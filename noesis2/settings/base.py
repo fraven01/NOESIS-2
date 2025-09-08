@@ -42,6 +42,7 @@ INSTALLED_APPS = [
     'ai_core',
     'users',
     'common',
+    'theme.apps.ThemeConfig',
 ]
 
 MIDDLEWARE = [
