@@ -83,15 +83,21 @@ WSGI_APPLICATION = 'noesis2.wsgi.application'
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 try:
     # Try to load the PostgreSQL driver
-    import psycopg2
+    import psycopg2  # noqa: F401
 
-    # If successful, configure for PostgreSQL using environment variables
-    DATABASE_URL = f"postgres://{env('DB_USER')}:{env('DB_PASSWORD')}@{env('DB_HOST')}:{env('DB_PORT')}/{env('DB_NAME')}"
-    env.read_env(io.StringIO(f"DATABASE_URL={DATABASE_URL}"))
+    # Configure PostgreSQL directly from individual environment variables.
+    # This avoids issues with special characters in passwords breaking a DATABASE_URL.
     DATABASES = {
-        'default': env.db(),
+        'default': {
+            'ENGINE': 'django.db.backends.postgresql',
+            'NAME': env('DB_NAME'),
+            'USER': env('DB_USER'),
+            'PASSWORD': env('DB_PASSWORD'),
+            'HOST': env('DB_HOST', default='localhost'),
+            'PORT': env('DB_PORT', default='5432'),
+        }
     }
-except (ImportError, KeyError, ImproperlyConfigured):
+except (ImportError, ImproperlyConfigured, Exception):
     # If the driver is not installed or env vars are missing, fall back to SQLite
     DATABASES = {
         'default': {
