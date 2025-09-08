@@ -1,6 +1,6 @@
 celery
 django
 django-environ
-psycopg2-binary
+psycopg2-binary  # optional PostgreSQL driver
 python-json-logger==3.3.0
 redis

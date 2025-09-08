@@ -6,10 +6,10 @@ Split into base/development/production. Development and production import * from
 
 from pathlib import Path
 import io
-from urllib.parse import quote
 import copy
 import environ
 from django.utils.log import DEFAULT_LOGGING
+from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # This file is at noesis2/settings/base.py, so project root is three parents up
@@ -81,19 +81,24 @@ WSGI_APPLICATION = 'noesis2.wsgi.application'
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
+try:
+    # Try to load the PostgreSQL driver
+    import psycopg2
 
-# Build DATABASE_URL from individual env vars and load into environ
-_db_user = quote(env('DB_USER'))
-_db_password = quote(env('DB_PASSWORD'))
-_db_host = env('DB_HOST')
-_db_port = env('DB_PORT')
-_db_name = quote(env('DB_NAME'))
-DATABASE_URL = f"postgres://{_db_user}:{_db_password}@{_db_host}:{_db_port}/{_db_name}"
-env.read_env(io.StringIO(f"DATABASE_URL={DATABASE_URL}"))
-
-DATABASES = {
-    'default': env.db(),
-}
+    # If successful, configure for PostgreSQL using environment variables
+    DATABASE_URL = f"postgres://{env('DB_USER')}:{env('DB_PASSWORD')}@{env('DB_HOST')}:{env('DB_PORT')}/{env('DB_NAME')}"
+    env.read_env(io.StringIO(f"DATABASE_URL={DATABASE_URL}"))
+    DATABASES = {
+        'default': env.db(),
+    }
+except (ImportError, KeyError, ImproperlyConfigured):
+    # If the driver is not installed or env vars are missing, fall back to SQLite
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
