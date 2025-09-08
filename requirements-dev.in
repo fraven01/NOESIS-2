@@ -1,0 +1,7 @@
+pytest
+pytest-django
+pytest-cov
+factory-boy
+ruff
+black
+

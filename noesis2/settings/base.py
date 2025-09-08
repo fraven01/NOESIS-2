@@ -5,6 +5,8 @@ Split into base/development/production. Development and production import * from
 """
 
 from pathlib import Path
+import io
+from urllib.parse import quote
 import environ
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -78,11 +80,17 @@ WSGI_APPLICATION = 'noesis2.wsgi.application'
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
 
+# Build DATABASE_URL from individual env vars and load into environ
+_db_user = quote(env('DB_USER'))
+_db_password = quote(env('DB_PASSWORD'))
+_db_host = env('DB_HOST')
+_db_port = env('DB_PORT')
+_db_name = quote(env('DB_NAME'))
+DATABASE_URL = f"postgres://{_db_user}:{_db_password}@{_db_host}:{_db_port}/{_db_name}"
+env.read_env(io.StringIO(f"DATABASE_URL={DATABASE_URL}"))
+
 DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
-    }
+    'default': env.db(),
 }
 
 

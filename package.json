@@ -5,8 +5,10 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:css": "tailwindcss -i ./theme/static_src/input.css -o ./theme/static/css/output.css --watch",
-    "dev": "concurrently \"python manage.py runserver\" \"npm run build:css\""
+    "build:css": "npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css --watch",
+    "dev": "concurrently \"python manage.py runserver\" \"npm run build:css\"",
+    "lint": "ruff . && black --check .",
+    "lint:fix": "ruff --fix . && black ."
   },
   "keywords": [],
   "author": "",
@@ -16,6 +18,8 @@
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "postcss": "^8.5.6",
+    "@tailwindcss/postcss": "^4.0.0",
+    "postcss-cli": "^11.0.0",
     "tailwindcss": "^4.1.13"
   }
 }
