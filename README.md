@@ -21,18 +21,19 @@ KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen M
 
 ---
 
-## Quickstart
+## Docker Quickstart
 ```bash
-pip install -r requirements.txt
-pip install -r requirements-dev.txt
 copy .env.example .env   # Linux/macOS: cp .env.example .env
-python manage.py migrate
-npm install && npm run dev
+docker-compose build
+docker-compose up
 ```
 
 ---
 
-## Lokales Setup
+## Lokales Setup (Alternative ohne Docker)
+
+Docker Compose ist die bevorzugte Methode für ein konsistentes, schnelles Setup.
+Die folgenden Schritte sind ein manueller Fallback, falls Docker nicht genutzt wird.
 
 ### Voraussetzungen
 - Python 3.12+
@@ -78,6 +79,13 @@ npm install && npm run dev
 npm run dev
 ```
 
+## Anwendung ausführen mit Docker
+
+- `docker-compose up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
+- `docker-compose up -d`: Startet die Anwendung im Hintergrund (detached mode).
+- `docker-compose down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
+- `docker-compose exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+
 ---
 
 ## Konfiguration (.env)
@@ -120,4 +128,3 @@ Die Settings lesen `.env` via `django-environ`. Die Datenbank wird über eine zu
 ## Troubleshooting (Windows)
 - Falls `pytest`, `black`, `ruff` oder `pip-compile` nicht gefunden werden: `%APPDATA%\Python\Python313\Scripts` zum PATH hinzufügen.
 - `.env` sollte UTF‑8 ohne BOM sein (bei Parsen-Fehlern Datei neu speichern).
-
