@@ -4,4 +4,4 @@ pytest-cov
 factory-boy
 ruff
 black
-
+pip-tools
