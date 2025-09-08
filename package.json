@@ -1,0 +1,22 @@
+{
+  "name": "noesis-2",
+  "version": "1.0.0",
+  "description": "KI-gestützte Plattform im Rahmen der betrieblichen Mitbestimmung",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build:css": "tailwindcss -i ./theme/static_src/input.css -o ./theme/static/css/output.css --watch",
+    "dev": "concurrently \"python manage.py runserver\" \"npm run build:css\""
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.13",
+    "@tailwindcss/cli": "^4.1.13"
+  }
+}
