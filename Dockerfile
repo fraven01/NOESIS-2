@@ -14,11 +14,12 @@ WORKDIR /app
 # System deps and Node.js for PostCSS build
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
+       build-essential \
        nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy dependency manifests and install Python + Node deps
-COPY requirements.txt ./
+COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY package*.json ./
@@ -37,7 +38,7 @@ ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
     DB_PORT=5432
 
 # Build CSS once (no watch) and collect static files
-RUN npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css \
+RUN npm run build:css \
     && python manage.py collectstatic --noinput
 
 ########################################
