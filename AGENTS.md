@@ -39,10 +39,31 @@ Dieses Dokument beschreibt die Standards, Workflows und Erwartungen für Entwick
 - Migrationen lokal generieren (`python manage.py makemigrations`) und anwenden (`migrate`)
 - Custom User-Modell: `users.User`; bei Referenzen Importzyklen vermeiden
 
-## Tests
-- Pytest + pytest-django; Testdaten via factory-boy
-- Ausführen: `pytest -q`; mit Coverage: `pytest -q --cov=noesis2 --cov-report=term-missing`
-- Ziel: stabile Tests, sinnvolle Abdeckung (z. B. ≥ 80%)
+## Test-Philosophie & Strategie
+
+Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jeder Beitrag muss von qualitativ hochwertigen Tests begleitet werden. Wir orientieren uns an der klassischen Testpyramide:
+
+1.  **Unit-Tests (Die Basis):**
+    * **Fokus:** Testen die kleinste logische Einheit (eine Funktion, eine Methode) in kompletter Isolation.
+    * **Anforderung:** Abhängigkeiten wie Datenbanken, externe Dienste oder das Dateisystem **müssen** durch Mocks ersetzt werden. Diese Tests sind extrem schnell und bilden die Mehrheit unserer Testsuite.
+    * **Beispiel:** Eine Funktion, die Daten transformiert, ohne auf ein Django-Model zuzugreifen.
+
+2.  **Integrationstests (Die Mitte):**
+    * **Fokus:** Testen das Zusammenspiel mehrerer Komponenten. Dies ist der häufigste Testtyp in unserem Django-Projekt.
+    * **Anforderung:** Hier wird bewusst die Interaktion mit der Datenbank (`@pytest.mark.django_db`), dem Caching oder anderen internen Diensten geprüft.
+    * **Beispiel:** Ein API-Endpunkt wird aufgerufen und es wird verifiziert, dass die korrekten Daten in der Datenbank angelegt und als Antwort zurückgegeben werden.
+
+3.  **End-to-End (E2E) Tests (Die Spitze):**
+    * **Fokus:** Simulieren einen vollständigen Benutzer-Workflow durch die Live-Anwendung (aus Browser-Sicht).
+    * **Anforderung:** Diese Tests sind wertvoll, aber aufwändig. Sie werden nur für kritische Hauptpfade der Anwendung erstellt und sind derzeit noch nicht implementiert.
+
+**Generelle Anweisungen:**
+* **Testgetriebene Anweisungen:** Jeder Prompt zur Implementierung von Funktionalität enthält die explizite Anforderung, die notwendigen Unit- und/oder Integrationstests zu schreiben.
+* **Struktur:** Tests leben in einem `tests`-Verzeichnis innerhalb der jeweiligen App und sind nach ihrer Funktion aufgeteilt (z.B. `test_models.py`, `test_views.py`, `test_tasks.py`).
+* **Testdaten:** Für die Erstellung von Testdaten wird konsequent `factory-boy` verwendet. Für jedes Model existiert eine entsprechende Factory in einer `factories.py`-Datei.
+* **Ausführung:** `pytest -q`
+* **Coverage:** `pytest -q --cov=noesis2 --cov-report=term-missing`. Eine hohe Testabdeckung (Ziel > 80%) ist obligatorisch.
+
 
 ## Frontend-Workflow
 - Entwicklung: `npm run dev` (Django + CSS-Watcher)
