@@ -30,10 +30,14 @@ django==5.2.6
     # via -r requirements.in
 django-environ==0.12.0
     # via -r requirements.in
+gunicorn==23.0.0
+    # via -r requirements.in
 kombu==5.5.4
     # via celery
 packaging==25.0
-    # via kombu
+    # via
+    #   gunicorn
+    #   kombu
 prompt-toolkit==3.0.52
     # via click-repl
 psycopg2-binary==2.9.10
