@@ -10,13 +10,13 @@ class Migration(migrations.Migration):
     initial = True
 
     dependencies = [
-        ("projects", "0001_initial"),
+        ("workflows", "0001_initial"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name="DocumentType",
+            name="Project",
             fields=[
                 (
                     "id",
@@ -31,13 +31,34 @@ class Migration(migrations.Migration):
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 ("name", models.CharField(max_length=255)),
                 ("description", models.TextField()),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("initiated", "Initiert"),
+                            ("negotiation", "In Verhandlung"),
+                            ("completed", "Abgeschlossen"),
+                            ("paused", "Pausiert"),
+                        ],
+                        default="initiated",
+                        max_length=20,
+                    ),
+                ),
+                (
+                    "owner",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="projects",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
                 "abstract": False,
             },
         ),
         migrations.CreateModel(
-            name="Document",
+            name="WorkflowInstance",
             fields=[
                 (
                     "id",
@@ -50,41 +71,21 @@ class Migration(migrations.Migration):
                 ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("file", models.FileField(upload_to="documents/")),
-                (
-                    "status",
-                    models.CharField(
-                        choices=[
-                            ("uploaded", "hochgeladen"),
-                            ("processing", "in Bearbeitung"),
-                            ("completed", "abgeschlossen"),
-                        ],
-                        default="uploaded",
-                        max_length=20,
-                    ),
-                ),
-                (
-                    "owner",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE,
-                        related_name="documents",
-                        to=settings.AUTH_USER_MODEL,
-                    ),
-                ),
+                ("state", models.JSONField(blank=True, default=dict)),
                 (
                     "project",
-                    models.ForeignKey(
+                    models.OneToOneField(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="documents",
+                        related_name="workflow",
                         to="projects.project",
                     ),
                 ),
                 (
-                    "type",
+                    "template",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="documents",
-                        to="documents.documenttype",
+                        related_name="instances",
+                        to="workflows.workflowtemplate",
                     ),
                 ),
             ],

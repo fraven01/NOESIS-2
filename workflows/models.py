@@ -3,8 +3,8 @@ from django.db import models
 from common.models import TimestampedModel
 
 
-class Workflow(TimestampedModel):
-    """A collection of ordered steps representing a document workflow."""
+class WorkflowTemplate(TimestampedModel):
+    """A collection of ordered steps representing a document workflow template."""
 
     name = models.CharField(max_length=255)
 
@@ -13,10 +13,10 @@ class Workflow(TimestampedModel):
 
 
 class WorkflowStep(TimestampedModel):
-    """Single step within a :class:`Workflow`."""
+    """Single step within a :class:`WorkflowTemplate`."""
 
-    workflow = models.ForeignKey(
-        Workflow, related_name="steps", on_delete=models.CASCADE
+    template = models.ForeignKey(
+        WorkflowTemplate, related_name="steps", on_delete=models.CASCADE
     )
     order = models.PositiveIntegerField()
     instructions = models.TextField()
@@ -25,4 +25,4 @@ class WorkflowStep(TimestampedModel):
         ordering = ["order"]
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
-        return f"{self.workflow} - step {self.order}"
+        return f"{self.template} - step {self.order}"

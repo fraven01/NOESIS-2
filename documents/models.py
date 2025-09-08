@@ -2,7 +2,7 @@ from django.conf import settings
 from django.db import models
 
 from common.models import TimestampedModel
-from workflows.models import Workflow
+from projects.models import Project
 
 
 class DocumentType(TimestampedModel):
@@ -10,9 +10,6 @@ class DocumentType(TimestampedModel):
 
     name = models.CharField(max_length=255)
     description = models.TextField()
-    workflow = models.ForeignKey(
-        Workflow, related_name="document_types", on_delete=models.CASCADE
-    )
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return self.name
@@ -36,6 +33,9 @@ class Document(TimestampedModel):
     )
     type = models.ForeignKey(
         DocumentType, related_name="documents", on_delete=models.CASCADE
+    )
+    project = models.ForeignKey(
+        Project, related_name="documents", on_delete=models.CASCADE
     )
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="documents", on_delete=models.CASCADE
