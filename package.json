@@ -5,8 +5,9 @@
   "main": "index.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "build:css": "npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css --watch",
-    "dev": "concurrently \"python manage.py runserver\" \"npm run build:css\"",
+    "build:css": "npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css",
+    "build:css:watch": "npm run build:css -- --watch",
+    "dev": "concurrently \"python manage.py runserver\" \"npm run build:css:watch\"",
     "lint": "ruff . && black --check .",
     "lint:fix": "ruff --fix . && black ."
   },
