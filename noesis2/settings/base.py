@@ -7,7 +7,9 @@ Split into base/development/production. Development and production import * from
 from pathlib import Path
 import io
 from urllib.parse import quote
+import copy
 import environ
+from django.utils.log import DEFAULT_LOGGING
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # This file is at noesis2/settings/base.py, so project root is three parents up
@@ -142,29 +144,26 @@ CELERY_BROKER_URL = 'redis://localhost:6379/0'
 CELERY_RESULT_BACKEND = 'redis://localhost:6379/0'
 
 
-LOGGING = {
-    'version': 1,
-    'disable_existing_loggers': False,
-    'formatters': {
-        'verbose': {
-            'format': '[%(asctime)s] %(levelname)s %(module)s %(message)s',
-        },
-        'json': {
-            '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
-        },
-    },
-    'handlers': {
-        'console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'verbose',
-        },
-        'json_console': {
-            'class': 'logging.StreamHandler',
-            'formatter': 'json',
-        },
-    },
-    'root': {
-        'handlers': ['console'],
-        'level': 'INFO',
-    },
+ADMINS = [(
+    env('ADMIN_NAME', default='Admin'),
+    env('ADMIN_EMAIL', default='admin@example.com'),
+)]
+
+EMAIL_BACKEND = 'django.core.mail.backends.console.EmailBackend'
+
+LOGGING = copy.deepcopy(DEFAULT_LOGGING)
+LOGGING['formatters']['verbose'] = {
+    'format': '[%(asctime)s] %(levelname)s %(module)s %(message)s',
+}
+LOGGING['formatters']['json'] = {
+    '()': 'pythonjsonlogger.jsonlogger.JsonFormatter',
+}
+LOGGING['handlers']['json_console'] = {
+    'class': 'logging.StreamHandler',
+    'formatter': 'json',
+}
+LOGGING['handlers']['console']['formatter'] = 'verbose'
+LOGGING['root'] = {
+    'handlers': ['console'],
+    'level': 'INFO',
 }

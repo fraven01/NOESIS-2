@@ -2,5 +2,5 @@ celery
 django
 django-environ
 psycopg2-binary
-python-json-logger
+python-json-logger==3.3.0
 redis
