@@ -6,6 +6,9 @@ DEBUG = False
 # Static files collection target
 STATIC_ROOT = BASE_DIR / "staticfiles"  # noqa: F405
 
+# Allow all hostnames on Google Cloud Run, as the URL is dynamically generated.
+ALLOWED_HOSTS = [".run.app"]
+
 # Security settings
 SECURE_HSTS_SECONDS = 31536000
 SECURE_HSTS_INCLUDE_SUBDOMAINS = True
