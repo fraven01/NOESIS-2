@@ -7,6 +7,7 @@ from .factories import ProjectFactory, WorkflowInstanceFactory
 def test_project_factory_creates_project():
     project = ProjectFactory()
     assert project.pk is not None
+    assert project.organization is not None
 
 
 @pytest.mark.django_db

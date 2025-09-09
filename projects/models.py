@@ -28,6 +28,9 @@ class Project(TimestampedModel):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="projects", on_delete=models.CASCADE
     )
+    organization = models.ForeignKey(
+        "organizations.Organization", on_delete=models.CASCADE
+    )
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return self.name
