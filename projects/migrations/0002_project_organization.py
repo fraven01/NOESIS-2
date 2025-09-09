@@ -99,7 +99,9 @@ class Migration(migrations.Migration):
                 ),
             ],
             database_operations=[
-                migrations.RunPython(ensure_org_column, reverse_code=migrations.RunPython.noop),
+                migrations.RunPython(
+                    ensure_org_column, reverse_code=migrations.RunPython.noop
+                ),
             ],
         ),
         migrations.RunPython(forwards_create_orgs, backwards_delete_legacy_orgs),
