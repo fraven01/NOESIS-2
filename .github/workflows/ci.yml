@@ -7,6 +7,60 @@ on:
     branches: [ "main" ]
 
 jobs:
+  verify-secrets:
+    name: Verify Secrets
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install jq
+        shell: bash
+        run: |
+          sudo apt-get update -y >/dev/null 2>&1
+          sudo apt-get install -y jq >/dev/null 2>&1
+
+      - name: Verify GCP Credentials JSON structure
+        shell: bash
+        run: |
+          echo "Verifying GCP_CREDENTIALS..."
+          CREDS='${{ secrets.GCP_CREDENTIALS }}'
+          if [ -z "$CREDS" ]; then
+            echo "::error::GCP_CREDENTIALS is empty!"; exit 1;
+          fi
+          printf '%s' "$CREDS" > gcp_creds.json
+          PARSED_PROJECT_ID=$(jq -r '.project_id' gcp_creds.json)
+          echo "Project ID parsed from JSON: $PARSED_PROJECT_ID"
+          if [ "$PARSED_PROJECT_ID" = "null" ] || [ -z "$PARSED_PROJECT_ID" ]; then
+            echo "::error::Could not parse project_id from GCP_CREDENTIALS JSON."; exit 1;
+          fi
+
+      - name: Verify simple string secrets
+        shell: bash
+        run: |
+          echo "Verifying GCP_PROJECT_ID..."
+          PROJECT_ID="${{ secrets.GCP_PROJECT_ID }}"
+          echo "Project ID Length: ${#PROJECT_ID}"
+          echo "Project ID Starts with: ${PROJECT_ID:0:5}"
+          echo "Project ID Ends with: ${PROJECT_ID: -5}"
+
+          echo "Verifying GCP_REGION (non-sensitive)..."
+          echo "Region: ${{ secrets.GCP_REGION }}"
+
+          echo "Verifying GAR_REPOSITORY..."
+          REPO="${{ secrets.GAR_REPOSITORY }}"
+          echo "Repository Name Length: ${#REPO}"
+
+          echo "Verifying CLOUD_SQL_CONNECTION_NAME..."
+          CONN_NAME="${{ secrets.CLOUD_SQL_CONNECTION_NAME }}"
+          echo "Connection Name Length: ${#CONN_NAME}"
+
+      - name: Verify database secrets (length check only)
+        shell: bash
+        run: |
+          echo "Verifying DB secrets..."
+          [ -n "${{ secrets.DB_NAME }}" ] || { echo "::error::DB_NAME is NOT set!"; exit 1; }
+          [ -n "${{ secrets.DB_USER }}" ] || { echo "::error::DB_USER is NOT set!"; exit 1; }
+          [ -n "${{ secrets.DB_PASSWORD }}" ] || { echo "::error::DB_PASSWORD is NOT set!"; exit 1; }
+          echo "DB secrets presence verified."
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
