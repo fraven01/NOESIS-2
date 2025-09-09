@@ -28,6 +28,11 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 ```
 
+Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
+Falls du ein älteres Compose-Setup verwendest, führe stattdessen manuell aus:
+`docker-compose exec web python manage.py collectstatic`.
+Dies ist erforderlich, da `CompressedManifestStaticFilesStorage` aktiviert ist.
+
 ---
 
 ## Lokales Setup (Alternative ohne Docker)
@@ -85,6 +90,10 @@ npm run dev
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`: Startet die Anwendung im Hintergrund (detached mode).
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+- Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
+  Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
+  `docker-compose exec web python manage.py collectstatic`.
+  Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
 
 ---
 
