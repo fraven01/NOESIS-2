@@ -27,7 +27,7 @@ SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = []
+ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
 
 
 # Application definition
@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "workflows",
     "ai_core",
     "users",
+    "organizations",
     "common",
     "theme.apps.ThemeConfig",
 ]

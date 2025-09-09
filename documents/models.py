@@ -3,6 +3,7 @@ from django.db import models
 
 from common.models import TimestampedModel
 from projects.models import Project
+from organizations.query import OrganizationManager
 
 
 class DocumentType(TimestampedModel):
@@ -40,6 +41,7 @@ class Document(TimestampedModel):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="documents", on_delete=models.CASCADE
     )
+    objects = OrganizationManager(organization_field="project__organization")
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return f"{self.type.name} ({self.get_status_display()})"
