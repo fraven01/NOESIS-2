@@ -14,5 +14,17 @@ class DocumentTypeAdmin(admin.ModelAdmin):
 class DocumentAdmin(admin.ModelAdmin):
     """Admin configuration for :class:`Document`."""
 
-    list_display = ("type", "project", "owner", "status", "created_at", "updated_at")
-    list_filter = ("status", "type", "project")
+    list_display = (
+        "type",
+        "project",
+        "organization",
+        "owner",
+        "status",
+        "created_at",
+        "updated_at",
+    )
+    list_filter = ("status", "type", "project__organization", "project")
+
+    @staticmethod
+    def organization(obj):
+        return obj.project.organization
