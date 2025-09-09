@@ -244,7 +244,7 @@ jobs:
           image: ${{ env.IMAGE }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           region: ${{ secrets.GCP_REGION }}
-          flags: '--add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}'
+          flags: '--add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }} --allow-unauthenticated'
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
