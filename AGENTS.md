@@ -81,3 +81,14 @@ Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jede
 - [ ] README/Docs aktualisiert
 - [ ] `.env.example` konsistent zu neuen/entfernten Settings
 
+### Datenmigrationen (PostgreSQL Best Practices)
+- Drei-Phasen-Pattern für neue, nicht-nullbare FKs bei Bestandsdaten:
+  1) `AddField(..., null=True, blank=True)`
+  2) `RunPython` zum Backfill bestehender Zeilen
+  3) `AlterField(..., null=False)`
+- Backwards sicher gestalten: Beziehungen zuerst lösen (FK auf `NULL` setzen), dann nur migrierte Daten löschen (z. B. per Slug-Prefix filtern).
+- Non-atomic in komplexen Fällen: `atomic = False` in der Migration setzen, um Postgres-Fehler wie „pending trigger events“ beim Zurückmigrieren zu vermeiden.
+- Historische Modelle nutzen: In `RunPython` stets `apps.get_model(...)` verwenden, keine direkten Model-Imports.
+- Effizient backfüllen: Nach Möglichkeit mit `update()`/Batching statt `save()` in Schleifen arbeiten.
+- Optional fortgeschritten: Bei Bedarf Constraints temporär deferieren (PostgreSQL), z. B. `schema_editor.execute('SET CONSTRAINTS ALL DEFERRED')` innerhalb der `RunPython`-Funktion.
+

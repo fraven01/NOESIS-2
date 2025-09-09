@@ -46,13 +46,6 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "organization",
-                    models.ForeignKey(
-                        on_delete=django.db.models.deletion.CASCADE,
-                        to="organizations.organization",
-                    ),
-                ),
-                (
                     "owner",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
