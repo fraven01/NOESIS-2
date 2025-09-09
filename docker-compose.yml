@@ -26,11 +26,12 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_web
-    command: sh -c "python manage.py migrate && gunicorn noesis2.wsgi:application --bind 0.0.0.0:8000"
+    command: sh -c "python manage.py migrate && python manage.py collectstatic --noinput && gunicorn noesis2.wsgi:application --bind 0.0.0.0:8000"
     ports:
       - "8000:8000"
     volumes:
       - .:/app
+      - staticfiles:/app/staticfiles
     env_file:
       - .env
     depends_on:
@@ -54,5 +55,7 @@ services:
 
 volumes:
   postgres_data:
+    driver: local
+  staticfiles:
     driver: local
 
