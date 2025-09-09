@@ -94,4 +94,4 @@ USER appuser
 EXPOSE 8080
 
 # Start via gunicorn (honors $PORT environment variable)
-CMD ["sh", "-c", "gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
+CMD ["sh", "-c", "python manage.py collectstatic --noinput && gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
