@@ -102,6 +102,8 @@ Benötigte Variablen (siehe `.env.example`):
 Die Settings lesen `.env` via `django-environ`. Die Datenbank wird über eine zusammengesetzte `DATABASE_URL` konfiguriert (aus den Variablen oben), inkl. URL-Encoding für Sonderzeichen.
 
 ## Settings-Profile
+Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modulare Paket `noesis2/settings/`.
+
 - Standard: `noesis2.settings.development` (in `manage.py`, `asgi.py`, `wsgi.py` vorkonfiguriert)
 - Production: `noesis2.settings.production`
 - Umstellung per Env-Var: `DJANGO_SETTINGS_MODULE=noesis2.settings.production`
