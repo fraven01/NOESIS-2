@@ -117,6 +117,21 @@ Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modu
 - Production: `noesis2.settings.production`
 - Umstellung per Env-Var: `DJANGO_SETTINGS_MODULE=noesis2.settings.production`
 
+## Datenmigration und Standard-Organisation
+Beim Upgrade auf die mandantenfähige Struktur muss jedem bestehenden Projekt
+eine Organisation zugeordnet werden. Die Migration
+`projects/migrations/0002_project_organization.py` legt für vorhandene Projekte
+automatisch eine Organisation an. Sollten nach dem Deploy noch Projekte ohne
+Organisation existieren (z. B. nach einem manuellen Datenimport), kann der
+Management-Befehl `assign_default_org` genutzt werden:
+
+```bash
+python manage.py assign_default_org
+```
+
+Der Befehl erzeugt für jedes betroffene Projekt eine neue Organisation und
+aktualisiert das Projekt entsprechend.
+
 ## Frontend-Build (Tailwind v4 via PostCSS)
 - Build/Watch: `npm run build:css` (wird in `npm run dev` automatisch gestartet)
 - Konfiguration: `postcss.config.js` mit `@tailwindcss/postcss` und `autoprefixer`
