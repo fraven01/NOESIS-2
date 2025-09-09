@@ -45,13 +45,9 @@ COPY . .
 COPY --from=css-builder /app/theme/static/css ./theme/static/css
 
 # Minimal env for Django settings during build (collectstatic)
+# No database needed for collectstatic; keep a placeholder SECRET_KEY only.
 ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
-    SECRET_KEY=build-secret \
-    DB_NAME=builddb \
-    DB_USER=builduser \
-    DB_PASSWORD=buildpass \
-    DB_HOST=localhost \
-    DB_PORT=5432
+    SECRET_KEY=build-secret
 
 # Collect static files
 RUN python manage.py collectstatic --noinput

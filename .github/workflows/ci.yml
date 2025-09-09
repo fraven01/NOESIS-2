@@ -143,14 +143,16 @@ jobs:
       - name: Run tests
         run: python -m pytest -q
 
-  deploy-staging:
-    name: Deploy to Cloud Run (staging)
+  build:
+    name: Build and Push Image
     runs-on: ubuntu-latest
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       REGISTRY_HOST: ${{ secrets.GCP_REGION }}-docker.pkg.dev
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+    outputs:
+      image: ${{ steps.set_output.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -170,10 +172,74 @@ jobs:
         env:
           REGISTRY_HOST: ${{ env.REGISTRY_HOST }}
 
-      - name: Build and push image
+      - name: Build image
+        run: docker build -t "$IMAGE" -f Dockerfile .
+
+      - name: Push image
+        run: docker push "$IMAGE"
+
+      - name: Set image output
+        id: set_output
+        run: echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+  migrate:
+    name: Run DB Migrations
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Run migrations via Cloud Run Job
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
+          CELERY_RESULT_BACKEND: ${{ secrets.CELERY_RESULT_BACKEND }}
         run: |
-          docker build -t "$IMAGE" -f Dockerfile .
-          docker push "$IMAGE"
+          gcloud run jobs deploy noesis2-migrate \
+            --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --max-retries=0 \
+            --task-timeout=600s \
+            --add-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
+            --command python \
+            --args manage.py,migrate,--noinput
+          gcloud run jobs execute noesis2-migrate --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --wait
+
+  deploy-staging:
+    name: Deploy to Cloud Run (staging)
+    runs-on: ubuntu-latest
+    needs: migrate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Deploy to Cloud Run (staging)
         uses: google-github-actions/deploy-cloudrun@v2.1.0
