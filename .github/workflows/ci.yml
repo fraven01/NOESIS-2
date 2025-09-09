@@ -217,7 +217,7 @@ jobs:
             --region "$GCP_REGION" \
             --max-retries=0 \
             --task-timeout=600s \
-            --add-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
             --command python \
             --args manage.py,migrate,--noinput
