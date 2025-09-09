@@ -24,9 +24,14 @@ KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen M
 ## Docker Quickstart
 ```bash
 copy .env.example .env   # Linux/macOS: cp .env.example .env
-docker-compose build
-docker-compose up
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 ```
+
+Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
+Falls du ein älteres Compose-Setup verwendest, führe stattdessen manuell aus:
+`docker-compose exec web python manage.py collectstatic`.
+Dies ist erforderlich, da `CompressedManifestStaticFilesStorage` aktiviert ist.
 
 ---
 
@@ -81,10 +86,14 @@ npm run dev
 
 ## Anwendung ausführen mit Docker
 
-- `docker-compose up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
-- `docker-compose up -d`: Startet die Anwendung im Hintergrund (detached mode).
-- `docker-compose down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
-- `docker-compose exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`: Startet die Anwendung im Hintergrund (detached mode).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+- Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
+  Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
+  `docker-compose exec web python manage.py collectstatic`.
+  Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
 
 ---
 
@@ -102,6 +111,8 @@ Benötigte Variablen (siehe `.env.example`):
 Die Settings lesen `.env` via `django-environ`. Die Datenbank wird über eine zusammengesetzte `DATABASE_URL` konfiguriert (aus den Variablen oben), inkl. URL-Encoding für Sonderzeichen.
 
 ## Settings-Profile
+Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modulare Paket `noesis2/settings/`.
+
 - Standard: `noesis2.settings.development` (in `manage.py`, `asgi.py`, `wsgi.py` vorkonfiguriert)
 - Production: `noesis2.settings.production`
 - Umstellung per Env-Var: `DJANGO_SETTINGS_MODULE=noesis2.settings.production`

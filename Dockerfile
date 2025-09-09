@@ -1,7 +1,22 @@
 # syntax=docker/dockerfile:1
 
 ########################################
-# Builder stage
+# CSS builder stage
+########################################
+FROM node:20 AS css-builder
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY postcss.config.js tailwind.config.js ./
+COPY theme ./theme
+
+RUN npm run build:css
+
+########################################
+# Python builder stage
 ########################################
 FROM python:3.12-slim-bookworm AS builder
 
@@ -11,22 +26,21 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System deps and Node.js for PostCSS build
+# System deps only
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
        build-essential \
-       nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency manifests and install Python + Node deps
+# Copy dependency manifests and install Python deps
 COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY package*.json ./
-RUN npm ci
-
 # Copy application source
 COPY . .
+
+# Copy built CSS from node builder
+COPY --from=css-builder /app/theme/static/css ./theme/static/css
 
 # Minimal env for Django settings during build (collectstatic)
 ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
@@ -37,9 +51,8 @@ ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
     DB_HOST=localhost \
     DB_PORT=5432
 
-# Build CSS once (no watch) and collect static files
-RUN npm run build:css \
-    && python manage.py collectstatic --noinput
+# Collect static files
+RUN python manage.py collectstatic --noinput
 
 ########################################
 # Runner stage
@@ -50,7 +63,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DJANGO_SETTINGS_MODULE=noesis2.settings.production \
-    PORT=8080
+    PORT=8000
 
 WORKDIR /app
 
@@ -72,13 +85,15 @@ COPY --from=builder /app/users /app/users
 COPY --from=builder /app/common /app/common
 COPY --from=builder /app/theme /app/theme
 COPY --from=builder /app/staticfiles /app/staticfiles
+COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 
 # Ensure correct ownership (optional, improves security)
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app && chmod +x /app/entrypoint.sh
 
 USER appuser
 
-EXPOSE 8080
+EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 # Start via gunicorn (honors $PORT environment variable)
 CMD ["sh", "-c", "gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
