@@ -15,12 +15,14 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "dependencies": {
+    "postcss-cli": "^11.0.0"
+  },
   "devDependencies": {
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "postcss": "^8.5.6",
     "@tailwindcss/postcss": "^4.0.0",
-    "postcss-cli": "^11.0.0",
     "tailwindcss": "^4.1.13"
   }
 }
