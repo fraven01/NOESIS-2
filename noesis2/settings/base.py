@@ -102,7 +102,9 @@ try:
     }
     # Special configuration for Google Cloud Run: use Cloud SQL Unix socket
     if os.getenv("GOOGLE_CLOUD_PROJECT"):
-        DATABASES["default"]["HOST"] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
+        DATABASES["default"][
+            "HOST"
+        ] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 except (ImportError, ImproperlyConfigured, Exception):
     # If the driver is not installed or env vars are missing, fall back to SQLite
     DATABASES = {
