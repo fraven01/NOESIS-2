@@ -151,8 +151,6 @@ jobs:
     env:
       REGISTRY_HOST: ${{ secrets.GCP_REGION }}-docker.pkg.dev
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
-    outputs:
-      image: ${{ steps.set_output.outputs.image }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -178,9 +176,7 @@ jobs:
       - name: Push image
         run: docker push "$IMAGE"
 
-      - name: Set image output
-        id: set_output
-        run: echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+      # Image tag is deterministic (${GITHUB_SHA}); downstream jobs can rebuild it.
 
   migrate:
     name: Run DB Migrations
@@ -200,7 +196,7 @@ jobs:
 
       - name: Run migrations via Cloud Run Job
         env:
-          IMAGE: ${{ needs.build.outputs.image }}
+          IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
@@ -229,7 +225,7 @@ jobs:
     needs: migrate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
-      IMAGE: ${{ needs.build.outputs.image }}
+      IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
