@@ -24,8 +24,8 @@ KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen M
 ## Docker Quickstart
 ```bash
 copy .env.example .env   # Linux/macOS: cp .env.example .env
-docker-compose build
-docker-compose up
+docker compose -f docker-compose.yml -f docker-compose.dev.yml build
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up
 ```
 
 ---
@@ -81,10 +81,10 @@ npm run dev
 
 ## Anwendung ausführen mit Docker
 
-- `docker-compose up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
-- `docker-compose up -d`: Startet die Anwendung im Hintergrund (detached mode).
-- `docker-compose down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
-- `docker-compose exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`: Startet die Anwendung im Hintergrund (detached mode).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
 
 ---
 

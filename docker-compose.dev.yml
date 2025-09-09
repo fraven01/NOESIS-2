@@ -26,10 +26,11 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_web
-    command: gunicorn noesis2.wsgi:application --bind 0.0.0.0:8000
+    command: python manage.py runserver 0.0.0.0:8000
     ports:
       - "8000:8000"
     volumes:
+      - .:/app
       - staticfiles:/app/staticfiles
     env_file:
       - .env
@@ -44,6 +45,8 @@ services:
       dockerfile: Dockerfile
     container_name: noesis2_worker
     command: celery -A noesis2 worker -l info
+    volumes:
+      - .:/app
     env_file:
       - .env
     depends_on:
@@ -55,4 +58,3 @@ volumes:
     driver: local
   staticfiles:
     driver: local
-

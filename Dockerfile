@@ -63,7 +63,7 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DJANGO_SETTINGS_MODULE=noesis2.settings.production \
-    PORT=8080
+    PORT=8000
 
 WORKDIR /app
 
@@ -85,13 +85,15 @@ COPY --from=builder /app/users /app/users
 COPY --from=builder /app/common /app/common
 COPY --from=builder /app/theme /app/theme
 COPY --from=builder /app/staticfiles /app/staticfiles
+COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 
 # Ensure correct ownership (optional, improves security)
-RUN chown -R appuser:appuser /app
+RUN chown -R appuser:appuser /app && chmod +x /app/entrypoint.sh
 
 USER appuser
 
-EXPOSE 8080
+EXPOSE 8000
 
+ENTRYPOINT ["/app/entrypoint.sh"]
 # Start via gunicorn (honors $PORT environment variable)
-CMD ["sh", "-c", "python manage.py collectstatic --noinput && gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
+CMD ["sh", "-c", "gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
