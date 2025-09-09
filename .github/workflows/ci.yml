@@ -11,6 +11,15 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
+      - name: Debug GitHub context
+        uses: actions/github-script@v7
+        with:
+          script: |
+            core.info(`event: ${context.eventName}`)
+            core.info(`actor: ${context.actor}`)
+            core.info(`sender: ${context.payload?.sender?.login || 'n/a'}`)
+            core.info(`pr.user: ${context.payload?.pull_request?.user?.login || 'n/a'}`)
+            core.info(`head.ref: ${context.payload?.pull_request?.head?.ref || process.env.GITHUB_REF_NAME}`)
       - name: Checkout
         uses: actions/checkout@v4
 
