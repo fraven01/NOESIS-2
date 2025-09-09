@@ -95,6 +95,7 @@ jobs:
     needs: test
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
+      REGISTRY_HOST: ${{ secrets.GCP_REGION }}-docker.pkg.dev
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
       - name: Checkout
@@ -111,7 +112,9 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       - name: Configure Docker for Artifact Registry
-        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev -q
+        run: gcloud auth configure-docker "$REGISTRY_HOST" -q
+        env:
+          REGISTRY_HOST: ${{ env.REGISTRY_HOST }}
 
       - name: Build and push image
         run: |
