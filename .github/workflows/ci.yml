@@ -182,7 +182,7 @@ jobs:
           image: ${{ env.IMAGE }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           region: ${{ secrets.GCP_REGION }}
-          cloud_sql_instances: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          flags: '--add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}'
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             SECRET_KEY=${{ secrets.SECRET_KEY }}
