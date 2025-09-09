@@ -16,7 +16,7 @@ class Command(BaseCommand):
     help = "Assign default organizations to projects without one"
 
     def handle(self, *args, **options):
-        for project in Project.objects.filter(organization__isnull=True):
+        for project in Project._base_manager.filter(organization__isnull=True):
             slug_part = getattr(project, "slug", str(project.pk))
             org = Organization.objects.create(
                 name=f"Legacy Org {slug_part}",
