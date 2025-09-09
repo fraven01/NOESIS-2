@@ -45,6 +45,7 @@ INSTALLED_APPS = [
     "workflows",
     "ai_core",
     "users",
+    "organizations",
     "common",
     "theme.apps.ThemeConfig",
 ]
