@@ -2,7 +2,8 @@ import os
 from celery import Celery
 
 
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "noesis2.settings.development")
+settings_module = os.getenv("DJANGO_SETTINGS_MODULE", "noesis2.settings.development")
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", settings_module)
 
 
 app = Celery("noesis2")
