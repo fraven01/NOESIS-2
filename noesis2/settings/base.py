@@ -4,6 +4,7 @@ Base settings for noesis2 project.
 Split into base/development/production. Development and production import * from here.
 """
 
+import os
 from pathlib import Path
 import copy
 import environ
@@ -99,6 +100,9 @@ try:
             "PORT": env("DB_PORT", default="5432"),
         }
     }
+    # Special configuration for Google Cloud Run: use Cloud SQL Unix socket
+    if os.getenv("GOOGLE_CLOUD_PROJECT"):
+        DATABASES["default"]["HOST"] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 except (ImportError, ImproperlyConfigured, Exception):
     # If the driver is not installed or env vars are missing, fall back to SQLite
     DATABASES = {
