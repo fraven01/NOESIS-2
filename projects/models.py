@@ -3,6 +3,7 @@ from django.db import models
 
 from common.models import TimestampedModel
 from workflows.models import WorkflowTemplate
+from organizations.query import OrganizationManager
 
 
 class Project(TimestampedModel):
@@ -31,6 +32,7 @@ class Project(TimestampedModel):
     organization = models.ForeignKey(
         "organizations.Organization", on_delete=models.CASCADE
     )
+    objects = OrganizationManager()
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return self.name
@@ -46,6 +48,7 @@ class WorkflowInstance(TimestampedModel):
         WorkflowTemplate, related_name="instances", on_delete=models.CASCADE
     )
     state = models.JSONField(default=dict, blank=True)
+    objects = OrganizationManager(organization_field="project__organization")
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return f"Workflow for {self.project}"
