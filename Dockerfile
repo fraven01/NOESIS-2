@@ -8,7 +8,9 @@ FROM node:20 AS css-builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm ci --omit=dev
+# Install with devDependencies, since build tools (@tailwindcss/postcss, autoprefixer, postcss)
+# are needed only during this stage. Final image does not include node_modules.
+RUN npm ci
 
 COPY postcss.config.js tailwind.config.js ./
 COPY theme ./theme
