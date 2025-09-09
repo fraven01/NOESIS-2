@@ -20,6 +20,12 @@ SECURE_REFERRER_POLICY = "strict-origin"
 SESSION_COOKIE_SECURE = True
 CSRF_COOKIE_SECURE = True
 
+# Behind Cloud Run's proxy, trust X-Forwarded-Proto for HTTPS detection
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
+# Allow browser POSTs from Cloud Run URLs (CSRF protection)
+CSRF_TRUSTED_ORIGINS = ["https://*.run.app"]
+
 # Use JSON logging in production
 LOGGING["root"]["handlers"] = ["json_console"]  # noqa: F405
 LOGGING["loggers"]["django.request"] = {  # noqa: F405

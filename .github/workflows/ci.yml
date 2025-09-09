@@ -61,6 +61,13 @@ jobs:
           [ -n "${{ secrets.DB_PASSWORD }}" ] || { echo "::error::DB_PASSWORD is NOT set!"; exit 1; }
           echo "DB secrets presence verified."
 
+      - name: Verify Django SECRET_KEY (presence only)
+        shell: bash
+        run: |
+          echo "Verifying SECRET_KEY..."
+          [ -n "${{ secrets.SECRET_KEY }}" ] || { echo "::error::SECRET_KEY is NOT set!"; exit 1; }
+          echo "SECRET_KEY presence verified."
+
   lint:
     name: Lint
     runs-on: ubuntu-latest
