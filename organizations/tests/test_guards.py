@@ -49,3 +49,12 @@ def test_non_member_cannot_read(client):
     with set_current_organization(org):
         response = client.get("/sample/")
     assert response.status_code == 403
+
+
+@override_settings(ROOT_URLCONF=__name__)
+@pytest.mark.django_db
+def test_requires_org_denies_without_active_org(client):
+    user = UserFactory()
+    client.force_login(user)
+    response = client.get("/sample/")
+    assert response.status_code == 403
