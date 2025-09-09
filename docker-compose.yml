@@ -49,6 +49,8 @@ services:
       - .:/app
     env_file:
       - .env
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
     depends_on:
       - redis
     restart: unless-stopped
