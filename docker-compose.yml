@@ -33,6 +33,8 @@ services:
       - staticfiles:/app/staticfiles
     env_file:
       - .env
+    environment:
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-example.com}
     depends_on:
       - db
       - redis
