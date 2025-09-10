@@ -113,11 +113,30 @@ jobs:
         run: npm run lint
 
   test:
-    name: Test
+    name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.12"]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: noesis2_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
     env:
       SECRET_KEY: ci-secret
       DJANGO_SETTINGS_MODULE: noesis2.settings.development
+      DB_NAME: noesis2_ci
+      DB_USER: postgres
+      DB_PASSWORD: postgres
+      DB_HOST: localhost
+      DB_PORT: 5432
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -125,7 +144,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
           cache-dependency-path: |
             requirements.txt
@@ -147,8 +166,23 @@ jobs:
       - name: Install Node deps
         run: npm ci
 
+      - name: Run shared migrations
+        run: python manage.py migrate_schemas --shared
+
+      - name: Create CI tenant
+        run: python manage.py create_tenant --schema_name ci --name "CI" --domain-domain ci.local --noinput
+
+      - name: Run tenant migrations
+        run: python manage.py migrate_schemas --tenant
+
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q --cov=noesis2 --cov-report=xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
 
   build:
     name: Build and Push Image
