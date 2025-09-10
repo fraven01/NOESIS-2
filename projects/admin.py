@@ -16,3 +16,4 @@ class ProjectAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_filter = ("organization", "status")
+    list_select_related = ("organization", "owner")

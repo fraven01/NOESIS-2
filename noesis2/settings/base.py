@@ -34,25 +34,18 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
 # Application definition
 
 SHARED_APPS = [
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "customers",
-]
-
-TENANT_APPS = [
-    "django.contrib.contenttypes",
-    "profiles",
-]
-
-INSTALLED_APPS = [
     "django_tenants",
-    *SHARED_APPS,
-    "theme.apps.ThemeConfig",
+    "customers",
+    "django.contrib.contenttypes",
+    "django.contrib.auth",
     "django.contrib.admin",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Project apps
+]
+
+TENANT_APPS = [
+    "theme.apps.ThemeConfig",
     "projects",
     "documents",
     "workflows",
@@ -63,9 +56,11 @@ INSTALLED_APPS = [
     "common",
 ]
 
+INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
+
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
     "django_tenants.middleware.main.TenantMainMiddleware",
+    "django.middleware.security.SecurityMiddleware",
     "common.middleware.TenantSchemaMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
@@ -129,6 +124,7 @@ except (ImportError, ImproperlyConfigured, Exception):
     }
 
 # Tenant settings
+PUBLIC_SCHEMA_NAME = "public"
 DATABASE_ROUTERS = ["django_tenants.routers.TenantSyncRouter"]
 TENANT_MODEL = "customers.Tenant"
 TENANT_DOMAIN_MODEL = "customers.Domain"
