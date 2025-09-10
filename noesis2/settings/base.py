@@ -33,10 +33,18 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
 
 # Application definition
 
-INSTALLED_APPS = [
-    "django.contrib.admin",
+SHARED_APPS = [
     "django.contrib.auth",
     "django.contrib.contenttypes",
+    "customers",
+]
+
+TENANT_APPS = ["django.contrib.contenttypes"]
+
+INSTALLED_APPS = [
+    "django_tenants",
+    *SHARED_APPS,
+    "django.contrib.admin",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
@@ -53,6 +61,7 @@ INSTALLED_APPS = [
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
+    "django_tenants.middleware.main.TenantMainMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -113,6 +122,11 @@ except (ImportError, ImproperlyConfigured, Exception):
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+# Tenant settings
+DATABASE_ROUTERS = ["django_tenants.routers.TenantSyncRouter"]
+TENANT_MODEL = "customers.Client"
+TENANT_DOMAIN_MODEL = "customers.Domain"
 
 
 # Password validation
