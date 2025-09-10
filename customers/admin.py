@@ -7,7 +7,7 @@ from .models import Domain, Tenant
 @admin.action(description="Migrate selected tenants")
 def migrate_selected_tenants(modeladmin, request, queryset):
     for tenant in queryset:
-        call_command("migrate_schemas", schema_name=tenant.schema_name)
+        call_command("migrate_schemas", schema=tenant.schema_name)
 
 
 @admin.register(Tenant)

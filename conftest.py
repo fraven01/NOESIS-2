@@ -12,6 +12,19 @@ if engine != "django_tenants.postgresql_backend":
     pytest.skip("requires django_tenants.postgresql_backend", allow_module_level=True)
 
 
+@pytest.fixture(autouse=True, scope="session")
+def ensure_tenant_engine():
+    """Skip tests if the PostgreSQL tenant backend isn't configured."""
+    from django.conf import settings
+
+    engine = settings.DATABASES["default"]["ENGINE"]
+    if engine != "django_tenants.postgresql_backend":
+        pytest.skip(
+            "Tests require the django-tenants PostgreSQL backend",
+            allow_module_level=True,
+        )
+
+
 @pytest.fixture(autouse=True)
 def tmp_media_root(tmp_path, settings):
     """Store uploaded files under a per-test temporary MEDIA_ROOT."""
