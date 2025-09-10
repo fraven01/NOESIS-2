@@ -1,8 +1,8 @@
 import pytest
-from django.core.management import call_command
+from django.core.management import CommandError, call_command
 
 from customers.models import Domain, Tenant
-from .factories import TenantFactory
+from .factories import DomainFactory, TenantFactory
 
 
 @pytest.mark.django_db
@@ -13,6 +13,29 @@ def test_create_tenant_command():
     tenant = Tenant.objects.get(schema_name="testschema")
     assert tenant.name == "Test"
     assert Domain.objects.filter(tenant=tenant, domain="test.example.com").exists()
+
+
+@pytest.mark.django_db
+def test_create_tenant_disallows_public_schema():
+    with pytest.raises(CommandError):
+        call_command(
+            "create_tenant",
+            schema="public",
+            name="Public",
+            domain="public.example.com",
+        )
+
+
+@pytest.mark.django_db
+def test_create_tenant_domain_collision():
+    DomainFactory(domain="collision.example.com")
+    with pytest.raises(CommandError):
+        call_command(
+            "create_tenant",
+            schema="collision",
+            name="Collision",
+            domain="collision.example.com",
+        )
 
 
 @pytest.mark.django_db

@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand, CommandError
+from django_tenants.utils import get_public_schema_name
 
 from customers.models import Domain, Tenant
 
@@ -16,8 +17,12 @@ class Command(BaseCommand):
         name = options["name"]
         domain = options["domain"]
 
+        if schema == get_public_schema_name():
+            raise CommandError("Schema 'public' is reserved")
         if Tenant.objects.filter(schema_name=schema).exists():
             raise CommandError("Schema already exists")
+        if Domain.objects.filter(domain=domain).exists():
+            raise CommandError("Domain already exists")
 
         tenant = Tenant(schema_name=schema, name=name)
         tenant.save()
