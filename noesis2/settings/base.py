@@ -36,18 +36,8 @@ ALLOWED_HOSTS = env.list(
 
 # Application definition
 
+# Apps that live in the ``public`` schema and are shared across all tenants
 SHARED_APPS = [
-    "django_tenants",
-    "django.contrib.auth",
-    "django.contrib.contenttypes",
-    "customers",
-    "django.contrib.contenttypes",
-    "profiles",
-]
-
-INSTALLED_APPS = [
-    *SHARED_APPS,
-    "theme.apps.ThemeConfig",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
@@ -57,6 +47,7 @@ INSTALLED_APPS = [
     "customers",
 ]
 
+# Apps that are installed separately for each tenant schema
 TENANT_APPS = [
     "theme.apps.ThemeConfig",
     "projects",
@@ -69,7 +60,8 @@ TENANT_APPS = [
     "common",
 ]
 
-INSTALLED_APPS = list(dict.fromkeys(SHARED_APPS + TENANT_APPS))
+# Final installed apps: ``django_tenants`` plus shared and tenant apps
+INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
 
 MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",
