@@ -101,7 +101,7 @@ try:
     # This avoids issues with special characters in passwords breaking a DATABASE_URL.
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
+            "ENGINE": "django_tenants.postgresql_backend",
             "NAME": env("DB_NAME"),
             "USER": env("DB_USER"),
             "PASSWORD": env("DB_PASSWORD"),
@@ -125,7 +125,7 @@ except (ImportError, ImproperlyConfigured, Exception):
 
 # Tenant settings
 DATABASE_ROUTERS = ["django_tenants.routers.TenantSyncRouter"]
-TENANT_MODEL = "customers.Client"
+TENANT_MODEL = "customers.Tenant"
 TENANT_DOMAIN_MODEL = "customers.Domain"
 
 
