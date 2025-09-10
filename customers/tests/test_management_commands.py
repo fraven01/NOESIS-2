@@ -1,7 +1,6 @@
 import pytest
-from django.conf import settings
-from django.core.management import call_command
-from django.core.management.base import CommandError
+from django.core.management import call_command, CommandError
+from django_tenants.utils import get_public_schema_name
 
 from customers.models import Domain, Tenant
 from .factories import DomainFactory, TenantFactory
@@ -18,18 +17,18 @@ def test_create_tenant_command():
 
 
 @pytest.mark.django_db
-def test_create_tenant_command_public_schema():
+def test_create_tenant_disallows_public_schema():
     with pytest.raises(CommandError):
         call_command(
             "create_tenant",
-            schema=settings.PUBLIC_SCHEMA_NAME,
-            name="Test",
-            domain="test.example.com",
+            schema=get_public_schema_name(),
+            name="Public",
+            domain="public.example.com",
         )
 
 
 @pytest.mark.django_db
-def test_create_tenant_command_duplicate_schema():
+def test_create_tenant_duplicate_schema():
     TenantFactory(schema_name="dup")
     with pytest.raises(CommandError):
         call_command(
@@ -38,7 +37,7 @@ def test_create_tenant_command_duplicate_schema():
 
 
 @pytest.mark.django_db
-def test_create_tenant_command_duplicate_domain():
+def test_create_tenant_duplicate_domain():
     DomainFactory(domain="dup.example.com")
     with pytest.raises(CommandError):
         call_command(
@@ -47,7 +46,7 @@ def test_create_tenant_command_duplicate_domain():
 
 
 @pytest.mark.django_db
-def test_create_tenant_command_is_atomic(monkeypatch):
+def test_create_tenant_is_atomic(monkeypatch):
     def _raise(*args, **kwargs):
         raise RuntimeError("boom")
 
