@@ -15,6 +15,7 @@ class DocumentAdmin(admin.ModelAdmin):
     """Admin configuration for :class:`Document`."""
 
     list_display = (
+        "title",
         "type",
         "project",
         "organization",
@@ -24,6 +25,7 @@ class DocumentAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_filter = ("status", "type", "project__organization", "project")
+    list_select_related = ("type", "project", "project__organization", "owner")
 
     @staticmethod
     def organization(obj):

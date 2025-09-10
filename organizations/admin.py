@@ -13,3 +13,4 @@ class OrganizationAdmin(admin.ModelAdmin):
 class OrgMembershipAdmin(admin.ModelAdmin):
     list_display = ("organization", "user", "role")
     list_filter = ("role",)
+    list_select_related = ("organization", "user")

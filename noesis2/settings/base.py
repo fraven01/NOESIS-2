@@ -28,31 +28,45 @@ SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
+ALLOWED_HOSTS = env.list(
+    "ALLOWED_HOSTS",
+    default=["example.com", "localhost", ".localhost", "testserver"],
+)
 
 
 # Application definition
 
-INSTALLED_APPS = [
+# Apps that live in the ``public`` schema and are shared across all tenants
+SHARED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    # Project apps
+    "customers",
+]
+
+# Apps that are installed separately for each tenant schema
+TENANT_APPS = [
+    "theme.apps.ThemeConfig",
     "projects",
     "documents",
     "workflows",
     "ai_core",
     "users",
+    "profiles",
     "organizations",
     "common",
-    "theme.apps.ThemeConfig",
 ]
 
+# Final installed apps: ``django_tenants`` plus shared and tenant apps
+INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
+
 MIDDLEWARE = [
+    "django_tenants.middleware.main.TenantMainMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "common.middleware.TenantSchemaMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -92,7 +106,7 @@ try:
     # This avoids issues with special characters in passwords breaking a DATABASE_URL.
     DATABASES = {
         "default": {
-            "ENGINE": "django.db.backends.postgresql",
+            "ENGINE": "django_tenants.postgresql_backend",
             "NAME": env("DB_NAME"),
             "USER": env("DB_USER"),
             "PASSWORD": env("DB_PASSWORD"),
@@ -113,6 +127,12 @@ except (ImportError, ImproperlyConfigured, Exception):
             "NAME": BASE_DIR / "db.sqlite3",
         }
     }
+
+# Tenant settings
+PUBLIC_SCHEMA_NAME = "public"
+DATABASE_ROUTERS = ["django_tenants.routers.TenantSyncRouter"]
+TENANT_MODEL = "customers.Tenant"
+TENANT_DOMAIN_MODEL = "customers.Domain"
 
 
 # Password validation

@@ -1,10 +1,12 @@
 import pytest
 
 from organizations.tests.factories import OrganizationFactory
-from projects.tests.factories import ProjectFactory, WorkflowInstanceFactory
+from projects.tests.factories import ProjectFactory
+from workflows.tests.factories import WorkflowInstanceFactory
 from documents.tests.factories import DocumentFactory
 from organizations.utils import set_current_organization
-from projects.models import Project, WorkflowInstance
+from projects.models import Project
+from workflows.models import WorkflowInstance
 from documents.models import Document
 
 

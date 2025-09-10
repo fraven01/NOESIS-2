@@ -2,7 +2,6 @@ from django.conf import settings
 from django.db import models
 
 from common.models import TimestampedModel
-from workflows.models import WorkflowTemplate
 from organizations.query import OrganizationManager
 
 
@@ -36,19 +35,3 @@ class Project(TimestampedModel):
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
         return self.name
-
-
-class WorkflowInstance(TimestampedModel):
-    """Concrete workflow state for a specific :class:`Project`."""
-
-    project = models.OneToOneField(
-        Project, related_name="workflow", on_delete=models.CASCADE
-    )
-    template = models.ForeignKey(
-        WorkflowTemplate, related_name="instances", on_delete=models.CASCADE
-    )
-    state = models.JSONField(default=dict, blank=True)
-    objects = OrganizationManager(organization_field="project__organization")
-
-    def __str__(self) -> str:  # pragma: no cover - simple representation
-        return f"Workflow for {self.project}"
