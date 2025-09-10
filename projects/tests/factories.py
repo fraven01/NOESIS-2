@@ -1,9 +1,8 @@
 import factory
 from factory.django import DjangoModelFactory
 
-from projects.models import Project, WorkflowInstance
+from projects.models import Project
 from users.tests.factories import UserFactory
-from workflows.tests.factories import WorkflowTemplateFactory
 from organizations.tests.factories import OrganizationFactory
 
 
@@ -15,12 +14,3 @@ class ProjectFactory(DjangoModelFactory):
     description = factory.Faker("sentence")
     owner = factory.SubFactory(UserFactory)
     organization = factory.SubFactory(OrganizationFactory)
-
-
-class WorkflowInstanceFactory(DjangoModelFactory):
-    class Meta:
-        model = WorkflowInstance
-
-    project = factory.SubFactory(ProjectFactory)
-    template = factory.SubFactory(WorkflowTemplateFactory)
-    state = factory.LazyFunction(dict)

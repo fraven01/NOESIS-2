@@ -14,3 +14,4 @@ def test_document_factory_creates_document():
     document = DocumentFactory()
     assert document.project is not None
     assert document.owner is not None
+    assert document.title != ""

@@ -1,7 +1,8 @@
 import factory
 from factory.django import DjangoModelFactory
 
-from workflows.models import WorkflowTemplate, WorkflowStep
+from workflows.models import WorkflowTemplate, WorkflowStep, WorkflowInstance
+from projects.tests.factories import ProjectFactory
 
 
 class WorkflowTemplateFactory(DjangoModelFactory):
@@ -18,3 +19,10 @@ class WorkflowStepFactory(DjangoModelFactory):
     template = factory.SubFactory(WorkflowTemplateFactory)
     order = factory.Sequence(lambda n: n)
     instructions = factory.Faker("sentence")
+
+
+class WorkflowInstanceFactory(DjangoModelFactory):
+    class Meta:
+        model = WorkflowInstance
+
+    project = factory.SubFactory(ProjectFactory)
