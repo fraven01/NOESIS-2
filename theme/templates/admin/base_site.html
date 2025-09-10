@@ -1,0 +1,30 @@
+{% extends "admin/base.html" %}
+{% load i18n domain_tags %}
+
+{% block userlinks %}
+    {% if request.user.is_staff %}
+        {% domains as domain_list %}
+        <label for="domain-switcher">{% trans "Domain" %}:</label>
+        <select id="domain-switcher">
+            {% for domain in domain_list %}
+                <option value="{{ domain.domain }}" {% if domain.domain == request.get_host %}selected{% endif %}>{{ domain.domain }}</option>
+            {% endfor %}
+        </select>
+        <small>{% trans "Hinweis: ggf. erneut einloggen" %}</small> /
+    {% endif %}
+    {{ block.super }}
+    {% if request.user.is_staff %}
+    <script>
+        (function() {
+            var select = document.getElementById('domain-switcher');
+            if (select) {
+                select.addEventListener('change', function() {
+                    var path = "{{ request.get_full_path|escapejs }}";
+                    var url = window.location.protocol + '//' + this.value + path;
+                    window.location.href = url;
+                });
+            }
+        })();
+    </script>
+    {% endif %}
+{% endblock %}

@@ -3,7 +3,7 @@ import datetime
 import factory
 from factory.django import DjangoModelFactory
 
-from customers.models import Tenant
+from customers.models import Domain, Tenant
 
 
 class TenantFactory(DjangoModelFactory):
@@ -14,3 +14,12 @@ class TenantFactory(DjangoModelFactory):
     name = factory.Sequence(lambda n: f"Tenant {n}")
     paid_until = factory.LazyFunction(lambda: datetime.date.today())
     on_trial = True
+
+
+class DomainFactory(DjangoModelFactory):
+    class Meta:
+        model = Domain
+
+    tenant = factory.SubFactory(TenantFactory)
+    domain = factory.Sequence(lambda n: f"domain{n}.example.com")
+    is_primary = True
