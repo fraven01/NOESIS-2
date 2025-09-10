@@ -1,5 +1,6 @@
 pytest
 pytest-django
+django-tenants
 pytest-cov
 factory-boy
 ruff
