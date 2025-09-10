@@ -1,4 +1,6 @@
+from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 
 from customers.models import Domain, Tenant
 
@@ -16,10 +18,16 @@ class Command(BaseCommand):
         name = options["name"]
         domain = options["domain"]
 
+        if schema == settings.PUBLIC_SCHEMA_NAME:
+            raise CommandError("Schema cannot be the public schema")
+
         if Tenant.objects.filter(schema_name=schema).exists():
             raise CommandError("Schema already exists")
 
-        tenant = Tenant(schema_name=schema, name=name)
-        tenant.save()
-        Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
+        if Domain.objects.filter(domain=domain).exists():
+            raise CommandError("Domain already exists")
+
+        with transaction.atomic():
+            tenant = Tenant.objects.create(schema_name=schema, name=name)
+            Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
         self.stdout.write(self.style.SUCCESS(f"Tenant '{name}' created"))
