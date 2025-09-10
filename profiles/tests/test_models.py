@@ -12,7 +12,9 @@ class TestUserProfileIsolation(TenantTestCase):
     def setUpTestData(cls):
         cls.user = UserFactory()
         cls.tenant1 = TenantFactory(schema_name="alpha")
+        cls.tenant1.create_schema()
         cls.tenant2 = TenantFactory(schema_name="beta")
+        cls.tenant2.create_schema()
 
     def test_profile_is_schema_isolated(self):
         with schema_context(self.tenant1.schema_name):
