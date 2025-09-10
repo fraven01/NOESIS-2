@@ -47,6 +47,7 @@ TENANT_APPS = [
 INSTALLED_APPS = [
     "django_tenants",
     *SHARED_APPS,
+    "theme.apps.ThemeConfig",
     "django.contrib.admin",
     "django.contrib.sessions",
     "django.contrib.messages",
@@ -60,7 +61,6 @@ INSTALLED_APPS = [
     "profiles",
     "organizations",
     "common",
-    "theme.apps.ThemeConfig",
 ]
 
 MIDDLEWARE = [
