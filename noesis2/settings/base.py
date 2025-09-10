@@ -34,6 +34,7 @@ ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
 # Application definition
 
 SHARED_APPS = [
+    "django_tenants",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "customers",
@@ -45,7 +46,6 @@ TENANT_APPS = [
 ]
 
 INSTALLED_APPS = [
-    "django_tenants",
     *SHARED_APPS,
     "theme.apps.ThemeConfig",
     "django.contrib.admin",
