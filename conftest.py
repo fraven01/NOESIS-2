@@ -1,6 +1,15 @@
 from pathlib import Path
 
 import pytest
+from django.conf import settings
+
+try:
+    engine = settings.DATABASES["default"]["ENGINE"]
+except Exception:  # pragma: no cover - settings not configured
+    engine = None
+
+if engine != "django_tenants.postgresql_backend":
+    pytest.skip("requires django_tenants.postgresql_backend", allow_module_level=True)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -23,6 +32,11 @@ def tmp_media_root(tmp_path, settings):
     media.mkdir(parents=True, exist_ok=True)
     settings.MEDIA_ROOT = str(media)
     yield
+
+
+@pytest.fixture(autouse=True)
+def disable_auto_create_schema(monkeypatch):
+    monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
 
 
 @pytest.fixture(autouse=True, scope="session")

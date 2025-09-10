@@ -19,3 +19,4 @@ class TenantAdmin(admin.ModelAdmin):
 @admin.register(Domain)
 class DomainAdmin(admin.ModelAdmin):
     list_display = ("domain", "tenant", "is_primary")
+    list_select_related = ("tenant",)

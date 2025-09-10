@@ -7,3 +7,4 @@ from .models import UserProfile
 class UserProfileAdmin(admin.ModelAdmin):
     list_display = ("user", "role", "is_active", "created_at")
     list_filter = ("role",)
+    list_select_related = ("user",)

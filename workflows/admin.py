@@ -16,6 +16,7 @@ class WorkflowStepAdmin(admin.ModelAdmin):
 
     list_display = ("template", "order", "created_at", "updated_at")
     list_filter = ("template",)
+    list_select_related = ("template",)
 
 
 @admin.register(WorkflowInstance)
@@ -30,6 +31,7 @@ class WorkflowInstanceAdmin(admin.ModelAdmin):
         "updated_at",
     )
     list_filter = ("project__organization", "status")
+    list_select_related = ("project", "project__organization")
 
     @staticmethod
     def organization(obj):

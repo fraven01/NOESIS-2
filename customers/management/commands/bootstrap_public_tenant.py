@@ -1,0 +1,19 @@
+from django.conf import settings
+from django.core.management.base import BaseCommand
+
+from customers.models import Domain, Tenant
+
+
+class Command(BaseCommand):
+    help = "Ensure the public tenant and primary domain exist."
+
+    def add_arguments(self, parser):
+        parser.add_argument("--domain", default="localhost")
+
+    def handle(self, *args, **options):
+        tenant, _ = Tenant.objects.get_or_create(
+            schema_name=settings.PUBLIC_SCHEMA_NAME, defaults={"name": "Public"}
+        )
+        Domain.objects.get_or_create(
+            domain=options["domain"], tenant=tenant, defaults={"is_primary": True}
+        )
