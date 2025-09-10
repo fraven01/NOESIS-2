@@ -19,9 +19,11 @@ from django.contrib import admin
 from django.urls import include, path
 
 from common.views import DemoView
+from users.views import accept_invitation
 
 urlpatterns = [
     path("", include("theme.urls")),
     path("admin/", admin.site.urls),
     path("tenant-demo/", DemoView.as_view(), name="tenant-demo"),
+    path("invite/accept/<str:token>/", accept_invitation, name="accept-invitation"),
 ]
