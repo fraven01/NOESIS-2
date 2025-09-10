@@ -18,6 +18,7 @@ class DocumentFactory(DjangoModelFactory):
     class Meta:
         model = Document
 
+    title = factory.Sequence(lambda n: f"Document {n}")
     file = FileField(filename="test.txt")
     type = factory.SubFactory(DocumentTypeFactory)
     project = factory.SubFactory(ProjectFactory)

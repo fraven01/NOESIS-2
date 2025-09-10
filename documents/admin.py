@@ -15,6 +15,7 @@ class DocumentAdmin(admin.ModelAdmin):
     """Admin configuration for :class:`Document`."""
 
     list_display = (
+        "title",
         "type",
         "project",
         "organization",
