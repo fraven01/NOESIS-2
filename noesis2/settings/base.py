@@ -28,30 +28,23 @@ SECRET_KEY = env("SECRET_KEY")
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = False
 
-ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["example.com"])
+ALLOWED_HOSTS = env.list(
+    "ALLOWED_HOSTS",
+    default=["example.com", "localhost", ".localhost", "testserver"],
+)
 
 
 # Application definition
 
 SHARED_APPS = [
     "django_tenants",
-33    "django.contrib.auth",
-    "django.contrib.contenttypes",
-
-    "customers",
-    "django.contrib.contenttypes",
-
-    "profiles",
-]
-
-INSTALLED_APPS = [
-    *SHARED_APPS,
-    "theme.apps.ThemeConfig",
-
     "django.contrib.admin",
+    "django.contrib.auth",
+    "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "customers",
 ]
 
 TENANT_APPS = [
@@ -66,7 +59,7 @@ TENANT_APPS = [
     "common",
 ]
 
-INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
+INSTALLED_APPS = list(dict.fromkeys(SHARED_APPS + TENANT_APPS))
 
 MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",
