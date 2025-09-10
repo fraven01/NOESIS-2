@@ -132,6 +132,10 @@ python manage.py assign_default_org
 Der Befehl erzeugt für jedes betroffene Projekt eine neue Organisation und
 aktualisiert das Projekt entsprechend.
 
+## Tenant-Verwaltung
+
+Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten befindet sich in [docs/tenant-management.md](docs/tenant-management.md).
+
 ## Frontend-Build (Tailwind v4 via PostCSS)
 - Build/Watch: `npm run build:css` (wird in `npm run dev` automatisch gestartet)
 - Konfiguration: `postcss.config.js` mit `@tailwindcss/postcss` und `autoprefixer`
