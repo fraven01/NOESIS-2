@@ -1,4 +1,5 @@
 from django.core.management.base import BaseCommand, CommandError
+from django.db import transaction
 from django_tenants.utils import get_public_schema_name
 
 from customers.models import Domain, Tenant
@@ -24,7 +25,8 @@ class Command(BaseCommand):
         if Domain.objects.filter(domain=domain).exists():
             raise CommandError("Domain already exists")
 
-        tenant = Tenant(schema_name=schema, name=name)
-        tenant.save()
-        Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
+        with transaction.atomic():
+            tenant = Tenant.objects.create(schema_name=schema, name=name)
+            Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
+
         self.stdout.write(self.style.SUCCESS(f"Tenant '{name}' created"))
