@@ -39,7 +39,10 @@ SHARED_APPS = [
     "customers",
 ]
 
-TENANT_APPS = ["django.contrib.contenttypes"]
+TENANT_APPS = [
+    "django.contrib.contenttypes",
+    "profiles",
+]
 
 INSTALLED_APPS = [
     "django_tenants",
@@ -54,6 +57,7 @@ INSTALLED_APPS = [
     "workflows",
     "ai_core",
     "users",
+    "profiles",
     "organizations",
     "common",
     "theme.apps.ThemeConfig",
