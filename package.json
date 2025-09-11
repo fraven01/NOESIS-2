@@ -4,7 +4,7 @@
   "description": "KI-gestützte Plattform im Rahmen der betrieblichen Mitbestimmung",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
     "build:css": "npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css",
     "build:css:watch": "npm run build:css -- --watch",
     "dev": "concurrently \"python manage.py runserver\" \"npm run build:css:watch\"",
@@ -16,13 +16,24 @@
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "postcss-cli": "^11.0.0"
+    "postcss-cli": "^11.0.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@tailwindcss/postcss": "^4.0.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
+    "jest-axe": "^10.0.0",
+    "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
-    "@tailwindcss/postcss": "^4.0.0",
-    "tailwindcss": "^4.1.13"
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
   }
 }
