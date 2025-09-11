@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from django.core.files.base import ContentFile
-from django_tenants.utils import schema_context
+from django_tenants.utils import schema_context, get_public_schema_name
 
 from customers.models import Domain, Tenant
 from users.models import User
@@ -17,12 +17,16 @@ class Command(BaseCommand):
     help = "Ensure demo tenant, user and sample data exist"
 
     def handle(self, *args, **options):
-        tenant, _ = Tenant.objects.get_or_create(
-            schema_name="demo", defaults={"name": "Demo Tenant"}
-        )
-        Domain.objects.get_or_create(
-            domain="demo.localhost", tenant=tenant, is_primary=True
-        )
+        # Ensure tenant/domain from the public schema
+        with schema_context(get_public_schema_name()):
+            tenant, _ = Tenant.objects.get_or_create(
+                schema_name="demo", defaults={"name": "Demo Tenant"}
+            )
+            Domain.objects.get_or_create(
+                domain="demo.localhost", tenant=tenant, is_primary=True
+            )
+        # Ensure tenant schema exists for data seeding
+        tenant.create_schema(check_if_exists=True)
 
         with schema_context(tenant.schema_name):
             user, created = User.objects.get_or_create(

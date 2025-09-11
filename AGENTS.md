@@ -64,6 +64,11 @@ Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jede
 * **Ausführung:** `pytest -q`
 * **Coverage:** `pytest -q --cov=noesis2 --cov-report=term-missing`. Eine hohe Testabdeckung (Ziel > 80%) ist obligatorisch.
 
+### Tenancy-Testing Hinweise
+- Standardmäßig laufen Tests innerhalb des Tenant-Schemas `test` (Domain `testserver`).
+- Für requests kann optional der Header `X-Tenant-Schema` gesetzt werden, um explizit ein Schema zu wählen.
+- Für Tests mit eigenen Schemas: nach `TenantFactory(schema_name=...)` bei Bedarf `tenant.create_schema(check_if_exists=True)` aufrufen.
+
 
 ## Frontend-Workflow
 - Entwicklung: `npm run dev` (Django + CSS-Watcher)

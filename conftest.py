@@ -140,3 +140,19 @@ def mocker(monkeypatch):
             return call(*args, **kwargs)
 
     return _Mocker()
+
+
+@pytest.fixture(autouse=True)
+def ensure_profiles_userprofile_isolation_testdata(request, django_db_blocker):
+    """Ensure TestUserProfileIsolation.setUpTestData runs exactly once.
+
+    This unittest-style class relies on class-level setup to define tenants
+    (tenant1/tenant2). Pytest may not invoke setUpTestData for this base, so we
+    call it explicitly in a narrowly-scoped way.
+    """
+    cls = getattr(request.node, "cls", None)
+    if cls and cls.__name__ == "TestUserProfileIsolation" and hasattr(cls, "setUpTestData"):
+        if not getattr(cls, "__setUpTestData_done__", False):
+            with django_db_blocker.unblock():
+                cls.setUpTestData()
+            setattr(cls, "__setUpTestData_done__", True)

@@ -33,26 +33,28 @@ ALLOWED_HOSTS = env.list(
     default=["example.com", "localhost", ".localhost", "testserver"],
 )
 
+# Testing flag (auto-detected for pytest)
+TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
+
 
 # Application definition
 
 # Apps that live in the ``public`` schema and are shared across all tenants
 # Keep this minimal. Models here exist only in the public schema.
 SHARED_APPS = [
-    "customers",
+    "customers.apps.CustomersConfig",
 ]
 
 # Apps that are installed separately for each tenant schema
-# Include Django's contrib apps and all domain apps here so they are created
-# inside each tenant schema and can reference the tenant-specific User model.
+# Order matters for template overrides: keep `theme` before `django.contrib.admin`.
 TENANT_APPS = [
+    "theme.apps.ThemeConfig",
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "theme.apps.ThemeConfig",
     "projects",
     "documents",
     "workflows",
@@ -64,11 +66,14 @@ TENANT_APPS = [
 ]
 
 # Final installed apps: ``django_tenants`` plus shared and tenant apps
+# Ensure our apps (e.g., customers) are loaded before django_tenants so our
+# management commands like `create_tenant` take precedence in tests.
 INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
 
 MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "common.middleware.HeaderTenantRoutingMiddleware",
     "common.middleware.TenantSchemaMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",

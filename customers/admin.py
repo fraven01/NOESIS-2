@@ -13,13 +13,13 @@ def is_public_schema() -> bool:
         return False
 
 
+@admin.action(description="Migrate selected tenants")
+def migrate_selected_tenants(modeladmin, request, queryset):
+    for tenant in queryset:
+        call_command("migrate_schemas", schema=tenant.schema_name)
+
+
 if is_public_schema():
-
-    @admin.action(description="Migrate selected tenants")
-    def migrate_selected_tenants(modeladmin, request, queryset):
-        for tenant in queryset:
-            call_command("migrate_schemas", schema_name=tenant.schema_name)
-
     @admin.register(Tenant)
     class TenantAdmin(admin.ModelAdmin):
         list_display = ("schema_name", "name", "paid_until", "on_trial", "created_on")

@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
-from django_tenants.utils import get_public_schema_name
+from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
 
@@ -9,9 +9,12 @@ class Command(BaseCommand):
     help = "Create a tenant and associated domain"
 
     def add_arguments(self, parser):
-        parser.add_argument("--schema", required=True)
+        # Accept synonyms to avoid conflicts with django-tenants built-in command flags
+        parser.add_argument("--schema", "--schema_name", dest="schema", required=True)
         parser.add_argument("--name", required=True)
-        parser.add_argument("--domain", required=True)
+        parser.add_argument(
+            "--domain", "--domain-domain", dest="domain", required=True
+        )
 
     def handle(self, *args, **options):
         schema = options["schema"]
@@ -25,8 +28,9 @@ class Command(BaseCommand):
         if Domain.objects.filter(domain=domain).exists():
             raise CommandError("Domain already exists")
 
-        with transaction.atomic():
-            tenant = Tenant.objects.create(schema_name=schema, name=name)
-            Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
+        with schema_context(get_public_schema_name()):
+            with transaction.atomic():
+                tenant = Tenant.objects.create(schema_name=schema, name=name)
+                Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
 
         self.stdout.write(self.style.SUCCESS(f"Tenant '{name}' created"))
