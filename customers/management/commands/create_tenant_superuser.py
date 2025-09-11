@@ -37,7 +37,9 @@ class Command(BaseCommand):
                         )
                     )
                     return
-                User.objects.create_superuser(username=username, email=email, password=password)
+                User.objects.create_superuser(
+                    username=username, email=email, password=password
+                )
                 self.stdout.write(
                     self.style.SUCCESS(
                         f"Superuser '{username}' created in schema '{schema}'."
@@ -51,4 +53,3 @@ class Command(BaseCommand):
                 )
                 # Delegate to Django's interactive command within the tenant schema
                 call_command("createsuperuser")
-

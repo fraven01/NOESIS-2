@@ -14,6 +14,7 @@ def is_public_schema() -> bool:
 
 
 if is_public_schema():
+
     @admin.action(description="Migrate selected tenants")
     def migrate_selected_tenants(modeladmin, request, queryset):
         for tenant in queryset:

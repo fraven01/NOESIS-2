@@ -50,6 +50,7 @@ class Command(BaseCommand):
         action = "created" if created else "ensured"
         suffix = " (set as primary)" if make_primary else ""
         self.stdout.write(
-            self.style.SUCCESS(f"Domain '{domain_value}' {action} for tenant '{schema}'{suffix}.")
+            self.style.SUCCESS(
+                f"Domain '{domain_value}' {action} for tenant '{schema}'{suffix}."
+            )
         )
-

@@ -43,4 +43,3 @@ class Migration(migrations.Migration):
             field=models.DateField(auto_now_add=True),
         ),
     ]
-
