@@ -265,6 +265,9 @@ jobs:
     needs: migrate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
@@ -298,7 +301,17 @@ jobs:
             --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
             --command bash \
-            --args -lc,"python manage.py bootstrap_public_tenant --domain localhost && python manage.py create_demo_data && python manage.py add_domain --schema=demo --domain=\"$STAGING_HOST\" --primary"
+            --args -lc,"python manage.py bootstrap_public_tenant --domain localhost && python manage.py create_demo_data && python manage.py add_domain --schema=demo --domain=\"$STAGING_HOST\" --primary --force-reassign"
+
+      - name: Execute seed job
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          gcloud run jobs execute noesis2-seed \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --wait
           gcloud run jobs execute noesis2-migrate --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --wait
 
   deploy-staging:

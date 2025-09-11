@@ -1,5 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.db import transaction
+from urllib.parse import urlparse
 
 from customers.models import Domain, Tenant
 
@@ -26,7 +27,11 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         schema = options["schema"]
-        domain_value = options["domain"].strip()
+        raw = options["domain"].strip()
+        # Normalize: strip scheme and path, keep host only, lowercase
+        parsed = urlparse(raw if "://" in raw else f"//{raw}", scheme="")
+        host = (parsed.netloc or parsed.path).split("/")[0]
+        domain_value = host.split(":")[0].lower()
         make_primary = options["primary"]
         force = options["force_reassign"]
 
