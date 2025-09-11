@@ -37,18 +37,21 @@ ALLOWED_HOSTS = env.list(
 # Application definition
 
 # Apps that live in the ``public`` schema and are shared across all tenants
+# Keep this minimal. Models here exist only in the public schema.
 SHARED_APPS = [
+    "customers",
+]
+
+# Apps that are installed separately for each tenant schema
+# Include Django's contrib apps and all domain apps here so they are created
+# inside each tenant schema and can reference the tenant-specific User model.
+TENANT_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
     "django.contrib.contenttypes",
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
-    "customers",
-]
-
-# Apps that are installed separately for each tenant schema
-TENANT_APPS = [
     "theme.apps.ThemeConfig",
     "projects",
     "documents",

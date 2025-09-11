@@ -134,7 +134,7 @@ aktualisiert das Projekt entsprechend.
 
 ## Tenant-Verwaltung
 
-Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten befindet sich in [docs/tenant-management.md](docs/tenant-management.md).
+Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten (inkl. lokalem Setup, Admin/Operator‑Rollen und X‑Tenant‑Schema) befindet sich im Dokument [docs/multi-tenancy.md](docs/multi-tenancy.md).
 
 ## Frontend-Build (Tailwind v4 via PostCSS)
 - Build/Watch: `npm run build:css` (wird in `npm run dev` automatisch gestartet)

@@ -166,11 +166,11 @@ jobs:
       - name: Install Node deps
         run: npm ci
 
-      - name: Run shared migrations
+      - name: Run public (shared) migrations
         run: python manage.py migrate_schemas --shared
 
       - name: Create CI tenant
-        run: python manage.py create_tenant --schema_name ci --name "CI" --domain-domain ci.local --noinput
+        run: python manage.py create_tenant --schema=ci --name="CI" --domain=ci.localhost
 
       - name: Run tenant migrations
         run: python manage.py migrate_schemas --tenant
@@ -257,7 +257,48 @@ jobs:
             --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
             --command python \
-            --args manage.py,migrate,--noinput
+            --args manage.py,migrate_schemas,--noinput
+
+  seed-staging:
+    name: Seed Staging Data
+    runs-on: ubuntu-latest
+    needs: migrate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Seed demo tenant and bind Cloud Run host
+        env:
+          IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
+          CELERY_RESULT_BACKEND: ${{ secrets.CELERY_RESULT_BACKEND }}
+          STAGING_HOST: ${{ secrets.STAGING_HOST }}
+        run: |
+          gcloud run jobs deploy noesis2-seed \
+            --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --max-retries=0 \
+            --task-timeout=600s \
+            --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
+            --command bash \
+            --args -lc,"python manage.py bootstrap_public_tenant --domain \"$STAGING_HOST\" && python manage.py create_demo_data && python manage.py add_domain --schema=demo --domain=\"$STAGING_HOST\" --primary"
           gcloud run jobs execute noesis2-migrate --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --wait
 
   deploy-staging:

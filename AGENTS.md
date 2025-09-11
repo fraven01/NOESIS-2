@@ -92,3 +92,37 @@ Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jede
 - Effizient backfüllen: Nach Möglichkeit mit `update()`/Batching statt `save()` in Schleifen arbeiten.
 - Optional fortgeschritten: Bei Bedarf Constraints temporär deferieren (PostgreSQL), z. B. `schema_editor.execute('SET CONSTRAINTS ALL DEFERRED')` innerhalb der `RunPython`-Funktion.
 
+#### Beispiel: Drei‑Phasen‑Migration (nicht‑null Feld)
+
+```python
+from django.db import migrations, models
+from django.utils import timezone
+
+def forwards(apps, schema_editor):
+    Tenant = apps.get_model("customers", "Tenant")
+    today = timezone.now().date()
+    Tenant.objects.filter(created_on__isnull=True).update(created_on=today)
+
+def backwards(apps, schema_editor):
+    # Feld wird durch Schema-Operationen entfernt; kein Data-Rollback nötig.
+    pass
+
+class Migration(migrations.Migration):
+    dependencies = [("customers", "<letzte_migration>")]
+    operations = [
+        migrations.AddField(
+            model_name="tenant",
+            name="created_on",
+            field=models.DateField(auto_now_add=True, null=True),
+        ),
+        migrations.RunPython(forwards, backwards),
+        migrations.AlterField(
+            model_name="tenant",
+            name="created_on",
+            field=models.DateField(auto_now_add=True),
+        ),
+    ]
+```
+
+Hinweis: Bei `django-tenants` laufen Migrationen pro Schema. Felder in `TENANT_APPS` werden in jedem Tenant-Schema angelegt; Felder in `SHARED_APPS` nur im Public-Schema.
+

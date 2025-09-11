@@ -28,8 +28,17 @@ class Command(BaseCommand):
             user, created = User.objects.get_or_create(
                 username="demo", defaults={"email": "demo@example.com"}
             )
+            changed = False
             if created or not user.password:
                 user.set_password("demo")
+                changed = True
+            if not user.is_staff:
+                user.is_staff = True
+                changed = True
+            if not user.is_superuser:
+                user.is_superuser = True
+                changed = True
+            if changed:
                 user.save()
 
             UserProfile.objects.update_or_create(
@@ -55,6 +64,7 @@ class Command(BaseCommand):
                     defaults={
                         "description": "Erstes Demo-Projekt",
                         "owner": user,
+                        "organization": org,
                     },
                 )
                 project2, _ = Project.objects.get_or_create(
@@ -62,10 +72,11 @@ class Command(BaseCommand):
                     defaults={
                         "description": "Zweites Demo-Projekt",
                         "owner": user,
+                        "organization": org,
                     },
                 )
 
-                if not project1.documents.filter(title="Demo Document 1").exists():
+                if not Document.objects.filter(project=project1, title="Demo Document 1").exists():
                     Document.objects.create(
                         title="Demo Document 1",
                         file=ContentFile(b"Demo content 1", name="demo1.txt"),
@@ -73,7 +84,7 @@ class Command(BaseCommand):
                         project=project1,
                         owner=user,
                     )
-                if not project2.documents.filter(title="Demo Document 2").exists():
+                if not Document.objects.filter(project=project2, title="Demo Document 2").exists():
                     Document.objects.create(
                         title="Demo Document 2",
                         file=ContentFile(b"Demo content 2", name="demo2.txt"),
