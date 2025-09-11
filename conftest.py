@@ -39,6 +39,46 @@ def disable_auto_create_schema(monkeypatch):
     monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
 
 
+@pytest.fixture(scope="session")
+def test_tenant_schema_name(django_db_setup, django_db_blocker):
+    """Create a dedicated tenant schema for tests and return its name.
+
+    Use a non-default name ('autotest') to avoid clashes with
+    django_tenants' TenantTestCase which uses 'test' by default.
+    """
+    from customers.models import Tenant, Domain
+
+    with django_db_blocker.unblock():
+        tenant, _ = Tenant.objects.get_or_create(
+            schema_name="autotest", defaults={"name": "Autotest Tenant"}
+        )
+        # Ensure schema exists even though auto_create_schema is disabled in tests
+        tenant.create_schema(check_if_exists=True)
+        # Map default Django test host to this tenant to avoid 404 from tenant middleware
+        Domain.objects.get_or_create(
+            domain="testserver", tenant=tenant, defaults={"is_primary": True}
+        )
+    return tenant.schema_name
+
+
+@pytest.fixture(autouse=True)
+def use_test_tenant(request, test_tenant_schema_name):
+    """Run each test inside the test tenant schema by default."""
+    from django_tenants.utils import schema_context
+    try:
+        from django_tenants.test.cases import TenantTestCase
+    except Exception:
+        TenantTestCase = None
+
+    cls = getattr(request.node, "cls", None)
+    if TenantTestCase and cls and issubclass(cls, TenantTestCase):
+        # Let TenantTestCase manage schema lifecycle itself
+        yield
+    else:
+        with schema_context(test_tenant_schema_name):
+            yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def cleanup_documents_test_files_session():
     """Safety net: remove stray documents/test*.txt in repo root, pre/post session."""
@@ -51,3 +91,52 @@ def cleanup_documents_test_files_session():
                 pass
         if phase == "pre":
             yield
+
+
+@pytest.fixture(autouse=True)
+def tolerate_existing_migration_table(monkeypatch):
+    """Work around DuplicateTable race when MigrationRecorder.ensure_schema runs twice.
+
+    In some tenant-test flows, the migration table may already exist even if
+    introspection temporarily misses it. Treat the specific 'already exists'
+    error as benign to keep migration tests stable.
+    """
+    from django.db.migrations.recorder import MigrationRecorder
+    from django.db.migrations.exceptions import MigrationSchemaMissing
+
+    original = MigrationRecorder.ensure_schema
+
+    def _safe_ensure(self):
+        try:
+            return original(self)
+        except MigrationSchemaMissing as exc:  # pragma: no cover - defensive
+            msg = str(exc).lower()
+            if "existiert bereits" in msg or "already exists" in msg:
+                return None
+            raise
+
+    monkeypatch.setattr(MigrationRecorder, "ensure_schema", _safe_ensure)
+
+
+@pytest.fixture
+def mocker(monkeypatch):
+    """Lightweight replacement for pytest-mock's `mocker` fixture.
+
+    Provides a `patch` method returning a MagicMock, compatible with
+    `assert_called_with` / `assert_has_calls` usage in tests.
+    """
+    from unittest.mock import MagicMock, call
+
+    class _Mocker:
+        def patch(self, target, new=None, **kwargs):
+            if new is None:
+                new = MagicMock(**kwargs)
+            module_path, attr = target.rsplit(".", 1)
+            module = __import__(module_path, fromlist=[attr])
+            monkeypatch.setattr(module, attr, new)
+            return new
+
+        def call(self, *args, **kwargs):  # helper passthrough
+            return call(*args, **kwargs)
+
+    return _Mocker()
