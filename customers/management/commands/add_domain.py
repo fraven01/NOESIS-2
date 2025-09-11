@@ -15,11 +15,20 @@ class Command(BaseCommand):
             action="store_true",
             help="Set this domain as the tenant's primary domain",
         )
+        parser.add_argument(
+            "--force-reassign",
+            action="store_true",
+            help=(
+                "If the domain is assigned to another tenant, reassign it to the"
+                " target tenant instead of failing"
+            ),
+        )
 
     def handle(self, *args, **options):
         schema = options["schema"]
         domain_value = options["domain"].strip()
         make_primary = options["primary"]
+        force = options["force_reassign"]
 
         try:
             tenant = Tenant.objects.get(schema_name=schema)
@@ -31,9 +40,13 @@ class Command(BaseCommand):
                 domain=domain_value, defaults={"tenant": tenant}
             )
             if not created and domain_obj.tenant_id != tenant.id:
-                raise CommandError(
-                    f"Domain '{domain_value}' already assigned to a different tenant"
-                )
+                if not force:
+                    raise CommandError(
+                        f"Domain '{domain_value}' already assigned to a different tenant"
+                    )
+                # Reassign the domain to the requested tenant
+                domain_obj.tenant = tenant
+                domain_obj.save(update_fields=["tenant"])
             # Ensure tenant is set (covers the get_or_create non-created path with missing tenant)
             if domain_obj.tenant_id != tenant.id:
                 domain_obj.tenant = tenant
