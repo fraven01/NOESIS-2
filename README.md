@@ -141,6 +141,9 @@ Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten befindet s
 - Konfiguration: `postcss.config.js` mit `@tailwindcss/postcss` und `autoprefixer`
 - Eingabe/Ausgabe: `theme/static_src/input.css` → `theme/static/css/output.css`
 
+## Frontend-Richtlinien
+Der vollständige Rahmen für React/TypeScript-Komponenten ist im [Frontend Master Prompt](docs/frontend-master-prompt.md) beschrieben.
+
 ## Testing
 - Ausführen: `pytest -q`
 - Mit Coverage: `pytest -q --cov=noesis2 --cov-report=term-missing`
