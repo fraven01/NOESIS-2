@@ -65,6 +65,7 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
 def use_test_tenant(request, test_tenant_schema_name):
     """Run each test inside the test tenant schema by default."""
     from django_tenants.utils import schema_context
+
     try:
         from django_tenants.test.cases import TenantTestCase
     except Exception:
@@ -151,7 +152,11 @@ def ensure_profiles_userprofile_isolation_testdata(request, django_db_blocker):
     call it explicitly in a narrowly-scoped way.
     """
     cls = getattr(request.node, "cls", None)
-    if cls and cls.__name__ == "TestUserProfileIsolation" and hasattr(cls, "setUpTestData"):
+    if (
+        cls
+        and cls.__name__ == "TestUserProfileIsolation"
+        and hasattr(cls, "setUpTestData")
+    ):
         if not getattr(cls, "__setUpTestData_done__", False):
             with django_db_blocker.unblock():
                 cls.setUpTestData()

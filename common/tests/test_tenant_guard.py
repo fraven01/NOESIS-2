@@ -1,7 +1,7 @@
 import pytest
 from django_tenants.utils import schema_context
 
-from customers.tests.factories import DomainFactory, TenantFactory
+from customers.tests.factories import TenantFactory
 from customers.models import Domain
 from common.tenants import get_current_tenant
 

@@ -12,9 +12,7 @@ class Command(BaseCommand):
         # Accept synonyms to avoid conflicts with django-tenants built-in command flags
         parser.add_argument("--schema", "--schema_name", dest="schema", required=True)
         parser.add_argument("--name", required=True)
-        parser.add_argument(
-            "--domain", "--domain-domain", dest="domain", required=True
-        )
+        parser.add_argument("--domain", "--domain-domain", dest="domain", required=True)
 
     def handle(self, *args, **options):
         schema = options["schema"]

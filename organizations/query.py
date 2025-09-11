@@ -26,7 +26,13 @@ class OrganizationScopedQuerySet(models.QuerySet):
 class OrganizationManager(models.Manager.from_queryset(OrganizationScopedQuerySet)):
     """Manager applying organization scoping to all queries."""
 
-    def __init__(self, *args, organization_field: str = "organization", require_org: bool = True, **kwargs):
+    def __init__(
+        self,
+        *args,
+        organization_field: str = "organization",
+        require_org: bool = True,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self.organization_field = organization_field
         self.require_org = require_org

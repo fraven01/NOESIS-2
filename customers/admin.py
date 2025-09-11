@@ -20,6 +20,7 @@ def migrate_selected_tenants(modeladmin, request, queryset):
 
 
 if is_public_schema():
+
     @admin.register(Tenant)
     class TenantAdmin(admin.ModelAdmin):
         list_display = ("schema_name", "name", "paid_until", "on_trial", "created_on")
