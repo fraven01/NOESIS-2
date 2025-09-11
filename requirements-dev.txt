@@ -14,6 +14,11 @@ click==8.2.1
     # via
     #   black
     #   pip-tools
+colorama==0.4.6
+    # via
+    #   build
+    #   click
+    #   pytest
 coverage[toml]==7.10.6
     # via pytest-cov
 django==5.2.6
@@ -63,7 +68,9 @@ ruff==0.12.12
 sqlparse==0.5.3
     # via django
 tzdata==2025.2
-    # via faker
+    # via
+    #   django
+    #   faker
 wheel==0.45.1
     # via pip-tools
 
