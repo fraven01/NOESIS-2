@@ -71,21 +71,10 @@ RUN useradd -m -u 10001 appuser
 # Copy Python site-packages and scripts from builder
 COPY --from=builder /usr/local /usr/local
 
-# Copy app code and collected static
-# Copy only necessary application files (avoid node_modules in final image)
-COPY --from=builder /app/manage.py /app/manage.py
-COPY --from=builder /app/noesis2 /app/noesis2
-COPY --from=builder /app/ai_core /app/ai_core
-COPY --from=builder /app/core /app/core
-COPY --from=builder /app/projects /app/projects
-COPY --from=builder /app/documents /app/documents
-COPY --from=builder /app/workflows /app/workflows
-COPY --from=builder /app/users /app/users
-COPY --from=builder /app/organizations /app/organizations
-COPY --from=builder /app/common /app/common
-COPY --from=builder /app/theme /app/theme
-COPY --from=builder /app/staticfiles /app/staticfiles
-COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
+# Copy application source and collected static from builder.
+# The builder stage already respected .dockerignore when copying the context,
+# so heavy/dev artefacts (e.g. node_modules, .venv) are not present here.
+COPY --from=builder /app /app
 
 # Ensure correct ownership (optional, improves security)
 RUN chown -R appuser:appuser /app && chmod +x /app/entrypoint.sh
