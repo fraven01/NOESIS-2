@@ -4,6 +4,15 @@
 <head>
     <meta charset="utf-8" />
     <title>{% block title %}NOESIS 2{% endblock %}</title>
+    <script>
+      (function () {
+        const t = localStorage.getItem("theme");
+        const m = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        if (t === "dark" || (!t && m)) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
+    </script>
     <link href="{% static 'css/output.css' %}" rel="stylesheet">
     {% block head %}{% endblock %}
 </head>
