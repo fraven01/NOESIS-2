@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <table>
+      <thead>
+        <tr>
+          <th id="name" role="columnheader" aria-sort="none">Name</th>
+        </tr>
+      </thead>
+      <tbody id="rows">
+        <tr><td>Beta</td></tr>
+        <tr><td>Alpha</td></tr>
+        <tr><td>Gamma</td></tr>
+      </tbody>
+    </table>
+    <script>
+      const header = document.getElementById('name');
+      const tbody = document.getElementById('rows');
+      let dir = 'none';
+      header.addEventListener('click', () => {
+        const items = Array.from(tbody.children);
+        if (dir !== 'asc') {
+          items.sort((a,b)=>a.cells[0].textContent.localeCompare(b.cells[0].textContent));
+          dir = 'asc';
+          header.setAttribute('aria-sort','ascending');
+        } else {
+          items.sort((a,b)=>b.cells[0].textContent.localeCompare(a.cells[0].textContent));
+          dir = 'desc';
+          header.setAttribute('aria-sort','descending');
+        }
+        items.forEach(i=>tbody.appendChild(i));
+      });
+    </script>
+  </body>
+</html>

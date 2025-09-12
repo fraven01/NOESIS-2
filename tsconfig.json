@@ -8,5 +8,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["theme/components/**/*", "vitest.setup.ts", "vitest.config.ts"]
+  "include": ["theme/components/**/*", "vitest.setup.ts", "vitest.config.ts", "e2e/**/*"]
 }
