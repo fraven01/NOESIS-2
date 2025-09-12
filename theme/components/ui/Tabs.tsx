@@ -29,13 +29,37 @@ export const Tabs: React.FC<TabsProps> = ({ defaultValue, children }) => {
 export const TabsList: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({
   className,
   ...props
-}) => (
-  <div
-    role="tablist"
-    className={cn("flex gap-2", className)}
-    {...props}
-  />
-);
+}) => {
+  const ref = React.useRef<HTMLDivElement>(null);
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!ref.current) return;
+    const tabs = Array.from(
+      ref.current.querySelectorAll<HTMLElement>("[role=tab]")
+    );
+    const currentIndex = tabs.indexOf(document.activeElement as HTMLElement);
+    if (e.key === "ArrowRight") {
+      const next = tabs[(currentIndex + 1) % tabs.length];
+      next.focus();
+      next.click();
+      e.preventDefault();
+    }
+    if (e.key === "ArrowLeft") {
+      const prev = tabs[(currentIndex - 1 + tabs.length) % tabs.length];
+      prev.focus();
+      prev.click();
+      e.preventDefault();
+    }
+  };
+  return (
+    <div
+      ref={ref}
+      role="tablist"
+      onKeyDown={onKeyDown}
+      className={cn("flex gap-2", className)}
+      {...props}
+    />
+  );
+};
 
 export interface TabsTriggerProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement> {
