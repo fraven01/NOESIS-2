@@ -4,25 +4,52 @@
   "description": "KI-gestützte Plattform im Rahmen der betrieblichen Mitbestimmung",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "vitest run",
     "build:css": "npx postcss ./theme/static_src/input.css -o ./theme/static/css/output.css",
     "build:css:watch": "npm run build:css -- --watch",
     "dev": "concurrently \"python manage.py runserver\" \"npm run build:css:watch\"",
     "lint": "python -m ruff check . && python -m black --check .",
-    "lint:fix": "python -m ruff check --fix . && python -m black ."
+    "lint:fix": "python -m ruff check --fix . && python -m black .",
+    "storybook": "storybook dev -p 6006",
+    "storybook:build": "storybook build",
+    "chromatic": "echo \"Add Chromatic or Percy command here\"",
+    "e2e": "playwright test"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
-    "postcss-cli": "^11.0.0"
+    "@radix-ui/react-checkbox": "^1.3.3",
+    "@radix-ui/react-popover": "^1.1.15",
+    "lucide-react": "^0.544.0",
+    "postcss-cli": "^11.0.0",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
   },
   "devDependencies": {
+    "@storybook/addon-a11y": "^8.6.14",
+    "@storybook/addon-essentials": "^8.6.14",
+    "@storybook/addon-interactions": "^8.6.14",
+    "@storybook/react-vite": "^8.6.14",
+    "@tailwindcss/postcss": "^4.0.0",
+    "@testing-library/jest-dom": "^6.8.0",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "@axe-core/playwright": "^4.9.1",
+    "@playwright/experimental-ct-react": "^1.51.0",
+    "@playwright/test": "^1.51.0",
+    "@vitejs/plugin-react": "^4.3.3",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
+    "jest-axe": "^10.0.0",
+    "jsdom": "^26.1.0",
     "postcss": "^8.5.6",
-    "@tailwindcss/postcss": "^4.0.0",
-    "tailwindcss": "^4.1.13"
+    "storybook": "^8.6.14",
+    "tailwindcss": "^4.1.13",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
   }
 }
