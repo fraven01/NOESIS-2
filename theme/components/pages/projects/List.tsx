@@ -3,6 +3,7 @@ import { DataToolbar } from "../../data/DataToolbar";
 import { DataTable, Row } from "../../data/DataTable";
 import { DataPagination } from "../../data/DataPagination";
 import { EmptyState } from "../../ui/EmptyState";
+import { ErrorState } from "../../ui/ErrorState";
 import { Skeleton } from "../../ui/Skeleton";
 
 /**
@@ -42,9 +43,7 @@ export const List: React.FC<ListProps> = ({ projects, status = "idle" }) => {
       />
       {status === "loading" && <Skeleton className="h-24" />}
       {status === "error" && (
-        <div role="alert" className="text-danger">
-          Failed to load projects
-        </div>
+        <ErrorState title="Error" text="Something went wrong" />
       )}
       {status === "idle" && pageItems.length === 0 && (
         <EmptyState title="No projects" text="Create a project to get started" />

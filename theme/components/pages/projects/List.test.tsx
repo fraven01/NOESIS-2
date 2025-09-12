@@ -54,4 +54,12 @@ describe("Projects List", () => {
     const { container } = render(<List projects={data} />);
     expect(await axe(container)).toHaveNoViolations();
   });
+
+  it("shows error state with alert role", async () => {
+    const { container } = render(<List projects={data} status="error" />);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Something went wrong"
+    );
+    expect(await axe(container)).toHaveNoViolations();
+  });
 });

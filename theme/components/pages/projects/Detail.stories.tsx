@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react";
 import { Detail } from "./Detail";
 import { Card } from "../../ui/Card";
 import { EmptyState } from "../../ui/EmptyState";
+import { ErrorState } from "../../ui/ErrorState";
 import { Skeleton } from "../../ui/Skeleton";
 
 const meta: Meta<typeof Detail> = {
@@ -25,7 +26,7 @@ const EmptySlot = () => (
 
 const ErrorSlot = () => (
   <Card>
-    <EmptyState title="Error" text="Unavailable" />
+    <ErrorState title="Error" text="Something went wrong" />
   </Card>
 );
 

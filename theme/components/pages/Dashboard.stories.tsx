@@ -3,6 +3,7 @@ import { Dashboard } from "./Dashboard";
 import { Card } from "../ui/Card";
 import { Skeleton } from "../ui/Skeleton";
 import { EmptyState } from "../ui/EmptyState";
+import { ErrorState } from "../ui/ErrorState";
 
 const meta: Meta<typeof Dashboard> = {
   title: "Pages/Dashboard",
@@ -32,7 +33,7 @@ const EmptySlot = () => (
 const ErrorSlot = () => (
   <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
     <Card>
-      <EmptyState title="Error" text="Unavailable" />
+      <ErrorState title="Error" text="Something went wrong" />
     </Card>
   </div>
 );
