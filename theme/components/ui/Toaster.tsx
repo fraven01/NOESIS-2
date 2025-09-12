@@ -9,6 +9,7 @@ import { Toast } from "./Toast";
 export interface ToastItem {
   id: number;
   message: string;
+  ref: React.RefObject<HTMLDivElement>;
 }
 
 interface ToasterContextValue {
@@ -30,12 +31,16 @@ export const Toaster: React.FC<React.PropsWithChildren> = ({ children }) => {
   const push = (message: string) => {
     previouslyFocused.current = document.activeElement as HTMLElement;
     const id = Date.now();
-    setToasts((t) => [...t, { id, message }]);
+    setToasts((t) => [...t, { id, message, ref: React.createRef<HTMLDivElement>() }]);
   };
 
-  const close = (id: number) => {
+  const close = (id: number, userInitiated = false) => {
+    const toast = toasts.find((x) => x.id === id);
+    const shouldRestore =
+      userInitiated ||
+      (!!toast?.ref.current && toast.ref.current.contains(document.activeElement));
     setToasts((t) => t.filter((x) => x.id !== id));
-    previouslyFocused.current?.focus();
+    if (shouldRestore) previouslyFocused.current?.focus();
   };
 
   return (
@@ -49,10 +54,11 @@ export const Toaster: React.FC<React.PropsWithChildren> = ({ children }) => {
         {toasts.map((t) => (
           <Toast
             key={t.id}
+            ref={t.ref}
             open
             onClose={() => close(t.id)}
             onKeyDown={(e) => {
-              if (e.key === "Escape") close(t.id);
+              if (e.key === "Escape") close(t.id, true);
             }}
             tabIndex={0}
           >
