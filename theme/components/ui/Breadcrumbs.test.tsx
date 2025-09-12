@@ -3,7 +3,7 @@ import { axe } from "jest-axe";
 import { Breadcrumbs } from "./Breadcrumbs";
 
 describe("Breadcrumbs", () => {
-  it("renders links and is accessible", async () => {
+  it("marks last item as current and is accessible", async () => {
     const items = [
       { href: "/", label: "Home" },
       { href: "/docs", label: "Docs" },
@@ -14,8 +14,8 @@ describe("Breadcrumbs", () => {
     ).toBeInTheDocument();
     const home = screen.getByRole("link", { name: "Home" });
     expect(home).toHaveAttribute("href", "/");
-    const docs = screen.getByRole("link", { name: "Docs" });
-    expect(docs).toHaveAttribute("href", "/docs");
+    const docs = screen.getByText("Docs");
+    expect(docs).toHaveAttribute("aria-current", "page");
     expect(await axe(container)).toHaveNoViolations();
   });
 });

@@ -18,14 +18,21 @@ export interface BreadcrumbsProps {
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, className }) => (
   <nav className={cn("text-sm", className)} aria-label="Breadcrumb">
     <ol className="flex flex-wrap gap-1">
-      {items.map((item, i) => (
-        <li key={item.href} className="flex items-center">
-          {i > 0 && <span className="mx-1">/</span>}
-          <a href={item.href} className="text-accent hover:underline">
-            {item.label}
-          </a>
-        </li>
-      ))}
+      {items.map((item, i) => {
+        const isLast = i === items.length - 1;
+        return (
+          <li key={item.href} className="flex items-center">
+            {i > 0 && <span className="mx-1">/</span>}
+            {isLast ? (
+              <span aria-current="page">{item.label}</span>
+            ) : (
+              <a href={item.href} className="text-accent hover:underline">
+                {item.label}
+              </a>
+            )}
+          </li>
+        );
+      })}
     </ol>
   </nav>
 );
