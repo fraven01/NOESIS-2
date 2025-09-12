@@ -15,9 +15,13 @@ export interface DashboardProps {
 }
 
 const DefaultKpiSlot: React.FC = () => (
-  <Card>
-    <Skeleton className="h-24" />
-  </Card>
+  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {Array.from({ length: 4 }).map((_, index) => (
+      <Card key={index}>
+        <Skeleton className="h-24" />
+      </Card>
+    ))}
+  </div>
 );
 
 const DefaultActivitySlot: React.FC = () => (
@@ -39,11 +43,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 }) => (
   <div className="flex flex-col gap-8">
     <section aria-label="KPI Area">
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {Array.from({ length: 4 }).map((_, index) => (
-          <KpiSlot key={index} />
-        ))}
-      </div>
+      <KpiSlot />
     </section>
     <div className="grid gap-8 lg:grid-cols-2">
       <section aria-label="Activity Area">

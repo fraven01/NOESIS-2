@@ -12,21 +12,29 @@ export default meta;
 type Story = StoryObj<typeof Dashboard>;
 
 const SkeletonSlot = () => (
-  <Card>
-    <Skeleton className="h-24" />
-  </Card>
+  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    {Array.from({ length: 4 }).map((_, index) => (
+      <Card key={index}>
+        <Skeleton className="h-24" />
+      </Card>
+    ))}
+  </div>
 );
 
 const EmptySlot = () => (
-  <Card>
-    <EmptyState title="Empty" text="Nothing here" />
-  </Card>
+  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <Card>
+      <EmptyState title="Empty" text="Nothing here" />
+    </Card>
+  </div>
 );
 
 const ErrorSlot = () => (
-  <Card>
-    <EmptyState title="Error" text="Unavailable" />
-  </Card>
+  <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <Card>
+      <EmptyState title="Error" text="Unavailable" />
+    </Card>
+  </div>
 );
 
 export const Default: Story = {
