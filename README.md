@@ -142,7 +142,8 @@ Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten (inkl. lok
 - Eingabe/Ausgabe: `theme/static_src/input.css` → `theme/static/css/output.css`
 
 ## Frontend-Richtlinien
-Der vollständige Rahmen für React/TypeScript-Komponenten ist im [Frontend Master Prompt](docs/frontend-master-prompt.md) beschrieben.
+- [Frontend-Überblick](docs/frontend-ueberblick.md)
+- Der vollständige Rahmen für React/TypeScript-Komponenten ist im [Frontend Master Prompt](docs/frontend-master-prompt.md) beschrieben.
 
 ## Testing
 - Ausführen: `pytest -q`
