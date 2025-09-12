@@ -44,6 +44,16 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
     }
   }, [open]);
 
+  React.useEffect(() => {
+    if (!open) {
+      setValue("");
+    }
+  }, [open]);
+
+  React.useEffect(() => {
+    setValue("");
+  }, [confirmText]);
+
   const disabled = confirmText ? value !== confirmText : false;
 
   return (
