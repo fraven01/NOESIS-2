@@ -12,7 +12,8 @@
     "lint:fix": "python -m ruff check --fix . && python -m black .",
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",
-    "chromatic": "echo \"Add Chromatic or Percy command here\""
+    "chromatic": "echo \"Add Chromatic or Percy command here\"",
+    "e2e": "playwright test"
   },
   "keywords": [],
   "author": "",
@@ -37,6 +38,10 @@
     "@testing-library/user-event": "^14.6.1",
     "@types/react": "^19.1.12",
     "@types/react-dom": "^19.1.9",
+    "@axe-core/playwright": "^4.10.2",
+    "@playwright/experimental-ct-react": "^1.55.0",
+    "@playwright/test": "^1.55.0",
+    "@vitejs/plugin-react": "^5.0.2",
     "autoprefixer": "^10.4.21",
     "concurrently": "^9.2.1",
     "jest-axe": "^10.0.0",

@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <button id="toggle" aria-label="Toggle theme">Toggle</button>
+    <script>
+      const root = document.documentElement;
+      const stored = localStorage.getItem('theme') || 'light';
+      if (stored === 'dark') root.classList.add('dark');
+      document.getElementById('toggle').addEventListener('click', () => {
+        const isDark = root.classList.toggle('dark');
+        localStorage.setItem('theme', isDark ? 'dark' : 'light');
+      });
+    </script>
+  </body>
+</html>

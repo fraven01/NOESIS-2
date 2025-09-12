@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+  <body>
+    <button id="open">Delete</button>
+    <dialog id="dlg" aria-label="Delete item?">
+      <p>Type DELETE to confirm</p>
+      <input id="input" aria-label="Type to confirm" placeholder="DELETE" />
+      <button id="confirm" disabled>Delete</button>
+    </dialog>
+    <div id="status">idle</div>
+    <script>
+      const dlg = document.getElementById('dlg');
+      const input = document.getElementById('input');
+      const confirm = document.getElementById('confirm');
+      document.getElementById('open').onclick = () => dlg.showModal();
+      input.addEventListener('input', () => {
+        confirm.disabled = input.value !== 'DELETE';
+      });
+      confirm.onclick = () => {
+        document.getElementById('status').textContent = 'confirmed';
+        dlg.close();
+      };
+    </script>
+  </body>
+</html>
