@@ -1,5 +1,8 @@
 import type { Meta, StoryObj } from "@storybook/react";
-import { Dashboard, DashboardProps } from "./Dashboard";
+import { Dashboard } from "./Dashboard";
+import { Card } from "../ui/Card";
+import { Skeleton } from "../ui/Skeleton";
+import { EmptyState } from "../ui/EmptyState";
 
 const meta: Meta<typeof Dashboard> = {
   title: "Pages/Dashboard",
@@ -8,43 +11,53 @@ const meta: Meta<typeof Dashboard> = {
 export default meta;
 type Story = StoryObj<typeof Dashboard>;
 
-const kpis: DashboardProps["kpis"] = [
-  { label: "Users", value: "1.2k" },
-  { label: "Sessions", value: "3.4k" },
-  { label: "Errors", value: "23" },
-  { label: "Uptime", value: "99.9%" },
-];
+const SkeletonSlot = () => (
+  <Card>
+    <Skeleton className="h-24" />
+  </Card>
+);
 
-const activities: DashboardProps["activities"] = [
-  { id: "1", text: "User signed up", status: "success" },
-  { id: "2", text: "Server restarted", status: "warning" },
-  { id: "3", text: "Error reported", status: "error" },
-];
+const EmptySlot = () => (
+  <Card>
+    <EmptyState title="Empty" text="Nothing here" />
+  </Card>
+);
 
-const quickLinks: DashboardProps["quickLinks"] = [
-  { label: "Projects", href: "#" },
-  { label: "Documents", href: "#" },
-  { label: "Settings", href: "#" },
-];
+const ErrorSlot = () => (
+  <Card>
+    <EmptyState title="Error" text="Unavailable" />
+  </Card>
+);
 
 export const Default: Story = {
-  args: { kpis, activities, quickLinks },
+  args: {
+    KpiSlot: SkeletonSlot,
+    ActivitySlot: EmptySlot,
+    QuickLinksSlot: EmptySlot,
+  },
 };
 
 export const Loading: Story = {
-  args: { kpis: [], activities: [], quickLinks: [], loading: true },
+  args: {
+    KpiSlot: SkeletonSlot,
+    ActivitySlot: SkeletonSlot,
+    QuickLinksSlot: SkeletonSlot,
+  },
 };
 
 export const Empty: Story = {
-  args: { kpis: kpis.slice(0, 3), activities: [], quickLinks: [] },
+  args: {
+    KpiSlot: EmptySlot,
+    ActivitySlot: EmptySlot,
+    QuickLinksSlot: EmptySlot,
+  },
 };
 
 export const Error: Story = {
   args: {
-    kpis: [],
-    activities: [],
-    quickLinks: [],
-    error: "Failed to load data",
+    KpiSlot: ErrorSlot,
+    ActivitySlot: ErrorSlot,
+    QuickLinksSlot: ErrorSlot,
   },
 };
 
@@ -54,7 +67,11 @@ export const Dark: Story = {
       <Dashboard {...args} />
     </div>
   ),
-  args: { kpis, activities, quickLinks },
+  args: {
+    KpiSlot: SkeletonSlot,
+    ActivitySlot: EmptySlot,
+    QuickLinksSlot: EmptySlot,
+  },
 };
 
 export const RTL: Story = {
@@ -63,5 +80,9 @@ export const RTL: Story = {
       <Dashboard {...args} />
     </div>
   ),
-  args: { kpis, activities, quickLinks },
+  args: {
+    KpiSlot: SkeletonSlot,
+    ActivitySlot: EmptySlot,
+    QuickLinksSlot: EmptySlot,
+  },
 };
