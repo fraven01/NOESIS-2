@@ -28,4 +28,31 @@ describe("Tabs", () => {
     expect(screen.queryByText("First")).not.toBeInTheDocument();
     expect(await axe(container)).toHaveNoViolations();
   });
+
+  it("allows arrow key navigation", async () => {
+    const user = userEvent.setup();
+    render(
+      <Tabs defaultValue="one">
+        <TabsList>
+          <TabsTrigger value="one">One</TabsTrigger>
+          <TabsTrigger value="two">Two</TabsTrigger>
+          <TabsTrigger value="three">Three</TabsTrigger>
+        </TabsList>
+        <TabsContent value="one">First</TabsContent>
+        <TabsContent value="two">Second</TabsContent>
+        <TabsContent value="three">Third</TabsContent>
+      </Tabs>
+    );
+    const [tab1, tab2, tab3] = screen.getAllByRole("tab");
+    tab1.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(tab2).toHaveFocus();
+    expect(tab2).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{ArrowRight}");
+    expect(tab3).toHaveFocus();
+    expect(tab3).toHaveAttribute("aria-selected", "true");
+    await user.keyboard("{ArrowLeft}");
+    expect(tab2).toHaveFocus();
+    expect(tab2).toHaveAttribute("aria-selected", "true");
+  });
 });
