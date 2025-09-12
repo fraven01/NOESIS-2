@@ -10,12 +10,14 @@ export interface SheetProps extends React.HTMLAttributes<HTMLDivElement> {
   open: boolean;
   onClose: () => void;
   side?: "left" | "right" | "top" | "bottom";
+  ariaLabel?: string;
 }
 
 export const Sheet: React.FC<SheetProps> = ({
   open,
   onClose,
   side = "right",
+  ariaLabel = "Sheet",
   className,
   children,
   ...props
@@ -34,7 +36,12 @@ export const Sheet: React.FC<SheetProps> = ({
 
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50" role="dialog" aria-modal="true">
+    <div
+      className="fixed inset-0 z-50"
+      role="dialog"
+      aria-modal="true"
+      aria-label={ariaLabel}
+    >
       <div className="absolute inset-0 bg-fg/50" onClick={onClose} aria-hidden="true" />
       <div
         ref={ref}
