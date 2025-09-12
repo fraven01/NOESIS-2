@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { axe } from "jest-axe";
 import { ConfirmDialog } from "./ConfirmDialog";
@@ -59,5 +59,44 @@ describe("ConfirmDialog", () => {
     );
     await userEvent.keyboard("{Escape}");
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("resets input when reopened", async () => {
+    const { rerender } = render(
+      <ConfirmDialog
+        open
+        onClose={() => {}}
+        onConfirm={() => {}}
+        title="Delete"
+        confirmText="CONFIRM"
+      />
+    );
+    const input = screen.getByLabelText(/type to confirm/i);
+    const confirm = screen.getByRole("button", { name: "Delete" });
+    await userEvent.type(input, "CONFIRM");
+    expect(confirm).toBeEnabled();
+    rerender(
+      <ConfirmDialog
+        open={false}
+        onClose={() => {}}
+        onConfirm={() => {}}
+        title="Delete"
+        confirmText="CONFIRM"
+      />
+    );
+    await waitFor(() =>
+      expect(screen.queryByLabelText(/type to confirm/i)).not.toBeInTheDocument()
+    );
+    rerender(
+      <ConfirmDialog
+        open
+        onClose={() => {}}
+        onConfirm={() => {}}
+        title="Delete"
+        confirmText="CONFIRM"
+      />
+    );
+    expect(screen.getByLabelText(/type to confirm/i)).toHaveValue("");
+    expect(screen.getByRole("button", { name: "Delete" })).toBeDisabled();
   });
 });
