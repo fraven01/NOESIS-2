@@ -1,0 +1,28 @@
+version: "3.9"
+services:
+  redis:
+    image: redis:7
+
+  api:
+    build:
+      context: ..
+      dockerfile: docker/api.Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ../.objstore:/app/.objstore
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+
+  worker:
+    build:
+      context: ..
+      dockerfile: docker/worker.Dockerfile
+    environment:
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ../.objstore:/app/.objstore
+    depends_on:
+      - redis

@@ -1,0 +1,21 @@
+simple-query:
+  provider: openai
+  model: gpt-4o-mini
+classify:
+  provider: openai
+  model: gpt-4o-mini
+extract:
+  provider: openai
+  model: gpt-4o-mini
+analyze:
+  provider: openai
+  model: gpt-4o-mini
+draft:
+  provider: openai
+  model: gpt-4o
+revise:
+  provider: openai
+  model: gpt-4o
+synthesize:
+  provider: openai
+  model: gpt-4o
