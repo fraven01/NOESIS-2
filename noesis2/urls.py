@@ -24,6 +24,7 @@ from users.views import accept_invitation
 urlpatterns = [
     path("", include("theme.urls")),
     path("admin/", admin.site.urls),
+    path("ai/", include("ai_core.urls")),
     path("tenant-demo/", DemoView.as_view(), name="tenant-demo"),
     path("invite/accept/<str:token>/", accept_invitation, name="accept-invitation"),
 ]

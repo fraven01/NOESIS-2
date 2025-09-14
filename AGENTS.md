@@ -69,6 +69,11 @@ Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jede
 - Für requests kann optional der Header `X-Tenant-Schema` gesetzt werden, um explizit ein Schema zu wählen.
 - Für Tests mit eigenen Schemas: nach `TenantFactory(schema_name=...)` bei Bedarf `tenant.create_schema(check_if_exists=True)` aufrufen.
 
+## AI Core Richtlinien
+- **Graph-/Node-I/O:** Graphen erhalten `state: dict` und `meta: {tenant, case, trace_id}` und geben `(new_state, result)` zurück. Nodes arbeiten auf klar definierten Inputs und liefern serialisierbare Outputs ohne Seiteneffekte.
+- **PII vor LLM:** Nach der Text-Extraktion immer `pii.mask` anwenden, bevor ein LLM-Client aufgerufen wird.
+- **No-Info-Fallback:** Fehlende Informationen als `gaps` zurückgeben statt Inhalte zu halluzinieren.
+- **Tracing-Pflicht:** Alle LLM-Nodes mit `@trace` dekorieren und `prompt_version` weiterreichen, damit Ereignisse `{tenant, case, trace_id, prompt_version, node}` enthalten.
 
 ## Frontend-Workflow
 - Entwicklung: `npm run dev` (Django + CSS-Watcher)

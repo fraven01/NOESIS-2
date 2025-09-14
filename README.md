@@ -19,6 +19,23 @@ KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen M
 - Entwicklungsumgebung: Node.js, npm
 - CI/CD & Testing: GitHub Actions, pytest
 
+## AI Core
+
+### API-Endpunkte
+Alle Pfade erfordern die Header `X-Tenant-ID` und `X-Case-ID`. Antworten enthalten Standard-Trace-Header und optionale `gaps` oder `citations`.
+
+- `GET /ai/ping/` – einfacher Health-Check
+- `POST /ai/intake/` – Metadaten speichern und Eingangsbestätigung liefern
+- `POST /ai/scope/` – Auftragsumfang prüfen und fehlende Angaben melden
+- `POST /ai/needs/` – Informationen dem Tenant-Profil zuordnen, Abbruch bei Lücken
+- `POST /ai/sysdesc/` – Systembeschreibung nur wenn keine Informationen fehlen
+
+### Graphen
+Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Gates wie `needs_mapping` oder `scope_check` brechen früh ab, statt unvollständige Drafts zu erzeugen.
+
+### Lokale Nutzung
+Das bestehende `docker compose`-Setup startet Web-App und Redis. Ein externer LiteLLM-Proxy kann über `LITELLM_BASE_URL` angebunden werden. Nach dem Start (`docker compose ... up`) können die Endpunkte lokal unter `http://localhost:8000/ai/` getestet werden.
+
 ---
 
 ## Docker Quickstart
@@ -107,6 +124,11 @@ Benötigte Variablen (siehe `.env.example`):
 - DB_PASSWORD: DB-Passwort (Sonderzeichen werden unterstützt)
 - DB_HOST: Host, z. B. `localhost`
 - DB_PORT: Port, i. d. R. `5432`
+
+AI Core:
+- LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys
+- LITELLM_API_KEY: API-Key für den Proxy
+- LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY: Schlüssel für Langfuse-Tracing
 
 Die Settings lesen `.env` via `django-environ`. Die Datenbank wird über eine zusammengesetzte `DATABASE_URL` konfiguriert (aus den Variablen oben), inkl. URL-Encoding für Sonderzeichen.
 
