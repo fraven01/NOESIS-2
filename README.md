@@ -158,6 +158,11 @@ aktualisiert das Projekt entsprechend.
 
 Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten (inkl. lokalem Setup, Admin/Operator‑Rollen und X‑Tenant‑Schema) befindet sich im Dokument [docs/multi-tenancy.md](docs/multi-tenancy.md).
 
+## LiteLLM Proxy (lokal)
+- `.env.example` → `.env` kopieren und `GOOGLE_API_KEY` setzen
+- Start: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d litellm`
+- Healthcheck: `curl -s http://localhost:4000/health`
+
 ## Frontend-Build (Tailwind v4 via PostCSS)
 - Build/Watch: `npm run build:css` (wird in `npm run dev` automatisch gestartet)
 - Konfiguration: `postcss.config.js` mit `@tailwindcss/postcss` und `autoprefixer`

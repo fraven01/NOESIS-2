@@ -1,7 +1,6 @@
-simple-query: gpt-3.5-turbo
-classify: gpt-3.5-turbo
-extract: gpt-3.5-turbo
-analyze: gpt-3.5-turbo
-draft: gpt-4-turbo
-revise: gpt-4-turbo
-synthesize: gpt-4-turbo
+labels:
+  default: google/gemini-2.5-flash
+  fast: google/gemini-2.5-flash
+  reasoning: google/gemini-2.5-pro
+  embedding: google/text-embedding-004
+
