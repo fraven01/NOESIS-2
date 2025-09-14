@@ -206,6 +206,13 @@ LOGGING = copy.deepcopy(DEFAULT_LOGGING)
 LOGGING["formatters"]["verbose"] = {
     "format": "[%(asctime)s] %(levelname)s %(module)s %(message)s",
 }
+
+# LiteLLM / AI Core
+LITELLM_BASE_URL = env("LITELLM_BASE_URL", default="http://localhost:4000")
+LITELLM_MASTER_KEY = env("LITELLM_MASTER_KEY", default="")
+LANGFUSE_PUBLIC_KEY = env("LANGFUSE_PUBLIC_KEY", default="")
+LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
+AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
 LOGGING["formatters"]["json"] = {
     "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
 }

@@ -1,0 +1,4 @@
+system:
+  required: ["purpose", "deployment_model", "main_components"]
+  optional: ["data_categories", "integrations", "references"]
+  forbidden: []
