@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-curl -s http://localhost:4000/health | grep -qi "ok" && echo "LiteLLM healthy"
+# Liveliness (no auth required)
+curl -s http://localhost:4000/health/liveliness | grep -qi "alive" && echo "LiteLLM alive"
+
+# Optional: readiness (auth required)
+curl -s -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" http://localhost:4000/health | grep -qi '"unhealthy_count":0' && echo "LiteLLM healthy"
 
 cat > /tmp/litellm_chat.json << 'JSON'
 {

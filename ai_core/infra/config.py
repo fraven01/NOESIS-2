@@ -27,9 +27,14 @@ def get_config() -> InfraConfig:
     Values are read once and cached for subsequent calls.
     """
 
+    # Accept either LITELLM_API_KEY or fallback to LITELLM_MASTER_KEY for proxy auth
+    api_key = env("LITELLM_API_KEY", default=None)
+    if not api_key:
+        api_key = env("LITELLM_MASTER_KEY", default="")
+
     return InfraConfig(
         litellm_base_url=env("LITELLM_BASE_URL"),
-        litellm_api_key=env("LITELLM_API_KEY"),
+        litellm_api_key=api_key,
         redis_url=env("REDIS_URL"),
         langfuse_public_key=env("LANGFUSE_PUBLIC_KEY"),
         langfuse_secret_key=env("LANGFUSE_SECRET_KEY"),

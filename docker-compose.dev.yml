@@ -33,7 +33,7 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/litellm
+      - DATABASE_URL=${DATABASE_URL}
       - CONFIG_FILE_PATH=/config/config.yaml
     entrypoint: ["litellm"]
     command:
