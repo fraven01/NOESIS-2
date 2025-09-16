@@ -129,6 +129,8 @@ sequenceDiagram
 | Staging GCP | Cloud SQL Public IP, Django nutzt Schema je Tenant | Cloud SQL `pgvector`-Schema im selben Instance; Extension aktiviert, isoliert per Schema-Namen | Multi-Tenant über separate Schemas für Kern-Daten, PGVector nutzt `tenant_id` Spalte laut [RAG-Schema](../rag/schema.sql) |
 | Prod GCP | Cloud SQL Private IP, getrennte DB für App und LiteLLM möglich | Cloud SQL `pgvector`-Schema mit Private IP, Indexierung IVFFLAT/HNSW | Entweder Schema pro Mandant oder `tenant_id` + RLS (siehe [Prod Leitfaden](../cloud/gcp-prod.md)) |
 
+Standardmäßig planen wir mit höchstens 50 Tenants. Steigt die Anzahl, skalieren wir horizontal auf weitere Datenbank-Instanzen und prüfen optional einen Silo-Betrieb pro Großkunde.
+
 # Schritte
 1. Baue Container nach den [Docker-Konventionen](../docker/conventions.md) und tagge Images deterministisch.
 2. Pflege Umgebungsparameter anhand der [Environment-Matrix](../environments/matrix.md), bevor Infrastruktur angelegt wird.

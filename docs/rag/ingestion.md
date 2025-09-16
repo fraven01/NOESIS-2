@@ -1,5 +1,5 @@
 # Warum
-Die Ingestion-Pipeline speist Inhalte in den RAG-Store ein. Dieses Dokument beschreibt den Ablauf, Parametergrenzen und Fehlertoleranz, damit Junior-Entwickler verlässlich Embeddings erzeugen.
+Die Ingestion-Pipeline speist Inhalte in den RAG-Store ein. Dieses Dokument beschreibt den Ablauf, Parametergrenzen und Fehlertoleranz, damit Junior-Entwickler verlässlich Embeddings erzeugen. Es gibt keinen Legacy-Import; wir starten bewusst from scratch.
 
 # Wie
 ## Pipeline
@@ -18,7 +18,7 @@ flowchart TD
     UP --> VS[(pgvector)]
 ```
 
-- Loader ziehen Daten (z.B. S3, CRM) und liefern strukturierte Records.
+- Loader nutzen eine generische Schnittstelle und liefern strukturierte Records; Anbindungen an externe Quellen folgen als Erweiterung.
 - Splitter normalisiert Formate (Markdown → Plaintext), Chunker erzeugt überlappende Stücke.
 - Embedder ruft LiteLLM mit `EMBEDDINGS_MODEL`/`EMBEDDINGS_API_BASE` auf und schreibt Ergebnisse in `pgvector`.
 - Upsert nutzt Hashes, um Duplikate zu überspringen und `documents.deleted_at` zu respektieren.
@@ -33,7 +33,7 @@ flowchart TD
 | `RETRY_BACKOFF` | 30s → x2 | 5m Max | Exponentielles Backoff bei Fehlern |
 
 ## Fehlertoleranz und Deduplizierung
-- Jeder Datensatz erhält einen SHA-256-Hash aus `(tenant_id, source, content)`. Der Hash wird vor Upsert geprüft; Matches werden übersprungen.
+- Jeder Datensatz erhält einen SHA-256-Hash aus `(tenant_id, source, content)`. Der Hash wird vor Upsert geprüft; Matches werden übersprungen, auch wenn der Startbestand leer ist.
 - Bei Rate-Limits markiert der Worker den Batch als „retry“ und wartet laut Backoff. Nach fünf Fehlversuchen landet der Eintrag in einer Dead-Letter-Queue zur manuellen Prüfung.
 - Netzwerkfehler lösen Wiederholungen aus; nach Erfolg werden Dead-Letter-Einträge automatisch erneut angestoßen.
 - Fehler werden in Langfuse als Span `ingestion.error` mit Metadaten protokolliert.

@@ -24,3 +24,5 @@ Qualitätssicherung verhindert Überraschungen nach Deployments. Diese Checklist
 2. Nach Deploy: Arbeite die Nach-Deploy-Liste ab und dokumentiere Zeitpunkte.
 3. Entscheide anhand der Abbruchkriterien, ob Traffic erhöht, eingefroren oder zurückgerollt wird.
 4. Hinterlege alle Ergebnisse im Projekt-Wiki, damit Lessons Learned nachvollziehbar sind.
+
+## Wird nach Implementierung ergänzt

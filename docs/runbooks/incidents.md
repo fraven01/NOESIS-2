@@ -13,6 +13,8 @@ Incidents passieren. Dieses Runbook liefert schnelle Orientierung für die häuf
 | Embedding-Rate-Limit | LiteLLM Logs `429`, Langfuse Alert „embedding_rate_limit“, Queue Stau in `ingestion` | Modellprovider-Limit erreicht, fehlendes Backoff, parallele Batches zu hoch | Reduziere `BATCH_SIZE`, setze Retry Delay (siehe [Scaling](../operations/scaling.md)), informiere Stakeholder über Verzögerung | Provider-Support bei anhaltender Limitierung |
 | Vektorindex korrupt/langsam | Query-Latenz > 1s, PG Logs `ERROR: index corrupted`, Monitoring Alarme | Abgebrochene `REINDEX`, veraltete Statistiken, Storage-Bottleneck | Leite Verkehr auf Fallback (`fallback=true`), führe `REINDEX CONCURRENTLY`/`ANALYZE` in Staging-Test durch, bevor Prod wieder Traffic erhält | Datenbank-Team, ggf. PITR-Restore |
 
+Hinweis: Detaillierte Qualitätstests zu falschen Treffern oder Halluzinationen folgen nach der Implementierung.
+
 # Schritte
 1. Identifiziere das Szenario anhand der Messpunkte in der Tabelle.
 2. Setze die aufgeführten Erstmaßnahmen um und dokumentiere jede Aktion im Incident-Channel.

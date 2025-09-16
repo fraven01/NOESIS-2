@@ -23,10 +23,12 @@ flowchart LR
 - Retriever filtert per `tenant_id`, optional Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren.
 
 ## Mandantenfähigkeit
+Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenant_id` trennt Zugriffe und wird vom Retriever gefiltert. Für wachsende Last kann optional ein Silo/Schemas je Tenant aufgebaut werden.
+
 | Modell | Beschreibung | Einsatz |
 | --- | --- | --- |
-| Schema pro Mandant | Eigenes Schema `tenant_<slug>` für Tabellen `documents`, `chunks`, `embeddings` | Hohe Isolation, Prod empfohlen wenn <50 Tenants |
-| Gemeinsames Schema mit `tenant_id` | Eine Tabelle pro Entität, `tenant_id` (UUID) erzwingt RLS-Regeln | Skalierbar für viele Tenants; Prod mit RLS, Staging identisch |
+| Gemeinsames Schema mit `tenant_id` | Eine Tabelle pro Entität, `tenant_id` (UUID) erzwingt RLS-Regeln und sorgt für gemeinsames Embedding-Repository | Default für alle Umgebungen, solange Anforderungen <≈50 Tenants bleiben |
+| Schema pro Mandant | Eigenes Schema `tenant_<slug>` für Tabellen `documents`, `chunks`, `embeddings` | Skalierungspfad für Großkunden oder erhöhte Isolation |
 | Hybrid | Kern-Tabellen pro Schema, Embeddings global mit `tenant_id` | Wenn LiteLLM und Django gemeinsame Daten teilen müssen |
 
 ## Löschkonzept
@@ -38,3 +40,5 @@ flowchart LR
 1. Plane Tenant-Strategie laut Tabelle und dokumentiere sie im Architektur-Overview.
 2. Implementiere Ingestion-Pipelines mit Parametern aus [RAG-Ingestion](ingestion.md) und schreibe Embeddings in das Schema aus [schema.sql](schema.sql).
 3. Aktiviere Observability für Agenten und Retriever über [Langfuse](../observability/langfuse.md), bevor Nutzer Zugriff erhalten.
+
+> **Skalierung:** Bis zu 50 Tenants gilt die gemeinsame Ablage als ausreichend. Darüber evaluieren wir pro Tenant ein Silo-Schema.

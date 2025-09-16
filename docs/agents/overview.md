@@ -29,6 +29,8 @@ sequenceDiagram
 | ActNode | Führt Tools aus (z.B. Django Services) | Timeout 30s, idempotente Aufrufe |
 | LLMNode | Sendet Prompt an LiteLLM | Verwendet `prompt_version` aus Config, maskiert PII |
 
+Agenten sind plattformweit; keine tenantspezifischen Prompts oder Tools im Startzustand. Tenancy greift ausschließlich im Retriever-Filter, `prompt_version` wird zentral in der Plattformkonfiguration gepflegt.
+
 ## Tools, Cancellations und Tests
 - Tools definieren sich als LangChain-Tools mit klarer Input/Output-Spezifikation; Beispiele: `fetch_case`, `update_status`.
 - Cancellation: Jeder Node prüft `state["cancel"]`; falls gesetzt, beendet der Graph ohne weitere LLM-Calls.
@@ -37,5 +39,5 @@ sequenceDiagram
 
 # Schritte
 1. Implementiere Nodes gemäß Tabelle und dokumentiere sie mit `prompt_version` und Guardrails.
-2. Verdrahte den Web-Aufruf mit Celery Queue `agents` und registriere Tools pro Tenant, bevor Deployments erfolgen.
+2. Verdrahte den Web-Aufruf mit Celery Queue `agents` und halte die Tool-Registrierung plattformweit, bevor Deployments erfolgen.
 3. Überwache Traces via [Langfuse Observability](../observability/langfuse.md) und aktualisiere Guardrails nach jedem Incident-Review.

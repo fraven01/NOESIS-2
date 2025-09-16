@@ -39,7 +39,7 @@ flowchart LR
 | `error_type` | Worker/LiteLLM | Klassifiziert Fehlertyp (z.B. `rate_limit`) |
 
 - Sampling-Richtwerte: Prod 5%, Staging 25%, Dev 100%. Anpassungen erfolgen über `LANGFUSE_SAMPLE_RATE` und werden im [Security-Guide](../security/secrets.md) dokumentiert.
-- PII-Redaction: Nutze `PII_REDACTION_RULES` (Regex, Hash) im Langfuse Backend und stelle sicher, dass Prompts keine Rohdaten enthalten.
+- PII-Redaction: Die Anwendung maskiert PII vor jedem LLM-Aufruf; Langfuse erhält bereits redaktierte Daten. Zusätzliche Langfuse-Regeln sind optional.
 - Dashboards: Standard-Dashboards `Agent Erfolg`, `Ingestion Durchsatz`, `Kosten pro Tenant`. Alerts lösen bei Fehlerquote >5% oder Kosten >80% Budget aus.
 
 # Schritte
