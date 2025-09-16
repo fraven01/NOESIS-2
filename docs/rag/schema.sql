@@ -1,3 +1,4 @@
+-- Index-Strategie wird später festgelegt.
 -- Warum: Dieses Skript definiert das pgvector-Zielbild für RAG. Es ist idempotent und kann in der Pipeline-Stufe „Vector-Schema-Migrations“ ausgeführt werden.
 
 BEGIN;
@@ -64,3 +65,7 @@ ANALYZE rag.embeddings;
 -- * Führe Index-Updates mit `CREATE INDEX CONCURRENTLY` in Prod aus, falls Downtime vermieden werden muss.
 -- * Nach großen Löschläufen: `VACUUM (VERBOSE, ANALYZE) rag.embeddings;`
 -- * Bei Schemaänderungen stets `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS` nutzen, damit Wiederholungen idempotent bleiben.
+
+-- TODO (später):
+-- * Auswahl IVFFLAT vs. HNSW abhängig von Datenvolumen und Latenz.
+-- * Entscheidung folgt nach Messung.

@@ -10,10 +10,10 @@ Die Pipeline sorgt dafür, dass jede Änderung getestet, geprüft und kontrollie
 | 3 | Build | Docker Build mit Multi-Stage, Tag `vX.Y.Z-<sha>` (Semver+SHA) | Nutzt Artifact Registry Service Account |
 | 4 | Push | Docker Push zum Artifact Registry Repo | Abbruch bei fehlender Auth |
 | 5 | E2E (Compose) | Playwright Tests aus `.github/workflows/e2e.yml` gegen Docker-Compose-Stack, prüft Retrieval-Ende-zu-Ende | Ergebnis entscheidet über Staging-Deploy |
-| 6 | Vector-Schema-Migrations | Führt SQL aus [`docs/rag/schema.sql`](../rag/schema.sql) über Cloud SQL Proxy; dry-run + Apply | Stoppt Release bei DDL-Fehlern |
+| 6 | Vector-Schema-Migrations | Führt SQL aus [`docs/rag/schema.sql`](../rag/schema.sql) über Cloud SQL Proxy; dry-run + Apply, Laufzeit derzeit ohne Bewertung | Stoppt Release bei DDL-Fehlern |
 | 7 | Staging Migrate Job | Cloud Run Job `noesis2-migrate` mit `migrate_schemas --noinput` | Bricht Release bei Fehlern ab |
 | 8 | Staging Deploy | Cloud Run Deploy für Web, Worker, Beat, LiteLLM mit `--set-env-vars` | Löst Smoke-Tests aus |
-| 9 | Ingestion-Smoke | Cloud Run Job (Queue `ingestion`) verarbeitet Mini-Batch, verifiziert Embeddings | Blockiert Approval bei Fehler |
+| 9 | Ingestion-Smoke | Cloud Run Job (Queue `ingestion`) verarbeitet Mini-Batch, verifiziert Embeddings; keine Backfill-Jobs für Altbestände | Blockiert Approval bei Fehler |
 | 10 | Smoke Staging | Health-Checks (`/`, `/health/liveliness`) + Logsichtung laut [QA](../qa/checklists.md) | Gate für Approval |
 | 11 | Approval | Manuelle Freigabe (Prod Approver) in GitHub Actions | Pflicht vor Prod |
 | 12 | Prod Migrate | Cloud Run Job mit Secrets aus Secret Manager | Stoppt Flow bei Fehler |
