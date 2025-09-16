@@ -11,6 +11,13 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 127.0.0.1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
   redis:
     image: redis:7-alpine
@@ -20,27 +27,42 @@ services:
       - "6379:6379"
 
   litellm:
-    image: python:3.12-slim
+    image: ghcr.io/berriai/litellm:main-stable
     container_name: litellm
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
-    command: >
-      sh -c "apt-get update && apt-get install -y --no-install-recommends curl &&
-              rm -rf /var/lib/apt/lists/* &&
-              pip install --no-cache-dir 'litellm[proxy]' &&
-              litellm --config /config/litellm-config.yaml --host 0.0.0.0 --port 4000
-                      --master_key \"$LITELLM_MASTER_KEY\""
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - DATABASE_URL=postgresql://${DB_USER}:${DB_PASSWORD}@db:5432/litellm
+      - CONFIG_FILE_PATH=/config/config.yaml
+    entrypoint: ["litellm"]
+    command:
+      - "--config"
+      - "/config/config.yaml"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "4000"
+      - "--num_workers"
+      - "1"
     volumes:
-      - ./config/litellm-config.yaml:/config/litellm-config.yaml:ro
+      - ./config/litellm-config.yaml:/config/config.yaml:ro
     ports:
       - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS -H \"Authorization: Bearer ${LITELLM_MASTER_KEY}\" http://localhost:4000/health || exit 1"]
+      test:
+        - CMD-SHELL
+        - >
+          curl -fsS http://localhost:4000/health/liveliness | grep -qi "alive" || exit 1
       interval: 10s
       timeout: 5s
       retries: 10
+      start_period: 10s
     restart: unless-stopped
+    
 
   web:
     build:
@@ -57,7 +79,7 @@ services:
       - .env
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_started
       litellm:
@@ -85,6 +107,4 @@ volumes:
   postgres_data:
     driver: local
   staticfiles:
-    driver: local
-  litellm_data:
     driver: local
