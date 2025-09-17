@@ -165,6 +165,30 @@ aktualisiert das Projekt entsprechend.
 
 Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten (inkl. lokalem Setup, Admin/Operator‑Rollen und X‑Tenant‑Schema) befindet sich im Dokument [docs/multi-tenancy.md](docs/multi-tenancy.md).
 
+## Operator-Kommandos (Makefile)
+
+Im Projektwurzelverzeichnis stehen Makefile-Targets zur Verfügung, um wiederkehrende Operator-Aufgaben auszuführen:
+
+- `make jobs:migrate` – führt `python manage.py migrate_schemas --noinput` aus.
+- `make jobs:bootstrap` – legt den öffentlichen Tenant per `bootstrap_public_tenant` an (`DOMAIN` erforderlich).
+- `make tenant-new` – erstellt ein neues Schema und die zugehörige Domain (`SCHEMA`, `NAME`, `DOMAIN`).
+- `make tenant-superuser` – erzeugt einen Superuser in einem Schema (`SCHEMA`, `USERNAME`, `PASSWORD`, optional `EMAIL`).
+- `make jobs:rag` – spielt [`docs/rag/schema.sql`](docs/rag/schema.sql) gegen den RAG-Store ein (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
+- `make jobs:rag:health` – prüft Schema, Tabellen und `vector`-Extension im RAG-Store (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
+
+Setze die benötigten Umgebungsvariablen vor dem Aufruf, z. B.:
+
+```bash
+export DOMAIN=demo.localhost
+export SCHEMA=demo
+export NAME="Demo GmbH"
+export USERNAME=admin
+export PASSWORD=changeme
+export RAG_DATABASE_URL=postgresql://user:pass@host:5432/rag
+```
+
+`RAG_DATABASE_URL` kann leer bleiben, sofern `DATABASE_URL` auf dieselbe Instanz zeigt. Für alternative Python-Binaries lässt sich `PYTHON` überschreiben (`make PYTHON=python3 jobs:migrate`).
+
 ## LiteLLM Proxy (lokal)
 - `.env.example` → `.env` kopieren und `GOOGLE_API_KEY` setzen
 - Start: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d litellm`
