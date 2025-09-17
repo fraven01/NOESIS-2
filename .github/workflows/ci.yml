@@ -55,11 +55,11 @@ jobs:
       - name: Verify database secrets (length check only)
         shell: bash
         run: |
-          echo "Verifying DB secrets..."
-          [ -n "${{ secrets.DB_NAME }}" ] || { echo "::error::DB_NAME is NOT set!"; exit 1; }
-          [ -n "${{ secrets.DB_USER }}" ] || { echo "::error::DB_USER is NOT set!"; exit 1; }
-          [ -n "${{ secrets.DB_PASSWORD }}" ] || { echo "::error::DB_PASSWORD is NOT set!"; exit 1; }
-          echo "DB secrets presence verified."
+          echo "Verifying DATABASE_URL..."
+          [ -n "${{ secrets.DATABASE_URL }}" ] || { echo "::error::DATABASE_URL is NOT set!"; exit 1; }
+          echo "Verifying REDIS_URL..."
+          [ -n "${{ secrets.REDIS_URL }}" ] || { echo "::error::REDIS_URL is NOT set!"; exit 1; }
+          echo "Core infrastructure secrets verified."
 
       - name: Verify Django SECRET_KEY (presence only)
         shell: bash
@@ -83,6 +83,20 @@ jobs:
             core.info(`head.ref: ${context.payload?.pull_request?.head?.ref || process.env.GITHUB_REF_NAME}`)
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Install ripgrep
+        run: sudo apt-get update -y && sudo apt-get install -y ripgrep
+
+      - name: Guard against legacy DB/Celery env lookups
+        run: |
+          if rg -n 'os\.getenv\("(?:DB_|CELERY_)' -g'*.py' .; then
+            echo "::error::Found legacy os.getenv DB_/CELERY_ usage.";
+            exit 1;
+          fi
+          if rg -n 'env\.(?:str|int|bool|list|float)?\("(?:DB_|CELERY_)' -g'*.py' .; then
+            echo "::error::Found legacy env(\"DB_/CELERY_\") usage.";
+            exit 1;
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -132,11 +146,8 @@ jobs:
     env:
       SECRET_KEY: ci-secret
       DJANGO_SETTINGS_MODULE: noesis2.settings.development
-      DB_NAME: noesis2_ci
-      DB_USER: postgres
-      DB_PASSWORD: postgres
-      DB_HOST: localhost
-      DB_PORT: 5432
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/noesis2_ci
+      REDIS_URL: redis://localhost:6379/0
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -242,11 +253,8 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
-          CELERY_RESULT_BACKEND: ${{ secrets.CELERY_RESULT_BACKEND }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
         run: |
           gcloud run jobs deploy noesis2-migrate \
             --image "$IMAGE" \
@@ -255,7 +263,7 @@ jobs:
             --max-retries=0 \
             --task-timeout=600s \
             --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
-            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
+            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
             --command python \
             --args manage.py,migrate_schemas,--noinput
 
@@ -285,11 +293,8 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          DB_NAME: ${{ secrets.DB_NAME }}
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          CELERY_BROKER_URL: ${{ secrets.CELERY_BROKER_URL }}
-          CELERY_RESULT_BACKEND: ${{ secrets.CELERY_RESULT_BACKEND }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
         run: |
           gcloud run jobs deploy noesis2-seed \
@@ -299,7 +304,7 @@ jobs:
             --max-retries=0 \
             --task-timeout=600s \
             --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
-            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DB_NAME="$DB_NAME",DB_USER="$DB_USER",DB_PASSWORD="$DB_PASSWORD",CELERY_BROKER_URL="$CELERY_BROKER_URL",CELERY_RESULT_BACKEND="$CELERY_RESULT_BACKEND" \
+            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
             --command bash \
             --args -lc,"python manage.py bootstrap_public_tenant --domain localhost && python manage.py create_demo_data && python manage.py add_domain --schema=demo --domain=\"$STAGING_HOST\" --primary --force-reassign"
 
@@ -345,8 +350,5 @@ jobs:
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
             CLOUD_SQL_CONNECTION_NAME=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
-            DB_NAME=${{ secrets.DB_NAME }}
-            DB_USER=${{ secrets.DB_USER }}
-            DB_PASSWORD=${{ secrets.DB_PASSWORD }}
-            CELERY_BROKER_URL=${{ secrets.CELERY_BROKER_URL }}
-            CELERY_RESULT_BACKEND=${{ secrets.CELERY_RESULT_BACKEND }}
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            REDIS_URL=${{ secrets.REDIS_URL }}
