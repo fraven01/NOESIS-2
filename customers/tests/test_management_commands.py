@@ -1,6 +1,7 @@
 import pytest
 from django.core.management import call_command, CommandError
-from django_tenants.utils import get_public_schema_name
+from django.db import connection
+from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
 from .factories import DomainFactory, TenantFactory
@@ -14,6 +15,21 @@ def test_create_tenant_command():
     tenant = Tenant.objects.get(schema_name="testschema")
     assert tenant.name == "Test"
     assert Domain.objects.filter(tenant=tenant, domain="test.example.com").exists()
+
+
+@pytest.mark.django_db
+def test_create_tenant_creates_schema_when_auto_creation_disabled(monkeypatch):
+    monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
+
+    call_command(
+        "create_tenant", schema="noschemaauto", name="Schema", domain="schema.example"
+    )
+    tenant = Tenant.objects.get(schema_name="noschemaauto")
+
+    with schema_context(tenant.schema_name):
+        tables = connection.introspection.table_names()
+
+    assert "customers_domain" in tables
 
 
 @pytest.mark.django_db

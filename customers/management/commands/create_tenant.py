@@ -31,4 +31,6 @@ class Command(BaseCommand):
                 tenant = Tenant.objects.create(schema_name=schema, name=name)
                 Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
 
+        tenant.create_schema(check_if_exists=True)
+
         self.stdout.write(self.style.SUCCESS(f"Tenant '{name}' created"))
