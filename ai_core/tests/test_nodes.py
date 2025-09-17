@@ -1,3 +1,5 @@
+import pytest
+
 from ai_core.nodes import (
     retrieve,
     compose,
@@ -7,22 +9,45 @@ from ai_core.nodes import (
     draft_blocks,
     needs,
 )
-from ai_core.rag.vector_client import InMemoryVectorClient
 from ai_core.rag.schemas import Chunk
 
 META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
 
 
-def test_retrieve_returns_snippets():
-    client = InMemoryVectorClient()
+def test_retrieve_returns_snippets(settings):
+    settings.RAG_ENABLED = True
+
+    class _Client:
+        def __init__(self, chunks):
+            self._chunks = chunks
+
+        def search(self, query, filters, top_k=5):
+            return self._chunks
+
     chunk = Chunk(
         "Hello 123", {"tenant": "t1", "case": "c1", "source": "s1", "hash": "h"}
     )
-    client.upsert_chunks([chunk])
+    client = _Client([chunk])
     state, result = retrieve.run({"query": "Hello"}, META.copy(), client=client)
     assert result["snippets"][0]["text"] == "Hello 123"
     assert result["snippets"][0]["source"] == "s1"
     assert state["snippets"] == result["snippets"]
+
+
+def test_retrieve_skips_when_disabled(settings, caplog):
+    settings.RAG_ENABLED = False
+    with caplog.at_level("INFO"):
+        state, result = retrieve.run({"query": "Hello"}, META.copy(), client=None)
+    assert result["snippets"] == []
+    assert state["snippets"] == []
+    assert result["confidence"] == 0.0
+    assert "RAG is disabled" in caplog.text
+
+
+def test_retrieve_requires_client_when_enabled(settings):
+    settings.RAG_ENABLED = True
+    with pytest.raises(ValueError):
+        retrieve.run({"query": "Hello"}, META.copy(), client=None)
 
 
 def _mock_call(called):

@@ -1,17 +1,21 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List
 
 from celery import shared_task
+from django.conf import settings
 
 from .infra import object_store, pii
-from .rag.vector_client import InMemoryVectorClient
 from .rag.schemas import Chunk
+from .rag.vector_client import EMBEDDING_DIM, PgVectorClient, get_default_client
 
-# Global in-memory vector client used by the upsert task
-VECTOR_CLIENT = InMemoryVectorClient()
+logger = logging.getLogger(__name__)
+
+# Factory returning the default pgvector client (can be patched in tests)
+VECTOR_CLIENT_FACTORY: Callable[[], PgVectorClient] = get_default_client
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
@@ -75,7 +79,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Attach dummy embedding vectors to chunks."""
     chunks = object_store.read_json(chunks_path)
-    embeddings = [{**ch, "vector": [0.0]} for ch in chunks]
+    embeddings = [{**ch, "embedding": [0.0] * EMBEDDING_DIM} for ch in chunks]
     out_path = _build_path(meta, "embeddings", "vectors.json")
     object_store.write_json(out_path, embeddings)
     return {"path": out_path}
@@ -84,7 +88,21 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 @shared_task
 def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
     """Upsert embedded chunks into the vector client."""
+    if not settings.RAG_ENABLED:
+        logger.info(
+            "Skipping vector upsert because RAG is disabled (tenant=%s, case=%s)",
+            meta.get("tenant"),
+            meta.get("case"),
+        )
+        return 0
+
     data = object_store.read_json(embeddings_path)
-    chunk_objs = [Chunk(content=ch["content"], meta=ch["meta"]) for ch in data]
-    VECTOR_CLIENT.upsert_chunks(chunk_objs)
-    return len(chunk_objs)
+    chunk_objs = []
+    for ch in data:
+        vector = ch.get("embedding")
+        embedding = [float(v) for v in vector] if vector is not None else None
+        chunk_objs.append(Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding))
+
+    client = VECTOR_CLIENT_FACTORY()
+    written = client.upsert_chunks(chunk_objs)
+    return written
