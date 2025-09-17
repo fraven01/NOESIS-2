@@ -111,6 +111,8 @@ npm run dev
   Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
   `docker-compose exec web python manage.py collectstatic`.
   Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
+- Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
+  `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate`.
 
 ---
  

@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
 
-python manage.py migrate --noinput
+# Migrationen werden über den dedizierten Job gemäß docs/runbooks/migrations.md ausgeführt.
 
 exec "$@"
