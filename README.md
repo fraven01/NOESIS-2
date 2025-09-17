@@ -113,7 +113,7 @@ npm run dev
   Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
 
 ---
-
+ 
 ## Konfiguration (.env)
 Benötigte Variablen (siehe `.env.example`):
 
