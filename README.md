@@ -119,18 +119,16 @@ Benötigte Variablen (siehe `.env.example`):
 
 - SECRET_KEY: geheimer Schlüssel für Django
 - DEBUG: `true`/`false`
-- DB_NAME: Name der PostgreSQL-Datenbank
-- DB_USER: DB-Benutzername
-- DB_PASSWORD: DB-Passwort (Sonderzeichen werden unterstützt)
-- DB_HOST: Host, z. B. `localhost`
-- DB_PORT: Port, i. d. R. `5432`
+- DATABASE_URL: Verbindungs-URL zur PostgreSQL-Datenbank
+- REDIS_URL: Redis-Endpoint (z. B. für Celery)
+- RAG_ENABLED: `true`/`false` zur Aktivierung des Retrieval-Augmented-Generation-Workflows
 
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys
 - LITELLM_API_KEY: API-Key für den Proxy
 - LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY: Schlüssel für Langfuse-Tracing
 
-Die Settings lesen `.env` via `django-environ`. Die Datenbank wird über eine zusammengesetzte `DATABASE_URL` konfiguriert (aus den Variablen oben), inkl. URL-Encoding für Sonderzeichen.
+Die Settings lesen `.env` via `django-environ`. `DATABASE_URL` muss eine vollständige URL enthalten (inkl. URL-Encoding für Sonderzeichen); `REDIS_URL` wird sowohl für Celery als auch für Redis-basierte Integrationen verwendet.
 
 ## Settings-Profile
 Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modulare Paket `noesis2/settings/`.

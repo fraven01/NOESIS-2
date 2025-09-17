@@ -9,7 +9,6 @@ from pathlib import Path
 import copy
 import environ
 from django.utils.log import DEFAULT_LOGGING
-from django.core.exceptions import ImproperlyConfigured
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # This file is at noesis2/settings/base.py, so project root is three parents up
@@ -106,35 +105,14 @@ WSGI_APPLICATION = "noesis2.wsgi.application"
 
 # Database
 # https://docs.djangoproject.com/en/5.2/ref/settings/#databases
-try:
-    # Try to load the PostgreSQL driver
-    import psycopg2  # noqa: F401
+DATABASES = {"default": env.db("DATABASE_URL")}
+DATABASES["default"]["ENGINE"] = "django_tenants.postgresql_backend"
 
-    # Configure PostgreSQL directly from individual environment variables.
-    # This avoids issues with special characters in passwords breaking a DATABASE_URL.
-    DATABASES = {
-        "default": {
-            "ENGINE": "django_tenants.postgresql_backend",
-            "NAME": env("DB_NAME"),
-            "USER": env("DB_USER"),
-            "PASSWORD": env("DB_PASSWORD"),
-            "HOST": env("DB_HOST", default="localhost"),
-            "PORT": env("DB_PORT", default="5432"),
-        }
-    }
-    # Special configuration for Google Cloud Run: use Cloud SQL Unix socket
-    if os.getenv("GOOGLE_CLOUD_PROJECT"):
-        DATABASES["default"][
-            "HOST"
-        ] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
-except (ImportError, ImproperlyConfigured, Exception):
-    # If the driver is not installed or env vars are missing, fall back to SQLite
-    DATABASES = {
-        "default": {
-            "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
-        }
-    }
+# Special configuration for Google Cloud Run: use Cloud SQL Unix socket
+if os.getenv("GOOGLE_CLOUD_PROJECT"):
+    DATABASES["default"][
+        "HOST"
+    ] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 
 # Tenant settings
 PUBLIC_SCHEMA_NAME = "public"
@@ -189,8 +167,9 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 # Custom user model
 AUTH_USER_MODEL = "users.User"
 
-CELERY_BROKER_URL = env("CELERY_BROKER_URL", default="redis://localhost:6379/0")
-CELERY_RESULT_BACKEND = env("CELERY_RESULT_BACKEND", default="redis://localhost:6379/0")
+REDIS_URL = env.str("REDIS_URL")
+CELERY_BROKER_URL = REDIS_URL
+CELERY_RESULT_BACKEND = REDIS_URL
 
 
 ADMINS = [

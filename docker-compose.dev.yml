@@ -4,16 +4,16 @@ services:
     container_name: noesis2_db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: noesis2
+      POSTGRES_USER: noesis2
+      POSTGRES_PASSWORD: noesis2
     ports:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./config/postgres-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 127.0.0.1"]
+      test: ["CMD-SHELL", "pg_isready -U noesis2 -d noesis2 -h 127.0.0.1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -33,7 +33,7 @@ services:
       - LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - DATABASE_URL=${DATABASE_URL}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       - CONFIG_FILE_PATH=/config/config.yaml
     entrypoint: ["litellm"]
     command:
@@ -85,6 +85,10 @@ services:
       litellm:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
 
   worker:
     build:
@@ -102,6 +106,10 @@ services:
       litellm:
         condition: service_healthy
     restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
 
 volumes:
   postgres_data:

@@ -6,9 +6,9 @@ services:
     container_name: noesis2_db
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${DB_NAME}
-      POSTGRES_USER: ${DB_USER}
-      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: noesis2
+      POSTGRES_USER: noesis2
+      POSTGRES_PASSWORD: noesis2
     ports:
       - "5432:5432"
     volumes:
@@ -35,6 +35,9 @@ services:
       - .env
     environment:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-example.com}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
     depends_on:
       - db
       - redis
@@ -50,6 +53,9 @@ services:
       - .env
     environment:
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      RAG_ENABLED: ${RAG_ENABLED:-false}
     depends_on:
       - redis
     restart: unless-stopped
