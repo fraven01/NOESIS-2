@@ -56,6 +56,11 @@ Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst di
 - Tests orientieren sich an der in der README beschriebenen Testpyramide; nutze `pytest` mit Tenant-Support und `factory-boy` für Daten. E2E-Pfade folgen der Pipeline ([docs/cicd/pipeline.md](docs/cicd/pipeline.md)).
 - Vor jeder Änderung prüfe, ob betroffene Runbooks oder Leitfäden aktualisiert werden müssen, und verlinke die Primärquelle im PR.
 
+## Arbeitsroutine
+1. Relevante AGENTS- und Bereichsdokumente prüfen – Einstieg über [AGENTS.md → Primärdokumente & Rollen](#primärdokumente--rollen) sowie Detailleitfäden wie [Frontend-Überblick](docs/frontend-ueberblick.md) oder [docs/multi-tenancy.md](docs/multi-tenancy.md) je nach Scope.
+2. Linting-, Test- und Build-Kommandos ausführen: `npm run lint` ([README.md → Linting & Formatierung](README.md#linting--formatierung)), `pytest -q` ([README.md → Testing](README.md#testing)), `npm test` ([docs/frontend-ueberblick.md → Tests und Storybook](docs/frontend-ueberblick.md#tests-und-storybook)), `npm run build:css` ([README.md → Frontend-Build](README.md#frontend-build-tailwind-v4-via-postcss)).
+3. Betroffene Runbooks/Dokumentationen angleichen (z. B. [docs/runbooks/migrations.md](docs/runbooks/migrations.md), [docs/runbooks/incidents.md](docs/runbooks/incidents.md), [docs/qa/checklists.md](docs/qa/checklists.md)) und die aktualisierte Quelle im PR direkt verlinken.
+
 ## CI/CD & Releases
 - Die GitHub Actions Pipeline, Gates und Workload Identity Rollen sind in [docs/cicd/pipeline.md](docs/cicd/pipeline.md) verbindlich geregelt.
 - Releases durchlaufen die dort beschriebenen Gates (Lint → Tests → Build → Deploy). Ohne bestandene QA-/Smoke-Schritte kein Prod-Traffic.
