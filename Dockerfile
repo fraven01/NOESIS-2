@@ -28,12 +28,6 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# System deps only
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       build-essential \
-    && rm -rf /var/lib/apt/lists/*
-
 # Copy dependency manifests and install Python deps
 COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
@@ -45,9 +39,12 @@ COPY . .
 COPY --from=css-builder /app/theme/static/css ./theme/static/css
 
 # Minimal env for Django settings during build (collectstatic)
-# No database needed for collectstatic; keep a placeholder SECRET_KEY only.
+# Provide placeholder DB/Redis URLs so settings can load without .env.
 ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
-    SECRET_KEY=build-secret
+    SECRET_KEY=build-secret \
+    DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2 \
+    REDIS_URL=redis://redis:6379/0 \
+    RAG_ENABLED=false
 
 # Collect static files
 RUN python manage.py collectstatic --noinput

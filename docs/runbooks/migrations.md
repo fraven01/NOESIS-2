@@ -1,38 +1,57 @@
-# Warum
-Schemaänderungen sind kritisch für Tenant-Daten. Dieses Runbook stellt sicher, dass Migrationen reproduzierbar und ohne Downtime laufen.
+# Runbook: Django/Tenant Migrationen (Dev)
 
-# Wie
-## Vorbereitung
-- Prüfe das Migration-Diff im Repo und stelle sicher, dass `manage.py migrate_schemas` idempotent ist (kein Datenverlust bei erneutem Lauf).
-- Kontrolliere, dass aktuelle Backups verfügbar sind: in Staging ein manuelles Snapshot, in Prod PITR + letztes tägliches Backup.
-- Verifiziere, dass keine Web/Worker-Container automatische Migrationen ausführen ([Docker-Konventionen](../docker/conventions.md)).
+Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen Entwicklungsumgebung mit `django-tenants`.
 
-## Durchführung
-- Verwende ausschließlich den Cloud Run Job `noesis2-migrate`. Er nutzt das Web-Image und führt `python manage.py migrate_schemas --noinput` aus.
-- Job-Konfiguration: Timeout 600 s (Staging) bzw. 900 s (Prod), `maxRetries` 0 (Staging) bzw. 1 (Prod).
-- Stelle sicher, dass `DJANGO_SETTINGS_MODULE=noesis2.settings.production` gesetzt ist und dass Cloud SQL/Redis-Verbindungen vorhanden sind.
-- Vector-spezifische DDL (Tabellen, Indizes) laufen separat in der Pipeline-Stufe „Vector-Schema-Migrations“. Skript liegt in [`docs/rag/schema.sql`](../rag/schema.sql) und wird per `psql` oder Cloud SQL Proxy angewendet.
+## Begriffe
+- Shared Apps: laufen im `public`‑Schema (z. B. `customers`).
+- Tenant Apps: laufen in je eigenem Tenant‑Schema (z. B. `users`, `projects`, …).
+- Befehlsfamilie: `migrate_schemas --shared` vs. `migrate_schemas --tenant`.
 
-## Validierung
-- Überwache Job-Logs in Cloud Logging: Erfolgsnachricht `Job completed successfully` und Exit-Code 0 bestätigen den Abschluss.
-- Führe direkt im Anschluss Readiness-Checks aus: HTTP 200 auf `/` und `/tenant-demo/`, Celery-Queue leer (`redis` Keys stabil), LiteLLM `/health` grün.
-- Dokumentiere Schema-Versionen (`django_migrations` Tabelle) und vergleiche sie mit erwarteten Migrationen.
+## Voraussetzungen
+- Stack läuft: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
+- `.env` gesetzt (DB/Redis/Keys); Services erreichbar: `npm run win:dev:check` (Windows) oder `npm run dev:check` (Bash)
 
-## Rollback
-- Bricht der Job, bleibt Schema unverändert. Analysiere Logs, fixiere Migration und wiederhole den Job.
-- Bei teilweisen Änderungen nutze Staging-Backup bzw. Prod-PITR, um in ein konsistentes Zeitfenster vor dem Lauf zurückzuspringen.
-- Nach einem Rollback wird der Job mit derselben Image-Version erneut gestartet, nachdem das Problem behoben wurde.
+## Typische Workflows
 
-## pgvector-Schema
-- Tabellenlayout laut [`docs/rag/schema.sql`](../rag/schema.sql): `documents`, `chunks`, `embeddings` mit Foreign Keys und `metadata` als `jsonb`.
-- Indizes: Primärschlüssel je Tabelle, GIN auf `metadata`, Vektorindex IVFFLAT oder HNSW auf `embeddings.embedding` (`cosine`).
-- DDL ist idempotent: `CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS` und `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`.
-- Führe `ANALYZE` nach großen Uploads aus und plane `REINDEX CONCURRENTLY` bei Index-Wechseln.
-- Rollback bei fehlerhaften Index-Updates: `DROP INDEX CONCURRENTLY`, danach vorherige Definition erneut ausführen; Daten bleiben unverändert.
+1) Modelle geändert → Migrationen erzeugen
+- Im Web‑Container ausführen (Dateien landen via Bind‑Mount im Repo):
+  - Windows: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py makemigrations <app>`
+  - Bash: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py makemigrations <app>`
 
-# Schritte
-1. Sichere, dass Backups aktuell sind und Approval für Migration vorliegt.
-2. Trigger den Cloud Run Migrate-Job (Staging automatisch via [Pipeline](../cicd/pipeline.md), Prod nach Approval manuell/CI).
-3. Überwache Logs und Validierungschecks laut Abschnitt „Validierung“.
-4. Melde den Status im Release-Channel und dokumentiere Schema-Versionen.
-5. Bei Fehlern: Stoppe weiteren Traffic-Shift, führe Rollback laut Abschnitt „Rollback“ durch und wiederhole Schritt 2 nach Fix.
+2) Shared‑Migrationen anwenden (falls Shared App betroffen)
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate_schemas --shared`
+
+3) Public Tenant sicherstellen (idempotent)
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py bootstrap_public_tenant --domain=localhost`
+
+4) Tenant‑Migrationen anwenden
+- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate_schemas --tenant`
+
+5) Neuen Tenant anlegen (optional)
+- Anlegen: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py create_tenant --schema=dev2 --name="Dev 2" --domain=dev2.localhost`
+- Superuser (nicht interaktiv):
+  - Windows: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T -e DJANGO_SUPERUSER_PASSWORD=admin123 web python manage.py create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
+  - Bash:   `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T -e DJANGO_SUPERUSER_PASSWORD=admin123 web python manage.py create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
+
+## Smoke‑Checks (nach Migrationen)
+- API‑Ping (Header‑Routing):
+  - `curl -i -H "X-Tenant-Schema: dev" -H "X-Tenant-ID: dev-tenant" -H "X-Case-ID: local" http://localhost:8000/ai/ping/`
+- Beispiel‑Graph:
+  - `curl -s -X POST http://localhost:8000/ai/scope/ -H "Content-Type: application/json" -H "X-Tenant-Schema: dev" -H "X-Tenant-ID: dev-tenant" -H "X-Case-ID: local" --data '{"hello":"world"}'`
+- Komplett: `npm run win:dev:check` (Windows) bzw. `npm run dev:check` (Bash)
+
+## RAG / pgvector (optional)
+- Schema anwenden (idempotent, nur einmal nötig):
+  - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
+- Feature aktivieren: `.env → RAG_ENABLED=true`, danach `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart web worker`
+
+## Fehlerbilder & Hinweise
+- Container restarten ständig → Logs prüfen:
+  - `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -n 120 web` (z. B. CRLF im `entrypoint.sh`)
+- 403 bei API‑POSTs → AI‑Endpoints sind CSRF‑exempt; sicherstellen, dass Code aktualisiert wurde.
+- LiteLLM „unhealthy“ → Healthcheck läuft Python‑Probe; bei Erststart dauert Prisma‑Migration etwas. Danach `web/worker` ggf. nachstarten.
+
+## Best Practices
+- Dev: ein DB‑User für App & LiteLLM verwenden (aus `.env`).
+- Prod: getrennte Rollen/DSNs je Dienst (Least Privilege), Migrationen über Pipeline‑Stufen ausführen.
+

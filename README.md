@@ -42,15 +42,22 @@ Das bestehende `docker compose`-Setup startet Web-App und Redis. Ein externer Li
 
 ## Docker Quickstart
 ```bash
-copy .env.example .env   # Linux/macOS: cp .env.example .env
+# Falls noch keine .env vorhanden ist:
+# Windows: copy .env.example .env   |   Linux/macOS: cp .env.example .env
+
 docker compose -f docker-compose.yml -f docker-compose.dev.yml build
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+
+# Bootstrap & Checks (idempotent):
+npm run dev:up
+npm run dev:check
 ```
 
-Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
-Falls du ein älteres Compose-Setup verwendest, führe stattdessen manuell aus:
-`docker-compose exec web python manage.py collectstatic`.
-Dies ist erforderlich, da `CompressedManifestStaticFilesStorage` aktiviert ist.
+Hinweise:
+- Wenn bereits eine lokale `.env` mit gültigen Schlüsseln existiert, Kopierschritt überspringen.
+- Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
+- Bei älteren Compose-Setups ggf. manuell:
+  `docker-compose exec web python manage.py collectstatic` (notwendig wegen `CompressedManifestStaticFilesStorage`).
 
 ---
 
@@ -116,14 +123,34 @@ npm run dev
 - Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
   `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate`.
 
+### Dev-Skripte (idempotent)
+- `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an.
+- `npm run dev:check`: Führt Smoke‑Checks aus (LiteLLM Health/Chat, `GET /ai/ping/`, `POST /ai/scope/`). Chat erfordert gültige `GEMINI_API_KEY`.
+- `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
+- `npm run dev:init`: Führt die Compose‑Jobs `migrate` und `bootstrap` aus (nach `up -d`).
+- `npm run dev:reset`: Full reset (down -v → build --no-cache → up -d → init → checks).
+- `npm run jobs:rag`: Führt `docs/rag/schema.sql` gegen die DB aus (idempotent).
+- `npm run rag:enable`: Setzt `RAG_ENABLED=true` in `.env` und startet Web/Worker neu.
+ - `npm run jobs:rag:health`: Prüft RAG-Gesundheit (pgvector installiert, Tabellen vorhanden).
+
+Hinweis (Windows): PowerShell‑Varianten sind enthalten:
+- `npm run win:dev:up`
+- `npm run win:dev:check`
+- `npm run win:dev:down`
+- `npm run win:dev:reset`
+- `npm run win:rag:enable`
+- `npm run win:jobs:rag`
+- `npm run win:jobs:rag:health`
+
 ---
  
 ## Konfiguration (.env)
-Benötigte Variablen (siehe `.env.example`):
+Benötigte Variablen (siehe `.env.example` oder `.env.dev.sample`):
 
 - SECRET_KEY: geheimer Schlüssel für Django
 - DEBUG: `true`/`false`
-- DATABASE_URL: Verbindungs-URL zur PostgreSQL-Datenbank
+- DB_USER / DB_PASSWORD / DB_NAME: gemeinsame Dev‑Credentials; werden für den Container‑Init und DSNs genutzt.
+- DATABASE_URL: Verbindungs-URL zur PostgreSQL-Datenbank (App‑DB, default: `postgresql://noesis2:noesis2@db:5432/noesis2`)
 - REDIS_URL: Redis-Endpoint (z. B. für Celery)
 - RAG_ENABLED: `true`/`false` zur Aktivierung des Retrieval-Augmented-Generation-Workflows.
   Aktiviere das Flag nur, wenn das `rag`-Schema inklusive `pgvector`-Extension (`CREATE EXTENSION IF NOT EXISTS vector;`)
@@ -135,9 +162,13 @@ Benötigte Variablen (siehe `.env.example`):
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys
 - LITELLM_API_KEY: API-Key für den Proxy
+- LITELLM_DATABASE_URL (optional): separates DB‑DSN für die LiteLLM Admin‑DB (default in Compose aus `DB_*` + `LITELLM_DB_NAME`)
 - LANGFUSE_PUBLIC_KEY / LANGFUSE_SECRET_KEY: Schlüssel für Langfuse-Tracing
+- LITELLM_SALT_KEY: Salt für Verschlüsselung gespeicherter Provider‑Keys in der Admin‑DB (empfohlen für Admin UI)
 
 Die Settings lesen `.env` via `django-environ`. `DATABASE_URL` muss eine vollständige URL enthalten (inkl. URL-Encoding für Sonderzeichen); `REDIS_URL` wird sowohl für Celery als auch für Redis-basierte Integrationen verwendet.
+
+Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden (einfachere Einrichtung). In Produktion getrennte Rollen/DSNs je Dienst (Least Privilege).
 
 ## Settings-Profile
 Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modulare Paket `noesis2/settings/`.
@@ -169,6 +200,7 @@ Eine ausführliche Anleitung zur Einrichtung und Pflege von Mandanten (inkl. lok
 - `.env.example` → `.env` kopieren und `GOOGLE_API_KEY` setzen
 - Start: `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d litellm`
 - Healthcheck: `curl -s http://localhost:4000/health`
+- Admin UI Login: Standardmäßig via Master Key (Wahl im UI). Alternativ User/Pass über `UI_USERNAME`/`UI_PASSWORD` setzen (in dev/staging per Compose auf `DB_USER`/`DB_PASSWORD` voreingestellt).
 
 ## Frontend-Build (Tailwind v4 via PostCSS)
 - Build/Watch: `npm run build:css` (wird in `npm run dev` automatisch gestartet)

@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.http import require_POST
+from django.views.decorators.csrf import csrf_exempt
 
 from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
@@ -80,21 +81,25 @@ def ping(request: HttpRequest) -> JsonResponse:
     return apply_std_headers(response, meta["trace_id"])
 
 
+@csrf_exempt
 @require_POST
 def intake(request: HttpRequest) -> JsonResponse:
     return _run_graph(request, info_intake)
 
 
+@csrf_exempt
 @require_POST
 def scope(request: HttpRequest) -> JsonResponse:
     return _run_graph(request, scope_check)
 
 
+@csrf_exempt
 @require_POST
 def needs(request: HttpRequest) -> JsonResponse:
     return _run_graph(request, needs_mapping)
 
 
+@csrf_exempt
 @require_POST
 def sysdesc(request: HttpRequest) -> JsonResponse:
     return _run_graph(request, system_description)

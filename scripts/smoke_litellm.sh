@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# Be tolerant if pipefail isn't supported in some shells on Windows
+set -euo pipefail 2>/dev/null || set -euo
 
-# Liveliness (no auth required)
-curl -s http://localhost:4000/health/liveliness | grep -qi "alive" && echo "LiteLLM alive"
+# Liveliness (no auth required) with small retry loop
+for i in {1..10}; do
+  if curl -s http://localhost:4000/health/liveliness | grep -qi "alive"; then
+    echo "LiteLLM alive"; break
+  fi
+  sleep 1
+done
 
 # Optional: readiness (auth required)
 curl -s -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" http://localhost:4000/health | grep -qi '"unhealthy_count":0' && echo "LiteLLM healthy"
