@@ -6,6 +6,12 @@ Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst di
 - Alle Beiträge orientieren sich an den Architektur-, Betriebs- und Sicherheitszielen aus den NOESIS 2-Dokumenten.
 - Änderungen an Prozessen oder Richtlinien werden zuerst in den Primärdokumenten gepflegt und anschließend hier referenziert.
 
+### Hinweis auf Unterordner-Leitfäden
+- In relevanten Verzeichniszweigen liegen zusätzliche `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`),
+  die weiterführende Regeln enthalten.
+- Prüfe vor jeder Änderung den gesamten Pfad auf solche Unterordner-Leitfäden und befolge immer die jeweils spezifischste Anweisung.
+- Ohne IDE-Unterstützung hilft `find . -name AGENTS.md`, um alle verfügbaren Leitfäden sichtbar zu machen.
+
 ## Primärdokumente & Rollen
 - **Architektur, Infrastruktur & Cloud-Pfade** – [docs/architektur/overview.md](docs/architektur/overview.md), [docs/cloud/gcp-staging.md](docs/cloud/gcp-staging.md), [docs/cloud/gcp-prod.md](docs/cloud/gcp-prod.md), [docs/environments/matrix.md](docs/environments/matrix.md) · Verantwortlich: Platform Engineering & Cloud Ops.
 - **Container & Laufzeitkonventionen** – [docs/docker/conventions.md](docs/docker/conventions.md) · Verantwortlich: Platform Engineering.
