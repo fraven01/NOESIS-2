@@ -3,7 +3,7 @@
 ## Vision
 KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen Mitbestimmung nach § 87 Abs. 1 Nr. 6 BetrVG.
 
-> Siehe Details in [AGENTS.md](AGENTS.md) für verbindliche Leitfäden, Rollen und Dokumentverweise.
+> 📘 **Zentrale Leitplanken & Navigation:** [AGENTS.md](AGENTS.md) bündelt Rollen, Trigger und Links zu allen Primärquellen.
 
 ## Kernfunktionen (Geplant)
 - Flexible, workflow-basierte Analyse von Dokumenten (z. B. Systembeschreibungen, Betriebsvereinbarungen)

@@ -1,81 +1,89 @@
 # AGENTS Leitfaden
 
-Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst die verbindlichen Leitplanken zusammen und verweist auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `README.md`.
+Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst die verbindlichen Leitplanken zusammen und verweist
+auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `README.md`.
 
-## Zweck & Geltung
-- Alle Beiträge orientieren sich an den Architektur-, Betriebs- und Sicherheitszielen aus den NOESIS 2-Dokumenten.
-- Änderungen an Prozessen oder Richtlinien werden zuerst in den Primärdokumenten gepflegt und anschließend hier referenziert.
+## Zweck & Geltungsbereich
+- Gilt für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
+- Vor Änderungen prüfe den Verzeichnispfad auf spezifischere `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`) und befolge stets die tiefste Anweisung.
+- Dieses Dokument dient als Einstieg und Navigationshilfe; es enthält keine sich wiederholenden Inhalte aus den Primärquellen.
 
-### Hinweis auf Unterordner-Leitfäden
-- In relevanten Verzeichniszweigen liegen zusätzliche `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`),
-  die weiterführende Regeln enthalten.
-- Prüfe vor jeder Änderung den gesamten Pfad auf solche Unterordner-Leitfäden und befolge immer die jeweils spezifischste Anweisung.
-- Ohne IDE-Unterstützung hilft `find . -name AGENTS.md`, um alle verfügbaren Leitfäden sichtbar zu machen.
+## Systemkontext
+- Die Systemlandschaft (Web, Worker, Ingestion, LiteLLM, Datenpfade) und die zugehörigen Diagramme sind in der [Architekturübersicht](docs/architektur/overview.md) beschrieben.
+- Laufzeitpfade pro Umgebung sowie die Sequenz von Deploy- zu RAG-Flows befinden sich in den Mermaid-Diagrammen derselben Quelle.
 
-## Primärdokumente & Rollen
-- **Architektur, Infrastruktur & Cloud-Pfade** – [docs/architektur/overview.md](docs/architektur/overview.md), [docs/cloud/gcp-staging.md](docs/cloud/gcp-staging.md), [docs/cloud/gcp-prod.md](docs/cloud/gcp-prod.md), [docs/environments/matrix.md](docs/environments/matrix.md) · Verantwortlich: Platform Engineering & Cloud Ops.
-- **Container & Laufzeitkonventionen** – [docs/docker/conventions.md](docs/docker/conventions.md) · Verantwortlich: Platform Engineering.
-- **Multi-Tenancy & Tenant-Betrieb** – [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/tenant-management.md](docs/tenant-management.md) · Verantwortlich: Backend & Tenant Operations.
-- **RAG, Ingestion & Vector Store** – [docs/rag/overview.md](docs/rag/overview.md), [docs/rag/ingestion.md](docs/rag/ingestion.md), [docs/rag/schema.sql](docs/rag/schema.sql) · Verantwortlich: AI Platform & Data Ops.
-- **Agenten & Guardrails** – [docs/agents/overview.md](docs/agents/overview.md) · Verantwortlich: AI Platform.
-- **LiteLLM Betrieb** – [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md) · Verantwortlich: AI Platform Owner.
-- **Observability & Langfuse** – [docs/observability/langfuse.md](docs/observability/langfuse.md) · Verantwortlich: Observability Team.
-- **Skalierung & Betrieb** – [docs/operations/scaling.md](docs/operations/scaling.md) · Verantwortlich: Platform Engineering.
-- **Runbooks & QA** – [docs/runbooks/migrations.md](docs/runbooks/migrations.md), [docs/runbooks/incidents.md](docs/runbooks/incidents.md), [docs/qa/checklists.md](docs/qa/checklists.md) · Verantwortlich: On-Call & QA.
-- **Sicherheit & Secrets** – [docs/security/secrets.md](docs/security/secrets.md) · Verantwortlich: Security & Platform.
-- **CI/CD & Releases** – [docs/cicd/pipeline.md](docs/cicd/pipeline.md) · Verantwortlich: DevEx & Release Management.
-- **Frontend Guidelines** – [docs/frontend-ueberblick.md](docs/frontend-ueberblick.md), [theme/AGENTS.md](theme/AGENTS.md), [theme/components/AGENTS.md](theme/components/AGENTS.md), [docs/frontend-master-prompt.md](docs/frontend-master-prompt.md) · Verantwortlich: Frontend.
+## Rollen & Funktionsblöcke
+- **Web- & Worker-Services** verantworten HTTP-Verarbeitung und Celery-Queues laut [Architekturübersicht](docs/architektur/overview.md).
+- **Agenten (LangGraph)** orchestrieren Retrieval und Guardrails nach [Agenten-Übersicht](docs/agents/overview.md).
+- **RAG & Ingestion** decken Loader→Embedding→pgvector gemäß [RAG-Overview](docs/rag/overview.md) und [Ingestion-Leitfaden](docs/rag/ingestion.md) ab.
+- **LiteLLM Betrieb** folgt den Betriebs- und Auth-Regeln aus [LiteLLM Admin GUI](docs/litellm/admin-gui.md).
+- **Observability & Kostenkontrolle** wird über [Langfuse Guide](docs/observability/langfuse.md) geführt.
+- **Multi-Tenancy & Tenant-CLI** inklusive Rollen findest du im [Multi-Tenancy Leitfaden](docs/multi-tenancy.md).
+- **CI/CD & Releases** werden über die [Pipeline-Dokumentation](docs/cicd/pipeline.md) gesteuert.
+- **Security & Secrets** verwalten Plattform- und AI-Schlüssel gemäß [Security Guide](docs/security/secrets.md).
 
-## Einstieg & Entwicklungsumgebungen
-- Quickstart, lokale Alternativen und Docker-Setup stehen in der [README.md](README.md). Nutze sie als Einstiegspunkt; Detailleitfäden sind in diesem Dokument verlinkt.
-- `.env` Werte, Installationsschritte und Mandanten-Demos folgen den Vorgaben in [docs/multi-tenancy.md](docs/multi-tenancy.md) und [docs/tenant-management.md](docs/tenant-management.md).
-- Für Umfeld-spezifische Konfigurationen (Dev/Staging/Prod) gilt die [Environment-Matrix](docs/environments/matrix.md).
+## Ereignisse & Trigger
+| Quelle | Trigger | Beschreibung | Primärquelle |
+| --- | --- | --- | --- |
+| GitHub Actions | Pull Request oder Merge nach `main` | Startet alle Pipeline-Stufen von Lint bis Deploy. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
+| Cloud Run Jobs | Freigabe nach Staging-Checks | Führt `noesis2-migrate` sowie Vector-Schema-Migrationen aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
+| Django Web-Service | HTTP-Request mit `X-Tenant-ID` & `X-Case-ID` | Legt Celery Task `agents.run` an und startet den LangGraph-Flow. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
+| Ingestion Worker | Pipeline-Stufe „Ingestion-Smoke“ oder manueller Batch | Lädt Daten, chunked sie und schreibt Embeddings in pgvector. | [docs/rag/ingestion.md#pipeline](docs/rag/ingestion.md#pipeline) |
+| Langfuse Observability | Fehlerquote > 5 % oder Kosten > 80 % Budget | Löst Alerts für Agenten, Ingestion und LiteLLM aus. | [docs/observability/langfuse.md#felder-und-sampling](docs/observability/langfuse.md#felder-und-sampling) |
 
-## Architektur & Infrastruktur
-- Halte Dich an die System- und Deploy-Pfade aus der [Architekturübersicht](docs/architektur/overview.md). Dort sind Komponenten, Queues und Netzpfade beschrieben.
-- Container-Builds und Startkommandos richten sich nach den [Docker-Konventionen](docs/docker/conventions.md); Änderungen am `Dockerfile` müssen die Multi-Stage- und Non-Root-Regeln respektieren.
-- Infrastruktur- und Bereitstellungsdetails unterscheiden sich je Stage. Beachte insbesondere die Leitfäden für [GCP Staging](docs/cloud/gcp-staging.md) und [GCP Prod](docs/cloud/gcp-prod.md).
+## Inputs & Outputs
+| Datenobjekt | Schema/Ort | Besitzer | Primärquelle |
+| --- | --- | --- | --- |
+| Tenant-Schemata | PostgreSQL Public- & Tenant-Schemas (`django-tenants`) | Platform Engineering | [docs/multi-tenancy.md#architektur](docs/multi-tenancy.md#architektur) |
+| Organisations- & Projektmigrationen | Django Migrationen (`migrate_schemas`, `assign_default_org`) | Backend & Operatoren | [docs/multi-tenancy.md#lokales-setup-nach-pull](docs/multi-tenancy.md#lokales-setup-nach-pull) |
+| RAG-Dokumente & Embeddings | `pgvector`-Tabellen inkl. Hash- und Metadata-Feldern | AI Platform & Data Ops | [docs/rag/schema.sql](docs/rag/schema.sql) |
+| Langfuse Traces & Kostenmetriken | Langfuse Store (Trace-, Span-, Metric-Records) | Observability Team | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
+| Secrets & Konfigurationswerte | `.env`, GitHub Secrets, Secret Manager Versionen | Security & Platform | [docs/security/secrets.md#env-verträge](docs/security/secrets.md#env-verträge) |
 
-## Daten, Tenancy & RAG
-- Mandantenführung und Header-Governance folgen [docs/multi-tenancy.md](docs/multi-tenancy.md); CLI-Kommandos und Admin-Workflows stehen zusätzlich in [docs/tenant-management.md](docs/tenant-management.md).
-- RAG-Architektur, Ingestion-Parameter und Schema-Pflege sind in [docs/rag/overview.md](docs/rag/overview.md), [docs/rag/ingestion.md](docs/rag/ingestion.md) und [docs/rag/schema.sql](docs/rag/schema.sql) verbindlich dokumentiert.
-- Lösch- und Backfill-Strategien orientieren sich am RAG-Overview sowie den Migrationsempfehlungen im [Migrations-Runbook](docs/runbooks/migrations.md).
+## Schnittstellen & Contracts
+| Interface | Endpunkt/Topic | Kurzbeschreibung | Primärquelle |
+| --- | --- | --- | --- |
+| AI Core REST | `/ai/ping/`, `/ai/intake/`, `/ai/scope/`, `/ai/needs/`, `/ai/sysdesc/` | HTTP-Endpunkte mit Tenant-Headern, orchestriert durch LangGraph. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
+| Agenten Queue | Celery Queue `agents` | Startet LangGraph-Nodes, setzt Guardrails & Cancellation. | [docs/agents/overview.md#knoten-und-guardrails](docs/agents/overview.md#knoten-und-guardrails) |
+| Ingestion Queue | Celery Queue `ingestion` | Führt Loader→Chunk→Embedding→Upsert Schritte aus. | [docs/rag/ingestion.md#pipeline](docs/rag/ingestion.md#pipeline) |
+| Vector Schema Migration | Cloud SQL Verbindung via Pipeline-Stufe | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
+| LiteLLM Admin GUI | Cloud Run Service `litellm` (`/health`, GUI) | Verwaltung von Modellen, Rate-Limits und Master Keys. | [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md) |
+| Langfuse API | `LANGFUSE_HOST` (`/api/public`, `/api/ingest`) | Erfasst Traces, Metrics, Alerts und Sampling-Konfiguration. | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 
-## Agenten, AI Core & LiteLLM
-- Kontrollfluss, Node-Verantwortlichkeiten und Guardrails für LangGraph stehen in der [Agenten-Übersicht](docs/agents/overview.md). Setze `prompt_version`, PII-Maskierung und Cancellation wie beschrieben um.
-- API-Verträge, Graph-State und lokale Nutzung werden in der [README.md](README.md#ai-core) beschrieben; konsolidiere Änderungen dort.
-- LiteLLM Betrieb, Authentifizierung und Rate-Limits folgen [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md). Halte Secrets synchron mit den Quellen aus [docs/security/secrets.md](docs/security/secrets.md).
+## Laufzeit & Betrieb
+- Skalierungs- und Ressourcenregeln pro Dienst stehen in den [Operations Guidelines](docs/operations/scaling.md).
+- Deploy- und Traffic-Shift-Abläufe folgen der [CI/CD Pipeline](docs/cicd/pipeline.md) inklusive Approval-Stufen und Smoke-Checks.
+- Runbooks zu Migrationen und Incidents liegen unter [docs/runbooks/](docs/runbooks) und ergänzen diese Übersicht.
 
-## Betrieb, Observability & Skalierung
-- Skalierungsgrenzen, Queue-Aufteilung und Kosten-Guards sind in [docs/operations/scaling.md](docs/operations/scaling.md) festgelegt.
-- Langfuse-Integration, Sampling und Trace-Felder sind in [docs/observability/langfuse.md](docs/observability/langfuse.md) definiert. Verbinde Agenten-, Ingestion- und LiteLLM-Traces entsprechend.
-- Für Releases und Störungen gelten die Schritte aus den Runbooks zu [Migrationen](docs/runbooks/migrations.md) und [Incidents](docs/runbooks/incidents.md) sowie den QA-Checklisten [docs/qa/checklists.md](docs/qa/checklists.md).
+## Sicherheit
+- ENV-Verträge, Secret-Rotation und Log-Scopes werden im [Security Guide](docs/security/secrets.md) definiert.
+- LiteLLM Master-Key Verwaltung, Auth und Rate-Limits folgen [LiteLLM Admin GUI](docs/litellm/admin-gui.md).
+- PII-Redaction und Zugriffskontrolle für Traces werden in [Langfuse Guide](docs/observability/langfuse.md) erläutert.
 
-## Sicherheit & Secrets
-- ENV-Verträge, Rotationen und Log-Scopes werden ausschließlich über [docs/security/secrets.md](docs/security/secrets.md) gepflegt. Keine Secrets im Code oder in Container-Images.
-- LiteLLM-Key- und Auth-Regeln folgen den Abschnitten „Berechtigungen“ und „Rate-Limits“ im [LiteLLM Guide](docs/litellm/admin-gui.md).
-- PII-Redaction vor jedem LLM-Aufruf ist Pflicht (siehe [Agenten-Übersicht](docs/agents/overview.md) und Security-Leitfaden).
+## Qualität & KPIs
+- Überwachung der Fehlerraten, Kosten und Queue-Längen erfolgt über Langfuse-Dashboards laut [Observability Guide](docs/observability/langfuse.md).
+- Skalierungs- und Kostenlimits sind in [Operations](docs/operations/scaling.md) dokumentiert.
+- QA-Abbruchkriterien und Smoke-Checklisten liegen in [docs/qa/checklists.md](docs/qa/checklists.md).
 
-## Entwicklungs- & Reviewleitlinien
-- Python: `ruff` + `black` verpflichtend; halte Requirements via `pip-compile` aktuell (`requirements*.in` → `.txt`).
-- Frontend: Tailwind CSS v4/PostCSS laut [Frontend-Überblick](docs/frontend-ueberblick.md) und Detailregeln in [theme/AGENTS.md](theme/AGENTS.md) bzw. [theme/components/AGENTS.md](theme/components/AGENTS.md).
-- Tests orientieren sich an der in der README beschriebenen Testpyramide; nutze `pytest` mit Tenant-Support und `factory-boy` für Daten. E2E-Pfade folgen der Pipeline ([docs/cicd/pipeline.md](docs/cicd/pipeline.md)).
-- Vor jeder Änderung prüfe, ob betroffene Runbooks oder Leitfäden aktualisiert werden müssen, und verlinke die Primärquelle im PR.
+## Teststrategie
+- Pipeline-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD Pipeline](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
+- Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
 
-## Arbeitsroutine
-1. Relevante AGENTS- und Bereichsdokumente prüfen – Einstieg über [AGENTS.md → Primärdokumente & Rollen](#primärdokumente--rollen) sowie Detailleitfäden wie [Frontend-Überblick](docs/frontend-ueberblick.md) oder [docs/multi-tenancy.md](docs/multi-tenancy.md) je nach Scope.
-2. Linting-, Test- und Build-Kommandos ausführen: `npm run lint` ([README.md → Linting & Formatierung](README.md#linting--formatierung)), `pytest -q` ([README.md → Testing](README.md#testing)), `npm test` ([docs/frontend-ueberblick.md → Tests und Storybook](docs/frontend-ueberblick.md#tests-und-storybook)), `npm run build:css` ([README.md → Frontend-Build](README.md#frontend-build-tailwind-v4-via-postcss)).
-3. Betroffene Runbooks/Dokumentationen angleichen (z. B. [docs/runbooks/migrations.md](docs/runbooks/migrations.md), [docs/runbooks/incidents.md](docs/runbooks/incidents.md), [docs/qa/checklists.md](docs/qa/checklists.md)) und die aktualisierte Quelle im PR direkt verlinken.
+## Governance & Änderungen
+- Architektur-, Security-, RAG- oder Betriebsanpassungen werden zuerst in den jeweiligen Primärquellen unter `docs/` dokumentiert.
+- Runbooks besitzen ihre eigenen Changelogs (siehe [docs/runbooks/](docs/runbooks)); verweise in Pull Requests auf aktualisierte Quellen.
+- Bewahre Idempotenz: aktualisiere diese Datei nur bei neuen Links, Begriffsklärungen oder widersprüchlichen Aussagen.
 
-## CI/CD & Releases
-- Die GitHub Actions Pipeline, Gates und Workload Identity Rollen sind in [docs/cicd/pipeline.md](docs/cicd/pipeline.md) verbindlich geregelt.
-- Releases durchlaufen die dort beschriebenen Gates (Lint → Tests → Build → Deploy). Ohne bestandene QA-/Smoke-Schritte kein Prod-Traffic.
-- Migrationen und Vector-DLLs laufen ausschließlich über die dedizierten Pipeline-Stufen und Runbooks.
+## Navigationsverzeichnis
+1. [Architekturübersicht](docs/architektur/overview.md)
+2. [Multi-Tenancy Leitfaden](docs/multi-tenancy.md) & [Tenant-Management](docs/tenant-management.md)
+3. [RAG Overview](docs/rag/overview.md), [Ingestion](docs/rag/ingestion.md) & [Schema](docs/rag/schema.sql)
+4. [Agenten-Übersicht](docs/agents/overview.md)
+5. [LiteLLM Admin GUI](docs/litellm/admin-gui.md)
+6. [Observability Langfuse](docs/observability/langfuse.md)
+7. [Operations & Scaling](docs/operations/scaling.md)
+8. [Security & Secrets](docs/security/secrets.md)
+9. [CI/CD Pipeline](docs/cicd/pipeline.md)
+10. [Runbooks](docs/runbooks) & [QA Checklisten](docs/qa/checklists.md)
+11. [README Einstieg & Kommandos](README.md)
 
-## On-Call & Incident-Verhalten
-- Folge bei Störungen den Szenarien im [Incident-Runbook](docs/runbooks/incidents.md). Dokumentiere Maßnahmen und aktualisiere Checklisten nach Post-Mortems.
-- QA-Abbruchkriterien und Rollback-Regeln sind in [docs/qa/checklists.md](docs/qa/checklists.md) definiert; Traffic-Split-Anpassungen laufen gemäß [Pipeline](docs/cicd/pipeline.md).
-
-## Dokumentationspflicht
-- Änderungen an Architektur, Security, RAG, Agenten oder Betriebsprozessen werden zuerst in den jeweiligen `docs/`-Quellen aktualisiert.
-- Dieser Leitfaden bleibt idempotent: passe ihn nur an, um neue oder geänderte Primärquellen zu verlinken oder widersprüchliche Aussagen zu korrigieren.
