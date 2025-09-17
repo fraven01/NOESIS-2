@@ -25,4 +25,25 @@ Qualitätssicherung verhindert Überraschungen nach Deployments. Diese Checklist
 3. Entscheide anhand der Abbruchkriterien, ob Traffic erhöht, eingefroren oder zurückgerollt wird.
 4. Hinterlege alle Ergebnisse im Projekt-Wiki, damit Lessons Learned nachvollziehbar sind.
 
-## Wird nach Implementierung ergänzt
+## Ingestion Smoke (Pipeline Stufe 9)
+- Verifiziere, dass der Cloud Run Job für die Queue `ingestion` den letzten Mini-Batch erfolgreich verarbeitet hat (`Job completed successfully`).
+- Prüfe in Langfuse, dass der Trace `retrieval_results>0` liefert und keine Embedding-Rate-Limits auftreten (siehe [Incidents-Runbook](../runbooks/incidents.md)).
+- Stelle sicher, dass `ingestion`-Queues nach dem Lauf leer sind und keine Retries offen bleiben.
+- Dokumentiere den Batch (Tenant, Dokumentanzahl, Timestamp) im Release-Template.
+
+## Staging Smoke-Test (Pipeline Stufe 10)
+- Führe HTTP-Checks auf `/`, `/health/liveliness` und `/tenant-demo/` durch; alle Antworten müssen `200` liefern (vgl. [Migrations-Runbook](../runbooks/migrations.md)).
+- Überprüfe Cloud Logging auf neue Fehlerstapel seit dem Deploy und bestätige, dass die Error-Rate unter 5 % bleibt.
+- Kontrolliere Celery-Queues und Redis-Keys auf Stabilität; LiteLLM `/health` darf keine Fehlerzählung anzeigen.
+- Vergleiche Schema-Versionen der `django_migrations` Tabelle mit dem erwarteten Stand aus dem Release.
+
+## Prod Smoke & Traffic-Freigabe (Pipeline Stufen 14–15)
+- Wiederhole alle Staging-Smoke-Prüfungen in Prod unmittelbar nach dem Traffic-Split.
+- Beobachte Cloud Monitoring Metriken (Latenz, Fehler, Queue-Tiefe) engmaschig und vergleiche sie mit den letzten 24 Stunden.
+- Bei Auffälligkeiten: Stoppe Traffic-Erhöhungen und folge den Eskalationspfaden im [Incidents-Runbook](../runbooks/incidents.md).
+- Dokumentiere die Entscheidung über die Traffic-Erhöhung auf 100 % in den Release-Notizen.
+
+## Rollen & Dokumentation
+- **Release Manager** verantwortet die Durchführung der QA-Checks und die Freigabeentscheidungen laut [Pipeline](../cicd/pipeline.md).
+- **On-Call/Incident Commander** wird eingebunden, sobald ein Abbruchkriterium eintritt oder Eskalation gemäß Runbook nötig ist.
+- Alle Prüfergebnisse, Logs und Entscheidungen werden im Projekt-Wiki archiviert; Abweichungen fließen in die Aktualisierung der Runbooks ein.
