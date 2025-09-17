@@ -123,7 +123,12 @@ Benötigte Variablen (siehe `.env.example`):
 - DEBUG: `true`/`false`
 - DATABASE_URL: Verbindungs-URL zur PostgreSQL-Datenbank
 - REDIS_URL: Redis-Endpoint (z. B. für Celery)
-- RAG_ENABLED: `true`/`false` zur Aktivierung des Retrieval-Augmented-Generation-Workflows
+- RAG_ENABLED: `true`/`false` zur Aktivierung des Retrieval-Augmented-Generation-Workflows.
+  Aktiviere das Flag nur, wenn das `rag`-Schema inklusive `pgvector`-Extension (`CREATE EXTENSION IF NOT EXISTS vector;`)
+  anhand von [`docs/rag/schema.sql`](docs/rag/schema.sql) bereitsteht und über `DATABASE_URL` oder `RAG_DATABASE_URL`
+  erreichbar ist. Für den Datenbankzugriff wird `psycopg2` (oder das Binär-Pendant `psycopg2-binary`) benötigt.
+  Achtung: Mandanten-IDs müssen UUIDs sein. Ältere nicht-UUID-Werte werden deterministisch gemappt, sollten aber per Migration
+  bereinigt werden, bevor Deployments `RAG_ENABLED=true` setzen.
 
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys

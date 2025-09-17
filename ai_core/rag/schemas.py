@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -9,3 +9,4 @@ class Chunk:
     content: str
     meta: Dict[str, Any]
     """Metadata with keys: tenant, case, source, hash."""
+    embedding: Optional[List[float]] = None

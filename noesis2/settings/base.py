@@ -35,6 +35,9 @@ ALLOWED_HOSTS = env.list(
 # Testing flag (auto-detected for pytest)
 TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
+# Feature switches
+RAG_ENABLED = env.bool("RAG_ENABLED", default=False)
+
 
 # Application definition
 

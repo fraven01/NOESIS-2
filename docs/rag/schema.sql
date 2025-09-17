@@ -6,6 +6,8 @@ BEGIN;
 CREATE SCHEMA IF NOT EXISTS rag;
 SET search_path TO rag, public;
 
+CREATE EXTENSION IF NOT EXISTS vector;
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -40,20 +42,14 @@ CREATE INDEX IF NOT EXISTS chunks_metadata_gin_idx
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY,
     chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
-    embedding vector(EMBEDDINGS_DIM) NOT NULL
+    embedding vector(1536) NOT NULL
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS embeddings_chunk_idx
     ON embeddings (chunk_id);
 
--- Verwende IVFFLAT für große Datenmengen, HNSW für geringe Latenz. Beide Indizes sind optional; erst erzeugen, wenn genug Daten vorhanden sind.
-CREATE INDEX IF NOT EXISTS embeddings_embedding_ivfflat_idx
-    ON embeddings USING ivfflat (embedding vector_cosine_ops)
-    WITH (lists = 100);
-
-CREATE INDEX IF NOT EXISTS embeddings_embedding_hnsw_idx
-    ON embeddings USING hnsw (embedding vector_cosine_ops)
-    WITH (ef_construction = 64, ef_search = 64);
+CREATE INDEX IF NOT EXISTS embeddings_embedding_hnsw
+    ON embeddings USING hnsw (embedding vector_l2_ops);
 
 COMMIT;
 
