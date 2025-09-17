@@ -1,138 +1,70 @@
 # AGENTS Leitfaden
 
-Dieses Dokument beschreibt die Standards, Workflows und Erwartungen für Entwicklung und Beiträge an NOESIS 2.
+Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst die verbindlichen Leitplanken zusammen und verweist auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `README.md`.
 
-## Ziele
-- Einheitliche Arbeitsweise und reproduzierbare Builds
-- Hohe Code-Qualität (Linting, Tests, Coverage)
-- Klare Verantwortlichkeiten und transparente PRs
+## Zweck & Geltung
+- Alle Beiträge orientieren sich an den Architektur-, Betriebs- und Sicherheitszielen aus den NOESIS 2-Dokumenten.
+- Änderungen an Prozessen oder Richtlinien werden zuerst in den Primärdokumenten gepflegt und anschließend hier referenziert.
 
-## Projektstruktur (Kurzüberblick)
-- Backend-Apps: `core/`, `documents/`, `workflows/`, `ai_core/`, `users/`, `common/`, `theme/`
-- Settings: `noesis2/settings/base.py`, `development.py`, `production.py`
-- Frontend: `theme/static_src/input.css` → `theme/static/css/output.css`
-- Entry Points: `manage.py`, `noesis2/asgi.py`, `noesis2/wsgi.py`
+## Primärdokumente & Rollen
+- **Architektur, Infrastruktur & Cloud-Pfade** – [docs/architektur/overview.md](docs/architektur/overview.md), [docs/cloud/gcp-staging.md](docs/cloud/gcp-staging.md), [docs/cloud/gcp-prod.md](docs/cloud/gcp-prod.md), [docs/environments/matrix.md](docs/environments/matrix.md) · Verantwortlich: Platform Engineering & Cloud Ops.
+- **Container & Laufzeitkonventionen** – [docs/docker/conventions.md](docs/docker/conventions.md) · Verantwortlich: Platform Engineering.
+- **Multi-Tenancy & Tenant-Betrieb** – [docs/multi-tenancy.md](docs/multi-tenancy.md), [docs/tenant-management.md](docs/tenant-management.md) · Verantwortlich: Backend & Tenant Operations.
+- **RAG, Ingestion & Vector Store** – [docs/rag/overview.md](docs/rag/overview.md), [docs/rag/ingestion.md](docs/rag/ingestion.md), [docs/rag/schema.sql](docs/rag/schema.sql) · Verantwortlich: AI Platform & Data Ops.
+- **Agenten & Guardrails** – [docs/agents/overview.md](docs/agents/overview.md) · Verantwortlich: AI Platform.
+- **LiteLLM Betrieb** – [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md) · Verantwortlich: AI Platform Owner.
+- **Observability & Langfuse** – [docs/observability/langfuse.md](docs/observability/langfuse.md) · Verantwortlich: Observability Team.
+- **Skalierung & Betrieb** – [docs/operations/scaling.md](docs/operations/scaling.md) · Verantwortlich: Platform Engineering.
+- **Runbooks & QA** – [docs/runbooks/migrations.md](docs/runbooks/migrations.md), [docs/runbooks/incidents.md](docs/runbooks/incidents.md), [docs/qa/checklists.md](docs/qa/checklists.md) · Verantwortlich: On-Call & QA.
+- **Sicherheit & Secrets** – [docs/security/secrets.md](docs/security/secrets.md) · Verantwortlich: Security & Platform.
+- **CI/CD & Releases** – [docs/cicd/pipeline.md](docs/cicd/pipeline.md) · Verantwortlich: DevEx & Release Management.
+- **Frontend Guidelines** – [docs/frontend-ueberblick.md](docs/frontend-ueberblick.md), [theme/AGENTS.md](theme/AGENTS.md), [theme/components/AGENTS.md](theme/components/AGENTS.md), [docs/frontend-master-prompt.md](docs/frontend-master-prompt.md) · Verantwortlich: Frontend.
 
-## Coding-Standards
-- Python
-  - Linting: `ruff`
-  - Formatierung: `black`
-  - Vor jedem Commit: `npm run lint` (oder `npm run lint:fix`)
-  - Keine Secrets im Code/Repo; Konfiguration über `.env` via `django-environ`
-- Frontend
-  - Tailwind CSS v4 via PostCSS (`@tailwindcss/postcss` + `autoprefixer`)
-  - Keine Legacy Tailwind-CLI verwenden
+## Einstieg & Entwicklungsumgebungen
+- Quickstart, lokale Alternativen und Docker-Setup stehen in der [README.md](README.md). Nutze sie als Einstiegspunkt; Detailleitfäden sind in diesem Dokument verlinkt.
+- `.env` Werte, Installationsschritte und Mandanten-Demos folgen den Vorgaben in [docs/multi-tenancy.md](docs/multi-tenancy.md) und [docs/tenant-management.md](docs/tenant-management.md).
+- Für Umfeld-spezifische Konfigurationen (Dev/Staging/Prod) gilt die [Environment-Matrix](docs/environments/matrix.md).
 
-## Dependencies (pip-tools)
-- Produktion: `requirements.in` → `pip-compile` → `requirements.txt`
-- Entwicklung: `requirements-dev.in` → `pip-compile` → `requirements-dev.txt`
-- Installation: `pip install -r requirements*.txt`
-- .txt-Dateien nicht manuell bearbeiten; nur via `pip-compile` aktualisieren
+## Architektur & Infrastruktur
+- Halte Dich an die System- und Deploy-Pfade aus der [Architekturübersicht](docs/architektur/overview.md). Dort sind Komponenten, Queues und Netzpfade beschrieben.
+- Container-Builds und Startkommandos richten sich nach den [Docker-Konventionen](docs/docker/conventions.md); Änderungen am `Dockerfile` müssen die Multi-Stage- und Non-Root-Regeln respektieren.
+- Infrastruktur- und Bereitstellungsdetails unterscheiden sich je Stage. Beachte insbesondere die Leitfäden für [GCP Staging](docs/cloud/gcp-staging.md) und [GCP Prod](docs/cloud/gcp-prod.md).
 
-## Settings & Secrets
-- `.env.example` aktuell halten (alle notwendigen Variablen dokumentieren)
-- Lokale `.env` nicht committen
-- Standard-Profil: `noesis2.settings.development`; Production für Deployments nutzen
+## Daten, Tenancy & RAG
+- Mandantenführung und Header-Governance folgen [docs/multi-tenancy.md](docs/multi-tenancy.md); CLI-Kommandos und Admin-Workflows stehen zusätzlich in [docs/tenant-management.md](docs/tenant-management.md).
+- RAG-Architektur, Ingestion-Parameter und Schema-Pflege sind in [docs/rag/overview.md](docs/rag/overview.md), [docs/rag/ingestion.md](docs/rag/ingestion.md) und [docs/rag/schema.sql](docs/rag/schema.sql) verbindlich dokumentiert.
+- Lösch- und Backfill-Strategien orientieren sich am RAG-Overview sowie den Migrationsempfehlungen im [Migrations-Runbook](docs/runbooks/migrations.md).
 
-## Datenbank & Migrations
-- PostgreSQL als Standard-DB; Zugang über `.env` (DB_NAME/USER/PASSWORD/HOST/PORT)
-- Migrationen lokal generieren (`python manage.py makemigrations`) und anwenden (`migrate`)
-- Custom User-Modell: `users.User`; bei Referenzen Importzyklen vermeiden
+## Agenten, AI Core & LiteLLM
+- Kontrollfluss, Node-Verantwortlichkeiten und Guardrails für LangGraph stehen in der [Agenten-Übersicht](docs/agents/overview.md). Setze `prompt_version`, PII-Maskierung und Cancellation wie beschrieben um.
+- API-Verträge, Graph-State und lokale Nutzung werden in der [README.md](README.md#ai-core) beschrieben; konsolidiere Änderungen dort.
+- LiteLLM Betrieb, Authentifizierung und Rate-Limits folgen [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md). Halte Secrets synchron mit den Quellen aus [docs/security/secrets.md](docs/security/secrets.md).
 
-## Test-Philosophie & Strategie
+## Betrieb, Observability & Skalierung
+- Skalierungsgrenzen, Queue-Aufteilung und Kosten-Guards sind in [docs/operations/scaling.md](docs/operations/scaling.md) festgelegt.
+- Langfuse-Integration, Sampling und Trace-Felder sind in [docs/observability/langfuse.md](docs/observability/langfuse.md) definiert. Verbinde Agenten-, Ingestion- und LiteLLM-Traces entsprechend.
+- Für Releases und Störungen gelten die Schritte aus den Runbooks zu [Migrationen](docs/runbooks/migrations.md) und [Incidents](docs/runbooks/incidents.md) sowie den QA-Checklisten [docs/qa/checklists.md](docs/qa/checklists.md).
 
-Tests sind das Fundament für die Stabilität und Wartbarkeit von NOESIS 2. Jeder Beitrag muss von qualitativ hochwertigen Tests begleitet werden. Wir orientieren uns an der klassischen Testpyramide:
+## Sicherheit & Secrets
+- ENV-Verträge, Rotationen und Log-Scopes werden ausschließlich über [docs/security/secrets.md](docs/security/secrets.md) gepflegt. Keine Secrets im Code oder in Container-Images.
+- LiteLLM-Key- und Auth-Regeln folgen den Abschnitten „Berechtigungen“ und „Rate-Limits“ im [LiteLLM Guide](docs/litellm/admin-gui.md).
+- PII-Redaction vor jedem LLM-Aufruf ist Pflicht (siehe [Agenten-Übersicht](docs/agents/overview.md) und Security-Leitfaden).
 
-1.  **Unit-Tests (Die Basis):**
-    * **Fokus:** Testen die kleinste logische Einheit (eine Funktion, eine Methode) in kompletter Isolation.
-    * **Anforderung:** Abhängigkeiten wie Datenbanken, externe Dienste oder das Dateisystem **müssen** durch Mocks ersetzt werden. Diese Tests sind extrem schnell und bilden die Mehrheit unserer Testsuite.
-    * **Beispiel:** Eine Funktion, die Daten transformiert, ohne auf ein Django-Model zuzugreifen.
+## Entwicklungs- & Reviewleitlinien
+- Python: `ruff` + `black` verpflichtend; halte Requirements via `pip-compile` aktuell (`requirements*.in` → `.txt`).
+- Frontend: Tailwind CSS v4/PostCSS laut [Frontend-Überblick](docs/frontend-ueberblick.md) und Detailregeln in [theme/AGENTS.md](theme/AGENTS.md) bzw. [theme/components/AGENTS.md](theme/components/AGENTS.md).
+- Tests orientieren sich an der in der README beschriebenen Testpyramide; nutze `pytest` mit Tenant-Support und `factory-boy` für Daten. E2E-Pfade folgen der Pipeline ([docs/cicd/pipeline.md](docs/cicd/pipeline.md)).
+- Vor jeder Änderung prüfe, ob betroffene Runbooks oder Leitfäden aktualisiert werden müssen, und verlinke die Primärquelle im PR.
 
-2.  **Integrationstests (Die Mitte):**
-    * **Fokus:** Testen das Zusammenspiel mehrerer Komponenten. Dies ist der häufigste Testtyp in unserem Django-Projekt.
-    * **Anforderung:** Hier wird bewusst die Interaktion mit der Datenbank (`@pytest.mark.django_db`), dem Caching oder anderen internen Diensten geprüft.
-    * **Beispiel:** Ein API-Endpunkt wird aufgerufen und es wird verifiziert, dass die korrekten Daten in der Datenbank angelegt und als Antwort zurückgegeben werden.
+## CI/CD & Releases
+- Die GitHub Actions Pipeline, Gates und Workload Identity Rollen sind in [docs/cicd/pipeline.md](docs/cicd/pipeline.md) verbindlich geregelt.
+- Releases durchlaufen die dort beschriebenen Gates (Lint → Tests → Build → Deploy). Ohne bestandene QA-/Smoke-Schritte kein Prod-Traffic.
+- Migrationen und Vector-DLLs laufen ausschließlich über die dedizierten Pipeline-Stufen und Runbooks.
 
-3.  **End-to-End (E2E) Tests (Die Spitze):**
-    * **Fokus:** Simulieren einen vollständigen Benutzer-Workflow durch die Live-Anwendung (aus Browser-Sicht).
-    * **Anforderung:** Diese Tests sind wertvoll, aber aufwändig. Sie werden nur für kritische Hauptpfade der Anwendung erstellt und sind derzeit noch nicht implementiert.
+## On-Call & Incident-Verhalten
+- Folge bei Störungen den Szenarien im [Incident-Runbook](docs/runbooks/incidents.md). Dokumentiere Maßnahmen und aktualisiere Checklisten nach Post-Mortems.
+- QA-Abbruchkriterien und Rollback-Regeln sind in [docs/qa/checklists.md](docs/qa/checklists.md) definiert; Traffic-Split-Anpassungen laufen gemäß [Pipeline](docs/cicd/pipeline.md).
 
-**Generelle Anweisungen:**
-* **Testgetriebene Anweisungen:** Jeder Prompt zur Implementierung von Funktionalität enthält die explizite Anforderung, die notwendigen Unit- und/oder Integrationstests zu schreiben.
-* **Struktur:** Tests leben in einem `tests`-Verzeichnis innerhalb der jeweiligen App und sind nach ihrer Funktion aufgeteilt (z.B. `test_models.py`, `test_views.py`, `test_tasks.py`).
-* **Testdaten:** Für die Erstellung von Testdaten wird konsequent `factory-boy` verwendet. Für jedes Model existiert eine entsprechende Factory in einer `factories.py`-Datei.
-* **Ausführung:** `pytest -q`
-* **Coverage:** `pytest -q --cov=noesis2 --cov-report=term-missing`. Eine hohe Testabdeckung (Ziel > 80%) ist obligatorisch.
-
-### Tenancy-Testing Hinweise
-- Standardmäßig laufen Tests innerhalb des Tenant-Schemas `test` (Domain `testserver`).
-- Für requests kann optional der Header `X-Tenant-Schema` gesetzt werden, um explizit ein Schema zu wählen.
-- Für Tests mit eigenen Schemas: nach `TenantFactory(schema_name=...)` bei Bedarf `tenant.create_schema(check_if_exists=True)` aufrufen.
-
-## AI Core Richtlinien
-- **Graph-/Node-I/O:** Graphen erhalten `state: dict` und `meta: {tenant, case, trace_id}` und geben `(new_state, result)` zurück. Nodes arbeiten auf klar definierten Inputs und liefern serialisierbare Outputs ohne Seiteneffekte.
-- **PII vor LLM:** Nach der Text-Extraktion immer `pii.mask` anwenden, bevor ein LLM-Client aufgerufen wird.
-- **No-Info-Fallback:** Fehlende Informationen als `gaps` zurückgeben statt Inhalte zu halluzinieren.
-- **Tracing-Pflicht:** Alle LLM-Nodes mit `@trace` dekorieren und `prompt_version` weiterreichen, damit Ereignisse `{tenant, case, trace_id, prompt_version, node}` enthalten.
-
-## Frontend-Workflow
-- Entwicklung: `npm run dev` (Django + CSS-Watcher)
-- Einmal-Build: `npm run build:css`
-
-## CI-Empfehlungen
-- Lint (ruff/black --check)
-- Tests mit Coverage
-- `pip-compile` Drift-Check (verifizieren, dass `requirements*.txt` aktuell sind)
-
-## PR-Checkliste
-- [ ] Lint grün (`npm run lint`)
-- [ ] Tests grün (lokal/CI)
-- [ ] Migrationen erstellt und angewendet (falls Modelle geändert)
-- [ ] README/Docs aktualisiert
-- [ ] `.env.example` konsistent zu neuen/entfernten Settings
-
-### Datenmigrationen (PostgreSQL Best Practices)
-- Drei-Phasen-Pattern für neue, nicht-nullbare FKs bei Bestandsdaten:
-  1) `AddField(..., null=True, blank=True)`
-  2) `RunPython` zum Backfill bestehender Zeilen
-  3) `AlterField(..., null=False)`
-- Backwards sicher gestalten: Beziehungen zuerst lösen (FK auf `NULL` setzen), dann nur migrierte Daten löschen (z. B. per Slug-Prefix filtern).
-- Non-atomic in komplexen Fällen: `atomic = False` in der Migration setzen, um Postgres-Fehler wie „pending trigger events“ beim Zurückmigrieren zu vermeiden.
-- Historische Modelle nutzen: In `RunPython` stets `apps.get_model(...)` verwenden, keine direkten Model-Imports.
-- Effizient backfüllen: Nach Möglichkeit mit `update()`/Batching statt `save()` in Schleifen arbeiten.
-- Optional fortgeschritten: Bei Bedarf Constraints temporär deferieren (PostgreSQL), z. B. `schema_editor.execute('SET CONSTRAINTS ALL DEFERRED')` innerhalb der `RunPython`-Funktion.
-
-#### Beispiel: Drei‑Phasen‑Migration (nicht‑null Feld)
-
-```python
-from django.db import migrations, models
-from django.utils import timezone
-
-def forwards(apps, schema_editor):
-    Tenant = apps.get_model("customers", "Tenant")
-    today = timezone.now().date()
-    Tenant.objects.filter(created_on__isnull=True).update(created_on=today)
-
-def backwards(apps, schema_editor):
-    # Feld wird durch Schema-Operationen entfernt; kein Data-Rollback nötig.
-    pass
-
-class Migration(migrations.Migration):
-    dependencies = [("customers", "<letzte_migration>")]
-    operations = [
-        migrations.AddField(
-            model_name="tenant",
-            name="created_on",
-            field=models.DateField(auto_now_add=True, null=True),
-        ),
-        migrations.RunPython(forwards, backwards),
-        migrations.AlterField(
-            model_name="tenant",
-            name="created_on",
-            field=models.DateField(auto_now_add=True),
-        ),
-    ]
-```
-
-Hinweis: Bei `django-tenants` laufen Migrationen pro Schema. Felder in `TENANT_APPS` werden in jedem Tenant-Schema angelegt; Felder in `SHARED_APPS` nur im Public-Schema.
-
+## Dokumentationspflicht
+- Änderungen an Architektur, Security, RAG, Agenten oder Betriebsprozessen werden zuerst in den jeweiligen `docs/`-Quellen aktualisiert.
+- Dieser Leitfaden bleibt idempotent: passe ihn nur an, um neue oder geänderte Primärquellen zu verlinken oder widersprüchliche Aussagen zu korrigieren.
