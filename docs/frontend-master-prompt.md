@@ -11,7 +11,7 @@ Du bist Senior-Frontend-Engineer. Erzeuge produktionsreifen React/TypeScript-Cod
 - Keine neuen Farbwerte, keine Magic Numbers, keine willkürlichen Abstände. Verwende Spacing-Scale und Tokens.
 - Schreibe Storybook-Stories: Default, Loading, Empty, Error, Dark, RTL.
 - Schreibe Tests: React Testing Library + jest-axe. Prüfe Keyboard-Navigation und ARIA-Rollen.
-- Halte dich an Prettier + Tailwind-Plugin. Keine Abkürzungen.
+- Halte dich an Prettier + Tailwind-Plugin (`npm run format`, Config in `.prettierrc`). Keine Abkürzungen.
 
 ## Lieferung
 1) Komponente(n) im Ordner `theme/components/...` (z. B. `theme/components/forms/LoginForm.tsx`)
