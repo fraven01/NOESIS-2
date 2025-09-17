@@ -1,6 +1,6 @@
 import pytest
 from django.core.management import call_command, CommandError
-from django.db import connection
+from django.db import connection, OperationalError
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
@@ -81,3 +81,48 @@ def test_list_tenants_command(capsys):
     captured = capsys.readouterr()
     assert "alpha" in captured.out
     assert tenant.name in captured.out
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_missing_tables(monkeypatch):
+    tenant = TenantFactory(schema_name="missing")
+
+    recorded_calls = []
+
+    def fake_call_command(name, *args, **kwargs):
+        recorded_calls.append((name, args, kwargs))
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.call_command",
+        fake_call_command,
+    )
+
+    class DummyQuerySet:
+        def exists(self):
+            return False
+
+    class DummyManager:
+        def filter(self, *args, **kwargs):
+            return DummyQuerySet()
+
+        def create_superuser(self, *args, **kwargs):
+            raise OperationalError("relation does not exist")
+
+    class DummyUser:
+        objects = DummyManager()
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.get_user_model",
+        lambda: DummyUser,
+    )
+
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "create_tenant_superuser",
+            schema=tenant.schema_name,
+            username="admin",
+            password="secret",
+        )
+
+    assert "migrate" in str(excinfo.value).lower()
+    assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
