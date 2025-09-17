@@ -73,8 +73,8 @@ TENANT_APPS = [
 INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
 
 MIDDLEWARE = [
-    "django_tenants.middleware.main.TenantMainMiddleware",
     "django.middleware.security.SecurityMiddleware",
+    "django_tenants.middleware.main.TenantMainMiddleware",
     "common.middleware.HeaderTenantRoutingMiddleware",
     "common.middleware.TenantSchemaMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
