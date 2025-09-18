@@ -135,7 +135,7 @@ jobs:
         python-version: ["3.12"]
     services:
       postgres:
-        image: postgres:16
+        image: pgvector/pgvector:pg16
         env:
           POSTGRES_DB: noesis2_ci
           POSTGRES_USER: postgres
@@ -144,11 +144,16 @@ jobs:
           - 5432:5432
         options: >-
           --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
     env:
       SECRET_KEY: ci-secret
       DJANGO_SETTINGS_MODULE: noesis2.settings.development
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/noesis2_ci
       REDIS_URL: redis://localhost:6379/0
+      AI_CORE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
     steps:
       - name: Checkout
         uses: actions/checkout@v4
