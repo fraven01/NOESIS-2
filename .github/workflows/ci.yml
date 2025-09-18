@@ -530,7 +530,7 @@ jobs:
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --allow-unauthenticated
             --command=celery
-            --args=-A,noesis2,worker,-l,info
+            --args="-A,noesis2,worker,-l,info"
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
@@ -569,7 +569,7 @@ jobs:
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --allow-unauthenticated
             --command=celery
-            --args=-A,noesis2,beat,-l,info
+            --args="-A,noesis2,beat,-l,info"
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
@@ -617,7 +617,7 @@ jobs:
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --port=4000
             --command=litellm
-            --args=--host,0.0.0.0,--port,4000,--num_workers,1
+            --args="--host,0.0.0.0,--port,4000,--num_workers,1"
           env_vars: |
             LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
             LITELLM_SALT_KEY=${{ secrets.LITELLM_SALT_KEY }}
