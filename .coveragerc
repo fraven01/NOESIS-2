@@ -1,0 +1,16 @@
+[run]
+branch = True
+source = .
+
+[report]
+show_missing = True
+
+[paths]
+source =
+    .
+
+[omit]
+noesis2/asgi.py
+noesis2/wsgi.py
+noesis2/settings/production.py
+

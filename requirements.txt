@@ -12,6 +12,10 @@ billiard==4.2.1
     # via celery
 celery==5.5.3
     # via -r requirements.in
+certifi==2025.8.3
+    # via requests
+charset-normalizer==3.4.3
+    # via requests
 click==8.2.1
     # via
     #   celery
@@ -36,6 +40,8 @@ django-tenants==3.9.0
     # via -r requirements.in
 gunicorn==23.0.0
     # via -r requirements.in
+idna==3.10
+    # via requests
 kombu==5.5.4
     # via celery
 packaging==25.0
@@ -50,7 +56,11 @@ python-dateutil==2.9.0.post0
     # via celery
 python-json-logger==3.3.0
     # via -r requirements.in
+pyyaml==6.0.2
+    # via -r requirements.in
 redis==6.4.0
+    # via -r requirements.in
+requests==2.32.5
     # via -r requirements.in
 six==1.17.0
     # via python-dateutil
@@ -60,6 +70,8 @@ tzdata==2025.2
     # via
     #   django
     #   kombu
+urllib3==2.5.0
+    # via requests
 vine==5.1.0
     # via
     #   amqp

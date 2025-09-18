@@ -4,7 +4,6 @@ from typing import Iterator
 
 import psycopg2
 import pytest
-from contextlib import contextmanager
 from psycopg2 import OperationalError, errors
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
@@ -12,24 +11,10 @@ from ai_core.rag import vector_client as rag_vector_client
 
 os.environ.setdefault("RAG_EMBEDDING_DIM", "1536")
 
-
-@pytest.fixture(scope="session")
-def django_db_setup():  # pragma: no cover - compatibility shim
-    import django
-
-    django.setup()
-    yield
-
-
-class _DummyBlocker:
-    @contextmanager
-    def unblock(self):  # pragma: no cover - compatibility shim
-        yield
-
-
-@pytest.fixture(scope="session")
-def django_db_blocker():  # pragma: no cover - compatibility shim
-    return _DummyBlocker()
+pytest.importorskip(
+    "pytest_django",
+    reason="pytest-django is required for ai_core tests",
+)
 
 
 SCHEMA_SQL = (

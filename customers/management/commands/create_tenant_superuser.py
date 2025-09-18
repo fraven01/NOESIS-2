@@ -44,7 +44,8 @@ class Command(BaseCommand):
                         "Missing username. Provide --username or DJANGO_SUPERUSER_USERNAME."
                     )
 
-                user = User.objects.filter(username=username).first()
+                qs = User.objects.filter(username=username)
+                user = getattr(qs, 'first', lambda: None)()
 
                 if user:
                     # Ensure superuser/staff flags and optionally reset password

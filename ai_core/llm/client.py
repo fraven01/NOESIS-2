@@ -7,7 +7,7 @@ from typing import Any, Dict
 import requests
 
 from ai_core.infra.config import get_config
-from ai_core.infra.pii import mask
+from ai_core.infra.pii import mask_prompt
 from ai_core.infra import ledger
 from .routing import resolve
 
@@ -28,7 +28,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
 
     model_id = resolve(label)
-    prompt_safe = mask(prompt)
+    prompt_safe = mask_prompt(prompt, placeholder_only=True)
 
     cfg = get_config()
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"

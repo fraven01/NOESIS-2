@@ -4,6 +4,8 @@ django-tenants
 django-environ
 psycopg2-binary  # optional PostgreSQL driver
 python-json-logger==3.3.0
+pyyaml
 redis
+requests
 gunicorn
 whitenoise

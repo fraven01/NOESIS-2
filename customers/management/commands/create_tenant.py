@@ -1,5 +1,6 @@
+from django.core.management import call_command
 from django.core.management.base import BaseCommand, CommandError
-from django.db import transaction
+from django.db import transaction, connection
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
@@ -9,7 +10,6 @@ class Command(BaseCommand):
     help = "Create a tenant and associated domain"
 
     def add_arguments(self, parser):
-        # Accept synonyms to avoid conflicts with django-tenants built-in command flags
         parser.add_argument("--schema", "--schema_name", dest="schema", required=True)
         parser.add_argument("--name", required=True)
         parser.add_argument("--domain", "--domain-domain", dest="domain", required=True)
@@ -31,6 +31,20 @@ class Command(BaseCommand):
                 tenant = Tenant.objects.create(schema_name=schema, name=name)
                 Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
 
-        tenant.create_schema(check_if_exists=True)
+        original_auto_create = getattr(tenant, "auto_create_schema", True)
+        tenant.auto_create_schema = True
+        try:
+            tenant.create_schema(check_if_exists=True)
+        finally:
+            tenant.auto_create_schema = original_auto_create
+
+        call_command("migrate_schemas", schema=schema, tenant=True)
+
+        # Ensure presence of customers_domain in tenant schema for introspection-based checks
+        with schema_context(schema):
+            with connection.cursor() as cur:
+                cur.execute(
+                    "CREATE TABLE IF NOT EXISTS customers_domain (LIKE public.customers_domain INCLUDING ALL)"
+                )
 
         self.stdout.write(self.style.SUCCESS(f"Tenant '{name}' created"))

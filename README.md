@@ -112,6 +112,17 @@ Die folgenden Schritte sind ein manueller Fallback, falls Docker nicht genutzt w
 npm run dev
 ```
 
+
+## Lokales Testen
+
+Die Tests greifen auf die in `docker-compose.dev.yml` definierten Service-Hosts (u. a. `db`) zu. Ausserhalb der Compose-Umgebung fehlen diese Namensaufloesungen und Django bricht mit Verbindungsfehlern ab. Zudem enthaelt das `web`-Image nur Produktionsabhaengigkeiten, daher muessen vor dem Testlauf sowohl Basis- als auch Dev-Abhaengigkeiten installiert werden.
+
+```bash
+docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -r requirements.txt -r requirements-dev.txt && python -m pytest"
+```
+
+Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die Tests aus und entfernt den Container anschliessend wieder. Fuehre ihn bei jedem frischen Containerlauf erneut aus, da Installationen nicht persistent sind.
+
 ## Anwendung ausführen mit Docker
 
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
@@ -244,9 +255,11 @@ export RAG_DATABASE_URL=postgresql://user:pass@host:5432/rag
 - Der vollständige Rahmen für React/TypeScript-Komponenten ist im [Frontend Master Prompt](docs/frontend-master-prompt.md) beschrieben.
 
 ## Testing
-- Ausführen: `pytest -q`
-- Mit Coverage: `pytest -q --cov=noesis2 --cov-report=term-missing`
-- Pytest ist via `pytest.ini` auf `noesis2.settings.development` konfiguriert
+- Bevorzugt: in Docker ausführen, siehe Abschnitt "Lokales Testen".
+- Schnelllauf: `docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q"`
+- Mit Coverage: `docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q --cov=noesis2 --cov-report=term-missing"`
+- Kurzbefehle: `npm run test:py` bzw. `npm run test:py:cov`
+- Hinweis: Direktes `pytest` auf dem Host führt häufig zu DB-/Hostname-Fehlern (kein `db` im Compose-Netz). Nur nativ ausführen, wenn Postgres/Redis lokal verfügbar und korrekt konfiguriert sind.
 
 ## Linting & Formatierung
 - Prüfen: `npm run lint` (ruff + black --check)
@@ -258,5 +271,5 @@ export RAG_DATABASE_URL=postgresql://user:pass@host:5432/rag
 - Installation: `pip install -r requirements*.txt`
 
 ## Troubleshooting (Windows)
-- Falls `pytest`, `black`, `ruff` oder `pip-compile` nicht gefunden werden: `%APPDATA%\Python\Python313\Scripts` zum PATH hinzufügen.
+- Nur bei nativer Ausführung ohne Docker relevant: Falls `pytest`, `black`, `ruff` oder `pip-compile` nicht gefunden werden, `%APPDATA%\Python\Python313\Scripts` zum PATH hinzufügen.
 - `.env` sollte UTF‑8 ohne BOM sein (bei Parsen-Fehlern Datei neu speichern).
