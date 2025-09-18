@@ -26,9 +26,7 @@ class Command(BaseCommand):
 
     def handle(self, *args, **options):
         desired_domain = (
-            options.get("domain")
-            or os.getenv("STAGING_HOST")
-            or "demo.localhost"
+            options.get("domain") or os.getenv("STAGING_HOST") or "demo.localhost"
         )
         # Ensure tenant/domain from the public schema
         with schema_context(get_public_schema_name()):
