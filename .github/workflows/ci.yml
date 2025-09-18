@@ -259,9 +259,9 @@ jobs:
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python - <<'PY'
-from urllib.parse import quote
-import os
-print(quote(os.environ['DB_PASSWORD'], safe=''))
+            from urllib.parse import quote
+            import os
+            print(quote(os.environ['DB_PASSWORD'], safe=''))
 PY
           )
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -309,9 +309,9 @@ PY
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python - <<'PY'
-from urllib.parse import quote
-import os
-print(quote(os.environ['DB_PASSWORD'], safe=''))
+            from urllib.parse import quote
+            import os
+            print(quote(os.environ['DB_PASSWORD'], safe=''))
 PY
           )
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -369,9 +369,9 @@ PY
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python - <<'PY'
-from urllib.parse import quote
-import os
-print(quote(os.environ['DB_PASSWORD'], safe=''))
+            from urllib.parse import quote
+            import os
+            print(quote(os.environ['DB_PASSWORD'], safe=''))
 PY
           )
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -436,9 +436,9 @@ PY
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python - <<'PY'
-from urllib.parse import quote
-import os
-print(quote(os.environ['DB_PASSWORD'], safe=''))
+            from urllib.parse import quote
+            import os
+            print(quote(os.environ['DB_PASSWORD'], safe=''))
 PY
           )
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -528,9 +528,9 @@ PY
           DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python - <<'PY'
-from urllib.parse import quote
-import os
-print(quote(os.environ['DB_PASSWORD'], safe=''))
+            from urllib.parse import quote
+            import os
+            print(quote(os.environ['DB_PASSWORD'], safe=''))
 PY
           )
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
