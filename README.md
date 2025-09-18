@@ -4,6 +4,8 @@
 KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen Mitbestimmung nach § 87 Abs. 1 Nr. 6 BetrVG.
 
 > 📘 **Zentrale Leitplanken & Navigation:** [AGENTS.md](AGENTS.md) bündelt Rollen, Trigger und Links zu allen Primärquellen.
+>
+> 🚀 **Neu im Projekt?** Der [Onboarding-Leitfaden](docs/development/onboarding.md) führt Schritt für Schritt durch Setup, Skripte und weiterführende Dokumentation.
 
 ## Kernfunktionen (Geplant)
 - Flexible, workflow-basierte Analyse von Dokumenten (z. B. Systembeschreibungen, Betriebsvereinbarungen)
