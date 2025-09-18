@@ -8,6 +8,7 @@ on:
 
 jobs:
   verify-secrets:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     name: Verify Secrets
     runs-on: ubuntu-latest
     steps:

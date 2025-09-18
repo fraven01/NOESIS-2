@@ -1,16 +1,15 @@
 [run]
 branch = True
 source = .
+omit =
+    noesis2/asgi.py
+    noesis2/wsgi.py
+    noesis2/settings/production.py
 
 [report]
 show_missing = True
+skip_empty = True
 
 [paths]
 source =
     .
-
-[omit]
-noesis2/asgi.py
-noesis2/wsgi.py
-noesis2/settings/production.py
-
