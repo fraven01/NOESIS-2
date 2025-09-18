@@ -267,6 +267,53 @@ jobs:
             --command python \
             --args manage.py,migrate_schemas,--noinput
 
+  rag-migrate-staging:
+    name: RAG Schema Migration (staging)
+    runs-on: ubuntu-latest
+    needs: migrate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy RAG migrate job
+        env:
+          IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          gcloud run jobs deploy noesis2-rag-migrate \
+            --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --max-retries=0 \
+            --task-timeout=600s \
+            --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
+            --command python \
+            --args manage.py,apply_rag_schema
+
+      - name: Execute RAG migrate job
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          gcloud run jobs execute noesis2-rag-migrate \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --wait
+
   seed-staging:
     name: Seed Staging Data
     runs-on: ubuntu-latest
@@ -322,7 +369,7 @@ jobs:
   deploy-staging:
     name: Deploy to Cloud Run (staging)
     runs-on: ubuntu-latest
-    needs: migrate
+    needs: rag-migrate-staging
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     env:
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
@@ -352,3 +399,167 @@ jobs:
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             DATABASE_URL=${{ secrets.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
+
+  smoke-staging:
+    name: Smoke Test (staging)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Resolve service URL
+        id: svc
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          URL=$(gcloud run services describe noesis-2-staging \
+            --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
+            --format='value(status.url)')
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+
+      - name: Ping /ai/ping/
+        env:
+          URL: ${{ steps.svc.outputs.url }}
+        run: |
+          echo "Pinging: ${URL}/ai/ping/"
+          curl -fsSI -H 'X-Tenant-Schema: demo' -H 'X-Tenant-ID: demo-tenant' -H 'X-Case-ID: smoke' "$URL/ai/ping/" | head -n 1
+
+      - name: POST /ai/scope
+        env:
+          URL: ${{ steps.svc.outputs.url }}
+        run: |
+          curl -fsS -X POST \
+            -H 'Content-Type: application/json' \
+            -H 'X-Tenant-Schema: demo' -H 'X-Tenant-ID: demo-tenant' -H 'X-Case-ID: smoke' \
+            --data '{"hello":"world"}' \
+            "$URL/ai/scope/" | head -c 200; echo
+
+  deploy-worker-staging:
+    name: Deploy Worker (staging)
+    runs-on: ubuntu-latest
+    needs: rag-migrate-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy Worker service (staging)
+        uses: google-github-actions/deploy-cloudrun@v2.1.0
+        with:
+          service: noesis-2-worker-staging
+          image: ${{ env.IMAGE }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          region: ${{ secrets.GCP_REGION }}
+          flags: >-
+            --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+            --allow-unauthenticated
+            --command=celery
+            --args=-A,noesis2,worker,-l,info
+          env_vars: |
+            DJANGO_SETTINGS_MODULE=noesis2.settings.production
+            GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+            CLOUD_SQL_CONNECTION_NAME=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            REDIS_URL=${{ secrets.REDIS_URL }}
+          metadata: |
+            annotations.run.googleapis.com/cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          revision_suffix: worker
+
+  deploy-beat-staging:
+    name: Deploy Beat (staging)
+    runs-on: ubuntu-latest
+    needs: rag-migrate-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy Beat service (staging)
+        uses: google-github-actions/deploy-cloudrun@v2.1.0
+        with:
+          service: noesis-2-beat-staging
+          image: ${{ env.IMAGE }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          region: ${{ secrets.GCP_REGION }}
+          flags: >-
+            --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+            --allow-unauthenticated
+            --command=celery
+            --args=-A,noesis2,beat,-l,info
+          env_vars: |
+            DJANGO_SETTINGS_MODULE=noesis2.settings.production
+            GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
+            CLOUD_SQL_CONNECTION_NAME=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+            SECRET_KEY=${{ secrets.SECRET_KEY }}
+            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            REDIS_URL=${{ secrets.REDIS_URL }}
+          metadata: |
+            annotations.run.googleapis.com/cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          revision_suffix: beat
+
+  deploy-litellm-staging:
+    name: Deploy LiteLLM (staging)
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy LiteLLM service (staging)
+        uses: google-github-actions/deploy-cloudrun@v2.1.0
+        with:
+          service: litellm-staging
+          image: ghcr.io/berriai/litellm:main-stable
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+          region: ${{ secrets.GCP_REGION }}
+          flags: >-
+            --allow-unauthenticated
+            --port=4000
+            --command=litellm
+            --args=--host,0.0.0.0,--port,4000,--num_workers,1
+          env_vars: |
+            LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
+            LITELLM_SALT_KEY=${{ secrets.LITELLM_SALT_KEY }}
+            DATABASE_URL=${{ secrets.LITELLM_DATABASE_URL }}
+            UI_USERNAME=${{ secrets.LITELLM_UI_USERNAME }}
+            UI_PASSWORD=${{ secrets.LITELLM_UI_PASSWORD }}
+            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
+            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+          

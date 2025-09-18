@@ -69,8 +69,11 @@ try {
   if (Test-Path '.env') {
     $envContent = Get-Content '.env' -Raw
     if ($envContent -match '(?m)^RAG_ENABLED\s*=\s*true\s*$') {
+      Write-Host "[dev-check] RAG migrate"
+      iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag"
       Write-Host "[dev-check] RAG health"
-      iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm rag-health"
+      # Disable TTY to avoid interactive psql sessions on Windows
+      iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-health"
     }
   }
 } catch { Write-Warning "RAG health failed: $_" }

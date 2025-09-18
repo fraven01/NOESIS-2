@@ -132,13 +132,15 @@ services:
   rag-health:
     image: postgres:16-alpine
     container_name: noesis2_rag_health
-    command: >-
-      sh -c "PGPASSWORD=${DB_PASSWORD:-noesis2} \
-      psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 \
-        -c \"SELECT 1 FROM pg_extension WHERE extname='vector';\" \
-        -c \"SELECT 1 FROM rag.documents LIMIT 0;\" \
-        -c \"SELECT 1 FROM rag.chunks LIMIT 0;\" \
-        -c \"SELECT 1 FROM rag.embeddings LIMIT 0;\""
+    command:
+      - sh
+      - -lc
+      - |
+        PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 \
+          -c "SELECT 1 FROM pg_extension WHERE extname='vector';" \
+          -c "SELECT 1 FROM rag.documents LIMIT 0;" \
+          -c "SELECT 1 FROM rag.chunks LIMIT 0;" \
+          -c "SELECT 1 FROM rag.embeddings LIMIT 0;"
     depends_on:
       db:
         condition: service_healthy

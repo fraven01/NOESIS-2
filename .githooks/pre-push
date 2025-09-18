@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Local safety net: run linters before pushing.
+# Skip in CI or when explicitly disabled.
+if [ "${CI:-}" != "" ] || [ "${SKIP_LINT:-}" = "1" ]; then
+  exit 0
+fi
+
+echo "[pre-push] Running linters (ruff + black) via npm run lint"
+if npm run lint; then
+  echo "[pre-push] Linters passed"
+  exit 0
+else
+  echo "[pre-push] Linters failed. Fix issues or set SKIP_LINT=1 to bypass (not recommended)." >&2
+  exit 1
+fi
+
