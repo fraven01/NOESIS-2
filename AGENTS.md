@@ -54,6 +54,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - Skalierungs- und Ressourcenregeln pro Dienst stehen in den [Operations Guidelines](docs/operations/scaling.md).
 - Deploy- und Traffic-Shift-Abläufe folgen der [CI/CD Pipeline](docs/cicd/pipeline.md) inklusive Approval-Stufen und Smoke-Checks.
 - Runbooks zu Migrationen und Incidents liegen unter [docs/runbooks/](docs/runbooks) und ergänzen diese Übersicht.
+- Migrations-Runbook (Django/Tenants): [docs/runbooks/migrations.md](docs/runbooks/migrations.md)
 
 ## Sicherheit
 - ENV-Verträge, Secret-Rotation und Log-Scopes werden im [Security Guide](docs/security/secrets.md) definiert.

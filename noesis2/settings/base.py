@@ -68,8 +68,9 @@ TENANT_APPS = [
 ]
 
 # Final installed apps: ``django_tenants`` plus shared and tenant apps
-# Ensure our apps (e.g., customers) are loaded before django_tenants so our
-# management commands like `create_tenant` take precedence in tests.
+# Note: Django resolves management command overrides in reverse INSTALLED_APPS order.
+# Keeping ``django_tenants`` first and our apps (e.g., ``customers``) after it
+# ensures our commands (like ``create_tenant``) override built-ins where present.
 INSTALLED_APPS = ["django_tenants", *SHARED_APPS, *TENANT_APPS]
 
 MIDDLEWARE = [
