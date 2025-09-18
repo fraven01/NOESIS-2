@@ -1,3 +1,5 @@
+import os
+
 from django.core.management.base import BaseCommand
 from django.core.files.base import ContentFile
 from django_tenants.utils import schema_context, get_public_schema_name
@@ -16,15 +18,38 @@ class Command(BaseCommand):
 
     help = "Ensure demo tenant, user and sample data exist"
 
+    def add_arguments(self, parser):
+        parser.add_argument(
+            "--domain",
+            help="Hostname to bind to the demo tenant (e.g. noesis-2-staging-...run.app)",
+        )
+
     def handle(self, *args, **options):
+        desired_domain = (
+            options.get("domain")
+            or os.getenv("STAGING_HOST")
+            or "demo.localhost"
+        )
         # Ensure tenant/domain from the public schema
         with schema_context(get_public_schema_name()):
             tenant, _ = Tenant.objects.get_or_create(
                 schema_name="demo", defaults={"name": "Demo Tenant"}
             )
-            Domain.objects.get_or_create(
-                domain="demo.localhost", tenant=tenant, is_primary=True
+            # Domain is globally unique (DomainMixin). Use domain-only lookup and
+            # then ensure tenant/is_primary to avoid duplicate-key races across runs.
+            domain_obj, created = Domain.objects.get_or_create(
+                domain=desired_domain, defaults={"tenant": tenant, "is_primary": True}
             )
+            if not created:
+                changed = False
+                if domain_obj.tenant_id != tenant.id:
+                    domain_obj.tenant = tenant
+                    changed = True
+                if not domain_obj.is_primary:
+                    domain_obj.is_primary = True
+                    changed = True
+                if changed:
+                    domain_obj.save(update_fields=["tenant", "is_primary"])
         # Ensure tenant schema exists for data seeding
         tenant.create_schema(check_if_exists=True)
 
