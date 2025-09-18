@@ -529,8 +529,8 @@ jobs:
           flags: >-
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --allow-unauthenticated
-            --command=celery
-            --args="-A,noesis2,worker,-l,info"
+            --command=bash
+            --args="-lc,python -m noesis2.healthsrv & exec celery -A noesis2 worker -l info"
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
@@ -568,8 +568,8 @@ jobs:
           flags: >-
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --allow-unauthenticated
-            --command=celery
-            --args="-A,noesis2,beat,-l,info"
+            --command=bash
+            --args="-lc,python -m noesis2.healthsrv & exec celery -A noesis2 beat -l info"
           env_vars: |
             DJANGO_SETTINGS_MODULE=noesis2.settings.production
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
