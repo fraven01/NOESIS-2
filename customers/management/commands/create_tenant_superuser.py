@@ -45,7 +45,7 @@ class Command(BaseCommand):
                     )
 
                 qs = User.objects.filter(username=username)
-                user = getattr(qs, 'first', lambda: None)()
+                user = getattr(qs, "first", lambda: None)()
 
                 if user:
                     # Ensure superuser/staff flags and optionally reset password

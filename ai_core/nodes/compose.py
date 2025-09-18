@@ -24,9 +24,7 @@ def _run(
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     snippets_text = "\n".join(s.get("text", "") for s in state.get("snippets", []))
     question = state.get("question", "")
-    full_prompt = (
-        f"{prompt['text']}\n\nQuestion: {question}\nContext:\n{snippets_text}"
-    )
+    full_prompt = f"{prompt['text']}\n\nQuestion: {question}\nContext:\n{snippets_text}"
     masked = mask_prompt(full_prompt)
     result = client.call("synthesize", masked, meta)
     new_state = dict(state)
