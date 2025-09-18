@@ -55,8 +55,9 @@ Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/
    ```
 3. Datenbank und Redis bereitstellen, `.env` anpassen und Migrationen ausführen:
    ```bash
-   python manage.py migrate
-   python manage.py createsuperuser
+   python manage.py migrate_schemas --noinput
+   python manage.py bootstrap_public_tenant --domain localhost
+   python manage.py create_demo_data    # legt Demo-Tenant & Superuser an
    ```
 4. Entwicklungsserver starten (Django + Tailwind Watcher):
    ```bash
