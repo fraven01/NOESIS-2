@@ -83,7 +83,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 5. [LiteLLM Admin GUI](docs/litellm/admin-gui.md)
 6. [Observability Langfuse](docs/observability/langfuse.md)
 7. [Operations & Scaling](docs/operations/scaling.md)
-8. [Security & Secrets](docs/security/secrets.md)
+8. [Security & Secrets](docs/security/secrets.md) 
 9. [CI/CD Pipeline](docs/cicd/pipeline.md)
 10. [Runbooks](docs/runbooks) & [QA Checklisten](docs/qa/checklists.md)
 11. [README Einstieg & Kommandos](README.md)
