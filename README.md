@@ -156,7 +156,7 @@ Hinweis (Windows): PowerShell‑Varianten sind enthalten:
 - `npm run win:jobs:rag:health`
 
 ### Git Hooks (Lint vor Push)
-- Installieren:
+- Installieren: 
   - macOS/Linux: `npm run hooks:install`
   - Windows: `npm run win:hooks:install`
 - Wirkung: Vor jedem `git push` läuft automatisch `npm run lint` (ruff + black). Zum Überspringen einmalig `SKIP_LINT=1 git push` setzen.
