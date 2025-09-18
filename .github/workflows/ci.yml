@@ -56,8 +56,10 @@ jobs:
       - name: Verify database secrets (length check only)
         shell: bash
         run: |
-          echo "Verifying DATABASE_URL..."
-          [ -n "${{ secrets.DATABASE_URL }}" ] || { echo "::error::DATABASE_URL is NOT set!"; exit 1; }
+          echo "Verifying DB_USER/DB_PASSWORD/DB_NAME..."
+          [ -n "${{ secrets.DB_USER }}" ] || { echo "::error::DB_USER is NOT set!"; exit 1; }
+          [ -n "${{ secrets.DB_PASSWORD }}" ] || { echo "::error::DB_PASSWORD is NOT set!"; exit 1; }
+          [ -n "${{ secrets.DB_NAME }}" ] || { echo "::error::DB_NAME is NOT set!"; exit 1; }
           echo "Verifying REDIS_URL..."
           [ -n "${{ secrets.REDIS_URL }}" ] || { echo "::error::REDIS_URL is NOT set!"; exit 1; }
           echo "Core infrastructure secrets verified."
@@ -249,6 +251,20 @@ jobs:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Build DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          enc_pwd=$(python - <<'PY'
+from urllib.parse import quote
+import os
+print(quote(os.environ['DB_PASSWORD'], safe=''))
+PY
+          )
+          echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
@@ -266,7 +282,6 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
         run: |
           gcloud run jobs deploy noesis2-migrate \
@@ -286,6 +301,20 @@ jobs:
     needs: migrate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Build DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          enc_pwd=$(python - <<'PY'
+from urllib.parse import quote
+import os
+print(quote(os.environ['DB_PASSWORD'], safe=''))
+PY
+          )
+          echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
@@ -303,7 +332,6 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
         run: |
           gcloud run jobs deploy noesis2-rag-migrate \
@@ -333,6 +361,20 @@ jobs:
     needs: migrate
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
+      - name: Build DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          enc_pwd=$(python - <<'PY'
+from urllib.parse import quote
+import os
+print(quote(os.environ['DB_PASSWORD'], safe=''))
+PY
+          )
+          echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -353,7 +395,6 @@ jobs:
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
           STAGING_HOST: ${{ secrets.STAGING_HOST }}
         run: |
@@ -387,6 +428,20 @@ jobs:
     env:
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
+      - name: Build DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          enc_pwd=$(python - <<'PY'
+from urllib.parse import quote
+import os
+print(quote(os.environ['DB_PASSWORD'], safe=''))
+PY
+          )
+          echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
@@ -410,7 +465,7 @@ jobs:
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
             CLOUD_SQL_CONNECTION_NAME=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            DATABASE_URL=${{ env.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
 
   smoke-staging:
@@ -465,6 +520,20 @@ jobs:
     env:
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
+      - name: Build DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          enc_pwd=$(python - <<'PY'
+from urllib.parse import quote
+import os
+print(quote(os.environ['DB_PASSWORD'], safe=''))
+PY
+          )
+          echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
@@ -492,7 +561,7 @@ jobs:
             GOOGLE_CLOUD_PROJECT=${{ secrets.GCP_PROJECT_ID }}
             CLOUD_SQL_CONNECTION_NAME=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             SECRET_KEY=${{ secrets.SECRET_KEY }}
-            DATABASE_URL=${{ secrets.DATABASE_URL }}
+            DATABASE_URL=${{ env.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
           metadata: |
             annotations.run.googleapis.com/cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
