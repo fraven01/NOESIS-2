@@ -101,7 +101,9 @@ def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
     for ch in data:
         vector = ch.get("embedding")
         embedding = [float(v) for v in vector] if vector is not None else None
-        chunk_objs.append(Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding))
+        chunk_objs.append(
+            Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding)
+        )
 
     client = VECTOR_CLIENT_FACTORY()
     written = client.upsert_chunks(chunk_objs)

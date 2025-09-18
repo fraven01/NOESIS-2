@@ -16,7 +16,11 @@ class TestPgVectorClient:
 
     def test_missing_tenant_raises(self):
         client = vector_client.get_default_client()
-        chunk = Chunk(content="text", meta={"hash": "h"}, embedding=[0.0] * vector_client.EMBEDDING_DIM)
+        chunk = Chunk(
+            content="text",
+            meta={"hash": "h"},
+            embedding=[0.0] * vector_client.EMBEDDING_DIM,
+        )
         with pytest.raises(ValueError):
             client.upsert_chunks([chunk])
 

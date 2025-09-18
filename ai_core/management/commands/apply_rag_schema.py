@@ -1,4 +1,3 @@
-import os
 from pathlib import Path
 
 from django.conf import settings
@@ -12,9 +11,7 @@ class Command(BaseCommand):
     def add_arguments(self, parser):
         parser.add_argument(
             "--path",
-            default=str(
-                Path(settings.BASE_DIR) / "docs" / "rag" / "schema.sql"
-            ),
+            default=str(Path(settings.BASE_DIR) / "docs" / "rag" / "schema.sql"),
             help="Path to schema.sql (default: docs/rag/schema.sql)",
         )
 
@@ -25,7 +22,9 @@ class Command(BaseCommand):
 
         sql = sql_path.read_text(encoding="utf-8")
         if not sql.strip():
-            self.stdout.write(self.style.WARNING("Schema file is empty; nothing to do."))
+            self.stdout.write(
+                self.style.WARNING("Schema file is empty; nothing to do.")
+            )
             return
 
         # Execute as a single script; schema.sql is idempotent
@@ -37,4 +36,3 @@ class Command(BaseCommand):
             raise CommandError(f"Failed to apply RAG schema: {exc}") from exc
 
         self.stdout.write(self.style.SUCCESS(f"Applied RAG schema from {sql_path}"))
-

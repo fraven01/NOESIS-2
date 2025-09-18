@@ -31,7 +31,10 @@ class _DummyBlocker:
 def django_db_blocker():  # pragma: no cover - compatibility shim
     return _DummyBlocker()
 
-SCHEMA_SQL = (Path(__file__).resolve().parents[2] / "docs" / "rag" / "schema.sql").read_text()
+
+SCHEMA_SQL = (
+    Path(__file__).resolve().parents[2] / "docs" / "rag" / "schema.sql"
+).read_text()
 
 
 @pytest.fixture(scope="session")

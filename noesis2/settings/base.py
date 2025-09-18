@@ -114,9 +114,7 @@ DATABASES["default"]["ENGINE"] = "django_tenants.postgresql_backend"
 
 # Special configuration for Google Cloud Run: use Cloud SQL Unix socket
 if os.getenv("GOOGLE_CLOUD_PROJECT"):
-    DATABASES["default"][
-        "HOST"
-    ] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
+    DATABASES["default"]["HOST"] = f"/cloudsql/{os.getenv('CLOUD_SQL_CONNECTION_NAME')}"
 
 # Tenant settings
 PUBLIC_SCHEMA_NAME = "public"

@@ -18,13 +18,15 @@ class Command(BaseCommand):
         parser.add_argument("--email", help="Email")
         parser.add_argument("--password", help="Password")
         # Accept but ignore --noinput to be compatible with CI calls
-        parser.add_argument("--noinput", action="store_true", help="No interactive prompts")
+        parser.add_argument(
+            "--noinput", action="store_true", help="No interactive prompts"
+        )
 
     def handle(self, *args, **options):
         schema = options["schema"]
         # Prefer CLI args; fall back to standard Django env vars used in CI
         username = options.get("username") or os.getenv("DJANGO_SUPERUSER_USERNAME")
-        email = (options.get("email") or os.getenv("DJANGO_SUPERUSER_EMAIL") or "")
+        email = options.get("email") or os.getenv("DJANGO_SUPERUSER_EMAIL") or ""
         password = options.get("password") or os.getenv("DJANGO_SUPERUSER_PASSWORD")
 
         if not Tenant.objects.filter(schema_name=schema).exists():

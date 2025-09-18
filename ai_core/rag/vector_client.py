@@ -79,7 +79,9 @@ class PgVectorClient:
     def _prepare_connection(self, conn) -> None:  # type: ignore[no-untyped-def]
         with conn.cursor() as cur:
             cur.execute(
-                sql.SQL("SET search_path TO {}, public").format(sql.Identifier(self._schema))
+                sql.SQL("SET search_path TO {}, public").format(
+                    sql.Identifier(self._schema)
+                )
             )
         if self._indexes_ready:
             return
@@ -97,7 +99,9 @@ class PgVectorClient:
             conn.commit()
             with conn.cursor() as cur:
                 cur.execute(
-                    sql.SQL("SET search_path TO {}, public").format(sql.Identifier(self._schema))
+                    sql.SQL("SET search_path TO {}, public").format(
+                        sql.Identifier(self._schema)
+                    )
                 )
             self._indexes_ready = True
 
@@ -179,7 +183,9 @@ class PgVectorClient:
         )
         return results
 
-    def _group_by_document(self, chunks: Sequence[Chunk]) -> Dict[Tuple[str, str], Dict[str, object]]:
+    def _group_by_document(
+        self, chunks: Sequence[Chunk]
+    ) -> Dict[Tuple[str, str], Dict[str, object]]:
         grouped: Dict[Tuple[str, str], Dict[str, object]] = {}
         for chunk in chunks:
             tenant_value = chunk.meta.get("tenant")
@@ -207,7 +213,9 @@ class PgVectorClient:
                 }
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant"] = tenant
-            grouped[key]["chunks"].append(Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding))
+            grouped[key]["chunks"].append(
+                Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)
+            )
         return grouped
 
     def _ensure_documents(self, cur, grouped: Dict[Tuple[str, str], Dict[str, object]]) -> Dict[Tuple[str, str], uuid.UUID]:  # type: ignore[no-untyped-def]
@@ -264,7 +272,14 @@ class PgVectorClient:
                     INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
                     VALUES (%s, %s, %s, %s, %s, %s)
                     """,
-                    (chunk_id, document_id, index, chunk.content, tokens, Json(chunk.meta)),
+                    (
+                        chunk_id,
+                        document_id,
+                        index,
+                        chunk.content,
+                        tokens,
+                        Json(chunk.meta),
+                    ),
                 )
                 if chunk.embedding is not None:
                     vector_value = self._format_vector(chunk.embedding)
