@@ -652,7 +652,7 @@ jobs:
             --allow-unauthenticated \
             --add-cloudsql-instances "${CLOUD_SQL_CONNECTION_NAME}" \
             --cpu 1 \
-            --memory 1Gi \
+            --memory 2Gi \
             --cpu-boost \
             --port 4000 \
             --env-vars-file env.litellm.json \
