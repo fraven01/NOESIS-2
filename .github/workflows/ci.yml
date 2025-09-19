@@ -661,8 +661,8 @@ jobs:
             --min-instances 1 \
             --port 4000 \
             --env-vars-file env.litellm.json \
-            --command sleep \
-            --args="3600"
+            --command python \
+            --args="-m,http.server,4000"
           
   deploy-gke-workers:
     name: Deploy Workers to GKE
