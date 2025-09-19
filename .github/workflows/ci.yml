@@ -652,7 +652,7 @@ jobs:
             --add-cloudsql-instances "${CLOUD_SQL_CONNECTION_NAME}" \
             --port 4000 \
             --command litellm \
-            --args "--host,0.0.0.0,--port,4000,--num_workers,1" \
+            --args=--host,0.0.0.0,--port,4000,--num_workers,1 \
             --update-env-vars "${ENV_VARS}"
           
   deploy-gke-workers:
