@@ -33,7 +33,7 @@ Secrets anlegen
 - Passe `k8s/secret-example.yaml` auf eure Werte an und lege das Secret an:
   kubectl apply -f k8s/secret-example.yaml
 - Datenbankname in den Deployments (Value von `DATABASE_URL`) auf eure DB setzen (z. B. `noesis2`).
-
+ 
 Deployments anwenden
 - Ersetze Platzhalter und apply:
   export IMAGE="REGION-docker.pkg.dev/YOUR_PROJECT/REPO/noesis2-web:SHA"
