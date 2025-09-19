@@ -27,14 +27,9 @@ spec:
             - name: SECRET_KEY
               valueFrom:
                 secretKeyRef: { name: app-secrets, key: SECRET_KEY }
-            - name: DB_USER
-              valueFrom:
-                secretKeyRef: { name: app-secrets, key: DB_USER }
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: app-secrets, key: DB_PASSWORD }
             - name: DATABASE_URL
-              value: postgresql://$(DB_USER):$(DB_PASSWORD)@127.0.0.1:5432/DB_NAME
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: DATABASE_URL }
             - name: REDIS_URL
               valueFrom:
                 secretKeyRef: { name: app-secrets, key: REDIS_URL }
