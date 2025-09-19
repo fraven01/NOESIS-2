@@ -655,7 +655,12 @@ jobs:
             --cpu-boost \
             --port 4000 \
             --command litellm \
-            --args=--host,0.0.0.0,--port,4000,--num_workers,1 \
+            --args="--host" \
+            --args="0.0.0.0" \
+            --args="--port" \
+            --args="4000" \
+            --args="--num_workers" \
+            --args="1" \
             --update-env-vars "${ENV_VARS}"
           
   deploy-gke-workers:
