@@ -48,8 +48,13 @@ spec:
           readinessProbe:
             exec:
               command: ["sh", "-lc", "pgrep -f 'celery.*beat' >/dev/null"]
-            initialDelaySeconds: 20
-            periodSeconds: 20
+            initialDelaySeconds: 60
+            periodSeconds: 15
+          startupProbe:
+            exec:
+              command: ["sh", "-lc", "pgrep -f 'celery.*beat' >/dev/null"]
+            failureThreshold: 30
+            periodSeconds: 5
           livenessProbe:
             exec:
               command: ["sh", "-lc", "pgrep -f 'celery.*beat' >/dev/null"]
@@ -68,4 +73,3 @@ spec:
           securityContext:
             runAsNonRoot: true
             runAsUser: 65532
-

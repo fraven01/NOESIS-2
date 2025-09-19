@@ -690,7 +690,26 @@ jobs:
               k8s/beat-deployment.yaml | kubectl apply -f -
           kubectl apply -f k8s/worker-hpa.yaml
 
-      - name: Wait for rollouts
+      - name: Wait for rollouts (with diagnostics)
         run: |
-          kubectl rollout status deploy/celery-worker -n noesis2 --timeout=120s
-          kubectl rollout status deploy/celery-beat -n noesis2 --timeout=120s
+          set +e
+          kubectl rollout status deploy/celery-worker -n noesis2 --timeout=300s
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "Worker rollout failed; collecting diagnostics"
+            kubectl get pods -n noesis2 -o wide
+            kubectl describe deploy/celery-worker -n noesis2 || true
+            kubectl describe pods -n noesis2 -l app=celery-worker || true
+            kubectl logs -n noesis2 deploy/celery-worker --all-containers --tail=200 || true
+            exit $STATUS
+          fi
+          kubectl rollout status deploy/celery-beat -n noesis2 --timeout=300s
+          STATUS=$?
+          if [ $STATUS -ne 0 ]; then
+            echo "Beat rollout failed; collecting diagnostics"
+            kubectl get pods -n noesis2 -o wide
+            kubectl describe deploy/celery-beat -n noesis2 || true
+            kubectl describe pods -n noesis2 -l app=celery-beat || true
+            kubectl logs -n noesis2 deploy/celery-beat --all-containers --tail=200 || true
+            exit $STATUS
+          fi
