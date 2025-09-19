@@ -256,6 +256,7 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -300,6 +301,7 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -354,6 +356,7 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -415,6 +418,7 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -501,6 +505,7 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
