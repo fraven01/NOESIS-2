@@ -606,11 +606,21 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
+      - name: Mirror LiteLLM image to Artifact Registry
+        env:
+          AR_IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/litellm:main-stable
+        run: |
+          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev -q
+          docker pull ghcr.io/berriai/litellm:main-stable
+          docker tag ghcr.io/berriai/litellm:main-stable "$AR_IMAGE"
+          docker push "$AR_IMAGE"
+          echo "LITELLM_AR_IMAGE=$AR_IMAGE" >> "$GITHUB_ENV"
+
       - name: Deploy LiteLLM service (staging)
         uses: google-github-actions/deploy-cloudrun@v2.1.0
         with:
           service: litellm-staging
-          image: ghcr.io/berriai/litellm:main-stable
+          image: ${{ env.LITELLM_AR_IMAGE }}
           project_id: ${{ secrets.GCP_PROJECT_ID }}
           region: ${{ secrets.GCP_REGION }}
           flags: >-
