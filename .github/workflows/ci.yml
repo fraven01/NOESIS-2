@@ -591,10 +591,11 @@ jobs:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
           LITELLM_DB_NAME: ${{ secrets.LITELLM_DB_NAME }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
         run: |
           : "${LITELLM_DB_NAME:=litellm}"
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
-          echo "LITELLM_DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${LITELLM_DB_NAME}" >> "$GITHUB_ENV"
+          echo "LITELLM_DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${LITELLM_DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}" >> "$GITHUB_ENV"
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
