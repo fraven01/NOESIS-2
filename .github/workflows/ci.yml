@@ -642,8 +642,18 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: |
           set -euo pipefail
-          # Build env var list for gcloud
-          ENV_VARS="LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY},LITELLM_SALT_KEY=${LITELLM_SALT_KEY},DATABASE_URL=${LITELLM_DATABASE_URL},UI_USERNAME=${UI_USERNAME},UI_PASSWORD=${UI_PASSWORD},GOOGLE_API_KEY=${GOOGLE_API_KEY},GEMINI_API_KEY=${GEMINI_API_KEY}"
+          # Write env vars to file to avoid comma/quote parsing issues
+          ENV_FILE="env.litellm.env"
+          {
+            printf '%s=%s\n' LITELLM_MASTER_KEY "${LITELLM_MASTER_KEY}"
+            printf '%s=%s\n' LITELLM_SALT_KEY "${LITELLM_SALT_KEY}"
+            printf '%s=%s\n' DATABASE_URL "${LITELLM_DATABASE_URL}"
+            printf '%s=%s\n' UI_USERNAME "${UI_USERNAME}"
+            printf '%s=%s\n' UI_PASSWORD "${UI_PASSWORD}"
+            printf '%s=%s\n' GOOGLE_API_KEY "${GOOGLE_API_KEY}"
+            printf '%s=%s\n' GEMINI_API_KEY "${GEMINI_API_KEY}"
+          } > "${ENV_FILE}"
+
           gcloud run deploy litellm-staging \
             --image "${IMAGE}" \
             --project "${GCP_PROJECT_ID}" \
@@ -661,7 +671,7 @@ jobs:
             --args="4000" \
             --args="--num_workers" \
             --args="1" \
-            --update-env-vars "${ENV_VARS}"
+            --env-vars-file "${ENV_FILE}"
           
   deploy-gke-workers:
     name: Deploy Workers to GKE
