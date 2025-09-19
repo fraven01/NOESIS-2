@@ -629,31 +629,31 @@ jobs:
           echo "LITELLM_AR_IMAGE=$AR_IMAGE" >> "$GITHUB_ENV"
 
       - name: Deploy LiteLLM service (staging)
-        uses: google-github-actions/deploy-cloudrun@v2.1.0
-        with:
-          service: litellm-staging
-          image: ${{ env.LITELLM_AR_IMAGE }}
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-          region: ${{ secrets.GCP_REGION }}
-          flags: >-
-            --allow-unauthenticated
-            --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-            --port=4000
-            --command=litellm
-            --args=--host
-            --args=0.0.0.0
-            --args=--port
-            --args=4000
-            --args=--num_workers
-            --args=1
-          env_vars: |
-            LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
-            LITELLM_SALT_KEY=${{ secrets.LITELLM_SALT_KEY }}
-            DATABASE_URL=${{ env.LITELLM_DATABASE_URL }}
-            UI_USERNAME=${{ secrets.LITELLM_UI_USERNAME }}
-            UI_PASSWORD=${{ secrets.LITELLM_UI_PASSWORD }}
-            GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
-            GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
+        env:
+          IMAGE: ${{ env.LITELLM_AR_IMAGE }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          LITELLM_SALT_KEY: ${{ secrets.LITELLM_SALT_KEY }}
+          UI_USERNAME: ${{ secrets.LITELLM_UI_USERNAME }}
+          UI_PASSWORD: ${{ secrets.LITELLM_UI_PASSWORD }}
+          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        run: |
+          set -euo pipefail
+          # Build env var list for gcloud
+          ENV_VARS="LITELLM_MASTER_KEY=${LITELLM_MASTER_KEY},LITELLM_SALT_KEY=${LITELLM_SALT_KEY},DATABASE_URL=${LITELLM_DATABASE_URL},UI_USERNAME=${UI_USERNAME},UI_PASSWORD=${UI_PASSWORD},GOOGLE_API_KEY=${GOOGLE_API_KEY},GEMINI_API_KEY=${GEMINI_API_KEY}"
+          gcloud run deploy litellm-staging \
+            --image "${IMAGE}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --allow-unauthenticated \
+            --add-cloudsql-instances "${CLOUD_SQL_CONNECTION_NAME}" \
+            --port 4000 \
+            --command litellm \
+            --args "--host,0.0.0.0,--port,4000,--num_workers,1" \
+            --update-env-vars "${ENV_VARS}"
           
   deploy-gke-workers:
     name: Deploy Workers to GKE
