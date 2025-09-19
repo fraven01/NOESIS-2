@@ -189,6 +189,41 @@ Die Settings lesen `.env` via `django-environ`. `DATABASE_URL` muss eine vollst�
 
 Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden (einfachere Einrichtung). In Produktion getrennte Rollen/DSNs je Dienst (Least Privilege).
 
+## GCloud Bootstrap (Windows)
+Mit dem Skript `scripts/gcloud-bootstrap.ps1` kannst du dich per `gcloud` anmelden, ein Projekt/Region wählen und häufige Laufzeitwerte aus GCP sammeln (Redis, Cloud SQL, Cloud Run URLs). Die Werte werden sicher in `.env.gcloud` geschrieben (Git-ignored) und können selektiv in deine `.env` übernommen werden.
+
+PowerShell (Windows):
+
+```powershell
+pwsh -File scripts/gcloud-bootstrap.ps1
+# oder nicht-interaktiv mit Vorgaben:
+pwsh -File scripts/gcloud-bootstrap.ps1 -Region europe-west3 -Zone europe-west3-a
+
+# Optional: Secrets explizit ziehen (schreibt sensible Werte in .env.gcloud!)
+pwsh -File scripts/gcloud-bootstrap.ps1 -FetchSecrets -Secrets SECRET_KEY,LANGFUSE_KEY
+```
+
+Hinweise:
+- Secrets werden standardmäßig nicht geladen. Mit `-FetchSecrets` + `-Secrets` kannst du gezielt Secret-Names laden, sofern dein Account berechtigt ist.
+- Für Cloud SQL im lokalen Setup bevorzugen wir weiterhin die lokale DB (Docker). Alternativ Cloud SQL Auth Proxy verwenden und `DB_HOST`/`DATABASE_URL` passend setzen.
+
+## GCloud Bootstrap (Bash/WSL/Linux)
+Das Bash-Pendant läuft unter WSL oder Linux. Es sammelt dieselben Werte und schreibt `.env.gcloud` (Git-ignored).
+
+```bash
+# Interaktiv
+bash scripts/gcloud-bootstrap.sh
+
+# Mit Parametern
+bash scripts/gcloud-bootstrap.sh --region europe-west3 --zone europe-west3-a
+
+# Optional Secrets (vorsichtig)
+bash scripts/gcloud-bootstrap.sh --fetch-secrets \
+  --secret SECRET_KEY --secret LANGFUSE_KEY
+```
+
+Voraussetzungen: `gcloud` im PATH. `jq` ist nicht erforderlich.
+
 ## Settings-Profile
 Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modulare Paket `noesis2/settings/`.
 
