@@ -493,10 +493,10 @@ jobs:
             "$URL/ai/scope/" | head -c 200; echo
 
   deploy-worker-staging:
-    name: Deploy Worker (staging)
+    name: Deploy Worker (staging) [disabled; moving to GKE]
     runs-on: ubuntu-latest
     needs: rag-migrate-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false
     env:
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
@@ -541,10 +541,10 @@ jobs:
           # Note: Cloud SQL attachment is handled via flags; no metadata YAML.
 
   deploy-beat-staging:
-    name: Deploy Beat (staging)
+    name: Deploy Beat (staging) [disabled; moving to GKE]
     runs-on: ubuntu-latest
     needs: rag-migrate-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: false
     env:
       IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
     steps:
@@ -627,3 +627,70 @@ jobs:
             GOOGLE_API_KEY=${{ secrets.GOOGLE_API_KEY }}
             GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }}
           
+  deploy-gke-workers:
+    name: Deploy Workers to GKE
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Get GKE credentials
+        uses: google-github-actions/get-gke-credentials@v2
+        with:
+          cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
+          location: ${{ secrets.GKE_LOCATION }}
+
+      - name: Create namespace & SA (idempotent)
+        run: |
+          kubectl apply -f k8s/namespace.yaml
+          kubectl apply -f k8s/serviceaccount.yaml
+
+      - name: Create/Update app-secrets from GitHub Secrets
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          REDIS_URL: ${{ secrets.REDIS_URL }}
+        run: |
+          kubectl create secret generic app-secrets \
+            -n noesis2 \
+            --from-literal=SECRET_KEY="$SECRET_KEY" \
+            --from-literal=DB_USER="$DB_USER" \
+            --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+            --from-literal=REDIS_URL="$REDIS_URL" \
+            --dry-run=client -o yaml | kubectl apply -f -
+
+      - name: Apply worker/beat manifests
+        env:
+          IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
+          PROJECT: ${{ secrets.GCP_PROJECT_ID }}
+          REGION: ${{ secrets.GCP_REGION }}
+          INSTANCE: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+        run: |
+          sed -e "s#REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA#${IMAGE}#g" \
+              -e "s#PROJECT:REGION:INSTANCE#${INSTANCE}#g" \
+              -e "s#DB_NAME#${DB_NAME}#g" \
+              k8s/worker-deployment.yaml | kubectl apply -f -
+          sed -e "s#REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA#${IMAGE}#g" \
+              -e "s#PROJECT:REGION:INSTANCE#${INSTANCE}#g" \
+              -e "s#DB_NAME#${DB_NAME}#g" \
+              k8s/beat-deployment.yaml | kubectl apply -f -
+          kubectl apply -f k8s/worker-hpa.yaml
+
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status deploy/celery-worker -n noesis2 --timeout=120s
+          kubectl rollout status deploy/celery-beat -n noesis2 --timeout=120s

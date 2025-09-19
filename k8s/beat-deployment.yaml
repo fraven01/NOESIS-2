@@ -1,0 +1,71 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: celery-beat
+  namespace: noesis2
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: celery-beat
+  template:
+    metadata:
+      labels:
+        app: celery-beat
+    spec:
+      serviceAccountName: noesis2-worker-sa
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: app
+          image: REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA
+          imagePullPolicy: IfNotPresent
+          command: ["celery"]
+          args: ["-A", "noesis2", "beat", "-l", "info"]
+          env:
+            - name: DJANGO_SETTINGS_MODULE
+              value: noesis2.settings.production
+            - name: SECRET_KEY
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: SECRET_KEY }
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: DB_USER }
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: DB_PASSWORD }
+            - name: DATABASE_URL
+              value: postgresql://$(DB_USER):$(DB_PASSWORD)@127.0.0.1:5432/DB_NAME
+            - name: REDIS_URL
+              valueFrom:
+                secretKeyRef: { name: app-secrets, key: REDIS_URL }
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          readinessProbe:
+            exec:
+              command: ["sh", "-lc", "pgrep -f 'celery.*beat' >/dev/null"]
+            initialDelaySeconds: 20
+            periodSeconds: 20
+          livenessProbe:
+            exec:
+              command: ["sh", "-lc", "pgrep -f 'celery.*beat' >/dev/null"]
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sh", "-lc", "pkill -TERM -f 'celery.*beat'; sleep 10"]
+        - name: cloud-sql-proxy
+          image: gcr.io/cloud-sql-connectors/cloud-sql-proxy:2.11.4
+          args:
+            - "--private-ip"
+            - "--port=5432"
+            - "PROJECT:REGION:INSTANCE" # CLOUD_SQL_CONNECTION_NAME
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 65532
+
