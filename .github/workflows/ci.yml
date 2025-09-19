@@ -606,6 +606,18 @@ jobs:
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
+      - name: Ensure LiteLLM database exists (Cloud SQL)
+        shell: bash
+        env:
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          LITELLM_DB_NAME: ${{ secrets.LITELLM_DB_NAME }}
+        run: |
+          : "${LITELLM_DB_NAME:=litellm}"
+          INSTANCE=${CLOUD_SQL_CONNECTION_NAME##*:}
+          echo "Ensuring DB '$LITELLM_DB_NAME' exists on instance '$INSTANCE'"
+          gcloud sql databases describe "$LITELLM_DB_NAME" --instance "$INSTANCE" --project ${{ secrets.GCP_PROJECT_ID }} >/dev/null 2>&1 \
+            || gcloud sql databases create "$LITELLM_DB_NAME" --instance "$INSTANCE" --project ${{ secrets.GCP_PROJECT_ID }}
+
       - name: Mirror LiteLLM image to Artifact Registry
         env:
           AR_IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/litellm:main-stable
@@ -627,8 +639,7 @@ jobs:
             --allow-unauthenticated
             --add-cloudsql-instances=${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
             --port=4000
-            --command=litellm
-            --args="--host,0.0.0.0,--port,4000,--num_workers,1"
+            --args="--host,0.0.0.0,--port,$PORT,--num_workers,1"
           env_vars: |
             LITELLM_MASTER_KEY=${{ secrets.LITELLM_MASTER_KEY }}
             LITELLM_SALT_KEY=${{ secrets.LITELLM_SALT_KEY }}
