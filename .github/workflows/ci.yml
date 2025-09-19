@@ -256,7 +256,6 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -301,7 +300,6 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -356,7 +354,6 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -418,7 +415,6 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -505,7 +501,6 @@ jobs:
         env:
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
@@ -662,13 +657,16 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           DB_USER: ${{ secrets.DB_USER }}
           DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
           REDIS_URL: ${{ secrets.REDIS_URL }}
         run: |
+          enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           kubectl create secret generic app-secrets \
             -n noesis2 \
             --from-literal=SECRET_KEY="$SECRET_KEY" \
             --from-literal=DB_USER="$DB_USER" \
             --from-literal=DB_PASSWORD="$DB_PASSWORD" \
+            --from-literal=DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@127.0.0.1:5432/${DB_NAME}" \
             --from-literal=REDIS_URL="$REDIS_URL" \
             --dry-run=client -o yaml | kubectl apply -f -
 
@@ -678,15 +676,12 @@ jobs:
           PROJECT: ${{ secrets.GCP_PROJECT_ID }}
           REGION: ${{ secrets.GCP_REGION }}
           INSTANCE: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-          DB_NAME: ${{ secrets.DB_NAME }}
         run: |
           sed -e "s#REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA#${IMAGE}#g" \
               -e "s#PROJECT:REGION:INSTANCE#${INSTANCE}#g" \
-              -e "s#DB_NAME#${DB_NAME}#g" \
               k8s/worker-deployment.yaml | kubectl apply -f -
           sed -e "s#REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA#${IMAGE}#g" \
               -e "s#PROJECT:REGION:INSTANCE#${INSTANCE}#g" \
-              -e "s#DB_NAME#${DB_NAME}#g" \
               k8s/beat-deployment.yaml | kubectl apply -f -
           kubectl apply -f k8s/worker-hpa.yaml
 
@@ -713,3 +708,7 @@ jobs:
             kubectl logs -n noesis2 deploy/celery-beat --all-containers --tail=200 || true
             exit $STATUS
           fi
+
+
+
+
