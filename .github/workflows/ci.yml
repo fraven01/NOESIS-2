@@ -628,7 +628,7 @@ jobs:
           docker push "$AR_IMAGE"
           echo "LITELLM_AR_IMAGE=$AR_IMAGE" >> "$GITHUB_ENV"
 
-      - name: Deploy LiteLLM service (staging)
+      - name: Deploy LiteLLM service (DIAGNOSTIC MODE)
         env:
           IMAGE: ${{ env.LITELLM_AR_IMAGE }}
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -655,9 +655,9 @@ jobs:
             --memory 1Gi \
             --cpu-boost \
             --port 4000 \
-            --command litellm \
-            --args="--host=0.0.0.0,--port=4000,--num_workers=1" \
-            --env-vars-file env.litellm.json
+            --env-vars-file env.litellm.json \
+            --command sleep \
+            --args="3600"
           
   deploy-gke-workers:
     name: Deploy Workers to GKE
