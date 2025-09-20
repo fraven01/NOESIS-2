@@ -121,9 +121,8 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
 
     _save_state(meta["tenant"], meta["case"], new_state)
 
-    prompt_version = result.get("prompt_version")
     response = JsonResponse(result)
-    return apply_std_headers(response, meta["trace_id"], prompt_version)
+    return apply_std_headers(response, meta)
 
 
 def ping(request: HttpRequest) -> JsonResponse:
@@ -133,7 +132,7 @@ def ping(request: HttpRequest) -> JsonResponse:
         return error
     with log_context(**_log_context_kwargs(meta)):
         response = JsonResponse({"ok": True})
-    return apply_std_headers(response, meta["trace_id"])
+    return apply_std_headers(response, meta)
 
 
 @csrf_exempt

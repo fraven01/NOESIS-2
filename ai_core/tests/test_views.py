@@ -31,10 +31,14 @@ def test_ping_view_applies_rate_limit(client, monkeypatch):
     resp1 = client.get("/ai/ping/", HTTP_X_CASE_ID="c")
     assert resp1.status_code == 200
     assert resp1.json() == {"ok": True}
-    assert "X-Prompt-Version" not in resp1
+    assert resp1["X-Trace-ID"]
+    assert resp1["X-Case-ID"] == "c"
+    assert resp1["X-Tenant-ID"] == test_tenant_schema_name
+    assert "X-Key-Alias" not in resp1
     resp2 = client.get("/ai/ping/", HTTP_X_CASE_ID="c")
     assert resp2.status_code == 429
     assert resp2.json()["detail"] == "rate limit"
+    assert "X-Trace-ID" not in resp2
 
 
 @pytest.mark.django_db
@@ -104,7 +108,9 @@ def test_intake_persists_state_and_headers(
     )
     assert resp.status_code == 200
     assert resp["X-Trace-ID"]
-    assert "X-Prompt-Version" not in resp
+    assert resp["X-Case-ID"] == "case-123"
+    assert resp["X-Tenant-ID"] == test_tenant_schema_name
+    assert "X-Key-Alias" not in resp
     assert resp.json()["tenant"] == test_tenant_schema_name
 
     state = object_store.read_json(f"{test_tenant_schema_name}/case-123/state.json")

@@ -24,18 +24,43 @@ def test_get_config_reads_env(monkeypatch):
     assert cfg.langfuse_secret_key == "sec"
 
 
-def test_apply_std_headers_sets_headers():
-    resp = HttpResponse("ok")
-    result = apply_std_headers(resp, trace_id="abc123", prompt_version="v1")
-    assert result["X-Prompt-Version"] == "v1"
+def test_apply_std_headers_sets_metadata_headers_for_success():
+    resp = HttpResponse("ok", status=200)
+    meta = {
+        "trace_id": "abc123",
+        "case": "case-1",
+        "tenant": "tenant-1",
+        "key_alias": "alias-1",
+    }
+
+    result = apply_std_headers(resp, meta)
+
+    assert result["X-Trace-ID"] == "abc123"
+    assert result["X-Case-ID"] == "case-1"
+    assert result["X-Tenant-ID"] == "tenant-1"
+    assert result["X-Key-Alias"] == "alias-1"
+
+
+def test_apply_std_headers_skips_missing_optional_headers():
+    resp = HttpResponse("ok", status=200)
+    meta = {"trace_id": "abc123", "case": "case-1", "tenant": "tenant-1"}
+
+    result = apply_std_headers(resp, meta)
+
+    assert "X-Key-Alias" not in result
     assert result["X-Trace-ID"] == "abc123"
 
 
-def test_apply_std_headers_skips_prompt_header_when_missing():
-    resp = HttpResponse("ok")
-    result = apply_std_headers(resp, trace_id="abc123")
-    assert "X-Prompt-Version" not in result
-    assert result["X-Trace-ID"] == "abc123"
+def test_apply_std_headers_ignores_non_success_responses():
+    meta = {"trace_id": "abc123", "case": "case-1", "tenant": "tenant-1"}
+
+    for status in (400, 500):
+        resp = HttpResponse("error", status=status)
+        result = apply_std_headers(resp, meta)
+        assert "X-Trace-ID" not in result
+        assert "X-Case-ID" not in result
+        assert "X-Tenant-ID" not in result
+        assert "X-Key-Alias" not in result
 
 
 def test_pii_mask_replaces_digits():
