@@ -268,7 +268,12 @@ jobs:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
           GCP_REGION: ${{ secrets.GCP_REGION }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
         run: |
+          # Fallback if upstream job output is unavailable
+          if [ -z "${IMAGE:-}" ]; then
+            IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/litellm-proxy-db:${GITHUB_SHA}"
+          fi
           gcloud run jobs deploy litellm-migrate \
             --image "$IMAGE" \
             --project "$GCP_PROJECT_ID" \
@@ -329,9 +334,14 @@ jobs:
           LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
           VERTEXAI_LOCATION: ${{ secrets.VERTEXAI_LOCATION }}
           PORT: 8080
+          GAR_REPOSITORY: ${{ secrets.GAR_REPOSITORY }}
         # Cloud SQL unix-domain socket is more stable than TCP in Cloud Run and avoids IP allowlisting.
         # Forcing the litellm CLI ensures it binds to $PORT, preventing startup probe failures.
         run: |
+          # Fallback if upstream job output is unavailable
+          if [ -z "${IMAGE:-}" ]; then
+            IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/litellm-proxy-db:${GITHUB_SHA}"
+          fi
           gcloud run deploy litellm-proxy \
             --image "$IMAGE" \
             --project "$GCP_PROJECT_ID" \
