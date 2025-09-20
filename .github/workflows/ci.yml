@@ -372,10 +372,12 @@ jobs:
           LITELLM_MASTER_KEY: ${{ env.LITELLM_MASTER_KEY }}
         run: |
           BODY=$(mktemp)
-          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}"             -X POST "$SERVICE_URL/key/create"             -H "Authorization: Bearer $LITELLM_MASTER_KEY"             -H "Content-Type: application/json"             --data-binary @- <<'JSON'
-{"key_alias":"ci-smoke-key","max_budget":1.0,"budget_duration":"monthly","block_after_limit":true}
-JSON
-          )
+          DATA='{"key_alias":"ci-smoke-key","max_budget":1.0,"budget_duration":"monthly","block_after_limit":true}'
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" \
+            -X POST "$SERVICE_URL/key/create" \
+            -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
+            -H "Content-Type: application/json" \
+            --data-raw "$DATA")
           echo "key_create_status=$STATUS"
           head -c 200 "$BODY" || true
           VIRTUAL_KEY=$(python - <<'PY'
