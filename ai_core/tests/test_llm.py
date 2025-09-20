@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import datetime
 import json
+from email.utils import format_datetime
 from typing import Any
 
 import pytest
@@ -96,6 +98,121 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert fail_once.calls == 2
     assert fail_once.idempotency_headers == ["c1:simple-query:v1", "c1:simple-query:v1"]
     assert fail_once.retry_headers == [None, "2"]
+
+
+def test_llm_client_retries_on_rate_limit(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class RandomStub:
+        def __init__(self):
+            self.value = 0.0
+            self.calls = 0
+
+        def __call__(self, _a: float, _b: float) -> float:
+            self.calls += 1
+            return self.value
+
+    random_stub = RandomStub()
+    sleep_calls: list[float] = []
+
+    def fake_sleep(duration: float) -> None:
+        sleep_calls.append(duration)
+
+    monkeypatch.setattr("ai_core.llm.client.random.uniform", random_stub)
+    monkeypatch.setattr("ai_core.llm.client.time.sleep", fake_sleep)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "token")
+
+    from ai_core.infra import config as conf
+
+    conf.get_config.cache_clear()
+
+    class RateLimitThenSuccess:
+        def __init__(self, retry_after: str | None):
+            self.retry_after = retry_after
+            self.calls = 0
+            self.idempotency_headers: list[str] = []
+            self.retry_headers: list[str | None] = []
+
+        def __call__(
+            self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
+        ):
+            assert json["messages"][0]["content"] == "XXXX"
+            assert headers["Authorization"] == "Bearer token"
+            self.idempotency_headers.append(headers["Idempotency-Key"])
+            self.retry_headers.append(headers.get("X-Retry-Attempt"))
+            self.calls += 1
+            if self.calls == 1:
+
+                class Resp:
+                    def __init__(self, retry_after: str | None):
+                        self.status_code = 429
+                        self.headers: dict[str, str] = {}
+                        if retry_after is not None:
+                            self.headers["Retry-After"] = retry_after
+
+                    def json(self):
+                        return {}
+
+                return Resp(self.retry_after)
+
+            class Resp:
+                status_code = 200
+                headers: dict[str, str] = {}
+
+                def json(self):
+                    return {
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    scenarios = [
+        {
+            "retry_after": None,
+            "expected_sleep": 1.1,
+            "random_value": 0.1,
+        },
+        {
+            "retry_after": format_datetime(
+                datetime.datetime.now(datetime.timezone.utc)
+                + datetime.timedelta(seconds=2)
+            ),
+            "expected_sleep": 2.0,
+            "random_value": 0.0,
+        },
+    ]
+
+    for scenario in scenarios:
+        random_stub.value = scenario["random_value"]
+        random_stub.calls = 0
+        sleep_calls.clear()
+        handler = RateLimitThenSuccess(scenario["retry_after"])
+        monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+
+        res = call("simple-query", "secret", metadata)
+        assert res["text"] == "ok"
+
+        assert handler.calls == 2
+        assert handler.idempotency_headers == ["c1:simple-query:v1"] * 2
+        assert handler.retry_headers == [None, "2"]
+        assert len(sleep_calls) == 1
+
+        if scenario["retry_after"] is None:
+            assert sleep_calls[0] == pytest.approx(1 + scenario["random_value"])
+            assert random_stub.calls == 1
+        else:
+            assert sleep_calls[0] == pytest.approx(
+                scenario["expected_sleep"], abs=0.1
+            )
+            assert random_stub.calls == 0
 
 
 def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
