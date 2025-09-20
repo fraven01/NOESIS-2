@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import datetime
 import logging
+import random
 import time
+from email.utils import parsedate_to_datetime
 from typing import Any, Dict
 
 import requests
@@ -71,6 +74,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if status and 500 <= status < 600:
             logger.warning("llm 5xx response", extra={"status": status})
             if attempt == max_retries - 1:
+                logger.warning("llm retries exhausted", extra={"status": status})
                 raise ValueError("llm error") from None
             time.sleep(min(5, 2**attempt))
             continue
@@ -78,8 +82,39 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if err is not None:
             logger.warning("llm request error", exc_info=err)
             if attempt == max_retries - 1:
+                logger.warning("llm retries exhausted", extra={"status": status})
                 raise ValueError("llm error") from None
             time.sleep(min(5, 2**attempt))
+            continue
+
+        if status == 429:
+            logger.warning("llm rate limited", extra={"status": status})
+            if attempt == max_retries - 1:
+                logger.warning("llm retries exhausted", extra={"status": status})
+                raise ValueError("llm error") from None
+
+            retry_after_raw = resp.headers.get("Retry-After") if resp else None
+            sleep_for: float | None = None
+            if retry_after_raw:
+                retry_after_raw = retry_after_raw.strip()
+                try:
+                    sleep_for = float(retry_after_raw)
+                except ValueError:
+                    try:
+                        retry_after_dt = parsedate_to_datetime(retry_after_raw)
+                    except (TypeError, ValueError):
+                        sleep_for = None
+                    else:
+                        if retry_after_dt.tzinfo is None:
+                            retry_after_dt = retry_after_dt.replace(
+                                tzinfo=datetime.timezone.utc
+                            )
+                        target_ts = retry_after_dt.timestamp()
+                        sleep_for = target_ts - time.time()
+            if sleep_for is None:
+                base_delay = min(5, 2**attempt)
+                sleep_for = base_delay + random.uniform(0, 0.3)
+            time.sleep(max(0.0, sleep_for))
             continue
 
         if status and 400 <= status < 500:
