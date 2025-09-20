@@ -114,7 +114,10 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
     if error:
         return error
 
-    state = _load_state(meta["tenant"], meta["case"])
+    try:
+        state = _load_state(meta["tenant"], meta["case"])
+    except ValueError as exc:
+        return JsonResponse({"detail": str(exc)}, status=400)
     if request.body:
         try:
             payload = json.loads(request.body)
@@ -130,7 +133,10 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
     except Exception:
         return JsonResponse({"detail": "internal error"}, status=500)
 
-    _save_state(meta["tenant"], meta["case"], new_state)
+    try:
+        _save_state(meta["tenant"], meta["case"], new_state)
+    except ValueError as exc:
+        return JsonResponse({"detail": str(exc)}, status=400)
 
     response = JsonResponse(result)
     return apply_std_headers(response, meta)
