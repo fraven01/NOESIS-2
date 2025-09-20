@@ -27,6 +27,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
         "case": "c1",
         "trace_id": "tr1",
         "prompt_version": "v1",
+        "key_alias": "alias-01",
     }
 
     class FailOnce:
@@ -37,6 +38,11 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
         ):
             assert json["messages"][0]["content"] == "XXXX"
+            assert headers["Authorization"] == "Bearer token"
+            assert headers["X-Trace-ID"] == "tr1"
+            assert headers["X-Case-ID"] == "c1"
+            assert headers["X-Tenant-ID"] == "t1"
+            assert headers["X-Key-Alias"] == "alias-01"
             self.calls += 1
             if self.calls == 1:
 
