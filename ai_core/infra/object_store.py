@@ -1,10 +1,24 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
 BASE_PATH = Path(".ai_core_store")
+
+
+def sanitize_identifier(value: str) -> str:
+    """Return a filesystem-safe representation of an identifier."""
+
+    if ".." in value or "/" in value or os.sep in value:
+        raise ValueError("unsafe identifier")
+
+    sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value)[:128]
+    if not sanitized:
+        raise ValueError("unsafe identifier")
+    return sanitized
 
 
 def _full_path(relative: str) -> Path:

@@ -5,6 +5,7 @@ import uuid
 import pytest
 
 from ai_core import tasks
+from ai_core.infra import object_store
 from ai_core.rag import metrics, vector_client
 from common import logging as common_logging
 from common.celery import ContextTask
@@ -126,3 +127,32 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
     assert "tenant=-" not in output
     assert "key_alias=-" not in output
     assert common_logging.get_log_context() == {}
+
+
+def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    meta = {"tenant": "Tenant Name", "case": "Case*ID"}
+
+    result = tasks.ingest_raw(meta, "doc.txt", b"payload")
+
+    safe_tenant = object_store.sanitize_identifier(meta["tenant"])
+    safe_case = object_store.sanitize_identifier(meta["case"])
+    assert result["path"] == f"{safe_tenant}/{safe_case}/raw/doc.txt"
+
+    stored = (
+        tmp_path
+        / ".ai_core_store"
+        / safe_tenant
+        / safe_case
+        / "raw"
+        / "doc.txt"
+    )
+    assert stored.read_bytes() == b"payload"
+
+
+def test_ingest_raw_rejects_unsafe_meta(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    meta = {"tenant": "tenant/../", "case": "case"}
+
+    with pytest.raises(ValueError):
+        tasks.ingest_raw(meta, "doc.txt", b"payload")

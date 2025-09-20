@@ -1,5 +1,6 @@
 import json
 
+import pytest
 from django.http import HttpResponse
 
 from ai_core.infra import object_store, pii
@@ -76,6 +77,17 @@ def test_object_store_roundtrip(tmp_path, monkeypatch):
     object_store.put_bytes("tenant/case/raw/data.bin", b"hi")
     stored = tmp_path / ".ai_core_store/tenant/case/raw/data.bin"
     assert stored.read_bytes() == b"hi"
+
+
+def test_sanitize_identifier_replaces_invalid_characters():
+    assert object_store.sanitize_identifier("tenant name!@#") == "tenant_name___"
+
+
+def test_sanitize_identifier_rejects_unsafe_sequences():
+    with pytest.raises(ValueError):
+        object_store.sanitize_identifier("..")
+    with pytest.raises(ValueError):
+        object_store.sanitize_identifier("tenant/abc")
 
 
 def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):

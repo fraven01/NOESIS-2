@@ -1,4 +1,5 @@
 import io
+import json
 import logging
 from types import SimpleNamespace
 
@@ -248,3 +249,32 @@ def test_request_logging_context_includes_metadata(
     assert "tenant=-" not in output
     assert "key_alias=-" not in output
     assert common_logging.get_log_context() == {}
+
+
+def test_state_helpers_sanitize_identifiers(monkeypatch, tmp_path):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    views._save_state("Tenant Name", "Case*ID", {"ok": True})
+
+    safe_tenant = object_store.sanitize_identifier("Tenant Name")
+    safe_case = object_store.sanitize_identifier("Case*ID")
+
+    unsafe_path = tmp_path / "Tenant Name"
+    assert not unsafe_path.exists()
+
+    stored = tmp_path / safe_tenant / safe_case / "state.json"
+    assert stored.exists()
+    assert json.loads(stored.read_text()) == {"ok": True}
+
+    loaded = views._load_state("Tenant Name", "Case*ID")
+    assert loaded == {"ok": True}
+
+
+def test_state_helpers_reject_unsafe_identifiers(monkeypatch, tmp_path):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    with pytest.raises(ValueError):
+        views._save_state("tenant/../", "case", {})
+
+    with pytest.raises(ValueError):
+        views._load_state("tenant", "../case")
