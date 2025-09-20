@@ -260,7 +260,9 @@ jobs:
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
-          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}"
+          # Prisma rejects an empty host in the authority component. Use localhost and override via query param.
+          # Cloud Run mounts the Cloud SQL Unix socket at /cloudsql/$CLOUD_SQL_CONNECTION_NAME
+          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@localhost/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}&port=5432"
           echo "LITELLM_DATABASE_URL=$LITELLM_DATABASE_URL" >> "$GITHUB_ENV"
       - name: Deploy LiteLLM migration job
         env:
