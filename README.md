@@ -189,6 +189,31 @@ Die Settings lesen `.env` via `django-environ`. `DATABASE_URL` muss eine vollst�
 
 Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden (einfachere Einrichtung). In Produktion getrennte Rollen/DSNs je Dienst (Least Privilege).
 
+## LiteLLM & Modelle (Prod vs. Lokal)
+- Produktion (Cloud Run)
+  - LiteLLM authentifiziert gegen Vertex AI per Service Account (ADC), kein API‑Key nötig.
+  - Regionensplit: Cloud Run `europe-west3`, Vertex `us-central1` (siehe `scripts/init_litellm_gcloud.sh` und CI).
+  - Routing: `MODEL_ROUTING.yaml` zeigt auf `vertex_ai/*` Modelle (z. B. `vertex_ai/gemini-2.5-flash`).
+  - CI setzt `VERTEXAI_PROJECT` und `VERTEXAI_LOCATION` und pinned die Cloud‑Run Service‑Account‑Identität.
+
+- Lokal (Docker Compose)
+  - Vertex ADC steht lokal i. d. R. nicht zur Verfügung. Nutze AI‑Studio (Gemini) über LiteLLM‑Config.
+  - Datei `config/litellm-config.yaml` ist für AI‑Studio konfiguriert (`gemini/*` + `GEMINI_API_KEY`).
+  - Erzeuge eine lokale Routing‑Override, damit Django lokale Modelle anspricht:
+    ```bash
+    cp MODEL_ROUTING.local.yaml.sample MODEL_ROUTING.local.yaml
+    ```
+  - Setze in `.env` mindestens:
+    - `GEMINI_API_KEY=<dein_ai_studio_key>`
+    - `LITELLM_MASTER_KEY=<beliebiger_dev_key>`
+  - Starte LiteLLM via Compose und teste:
+    ```bash
+    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d litellm
+    bash scripts/smoke_litellm.sh
+    ```
+
+Hinweis: `MODEL_ROUTING.local.yaml` ist git‑ignored und überschreibt nur lokal. In Prod wird ausschließlich `MODEL_ROUTING.yaml` verwendet.
+
 ## GCloud Bootstrap (Windows)
 Mit dem Skript `scripts/gcloud-bootstrap.ps1` kannst du dich per `gcloud` anmelden, ein Projekt/Region wählen und häufige Laufzeitwerte aus GCP sammeln (Redis, Cloud SQL, Cloud Run URLs). Die Werte werden sicher in `.env.gcloud` geschrieben (Git-ignored) und können selektiv in deine `.env` übernommen werden.
 
