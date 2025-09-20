@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from ai_core.llm import routing
-from ai_core.llm.client import call
+from ai_core.llm.client import LlmClientError, RateLimitError, call
 
 
 def test_resolve_reads_yaml(tmp_path, monkeypatch):
@@ -322,3 +322,233 @@ def test_llm_retry_counter_increments(monkeypatch):
         "c1:simple-query:v1",
     ]
     assert fail_twice.retry_headers == [None, "2", "3"]
+
+
+def _prepare_env(monkeypatch):
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "token")
+    from ai_core.infra import config as conf
+
+    conf.get_config.cache_clear()
+
+
+def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        "ai_core.llm.client.time.sleep",
+        lambda duration: sleep_calls.append(duration),
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class AlwaysFail:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+
+            class Resp:
+                status_code = 502
+                headers: dict[str, str] = {}
+                text = ""
+
+                def json(self):
+                    return {"detail": "backend exploded", "code": "bad_gateway", "status": 502}
+
+            return Resp()
+
+    handler = AlwaysFail()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(LlmClientError) as excinfo:
+        call("simple-query", "secret", metadata)
+
+    assert handler.calls == 3
+    err = excinfo.value
+    assert err.detail == "backend exploded"
+    assert err.code == "bad_gateway"
+    assert err.status == 502
+    assert str(err) == "backend exploded (status=502, code=bad_gateway)"
+    assert sleep_calls == [1, 2]
+
+
+def test_llm_client_raises_llmclienterror_with_text_error(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr(
+        "ai_core.llm.client.time.sleep",
+        lambda duration: sleep_calls.append(duration),
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class AlwaysFail:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+
+            class Resp:
+                status_code = 503
+                headers: dict[str, str] = {}
+                text = "service unavailable"
+
+                def json(self):
+                    raise ValueError("no json")
+
+            return Resp()
+
+    handler = AlwaysFail()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(LlmClientError) as excinfo:
+        call("simple-query", "secret", metadata)
+
+    assert handler.calls == 3
+    err = excinfo.value
+    assert err.detail == "service unavailable"
+    assert err.code is None
+    assert err.status == 503
+    assert str(err) == "service unavailable (status=503)"
+    assert sleep_calls == [1, 2]
+
+
+def test_llm_client_raises_rate_limit_error_with_json_body(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr("ai_core.llm.client.random.uniform", lambda a, b: 0.0)
+    monkeypatch.setattr(
+        "ai_core.llm.client.time.sleep",
+        lambda duration: sleep_calls.append(duration),
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class AlwaysRateLimited:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+
+            class Resp:
+                status_code = 429
+                headers: dict[str, str] = {}
+                text = ""
+
+                def json(self):
+                    return {"detail": "slow down", "code": "rate_limit", "status": 429}
+
+            return Resp()
+
+    handler = AlwaysRateLimited()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(RateLimitError) as excinfo:
+        call("simple-query", "secret", metadata)
+
+    assert handler.calls == 3
+    err = excinfo.value
+    assert err.detail == "slow down"
+    assert err.code == "rate_limit"
+    assert err.status == 429
+    assert str(err) == "slow down (status=429, code=rate_limit)"
+    assert sleep_calls == [1.0, 2.0]
+
+
+def test_llm_client_raises_rate_limit_error_with_text_body(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    sleep_calls: list[float] = []
+
+    monkeypatch.setattr("ai_core.llm.client.random.uniform", lambda a, b: 0.0)
+    monkeypatch.setattr(
+        "ai_core.llm.client.time.sleep",
+        lambda duration: sleep_calls.append(duration),
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class AlwaysRateLimited:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+
+            class Resp:
+                status_code = 429
+                headers: dict[str, str] = {}
+                text = "too many"
+
+                def json(self):
+                    raise ValueError("not json")
+
+            return Resp()
+
+    handler = AlwaysRateLimited()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(RateLimitError) as excinfo:
+        call("simple-query", "secret", metadata)
+
+    assert handler.calls == 3
+    err = excinfo.value
+    assert err.detail == "too many"
+    assert err.code is None
+    assert err.status == 429
+    assert str(err) == "too many (status=429)"
+    assert sleep_calls == [1.0, 2.0]

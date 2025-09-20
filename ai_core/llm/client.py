@@ -17,6 +17,42 @@ from .routing import resolve
 logger = logging.getLogger(__name__)
 
 
+class LlmClientError(Exception):
+    """Base exception for LLM client errors."""
+
+    def __init__(
+        self,
+        detail: str | None = None,
+        *,
+        status: int | None = None,
+        code: str | None = None,
+    ) -> None:
+        self.detail = detail
+        self.status = status
+        self.code = code
+        message = detail or "LLM client error"
+        parts: list[str] = []
+        if status is not None:
+            parts.append(f"status={status}")
+        if code:
+            parts.append(f"code={code}")
+        if parts:
+            message = f"{message} ({', '.join(parts)})"
+        super().__init__(message)
+
+
+class RateLimitError(LlmClientError):
+    """Raised when the LLM client is rate limited."""
+
+
+def _safe_json(resp: requests.Response) -> Dict[str, Any]:
+    try:
+        data = resp.json()
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
 
@@ -56,6 +92,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
     timeout = 20
     for attempt in range(max_retries):
+        resp: requests.Response | None = None
         attempt_headers = headers.copy()
         attempt_headers["Idempotency-Key"] = idempotency_key
         if attempt > 0:
@@ -75,7 +112,15 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning("llm 5xx response", extra={"status": status})
             if attempt == max_retries - 1:
                 logger.warning("llm retries exhausted", extra={"status": status})
-                raise ValueError("llm error") from None
+                payload = _safe_json(resp)
+                detail = payload.get("detail") or (
+                    (resp.text or "").strip() if resp is not None else None
+                )
+                status_val = payload.get("status") or status
+                code = payload.get("code")
+                raise LlmClientError(
+                    detail or "LLM client error", status=status_val, code=code
+                ) from None
             time.sleep(min(5, 2**attempt))
             continue
 
@@ -83,7 +128,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning("llm request error", exc_info=err)
             if attempt == max_retries - 1:
                 logger.warning("llm retries exhausted", extra={"status": status})
-                raise ValueError("llm error") from None
+                raise LlmClientError(str(err) or "LLM client error") from err
             time.sleep(min(5, 2**attempt))
             continue
 
@@ -91,7 +136,15 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             logger.warning("llm rate limited", extra={"status": status})
             if attempt == max_retries - 1:
                 logger.warning("llm retries exhausted", extra={"status": status})
-                raise ValueError("llm error") from None
+                payload = _safe_json(resp)
+                detail = payload.get("detail") or (
+                    (resp.text or "").strip() if resp is not None else None
+                )
+                status_val = payload.get("status") or status
+                code = payload.get("code")
+                raise RateLimitError(
+                    detail or "LLM client error", status=status_val, code=code
+                ) from None
 
             retry_after_raw = resp.headers.get("Retry-After") if resp else None
             sleep_for: float | None = None
@@ -119,7 +172,15 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
         if status and 400 <= status < 500:
             logger.warning("llm 4xx response", extra={"status": status})
-            raise ValueError("llm error")
+            payload = _safe_json(resp)
+            detail = payload.get("detail") or (
+                (resp.text or "").strip() if resp is not None else None
+            )
+            status_val = payload.get("status") or status
+            code = payload.get("code")
+            raise LlmClientError(
+                detail or "LLM client error", status=status_val, code=code
+            )
 
         data = resp.json()
         break
