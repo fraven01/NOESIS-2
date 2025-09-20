@@ -220,3 +220,4 @@ theme/static/css/output.css
 merge_models.sh
 test_output.txt
 k8s/secret.yaml
+litellm-proxy-key.json
