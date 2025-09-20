@@ -35,7 +35,7 @@ cd NOESIS-2
    - `npm run dev:reset` setzt die Umgebung vollständig neu auf (inkl. Volumes löschen).
    - `npm run dev:down` stoppt und entfernt alle Container samt Volumes.
 
-Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/` erreichbar. Die AI-Core-Endpunkte laufen unter `http://localhost:8000/ai/` und erwarten `X-Tenant-ID` sowie `X-Case-ID` Header.
+Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/` erreichbar. Die AI-Core-Endpunkte laufen unter `http://localhost:8000/ai/` und erwarten die Header `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key`.
 
 ## 4. Manuelles Setup ohne Docker (Fallback)
 1. Python-Umgebung anlegen:

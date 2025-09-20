@@ -26,7 +26,7 @@ KI-gestützte SaaS-Plattform zur prozessualen Unterstützung der betrieblichen M
 ## AI Core
 
 ### API-Endpunkte
-Alle Pfade erfordern die Header `X-Tenant-ID` und `X-Case-ID`. Antworten enthalten Standard-Trace-Header und optionale `gaps` oder `citations`.
+Alle Pfade erfordern die Header `X-Tenant-ID`, `X-Case-ID` sowie `Idempotency-Key`. Antworten enthalten Standard-Trace-Header und optionale `gaps` oder `citations`. Der `Idempotency-Key` muss pro Mandant und Vorgang eindeutig sein, damit wiederholte POST-Aufrufe dedupliziert werden können.
 
 - `GET /ai/ping/` – einfacher Health-Check
 - `POST /ai/intake/` – Metadaten speichern und Eingangsbestätigung liefern
