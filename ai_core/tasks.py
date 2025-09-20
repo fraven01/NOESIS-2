@@ -20,8 +20,8 @@ VECTOR_CLIENT_FACTORY: Callable[[], PgVectorClient] = get_default_client
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
-    tenant = meta["tenant"]
-    case = meta["case"]
+    tenant = object_store.sanitize_identifier(meta["tenant"])
+    case = object_store.sanitize_identifier(meta["case"])
     return "/".join([tenant, case, *parts])
 
 

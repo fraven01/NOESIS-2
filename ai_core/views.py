@@ -14,7 +14,7 @@ from common.logging import bind_log_context
 
 from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
-from .infra.object_store import read_json, write_json
+from .infra.object_store import read_json, sanitize_identifier, write_json
 from .infra.resp import apply_std_headers
 
 
@@ -96,13 +96,17 @@ def _prepare_request(request: HttpRequest):
 
 def _load_state(tenant: str, case_id: str) -> dict:
     try:
-        return read_json(f"{tenant}/{case_id}/state.json")
+        safe_tenant = sanitize_identifier(tenant)
+        safe_case = sanitize_identifier(case_id)
+        return read_json(f"{safe_tenant}/{safe_case}/state.json")
     except FileNotFoundError:
         return {}
 
 
 def _save_state(tenant: str, case_id: str, state: dict) -> None:
-    write_json(f"{tenant}/{case_id}/state.json", state)
+    safe_tenant = sanitize_identifier(tenant)
+    safe_case = sanitize_identifier(case_id)
+    write_json(f"{safe_tenant}/{safe_case}/state.json", state)
 
 
 def _run_graph(request: HttpRequest, graph) -> JsonResponse:
