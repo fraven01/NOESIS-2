@@ -182,7 +182,7 @@ jobs:
       - name: Verify LiteLLM /health
         run: |
           BODY=$(mktemp)
-          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" "$SERVICE_URL/health")
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" "$SERVICE_URL/health/liveliness")
           echo "health_status=$STATUS"
           head -c 200 "$BODY" || true
       - name: Create LiteLLM virtual key
@@ -212,7 +212,7 @@ jobs:
         run: |
           AUTH_KEY="${LITELLM_VIRTUAL_KEY:-$LITELLM_MASTER_KEY}"
           BODY=$(mktemp)
-          CHAT='{"model":"vertex_ai/gemini-2.5-flash","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
+          CHAT='{"model":"vertex_ai/gemini-1.5-flash-001","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
           STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" \
             -X POST "$SERVICE_URL/v1/chat/completions" \
             -H "Authorization: Bearer $AUTH_KEY" \
