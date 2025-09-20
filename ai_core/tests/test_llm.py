@@ -33,6 +33,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     class FailOnce:
         def __init__(self):
             self.calls = 0
+            self.headers: list[str] = []
 
         def __call__(
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
@@ -43,6 +44,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
             assert headers["X-Case-ID"] == "c1"
             assert headers["X-Tenant-ID"] == "t1"
             assert headers["X-Key-Alias"] == "alias-01"
+            self.headers.append(headers["Idempotency-Key"])
             self.calls += 1
             if self.calls == 1:
 
@@ -90,3 +92,50 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert ledger_calls["meta"]["usage"]["in_tokens"] == 1
     assert "text" not in ledger_calls["meta"]
     assert fail_once.calls == 2
+    assert fail_once.headers == ["c1:simple-query:v1:1", "c1:simple-query:v1:2"]
+
+
+def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
+    metadata_v1 = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+    metadata_v2 = {**metadata_v1, "prompt_version": "v2"}
+
+    class CaptureHeaders:
+        def __init__(self):
+            self.headers: list[str] = []
+
+        def __call__(
+            self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
+        ):
+            self.headers.append(headers["Idempotency-Key"])
+
+            class Resp:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    capture = CaptureHeaders()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", capture)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "token")
+
+    from ai_core.infra import config as conf
+
+    conf.get_config.cache_clear()
+
+    call("simple-query", "prompt-1", metadata_v1)
+    call("simple-query", "prompt-1", metadata_v2)
+
+    assert capture.headers == ["c1:simple-query:v1:1", "c1:simple-query:v2:1"]
