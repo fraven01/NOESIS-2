@@ -1,25 +1,28 @@
 from __future__ import annotations
 
+from typing import Mapping
+
 from django.http import HttpResponse
 
 
-def apply_std_headers(
-    response: HttpResponse, trace_id: str, prompt_version: str | None = None
-) -> HttpResponse:
-    """Attach standard headers to a response.
+Meta = Mapping[str, str]
 
-    Parameters
-    ----------
-    response:
-        The response object to modify.
-    trace_id:
-        Trace identifier for linking logs and metrics.
-    prompt_version:
-        Version identifier for the prompt used to generate the response. Only
-        set when provided.
-    """
 
-    response["X-Trace-ID"] = trace_id
-    if prompt_version:
-        response["X-Prompt-Version"] = prompt_version
+def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
+    """Attach standard metadata headers to successful responses only."""
+
+    if not 200 <= response.status_code < 300:
+        return response
+
+    header_map = {
+        "X-Trace-ID": meta.get("trace_id"),
+        "X-Case-ID": meta.get("case"),
+        "X-Tenant-ID": meta.get("tenant"),
+        "X-Key-Alias": meta.get("key_alias"),
+    }
+
+    for header, value in header_map.items():
+        if value:
+            response[header] = value
+
     return response
