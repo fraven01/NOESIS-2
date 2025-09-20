@@ -33,6 +33,15 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     cfg = get_config()
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
+    propagated_headers = {
+        "X-Trace-ID": metadata.get("trace_id"),
+        "X-Case-ID": metadata.get("case"),
+        "X-Tenant-ID": metadata.get("tenant"),
+    }
+    key_alias = metadata.get("key_alias")
+    if key_alias:
+        propagated_headers["X-Key-Alias"] = key_alias
+    headers.update({k: v for k, v in propagated_headers.items() if v})
     payload = {
         "model": model_id,
         "messages": [{"role": "user", "content": prompt_safe}],

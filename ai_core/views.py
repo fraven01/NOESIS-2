@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from uuid import uuid4
 
 from django.conf import settings
@@ -38,9 +39,13 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     return schema_name
 
 
+KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
 def _prepare_request(request: HttpRequest):
     tenant_header = request.headers.get("X-Tenant-ID")
     case_id = request.headers.get("X-Case-ID")
+    key_alias_header = request.headers.get("X-Key-Alias")
 
     tenant = _resolve_tenant_id(request)
     if not tenant:
@@ -55,9 +60,17 @@ def _prepare_request(request: HttpRequest):
     if not rate_limit.check(tenant):
         return None, JsonResponse({"detail": "rate limit"}, status=429)
 
+    key_alias = None
+    if key_alias_header is not None:
+        key_alias = key_alias_header.strip()
+        if not key_alias or not KEY_ALIAS_RE.fullmatch(key_alias):
+            return None, JsonResponse({"detail": "invalid key alias header"}, status=400)
+
     trace_id = uuid4().hex
     assert_case_active(tenant, case_id)
     meta = {"tenant": tenant, "case": case_id, "trace_id": trace_id}
+    if key_alias:
+        meta["key_alias"] = key_alias
     return meta, None
 
 
