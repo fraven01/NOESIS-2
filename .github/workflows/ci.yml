@@ -380,15 +380,7 @@ jobs:
             --data-raw "$DATA")
           echo "key_create_status=$STATUS"
           head -c 200 "$BODY" || true
-          VIRTUAL_KEY=$(python - <<'PY'
-import json, sys
-try:
-    data = json.load(open(sys.argv[1]))
-    print(data.get('key') or data.get('api_key') or '')
-except Exception:
-    print('')
-PY
- "$BODY")
+          VIRTUAL_KEY=$(python -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('key') or d.get('api_key') or '')" "$BODY")
           if [ -n "$VIRTUAL_KEY" ]; then
             echo "LITELLM_VIRTUAL_KEY=$VIRTUAL_KEY" >> "$GITHUB_ENV"
           else
