@@ -160,7 +160,25 @@ jobs:
     env:
       SERVICE_URL: ${{ needs.deploy-litellm.outputs.service_url }}
       LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+      GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      GCP_REGION: ${{ secrets.GCP_REGION }}
     steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - name: Resolve SERVICE_URL if empty
+        shell: bash
+        run: |
+          if [ -z "${SERVICE_URL:-}" ]; then
+            URL=$(gcloud run services describe litellm-proxy --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')
+            echo "Resolved SERVICE_URL=$URL"
+            echo "SERVICE_URL=$URL" >> "$GITHUB_ENV"
+          fi
       - name: Verify LiteLLM /health
         run: |
           BODY=$(mktemp)
