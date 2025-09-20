@@ -1,6 +1,13 @@
-import pytest
+import io
+import logging
+from types import SimpleNamespace
 
+import pytest
+from django.test import RequestFactory
+
+from ai_core import views
 from ai_core.infra import object_store, rate_limit
+from common import logging as common_logging
 
 
 class DummyRedis:
@@ -158,3 +165,57 @@ def test_sysdesc_requires_no_missing(client, monkeypatch, tmp_path, test_tenant_
     assert resp_desc.status_code == 200
     body = resp_desc.json()
     assert "description" in body
+
+
+def test_request_logging_context_includes_metadata(
+    monkeypatch,
+    tmp_path,
+    settings,
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    log_buffer = io.StringIO()
+    handler = logging.StreamHandler(log_buffer)
+    handler.addFilter(common_logging.RequestTaskContextFilter())
+    formatter = logging.Formatter(settings.LOGGING["formatters"]["verbose"]["format"])
+    handler.setFormatter(formatter)
+
+    logger = logging.getLogger("ai_core.tests.graph")
+    original_propagate = logger.propagate
+    logger.propagate = False
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+
+    class _LoggingGraph:
+        def run(self, state, meta):
+            logger.info("graph-run")
+            return state, {"ok": True}
+
+    monkeypatch.setattr(views, "info_intake", _LoggingGraph())
+
+    factory = RequestFactory()
+    request = factory.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        HTTP_X_TENANT_ID="autotest",
+        HTTP_X_CASE_ID="case-123",
+        HTTP_X_KEY_ALIAS="alias-1234",
+    )
+    request.tenant = SimpleNamespace(schema_name="autotest")
+
+    try:
+        resp = views.intake(request)
+    finally:
+        logger.removeHandler(handler)
+        logger.propagate = original_propagate
+
+    assert resp.status_code == 200
+
+    output = log_buffer.getvalue()
+    assert "graph-run" in output
+    assert "trace=-" not in output
+    assert "case=-" not in output
+    assert "tenant=-" not in output
+    assert "key_alias=-" not in output

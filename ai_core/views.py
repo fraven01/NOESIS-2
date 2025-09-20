@@ -10,6 +10,8 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
 
+from common.logging import log_context
+
 from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
 from .infra.object_store import read_json, write_json
@@ -85,6 +87,15 @@ def _save_state(tenant: str, case_id: str, state: dict) -> None:
     write_json(f"{tenant}/{case_id}/state.json", state)
 
 
+def _log_context_kwargs(meta: dict[str, str]) -> dict[str, str | None]:
+    return {
+        "trace_id": meta.get("trace_id"),
+        "case_id": meta.get("case"),
+        "tenant": meta.get("tenant"),
+        "key_alias": meta.get("key_alias"),
+    }
+
+
 def _run_graph(request: HttpRequest, graph) -> JsonResponse:
     meta, error = _prepare_request(request)
     if error:
@@ -100,7 +111,8 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
             return JsonResponse({"detail": "invalid json"}, status=400)
 
     try:
-        new_state, result = graph.run(state, meta)
+        with log_context(**_log_context_kwargs(meta)):
+            new_state, result = graph.run(state, meta)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=400)
     except Exception:
@@ -118,7 +130,8 @@ def ping(request: HttpRequest) -> JsonResponse:
     meta, error = _prepare_request(request)
     if error:
         return error
-    response = JsonResponse({"ok": True})
+    with log_context(**_log_context_kwargs(meta)):
+        response = JsonResponse({"ok": True})
     return apply_std_headers(response, meta["trace_id"])
 
 
