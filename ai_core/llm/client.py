@@ -12,6 +12,7 @@ import requests
 from ai_core.infra.config import get_config
 from ai_core.infra.pii import mask_prompt
 from ai_core.infra import ledger
+from common.logging import mask_value
 from .routing import resolve
 
 logger = logging.getLogger(__name__)
@@ -91,6 +92,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     case_id = metadata.get("case") or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
     timeout = cfg.timeouts.get(label, 20)
+    log_extra = {
+        "trace_id": mask_value(metadata.get("trace_id")),
+        "case_id": mask_value(metadata.get("case")),
+        "tenant": mask_value(metadata.get("tenant")),
+        "key_alias": mask_value(metadata.get("key_alias")),
+    }
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()
@@ -109,9 +116,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             err = None
 
         if status and 500 <= status < 600:
-            logger.warning("llm 5xx response", extra={"status": status})
+            logger.warning(
+                "llm 5xx response", extra={**log_extra, "status": status}
+            )
             if attempt == max_retries - 1:
-                logger.warning("llm retries exhausted", extra={"status": status})
+                logger.warning(
+                    "llm retries exhausted", extra={**log_extra, "status": status}
+                )
                 payload = _safe_json(resp)
                 detail = payload.get("detail") or (
                     (resp.text or "").strip() if resp is not None else None
@@ -125,17 +136,27 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if err is not None:
-            logger.warning("llm request error", exc_info=err)
+            logger.warning(
+                "llm request error",
+                exc_info=err,
+                extra={**log_extra, "status": status},
+            )
             if attempt == max_retries - 1:
-                logger.warning("llm retries exhausted", extra={"status": status})
+                logger.warning(
+                    "llm retries exhausted", extra={**log_extra, "status": status}
+                )
                 raise LlmClientError(str(err) or "LLM client error") from err
             time.sleep(min(5, 2**attempt))
             continue
 
         if status == 429:
-            logger.warning("llm rate limited", extra={"status": status})
+            logger.warning(
+                "llm rate limited", extra={**log_extra, "status": status}
+            )
             if attempt == max_retries - 1:
-                logger.warning("llm retries exhausted", extra={"status": status})
+                logger.warning(
+                    "llm retries exhausted", extra={**log_extra, "status": status}
+                )
                 payload = _safe_json(resp)
                 detail = payload.get("detail") or (
                     (resp.text or "").strip() if resp is not None else None
@@ -171,7 +192,9 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if status and 400 <= status < 500:
-            logger.warning("llm 4xx response", extra={"status": status})
+            logger.warning(
+                "llm 4xx response", extra={**log_extra, "status": status}
+            )
             payload = _safe_json(resp)
             detail = payload.get("detail") or (
                 (resp.text or "").strip() if resp is not None else None
