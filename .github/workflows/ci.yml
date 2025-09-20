@@ -1,11 +1,9 @@
 name: CI
-
 on:
   pull_request:
     branches: [ "main" ]
   push:
     branches: [ "main" ]
-
 jobs:
   verify-secrets:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -17,7 +15,6 @@ jobs:
         run: |
           sudo apt-get update -y >/dev/null 2>&1
           sudo apt-get install -y jq >/dev/null 2>&1
-
       - name: Verify GCP Credentials JSON structure
         shell: bash
         run: |
@@ -32,7 +29,6 @@ jobs:
           if [ "$PARSED_PROJECT_ID" = "null" ] || [ -z "$PARSED_PROJECT_ID" ]; then
             echo "::error::Could not parse project_id from GCP_CREDENTIALS JSON."; exit 1;
           fi
-
       - name: Verify simple string secrets
         shell: bash
         run: |
@@ -41,18 +37,14 @@ jobs:
           echo "Project ID Length: ${#PROJECT_ID}"
           echo "Project ID Starts with: ${PROJECT_ID:0:5}"
           echo "Project ID Ends with: ${PROJECT_ID: -5}"
-
           echo "Verifying GCP_REGION (non-sensitive)..."
           echo "Region: ${{ secrets.GCP_REGION }}"
-
           echo "Verifying GAR_REPOSITORY..."
           REPO="${{ secrets.GAR_REPOSITORY }}"
           echo "Repository Name Length: ${#REPO}"
-
           echo "Verifying CLOUD_SQL_CONNECTION_NAME..."
           CONN_NAME="${{ secrets.CLOUD_SQL_CONNECTION_NAME }}"
           echo "Connection Name Length: ${#CONN_NAME}"
-
       - name: Verify database secrets (length check only)
         shell: bash
         run: |
@@ -63,14 +55,12 @@ jobs:
           echo "Verifying REDIS_URL..."
           [ -n "${{ secrets.REDIS_URL }}" ] || { echo "::error::REDIS_URL is NOT set!"; exit 1; }
           echo "Core infrastructure secrets verified."
-
       - name: Verify Django SECRET_KEY (presence only)
         shell: bash
         run: |
           echo "Verifying SECRET_KEY..."
           [ -n "${{ secrets.SECRET_KEY }}" ] || { echo "::error::SECRET_KEY is NOT set!"; exit 1; }
           echo "SECRET_KEY presence verified."
-
   lint:
     name: Lint
     runs-on: ubuntu-latest
@@ -86,10 +76,8 @@ jobs:
             core.info(`head.ref: ${context.payload?.pull_request?.head?.ref || process.env.GITHUB_REF_NAME}`)
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Install ripgrep
         run: sudo apt-get update -y && sudo apt-get install -y ripgrep
-
       - name: Guard against legacy DB/Celery env lookups
         run: |
           if rg -n 'os\.getenv\("(?:DB_|CELERY_)' -g'*.py' .; then
@@ -100,7 +88,6 @@ jobs:
             echo "::error::Found legacy env(\"DB_/CELERY_\") usage.";
             exit 1;
           fi
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -109,26 +96,20 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
-
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
-
       - name: Install Python deps
         run: pip install -r requirements.txt -r requirements-dev.txt
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
           cache: "npm"
           cache-dependency-path: package-lock.json
-
       - name: Install Node deps
         run: npm ci
-
       - name: Run linters
         run: npm run lint
-
   test:
     name: Test (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -161,7 +142,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -170,46 +150,35 @@ jobs:
           cache-dependency-path: |
             requirements.txt
             requirements-dev.txt
-
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
-
       - name: Install Python deps
         run: pip install -r requirements.txt -r requirements-dev.txt
-
       - name: Ensure pgvector extension is available
         run: |
           sudo apt-get update -y && sudo apt-get install -y postgresql-client
           psql "postgresql://postgres:postgres@localhost:5432/postgres" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
-
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "lts/*"
           cache: "npm"
           cache-dependency-path: package-lock.json
-
       - name: Install Node deps
         run: npm ci
-
       - name: Run public (shared) migrations
         run: python manage.py migrate_schemas --shared
-
       - name: Create CI tenant
         run: python manage.py create_tenant --schema=ci --name="CI" --domain=ci.localhost
-
       - name: Run tenant migrations
         run: python manage.py migrate_schemas --tenant
-
       - name: Run tests
         run: python -m pytest -q --cov=noesis2 --cov-report=xml
-
       - name: Upload coverage report
         uses: actions/upload-artifact@v4
         with:
           name: coverage-xml
           path: coverage.xml
-
   build:
     name: Build and Push Image
     runs-on: ubuntu-latest
@@ -221,30 +190,23 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Configure Docker for Artifact Registry
         run: gcloud auth configure-docker "$REGISTRY_HOST" -q
         env:
           REGISTRY_HOST: ${{ env.REGISTRY_HOST }}
-
       - name: Build image
         run: docker build -t "$IMAGE" -f Dockerfile .
-
       - name: Push image
         run: docker push "$IMAGE"
-
       # Image tag is deterministic (${GITHUB_SHA}); downstream jobs can rebuild it.
-
   build-push-litellm:
     name: Publish LiteLLM proxy image
     runs-on: ubuntu-latest
@@ -273,9 +235,7 @@ jobs:
           docker pull "$SOURCE_IMAGE"
           docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
           docker push "$TARGET_IMAGE"
-          printf 'image=%s
-' "$TARGET_IMAGE" >> "$GITHUB_OUTPUT"
-
+          echo "image=$TARGET_IMAGE" >> "$GITHUB_OUTPUT"
   litellm-migrate:
     name: Run LiteLLM migrations
     runs-on: ubuntu-latest
@@ -301,8 +261,7 @@ jobs:
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
           LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}"
-          printf 'LITELLM_DATABASE_URL=%s
-' "$LITELLM_DATABASE_URL" >> "$GITHUB_ENV"
+          echo "LITELLM_DATABASE_URL=$LITELLM_DATABASE_URL" >> "$GITHUB_ENV"
       - name: Deploy LiteLLM migration job
         env:
           IMAGE: ${{ needs.build-push-litellm.outputs.image }}
@@ -343,7 +302,6 @@ jobs:
           else
             echo "No LiteLLM migration execution found"
           fi
-
   deploy-litellm:
     name: Deploy LiteLLM proxy
     runs-on: ubuntu-latest
@@ -391,10 +349,8 @@ jobs:
             --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL",LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY",VERTEXAI_PROJECT="$GCP_PROJECT_ID",VERTEXAI_LOCATION="$VERTEXAI_LOCATION"
           echo "Cloud Run service account carries Vertex AI User role (configured out-of-band)."
           SERVICE_URL=$(gcloud run services describe litellm-proxy --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')
-          printf 'service_url=%s
-' "$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
           echo "LiteLLM service URL: $SERVICE_URL"
-
   smoke-litellm:
     name: Smoke test LiteLLM proxy
     runs-on: ubuntu-latest
@@ -432,12 +388,10 @@ except Exception:
 PY
  "$BODY")
           if [ -n "$VIRTUAL_KEY" ]; then
-            printf 'LITELLM_VIRTUAL_KEY=%s
-' "$VIRTUAL_KEY" >> "$GITHUB_ENV"
+            echo "LITELLM_VIRTUAL_KEY=$VIRTUAL_KEY" >> "$GITHUB_ENV"
           else
             echo "Falling back to master key for smoke call"
-            printf 'LITELLM_VIRTUAL_KEY=%s
-' "$LITELLM_MASTER_KEY" >> "$GITHUB_ENV"
+            echo "LITELLM_VIRTUAL_KEY=$LITELLM_MASTER_KEY" >> "$GITHUB_ENV"
           fi
       - name: Chat completion smoke test
         env:
@@ -451,8 +405,6 @@ JSON
           )
           echo "chat_completion_status=$STATUS"
           head -c 200 "$BODY" || true
-
-
   migrate:
     name: Run DB Migrations
     runs-on: ubuntu-latest
@@ -472,12 +424,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Run migrations via Cloud Run Job
         env:
           IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
@@ -497,7 +447,6 @@ JSON
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
             --command python \
             --args manage.py,migrate_schemas,--noinput
-
   rag-migrate-staging:
     name: RAG Schema Migration (staging)
     runs-on: ubuntu-latest
@@ -517,12 +466,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Deploy RAG migrate job
         env:
           IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
@@ -542,7 +489,6 @@ JSON
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
             --command python \
             --args manage.py,apply_rag_schema
-
       - name: Execute RAG migrate job
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -552,7 +498,6 @@ JSON
             --project "$GCP_PROJECT_ID" \
             --region "$GCP_REGION" \
             --wait
-
   seed-staging:
     name: Seed Staging Data
     runs-on: ubuntu-latest
@@ -570,17 +515,14 @@ JSON
           echo "DATABASE_URL=postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}" >> "$GITHUB_ENV"
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Seed demo tenant and bind Cloud Run host
         env:
           IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
@@ -601,7 +543,6 @@ JSON
             --set-env-vars DJANGO_SETTINGS_MODULE=noesis2.settings.production,GOOGLE_CLOUD_PROJECT="$GCP_PROJECT_ID",CLOUD_SQL_CONNECTION_NAME="$CLOUD_SQL_CONNECTION_NAME",SECRET_KEY="$SECRET_KEY",DATABASE_URL="$DATABASE_URL",REDIS_URL="$REDIS_URL" \
             --command bash \
             --args -lc,"python manage.py bootstrap_public_tenant --domain localhost && python manage.py create_demo_data --domain=\"$STAGING_HOST\""
-
       - name: Execute seed job
         env:
           GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
@@ -612,7 +553,6 @@ JSON
             --region "$GCP_REGION" \
             --wait
           gcloud run jobs execute noesis2-migrate --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --wait
-
   deploy-staging:
     name: Deploy to Cloud Run (staging)
     runs-on: ubuntu-latest
@@ -634,12 +574,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Deploy to Cloud Run (staging)
         uses: google-github-actions/deploy-cloudrun@v2.1.0
         with:
@@ -655,7 +593,6 @@ JSON
             SECRET_KEY=${{ secrets.SECRET_KEY }}
             DATABASE_URL=${{ env.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
-
   smoke-staging:
     name: Smoke Test (staging)
     runs-on: ubuntu-latest
@@ -666,12 +603,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Resolve service URL
         id: svc
         env:
@@ -682,14 +617,12 @@ JSON
             --project "$GCP_PROJECT_ID" --region "$GCP_REGION" \
             --format='value(status.url)')
           echo "url=$URL" >> "$GITHUB_OUTPUT"
-
       - name: Ping /ai/ping/
         env:
           URL: ${{ steps.svc.outputs.url }}
         run: |
           echo "Pinging: ${URL}/ai/ping/"
           curl -fsSI -H 'X-Tenant-Schema: demo' -H 'X-Tenant-ID: demo-tenant' -H 'X-Case-ID: smoke' "$URL/ai/ping/" | head -n 1
-
       - name: POST /ai/scope
         env:
           URL: ${{ steps.svc.outputs.url }}
@@ -699,7 +632,6 @@ JSON
             -H 'X-Tenant-Schema: demo' -H 'X-Tenant-ID: demo-tenant' -H 'X-Case-ID: smoke' \
             --data '{"hello":"world"}' \
             "$URL/ai/scope/" | head -c 200; echo
-
   deploy-worker-staging:
     name: Deploy Worker (staging) [disabled; moving to GKE]
     runs-on: ubuntu-latest
@@ -721,12 +653,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Deploy Worker service (staging)
         uses: google-github-actions/deploy-cloudrun@v2.1.0
         with:
@@ -747,7 +677,6 @@ JSON
             DATABASE_URL=${{ env.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
           # Note: Cloud SQL attachment is handled via flags; no metadata YAML.
-
   deploy-beat-staging:
     name: Deploy Beat (staging) [disabled; moving to GKE]
     runs-on: ubuntu-latest
@@ -760,12 +689,10 @@ JSON
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Deploy Beat service (staging)
         uses: google-github-actions/deploy-cloudrun@v2.1.0
         with:
@@ -786,7 +713,6 @@ JSON
             DATABASE_URL=${{ env.DATABASE_URL }}
             REDIS_URL=${{ secrets.REDIS_URL }}
           # Note: Cloud SQL attachment is handled via flags; no metadata YAML.
-
   deploy-gke-workers:
     name: Deploy Workers to GKE
     runs-on: ubuntu-latest
@@ -795,28 +721,23 @@ JSON
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Google Cloud Auth
         uses: google-github-actions/auth@v2
         with:
           credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
       - name: Set up gcloud SDK
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-
       - name: Get GKE credentials
         uses: google-github-actions/get-gke-credentials@v2
         with:
           cluster_name: ${{ secrets.GKE_CLUSTER_NAME }}
           location: ${{ secrets.GKE_LOCATION }}
-
       - name: Create namespace & SA (idempotent)
         run: |
           kubectl apply -f k8s/namespace.yaml
           kubectl apply -f k8s/serviceaccount.yaml
-
       - name: Create/Update app-secrets from GitHub Secrets
         env:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
@@ -834,7 +755,6 @@ JSON
             --from-literal=DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@127.0.0.1:5432/${DB_NAME}" \
             --from-literal=REDIS_URL="$REDIS_URL" \
             --dry-run=client -o yaml | kubectl apply -f -
-
       - name: Apply worker/beat manifests
         env:
           IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/noesis2-web:${{ github.sha }}
@@ -849,7 +769,6 @@ JSON
               -e "s#PROJECT:REGION:INSTANCE#${INSTANCE}#g" \
               k8s/beat-deployment.yaml | kubectl apply -f -
           kubectl apply -f k8s/worker-hpa.yaml
-
       - name: Wait for rollouts (with diagnostics)
         run: |
           set +e
@@ -873,7 +792,3 @@ JSON
             kubectl logs -n noesis2 deploy/celery-beat --all-containers --tail=200 || true
             exit $STATUS
           fi
-
-
-
-
