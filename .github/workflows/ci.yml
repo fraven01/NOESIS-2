@@ -245,6 +245,214 @@ jobs:
 
       # Image tag is deterministic (${GITHUB_SHA}); downstream jobs can rebuild it.
 
+  build-push-litellm:
+    name: Publish LiteLLM proxy image
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      image: ${{ steps.publish.outputs.image }}
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev -q
+      - name: Mirror upstream LiteLLM database image
+        id: publish
+        # Using litellm-database image keeps Prisma schema packaged to avoid ModuleNotFoundError: prisma.
+        env:
+          SOURCE_IMAGE: ghcr.io/berriai/litellm-database:main-stable
+          TARGET_IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/litellm-proxy-db:${{ github.sha }}
+        run: |
+          docker pull "$SOURCE_IMAGE"
+          docker tag "$SOURCE_IMAGE" "$TARGET_IMAGE"
+          docker push "$TARGET_IMAGE"
+          printf 'image=%s
+' "$TARGET_IMAGE" >> "$GITHUB_OUTPUT"
+
+  litellm-migrate:
+    name: Run LiteLLM migrations
+    runs-on: ubuntu-latest
+    needs: build-push-litellm
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - &.litellm-dburl
+        name: Build LiteLLM DATABASE_URL
+        shell: bash
+        env:
+          DB_USER: ${{ secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.DB_NAME }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+        run: |
+          enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
+          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}"
+          printf 'LITELLM_DATABASE_URL=%s
+' "$LITELLM_DATABASE_URL" >> "$GITHUB_ENV"
+      - name: Deploy LiteLLM migration job
+        env:
+          IMAGE: ${{ needs.build-push-litellm.outputs.image }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+        run: |
+          gcloud run jobs deploy litellm-migrate \
+            --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --service-account "litellm-proxy@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL" \
+            --command bash \
+            --args=-lc \
+            --args="litellm prisma migrate deploy" \
+            --task-timeout=600s \
+            --max-retries=0
+      - name: Execute LiteLLM migration job
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          gcloud run jobs execute litellm-migrate \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --wait
+      - name: Dump LiteLLM migration logs
+        if: always()
+        env:
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+        run: |
+          EXEC_ID=$(gcloud run jobs executions list --job litellm-migrate --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --limit=1 --format='value(name)')
+          if [ -n "$EXEC_ID" ]; then
+            gcloud run jobs executions logs read "$EXEC_ID" --project "$GCP_PROJECT_ID" --region "$GCP_REGION" || true
+          else
+            echo "No LiteLLM migration execution found"
+          fi
+
+  deploy-litellm:
+    name: Deploy LiteLLM proxy
+    runs-on: ubuntu-latest
+    needs: litellm-migrate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    outputs:
+      service_url: ${{ steps.deploy.outputs.service_url }}
+    steps:
+      - name: Google Cloud Auth
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+      - name: Set up gcloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+      - *.litellm-dburl
+      - name: Deploy LiteLLM service
+        id: deploy
+        env:
+          IMAGE: ${{ needs.build-push-litellm.outputs.image }}
+          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+          GCP_REGION: ${{ secrets.GCP_REGION }}
+          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
+          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+          VERTEXAI_LOCATION: ${{ secrets.VERTEXAI_LOCATION }}
+          PORT: 8080
+        # Cloud SQL unix-domain socket is more stable than TCP in Cloud Run and avoids IP allowlisting.
+        # Forcing the litellm CLI ensures it binds to $PORT, preventing startup probe failures.
+        run: |
+          gcloud run deploy litellm-proxy \
+            --image "$IMAGE" \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --service-account "litellm-proxy@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+            --allow-unauthenticated \
+            --add-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
+            --cpu=1 \
+            --memory=1Gi \
+            --concurrency=80 \
+            --command litellm \
+            --args="--host=0.0.0.0" \
+            --args="--port=${PORT:-8080}" \
+            --args="--num_workers=1" \
+            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL",LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY",VERTEXAI_PROJECT="$GCP_PROJECT_ID",VERTEXAI_LOCATION="$VERTEXAI_LOCATION"
+          echo "Cloud Run service account carries Vertex AI User role (configured out-of-band)."
+          SERVICE_URL=$(gcloud run services describe litellm-proxy --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')
+          printf 'service_url=%s
+' "$SERVICE_URL" >> "$GITHUB_OUTPUT"
+          echo "LiteLLM service URL: $SERVICE_URL"
+
+  smoke-litellm:
+    name: Smoke test LiteLLM proxy
+    runs-on: ubuntu-latest
+    needs: deploy-litellm
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      SERVICE_URL: ${{ needs.deploy-litellm.outputs.service_url }}
+      LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
+    steps:
+      - name: Verify LiteLLM /health
+        run: |
+          BODY=$(mktemp)
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" "$SERVICE_URL/health")
+          echo "health_status=$STATUS"
+          head -c 200 "$BODY" || true
+      - name: Create LiteLLM virtual key
+        env:
+          SERVICE_URL: ${{ env.SERVICE_URL }}
+          LITELLM_MASTER_KEY: ${{ env.LITELLM_MASTER_KEY }}
+        run: |
+          BODY=$(mktemp)
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}"             -X POST "$SERVICE_URL/key/create"             -H "Authorization: Bearer $LITELLM_MASTER_KEY"             -H "Content-Type: application/json"             --data-binary @- <<'JSON'
+{"key_alias":"ci-smoke-key","max_budget":1.0,"budget_duration":"monthly","block_after_limit":true}
+JSON
+          )
+          echo "key_create_status=$STATUS"
+          head -c 200 "$BODY" || true
+          VIRTUAL_KEY=$(python - <<'PY'
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+    print(data.get('key') or data.get('api_key') or '')
+except Exception:
+    print('')
+PY
+ "$BODY")
+          if [ -n "$VIRTUAL_KEY" ]; then
+            printf 'LITELLM_VIRTUAL_KEY=%s
+' "$VIRTUAL_KEY" >> "$GITHUB_ENV"
+          else
+            echo "Falling back to master key for smoke call"
+            printf 'LITELLM_VIRTUAL_KEY=%s
+' "$LITELLM_MASTER_KEY" >> "$GITHUB_ENV"
+          fi
+      - name: Chat completion smoke test
+        env:
+          SERVICE_URL: ${{ env.SERVICE_URL }}
+        run: |
+          AUTH_KEY="${LITELLM_VIRTUAL_KEY:-$LITELLM_MASTER_KEY}"
+          BODY=$(mktemp)
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}"             -X POST "$SERVICE_URL/v1/chat/completions"             -H "Authorization: Bearer $AUTH_KEY"             -H "Content-Type: application/json"             --data-binary @- <<'JSON'
+{"model":"vertex_ai/gemini-2.5-flash","messages":[{"role":"user","content":"ping"}],"max_tokens":8}
+JSON
+          )
+          echo "chat_completion_status=$STATUS"
+          head -c 200 "$BODY" || true
+
+
   migrate:
     name: Run DB Migrations
     runs-on: ubuntu-latest
@@ -579,91 +787,6 @@ jobs:
             REDIS_URL=${{ secrets.REDIS_URL }}
           # Note: Cloud SQL attachment is handled via flags; no metadata YAML.
 
-  deploy-litellm-staging:
-    name: Deploy LiteLLM (staging)
-    runs-on: ubuntu-latest
-    needs: deploy-staging
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    steps:
-      - name: Build LITELLM_DATABASE_URL
-        shell: bash
-        env:
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          LITELLM_DB_NAME: ${{ secrets.LITELLM_DB_NAME }}
-          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-        run: |
-          : "${LITELLM_DB_NAME:=litellm}"
-          enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
-          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@/${LITELLM_DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}&connect_timeout=60"
-          echo "[diag] Encoded DB_PASSWORD: ${enc_pwd}"
-          echo "[diag] LITELLM_DATABASE_URL (FULL): ${LITELLM_DATABASE_URL}"
-          echo "LITELLM_DATABASE_URL=${LITELLM_DATABASE_URL}" >> "$GITHUB_ENV"
-      - name: Google Cloud Auth
-        uses: google-github-actions/auth@v2
-        with:
-          credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-
-      - name: Set up gcloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-        with:
-          project_id: ${{ secrets.GCP_PROJECT_ID }}
-
-      - name: Ensure LiteLLM database exists (Cloud SQL)
-        shell: bash
-        env:
-          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-          LITELLM_DB_NAME: ${{ secrets.LITELLM_DB_NAME }}
-        run: |
-          : "${LITELLM_DB_NAME:=litellm}"
-          INSTANCE=${CLOUD_SQL_CONNECTION_NAME##*:}
-          echo "Ensuring DB '$LITELLM_DB_NAME' exists on instance '$INSTANCE'"
-          gcloud sql databases describe "$LITELLM_DB_NAME" --instance "$INSTANCE" --project ${{ secrets.GCP_PROJECT_ID }} >/dev/null 2>&1 \
-            || gcloud sql databases create "$LITELLM_DB_NAME" --instance "$INSTANCE" --project ${{ secrets.GCP_PROJECT_ID }}
-
-      - name: Mirror LiteLLM image to Artifact Registry
-        env:
-          AR_IMAGE: ${{ secrets.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ secrets.GAR_REPOSITORY }}/litellm:main-stable
-        run: |
-          gcloud auth configure-docker ${{ secrets.GCP_REGION }}-docker.pkg.dev -q
-          docker pull ghcr.io/berriai/litellm:main-stable
-          docker tag ghcr.io/berriai/litellm:main-stable "$AR_IMAGE"
-          docker push "$AR_IMAGE"
-          echo "LITELLM_AR_IMAGE=$AR_IMAGE" >> "$GITHUB_ENV"
-
-      - name: Deploy LiteLLM service (DIAGNOSTIC MODE)
-        env:
-          IMAGE: ${{ env.LITELLM_AR_IMAGE }}
-          GCP_PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-          GCP_REGION: ${{ secrets.GCP_REGION }}
-          CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
-          LITELLM_MASTER_KEY: ${{ secrets.LITELLM_MASTER_KEY }}
-          LITELLM_SALT_KEY: ${{ secrets.LITELLM_SALT_KEY }}
-          UI_USERNAME: ${{ secrets.LITELLM_UI_USERNAME }}
-          UI_PASSWORD: ${{ secrets.LITELLM_UI_PASSWORD }}
-          GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: |
-          set -euo pipefail
-          # Build a JSON env file to safely pass secrets (supports any characters)
-          python -c "import json, os; data={'LITELLM_MASTER_KEY': os.environ.get('LITELLM_MASTER_KEY',''), 'LITELLM_SALT_KEY': os.environ.get('LITELLM_SALT_KEY',''), 'DATABASE_URL': os.environ.get('LITELLM_DATABASE_URL',''), 'UI_USERNAME': os.environ.get('UI_USERNAME',''), 'UI_PASSWORD': os.environ.get('UI_PASSWORD',''), 'GOOGLE_API_KEY': os.environ.get('GOOGLE_API_KEY',''), 'GEMINI_API_KEY': os.environ.get('GEMINI_API_KEY','')}; json.dump(data, open('env.litellm.json','w'))"
-
-          gcloud run deploy litellm-staging \
-            --image "${IMAGE}" \
-            --project "${GCP_PROJECT_ID}" \
-            --region "${GCP_REGION}" \
-            --allow-unauthenticated \
-            --add-cloudsql-instances "${CLOUD_SQL_CONNECTION_NAME}" \
-            --cpu 1 \
-            --memory 2Gi \
-            --cpu-boost \
-            --timeout 600s \
-            --min-instances 1 \
-            --port 4000 \
-            --env-vars-file env.litellm.json \
-            --command python \
-            --args="-m,http.server,4000"
-          
   deploy-gke-workers:
     name: Deploy Workers to GKE
     runs-on: ubuntu-latest

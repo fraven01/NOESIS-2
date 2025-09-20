@@ -6,9 +6,9 @@ general_settings:
 model_list:
   - model_name: gemini-2.5-flash
     litellm_params:
-      model: gemini/gemini-2.5-flash
-      api_key: os.environ/GEMINI_API_KEY
+      # Use Vertex AI via ADC (no API key). Project/region come from env
+      # VERTEXAI_PROJECT and VERTEXAI_LOCATION provided by CI/Runtime.
+      model: vertex_ai/gemini-2.5-flash
   - model_name: gemini-2.5-pro
     litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_key: os.environ/GEMINI_API_KEY
+      model: vertex_ai/gemini-2.5-pro

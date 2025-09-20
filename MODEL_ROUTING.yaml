@@ -1,6 +1,6 @@
 labels:
-  default: google/gemini-2.5-flash
-  fast: google/gemini-2.5-flash
-  reasoning: google/gemini-2.5-pro
-  embedding: google/text-embedding-004
+  default: vertex_ai/gemini-2.5-flash
+  fast: vertex_ai/gemini-2.5-flash
+  reasoning: vertex_ai/gemini-2.5-pro
+  embedding: vertex_ai/text-embedding-004
 
