@@ -25,7 +25,10 @@ class DummyRedis:
 
 
 @pytest.mark.django_db
-def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_name):
+def test_ping_view_applies_rate_limit(
+    client, monkeypatch, test_tenant_schema_name
+):
+    tenant_schema = test_tenant_schema_name
     monkeypatch.setattr(rate_limit, "get_quota", lambda: 1)
     rate_limit._get_redis.cache_clear()
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
@@ -33,18 +36,18 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
     resp1 = client.get(
         "/ai/ping/",
         HTTP_X_CASE_ID="c",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
+        HTTP_X_TENANT_ID=tenant_schema,
     )
     assert resp1.status_code == 200
     assert resp1.json() == {"ok": True}
     assert resp1["X-Trace-ID"]
     assert resp1["X-Case-ID"] == "c"
-    assert resp1["X-Tenant-ID"] == test_tenant_schema_name
+    assert resp1["X-Tenant-ID"] == tenant_schema
     assert "X-Key-Alias" not in resp1
     resp2 = client.get(
         "/ai/ping/",
         HTTP_X_CASE_ID="c",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
+        HTTP_X_TENANT_ID=tenant_schema,
     )
     assert resp2.status_code == 429
     assert resp2.json()["detail"] == "rate limit"
