@@ -90,7 +90,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = metadata.get("case") or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
-    timeout = 20
+    timeout = cfg.timeouts.get(label, 20)
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()

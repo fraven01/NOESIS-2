@@ -15,6 +15,7 @@ def test_get_config_reads_env(monkeypatch):
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
+    monkeypatch.setenv("LITELLM_TIMEOUTS", json.dumps({"fast": 5, "default": 30}))
 
     cfg = get_config()
     assert cfg.litellm_base_url == "http://litellm.local"
@@ -22,6 +23,7 @@ def test_get_config_reads_env(monkeypatch):
     assert cfg.redis_url == "redis://localhost:6379/0"
     assert cfg.langfuse_public_key == "pub"
     assert cfg.langfuse_secret_key == "sec"
+    assert cfg.timeouts == {"fast": 5, "default": 30}
 
 
 def test_apply_std_headers_sets_metadata_headers_for_success():
