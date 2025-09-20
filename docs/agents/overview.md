@@ -21,6 +21,8 @@ sequenceDiagram
     Queue-->>Web: Antwort speichern
 ```
 
+Jeder Aufruf muss die Header `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key` setzen. Die Werte werden in `meta` übernommen, sodass der Graph tenant-spezifisch arbeitet und doppelte POSTs anhand des `Idempotency-Key` ignorieren kann.
+
 ## Knoten und Guardrails
 | Node | Aufgabe | Guardrail |
 | --- | --- | --- |
