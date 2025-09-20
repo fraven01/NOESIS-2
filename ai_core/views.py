@@ -7,10 +7,10 @@ from uuid import uuid4
 from django.conf import settings
 from django.db import connection
 from django.http import HttpRequest, JsonResponse
-from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.http import require_POST
 
-from common.logging import log_context
+from common.logging import bind_log_context
 
 from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
@@ -74,6 +74,23 @@ def _prepare_request(request: HttpRequest):
     meta = {"tenant": tenant, "case": case_id, "trace_id": trace_id}
     if key_alias:
         meta["key_alias"] = key_alias
+
+    request.META["HTTP_X_TRACE_ID"] = trace_id
+    request.META["HTTP_X_CASE_ID"] = case_id
+    request.META["HTTP_X_TENANT_ID"] = tenant
+    if key_alias:
+        request.META["HTTP_X_KEY_ALIAS"] = key_alias
+    else:
+        request.META.pop("HTTP_X_KEY_ALIAS", None)
+
+    log_context = {
+        "trace_id": trace_id,
+        "case_id": case_id,
+        "tenant": tenant,
+        "key_alias": key_alias,
+    }
+    request.log_context = log_context
+    bind_log_context(**log_context)
     return meta, None
 
 
@@ -86,15 +103,6 @@ def _load_state(tenant: str, case_id: str) -> dict:
 
 def _save_state(tenant: str, case_id: str, state: dict) -> None:
     write_json(f"{tenant}/{case_id}/state.json", state)
-
-
-def _log_context_kwargs(meta: dict[str, str]) -> dict[str, str | None]:
-    return {
-        "trace_id": meta.get("trace_id"),
-        "case_id": meta.get("case"),
-        "tenant": meta.get("tenant"),
-        "key_alias": meta.get("key_alias"),
-    }
 
 
 def _run_graph(request: HttpRequest, graph) -> JsonResponse:
@@ -112,8 +120,7 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
             return JsonResponse({"detail": "invalid json"}, status=400)
 
     try:
-        with log_context(**_log_context_kwargs(meta)):
-            new_state, result = graph.run(state, meta)
+        new_state, result = graph.run(state, meta)
     except ValueError as exc:
         return JsonResponse({"detail": str(exc)}, status=400)
     except Exception:
@@ -130,8 +137,7 @@ def ping(request: HttpRequest) -> JsonResponse:
     meta, error = _prepare_request(request)
     if error:
         return error
-    with log_context(**_log_context_kwargs(meta)):
-        response = JsonResponse({"ok": True})
+    response = JsonResponse({"ok": True})
     return apply_std_headers(response, meta)
 
 
