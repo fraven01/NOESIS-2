@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from uuid import uuid4
 
+from django.conf import settings
+from django.db import connection
 from django.http import HttpRequest, JsonResponse
 from django.views.decorators.http import require_POST
 from django.views.decorators.csrf import csrf_exempt
@@ -18,11 +20,37 @@ def assert_case_active(tenant: str, case_id: str) -> None:
     return None
 
 
+def _resolve_tenant_id(request: HttpRequest) -> str | None:
+    """Derive the active tenant identifier for the current request."""
+
+    tenant_obj = getattr(request, "tenant", None)
+    schema_name = getattr(tenant_obj, "schema_name", None)
+    if not schema_name:
+        schema_name = getattr(connection, "schema_name", None)
+
+    if not schema_name:
+        return None
+
+    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+    if schema_name == public_schema:
+        return None
+
+    return schema_name
+
+
 def _prepare_request(request: HttpRequest):
-    tenant = request.headers.get("X-Tenant-ID")
+    tenant_header = request.headers.get("X-Tenant-ID")
     case_id = request.headers.get("X-Case-ID")
-    if not tenant or not case_id:
-        return None, JsonResponse({"detail": "missing headers"}, status=400)
+
+    tenant = _resolve_tenant_id(request)
+    if not tenant:
+        return None, JsonResponse({"detail": "tenant not resolved"}, status=400)
+
+    if tenant_header and tenant_header != tenant:
+        return None, JsonResponse({"detail": "tenant mismatch"}, status=400)
+
+    if not case_id:
+        return None, JsonResponse({"detail": "missing case header"}, status=400)
 
     if not rate_limit.check(tenant):
         return None, JsonResponse({"detail": "rate limit"}, status=429)

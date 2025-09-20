@@ -21,24 +21,57 @@ def test_ping_view_applies_rate_limit(client, monkeypatch):
     rate_limit._get_redis.cache_clear()
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
 
-    resp1 = client.get("/ai/ping/", HTTP_X_TENANT_ID="t", HTTP_X_CASE_ID="c")
+    resp1 = client.get("/ai/ping/", HTTP_X_CASE_ID="c")
     assert resp1.status_code == 200
     assert resp1.json() == {"ok": True}
     assert "X-Prompt-Version" not in resp1
-    resp2 = client.get("/ai/ping/", HTTP_X_TENANT_ID="t", HTTP_X_CASE_ID="c")
+    resp2 = client.get("/ai/ping/", HTTP_X_CASE_ID="c")
     assert resp2.status_code == 429
     assert resp2.json()["detail"] == "rate limit"
 
 
 @pytest.mark.django_db
-def test_missing_headers_returns_400(client):
-    resp = client.post("/ai/intake/", data={}, content_type="application/json")
+def test_missing_case_header_returns_400(client, test_tenant_schema_name):
+    resp = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
+    )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "missing headers"
+    assert resp.json()["detail"] == "missing case header"
 
 
 @pytest.mark.django_db
-def test_intake_persists_state_and_headers(client, monkeypatch, tmp_path):
+def test_tenant_header_mismatch_returns_400(client, test_tenant_schema_name):
+    resp = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        HTTP_X_TENANT_ID=f"{test_tenant_schema_name}-other",
+        HTTP_X_CASE_ID="c",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "tenant mismatch"
+
+
+@pytest.mark.django_db
+def test_missing_tenant_resolution_returns_400(client, monkeypatch):
+    monkeypatch.setattr("ai_core.views._resolve_tenant_id", lambda request: None)
+    resp = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        HTTP_X_CASE_ID="c",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "tenant not resolved"
+
+
+@pytest.mark.django_db
+def test_intake_persists_state_and_headers(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
@@ -46,19 +79,20 @@ def test_intake_persists_state_and_headers(client, monkeypatch, tmp_path):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
     assert resp.status_code == 200
     assert resp["X-Trace-ID"]
     assert "X-Prompt-Version" not in resp
+    assert resp.json()["tenant"] == test_tenant_schema_name
 
-    state = object_store.read_json("t/c/state.json")
-    assert state["meta"]["tenant"] == "t"
+    state = object_store.read_json(f"{test_tenant_schema_name}/c/state.json")
+    assert state["meta"]["tenant"] == test_tenant_schema_name
 
 
 @pytest.mark.django_db
-def test_scope_and_needs_flow(client, monkeypatch, tmp_path):
+def test_scope_and_needs_flow(client, monkeypatch, tmp_path, test_tenant_schema_name):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
@@ -66,7 +100,7 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
 
@@ -74,19 +108,19 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path):
         "/ai/scope/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
     assert resp_scope.status_code == 200
     assert resp_scope.json()["missing"] == ["scope"]
-    state = object_store.read_json("t/c/state.json")
+    state = object_store.read_json(f"{test_tenant_schema_name}/c/state.json")
     assert state["missing"] == ["scope"]
 
     resp_needs = client.post(
         "/ai/needs/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
     assert resp_needs.status_code == 200
@@ -94,27 +128,31 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path):
 
 
 @pytest.mark.django_db
-def test_sysdesc_requires_no_missing(client, monkeypatch, tmp_path):
+def test_sysdesc_requires_no_missing(client, monkeypatch, tmp_path, test_tenant_schema_name):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    object_store.write_json("t/c/state.json", {"missing": ["scope"]})
+    object_store.write_json(
+        f"{test_tenant_schema_name}/c/state.json", {"missing": ["scope"]}
+    )
     resp_skip = client.post(
         "/ai/sysdesc/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
     assert resp_skip.status_code == 200
     assert resp_skip.json()["missing"] == ["scope"]
 
-    object_store.write_json("t/c/state.json", {"missing": []})
+    object_store.write_json(
+        f"{test_tenant_schema_name}/c/state.json", {"missing": []}
+    )
     resp_desc = client.post(
         "/ai/sysdesc/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="t",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
         HTTP_X_CASE_ID="c",
     )
     assert resp_desc.status_code == 200
