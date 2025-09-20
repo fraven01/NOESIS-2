@@ -282,7 +282,7 @@ jobs:
             --region "$GCP_REGION" \
             --service-account "litellm-proxy@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
             --set-cloudsql-instances "$CLOUD_SQL_CONNECTION_NAME" \
-            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL" \
+            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL",STORE_MODEL_IN_DB="True" \
             --command bash \
             --args=-lc \
             --args="npx prisma migrate deploy || prisma migrate deploy" \
@@ -358,7 +358,7 @@ jobs:
             --args="--host=0.0.0.0" \
             --args="--port=${PORT:-8080}" \
             --args="--num_workers=1" \
-            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL",LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY",VERTEXAI_PROJECT="$GCP_PROJECT_ID",VERTEXAI_LOCATION="$VERTEXAI_LOCATION"
+            --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL",LITELLM_MASTER_KEY="$LITELLM_MASTER_KEY",VERTEXAI_PROJECT="$GCP_PROJECT_ID",VERTEXAI_LOCATION="$VERTEXAI_LOCATION",STORE_MODEL_IN_DB="True"
           echo "Cloud Run service account carries Vertex AI User role (configured out-of-band)."
           SERVICE_URL=$(gcloud run services describe litellm-proxy --project "$GCP_PROJECT_ID" --region "$GCP_REGION" --format='value(status.url)')
           echo "service_url=$SERVICE_URL" >> "$GITHUB_OUTPUT"
