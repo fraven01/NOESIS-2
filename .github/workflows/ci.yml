@@ -283,7 +283,7 @@ jobs:
             --set-env-vars DATABASE_URL="$LITELLM_DATABASE_URL" \
             --command bash \
             --args=-lc \
-            --args="litellm prisma migrate deploy" \
+            --args="npx prisma migrate deploy || prisma migrate deploy" \
             --task-timeout=600s \
             --max-retries=0
       - name: Execute LiteLLM migration job
