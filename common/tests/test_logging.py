@@ -1,8 +1,11 @@
 import logging
 
 import pytest
+from django.http import HttpResponse
+from django.test import RequestFactory
 
 from common import logging as common_logging
+from common.middleware import RequestLogContextMiddleware
 
 
 @pytest.fixture(autouse=True)
@@ -81,3 +84,31 @@ def test_handlers_apply_request_context_filter(settings):
 
     assert "request_task_context" in handler_filters
     assert "request_task_context" in json_filters
+
+
+def test_request_log_context_middleware_binds_and_clears():
+    factory = RequestFactory()
+    request = factory.get(
+        "/ai/ping/",
+        HTTP_X_TRACE_ID="trace-123",
+        HTTP_X_CASE_ID="case-456",
+        HTTP_X_TENANT_ID="tenant-789",
+        HTTP_X_KEY_ALIAS="alias-001",
+    )
+
+    observed: dict[str, str] = {}
+
+    def _view(inner_request):
+        nonlocal observed
+        observed = common_logging.get_log_context()
+        return HttpResponse("ok")
+
+    middleware = RequestLogContextMiddleware(_view)
+    response = middleware(request)
+
+    assert response.status_code == 200
+    assert observed["trace_id"] == "trace-123"
+    assert observed["case_id"] == "case-456"
+    assert observed["tenant"] == "tenant-789"
+    assert observed["key_alias"] == "alias-001"
+    assert common_logging.get_log_context() == {}

@@ -7,6 +7,7 @@ import pytest
 from ai_core import tasks
 from ai_core.rag import metrics, vector_client
 from common import logging as common_logging
+from common.celery import ContextTask
 
 
 def test_pipeline_skips_when_rag_disabled(tmp_path, monkeypatch, settings, caplog):
@@ -92,12 +93,18 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
     logger.setLevel(logging.INFO)
 
     def _logging_put_bytes(path: str, data: bytes):
+        context = common_logging.get_log_context()
+        assert context["trace_id"] == "trace-7890"
+        assert context["case_id"] == "case-456"
+        assert context["tenant"] == "tenant-123"
+        assert context["key_alias"] == "alias-1234"
         logger.info("task-run")
         return original_put_bytes(path, data)
 
     monkeypatch.setattr(tasks.object_store, "put_bytes", _logging_put_bytes)
 
     try:
+        assert isinstance(tasks.ingest_raw._get_current_object(), ContextTask)
         tasks.ingest_raw(
             {
                 "tenant": "tenant-123",
@@ -118,3 +125,4 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
     assert "case=-" not in output
     assert "tenant=-" not in output
     assert "key_alias=-" not in output
+    assert common_logging.get_log_context() == {}

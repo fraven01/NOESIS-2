@@ -8,6 +8,7 @@ from django.test import RequestFactory
 from ai_core import views
 from ai_core.infra import object_store, rate_limit
 from common import logging as common_logging
+from common.middleware import RequestLogContextMiddleware
 
 
 class DummyRedis:
@@ -209,6 +210,11 @@ def test_request_logging_context_includes_metadata(
 
     class _LoggingGraph:
         def run(self, state, meta):
+            context = common_logging.get_log_context()
+            assert context["trace_id"] == meta["trace_id"]
+            assert context["case_id"] == meta["case"]
+            assert context["tenant"] == meta["tenant"]
+            assert context.get("key_alias") == meta.get("key_alias")
             logger.info("graph-run")
             return state, {"ok": True}
 
@@ -225,8 +231,10 @@ def test_request_logging_context_includes_metadata(
     )
     request.tenant = SimpleNamespace(schema_name="autotest")
 
+    middleware = RequestLogContextMiddleware(views.intake)
+
     try:
-        resp = views.intake(request)
+        resp = middleware(request)
     finally:
         logger.removeHandler(handler)
         logger.propagate = original_propagate
@@ -239,3 +247,4 @@ def test_request_logging_context_includes_metadata(
     assert "case=-" not in output
     assert "tenant=-" not in output
     assert "key_alias=-" not in output
+    assert common_logging.get_log_context() == {}

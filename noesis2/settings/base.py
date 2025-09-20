@@ -78,6 +78,7 @@ MIDDLEWARE = [
     "django_tenants.middleware.main.TenantMainMiddleware",
     "common.middleware.HeaderTenantRoutingMiddleware",
     "common.middleware.TenantSchemaMiddleware",
+    "common.middleware.RequestLogContextMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
