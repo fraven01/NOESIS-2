@@ -393,10 +393,12 @@ jobs:
         run: |
           AUTH_KEY="${LITELLM_VIRTUAL_KEY:-$LITELLM_MASTER_KEY}"
           BODY=$(mktemp)
-          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}"             -X POST "$SERVICE_URL/v1/chat/completions"             -H "Authorization: Bearer $AUTH_KEY"             -H "Content-Type: application/json"             --data-binary @- <<'JSON'
-{"model":"vertex_ai/gemini-2.5-flash","messages":[{"role":"user","content":"ping"}],"max_tokens":8}
-JSON
-          )
+          CHAT='{"model":"vertex_ai/gemini-2.5-flash","messages":[{"role":"user","content":"ping"}],"max_tokens":8}'
+          STATUS=$(curl -sS -o "$BODY" -w "%{http_code}" \
+            -X POST "$SERVICE_URL/v1/chat/completions" \
+            -H "Authorization: Bearer $AUTH_KEY" \
+            -H "Content-Type: application/json" \
+            --data-raw "$CHAT")
           echo "chat_completion_status=$STATUS"
           head -c 200 "$BODY" || true
   migrate:
