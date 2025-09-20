@@ -46,7 +46,20 @@ def test_missing_case_header_returns_400(client, test_tenant_schema_name):
         HTTP_X_TENANT_ID=test_tenant_schema_name,
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "missing case header"
+    assert resp.json()["detail"] == "invalid case header"
+
+
+@pytest.mark.django_db
+def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
+    resp = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        HTTP_X_TENANT_ID=test_tenant_schema_name,
+        HTTP_X_CASE_ID="not/allowed",
+    )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "invalid case header"
 
 
 @pytest.mark.django_db
@@ -87,15 +100,16 @@ def test_intake_persists_state_and_headers(
         data={},
         content_type="application/json",
         HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        HTTP_X_CASE_ID="  case-123  ",
     )
     assert resp.status_code == 200
     assert resp["X-Trace-ID"]
     assert "X-Prompt-Version" not in resp
     assert resp.json()["tenant"] == test_tenant_schema_name
 
-    state = object_store.read_json(f"{test_tenant_schema_name}/c/state.json")
+    state = object_store.read_json(f"{test_tenant_schema_name}/case-123/state.json")
     assert state["meta"]["tenant"] == test_tenant_schema_name
+    assert state["meta"]["case"] == "case-123"
 
 
 @pytest.mark.django_db
