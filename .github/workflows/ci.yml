@@ -427,20 +427,7 @@ jobs:
             -H "Authorization: Bearer $AUTH_KEY" \
             "$SERVICE_URL/v1/models")
           echo "models_status=$STATUS"
-          python - <<'PY' "$BODY" || true
-import json, sys
-try:
-    data=json.load(open(sys.argv[1]))
-    arr=data.get('data') if isinstance(data, dict) else data
-    if isinstance(arr, list):
-        for m in arr[:10]:
-            mid=(m.get('id') if isinstance(m, dict) else str(m))
-            print(mid)
-    else:
-        print(json.dumps(data)[:500])
-except Exception as e:
-    print('models_parse_error:', e)
-PY
+          python -c 'import json, sys; code = "try:\\n    data=json.load(open(sys.argv[1]))\\n    arr=data.get(\\"data\\") if isinstance(data, dict) else data\\n    if isinstance(arr, list):\\n        for m in arr[:10]:\\n            mid=(m.get(\\"id\\") if isinstance(m, dict) else str(m))\\n            print(mid)\\n    else:\\n        print(json.dumps(data)[:500])\\nexcept Exception as e:\\n    print(\\"models_parse_error:\\", e)"; exec(code)' "$BODY" || true
       - name: Chat completion smoke test
         env:
           SERVICE_URL: ${{ env.SERVICE_URL }}
