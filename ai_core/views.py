@@ -42,11 +42,12 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
 
 
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _prepare_request(request: HttpRequest):
     tenant_header = request.headers.get("X-Tenant-ID")
-    case_id = request.headers.get("X-Case-ID")
+    case_id = (request.headers.get("X-Case-ID") or "").strip()
     key_alias_header = request.headers.get("X-Key-Alias")
 
     tenant = _resolve_tenant_id(request)
@@ -56,8 +57,8 @@ def _prepare_request(request: HttpRequest):
     if tenant_header and tenant_header != tenant:
         return None, JsonResponse({"detail": "tenant mismatch"}, status=400)
 
-    if not case_id:
-        return None, JsonResponse({"detail": "missing case header"}, status=400)
+    if not CASE_ID_RE.fullmatch(case_id):
+        return None, JsonResponse({"detail": "invalid case header"}, status=400)
 
     if not rate_limit.check(tenant):
         return None, JsonResponse({"detail": "rate limit"}, status=429)
