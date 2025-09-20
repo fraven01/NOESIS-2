@@ -50,18 +50,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     max_retries = 3
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = metadata.get("case") or "unknown-case"
+    idempotency_key = f"{case_id}:{label}:{prompt_version}"
     timeout = 20
     for attempt in range(max_retries):
         attempt_headers = headers.copy()
-        idempotency_key = ":".join(
-            [
-                str(case_id),
-                str(label),
-                str(prompt_version),
-                str(attempt + 1),
-            ]
-        )
         attempt_headers["Idempotency-Key"] = idempotency_key
+        if attempt > 0:
+            attempt_headers["X-Retry-Attempt"] = str(attempt + 1)
         try:
             resp = requests.post(
                 url, headers=attempt_headers, json=payload, timeout=timeout
