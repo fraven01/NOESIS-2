@@ -183,9 +183,18 @@ ADMINS = [
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
+# Logging / observability
+LOGGING_ALLOW_UNMASKED_CONTEXT = env.bool(
+    "LOGGING_ALLOW_UNMASKED_CONTEXT", default=False
+)
+
 LOGGING = copy.deepcopy(DEFAULT_LOGGING)
 LOGGING["formatters"]["verbose"] = {
-    "format": "[%(asctime)s] %(levelname)s %(module)s %(message)s",
+    "format": (
+        "[%(asctime)s] %(levelname)s %(name)s "
+        "trace=%(trace_id)s case=%(case_id)s "
+        "tenant=%(tenant)s key_alias=%(key_alias)s %(message)s"
+    ),
 }
 
 # LiteLLM / AI Core
@@ -196,13 +205,36 @@ LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
 AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
 LOGGING["formatters"]["json"] = {
     "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+    "fmt": (
+        "%(asctime)s %(levelname)s %(name)s %(trace_id)s %(case_id)s %(tenant)s "
+        "%(key_alias)s %(message)s"
+    ),
+}
+LOGGING.setdefault("filters", {})
+LOGGING["filters"]["request_task_context"] = {
+    "()": "common.logging.RequestTaskContextFilter",
 }
 LOGGING["handlers"]["json_console"] = {
     "class": "logging.StreamHandler",
     "formatter": "json",
 }
+LOGGING["handlers"]["json_console"].setdefault("filters", []).append(
+    "request_task_context"
+)
+LOGGING["handlers"]["console"].setdefault("filters", []).append(
+    "request_task_context"
+)
 LOGGING["handlers"]["console"]["formatter"] = "verbose"
 LOGGING["root"] = {
     "handlers": ["console"],
     "level": "INFO",
 }
+LOGGING.setdefault("loggers", {})
+LOGGING["loggers"].setdefault(
+    "celery",
+    {
+        "handlers": ["console"],
+        "level": "INFO",
+        "propagate": False,
+    },
+)
