@@ -6,9 +6,11 @@ from email.utils import format_datetime
 from typing import Any
 
 import pytest
+import requests
 
 from ai_core.llm import routing
 from ai_core.llm.client import LlmClientError, RateLimitError, call
+from common.logging import mask_value
 
 
 def test_resolve_reads_yaml(tmp_path, monkeypatch):
@@ -382,6 +384,128 @@ def _prepare_env(monkeypatch):
 
     conf.get_config.cache_clear()
 
+
+def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
+    metadata = {
+        "tenant": "tenant-123",
+        "case": "case-456",
+        "trace_id": "trace-789",
+        "prompt_version": "v1",
+        "key_alias": "alias-999",
+    }
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    def fake_warning(message: str, *args: object, **kwargs: object) -> None:
+        warnings.append((message, kwargs))
+
+    monkeypatch.setattr("ai_core.llm.client.logger.warning", fake_warning)
+    monkeypatch.setattr("ai_core.llm.client.time.sleep", lambda duration: None)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class AlwaysFail:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+
+            class Resp:
+                status_code = 502
+                headers: dict[str, str] = {}
+
+                def json(self) -> dict[str, object]:
+                    return {}
+
+            return Resp()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", AlwaysFail())
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(LlmClientError):
+        call("simple-query", "secret", metadata)
+
+    expected_extra = {
+        "trace_id": mask_value(metadata["trace_id"]),
+        "case_id": mask_value(metadata["case"]),
+        "tenant": mask_value(metadata["tenant"]),
+        "key_alias": mask_value(metadata["key_alias"]),
+        "status": 502,
+    }
+
+    assert any(msg == "llm retries exhausted" for msg, _ in warnings)
+    for _, kwargs in warnings:
+        assert kwargs.get("extra") == expected_extra
+
+
+def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
+    metadata = {
+        "tenant": "tenant-123",
+        "case": "case-456",
+        "trace_id": "trace-789",
+        "prompt_version": "v1",
+        "key_alias": "alias-999",
+    }
+
+    warnings: list[tuple[str, dict[str, object]]] = []
+
+    def fake_warning(message: str, *args: object, **kwargs: object) -> None:
+        warnings.append((message, kwargs))
+
+    monkeypatch.setattr("ai_core.llm.client.logger.warning", fake_warning)
+    monkeypatch.setattr("ai_core.llm.client.time.sleep", lambda duration: None)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class FailThenSuccess:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def __call__(
+            self,
+            url: str,
+            headers: dict[str, str],
+            json: dict[str, Any],
+            timeout: int,
+        ):
+            self.calls += 1
+            if self.calls == 1:
+                raise requests.RequestException("boom")
+
+            class Resp:
+                status_code = 200
+                headers: dict[str, str] = {}
+
+                def json(self) -> dict[str, object]:
+                    return {
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", FailThenSuccess())
+    _prepare_env(monkeypatch)
+
+    result = call("simple-query", "secret", metadata)
+    assert result["text"] == "ok"
+
+    expected_extra = {
+        "trace_id": mask_value(metadata["trace_id"]),
+        "case_id": mask_value(metadata["case"]),
+        "tenant": mask_value(metadata["tenant"]),
+        "key_alias": mask_value(metadata["key_alias"]),
+        "status": None,
+    }
+
+    assert warnings
+    assert warnings[0][0] == "llm request error"
+    assert warnings[0][1].get("extra") == expected_extra
 
 def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
     metadata = {
