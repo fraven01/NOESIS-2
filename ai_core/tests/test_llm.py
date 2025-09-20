@@ -37,6 +37,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
             self.calls = 0
             self.idempotency_headers: list[str] = []
             self.retry_headers: list[str | None] = []
+            self.timeouts: list[int] = []
 
         def __call__(
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
@@ -49,6 +50,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
             assert headers["X-Key-Alias"] == "alias-01"
             self.idempotency_headers.append(headers["Idempotency-Key"])
             self.retry_headers.append(headers.get("X-Retry-Attempt"))
+            self.timeouts.append(timeout)
             self.calls += 1
             if self.calls == 1:
 
@@ -98,6 +100,55 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert fail_once.calls == 2
     assert fail_once.idempotency_headers == ["c1:simple-query:v1", "c1:simple-query:v1"]
     assert fail_once.retry_headers == [None, "2"]
+    assert fail_once.timeouts == [20, 20]
+
+
+def test_llm_client_uses_configured_timeouts(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class CaptureTimeout:
+        def __init__(self):
+            self.timeouts: list[int] = []
+
+        def __call__(
+            self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
+        ):
+            self.timeouts.append(timeout)
+
+            class Resp:
+                status_code = 200
+                headers: dict[str, str] = {}
+
+                def json(self):
+                    return {
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    capture = CaptureTimeout()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", capture)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    monkeypatch.setattr("ai_core.llm.client.resolve", lambda label: f"model-{label}")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "token")
+    monkeypatch.setenv("LITELLM_TIMEOUTS", json.dumps({"configured": 7}))
+
+    from ai_core.infra import config as conf
+
+    conf.get_config.cache_clear()
+
+    call("configured", "secret", metadata)
+    call("fallback", "secret", metadata)
+
+    assert capture.timeouts == [7, 20]
 
 
 def test_llm_client_retries_on_rate_limit(monkeypatch):
