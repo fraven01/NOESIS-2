@@ -290,7 +290,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-      - &.litellm-dburl
+      - &litellm_dburl
         name: Build LiteLLM DATABASE_URL
         shell: bash
         env:
@@ -360,7 +360,7 @@ jobs:
         uses: google-github-actions/setup-gcloud@v2
         with:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
-      - *.litellm-dburl
+      - *litellm_dburl
       - name: Deploy LiteLLM service
         id: deploy
         env:
