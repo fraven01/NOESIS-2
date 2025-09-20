@@ -49,13 +49,13 @@ jobs:
         name: Build LiteLLM DATABASE_URL
         shell: bash
         env:
-          DB_USER: ${{ secrets.DB_USER }}
-          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
-          DB_NAME: ${{ secrets.DB_NAME }}
+          DB_USER: ${{ secrets.LITELLM_DB_USER || secrets.DB_USER }}
+          DB_PASSWORD: ${{ secrets.LITELLM_DB_PASSWORD || secrets.DB_PASSWORD }}
+          DB_NAME: ${{ secrets.LITELLM_DB_NAME || secrets.DB_NAME }}
           CLOUD_SQL_CONNECTION_NAME: ${{ secrets.CLOUD_SQL_CONNECTION_NAME }}
         run: |
           enc_pwd=$(python -c "from urllib.parse import quote; import os; print(quote(os.environ['DB_PASSWORD'], safe=''))")
-          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}"
+          LITELLM_DATABASE_URL="postgresql://${DB_USER}:${enc_pwd}@localhost/${DB_NAME}?host=/cloudsql/${CLOUD_SQL_CONNECTION_NAME}&port=5432"
           echo "LITELLM_DATABASE_URL=$LITELLM_DATABASE_URL" >> "$GITHUB_ENV"
       - name: Deploy LiteLLM migration job
         env:
@@ -202,4 +202,3 @@ jobs:
             --data-raw "$CHAT")
           echo "chat_completion_status=$STATUS"
           head -c 200 "$BODY" || true
-
