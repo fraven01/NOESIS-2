@@ -1,4 +1,5 @@
 import json
+import threading
 
 import pytest
 from django.http import HttpResponse
@@ -143,3 +144,49 @@ def test_trace_sends_to_langfuse(monkeypatch):
     assert dispatched[0]["traceId"] == "tid"
     assert dispatched[0]["name"] == "node2"
     assert dispatched[0]["metadata"]["tenant"] == "t1"
+
+
+def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
+    from ai_core.infra import tracing
+
+    if tracing._LANGFUSE_EXECUTOR is not None:
+        tracing._LANGFUSE_EXECUTOR.shutdown(wait=True)
+        tracing._LANGFUSE_EXECUTOR = None
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
+    monkeypatch.setenv("LANGFUSE_MAX_WORKERS", "1")
+
+    calls = []
+    done = threading.Event()
+
+    def fake_post(url, json, headers, timeout):
+        calls.append(
+            {
+                "url": url,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+                "thread": threading.current_thread().name,
+            }
+        )
+        done.set()
+
+    monkeypatch.setattr(tracing.requests, "post", fake_post)
+
+    tracing._dispatch_langfuse("tid", "node", {"foo": "bar"})
+
+    assert done.wait(1), "langfuse dispatch did not complete"
+
+    executor = tracing._get_langfuse_executor()
+    try:
+        assert getattr(executor, "_max_workers") == 1
+    finally:
+        executor.shutdown(wait=True)
+        tracing._LANGFUSE_EXECUTOR = None
+
+    assert calls
+    assert calls[0]["json"]["traceId"] == "tid"
+    assert calls[0]["json"]["name"] == "node"
+    assert calls[0]["json"]["metadata"] == {"foo": "bar"}
+    assert calls[0]["thread"].startswith("langfuse")

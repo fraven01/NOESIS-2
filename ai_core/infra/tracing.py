@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable, TypeVar, cast
 
 import requests
@@ -33,6 +35,46 @@ def _log(payload: dict[str, Any]) -> None:
     print(json.dumps(payload))
 
 
+_LANGFUSE_EXECUTOR: ThreadPoolExecutor | None = None
+_LANGFUSE_EXECUTOR_LOCK = threading.Lock()
+
+
+def _shutdown_langfuse_executor() -> None:
+    global _LANGFUSE_EXECUTOR
+    executor = _LANGFUSE_EXECUTOR
+    if executor is not None:
+        executor.shutdown(wait=False)
+        _LANGFUSE_EXECUTOR = None
+
+
+atexit.register(_shutdown_langfuse_executor)
+
+
+def _get_langfuse_executor() -> ThreadPoolExecutor:
+    """Return (and lazily create) the shared Langfuse executor."""
+
+    global _LANGFUSE_EXECUTOR
+    if _LANGFUSE_EXECUTOR is None:
+        with _LANGFUSE_EXECUTOR_LOCK:
+            if _LANGFUSE_EXECUTOR is None:
+                max_workers_raw = os.getenv("LANGFUSE_MAX_WORKERS", "2")
+                try:
+                    max_workers = max(1, int(max_workers_raw))
+                except ValueError:
+                    logger.warning(
+                        "invalid LANGFUSE_MAX_WORKERS %r, defaulting to 2",
+                        max_workers_raw,
+                    )
+                    max_workers = 2
+
+                _LANGFUSE_EXECUTOR = ThreadPoolExecutor(
+                    max_workers=max_workers,
+                    thread_name_prefix="langfuse",
+                )
+
+    return cast(ThreadPoolExecutor, _LANGFUSE_EXECUTOR)
+
+
 def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) -> None:
     """Send a tracing event to Langfuse in the background if credentials exist."""
 
@@ -55,7 +97,8 @@ def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) 
         except Exception as exc:  # pragma: no cover - best-effort logging
             logger.warning("langfuse dispatch failed: %s", exc)
 
-    threading.Thread(target=_send, daemon=True).start()
+    executor = _get_langfuse_executor()
+    executor.submit(_send)
 
 
 def trace(node_name: str) -> Callable[[F], F]:
