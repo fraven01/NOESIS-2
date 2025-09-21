@@ -184,7 +184,15 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
             self.calls += 1
             return self.value
 
+    class TimeStub:
+        def __init__(self) -> None:
+            self.value = 0.0
+
+        def time(self) -> float:
+            return self.value
+
     random_stub = RandomStub()
+    time_stub = TimeStub()
     sleep_calls: list[float] = []
 
     def fake_sleep(duration: float) -> None:
@@ -192,6 +200,7 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
 
     monkeypatch.setattr("ai_core.llm.client.random.uniform", random_stub)
     monkeypatch.setattr("ai_core.llm.client.time.sleep", fake_sleep)
+    monkeypatch.setattr("ai_core.llm.client.time.time", time_stub.time)
     monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
     monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("LITELLM_API_KEY", "token")
@@ -241,19 +250,19 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
 
             return Resp()
 
+    future_dt = datetime.datetime(2021, 1, 1, 0, 0, 2, tzinfo=datetime.timezone.utc)
     scenarios = [
         {
             "retry_after": None,
             "expected_sleep": 1.1,
             "random_value": 0.1,
+            "time_now": 100.0,
         },
         {
-            "retry_after": format_datetime(
-                datetime.datetime.now(datetime.timezone.utc)
-                + datetime.timedelta(seconds=2)
-            ),
+            "retry_after": format_datetime(future_dt),
             "expected_sleep": 2.0,
             "random_value": 0.0,
+            "time_now": (future_dt - datetime.timedelta(seconds=2)).timestamp(),
         },
     ]
 
@@ -261,6 +270,7 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
         random_stub.value = scenario["random_value"]
         random_stub.calls = 0
         sleep_calls.clear()
+        time_stub.value = scenario["time_now"]
         handler = RateLimitThenSuccess(scenario["retry_after"])
         monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
 

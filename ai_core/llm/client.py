@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import math
 import logging
 import random
 import time
@@ -188,7 +189,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                                 tzinfo=datetime.timezone.utc
                             )
                         target_ts = retry_after_dt.timestamp()
-                        sleep_for = target_ts - time.time()
+                        delta = target_ts - time.time()
+                        sleep_for = max(0.0, float(math.ceil(delta)))
             if sleep_for is None:
                 base_delay = min(5, 2**attempt)
                 sleep_for = base_delay + random.uniform(0, 0.3)
