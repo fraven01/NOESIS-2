@@ -1,4 +1,9 @@
-from ai_core.graphs import info_intake, scope_check, needs_mapping, system_description
+from ai_core.graphs import (
+    info_intake,
+    scope_check,
+    needs_mapping,
+    system_description,
+)
 
 META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
 
