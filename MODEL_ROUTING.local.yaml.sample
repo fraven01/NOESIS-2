@@ -2,6 +2,12 @@ labels:
   # Local/dev: use AI Studio provider via LiteLLM config (requires GEMINI_API_KEY)
   default: gemini-2.5-flash
   fast: gemini-2.5-flash
+  simple-query: gemini-2.5-flash
+  synthesize: gemini-2.5-flash
+  extract: gemini-2.5-flash
+  classify: gemini-2.5-flash
+  analyze: gemini-2.5-flash
   reasoning: gemini-2.5-pro
+  draft: gemini-2.5-pro
   embedding: google/text-embedding-004
 

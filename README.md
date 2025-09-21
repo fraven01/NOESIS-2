@@ -207,6 +207,10 @@ Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden
   - LiteLLM authentifiziert gegen Vertex AI per Service Account (ADC), kein API‑Key nötig.
   - Regionensplit: Cloud Run `europe-west3`, Vertex `us-central1` (siehe `scripts/init_litellm_gcloud.sh` und CI).
   - Routing: `MODEL_ROUTING.yaml` zeigt auf `vertex_ai/*` Modelle (z. B. `vertex_ai/gemini-2.5-flash`).
+  - Labels → Modelle (Vertex AI):
+    - `default`, `fast`, `simple-query`, `synthesize`, `extract`, `classify`, `analyze` → `vertex_ai/gemini-2.5-flash`
+    - `reasoning`, `draft` → `vertex_ai/gemini-2.5-pro`
+    - `embedding` → `vertex_ai/text-embedding-004`
   - CI setzt `VERTEXAI_PROJECT` und `VERTEXAI_LOCATION` und pinned die Cloud‑Run Service‑Account‑Identität.
 
 - Lokal (Docker Compose)
@@ -224,6 +228,11 @@ Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden
     docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d litellm
     bash scripts/smoke_litellm.sh
     ```
+
+  - Labels → Modelle (AI Studio):
+    - `default`, `fast`, `simple-query`, `synthesize`, `extract`, `classify`, `analyze` → `gemini-2.5-flash`
+    - `reasoning`, `draft` → `gemini-2.5-pro`
+    - `embedding` → `google/text-embedding-004`
 
 Hinweis: `MODEL_ROUTING.local.yaml` ist git‑ignored und überschreibt nur lokal. In Prod wird ausschließlich `MODEL_ROUTING.yaml` verwendet.
 
