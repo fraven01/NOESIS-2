@@ -194,7 +194,9 @@ def _structlog_processors() -> list[structlog.types.Processor]:
         _TIME_STAMPER,
         _otel_trace_processor,
         _redaction_processor,
-        structlog.processors.JSONRenderer(),
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter(
+            structlog.processors.JSONRenderer()
+        ),
     ]
 
 
