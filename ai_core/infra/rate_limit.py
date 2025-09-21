@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import time
 from functools import lru_cache
 from typing import Optional
@@ -10,9 +9,10 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from .config import get_config
+from common.logging import get_logger
 
 env = environ.Env()
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_QUOTA = 60
 

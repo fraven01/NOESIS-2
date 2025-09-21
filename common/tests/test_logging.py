@@ -3,6 +3,7 @@ import logging
 import pytest
 from django.http import HttpResponse
 from django.test import RequestFactory
+from structlog.testing import capture_logs
 
 from common import logging as common_logging
 from common.constants import (
@@ -86,22 +87,29 @@ def test_filter_sets_placeholders_when_context_missing(settings):
     assert record.key_alias == "-"
 
 
-def test_logging_configuration_includes_context_fields(settings):
-    verbose_fmt = settings.LOGGING["formatters"]["verbose"]["format"]
-    json_fmt = settings.LOGGING["formatters"]["json"]["fmt"]
+def test_structlog_logger_includes_context_and_service(monkeypatch):
+    monkeypatch.setitem(common_logging._SERVICE_CONTEXT, "service.name", "svc-test")
+    monkeypatch.setitem(
+        common_logging._SERVICE_CONTEXT, "deployment.environment", "pytest"
+    )
 
-    for field in ("trace_id", "case_id", "tenant", "key_alias"):
-        placeholder = f"%({field})s"
-        assert placeholder in verbose_fmt
-        assert placeholder in json_fmt
+    with capture_logs() as logs:
+        with common_logging.log_context(
+            trace_id="trace-xyz123", case_id="case-789", tenant="tenant-42"
+        ):
+            common_logging.get_logger("common.tests").info("hello", extra_field="value")
 
-
-def test_handlers_apply_request_context_filter(settings):
-    handler_filters = settings.LOGGING["handlers"]["console"]["filters"]
-    json_filters = settings.LOGGING["handlers"]["json_console"]["filters"]
-
-    assert "request_task_context" in handler_filters
-    assert "request_task_context" in json_filters
+    assert logs, "expected log entry"
+    event = logs[0]
+    assert event["event"] == "hello"
+    assert event["extra_field"] == "value"
+    assert event["service.name"] == "svc-test"
+    assert event["deployment.environment"] == "pytest"
+    assert event["trace_id"].startswith("tr")
+    assert event["trace_id"].endswith("23")
+    assert "***" in event["trace_id"]
+    assert event["case_id"].startswith("ca")
+    assert event["tenant"].startswith("te")
 
 
 def test_request_log_context_middleware_binds_and_clears():

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import atexit
 import json
-import logging
 import os
 import threading
 import time
@@ -14,6 +13,8 @@ from psycopg2 import sql
 from psycopg2.extras import Json, register_default_jsonb
 from psycopg2.pool import SimpleConnectionPool
 
+from common.logging import get_logger
+
 from . import metrics
 from .filters import strict_match
 from .schemas import Chunk
@@ -21,7 +22,7 @@ from .schemas import Chunk
 # Ensure jsonb columns are decoded into Python dictionaries
 register_default_jsonb(loads=json.loads, globally=True)
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_STATEMENT_TIMEOUT_MS = 15000
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))

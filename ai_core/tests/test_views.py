@@ -1,10 +1,9 @@
-import io
 import json
-import logging
 from types import SimpleNamespace
 
 import pytest
 from django.test import RequestFactory
+from structlog.testing import capture_logs
 
 from ai_core import views
 from ai_core.infra import object_store, rate_limit
@@ -239,25 +238,11 @@ def test_sysdesc_requires_no_missing(
     assert "description" in body
 
 
-def test_request_logging_context_includes_metadata(
-    monkeypatch,
-    tmp_path,
-    settings,
-):
+def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    log_buffer = io.StringIO()
-    handler = logging.StreamHandler(log_buffer)
-    handler.addFilter(common_logging.RequestTaskContextFilter())
-    formatter = logging.Formatter(settings.LOGGING["formatters"]["verbose"]["format"])
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger("ai_core.tests.graph")
-    original_propagate = logger.propagate
-    logger.propagate = False
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
+    logger = common_logging.get_logger("ai_core.tests.graph")
 
     class _LoggingGraph:
         def run(self, state, meta):
@@ -286,20 +271,18 @@ def test_request_logging_context_includes_metadata(
 
     middleware = RequestLogContextMiddleware(views.intake)
 
-    try:
+    with capture_logs() as logs:
         resp = middleware(request)
-    finally:
-        logger.removeHandler(handler)
-        logger.propagate = original_propagate
 
     assert resp.status_code == 200
 
-    output = log_buffer.getvalue()
-    assert "graph-run" in output
-    assert "trace=-" not in output
-    assert "case=-" not in output
-    assert "tenant=-" not in output
-    assert "key_alias=-" not in output
+    events = [entry for entry in logs if entry.get("event") == "graph-run"]
+    assert events, "expected graph-run log entry"
+    event = events[0]
+    assert event["trace_id"] != "-"
+    assert event["case_id"] != "-"
+    assert event["tenant"] != "-"
+    assert event.get("key_alias", "") != "-"
     assert common_logging.get_log_context() == {}
 
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import logging
 from pathlib import Path
 from typing import Callable, Dict, List
 
@@ -9,11 +8,12 @@ from celery import shared_task
 from django.conf import settings
 
 from common.celery import ContextTask
+from common.logging import get_logger
 from .infra import object_store, pii
 from .rag.schemas import Chunk
 from .rag.vector_client import EMBEDDING_DIM, PgVectorClient, get_default_client
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Factory returning the default pgvector client (can be patched in tests)
 VECTOR_CLIENT_FACTORY: Callable[[], PgVectorClient] = get_default_client

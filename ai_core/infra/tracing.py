@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import os
 import threading
 import time
@@ -11,7 +10,12 @@ from typing import Any, Callable, TypeVar, cast
 
 import requests
 
+from common.logging import get_logger
+
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+logger = get_logger(__name__)
 
 
 def trace_meta(meta: dict[str, Any], prompt_version: str | None) -> dict[str, Any]:
@@ -49,7 +53,7 @@ def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) 
         try:
             requests.post(url, json=payload, headers=headers, timeout=2)
         except Exception as exc:  # pragma: no cover - best-effort logging
-            logging.getLogger(__name__).warning("langfuse dispatch failed: %s", exc)
+            logger.warning("langfuse dispatch failed: %s", exc)
 
     threading.Thread(target=_send, daemon=True).start()
 
