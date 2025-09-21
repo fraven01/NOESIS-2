@@ -139,14 +139,7 @@ def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
     safe_case = object_store.sanitize_identifier(meta["case"])
     assert result["path"] == f"{safe_tenant}/{safe_case}/raw/doc.txt"
 
-    stored = (
-        tmp_path
-        / ".ai_core_store"
-        / safe_tenant
-        / safe_case
-        / "raw"
-        / "doc.txt"
-    )
+    stored = tmp_path / ".ai_core_store" / safe_tenant / safe_case / "raw" / "doc.txt"
     assert stored.read_bytes() == b"payload"
 
 

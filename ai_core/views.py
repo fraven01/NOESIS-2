@@ -67,7 +67,9 @@ def _prepare_request(request: HttpRequest):
     if key_alias_header is not None:
         key_alias = key_alias_header.strip()
         if not key_alias or not KEY_ALIAS_RE.fullmatch(key_alias):
-            return None, JsonResponse({"detail": "invalid key alias header"}, status=400)
+            return None, JsonResponse(
+                {"detail": "invalid key alias header"}, status=400
+            )
 
     trace_id = uuid4().hex
     assert_case_active(tenant, case_id)

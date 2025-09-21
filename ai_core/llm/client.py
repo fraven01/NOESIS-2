@@ -116,9 +116,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             err = None
 
         if status and 500 <= status < 600:
-            logger.warning(
-                "llm 5xx response", extra={**log_extra, "status": status}
-            )
+            logger.warning("llm 5xx response", extra={**log_extra, "status": status})
             if attempt == max_retries - 1:
                 logger.warning(
                     "llm retries exhausted", extra={**log_extra, "status": status}
@@ -150,9 +148,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if status == 429:
-            logger.warning(
-                "llm rate limited", extra={**log_extra, "status": status}
-            )
+            logger.warning("llm rate limited", extra={**log_extra, "status": status})
             if attempt == max_retries - 1:
                 logger.warning(
                     "llm retries exhausted", extra={**log_extra, "status": status}
@@ -192,9 +188,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             continue
 
         if status and 400 <= status < 500:
-            logger.warning(
-                "llm 4xx response", extra={**log_extra, "status": status}
-            )
+            logger.warning("llm 4xx response", extra={**log_extra, "status": status})
             payload = _safe_json(resp)
             detail = payload.get("detail") or (
                 (resp.text or "").strip() if resp is not None else None

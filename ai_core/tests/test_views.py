@@ -25,9 +25,7 @@ class DummyRedis:
 
 
 @pytest.mark.django_db
-def test_ping_view_applies_rate_limit(
-    client, monkeypatch, test_tenant_schema_name
-):
+def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_name):
     tenant_schema = test_tenant_schema_name
     monkeypatch.setattr(rate_limit, "get_quota", lambda: 1)
     rate_limit._get_redis.cache_clear()
@@ -168,7 +166,9 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path, test_tenant_schema_
 
 
 @pytest.mark.django_db
-def test_sysdesc_requires_no_missing(client, monkeypatch, tmp_path, test_tenant_schema_name):
+def test_sysdesc_requires_no_missing(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
@@ -185,9 +185,7 @@ def test_sysdesc_requires_no_missing(client, monkeypatch, tmp_path, test_tenant_
     assert resp_skip.status_code == 200
     assert resp_skip.json()["missing"] == ["scope"]
 
-    object_store.write_json(
-        f"{test_tenant_schema_name}/c/state.json", {"missing": []}
-    )
+    object_store.write_json(f"{test_tenant_schema_name}/c/state.json", {"missing": []})
     resp_desc = client.post(
         "/ai/sysdesc/",
         data={},

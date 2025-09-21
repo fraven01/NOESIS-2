@@ -17,7 +17,13 @@ def _clear_log_context():
 
 def _build_record() -> logging.LogRecord:
     return logging.LogRecord(
-        name="test", level=logging.INFO, pathname=__file__, lineno=0, msg="hello", args=(), exc_info=None
+        name="test",
+        level=logging.INFO,
+        pathname=__file__,
+        lineno=0,
+        msg="hello",
+        args=(),
+        exc_info=None,
     )
 
 
@@ -26,7 +32,10 @@ def test_filter_masks_values_when_masking_enabled(settings):
     filt = common_logging.RequestTaskContextFilter()
 
     with common_logging.log_context(
-        trace_id="trace-abcdef", case_id="case-12345", tenant="tenant-42", key_alias="alias-secret"
+        trace_id="trace-abcdef",
+        case_id="case-12345",
+        tenant="tenant-42",
+        key_alias="alias-secret",
     ):
         record = _build_record()
         assert filt.filter(record) is True
@@ -44,7 +53,10 @@ def test_filter_allows_unmasked_values_when_opted_in(settings):
     filt = common_logging.RequestTaskContextFilter()
 
     with common_logging.log_context(
-        trace_id="trace-xyz", case_id="case-xyz", tenant="tenant-xyz", key_alias="alias-xyz"
+        trace_id="trace-xyz",
+        case_id="case-xyz",
+        tenant="tenant-xyz",
+        key_alias="alias-xyz",
     ):
         record = _build_record()
         filt.filter(record)

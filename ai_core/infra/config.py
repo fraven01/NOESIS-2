@@ -44,9 +44,7 @@ def _parse_timeouts(raw: str | None) -> dict[str, int]:
         try:
             timeout = int(value)
         except (TypeError, ValueError) as exc:
-            raise ValueError(
-                "Timeout values must be integers"
-            ) from exc
+            raise ValueError("Timeout values must be integers") from exc
         if timeout < 0:
             raise ValueError("Timeout values must be non-negative")
         timeouts[key] = timeout

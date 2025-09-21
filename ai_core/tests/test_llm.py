@@ -262,9 +262,7 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
             assert sleep_calls[0] == pytest.approx(1 + scenario["random_value"])
             assert random_stub.calls == 1
         else:
-            assert sleep_calls[0] == pytest.approx(
-                scenario["expected_sleep"], abs=0.1
-            )
+            assert sleep_calls[0] == pytest.approx(scenario["expected_sleep"], abs=0.1)
             assert random_stub.calls == 0
 
 
@@ -507,6 +505,7 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
     assert warnings[0][0] == "llm request error"
     assert warnings[0][1].get("extra") == expected_extra
 
+
 def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
     metadata = {
         "tenant": "t1",
@@ -542,7 +541,11 @@ def test_llm_client_raises_llmclienterror_with_json_error(monkeypatch):
                 text = ""
 
                 def json(self):
-                    return {"detail": "backend exploded", "code": "bad_gateway", "status": 502}
+                    return {
+                        "detail": "backend exploded",
+                        "code": "bad_gateway",
+                        "status": 502,
+                    }
 
             return Resp()
 

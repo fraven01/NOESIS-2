@@ -222,9 +222,7 @@ LOGGING["handlers"]["json_console"] = {
 LOGGING["handlers"]["json_console"].setdefault("filters", []).append(
     "request_task_context"
 )
-LOGGING["handlers"]["console"].setdefault("filters", []).append(
-    "request_task_context"
-)
+LOGGING["handlers"]["console"].setdefault("filters", []).append("request_task_context")
 LOGGING["handlers"]["console"]["formatter"] = "verbose"
 LOGGING["root"] = {
     "handlers": ["console"],

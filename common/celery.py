@@ -31,7 +31,9 @@ class ContextTask(Task):
         finally:
             clear_log_context()
 
-    def _gather_context(self, args: tuple[Any, ...], kwargs: dict[str, Any]) -> dict[str, str]:
+    def _gather_context(
+        self, args: tuple[Any, ...], kwargs: dict[str, Any]
+    ) -> dict[str, str]:
         context: dict[str, str] = {}
 
         request = getattr(self, "request", None)
