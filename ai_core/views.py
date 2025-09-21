@@ -14,10 +14,12 @@ from common.constants import (
     META_CASE_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
+    META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
     X_CASE_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
+    X_TENANT_SCHEMA_HEADER,
 )
 from common.logging import bind_log_context
 
@@ -52,6 +54,7 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
 
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
 def _prepare_request(request: HttpRequest):
@@ -59,17 +62,29 @@ def _prepare_request(request: HttpRequest):
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
 
-    tenant = _resolve_tenant_id(request)
-    if not tenant:
+    tenant_schema = _resolve_tenant_id(request)
+    if not tenant_schema:
         return None, JsonResponse({"detail": "tenant not resolved"}, status=400)
 
-    if tenant_header and tenant_header != tenant:
-        return None, JsonResponse({"detail": "tenant mismatch"}, status=400)
+    if tenant_header is None:
+        return None, JsonResponse({"detail": "invalid tenant header"}, status=400)
+
+    tenant_id = tenant_header.strip()
+    if not tenant_id or not TENANT_ID_RE.fullmatch(tenant_id):
+        return None, JsonResponse({"detail": "invalid tenant header"}, status=400)
+
+    schema_header = request.headers.get(X_TENANT_SCHEMA_HEADER)
+    if schema_header is not None:
+        header_schema = schema_header.strip()
+        if not header_schema:
+            return None, JsonResponse({"detail": "invalid tenant schema header"}, status=400)
+        if header_schema != tenant_schema:
+            return None, JsonResponse({"detail": "tenant schema mismatch"}, status=400)
 
     if not CASE_ID_RE.fullmatch(case_id):
         return None, JsonResponse({"detail": "invalid case header"}, status=400)
 
-    if not rate_limit.check(tenant):
+    if not rate_limit.check(tenant_id):
         return None, JsonResponse({"detail": "rate limit"}, status=429)
 
     key_alias = None
@@ -81,14 +96,20 @@ def _prepare_request(request: HttpRequest):
             )
 
     trace_id = uuid4().hex
-    assert_case_active(tenant, case_id)
-    meta = {"tenant": tenant, "case": case_id, "trace_id": trace_id}
+    assert_case_active(tenant_id, case_id)
+    meta = {
+        "tenant": tenant_id,
+        "tenant_schema": tenant_schema,
+        "case": case_id,
+        "trace_id": trace_id,
+    }
     if key_alias:
         meta["key_alias"] = key_alias
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id
-    request.META[META_TENANT_ID_KEY] = tenant
+    request.META[META_TENANT_ID_KEY] = tenant_id
+    request.META[META_TENANT_SCHEMA_KEY] = tenant_schema
     if key_alias:
         request.META[META_KEY_ALIAS_KEY] = key_alias
     else:
@@ -97,7 +118,7 @@ def _prepare_request(request: HttpRequest):
     log_context = {
         "trace_id": trace_id,
         "case_id": case_id,
-        "tenant": tenant,
+        "tenant": tenant_id,
         "key_alias": key_alias,
     }
     request.log_context = log_context
