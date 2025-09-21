@@ -36,6 +36,9 @@ def _log(payload: dict[str, Any]) -> None:
 def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) -> None:
     """Send a tracing event to Langfuse in the background if credentials exist."""
 
+    if not trace_id.strip():
+        return
+
     public = os.getenv("LANGFUSE_PUBLIC_KEY")
     secret = os.getenv("LANGFUSE_SECRET_KEY")
     if not public or not secret:
@@ -99,15 +102,18 @@ def trace(node_name: str) -> Callable[[F], F]:
                 }
                 _log(end_payload)
 
-                _dispatch_langfuse(
-                    trace_id=str(meta_enriched.get("trace_id")),
-                    node_name=node_name,
-                    metadata={
-                        "tenant": meta_enriched.get("tenant"),
-                        "case": meta_enriched.get("case"),
-                        "prompt_version": meta_enriched.get("prompt_version"),
-                    },
-                )
+                trace_id_value = meta_enriched.get("trace_id")
+                trace_id_str = str(trace_id_value).strip() if trace_id_value is not None else ""
+                if trace_id_str and trace_id_str.lower() != "none":
+                    _dispatch_langfuse(
+                        trace_id=trace_id_str,
+                        node_name=node_name,
+                        metadata={
+                            "tenant": meta_enriched.get("tenant"),
+                            "case": meta_enriched.get("case"),
+                            "prompt_version": meta_enriched.get("prompt_version"),
+                        },
+                    )
 
         return cast(F, wrapped)
 
