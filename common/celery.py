@@ -5,6 +5,7 @@ from typing import Any
 
 from celery import Task
 
+from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
 
 
@@ -13,12 +14,7 @@ class ContextTask(Task):
 
     abstract = True
 
-    _HEADER_CANDIDATES = {
-        "trace_id": ("x-trace-id", "trace_id", "trace-id"),
-        "case_id": ("x-case-id", "case_id", "case"),
-        "tenant": ("x-tenant-id", "tenant", "tenant_id"),
-        "key_alias": ("x-key-alias", "key_alias", "key-alias"),
-    }
+    _HEADER_CANDIDATES = HEADER_CANDIDATE_MAP
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         clear_log_context()

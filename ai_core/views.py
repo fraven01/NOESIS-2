@@ -10,6 +10,15 @@ from django.http import HttpRequest, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 
+from common.constants import (
+    META_CASE_ID_KEY,
+    META_KEY_ALIAS_KEY,
+    META_TENANT_ID_KEY,
+    META_TRACE_ID_KEY,
+    X_CASE_ID_HEADER,
+    X_KEY_ALIAS_HEADER,
+    X_TENANT_ID_HEADER,
+)
 from common.logging import bind_log_context
 
 from .graphs import info_intake, needs_mapping, scope_check, system_description
@@ -46,9 +55,9 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def _prepare_request(request: HttpRequest):
-    tenant_header = request.headers.get("X-Tenant-ID")
-    case_id = (request.headers.get("X-Case-ID") or "").strip()
-    key_alias_header = request.headers.get("X-Key-Alias")
+    tenant_header = request.headers.get(X_TENANT_ID_HEADER)
+    case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
+    key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
 
     tenant = _resolve_tenant_id(request)
     if not tenant:
@@ -75,13 +84,13 @@ def _prepare_request(request: HttpRequest):
     if key_alias:
         meta["key_alias"] = key_alias
 
-    request.META["HTTP_X_TRACE_ID"] = trace_id
-    request.META["HTTP_X_CASE_ID"] = case_id
-    request.META["HTTP_X_TENANT_ID"] = tenant
+    request.META[META_TRACE_ID_KEY] = trace_id
+    request.META[META_CASE_ID_KEY] = case_id
+    request.META[META_TENANT_ID_KEY] = tenant
     if key_alias:
-        request.META["HTTP_X_KEY_ALIAS"] = key_alias
+        request.META[META_KEY_ALIAS_KEY] = key_alias
     else:
-        request.META.pop("HTTP_X_KEY_ALIAS", None)
+        request.META.pop(META_KEY_ALIAS_KEY, None)
 
     log_context = {
         "trace_id": trace_id,

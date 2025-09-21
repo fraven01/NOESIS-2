@@ -5,6 +5,12 @@ from django.http import HttpResponse
 from django.test import RequestFactory
 
 from common import logging as common_logging
+from common.constants import (
+    META_CASE_ID_KEY,
+    META_KEY_ALIAS_KEY,
+    META_TENANT_ID_KEY,
+    META_TRACE_ID_KEY,
+)
 from common.middleware import RequestLogContextMiddleware
 
 
@@ -90,10 +96,12 @@ def test_request_log_context_middleware_binds_and_clears():
     factory = RequestFactory()
     request = factory.get(
         "/ai/ping/",
-        HTTP_X_TRACE_ID="trace-123",
-        HTTP_X_CASE_ID="case-456",
-        HTTP_X_TENANT_ID="tenant-789",
-        HTTP_X_KEY_ALIAS="alias-001",
+        **{
+            META_TRACE_ID_KEY: "trace-123",
+            META_CASE_ID_KEY: "case-456",
+            META_TENANT_ID_KEY: "tenant-789",
+            META_KEY_ALIAS_KEY: "alias-001",
+        },
     )
 
     observed: dict[str, str] = {}

@@ -7,6 +7,12 @@ from ai_core.infra import object_store, pii
 from ai_core.infra.config import get_config
 from ai_core.infra.resp import apply_std_headers
 from ai_core.infra.tracing import trace
+from common.constants import (
+    X_CASE_ID_HEADER,
+    X_KEY_ALIAS_HEADER,
+    X_TENANT_ID_HEADER,
+    X_TRACE_ID_HEADER,
+)
 
 
 def test_get_config_reads_env(monkeypatch):
@@ -38,10 +44,10 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
 
     result = apply_std_headers(resp, meta)
 
-    assert result["X-Trace-ID"] == "abc123"
-    assert result["X-Case-ID"] == "case-1"
-    assert result["X-Tenant-ID"] == "tenant-1"
-    assert result["X-Key-Alias"] == "alias-1"
+    assert result[X_TRACE_ID_HEADER] == "abc123"
+    assert result[X_CASE_ID_HEADER] == "case-1"
+    assert result[X_TENANT_ID_HEADER] == "tenant-1"
+    assert result[X_KEY_ALIAS_HEADER] == "alias-1"
 
 
 def test_apply_std_headers_skips_missing_optional_headers():
@@ -50,8 +56,8 @@ def test_apply_std_headers_skips_missing_optional_headers():
 
     result = apply_std_headers(resp, meta)
 
-    assert "X-Key-Alias" not in result
-    assert result["X-Trace-ID"] == "abc123"
+    assert X_KEY_ALIAS_HEADER not in result
+    assert result[X_TRACE_ID_HEADER] == "abc123"
 
 
 def test_apply_std_headers_ignores_non_success_responses():
@@ -60,10 +66,10 @@ def test_apply_std_headers_ignores_non_success_responses():
     for status in (400, 500):
         resp = HttpResponse("error", status=status)
         result = apply_std_headers(resp, meta)
-        assert "X-Trace-ID" not in result
-        assert "X-Case-ID" not in result
-        assert "X-Tenant-ID" not in result
-        assert "X-Key-Alias" not in result
+        assert X_TRACE_ID_HEADER not in result
+        assert X_CASE_ID_HEADER not in result
+        assert X_TENANT_ID_HEADER not in result
+        assert X_KEY_ALIAS_HEADER not in result
 
 
 def test_pii_mask_replaces_digits():
