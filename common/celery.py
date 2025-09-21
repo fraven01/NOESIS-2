@@ -15,6 +15,22 @@ class ContextTask(Task):
     abstract = True
 
     _HEADER_CANDIDATES = HEADER_CANDIDATE_MAP
+    _REQUEST_OVERRIDE_SENTINEL = object()
+
+    @property
+    def request(self):  # type: ignore[override]
+        override = getattr(self, "_request_override", self._REQUEST_OVERRIDE_SENTINEL)
+        if override is not self._REQUEST_OVERRIDE_SENTINEL:
+            return override
+        return Task.request.__get__(self, type(self))
+
+    @request.setter
+    def request(self, value):
+        self._request_override = value
+
+    @request.deleter
+    def request(self):  # noqa: F811
+        self._request_override = self._REQUEST_OVERRIDE_SENTINEL
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         clear_log_context()
