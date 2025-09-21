@@ -184,13 +184,6 @@ def _otel_trace_processor(
 
 
 def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]:
-    def _render_to_json(
-        logger: structlog.typing.WrappedLogger,
-        name: str,
-        event_dict: MutableMapping[str, object],
-    ) -> str:
-        return _JSON_RENDERER(logger, name, event_dict)
-
     return [
         structlog.stdlib.filter_by_level,
         _service_processor,
@@ -199,7 +192,7 @@ def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]
         _TIME_STAMPER,
         _otel_trace_processor,
         redactor,
-        _render_to_json,
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
 
