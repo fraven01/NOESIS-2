@@ -13,6 +13,7 @@ from common.constants import (
     META_CASE_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
+    META_TENANT_SCHEMA_KEY,
     X_CASE_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
@@ -87,18 +88,48 @@ def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
-def test_tenant_header_mismatch_returns_400(client, test_tenant_schema_name):
+def test_tenant_schema_header_mismatch_returns_400(client, test_tenant_schema_name):
     resp = client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
         **{
-            META_TENANT_ID_KEY: f"{test_tenant_schema_name}-other",
+            META_TENANT_ID_KEY: "tenant-header",
+            META_TENANT_SCHEMA_KEY: f"{test_tenant_schema_name}-other",
             META_CASE_ID_KEY: "c",
         },
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "tenant mismatch"
+    assert resp.json()["detail"] == "tenant schema mismatch"
+
+
+@pytest.mark.django_db
+def test_tenant_schema_header_match_allows_request(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    seen = {}
+
+    def _check(tenant, now=None):
+        seen["tenant"] = tenant
+        return True
+
+    monkeypatch.setattr(rate_limit, "check", _check)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    resp = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: "tenant-header",
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "c",
+        },
+    )
+    assert resp.status_code == 200
+    assert resp[X_TENANT_ID_HEADER] == "tenant-header"
+    assert resp[X_CASE_ID_HEADER] == "c"
+    assert resp.json()["tenant"] == "tenant-header"
+    assert seen["tenant"] == "tenant-header"
 
 
 @pytest.mark.django_db
@@ -121,24 +152,26 @@ def test_intake_persists_state_and_headers(
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
+    tenant_header = "tenant-header"
     resp = client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
         **{
-            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: tenant_header,
             META_CASE_ID_KEY: "  case-123  ",
         },
     )
     assert resp.status_code == 200
     assert resp[X_TRACE_ID_HEADER]
     assert resp[X_CASE_ID_HEADER] == "case-123"
-    assert resp[X_TENANT_ID_HEADER] == test_tenant_schema_name
+    assert resp[X_TENANT_ID_HEADER] == tenant_header
     assert X_KEY_ALIAS_HEADER not in resp
-    assert resp.json()["tenant"] == test_tenant_schema_name
+    assert resp.json()["tenant"] == tenant_header
 
-    state = object_store.read_json(f"{test_tenant_schema_name}/case-123/state.json")
-    assert state["meta"]["tenant"] == test_tenant_schema_name
+    state = object_store.read_json(f"{tenant_header}/case-123/state.json")
+    assert state["meta"]["tenant"] == tenant_header
+    assert state["meta"]["tenant_schema"] == test_tenant_schema_name
     assert state["meta"]["case"] == "case-123"
 
 
