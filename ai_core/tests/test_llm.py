@@ -10,6 +10,14 @@ import requests
 
 from ai_core.llm import routing
 from ai_core.llm.client import LlmClientError, RateLimitError, call
+from common.constants import (
+    IDEMPOTENCY_KEY_HEADER,
+    X_CASE_ID_HEADER,
+    X_KEY_ALIAS_HEADER,
+    X_RETRY_ATTEMPT_HEADER,
+    X_TENANT_ID_HEADER,
+    X_TRACE_ID_HEADER,
+)
 from common.logging import mask_value
 
 
@@ -46,12 +54,12 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
         ):
             assert json["messages"][0]["content"] == "XXXX"
             assert headers["Authorization"] == "Bearer token"
-            assert headers["X-Trace-ID"] == "tr1"
-            assert headers["X-Case-ID"] == "c1"
-            assert headers["X-Tenant-ID"] == "t1"
-            assert headers["X-Key-Alias"] == "alias-01"
-            self.idempotency_headers.append(headers["Idempotency-Key"])
-            self.retry_headers.append(headers.get("X-Retry-Attempt"))
+            assert headers[X_TRACE_ID_HEADER] == "tr1"
+            assert headers[X_CASE_ID_HEADER] == "c1"
+            assert headers[X_TENANT_ID_HEADER] == "t1"
+            assert headers[X_KEY_ALIAS_HEADER] == "alias-01"
+            self.idempotency_headers.append(headers[IDEMPOTENCY_KEY_HEADER])
+            self.retry_headers.append(headers.get(X_RETRY_ATTEMPT_HEADER))
             self.timeouts.append(timeout)
             self.calls += 1
             if self.calls == 1:
@@ -198,8 +206,8 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
         ):
             assert json["messages"][0]["content"] == "XXXX"
             assert headers["Authorization"] == "Bearer token"
-            self.idempotency_headers.append(headers["Idempotency-Key"])
-            self.retry_headers.append(headers.get("X-Retry-Attempt"))
+            self.idempotency_headers.append(headers[IDEMPOTENCY_KEY_HEADER])
+            self.retry_headers.append(headers.get(X_RETRY_ATTEMPT_HEADER))
             self.calls += 1
             if self.calls == 1:
 
@@ -284,7 +292,7 @@ def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
         def __call__(
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
         ):
-            self.headers.append(headers["Idempotency-Key"])
+            self.headers.append(headers[IDEMPOTENCY_KEY_HEADER])
 
             class Resp:
                 status_code = 200
@@ -332,8 +340,8 @@ def test_llm_retry_counter_increments(monkeypatch):
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
         ):
             self.calls += 1
-            self.idempotency_headers.append(headers["Idempotency-Key"])
-            self.retry_headers.append(headers.get("X-Retry-Attempt"))
+            self.idempotency_headers.append(headers[IDEMPOTENCY_KEY_HEADER])
+            self.retry_headers.append(headers.get(X_RETRY_ATTEMPT_HEADER))
             if self.calls < 3:
 
                 class Resp:
