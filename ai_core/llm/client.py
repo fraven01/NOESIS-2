@@ -63,6 +63,17 @@ def _safe_json(resp: requests.Response) -> Dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _safe_text(resp: requests.Response | None) -> str | None:
+    if resp is None:
+        return None
+    resp_text = getattr(resp, "text", "")
+    if resp_text is None:
+        return ""
+    if not isinstance(resp_text, str):
+        resp_text = str(resp_text)
+    return resp_text.strip()
+
+
 def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
 
@@ -131,9 +142,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                     "llm retries exhausted", extra={**log_extra, "status": status}
                 )
                 payload = _safe_json(resp)
-                detail = payload.get("detail") or (
-                    (resp.text or "").strip() if resp is not None else None
-                )
+                detail = payload.get("detail") or _safe_text(resp)
                 status_val = payload.get("status") or status
                 code = payload.get("code")
                 raise LlmClientError(
@@ -163,9 +172,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                     "llm retries exhausted", extra={**log_extra, "status": status}
                 )
                 payload = _safe_json(resp)
-                detail = payload.get("detail") or (
-                    (resp.text or "").strip() if resp is not None else None
-                )
+                detail = payload.get("detail") or _safe_text(resp)
                 status_val = payload.get("status") or status
                 code = payload.get("code")
                 raise RateLimitError(
@@ -200,9 +207,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if status and 400 <= status < 500:
             logger.warning("llm 4xx response", extra={**log_extra, "status": status})
             payload = _safe_json(resp)
-            detail = payload.get("detail") or (
-                (resp.text or "").strip() if resp is not None else None
-            )
+            detail = payload.get("detail") or _safe_text(resp)
             status_val = payload.get("status") or status
             code = payload.get("code")
             raise LlmClientError(
