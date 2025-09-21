@@ -21,10 +21,20 @@ def load(alias: str) -> Dict[str, str]:
     if not candidates:
         raise FileNotFoundError(f"No prompt for alias '{alias}'")
 
-    prompt_file = candidates[-1]
-    match = re.search(r"\.v(\d+)\.md$", prompt_file.name)
-    if not match:
-        raise ValueError(f"Invalid prompt filename: {prompt_file.name}")
-    version = f"v{match.group(1)}"
+    valid_candidates = []
+    for candidate in candidates:
+        match = re.search(r"\.v(\d+)\.md$", candidate.name)
+        if not match:
+            continue
+        valid_candidates.append((int(match.group(1)), match.group(1), candidate))
+
+    if not valid_candidates:
+        invalid_files = ", ".join(path.name for path in candidates)
+        raise ValueError(
+            f"No valid prompt filename found for alias '{alias}'. Candidates: {invalid_files}"
+        )
+
+    _, version_str, prompt_file = max(valid_candidates, key=lambda item: item[0])
+    version = f"v{version_str}"
     text = prompt_file.read_text(encoding="utf-8")
     return {"version": version, "text": text}
