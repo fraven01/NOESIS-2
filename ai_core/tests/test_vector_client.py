@@ -68,3 +68,45 @@ class TestPgVectorClient:
         assert len(results) == 1
         assert histogram.samples
         assert uuid.UUID(results[0].meta["tenant"])  # tenant ids are normalised
+
+    def test_upsert_replaces_existing_chunks_in_batches(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = "batched"
+
+        def _make_chunk(content: str) -> Chunk:
+            return Chunk(
+                content=content,
+                meta={"tenant": tenant, "hash": doc_hash, "source": "s"},
+                embedding=[0.01] * vector_client.EMBEDDING_DIM,
+            )
+
+        initial_chunks = [_make_chunk(f"chunk-{idx}") for idx in range(3)]
+        written = client.upsert_chunks(initial_chunks)
+        assert written == 3
+
+        with client._connection() as conn:  # type: ignore[attr-defined]
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT text, ord, tokens FROM chunks ORDER BY ord"
+                )
+                rows = cur.fetchall()
+                assert [row[0] for row in rows] == [c.content for c in initial_chunks]
+                assert [row[1] for row in rows] == [0, 1, 2]
+                assert all(row[2] > 0 for row in rows)
+                cur.execute("SELECT COUNT(*) FROM embeddings")
+                assert cur.fetchone()[0] == 3
+                cur.execute("SELECT COUNT(*) FROM documents")
+                assert cur.fetchone()[0] == 1
+
+        replacement_chunks = [_make_chunk(f"replacement-{idx}") for idx in range(2)]
+        written = client.upsert_chunks(replacement_chunks)
+        assert written == 2
+
+        with client._connection() as conn:  # type: ignore[attr-defined]
+            with conn.cursor() as cur:
+                cur.execute("SELECT text FROM chunks ORDER BY ord")
+                rows = cur.fetchall()
+                assert [row[0] for row in rows] == [c.content for c in replacement_chunks]
+                cur.execute("SELECT COUNT(*) FROM embeddings")
+                assert cur.fetchone()[0] == 2
