@@ -77,7 +77,10 @@ def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "not/allowed"},
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "not/allowed",
+        },
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "invalid case header"
