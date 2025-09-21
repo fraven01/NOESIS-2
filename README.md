@@ -141,17 +141,26 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
 - `npm run dev:check`: Führt Smoke‑Checks aus (LiteLLM Health/Chat, `GET /ai/ping/`, `POST /ai/scope/`). Chat erfordert gültige `GEMINI_API_KEY`.
 - `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
 - `npm run dev:rebuild`: Baut Web- und Worker-Images neu und aktualisiert Code-Abhängigkeiten, ohne Volumes zu löschen. Mit `npm run dev:rebuild -- --with-frontend` lässt sich optional auch das Frontend-Image aktualisieren.
+- `npm run dev:restart`: Startet Web- und Worker-Container schnell neu (Compose `restart`).
 - `npm run dev:init`: Führt die Compose‑Jobs `migrate` und `bootstrap` aus (nach `up -d`).
 - `npm run dev:reset`: Full reset (down -v → build --no-cache → up -d → init → checks).
 - `npm run jobs:rag`: Führt `docs/rag/schema.sql` gegen die DB aus (idempotent).
 - `npm run rag:enable`: Setzt `RAG_ENABLED=true` in `.env` und startet Web/Worker neu.
  - `npm run jobs:rag:health`: Prüft RAG-Gesundheit (pgvector installiert, Tabellen vorhanden).
 
+**Wann welches Skript?**
+- Konfigurationswerte, Feature-Flags oder Django-Code geändert und die laufenden Container sollen die Änderungen aufnehmen → `npm run dev:restart` (Windows: `npm run win:dev:restart`).
+- Neue Python-/Node-Abhängigkeiten installiert oder das Dockerfile angepasst → `npm run dev:rebuild` (Windows: `npm run win:dev:rebuild`).
+- Komplettes Setup inkl. Datenbanken zurücksetzen (z. B. nach kaputten Fixtures) → `npm run dev:reset` (Windows: `npm run win:dev:reset`).
+- Nur das RAG-Schema aktualisieren bzw. die Installation verifizieren → `npm run jobs:rag` bzw. `npm run jobs:rag:health`.
+- Demo-Tenant & Beispieldaten neu befüllen → `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py create_demo_data` (Windows: gleicher Befehl in PowerShell).
+
 Hinweis (Windows): PowerShell‑Varianten sind enthalten:
 - `npm run win:dev:up`
 - `npm run win:dev:check`
 - `npm run win:dev:down`
 - `npm run win:dev:rebuild` (optional mit `npm run win:dev:rebuild -- -WithFrontend`)
+- `npm run win:dev:restart`
 - `npm run win:dev:reset`
 - `npm run win:rag:enable`
 - `npm run win:jobs:rag`
