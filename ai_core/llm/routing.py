@@ -10,20 +10,35 @@ ROUTING_FILE = ROOT_DIR / "MODEL_ROUTING.yaml"
 LOCAL_OVERRIDE_FILE = ROOT_DIR / "MODEL_ROUTING.local.yaml"
 
 
-@lru_cache(maxsize=1)
-def load_map() -> dict[str, str]:
-    """Load and cache the label→model mapping from ``MODEL_ROUTING.yaml``."""
+def _parse_routing_file(file: Path) -> dict[str, str]:
+    """Return the label→model mapping contained in ``file``."""
 
-    # Prefer local override when present (e.g., docker dev without Vertex)
-    file = LOCAL_OVERRIDE_FILE if LOCAL_OVERRIDE_FILE.exists() else ROUTING_FILE
+    if not file.exists():
+        return {}
 
     with file.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    # Support either flat mapping or nested under 'labels'
-    if isinstance(data, dict) and "labels" in data and isinstance(data["labels"], dict):
-        return data["labels"]
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict):
+        return {}
+
+    mapping = data.get("labels") if isinstance(data.get("labels"), dict) else data
+    if not isinstance(mapping, dict):
+        return {}
+
+    return {str(label): value for label, value in mapping.items()}
+
+
+@lru_cache(maxsize=1)
+def load_map() -> dict[str, str]:
+    """Load and cache the label→model mapping from routing files."""
+
+    base_map = _parse_routing_file(ROUTING_FILE)
+    override_map = _parse_routing_file(LOCAL_OVERRIDE_FILE)
+
+    combined_map = base_map.copy()
+    combined_map.update(override_map)
+    return combined_map
 
 
 def resolve(label: str) -> str:
