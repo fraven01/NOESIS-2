@@ -6,9 +6,21 @@ on:
   pull_request:
   workflow_dispatch:
 
+env:
+  RUN_CI: ${{ ((
+      github.event_name == 'pull_request' && (
+        contains(github.event.pull_request.title, '[CI]') ||
+        contains(github.event.pull_request.body || '', '[CI]')
+      )
+    ) || (
+      github.event_name == 'push' &&
+      contains(join(github.event.commits.*.message, ' '), '[CI]')
+    )) && 'true' || 'false' }}
+
 jobs:
   e2e:
     runs-on: ubuntu-latest
+    if: env.RUN_CI == 'true' || github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
