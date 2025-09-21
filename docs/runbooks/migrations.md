@@ -43,13 +43,15 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 ## RAG / pgvector (optional)
 - Schema anwenden (idempotent, nur einmal nötig):
   - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
-- Feature aktivieren: `.env → RAG_ENABLED=true`, danach `docker compose -f docker-compose.yml -f docker-compose.dev.yml restart web worker`
+- Feature aktivieren: `.env → RAG_ENABLED=true`, danach `npm run dev:restart` (Windows: `npm run win:dev:restart`)
+  (reicht für Flag-Änderungen; `dev:rebuild` nur bei neuen Abhängigkeiten notwendig).
 
 ## Fehlerbilder & Hinweise
 - Container restarten ständig → Logs prüfen:
   - `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -n 120 web` (z. B. CRLF im `entrypoint.sh`)
 - 403 bei API‑POSTs → AI‑Endpoints sind CSRF‑exempt; sicherstellen, dass Code aktualisiert wurde.
-- LiteLLM „unhealthy“ → Healthcheck läuft Python‑Probe; bei Erststart dauert Prisma‑Migration etwas. Danach `web/worker` ggf. nachstarten.
+- LiteLLM „unhealthy“ → Healthcheck läuft Python‑Probe; bei Erststart dauert Prisma‑Migration etwas. Danach `web/worker` ggf. per `npm run dev:restart` (Windows: `npm run win:dev:restart`) neu starten.
+  Sollte der Fehler nach Code-Abhängigkeitsänderungen bestehen bleiben, `npm run dev:rebuild` / `npm run win:dev:rebuild` ausführen.
 
 ## Best Practices
 - Dev: ein DB‑User für App & LiteLLM verwenden (aus `.env`).
