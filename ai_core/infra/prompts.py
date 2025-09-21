@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import re
-from pathlib import Path
-from typing import Dict
-
 from functools import lru_cache
+from pathlib import Path
+import re
+from typing import Dict
 
 
 @lru_cache(maxsize=None)
