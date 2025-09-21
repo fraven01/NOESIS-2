@@ -146,6 +146,27 @@ def test_trace_sends_to_langfuse(monkeypatch):
     assert dispatched[0]["metadata"]["tenant"] == "t1"
 
 
+def test_trace_skips_langfuse_without_trace_id(monkeypatch):
+    dispatched = []
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
+    monkeypatch.setattr(
+        "ai_core.infra.tracing._dispatch_langfuse",
+        lambda trace_id, node_name, metadata: dispatched.append(
+            {"traceId": trace_id, "name": node_name, "metadata": metadata}
+        ),
+    )
+
+    @trace("node-missing-trace")
+    def sample(state, meta):
+        return "ok"
+
+    sample({}, {"tenant": "t1", "case": "c1"})
+
+    assert dispatched == []
+
+
 def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
     from ai_core.infra import tracing
 
