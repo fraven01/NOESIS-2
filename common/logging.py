@@ -156,22 +156,23 @@ def _otel_trace_processor(
     span = trace.get_current_span()
     span_context = span.get_span_context() if span else None
 
+    trace_id: str | None = None
+    span_id: str | None = None
+
     if span_context and span_context.is_valid:
         trace_id = f"{span_context.trace_id:032x}"
         span_id = f"{span_context.span_id:016x}"
-    else:
-        trace_id = "0" * 32
-        span_id = "0" * 16
 
     event_dict.setdefault("trace_id", trace_id)
     event_dict.setdefault("span_id", span_id)
 
-    gcp_project = os.getenv("GCP_PROJECT")
-    if gcp_project:
-        event_dict.setdefault(
-            "logging.googleapis.com/trace",
-            f"projects/{gcp_project}/traces/{trace_id}",
-        )
+    if trace_id:
+        gcp_project = os.getenv("GCP_PROJECT")
+        if gcp_project:
+            event_dict.setdefault(
+                "logging.googleapis.com/trace",
+                f"projects/{gcp_project}/traces/{trace_id}",
+            )
     return event_dict
 
 
