@@ -12,11 +12,16 @@ from common.constants import (
 )
 
 
-Meta = Mapping[str, str]
+Meta = Mapping[str, str | None]
 
 
 def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
-    """Attach standard metadata headers to successful responses only."""
+    """Attach standard metadata headers to successful responses only.
+
+    The ``meta`` mapping may optionally include a ``traceparent`` entry. When
+    provided, the corresponding W3C trace context header is forwarded alongside
+    the standard ``X-*`` metadata headers.
+    """
 
     if not 200 <= response.status_code < 300:
         return response
@@ -26,6 +31,7 @@ def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
         X_CASE_ID_HEADER: meta.get("case"),
         X_TENANT_ID_HEADER: meta.get("tenant"),
         X_KEY_ALIAS_HEADER: meta.get("key_alias"),
+        "traceparent": meta.get("traceparent"),
     }
 
     for header, value in header_map.items():

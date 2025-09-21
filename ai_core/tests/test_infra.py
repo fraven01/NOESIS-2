@@ -40,6 +40,7 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
         "case": "case-1",
         "tenant": "tenant-1",
         "key_alias": "alias-1",
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }
 
     result = apply_std_headers(resp, meta)
@@ -48,6 +49,7 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
     assert result[X_CASE_ID_HEADER] == "case-1"
     assert result[X_TENANT_ID_HEADER] == "tenant-1"
     assert result[X_KEY_ALIAS_HEADER] == "alias-1"
+    assert result["traceparent"] == meta["traceparent"]
 
 
 def test_apply_std_headers_skips_missing_optional_headers():
@@ -58,10 +60,16 @@ def test_apply_std_headers_skips_missing_optional_headers():
 
     assert X_KEY_ALIAS_HEADER not in result
     assert result[X_TRACE_ID_HEADER] == "abc123"
+    assert "traceparent" not in result
 
 
 def test_apply_std_headers_ignores_non_success_responses():
-    meta = {"trace_id": "abc123", "case": "case-1", "tenant": "tenant-1"}
+    meta = {
+        "trace_id": "abc123",
+        "case": "case-1",
+        "tenant": "tenant-1",
+        "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+    }
 
     for status in (400, 500):
         resp = HttpResponse("error", status=status)
@@ -70,6 +78,7 @@ def test_apply_std_headers_ignores_non_success_responses():
         assert X_CASE_ID_HEADER not in result
         assert X_TENANT_ID_HEADER not in result
         assert X_KEY_ALIAS_HEADER not in result
+        assert "traceparent" not in result
 
 
 def test_pii_mask_replaces_digits():
