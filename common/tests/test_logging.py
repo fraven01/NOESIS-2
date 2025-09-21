@@ -1,9 +1,11 @@
 import importlib
+import json
 import logging
 
 import pytest
 from django.http import HttpResponse
 from django.test import RequestFactory
+import structlog
 from structlog.testing import capture_logs
 
 from common import logging as common_logging
@@ -180,3 +182,55 @@ def test_service_context_defaults_to_unknown(monkeypatch):
     assert module._SERVICE_CONTEXT["deployment.environment"] == "unknown"
 
     _reload_logging_module()
+
+
+def test_otel_trace_processor_formats_valid_span(monkeypatch):
+    class _FakeSpanContext:
+        trace_id = 0x1234ABCD
+        span_id = 0x7890
+
+        @property
+        def is_valid(self) -> bool:  # pragma: no cover - property semantics
+            return True
+
+    class _FakeSpan:
+        def get_span_context(self) -> _FakeSpanContext:
+            return _FakeSpanContext()
+
+    monkeypatch.setenv("GCP_PROJECT", "sample-project")
+    monkeypatch.setattr(common_logging.trace, "get_current_span", lambda: _FakeSpan())
+
+    payload = {}
+    processed = common_logging._otel_trace_processor(None, "event", payload)
+    rendered = structlog.processors.JSONRenderer()(None, "event", processed)
+    event = json.loads(rendered)
+
+    assert event["trace_id"] == "0000000000000000000000001234abcd"
+    assert event["span_id"] == "0000000000007890"
+    assert (
+        event["logging.googleapis.com/trace"]
+        == "projects/sample-project/traces/0000000000000000000000001234abcd"
+    )
+
+
+def test_otel_trace_processor_handles_invalid_span(monkeypatch):
+    class _InvalidSpanContext:
+        trace_id = 0
+        span_id = 0
+        is_valid = False
+
+    class _InvalidSpan:
+        def get_span_context(self) -> _InvalidSpanContext:
+            return _InvalidSpanContext()
+
+    monkeypatch.delenv("GCP_PROJECT", raising=False)
+    monkeypatch.setattr(common_logging.trace, "get_current_span", lambda: _InvalidSpan())
+
+    payload: dict[str, object] = {}
+    processed = common_logging._otel_trace_processor(None, "event", payload)
+    rendered = structlog.processors.JSONRenderer()(None, "event", processed)
+    event = json.loads(rendered)
+
+    assert event["trace_id"] is None
+    assert event["span_id"] is None
+    assert "logging.googleapis.com/trace" not in event
