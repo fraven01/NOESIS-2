@@ -128,13 +128,13 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`: Startet die Anwendung im Hintergrund (detached mode).
 - `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus.
+- `npm run dev:manage <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus (Windows: `npm run win:dev:manage <befehl>`).
 - Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
   Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
   `docker-compose exec web python manage.py collectstatic`.
   Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
 - Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
-  `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate`.
+  `npm run dev:manage migrate`.
 
 ### Dev-Skripte (idempotent)
 - `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an.
@@ -142,6 +142,7 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
 - `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
 - `npm run dev:rebuild`: Baut Web- und Worker-Images neu und aktualisiert Code-Abhängigkeiten, ohne Volumes zu löschen. Mit `npm run dev:rebuild -- --with-frontend` lässt sich optional auch das Frontend-Image aktualisieren.
 - `npm run dev:restart`: Startet Web- und Worker-Container schnell neu (Compose `restart`).
+- `npm run dev:manage <befehl>`: Wrapper für `python manage.py` im Web-Container (z. B. `npm run dev:manage makemigrations users`).
 - `npm run dev:init`: Führt die Compose‑Jobs `migrate` und `bootstrap` aus (nach `up -d`).
 - `npm run dev:reset`: Full reset (down -v → build --no-cache → up -d → init → checks).
 - `npm run jobs:rag`: Führt `docs/rag/schema.sql` gegen die DB aus (idempotent).
@@ -153,7 +154,7 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
 - Neue Python-/Node-Abhängigkeiten installiert oder das Dockerfile angepasst → `npm run dev:rebuild` (Windows: `npm run win:dev:rebuild`).
 - Komplettes Setup inkl. Datenbanken zurücksetzen (z. B. nach kaputten Fixtures) → `npm run dev:reset` (Windows: `npm run win:dev:reset`).
 - Nur das RAG-Schema aktualisieren bzw. die Installation verifizieren → `npm run jobs:rag` bzw. `npm run jobs:rag:health`.
-- Demo-Tenant & Beispieldaten neu befüllen → `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py create_demo_data` (Windows: gleicher Befehl in PowerShell).
+- Demo-Tenant & Beispieldaten neu befüllen → `npm run dev:manage create_demo_data` (Windows: `npm run win:dev:manage create_demo_data`).
 
 Hinweis (Windows): PowerShell‑Varianten sind enthalten:
 - `npm run win:dev:up`
@@ -161,6 +162,7 @@ Hinweis (Windows): PowerShell‑Varianten sind enthalten:
 - `npm run win:dev:down`
 - `npm run win:dev:rebuild` (optional mit `npm run win:dev:rebuild -- -WithFrontend`)
 - `npm run win:dev:restart`
+- `npm run win:dev:manage <befehl>`
 - `npm run win:dev:reset`
 - `npm run win:rag:enable`
 - `npm run win:jobs:rag`

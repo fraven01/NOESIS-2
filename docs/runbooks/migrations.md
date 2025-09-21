@@ -15,23 +15,23 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 
 1) Modelle geändert → Migrationen erzeugen
 - Im Web‑Container ausführen (Dateien landen via Bind‑Mount im Repo):
-  - Windows: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py makemigrations <app>`
-  - Bash: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py makemigrations <app>`
+  - Windows: `npm run win:dev:manage makemigrations <app>`
+  - Bash: `npm run dev:manage makemigrations <app>`
 
 2) Shared‑Migrationen anwenden (falls Shared App betroffen)
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate_schemas --shared`
+- `npm run dev:manage migrate_schemas --shared`
 
 3) Public Tenant sicherstellen (idempotent)
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py bootstrap_public_tenant --domain=localhost`
+- `npm run dev:manage bootstrap_public_tenant --domain=localhost`
 
 4) Tenant‑Migrationen anwenden
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py migrate_schemas --tenant`
+- `npm run dev:manage migrate_schemas --tenant`
 
 5) Neuen Tenant anlegen (optional)
-- Anlegen: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec web python manage.py create_tenant --schema=dev2 --name="Dev 2" --domain=dev2.localhost`
+- Anlegen: `npm run dev:manage create_tenant --schema=dev2 --name="Dev 2" --domain=dev2.localhost`
 - Superuser (nicht interaktiv):
-  - Windows: `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T -e DJANGO_SUPERUSER_PASSWORD=admin123 web python manage.py create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
-  - Bash:   `docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T -e DJANGO_SUPERUSER_PASSWORD=admin123 web python manage.py create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
+  - Windows: `npm run win:dev:manage DJANGO_SUPERUSER_PASSWORD=admin123 create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
+  - Bash:   `npm run dev:manage DJANGO_SUPERUSER_PASSWORD=admin123 create_tenant_superuser --schema=dev2 --username=admin --email=admin@example.com --noinput`
 
 ## Smoke‑Checks (nach Migrationen)
 - API‑Ping (Header‑Routing):
