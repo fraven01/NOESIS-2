@@ -1,6 +1,12 @@
 labels:
   default: vertex_ai/gemini-2.5-flash
   fast: vertex_ai/gemini-2.5-flash
+  simple-query: vertex_ai/gemini-2.5-flash
+  synthesize: vertex_ai/gemini-2.5-flash
+  extract: vertex_ai/gemini-2.5-flash
+  classify: vertex_ai/gemini-2.5-flash
+  analyze: vertex_ai/gemini-2.5-flash
   reasoning: vertex_ai/gemini-2.5-pro
+  draft: vertex_ai/gemini-2.5-pro
   embedding: vertex_ai/text-embedding-004
 
