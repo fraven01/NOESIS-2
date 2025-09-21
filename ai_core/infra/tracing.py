@@ -142,15 +142,20 @@ def trace(node_name: str) -> Callable[[F], F]:
                 }
                 _log(end_payload)
 
-                _dispatch_langfuse(
-                    trace_id=str(meta_enriched.get("trace_id")),
-                    node_name=node_name,
-                    metadata={
-                        "tenant": meta_enriched.get("tenant"),
-                        "case": meta_enriched.get("case"),
-                        "prompt_version": meta_enriched.get("prompt_version"),
-                    },
-                )
+                trace_id = meta_enriched.get("trace_id")
+                if isinstance(trace_id, str):
+                    trace_id = trace_id.strip()
+
+                if trace_id:
+                    _dispatch_langfuse(
+                        trace_id=str(trace_id),
+                        node_name=node_name,
+                        metadata={
+                            "tenant": meta_enriched.get("tenant"),
+                            "case": meta_enriched.get("case"),
+                            "prompt_version": meta_enriched.get("prompt_version"),
+                        },
+                    )
 
         return cast(F, wrapped)
 
