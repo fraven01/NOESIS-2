@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-import logging
 from typing import Any, Dict, Optional, Tuple
 
 from django.conf import settings
 
 from ai_core.rag.vector_client import PgVectorClient
+from common.logging import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def run(

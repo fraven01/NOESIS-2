@@ -1,9 +1,8 @@
-import io
-import logging
 import uuid
 from types import SimpleNamespace
 
 import pytest
+from structlog.testing import capture_logs
 
 from ai_core import tasks
 from ai_core.infra import object_store
@@ -78,21 +77,9 @@ def test_upsert_no_chunks_is_noop(monkeypatch, settings):
     vector_client.reset_default_client()
 
 
-def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings):
+def test_task_logging_context_includes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(tasks.object_store, "BASE_PATH", tmp_path)
     original_put_bytes = tasks.object_store.put_bytes
-
-    log_buffer = io.StringIO()
-    handler = logging.StreamHandler(log_buffer)
-    handler.addFilter(common_logging.RequestTaskContextFilter())
-    formatter = logging.Formatter(settings.LOGGING["formatters"]["verbose"]["format"])
-    handler.setFormatter(formatter)
-
-    logger = logging.getLogger("ai_core.tests.tasks")
-    original_propagate = logger.propagate
-    logger.propagate = False
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
 
     def _logging_put_bytes(path: str, data: bytes):
         context = common_logging.get_log_context()
@@ -100,13 +87,14 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
         assert context["case_id"] == "case-456"
         assert context["tenant"] == "tenant-123"
         assert context["key_alias"] == "alias-1234"
-        logger.info("task-run")
+        tasks.logger.info("task-run")
         return original_put_bytes(path, data)
 
     monkeypatch.setattr(tasks.object_store, "put_bytes", _logging_put_bytes)
 
-    try:
-        assert isinstance(tasks.ingest_raw._get_current_object(), ContextTask)
+    assert isinstance(tasks.ingest_raw._get_current_object(), ContextTask)
+
+    with capture_logs() as logs:
         tasks.ingest_raw(
             {
                 "tenant": "tenant-123",
@@ -117,16 +105,16 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
             "doc.txt",
             b"payload",
         )
-    finally:
-        logger.removeHandler(handler)
-        logger.propagate = original_propagate
 
-    output = log_buffer.getvalue()
-    assert "task-run" in output
-    assert "trace=-" not in output
-    assert "case=-" not in output
-    assert "tenant=-" not in output
-    assert "key_alias=-" not in output
+    events = [entry for entry in logs if entry.get("event") == "task-run"]
+    assert events, "expected task-run log entry"
+    event = events[0]
+    assert event["trace_id"].startswith("tr")
+    assert event["trace_id"].endswith("90")
+    assert "***" in event["trace_id"]
+    assert event["case_id"].startswith("ca")
+    assert event["tenant"].startswith("te")
+    assert event["key_alias"].startswith("al")
     assert common_logging.get_log_context() == {}
 
 

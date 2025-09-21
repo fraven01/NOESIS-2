@@ -1,4 +1,5 @@
 import logging
+
 from redis.exceptions import RedisError
 
 from ai_core.infra import rate_limit

@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import datetime
 import math
-import logging
 import random
 import time
 from email.utils import parsedate_to_datetime
@@ -13,7 +12,7 @@ import requests
 from ai_core.infra.config import get_config
 from ai_core.infra.pii import mask_prompt
 from ai_core.infra import ledger
-from common.logging import mask_value
+from common.logging import get_logger, mask_value
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -24,7 +23,7 @@ from common.constants import (
 )
 from .routing import resolve
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LlmClientError(Exception):
