@@ -140,6 +140,7 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
 - `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an.
 - `npm run dev:check`: Führt Smoke‑Checks aus (LiteLLM Health/Chat, `GET /ai/ping/`, `POST /ai/scope/`). Chat erfordert gültige `GEMINI_API_KEY`.
 - `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
+- `npm run dev:rebuild`: Baut Web- und Worker-Images neu und aktualisiert Code-Abhängigkeiten, ohne Volumes zu löschen. Mit `npm run dev:rebuild -- --with-frontend` lässt sich optional auch das Frontend-Image aktualisieren.
 - `npm run dev:init`: Führt die Compose‑Jobs `migrate` und `bootstrap` aus (nach `up -d`).
 - `npm run dev:reset`: Full reset (down -v → build --no-cache → up -d → init → checks).
 - `npm run jobs:rag`: Führt `docs/rag/schema.sql` gegen die DB aus (idempotent).
@@ -150,6 +151,7 @@ Hinweis (Windows): PowerShell‑Varianten sind enthalten:
 - `npm run win:dev:up`
 - `npm run win:dev:check`
 - `npm run win:dev:down`
+- `npm run win:dev:rebuild` (optional mit `npm run win:dev:rebuild -- -WithFrontend`)
 - `npm run win:dev:reset`
 - `npm run win:rag:enable`
 - `npm run win:jobs:rag`
