@@ -1,5 +1,7 @@
 import pytest
 
+from ai_core.infra.prompts import load
+from ai_core.infra.pii import mask_prompt
 from ai_core.nodes import (
     retrieve,
     compose,
@@ -67,9 +69,14 @@ def test_compose_masks_and_sets_version(monkeypatch):
         "question": "Number 1234?",
         "snippets": [{"text": "Answer", "source": "s"}],
     }
+    prompt = load("retriever/answer")
+    snippets_text = "\n".join(s.get("text", "") for s in state["snippets"])
+    expected_prompt = mask_prompt(
+        f"{prompt['text']}\n\nQuestion: {state['question']}\nContext:\n{snippets_text}"
+    )
     new_state, result = compose.run(state, META.copy())
     assert called["label"] == "synthesize"
-    assert "XXXX" in called["prompt"]
+    assert called["prompt"] == expected_prompt
     assert called["meta"]["prompt_version"] == "v1"
     assert new_state["answer"] == "resp"
     assert result["answer"] == "resp"
@@ -79,17 +86,26 @@ def test_extract_classify_assess(monkeypatch):
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
     state = {"text": "Fact 42"}
+    extract_prompt = mask_prompt(
+        f"{load('extract/items')['text']}\n\n{state['text']}"
+    )
     new_state, _ = extract.run(state, META.copy())
     assert called["label"] == "extract"
-    assert "XXXX" in called["prompt"]
+    assert called["prompt"] == extract_prompt
     assert new_state["items"] == "resp"
 
+    classify_prompt = mask_prompt(
+        f"{load('classify/mitbestimmung')['text']}\n\n{state['text']}"
+    )
     new_state, _ = classify.run(state, META.copy())
     assert called["label"] == "classify"
+    assert called["prompt"] == classify_prompt
     assert new_state["classification"] == "resp"
 
+    assess_prompt = mask_prompt(f"{load('assess/risk')['text']}\n\n{state['text']}")
     new_state, _ = assess.run(state, META.copy())
     assert called["label"] == "analyze"
+    assert called["prompt"] == assess_prompt
     assert new_state["risk"] == "resp"
 
 

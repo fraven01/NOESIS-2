@@ -10,7 +10,6 @@ from typing import Any, Dict
 import requests
 
 from ai_core.infra.config import get_config
-from ai_core.infra.pii import mask_prompt
 from ai_core.infra import ledger
 from common.logging import get_logger, mask_value
 from common.constants import (
@@ -87,8 +86,6 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """
 
     model_id = resolve(label)
-    prompt_safe = mask_prompt(prompt, placeholder_only=True)
-
     cfg = get_config()
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
@@ -103,7 +100,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     headers.update({k: v for k, v in propagated_headers.items() if v})
     payload = {
         "model": model_id,
-        "messages": [{"role": "user", "content": prompt_safe}],
+        "messages": [{"role": "user", "content": prompt}],
     }
 
     max_retries = 3
