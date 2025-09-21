@@ -33,10 +33,20 @@ _LOG_CONTEXT: contextvars.ContextVar[dict[str, str] | None] = contextvars.Contex
     "log_context", default=None
 )
 
+def _deployment_environment() -> str:
+    """Return the deployment environment from supported environment variables."""
+
+    return (
+        os.getenv("DEPLOY_ENV")
+        or os.getenv("DEPLOYMENT_ENVIRONMENT")
+        or "unknown"
+    )
+
+
 _SERVICE_CONTEXT: dict[str, str] = {
     "service.name": os.getenv("SERVICE_NAME", "noesis2"),
     "service.version": os.getenv("SERVICE_VERSION", "unknown"),
-    "deployment.environment": os.getenv("DEPLOYMENT_ENVIRONMENT", "unknown"),
+    "deployment.environment": _deployment_environment(),
 }
 
 _TIME_STAMPER = structlog.processors.TimeStamper(fmt="iso", key="timestamp")

@@ -1,3 +1,4 @@
+import importlib
 import logging
 
 import pytest
@@ -140,3 +141,42 @@ def test_request_log_context_middleware_binds_and_clears():
     assert observed["tenant"] == "tenant-789"
     assert observed["key_alias"] == "alias-001"
     assert common_logging.get_log_context() == {}
+
+
+def _reload_logging_module():
+    """Reload the logging module to rebuild service context from env vars."""
+
+    return importlib.reload(common_logging)
+
+
+def test_service_context_prefers_deploy_env(monkeypatch):
+    monkeypatch.setenv("DEPLOY_ENV", "staging")
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "legacy")
+
+    module = _reload_logging_module()
+    assert module._SERVICE_CONTEXT["deployment.environment"] == "staging"
+
+    monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    monkeypatch.delenv("DEPLOYMENT_ENVIRONMENT", raising=False)
+    _reload_logging_module()
+
+
+def test_service_context_falls_back_to_legacy_env(monkeypatch):
+    monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    monkeypatch.setenv("DEPLOYMENT_ENVIRONMENT", "legacy")
+
+    module = _reload_logging_module()
+    assert module._SERVICE_CONTEXT["deployment.environment"] == "legacy"
+
+    monkeypatch.delenv("DEPLOYMENT_ENVIRONMENT", raising=False)
+    _reload_logging_module()
+
+
+def test_service_context_defaults_to_unknown(monkeypatch):
+    monkeypatch.delenv("DEPLOY_ENV", raising=False)
+    monkeypatch.delenv("DEPLOYMENT_ENVIRONMENT", raising=False)
+
+    module = _reload_logging_module()
+    assert module._SERVICE_CONTEXT["deployment.environment"] == "unknown"
+
+    _reload_logging_module()
