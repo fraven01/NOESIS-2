@@ -28,6 +28,10 @@ DEFAULT_STATEMENT_TIMEOUT_MS = 15000
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
 
 
+DocumentKey = Tuple[str, str]
+GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
+
+
 class PgVectorClient:
     """pgvector-backed client for chunk storage and retrieval."""
 
@@ -184,10 +188,8 @@ class PgVectorClient:
         )
         return results
 
-    def _group_by_document(
-        self, chunks: Sequence[Chunk]
-    ) -> Dict[Tuple[str, str], Dict[str, object]]:
-        grouped: Dict[Tuple[str, str], Dict[str, object]] = {}
+    def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
+        grouped: GroupedDocuments = {}
         for chunk in chunks:
             tenant_value = chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
@@ -219,8 +221,12 @@ class PgVectorClient:
             )
         return grouped
 
-    def _ensure_documents(self, cur, grouped: Dict[Tuple[str, str], Dict[str, object]]) -> Dict[Tuple[str, str], uuid.UUID]:  # type: ignore[no-untyped-def]
-        document_ids: Dict[Tuple[str, str], uuid.UUID] = {}
+    def _ensure_documents(
+        self,
+        cur,
+        grouped: GroupedDocuments,
+    ) -> Dict[DocumentKey, uuid.UUID]:  # type: ignore[no-untyped-def]
+        document_ids: Dict[DocumentKey, uuid.UUID] = {}
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
             metadata = Json(doc["metadata"])
@@ -259,8 +265,8 @@ class PgVectorClient:
     def _replace_chunks(
         self,
         cur,
-        grouped: Dict[Tuple[str, str], Dict[str, object]],
-        document_ids: Dict[Tuple[str, str], uuid.UUID],
+        grouped: GroupedDocuments,
+        document_ids: Dict[DocumentKey, uuid.UUID],
     ) -> None:  # type: ignore[no-untyped-def]
         chunk_insert_sql = """
             INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
