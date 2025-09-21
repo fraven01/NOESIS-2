@@ -21,14 +21,20 @@ from common.constants import (
 from common.logging import mask_value
 
 
-def test_resolve_reads_yaml(tmp_path, monkeypatch):
-    mapping = {"simple-query": "gpt-3.5"}
-    file = tmp_path / "MODEL_ROUTING.yaml"
-    file.write_text(json.dumps(mapping))
-    monkeypatch.setattr(routing, "ROUTING_FILE", file)
+def test_resolve_merges_base_and_override(tmp_path, monkeypatch):
+    base_file = tmp_path / "MODEL_ROUTING.yaml"
+    base_file.write_text(
+        json.dumps({"simple-query": "gpt-3.5", "default": "base-default"})
+    )
+    override_file = tmp_path / "MODEL_ROUTING.local.yaml"
+    override_file.write_text(json.dumps({"default": "override-default"}))
+
+    monkeypatch.setattr(routing, "ROUTING_FILE", base_file)
+    monkeypatch.setattr(routing, "LOCAL_OVERRIDE_FILE", override_file)
     routing.load_map.cache_clear()
 
     assert routing.resolve("simple-query") == "gpt-3.5"
+    assert routing.resolve("default") == "override-default"
     with pytest.raises(ValueError):
         routing.resolve("missing")
 
