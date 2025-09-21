@@ -11,6 +11,8 @@ from typing import Dict, Iterator, MutableMapping
 import structlog
 from opentelemetry import trace
 
+from common.redaction import Redactor, hash_email, hash_str, hash_user_id  # noqa: F401
+
 try:  # pragma: no cover - optional instrumentation
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
 except Exception:  # pragma: no cover - fallback when OTEL extras missing
@@ -24,6 +26,9 @@ __all__ = [
     "get_log_context",
     "log_context",
     "mask_value",
+    "hash_str",
+    "hash_email",
+    "hash_user_id",
     "RequestTaskContextFilter",
 ]
 
@@ -52,6 +57,7 @@ _SERVICE_CONTEXT: dict[str, str] = {
 _TIME_STAMPER = structlog.processors.TimeStamper(fmt="iso", key="timestamp")
 _JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
+_REDACTOR: Redactor | None = None
 
 
 def get_log_context() -> dict[str, str]:
@@ -177,17 +183,7 @@ def _otel_trace_processor(
     return event_dict
 
 
-def _redaction_processor(
-    _: structlog.typing.WrappedLogger,
-    __: str,
-    event_dict: MutableMapping[str, object],
-) -> MutableMapping[str, object]:
-    """Placeholder processor for future structured redaction hooks."""
-
-    return event_dict
-
-
-def _structlog_processors() -> list[structlog.types.Processor]:
+def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]:
     def _render_to_json(
         logger: structlog.typing.WrappedLogger,
         name: str,
@@ -202,12 +198,12 @@ def _structlog_processors() -> list[structlog.types.Processor]:
         structlog.stdlib.add_log_level,
         _TIME_STAMPER,
         _otel_trace_processor,
-        _redaction_processor,
+        redactor,
         _render_to_json,
     ]
 
 
-def _configure_stdlib_logging(level: int) -> None:
+def _configure_stdlib_logging(level: int, redactor: Redactor) -> None:
     handler = logging.StreamHandler()
     handler.setLevel(level)
     handler.setFormatter(
@@ -219,7 +215,7 @@ def _configure_stdlib_logging(level: int) -> None:
                 structlog.stdlib.add_log_level,
                 _TIME_STAMPER,
                 _otel_trace_processor,
-                _redaction_processor,
+                redactor,
             ],
         )
     )
@@ -246,20 +242,22 @@ def _log_level_from_env() -> int:
 def configure_logging() -> None:
     """Configure structlog and stdlib logging once."""
 
-    global _CONFIGURED
+    global _CONFIGURED, _REDACTOR
     if _CONFIGURED:
         return
 
     level = _log_level_from_env()
-    _configure_stdlib_logging(level)
+    redactor = Redactor()
+    _configure_stdlib_logging(level, redactor)
 
     structlog.configure(
-        processors=_structlog_processors(),
+        processors=_structlog_processors(redactor),
         wrapper_class=structlog.stdlib.BoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
+    _REDACTOR = redactor
     _instrument_logging()
     _CONFIGURED = True
 
