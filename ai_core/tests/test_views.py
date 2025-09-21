@@ -9,6 +9,15 @@ from django.test import RequestFactory
 from ai_core import views
 from ai_core.infra import object_store, rate_limit
 from common import logging as common_logging
+from common.constants import (
+    META_CASE_ID_KEY,
+    META_KEY_ALIAS_KEY,
+    META_TENANT_ID_KEY,
+    X_CASE_ID_HEADER,
+    X_KEY_ALIAS_HEADER,
+    X_TENANT_ID_HEADER,
+    X_TRACE_ID_HEADER,
+)
 from common.middleware import RequestLogContextMiddleware
 
 
@@ -33,23 +42,21 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
 
     resp1 = client.get(
         "/ai/ping/",
-        HTTP_X_CASE_ID="c",
-        HTTP_X_TENANT_ID=tenant_schema,
+        **{META_CASE_ID_KEY: "c", META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp1.status_code == 200
     assert resp1.json() == {"ok": True}
-    assert resp1["X-Trace-ID"]
-    assert resp1["X-Case-ID"] == "c"
-    assert resp1["X-Tenant-ID"] == tenant_schema
-    assert "X-Key-Alias" not in resp1
+    assert resp1[X_TRACE_ID_HEADER]
+    assert resp1[X_CASE_ID_HEADER] == "c"
+    assert resp1[X_TENANT_ID_HEADER] == tenant_schema
+    assert X_KEY_ALIAS_HEADER not in resp1
     resp2 = client.get(
         "/ai/ping/",
-        HTTP_X_CASE_ID="c",
-        HTTP_X_TENANT_ID=tenant_schema,
+        **{META_CASE_ID_KEY: "c", META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp2.status_code == 429
     assert resp2.json()["detail"] == "rate limit"
-    assert "X-Trace-ID" not in resp2
+    assert X_TRACE_ID_HEADER not in resp2
 
 
 @pytest.mark.django_db
@@ -58,7 +65,7 @@ def test_missing_case_header_returns_400(client, test_tenant_schema_name):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "invalid case header"
@@ -70,8 +77,7 @@ def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="not/allowed",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "not/allowed"},
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "invalid case header"
@@ -83,8 +89,10 @@ def test_tenant_header_mismatch_returns_400(client, test_tenant_schema_name):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=f"{test_tenant_schema_name}-other",
-        HTTP_X_CASE_ID="c",
+        **{
+            META_TENANT_ID_KEY: f"{test_tenant_schema_name}-other",
+            META_CASE_ID_KEY: "c",
+        },
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "tenant mismatch"
@@ -97,7 +105,7 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_CASE_ID="c",
+        **{META_CASE_ID_KEY: "c"},
     )
     assert resp.status_code == 400
     assert resp.json()["detail"] == "tenant not resolved"
@@ -114,14 +122,16 @@ def test_intake_persists_state_and_headers(
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="  case-123  ",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "  case-123  ",
+        },
     )
     assert resp.status_code == 200
-    assert resp["X-Trace-ID"]
-    assert resp["X-Case-ID"] == "case-123"
-    assert resp["X-Tenant-ID"] == test_tenant_schema_name
-    assert "X-Key-Alias" not in resp
+    assert resp[X_TRACE_ID_HEADER]
+    assert resp[X_CASE_ID_HEADER] == "case-123"
+    assert resp[X_TENANT_ID_HEADER] == test_tenant_schema_name
+    assert X_KEY_ALIAS_HEADER not in resp
     assert resp.json()["tenant"] == test_tenant_schema_name
 
     state = object_store.read_json(f"{test_tenant_schema_name}/case-123/state.json")
@@ -138,16 +148,14 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path, test_tenant_schema_
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
     )
 
     resp_scope = client.post(
         "/ai/scope/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
     )
     assert resp_scope.status_code == 200
     assert resp_scope.json()["missing"] == ["scope"]
@@ -158,8 +166,7 @@ def test_scope_and_needs_flow(client, monkeypatch, tmp_path, test_tenant_schema_
         "/ai/needs/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
     )
     assert resp_needs.status_code == 200
     assert resp_needs.json()["missing"] == ["scope"]
@@ -179,8 +186,7 @@ def test_sysdesc_requires_no_missing(
         "/ai/sysdesc/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
     )
     assert resp_skip.status_code == 200
     assert resp_skip.json()["missing"] == ["scope"]
@@ -190,8 +196,7 @@ def test_sysdesc_requires_no_missing(
         "/ai/sysdesc/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID=test_tenant_schema_name,
-        HTTP_X_CASE_ID="c",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
     )
     assert resp_desc.status_code == 200
     body = resp_desc.json()
@@ -235,9 +240,11 @@ def test_request_logging_context_includes_metadata(
         "/ai/intake/",
         data={},
         content_type="application/json",
-        HTTP_X_TENANT_ID="autotest",
-        HTTP_X_CASE_ID="case-123",
-        HTTP_X_KEY_ALIAS="alias-1234",
+        **{
+            META_TENANT_ID_KEY: "autotest",
+            META_CASE_ID_KEY: "case-123",
+            META_KEY_ALIAS_KEY: "alias-1234",
+        },
     )
     request.tenant = SimpleNamespace(schema_name="autotest")
 

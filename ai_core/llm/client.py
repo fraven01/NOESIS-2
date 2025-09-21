@@ -13,6 +13,14 @@ from ai_core.infra.config import get_config
 from ai_core.infra.pii import mask_prompt
 from ai_core.infra import ledger
 from common.logging import mask_value
+from common.constants import (
+    IDEMPOTENCY_KEY_HEADER,
+    X_CASE_ID_HEADER,
+    X_KEY_ALIAS_HEADER,
+    X_RETRY_ATTEMPT_HEADER,
+    X_TENANT_ID_HEADER,
+    X_TRACE_ID_HEADER,
+)
 from .routing import resolve
 
 logger = logging.getLogger(__name__)
@@ -74,13 +82,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     url = f"{cfg.litellm_base_url.rstrip('/')}/v1/chat/completions"
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
     propagated_headers = {
-        "X-Trace-ID": metadata.get("trace_id"),
-        "X-Case-ID": metadata.get("case"),
-        "X-Tenant-ID": metadata.get("tenant"),
+        X_TRACE_ID_HEADER: metadata.get("trace_id"),
+        X_CASE_ID_HEADER: metadata.get("case"),
+        X_TENANT_ID_HEADER: metadata.get("tenant"),
     }
     key_alias = metadata.get("key_alias")
     if key_alias:
-        propagated_headers["X-Key-Alias"] = key_alias
+        propagated_headers[X_KEY_ALIAS_HEADER] = key_alias
     headers.update({k: v for k, v in propagated_headers.items() if v})
     payload = {
         "model": model_id,
@@ -101,9 +109,9 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()
-        attempt_headers["Idempotency-Key"] = idempotency_key
+        attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
         if attempt > 0:
-            attempt_headers["X-Retry-Attempt"] = str(attempt + 1)
+            attempt_headers[X_RETRY_ATTEMPT_HEADER] = str(attempt + 1)
         try:
             resp = requests.post(
                 url, headers=attempt_headers, json=payload, timeout=timeout

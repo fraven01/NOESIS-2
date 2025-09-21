@@ -3,13 +3,20 @@ from collections.abc import Mapping
 from django.conf import settings
 from django.db import connection
 
+from .constants import (
+    META_CASE_ID_KEY,
+    META_KEY_ALIAS_KEY,
+    META_TENANT_ID_KEY,
+    META_TENANT_SCHEMA_KEY,
+    META_TRACE_ID_KEY,
+)
 from .logging import bind_log_context, clear_log_context
 
 
 class TenantSchemaMiddleware:
     """Populate request.tenant_schema from the X-Tenant-Schema header."""
 
-    header_name = "HTTP_X_TENANT_SCHEMA"
+    header_name = META_TENANT_SCHEMA_KEY
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -28,7 +35,7 @@ class HeaderTenantRoutingMiddleware:
     middleware is inert and does not change schema routing.
     """
 
-    header_name = "HTTP_X_TENANT_SCHEMA"
+    header_name = META_TENANT_SCHEMA_KEY
 
     def __init__(self, get_response):
         self.get_response = get_response
@@ -51,10 +58,10 @@ class RequestLogContextMiddleware:
     """Bind request metadata to the logging context for the request lifecycle."""
 
     _HEADER_MAP = {
-        "trace_id": "HTTP_X_TRACE_ID",
-        "case_id": "HTTP_X_CASE_ID",
-        "tenant": "HTTP_X_TENANT_ID",
-        "key_alias": "HTTP_X_KEY_ALIAS",
+        "trace_id": META_TRACE_ID_KEY,
+        "case_id": META_CASE_ID_KEY,
+        "tenant": META_TENANT_ID_KEY,
+        "key_alias": META_KEY_ALIAS_KEY,
     }
 
     def __init__(self, get_response):
