@@ -35,7 +35,10 @@ class ContextTask(Task):
         request = getattr(self, "request", None)
         if request:
             context.update(self._from_headers(getattr(request, "headers", None)))
-            context.update(self._from_meta(getattr(request, "kwargs", {}).get("meta")))
+            request_kwargs = getattr(request, "kwargs", None)
+            if not isinstance(request_kwargs, Mapping):
+                request_kwargs = {}
+            context.update(self._from_meta(request_kwargs.get("meta")))
 
         context.update(self._from_meta(kwargs.get("meta")))
 

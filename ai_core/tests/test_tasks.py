@@ -1,6 +1,7 @@
 import io
 import logging
 import uuid
+from types import SimpleNamespace
 
 import pytest
 
@@ -147,5 +148,14 @@ def test_ingest_raw_rejects_unsafe_meta(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     meta = {"tenant": "tenant/../", "case": "case"}
 
-    with pytest.raises(ValueError):
-        tasks.ingest_raw(meta, "doc.txt", b"payload")
+    original_request = getattr(tasks.ingest_raw, "request", None)
+    tasks.ingest_raw.request = SimpleNamespace(headers=None, kwargs=None)
+
+    try:
+        with pytest.raises(ValueError):
+            tasks.ingest_raw(meta, "doc.txt", b"payload")
+    finally:
+        if original_request is not None:
+            tasks.ingest_raw.request = original_request
+        else:
+            delattr(tasks.ingest_raw, "request")
