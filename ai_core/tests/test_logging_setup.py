@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 
 from opentelemetry import trace
@@ -53,3 +54,19 @@ def test_logging_adds_gcp_trace_when_project_present(monkeypatch, capsys):
     assert payload["logging.googleapis.com/trace"].startswith(
         "projects/demo-project/traces/"
     )
+
+
+def test_configure_logging_switches_streams(capsys):
+    configure_logging()
+    logger = get_logger(__name__)
+    logger.info("first-capture")
+
+    first_capture = capsys.readouterr().err
+    assert "first-capture" in first_capture
+
+    alt_stream = io.StringIO()
+    configure_logging(stream=alt_stream)
+    logger.info("second-capture")
+
+    assert "second-capture" in alt_stream.getvalue()
+    assert "second-capture" not in capsys.readouterr().err

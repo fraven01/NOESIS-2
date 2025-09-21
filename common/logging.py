@@ -6,7 +6,8 @@ import contextlib
 import contextvars
 import logging
 import os
-from typing import Dict, Iterator, MutableMapping
+import sys
+from typing import Dict, Iterator, MutableMapping, TextIO
 
 import structlog
 from opentelemetry import trace
@@ -58,6 +59,7 @@ _TIME_STAMPER = structlog.processors.TimeStamper(fmt="iso", key="timestamp")
 _JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
 _REDACTOR: Redactor | None = None
+_CONFIGURED_STREAM: TextIO | None = None
 
 
 def get_log_context() -> dict[str, str]:
@@ -203,8 +205,23 @@ def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]
     ]
 
 
-def _configure_stdlib_logging(level: int, redactor: Redactor) -> None:
-    handler = logging.StreamHandler()
+def _configure_stdlib_logging(
+    level: int, redactor: Redactor, stream: TextIO | None
+) -> None:
+    handler: logging.StreamHandler | None = None
+    root_logger = logging.getLogger()
+
+    for existing in root_logger.handlers:
+        if isinstance(existing, logging.StreamHandler):
+            handler = existing
+            break
+
+    if handler is None:
+        handler = logging.StreamHandler(stream)
+    else:
+        handler.flush()
+        handler.setStream(stream)
+
     handler.setLevel(level)
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
@@ -220,7 +237,6 @@ def _configure_stdlib_logging(level: int, redactor: Redactor) -> None:
         )
     )
 
-    root_logger = logging.getLogger()
     root_logger.handlers = [handler]
     root_logger.setLevel(level)
 
@@ -239,16 +255,26 @@ def _log_level_from_env() -> int:
     return getattr(logging, level_name, logging.INFO)
 
 
-def configure_logging() -> None:
+def configure_logging(stream: TextIO | None = None) -> None:
     """Configure structlog and stdlib logging once."""
 
-    global _CONFIGURED, _REDACTOR
-    if _CONFIGURED:
-        return
+    global _CONFIGURED, _REDACTOR, _CONFIGURED_STREAM
+
+    active_stream = stream or sys.stderr
 
     level = _log_level_from_env()
+
+    if _CONFIGURED:
+        if _REDACTOR is None:
+            _REDACTOR = Redactor()
+
+        if _CONFIGURED_STREAM is not active_stream and _REDACTOR is not None:
+            _configure_stdlib_logging(level, _REDACTOR, active_stream)
+            _CONFIGURED_STREAM = active_stream
+        return
+
     redactor = Redactor()
-    _configure_stdlib_logging(level, redactor)
+    _configure_stdlib_logging(level, redactor, active_stream)
 
     structlog.configure(
         processors=_structlog_processors(redactor),
@@ -260,6 +286,7 @@ def configure_logging() -> None:
     _REDACTOR = redactor
     _instrument_logging()
     _CONFIGURED = True
+    _CONFIGURED_STREAM = active_stream
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
