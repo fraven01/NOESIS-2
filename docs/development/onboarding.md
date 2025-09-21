@@ -34,6 +34,8 @@ cd NOESIS-2
    - `npm run dev:init` führt nur die Jobs `migrate` & `bootstrap` aus (nach einem `up -d`).
    - `npm run dev:reset` setzt die Umgebung vollständig neu auf (inkl. Volumes löschen).
    - `npm run dev:down` stoppt und entfernt alle Container samt Volumes.
+   - `npm run dev:rebuild` baut Web- und Worker-Images neu, um Python-/Node-Abhängigkeiten aufzufrischen, ohne Daten-Volumes zu
+     löschen. Optional `npm run dev:rebuild -- --with-frontend`, falls auch das Frontend-Image aktualisiert werden soll.
 
 Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/` erreichbar. Die AI-Core-Endpunkte laufen unter `http://localhost:8000/ai/` und erwarten die Header `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key`.
 
