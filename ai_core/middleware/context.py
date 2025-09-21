@@ -31,9 +31,6 @@ class RequestContextMiddleware:
         try:
             response = self.get_response(request)
             response = apply_std_headers(response, meta["response_meta"])
-            traceparent = meta["response_meta"].get("traceparent")
-            if traceparent:
-                response["traceparent"] = traceparent
             return response
         finally:
             clear_contextvars()
