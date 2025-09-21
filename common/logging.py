@@ -50,6 +50,7 @@ _SERVICE_CONTEXT: dict[str, str] = {
 }
 
 _TIME_STAMPER = structlog.processors.TimeStamper(fmt="iso", key="timestamp")
+_JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
 
 
@@ -187,6 +188,13 @@ def _redaction_processor(
 
 
 def _structlog_processors() -> list[structlog.types.Processor]:
+    def _render_to_json(
+        logger: structlog.typing.WrappedLogger,
+        name: str,
+        event_dict: MutableMapping[str, object],
+    ) -> str:
+        return _JSON_RENDERER(logger, name, event_dict)
+
     return [
         structlog.stdlib.filter_by_level,
         _service_processor,
@@ -195,9 +203,7 @@ def _structlog_processors() -> list[structlog.types.Processor]:
         _TIME_STAMPER,
         _otel_trace_processor,
         _redaction_processor,
-        structlog.stdlib.ProcessorFormatter.wrap_for_formatter(
-            structlog.processors.JSONRenderer()
-        ),
+        _render_to_json,
     ]
 
 
@@ -206,7 +212,7 @@ def _configure_stdlib_logging(level: int) -> None:
     handler.setLevel(level)
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
-            processor=structlog.processors.JSONRenderer(),
+            processor=_JSON_RENDERER,
             foreign_pre_chain=[
                 _service_processor,
                 _context_processor,
