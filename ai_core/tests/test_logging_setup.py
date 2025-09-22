@@ -56,6 +56,30 @@ def test_logging_adds_gcp_trace_when_project_present(monkeypatch, capsys):
     )
 
 
+def test_logging_uses_string_ids_when_span_invalid(monkeypatch, capsys):
+    configure_logging()
+    monkeypatch.delenv("GCP_PROJECT", raising=False)
+
+    class _InvalidSpanContext:
+        is_valid = False
+        trace_id = 0
+        span_id = 0
+
+    class _InvalidSpan:
+        def get_span_context(self):
+            return _InvalidSpanContext()
+
+    monkeypatch.setattr("common.logging.trace.get_current_span", lambda: _InvalidSpan())
+
+    logger = get_logger(__name__)
+    logger.info("invalid-span")
+
+    payload = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
+
+    assert payload["trace_id"] == ""
+    assert payload["span_id"] == ""
+
+
 def test_configure_logging_switches_streams(capsys):
     configure_logging()
     logger = get_logger(__name__)
