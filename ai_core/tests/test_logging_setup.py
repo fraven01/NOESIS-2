@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 
 import pytest
 
@@ -11,6 +12,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.trace import ProxyTracerProvider
 
+from common import logging as common_logging
 from common.logging import configure_logging, get_logger
 
 
@@ -146,3 +148,31 @@ def test_configure_logging_recovers_from_closed_stream():
     logger.info("second")
 
     assert "second" in second_stream.getvalue()
+
+
+def test_configure_logging_does_not_override_tracer_provider(monkeypatch):
+    """configure_logging should not install a tracer provider on its own."""
+
+    monkeypatch.setattr(common_logging, "_CONFIGURED", False)
+    monkeypatch.setattr(common_logging, "_REDACTOR", None)
+    monkeypatch.setattr(common_logging, "_CONFIGURED_STREAM", None)
+    monkeypatch.setattr(common_logging, "LoggingInstrumentor", None)
+
+    captured_providers: list[object] = []
+
+    def _capture(provider: object) -> None:
+        captured_providers.append(provider)
+
+    monkeypatch.setattr(common_logging.trace, "set_tracer_provider", _capture)
+
+    root_logger = logging.getLogger()
+    previous_handlers = list(root_logger.handlers)
+    previous_level = root_logger.level
+
+    try:
+        configure_logging(stream=io.StringIO())
+    finally:
+        root_logger.handlers = previous_handlers
+        root_logger.setLevel(previous_level)
+
+    assert captured_providers == []
