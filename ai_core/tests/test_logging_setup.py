@@ -5,9 +5,20 @@ from __future__ import annotations
 import io
 import json
 
+import pytest
+
 from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.trace import ProxyTracerProvider
 
 from common.logging import configure_logging, get_logger
+
+
+@pytest.fixture(autouse=True)
+def _install_test_tracer_provider() -> None:
+    provider = trace.get_tracer_provider()
+    if isinstance(provider, ProxyTracerProvider):
+        trace.set_tracer_provider(TracerProvider())
 
 
 def _emit_log_line(capsys) -> dict[str, object]:

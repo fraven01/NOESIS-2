@@ -254,22 +254,6 @@ def _instrument_logging() -> None:
         LoggingInstrumentor().instrument(set_logging_format=False)
     except Exception:
         pass
-
-
-def _ensure_tracer_provider() -> None:
-    """Install a basic tracer provider when only the proxy is configured."""
-
-    try:
-        from opentelemetry.trace import ProxyTracerProvider
-        from opentelemetry.sdk.trace import TracerProvider
-    except Exception:  # pragma: no cover - optional dependency missing
-        return
-
-    provider = trace.get_tracer_provider()
-    if isinstance(provider, ProxyTracerProvider):
-        trace.set_tracer_provider(TracerProvider())
-
-
 def _log_level_from_env() -> int:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_name, logging.INFO)
@@ -295,8 +279,6 @@ def configure_logging(stream: TextIO | None = None) -> None:
 
     redactor = Redactor()
     _configure_stdlib_logging(level, redactor, active_stream)
-
-    _ensure_tracer_provider()
 
     structlog.configure(
         processors=_structlog_processors(redactor),
