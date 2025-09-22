@@ -83,7 +83,7 @@ def test_apply_std_headers_ignores_non_success_responses():
 
 
 def test_pii_mask_replaces_digits():
-    assert pii.mask("User 123") == "User XXX"
+    assert pii.mask("User 123") == "User [REDACTED_NUMBER]"
 
 
 def test_object_store_roundtrip(tmp_path, monkeypatch):

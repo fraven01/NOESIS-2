@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 import requests
 
+from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.llm import routing
 from ai_core.llm.client import LlmClientError, RateLimitError, call
-from ai_core.infra.pii import mask_prompt
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,

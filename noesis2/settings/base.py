@@ -38,6 +38,16 @@ TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 RAG_ENABLED = env.bool("RAG_ENABLED", default=False)
 
 
+# PII configuration defaults
+PII_MODE = os.getenv("PII_MODE", "industrial")
+PII_POLICY = os.getenv("PII_POLICY", "balanced")
+PII_DETERMINISTIC = os.getenv("PII_DETERMINISTIC", "true").lower() == "true"
+PII_POST_RESPONSE = os.getenv("PII_POST_RESPONSE", "false").lower() == "true"
+PII_LOGGING_REDACTION = os.getenv("PII_LOGGING_REDACTION", "true").lower() == "true"
+PII_HMAC_SECRET = os.getenv("PII_HMAC_SECRET", "")
+PII_NAME_DETECTION = os.getenv("PII_NAME_DETECTION", "false").lower() == "true"
+
+
 # Application definition
 
 # Apps that live in the ``public`` schema and are shared across all tenants
@@ -79,6 +89,7 @@ MIDDLEWARE = [
     "common.middleware.TenantSchemaMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
+    "ai_core.middleware.PIISessionScopeMiddleware",
     "ai_core.middleware.RequestContextMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
