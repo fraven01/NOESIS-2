@@ -1,15 +1,6 @@
 from pathlib import Path
 
 import pytest
-from django.conf import settings
-
-try:
-    engine = settings.DATABASES["default"]["ENGINE"]
-except Exception:  # pragma: no cover - settings not configured
-    engine = None
-
-if engine != "django_tenants.postgresql_backend":
-    pytest.skip("requires django_tenants.postgresql_backend", allow_module_level=True)
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -17,8 +8,7 @@ def ensure_tenant_engine():
     """Skip tests if the PostgreSQL tenant backend isn't configured."""
     from django.conf import settings
 
-    engine = settings.DATABASES["default"]["ENGINE"]
-    if engine != "django_tenants.postgresql_backend":
+    if settings.DATABASES["default"]["ENGINE"] != "django_tenants.postgresql_backend":
         pytest.skip(
             "Tests require the django-tenants PostgreSQL backend",
             allow_module_level=True,
@@ -37,6 +27,21 @@ def tmp_media_root(tmp_path, settings):
 @pytest.fixture(autouse=True)
 def disable_auto_create_schema(monkeypatch):
     monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
+
+
+@pytest.fixture(autouse=True, scope="session")
+def ensure_public_schema(django_db_setup, django_db_blocker):
+    """Ensure the shared (public) schema migrations run before tenant setup."""
+    from django.core.management import call_command
+
+    with django_db_blocker.unblock():
+        call_command(
+            "migrate_schemas", shared=True, interactive=False, verbosity=0
+        )
+        try:
+            call_command("init_public", verbosity=0)
+        except Exception:  # pragma: no cover - optional bootstrap
+            pass
 
 
 @pytest.fixture(scope="session")

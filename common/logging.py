@@ -175,16 +175,20 @@ def _otel_trace_processor(
     trace_id_value = trace_id if trace_id is not None else ""
     span_id_value = span_id if span_id is not None else ""
 
-    event_dict.setdefault("trace_id", trace_id_value)
-    event_dict.setdefault("span_id", span_id_value)
+    if not isinstance(event_dict.get("trace_id"), str):
+        event_dict["trace_id"] = trace_id_value
+    if not isinstance(event_dict.get("span_id"), str):
+        event_dict["span_id"] = span_id_value
 
     if trace_id:
-        gcp_project = os.getenv("GCP_PROJECT")
+        gcp_project = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")
         if gcp_project:
             event_dict.setdefault(
                 "logging.googleapis.com/trace",
                 f"projects/{gcp_project}/traces/{trace_id}",
             )
+            if span_id:
+                event_dict.setdefault("logging.googleapis.com/spanId", span_id)
     return event_dict
 
 
@@ -212,11 +216,17 @@ def _configure_stdlib_logging(
             handler = existing
             break
 
-    if handler is None:
+    stream_closed = bool(handler and getattr(handler.stream, "closed", False))
+
+    if handler is None or stream_closed:
         handler = logging.StreamHandler(stream)
     else:
-        handler.flush()
-        handler.setStream(stream)
+        try:
+            handler.flush()
+        except ValueError:
+            handler = logging.StreamHandler(stream)
+        else:
+            handler.setStream(stream)
 
     handler.setLevel(level)
     handler.setFormatter(
@@ -246,6 +256,20 @@ def _instrument_logging() -> None:
         pass
 
 
+def _ensure_tracer_provider() -> None:
+    """Install a basic tracer provider when only the proxy is configured."""
+
+    try:
+        from opentelemetry.trace import ProxyTracerProvider
+        from opentelemetry.sdk.trace import TracerProvider
+    except Exception:  # pragma: no cover - optional dependency missing
+        return
+
+    provider = trace.get_tracer_provider()
+    if isinstance(provider, ProxyTracerProvider):
+        trace.set_tracer_provider(TracerProvider())
+
+
 def _log_level_from_env() -> int:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_name, logging.INFO)
@@ -271,6 +295,8 @@ def configure_logging(stream: TextIO | None = None) -> None:
 
     redactor = Redactor()
     _configure_stdlib_logging(level, redactor, active_stream)
+
+    _ensure_tracer_provider()
 
     structlog.configure(
         processors=_structlog_processors(redactor),

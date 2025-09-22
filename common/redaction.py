@@ -111,6 +111,8 @@ class Redactor:
         return mapping
 
     def _redact_value(self, key: str | None, value: object) -> object:
+        if key in {"logging.googleapis.com/spanId"}:
+            return value
         if isinstance(value, str):
             return self._redact_string(key, value)
         if isinstance(value, Mapping):
