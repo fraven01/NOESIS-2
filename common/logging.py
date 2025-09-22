@@ -172,8 +172,11 @@ def _otel_trace_processor(
         trace_id = f"{span_context.trace_id:032x}"
         span_id = f"{span_context.span_id:016x}"
 
-    event_dict.setdefault("trace_id", trace_id)
-    event_dict.setdefault("span_id", span_id)
+    trace_id_value = trace_id if trace_id is not None else ""
+    span_id_value = span_id if span_id is not None else ""
+
+    event_dict.setdefault("trace_id", trace_id_value)
+    event_dict.setdefault("span_id", span_id_value)
 
     if trace_id:
         gcp_project = os.getenv("GCP_PROJECT")
