@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import sys
-from typing import Any, Dict, Iterator, MutableMapping, Optional, Sequence, TextIO
+from typing import Any, Dict, Iterator, MutableMapping, Sequence, TextIO
 
 import structlog
 from opentelemetry import trace
@@ -65,9 +65,9 @@ _LOG_JSON_DUMP_KWARGS: dict[str, object] = {
     "ensure_ascii": False,
     "separators": None,
 }
-_PII_LOG_CONFIG_CACHE: contextvars.ContextVar[
-    tuple[int, dict[str, object]] | None
-] = contextvars.ContextVar("log_pii_config_cache", default=None)
+_PII_LOG_CONFIG_CACHE: contextvars.ContextVar[tuple[int, dict[str, object]] | None] = (
+    contextvars.ContextVar("log_pii_config_cache", default=None)
+)
 _PII_FAST_PATH_MARKERS: tuple[str, ...] = (
     "@",
     "+",
@@ -271,7 +271,16 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
                 return True
             if "=" in value and any(
                 token in lower_value
-                for token in ("email", "token", "secret", "password", "pass", "session", "auth", "key")
+                for token in (
+                    "email",
+                    "token",
+                    "secret",
+                    "password",
+                    "pass",
+                    "session",
+                    "auth",
+                    "key",
+                )
             ):
                 return True
 
@@ -287,11 +296,7 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
                 else:
                     consecutive = 0
 
-            digit_sequences = [
-                len(chunk)
-                for chunk in re.split(r"\D+", value)
-                if chunk
-            ]
+            digit_sequences = [len(chunk) for chunk in re.split(r"\D+", value) if chunk]
             if digit_sequences:
                 if any(length >= 7 for length in digit_sequences):
                     return True

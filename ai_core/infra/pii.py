@@ -129,7 +129,9 @@ def _make_placeholder(
     tag = tag.upper()
     if deterministic and hmac_key:
         scoped_key = derive_scoped_hmac_key(hmac_key, session_scope)
-        digest = hmac.new(scoped_key, original.encode("utf-8"), hashlib.sha256).hexdigest()[:8]
+        digest = hmac.new(
+            scoped_key, original.encode("utf-8"), hashlib.sha256
+        ).hexdigest()[:8]
         return f"<{tag}_{digest}>"
     return f"[REDACTED_{tag}]"
 

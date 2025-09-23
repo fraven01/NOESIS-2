@@ -118,9 +118,7 @@ def _ensure_tuple(scope: Iterable[str]) -> tuple[str, ...]:
 def set_session_scope(*, tenant_id: str, case_id: str, session_salt: str) -> None:
     """Persist the active masking scope for session-stable tokens."""
 
-    _SESSION_SCOPE.set(
-        _ensure_tuple((tenant_id, case_id, session_salt)) or None
-    )
+    _SESSION_SCOPE.set(_ensure_tuple((tenant_id, case_id, session_salt)) or None)
 
 
 def clear_session_scope() -> None:
@@ -166,7 +164,9 @@ def get_policy_rules(
     base = _GOLD_POLICY_MATRIX.get(policy, _GOLD_POLICY_MATRIX["balanced"])
     rules: MutableMapping[str, PolicyRule] = {}
     for tag in base:
-        rules[tag] = PolicyRule(tag=tag, format_preserving=tag in _FORMAT_PRESERVING_TAGS)
+        rules[tag] = PolicyRule(
+            tag=tag, format_preserving=tag in _FORMAT_PRESERVING_TAGS
+        )
     if name_detection:
         rules["NAME"] = PolicyRule(tag="NAME")
     return dict(rules)

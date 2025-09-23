@@ -159,7 +159,6 @@ def test_prompt_runner_with_result_shaper(monkeypatch):
         "ai_core.nodes._prompt_runner.mask_prompt", lambda value, **kwargs: value
     )
 
-
     def fake_call(label, prompt, metadata):
         return {"text": "resp", "usage": {}}
 
