@@ -192,7 +192,7 @@ class DemoDatasetBuilder:
         for doc in invalid_json_docs:
             doc.content = b'{"invalid": true'
             doc.broken = True
-            doc.metadata.update({"invalid": True, "reason": "invalid_json"})
+            doc.metadata.update(self._invalid_metadata("invalid_json"))
         remaining_needed = max(0, broken_target - len(invalid_json_docs))
         remaining_pool = [
             doc for doc in all_doc_refs if doc not in invalid_json_docs
@@ -212,19 +212,19 @@ class DemoDatasetBuilder:
             if mode == "empty":
                 doc.content = None
                 doc.broken = True
-                doc.metadata.update({"invalid": True, "reason": "empty_content"})
+                doc.metadata.update(self._invalid_metadata("empty_content"))
             elif mode == "invalid_bytes":
                 doc.content = b"\x80\x81\xfe"
                 doc.broken = True
-                doc.metadata.update({"invalid": True, "reason": "invalid_bytes"})
+                doc.metadata.update(self._invalid_metadata("invalid_bytes"))
             elif mode == "long_title":
                 doc.title = f"{doc.title} {self.faker.pystr(min_chars=30, max_chars=30)}"
                 doc.broken = True
-                doc.metadata.update({"invalid": True, "reason": "title_length"})
+                doc.metadata.update(self._invalid_metadata("title_length"))
             elif mode == "missing_type":
                 doc.missing_type = True
                 doc.broken = True
-                doc.metadata.update({"invalid": True, "reason": "missing_type"})
+                doc.metadata.update(self._invalid_metadata("missing_type"))
         return SeederDataset(projects)
 
     def _generate_project(
@@ -285,7 +285,7 @@ class DemoDatasetBuilder:
             if allow_minor_faults and offset == 0 and fmt == "md":
                 content_bytes = f"## {project_name} Liste [Unvollständig".encode("utf-8")
                 broken = True
-                metadata = {"invalid": True, "reason": "markdown_unclosed"}
+                metadata = self._invalid_metadata("markdown_unclosed")
             documents.append(
                 DocumentSpec(
                     slug=doc_slug,
@@ -355,6 +355,15 @@ class DemoDatasetBuilder:
         if fmt == "json":
             return "application/json"
         return "text/plain"
+
+    def _invalid_metadata(self, reason: str, *, error: Optional[str] = None, **extra: object) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "invalid": True,
+            "reason": reason,
+            "error": error or reason,
+        }
+        payload.update(extra)
+        return payload
 
 
 class DemoDatasetApplier:
@@ -496,6 +505,7 @@ class DemoDatasetApplier:
             type=self.doc_type,
             status=self._target_status(doc_spec),
         )
+        document.meta = self._document_metadata(doc_spec)
         file_content = doc_spec.content if doc_spec.content is not None else b""
         try:
             document.file.save(
@@ -509,6 +519,10 @@ class DemoDatasetApplier:
                 doc_spec.filename,
                 ContentFile(file_content or b""),
                 save=False,
+            )
+            document.meta = self._augment_error_metadata(
+                document.meta,
+                "file_save_error",
             )
         return document
 
@@ -530,6 +544,11 @@ class DemoDatasetApplier:
             document.status = target_status
             update_fields.append("status")
 
+        desired_meta = self._document_metadata(doc_spec)
+        if document.meta != desired_meta:
+            document.meta = desired_meta
+            update_fields.append("meta")
+
         file_updated = False
         should_update_file = doc_spec.content is not None or doc_spec.broken
         if should_update_file:
@@ -547,6 +566,12 @@ class DemoDatasetApplier:
                 document.status = Document.STATUS_PROCESSING
                 if "status" not in update_fields:
                     update_fields.append("status")
+                document.meta = self._augment_error_metadata(
+                    document.meta,
+                    "file_save_error",
+                )
+                if "meta" not in update_fields:
+                    update_fields.append("meta")
 
         if file_updated:
             update_fields.append("file")
@@ -586,6 +611,23 @@ class DemoDatasetApplier:
         if doc_spec.metadata.get("invalid"):
             return Document.STATUS_PROCESSING
         return Document.STATUS_UPLOADED
+
+    def _document_metadata(self, doc_spec: DocumentSpec) -> Dict[str, object]:
+        metadata = dict(doc_spec.metadata)
+        if metadata.get("invalid"):
+            metadata.setdefault("error", metadata.get("reason", "invalid_document"))
+        return metadata
+
+    def _augment_error_metadata(
+        self, current_meta: Dict[str, object], error: str
+    ) -> Dict[str, object]:
+        updated = dict(current_meta or {})
+        if updated.get("invalid"):
+            updated.setdefault("error", error)
+            updated.setdefault("reason", error)
+        else:
+            updated.update({"invalid": True, "reason": error, "error": error})
+        return updated
 
 
 def wipe_seeded_content(

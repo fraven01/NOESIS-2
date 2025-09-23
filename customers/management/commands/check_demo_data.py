@@ -198,6 +198,7 @@ class Command(BaseCommand):
                 if (
                     document.status == Document.STATUS_PROCESSING
                     or self._file_size(document) == 0
+                    or getattr(document, "meta", {}).get("invalid")
                 ):
                     invalid_documents += 1
 

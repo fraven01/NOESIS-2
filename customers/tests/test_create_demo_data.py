@@ -334,6 +334,9 @@ def test_chaos_creates_flagged_invalid_documents():
                 )
             ]
             assert flagged
+            for doc in flagged:
+                assert doc.meta.get("invalid") is True
+                assert doc.meta.get("error")
 
             invalid_json_docs = []
             for doc in documents:
@@ -346,6 +349,8 @@ def test_chaos_creates_flagged_invalid_documents():
                     invalid_json_docs.append(doc)
 
             assert 1 <= len(invalid_json_docs) <= 2
+            for doc in invalid_json_docs:
+                assert doc.meta.get("reason") == "invalid_json"
 
 
 @pytest.mark.django_db
