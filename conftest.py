@@ -84,9 +84,7 @@ def ensure_public_schema(django_db_setup, django_db_blocker):
     from django.core.management import call_command
 
     with django_db_blocker.unblock():
-        call_command(
-            "migrate_schemas", shared=True, interactive=False, verbosity=0
-        )
+        call_command("migrate_schemas", shared=True, interactive=False, verbosity=0)
         try:
             call_command("init_public", verbosity=0)
         except Exception:  # pragma: no cover - optional bootstrap

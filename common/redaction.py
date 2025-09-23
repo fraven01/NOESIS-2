@@ -105,7 +105,9 @@ class Redactor:
     ) -> MutableMapping[str, object]:
         return self._redact_mapping(event_dict)
 
-    def _redact_mapping(self, mapping: MutableMapping[str, object]) -> MutableMapping[str, object]:
+    def _redact_mapping(
+        self, mapping: MutableMapping[str, object]
+    ) -> MutableMapping[str, object]:
         for key, value in list(mapping.items()):
             mapping[key] = self._redact_value(key, value)
         return mapping
@@ -137,7 +139,11 @@ class Redactor:
         return any(token in lowered for token in self._SENSITIVE_KEYWORDS)
 
     def _redact_string(self, key: str | None, value: str) -> str:
-        if key and key.lower() in self._PROMPT_FIELDS and not self._log_llm_text_enabled():
+        if (
+            key
+            and key.lower() in self._PROMPT_FIELDS
+            and not self._log_llm_text_enabled()
+        ):
             return self._redact_llm_field(value)
 
         if key and self._key_is_sensitive(key):
@@ -159,7 +165,9 @@ class Redactor:
             pattern.search(value)
             for pattern in (
                 re.compile(r"^\s*-----BEGIN PRIVATE KEY-----", re.IGNORECASE),
-                re.compile(r"^\s*eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\s*$"),
+                re.compile(
+                    r"^\s*eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\s*$"
+                ),
                 re.compile(r"^\s*Bearer\s+[A-Za-z0-9\-._~+/]+=*\s*$", re.IGNORECASE),
                 re.compile(r"^\s*[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}\s*$"),
             )
@@ -201,4 +209,3 @@ class Redactor:
                     digit -= 9
             total += digit
         return total % 10 == 0
-

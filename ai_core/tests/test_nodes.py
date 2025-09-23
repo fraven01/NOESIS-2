@@ -87,9 +87,7 @@ def test_extract_classify_assess(monkeypatch):
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
     state = {"text": "Fact 42"}
-    extract_prompt = mask_prompt(
-        f"{load('extract/items')['text']}\n\n{state['text']}"
-    )
+    extract_prompt = mask_prompt(f"{load('extract/items')['text']}\n\n{state['text']}")
     new_state, _ = extract.run(state, META.copy())
     assert called["label"] == "extract"
     assert called["prompt"] == extract_prompt
@@ -156,9 +154,11 @@ def test_prompt_runner_with_result_shaper(monkeypatch):
         "ai_core.nodes._prompt_runner.load",
         lambda alias: {"text": "Prompt", "version": "v1"},
     )
+
     monkeypatch.setattr(
         "ai_core.nodes._prompt_runner.mask_prompt", lambda value, **kwargs: value
     )
+
 
     def fake_call(label, prompt, metadata):
         return {"text": "resp", "usage": {}}

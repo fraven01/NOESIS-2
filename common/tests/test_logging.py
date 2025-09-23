@@ -224,7 +224,9 @@ def test_otel_trace_processor_handles_invalid_span(monkeypatch):
             return _InvalidSpanContext()
 
     monkeypatch.delenv("GCP_PROJECT", raising=False)
-    monkeypatch.setattr(common_logging.trace, "get_current_span", lambda: _InvalidSpan())
+    monkeypatch.setattr(
+        common_logging.trace, "get_current_span", lambda: _InvalidSpan()
+    )
 
     payload: dict[str, object] = {}
     processed = common_logging._otel_trace_processor(None, "event", payload)

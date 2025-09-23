@@ -70,6 +70,12 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - Pipeline-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD Pipeline](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
 - Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
 
+## Comands
+test: pytest -q
+lint: ruff check . && black --check . && mypy .
+typecheck: mypy .
+format: black .
+
 ## Governance & Änderungen
 - Architektur-, Security-, RAG- oder Betriebsanpassungen werden zuerst in den jeweiligen Primärquellen unter `docs/` dokumentiert.
 - Runbooks besitzen ihre eigenen Changelogs (siehe [docs/runbooks/](docs/runbooks)); verweise in Pull Requests auf aktualisierte Quellen.
