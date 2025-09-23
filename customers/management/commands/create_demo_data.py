@@ -560,7 +560,7 @@ def wipe_seeded_content(
             org_deleted = True
 
     if doc_type and DocumentType.objects.filter(pk=doc_type.pk).exists():
-        if not Document.objects.filter(type=doc_type).exists():
+        if not Document._base_manager.filter(type=doc_type).exists():
             doc_type.delete()
 
     return {
