@@ -10,6 +10,11 @@ Param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
+if (-not (Test-Path -Path '.env' -PathType Leaf)) {
+    Write-Error '[dev-up] Keine .env im Projektstamm gefunden. Bitte .env.example nach .env kopieren und Werte anpassen.'
+    exit 1
+}
+
 if (-not $DevTenantSchema) { $DevTenantSchema = 'dev' }
 if (-not $DevTenantName) { $DevTenantName = 'Dev Tenant' }
 if (-not $DevDomain) { $DevDomain = 'dev.localhost' }
