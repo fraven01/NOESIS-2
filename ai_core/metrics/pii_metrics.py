@@ -12,7 +12,11 @@ except Exception:  # pragma: no cover - fallback path exercised in tests
 
 
 class _LabelCounter:
-    def __init__(self, store: Dict[Tuple[Tuple[str, str], ...], float], key: Tuple[Tuple[str, str], ...]):
+    def __init__(
+        self,
+        store: Dict[Tuple[Tuple[str, str], ...], float],
+        key: Tuple[Tuple[str, str], ...],
+    ):
         self._store = store
         self._key = key
 

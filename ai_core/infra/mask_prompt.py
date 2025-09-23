@@ -43,7 +43,9 @@ def _apply_mask(
     if placeholder_only:
         return "XXXX"
 
-    hmac_key: Optional[bytes] = config["hmac_secret"] if config["deterministic"] else None
+    hmac_key: Optional[bytes] = (
+        config["hmac_secret"] if config["deterministic"] else None
+    )
     masked = mask_text(
         text,
         config["policy"],

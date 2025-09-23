@@ -107,7 +107,7 @@ def test_logging_redaction_fast_path_preserves_large_json_spacing():
     )
     masked_payload = records[0]["payload"]
     assert masked_payload.startswith('{ "email": "')
-    assert 'user@example.com' not in masked_payload
+    assert "user@example.com" not in masked_payload
     assert '"email": "[REDACTED_EMAIL]"' in masked_payload
     assert ' "note": "' in masked_payload
     assert masked_payload.endswith('" }')

@@ -10,7 +10,11 @@ from ai_core.infra.pii_flags import (
     resolve_tenant_pii_config,
     set_pii_config,
 )
-from ai_core.infra.policy import clear_session_scope, get_session_scope, set_session_scope
+from ai_core.infra.policy import (
+    clear_session_scope,
+    get_session_scope,
+    set_session_scope,
+)
 from common.tenants import get_current_tenant
 
 
