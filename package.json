@@ -27,8 +27,6 @@
     "dev:init": "npm run jobs:migrate && npm run jobs:bootstrap",
     "dev:reset": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v && docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache --pull && docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d && npm run dev:init && npm run dev:check",
     "win:dev:reset": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-reset.ps1",
-    "rag:enable": "bash ./scripts/rag-enable.sh",
-    "win:rag:enable": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\rag-enable.ps1",
     "win:jobs:rag": "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm rag",
     "win:jobs:rag:health": "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm rag-health",
     "test:py": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q\"",

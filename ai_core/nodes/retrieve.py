@@ -2,12 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional, Tuple
 
-from django.conf import settings
-
 from ai_core.rag.vector_client import PgVectorClient
-from common.logging import get_logger
-
-logger = get_logger(__name__)
 
 
 def run(
@@ -30,24 +25,14 @@ def run(
     top_k:
         Number of snippets to return.
     """
-    if not settings.RAG_ENABLED:
-        logger.info(
-            "Skipping retrieval because RAG is disabled (tenant=%s, case=%s)",
-            meta.get("tenant"),
-            meta.get("case"),
-        )
-        snippets: list[Dict[str, Any]] = []
-    else:
-        if client is None:
-            raise ValueError(
-                "A PgVectorClient instance is required when RAG is enabled"
-            )
-        query = state.get("query", "")
-        filters = {"tenant": meta.get("tenant"), "case": meta.get("case")}
-        chunks = client.search(query, filters=filters, top_k=top_k)
-        snippets = [
-            {"text": c.content, "source": c.meta.get("source", "")} for c in chunks
-        ]
+    if client is None:
+        raise ValueError("A PgVectorClient instance is required for retrieval")
+    query = state.get("query", "")
+    filters = {"tenant": meta.get("tenant"), "case": meta.get("case")}
+    chunks = client.search(query, filters=filters, top_k=top_k)
+    snippets = [
+        {"text": c.content, "source": c.meta.get("source", "")} for c in chunks
+    ]
     new_state = dict(state)
     new_state["snippets"] = snippets
     confidence = 1.0 if snippets else 0.0

@@ -36,16 +36,13 @@ RESP=$(curl -s -X POST \
   http://localhost:8000/ai/scope/ || true)
 echo "$RESP" | head -c 200; echo
 
-# Optional RAG health, only if enabled in .env
-if [ -f ./.env ] && grep -qi '^RAG_ENABLED=true' ./.env; then
-  echo "[dev-check] RAG migrate"
-  docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag || {
-    echo "[dev-check] RAG migrate failed" >&2
-  }
-  echo "[dev-check] RAG health"
-  docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-health || {
-    echo "[dev-check] RAG health failed" >&2
-  }
-fi
+echo "[dev-check] RAG migrate"
+docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag || {
+  echo "[dev-check] RAG migrate failed" >&2
+}
+echo "[dev-check] RAG health"
+docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-health || {
+  echo "[dev-check] RAG health failed" >&2
+}
 
 echo "[dev-check] Done"

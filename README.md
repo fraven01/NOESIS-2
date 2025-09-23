@@ -45,147 +45,108 @@ Der Session-Scope sorgt dafür, dass dieselben deterministischen Platzhalter in 
 
 ---
 
-## Docker Quickstart
-```bash
-# Falls noch keine .env vorhanden ist:
-# Windows: copy .env.example .env   |   Linux/macOS: cp .env.example .env
+## Entwicklungsworkflow mit Docker
 
+### 1️⃣ Vorbereitung
+- `.env.example` nach `.env` kopieren (Windows: `copy`, Linux/macOS: `cp`).
+- Optional: vorhandene Secrets und API-Keys ergänzen (LiteLLM, Gemini, Langfuse …).
+
+### 2️⃣ Build & Start
+```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
+```
 
-# Bootstrap & Checks (idempotent):
+### 3️⃣ Bootstrap & Smoke-Checks
+```bash
 npm run dev:up
 npm run dev:check
 ```
 
-Hinweise:
-- Wenn bereits eine lokale `.env` mit gültigen Schlüsseln existiert, Kopierschritt überspringen.
-- Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
-- Bei älteren Compose-Setups ggf. manuell:
-  `docker-compose exec web python manage.py collectstatic` (notwendig wegen `CompressedManifestStaticFilesStorage`).
+Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `migrate_schemas` aus und prüfen LiteLLM sowie die AI-Endpunkte (`/ai/ping`, `/ai/scope`).
 
----
+> ℹ️ **Compose-Notizen**
+> - Der `web`-Container führt `collectstatic` automatisch aus (Storage: `CompressedManifestStaticFilesStorage`).
+> - Volumes bleiben bei `up -d` erhalten. Für einen vollständigen Reset siehe `npm run dev:reset`.
+> - Container lesen `.env.docker`. Host-Tools nutzen weiterhin `.env`.
 
-## Lokales Setup (Alternative ohne Docker)
+### Häufige Docker-Kommandos
 
-Docker Compose ist die bevorzugte Methode für ein konsistentes, schnelles Setup.
-Die folgenden Schritte sind ein manueller Fallback, falls Docker nicht genutzt wird.
+| Kommando | Zweck |
+| --- | --- |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml up` | Start im Vordergrund (Logs im Terminal) |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d` | Start im Hintergrund |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml down` | Stoppen ohne Volumes zu löschen |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v` | Stoppen inkl. Entfernen der Volumes |
+| `docker compose -f docker-compose.yml -f docker-compose.dev.yml ps` | Statusübersicht der laufenden Container |
 
-### Voraussetzungen
-- Python 3.12+
-- Node.js und npm
-- PostgreSQL-Server
-- Redis-Server
+### Quality-of-Life Skripte (npm)
 
-### Installations-Schritte
-1. Repository klonen
-   ```bash
-   git clone https://github.com/fraven01/NOESIS-2.git
-   cd NOESIS-2
-   ```
-2. Python-Umgebung einrichten
-   ```bash
-   python -m venv .venv
-   # Linux/macOS
-   source .venv/bin/activate
-   # Windows PowerShell
-   .\.venv\Scripts\Activate.ps1
+| Script | Beschreibung |
+| --- | --- |
+| `npm run dev:up` | Initialisiert Datenbank & Tenants im Compose-Stack, erstellt Superuser |
+| `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/ai/scope`) aus |
+| `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`) |
+| `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
+| `npm run dev:restart` | Neustart von Web- und Worker-Containern |
+| `npm run dev:rebuild` | Rebuild von Web-/Worker-Images (`-- --with-frontend` für Tailwind) |
+| `npm run dev:reset` | Komplettreset (down -v → build --no-cache → up -d → init → check) |
+| `npm run dev:manage <cmd>` | Führt `python manage.py <cmd>` im `web`-Container aus |
+| `npm run jobs:migrate` | Compose-Job `migrate` für `migrate_schemas` |
+| `npm run jobs:bootstrap` | Compose-Job `bootstrap_public_tenant` |
+| `npm run jobs:rag` | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus |
+| `npm run jobs:rag:health` | Prüft pgvector/RAG-Schema |
 
-   pip install -r requirements.txt
-   pip install -r requirements-dev.txt
-   ```
-3. Frontend-Abhängigkeiten installieren
-   ```bash
-   npm install
-   ```
-4. Datenbank einrichten
-   - Leere PostgreSQL-Datenbank erstellen (z. B. `CREATE DATABASE noesis2_db;`).
-   - `.env.example` nach `.env` kopieren und Zugangsdaten anpassen.
-   - Migrationen ausführen:
-     ```bash
-     python manage.py migrate
-     ```
-5. Superuser anlegen
-   ```bash
-   python manage.py createsuperuser
-   ```
+Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:rebuild`).
 
-### Entwicklungsserver starten
+### Frontend & Tooling
+
+| Script | Beschreibung |
+| --- | --- |
+| `npm run dev` | Lokaler Django-Server + Tailwind-Watcher (nur ohne Docker sinnvoll) |
+| `npm run build:css` | Einmaliger Tailwind-Build |
+| `npm run build:css:watch` | Tailwind-Watcher |
+| `npm run storybook` | Startet Storybook (Port 6006) |
+| `npm run storybook:build` | Erzeugt statischen Storybook-Build |
+| `npm run e2e` | Playwright E2E-Tests |
+| `npm run test` | Vitest-Unit-Tests für Frontend |
+| `npm run test:py` | Python-Tests innerhalb des Web-Containers |
+| `npm run test:py:cov` | Python-Tests inkl. Coverage |
+| `npm run lint` | Ruff + Black (Check-Modus) |
+| `npm run lint:fix` | Ruff (Fix) + Black Formatierung |
+| `npm run format` | Prettier für JS/TS/CSS/MD/JSON |
+| `npm run hooks:install` | Git-Hooks (pre-push) für macOS/Linux |
+| `npm run win:hooks:install` | Git-Hooks Installation für Windows |
+
+### Make Targets
+
+| Target | Beschreibung |
+| --- | --- |
+| `make jobs:migrate` | Führt `migrate_schemas --noinput` aus |
+| `make jobs:bootstrap` | Erstellt den Public-Tenant (`DOMAIN` erforderlich) |
+| `make tenant-new` | Legt einen neuen Tenant an (`SCHEMA`, `NAME`, `DOMAIN`) |
+| `make tenant-superuser` | Erstellt einen Tenant-Superuser (`SCHEMA`, `USERNAME`, `PASSWORD`, optional `EMAIL`) |
+| `make jobs:rag` | Spielt `docs/rag/schema.sql` gegen `RAG_DATABASE_URL`/`DATABASE_URL` ein |
+| `make jobs:rag:health` | Validiert RAG-Schema & `vector`-Extension |
+
+Alle Make-Targets greifen auf lokale Tools (`psql`, `python`). Innerhalb des Compose-Stacks empfiehlt sich die Nutzung der äquivalenten npm-Skripte (`npm run jobs:*`).
+
+## Tests & Qualitätssicherung
+
 ```bash
-npm run dev
+npm run test:py        # Django/Celery Tests im Container
+npm run test           # Frontend Tests (Vitest)
+npm run lint           # Ruff + Black Checks
+npm run e2e            # Playwright E2E
 ```
 
+Der Python-Test-Runner installiert die benötigten Abhängigkeiten on-the-fly in einem temporären Container und räumt nach dem Lauf automatisch auf.
 
-## Lokales Testen
+## Manuelles Setup ohne Docker
 
-Die Tests greifen auf die in `docker-compose.dev.yml` definierten Service-Hosts (u. a. `db`) zu. Ausserhalb der Compose-Umgebung fehlen diese Namensaufloesungen und Django bricht mit Verbindungsfehlern ab. Zudem enthaelt das `web`-Image nur Produktionsabhaengigkeiten, daher muessen vor dem Testlauf sowohl Basis- als auch Dev-Abhaengigkeiten installiert werden.
+Für Systeme ohne Docker-Unterstützung gibt es einen dokumentierten Fallback:
+[docs/development/manual-setup.md](docs/development/manual-setup.md).
 
-```bash
-docker compose -f docker-compose.dev.yml run --rm web sh -c "pip install -r requirements.txt -r requirements-dev.txt && python -m pytest"
-```
-
-Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die Tests aus und entfernt den Container anschliessend wieder. Fuehre ihn bei jedem frischen Containerlauf erneut aus, da Installationen nicht persistent sind.
-
-## Anwendung ausführen mit Docker
-
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up`: Startet die gesamte Anwendung im Vordergrund (Logs im Terminal).
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`: Startet die Anwendung im Hintergrund (detached mode).
-- `docker compose -f docker-compose.yml -f docker-compose.dev.yml down`: Stoppt und entfernt die Container (Volumes wie Datenbankdaten bleiben erhalten).
-- `npm run dev:manage <befehl>`: Führt einen `manage.py`-Befehl (z. B. `createsuperuser`) im laufenden `web`-Container aus (Windows: `npm run win:dev:manage <befehl>`).
-- Der Entwicklungscontainer führt `python manage.py collectstatic` beim Start automatisch aus.
-  Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
-  `docker-compose exec web python manage.py collectstatic`.
-  Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
-- Hinweis zu `.env`: Host-seitige Werte für `DATABASE_URL`/`REDIS_URL` bleiben für lokale Tools bestehen.
-
-  Die Compose-Services `web` und `worker` lesen stattdessen `.env.docker` (Standardwerte sind
-  `postgresql://noesis2:noesis2@db:5432/noesis2` bzw. `redis://redis:6379/0`).
-  Passe Container-DSNs bei Bedarf über `COMPOSE_DATABASE_URL`/`COMPOSE_REDIS_URL` in `.env.docker`
-  oder überschreibe sie gezielt in deiner `.env`.
-
-- Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
-  `npm run dev:manage migrate`.
-
-### Dev-Skripte (idempotent)
-- `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an. Bricht mit einem Hinweis ab, wenn keine `.env` im Projektstamm liegt (vorher `.env.example` kopieren).
-- `npm run dev:check`: Führt Smoke‑Checks aus (LiteLLM Health/Chat, `GET /ai/ping/`, `POST /ai/scope/`). Chat erfordert gültige `GEMINI_API_KEY`.
-- `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
-- `npm run dev:rebuild`: Baut Web- und Worker-Images neu und aktualisiert Code-Abhängigkeiten, ohne Volumes zu löschen. Mit `npm run dev:rebuild -- --with-frontend` lässt sich optional auch das Frontend-Image aktualisieren.
-- `npm run dev:restart`: Startet Web- und Worker-Container schnell neu (Compose `restart`).
-- `npm run dev:manage <befehl>`: Wrapper für `python manage.py` im Web-Container (z. B. `npm run dev:manage makemigrations users`).
-- `npm run dev:init`: Führt die Compose‑Jobs `migrate` und `bootstrap` aus (nach `up -d`).
-- `npm run dev:reset`: Full reset (down -v → build --no-cache → up -d → init → checks).
-- `npm run jobs:rag`: Führt `docs/rag/schema.sql` gegen die DB aus (idempotent).
-- `npm run rag:enable`: Setzt `RAG_ENABLED=true` in `.env` und startet Web/Worker neu.
- - `npm run jobs:rag:health`: Prüft RAG-Gesundheit (pgvector installiert, Tabellen vorhanden).
-
-**Wann welches Skript?**
-- Konfigurationswerte, Feature-Flags oder Django-Code geändert und die laufenden Container sollen die Änderungen aufnehmen → `npm run dev:restart` (Windows: `npm run win:dev:restart`).
-- Neue Python-/Node-Abhängigkeiten installiert oder das Dockerfile angepasst → `npm run dev:rebuild` (Windows: `npm run win:dev:rebuild`).
-- Komplettes Setup inkl. Datenbanken zurücksetzen (z. B. nach kaputten Fixtures) → `npm run dev:reset` (Windows: `npm run win:dev:reset`).
-- Nur das RAG-Schema aktualisieren bzw. die Installation verifizieren → `npm run jobs:rag` bzw. `npm run jobs:rag:health`.
-- Demo-Tenant & Beispieldaten neu befüllen → `npm run dev:manage create_demo_data` (Windows: `npm run win:dev:manage create_demo_data`).
-
-Hinweis (Windows): PowerShell‑Varianten sind enthalten:
-- `npm run win:dev:up`
-- `npm run win:dev:check`
-- `npm run win:dev:down`
-- `npm run win:dev:rebuild` (optional mit `npm run win:dev:rebuild -- -WithFrontend`)
-- `npm run win:dev:restart`
-- `npm run win:dev:manage <befehl>`
-- `npm run win:dev:reset`
-- `npm run win:rag:enable`
-- `npm run win:jobs:rag`
-- `npm run win:jobs:rag:health`
-
-### Git Hooks (Lint vor Push)
-- Installieren: 
-  - macOS/Linux: `npm run hooks:install`
-  - Windows: `npm run win:hooks:install`
-- Wirkung: Vor jedem `git push` läuft automatisch `npm run lint` (ruff + black). Zum Überspringen einmalig `SKIP_LINT=1 git push` setzen.
-
----
- 
 ## Konfiguration (.env)
 Benötigte Variablen (siehe `.env.example` oder `.env.dev.sample`):
 
@@ -194,12 +155,10 @@ Benötigte Variablen (siehe `.env.example` oder `.env.dev.sample`):
 - DB_USER / DB_PASSWORD / DB_NAME: gemeinsame Dev‑Credentials; werden für den Container‑Init und DSNs genutzt.
 - DATABASE_URL: Verbindungs-URL zur PostgreSQL-Datenbank (App‑DB, default: `postgresql://noesis2:noesis2@db:5432/noesis2`)
 - REDIS_URL: Redis-Endpoint (z. B. für Celery)
-- RAG_ENABLED: `true`/`false` zur Aktivierung des Retrieval-Augmented-Generation-Workflows.
-  Aktiviere das Flag nur, wenn das `rag`-Schema inklusive `pgvector`-Extension (`CREATE EXTENSION IF NOT EXISTS vector;`)
-  anhand von [`docs/rag/schema.sql`](docs/rag/schema.sql) bereitsteht und über `DATABASE_URL` oder `RAG_DATABASE_URL`
-  erreichbar ist. Für den Datenbankzugriff wird `psycopg2` (oder das Binär-Pendant `psycopg2-binary`) benötigt.
-  Achtung: Mandanten-IDs müssen UUIDs sein. Ältere nicht-UUID-Werte werden deterministisch gemappt, sollten aber per Migration
-  bereinigt werden, bevor Deployments `RAG_ENABLED=true` setzen.
+- RAG_DATABASE_URL (optional): separates DSN für das pgvector-Schema. Ohne Angabe nutzt der Stack `DATABASE_URL`.
+  Stelle sicher, dass [`docs/rag/schema.sql`](docs/rag/schema.sql) angewendet wurde und die `vector`-Extension aktiv ist.
+  Mandanten-IDs müssen UUIDs sein; vorhandene Legacy-IDs werden deterministisch gemappt, sollten aber per Migration bereinigt
+  werden, bevor produktive Daten geladen werden.
 
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys

@@ -5,8 +5,6 @@ from pathlib import Path
 from typing import Callable, Dict, List
 
 from celery import shared_task
-from django.conf import settings
-
 from common.celery import ScopedTask
 from common.logging import get_logger
 from .infra import object_store, pii
@@ -89,14 +87,6 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 @shared_task(base=ScopedTask)
 def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
     """Upsert embedded chunks into the vector client."""
-    if not settings.RAG_ENABLED:
-        logger.info(
-            "Skipping vector upsert because RAG is disabled (tenant=%s, case=%s)",
-            meta.get("tenant"),
-            meta.get("case"),
-        )
-        return 0
-
     data = object_store.read_json(embeddings_path)
     chunk_objs = []
     for ch in data:

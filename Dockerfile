@@ -43,8 +43,7 @@ COPY --from=css-builder /app/theme/static/css ./theme/static/css
 ENV DJANGO_SETTINGS_MODULE=noesis2.settings.production \
     SECRET_KEY=build-secret \
     DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2 \
-    REDIS_URL=redis://redis:6379/0 \
-    RAG_ENABLED=false
+    REDIS_URL=redis://redis:6379/0
 
 # Collect static files
 RUN python manage.py collectstatic --noinput
