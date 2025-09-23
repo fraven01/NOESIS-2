@@ -24,13 +24,31 @@ FROM python:3.12-slim-bookworm AS builder
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
-    PIP_NO_CACHE_DIR=1
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DEFAULT_TIMEOUT=60
 
 WORKDIR /app
 
+# Ensure system trust store and TLS tooling are present for pip downloads
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl openssl \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-ca-certificates
+
 # Copy dependency manifests and install Python deps
 COPY requirements*.txt ./
-RUN pip install --no-cache-dir -r requirements.txt
+RUN python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --no-cache-dir --retries 5 -r requirements.txt
+
+# Smoke test TLS path to PyPI to surface trust store issues early
+RUN python - <<'PY'
+import ssl
+import urllib.request
+
+ctx = ssl.create_default_context()
+with urllib.request.urlopen("https://pypi.org/simple/", context=ctx, timeout=15) as response:
+    print(response.status)
+PY
 
 # Copy application source
 COPY . .
