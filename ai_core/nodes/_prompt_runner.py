@@ -46,7 +46,11 @@ def run_prompt_node(
         new_state = dict(current_state)
         new_state[state_key] = value
 
-        node_meta = {state_key: value, **metadata_extra, "prompt_version": prompt["version"]}
+        node_meta = {
+            state_key: value,
+            **metadata_extra,
+            "prompt_version": prompt["version"],
+        }
         return new_state, node_meta
 
     return _execute(state, meta=meta_with_version)

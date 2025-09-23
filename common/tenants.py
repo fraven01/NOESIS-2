@@ -18,7 +18,9 @@ def get_current_tenant():
 def _is_valid_tenant_request(request):
     """Return whether the request targets the active tenant schema."""
     tenant = get_current_tenant()
-    return bool(tenant and getattr(request, "tenant_schema", None) == tenant.schema_name)
+    return bool(
+        tenant and getattr(request, "tenant_schema", None) == tenant.schema_name
+    )
 
 
 def tenant_schema_required(view_func):

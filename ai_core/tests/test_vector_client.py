@@ -87,9 +87,7 @@ class TestPgVectorClient:
 
         with client._connection() as conn:  # type: ignore[attr-defined]
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT text, ord, tokens FROM chunks ORDER BY ord"
-                )
+                cur.execute("SELECT text, ord, tokens FROM chunks ORDER BY ord")
                 rows = cur.fetchall()
                 assert [row[0] for row in rows] == [c.content for c in initial_chunks]
                 assert [row[1] for row in rows] == [0, 1, 2]
@@ -107,6 +105,8 @@ class TestPgVectorClient:
             with conn.cursor() as cur:
                 cur.execute("SELECT text FROM chunks ORDER BY ord")
                 rows = cur.fetchall()
-                assert [row[0] for row in rows] == [c.content for c in replacement_chunks]
+                assert [row[0] for row in rows] == [
+                    c.content for c in replacement_chunks
+                ]
                 cur.execute("SELECT COUNT(*) FROM embeddings")
                 assert cur.fetchone()[0] == 2

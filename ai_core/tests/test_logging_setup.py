@@ -88,9 +88,7 @@ def test_logging_adds_spanId_when_trace_and_project(monkeypatch, capsys):
 
     payload = json.loads(capsys.readouterr().err.strip().splitlines()[-1])
 
-    assert payload["logging.googleapis.com/trace"].startswith(
-        "projects/demo/traces/"
-    )
+    assert payload["logging.googleapis.com/trace"].startswith("projects/demo/traces/")
     assert payload["logging.googleapis.com/spanId"] == f"{_Ctx.span_id:016x}"
 
 

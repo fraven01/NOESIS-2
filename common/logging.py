@@ -39,14 +39,11 @@ _LOG_CONTEXT: contextvars.ContextVar[dict[str, str] | None] = contextvars.Contex
     "log_context", default=None
 )
 
+
 def _deployment_environment() -> str:
     """Return the deployment environment from supported environment variables."""
 
-    return (
-        os.getenv("DEPLOY_ENV")
-        or os.getenv("DEPLOYMENT_ENVIRONMENT")
-        or "unknown"
-    )
+    return os.getenv("DEPLOY_ENV") or os.getenv("DEPLOYMENT_ENVIRONMENT") or "unknown"
 
 
 _SERVICE_CONTEXT: dict[str, str] = {
@@ -172,9 +169,7 @@ def _ensure_trace_keys(
             raw_value = context.get(field)
             if raw_value is None:
                 continue
-            event_dict[field] = (
-                mask_value(raw_value) if mask else str(raw_value)
-            )
+            event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
 
     if "tenant" in event_dict and "tenant_id" not in event_dict:
         event_dict["tenant_id"] = event_dict["tenant"]
@@ -271,17 +266,15 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
                 raw_value = context.get(field)
                 if raw_value is None:
                     continue
-                event_dict[field] = (
-                    mask_value(raw_value) if mask else str(raw_value)
-                )
+                event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
 
             if "tenant_id" not in event_dict:
                 tenant_value = event_dict.get("tenant")
                 if tenant_value is None:
                     tenant_raw = context.get("tenant")
                     if tenant_raw is not None:
-                        tenant_value = mask_value(tenant_raw) if mask else str(
-                            tenant_raw
+                        tenant_value = (
+                            mask_value(tenant_raw) if mask else str(tenant_raw)
                         )
                 if tenant_value is not None:
                     event_dict["tenant_id"] = tenant_value
@@ -361,6 +354,8 @@ def _instrument_logging() -> None:
         LoggingInstrumentor().instrument(set_logging_format=False)
     except Exception:
         pass
+
+
 def _log_level_from_env() -> int:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_name, logging.INFO)
