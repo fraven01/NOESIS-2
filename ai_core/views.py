@@ -77,7 +77,9 @@ def _prepare_request(request: HttpRequest):
     if schema_header is not None:
         header_schema = schema_header.strip()
         if not header_schema:
-            return None, JsonResponse({"detail": "invalid tenant schema header"}, status=400)
+            return None, JsonResponse(
+                {"detail": "invalid tenant schema header"}, status=400
+            )
         if header_schema != tenant_schema:
             return None, JsonResponse({"detail": "tenant schema mismatch"}, status=400)
 
