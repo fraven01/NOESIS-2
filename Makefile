@@ -1,4 +1,5 @@
-.PHONY: jobs\:migrate jobs\:bootstrap tenant-new tenant-superuser jobs\:rag jobs\:rag\:health
+.PHONY: jobs\:migrate jobs\:bootstrap tenant-new tenant-superuser jobs\:rag jobs\:rag\:health \
+        seed-baseline seed-demo seed-heavy seed-chaos seed-wipe seed-check
 
 PYTHON ?= python
 MANAGE := $(PYTHON) manage.py
@@ -55,3 +56,15 @@ jobs\:rag\:health:
 	END;
 	$$;
 	SQL
+
+seed-baseline: ; $(MANAGE) create_demo_data --profile baseline --seed 1337
+
+seed-demo: ; $(MANAGE) create_demo_data --profile demo --seed 1337
+
+seed-heavy: ; $(MANAGE) create_demo_data --profile heavy --seed 42
+
+seed-chaos: ; $(MANAGE) create_demo_data --profile chaos --seed 99
+
+seed-wipe: ; $(MANAGE) create_demo_data --wipe --include-org
+
+seed-check: ; $(MANAGE) check_demo_data --profile demo --seed 1337

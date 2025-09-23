@@ -42,6 +42,7 @@ class Document(TimestampedModel):
     owner = models.ForeignKey(
         settings.AUTH_USER_MODEL, related_name="documents", on_delete=models.CASCADE
     )
+    meta = models.JSONField(default=dict, blank=True)
     objects = OrganizationManager(organization_field="project__organization")
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
