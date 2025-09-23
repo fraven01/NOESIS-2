@@ -80,6 +80,7 @@ services:
       - staticfiles:/app/staticfiles
     env_file:
       - .env
+      - .env.docker
     depends_on:
       db:
         condition: service_healthy
@@ -103,6 +104,7 @@ services:
       - .:/app
     env_file:
       - .env
+      - .env.docker
     depends_on:
       redis:
         condition: service_started
