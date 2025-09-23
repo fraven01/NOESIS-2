@@ -292,6 +292,22 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
                 else:
                     consecutive = 0
 
+            digit_sequences = [
+                len(chunk)
+                for chunk in re.split(r"\D+", value)
+                if chunk
+            ]
+            if digit_sequences:
+                if any(length >= 7 for length in digit_sequences):
+                    return True
+                if (
+                    len(digit_sequences) >= 2
+                    and sum(digit_sequences) >= 7
+                    and any(length >= 3 for length in digit_sequences[:-1])
+                    and digit_sequences[-1] >= 4
+                ):
+                    return True
+
             return False
 
         for key, raw_value in list(event_dict.items()):
