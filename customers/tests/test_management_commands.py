@@ -126,3 +126,8 @@ def test_create_tenant_superuser_missing_tables(monkeypatch):
 
     assert "migrate" in str(excinfo.value).lower()
     assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
+
+
+@pytest.mark.django_db
+def test_collectstatic_command_resolves():
+    call_command("collectstatic", "--dry-run", "--noinput", verbosity=0)

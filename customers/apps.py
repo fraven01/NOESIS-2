@@ -1,5 +1,3 @@
-from functools import cache
-
 from django.apps import AppConfig
 
 
@@ -49,17 +47,23 @@ class CustomersConfig(AppConfig):
         except Exception:
             return
 
-        original_get_commands = management.get_commands
-
         if getattr(management, "_customers_commands_patched", False):
             return
 
-        @cache
+        original_get_commands = management.get_commands
+
         def patched_get_commands():
             commands = dict(original_get_commands())
             commands["create_tenant"] = "customers"
             commands["create_tenant_superuser"] = "customers"
             return commands
 
+        if hasattr(original_get_commands, "cache_clear"):
+            patched_get_commands.cache_clear = original_get_commands.cache_clear  # type: ignore[attr-defined]
+
         management.get_commands = patched_get_commands
+
+        if hasattr(original_get_commands, "cache_clear"):
+            original_get_commands.cache_clear()
+
         management._customers_commands_patched = True
