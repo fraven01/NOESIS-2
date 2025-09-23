@@ -4,7 +4,14 @@ from typing import Any
 
 from django.utils.deprecation import MiddlewareMixin
 
-from ai_core.infra.policy import clear_session_scope, set_session_scope
+from ai_core.infra.pii_flags import (
+    clear_pii_config,
+    load_tenant_pii_config,
+    resolve_tenant_pii_config,
+    set_pii_config,
+)
+from ai_core.infra.policy import clear_session_scope, get_session_scope, set_session_scope
+from common.tenants import get_current_tenant
 
 
 class PIISessionScopeMiddleware(MiddlewareMixin):
@@ -20,6 +27,7 @@ class PIISessionScopeMiddleware(MiddlewareMixin):
             response = super().__call__(request)
             return response
         finally:
+            clear_pii_config()
             clear_session_scope()
 
     def process_request(self, request: Any) -> None:
@@ -33,6 +41,19 @@ class PIISessionScopeMiddleware(MiddlewareMixin):
             case_id=case_id,
             session_salt=session_salt,
         )
+
+        tenant = getattr(request, "tenant", None) or get_current_tenant()
+        tenant_config = resolve_tenant_pii_config(tenant)
+        if tenant_config is None and tenant is None and tenant_id:
+            tenant_config = load_tenant_pii_config(tenant_id)
+        if tenant_config:
+            scope = get_session_scope()
+            if scope:
+                scoped_config = dict(tenant_config)
+                scoped_config["session_scope"] = scope
+            else:
+                scoped_config = tenant_config
+            set_pii_config(scoped_config)
 
     @staticmethod
     def _normalize(value: Any) -> str:

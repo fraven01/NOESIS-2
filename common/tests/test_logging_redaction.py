@@ -2,6 +2,7 @@ import importlib
 import io
 import json
 from typing import Iterable, Mapping
+from urllib.parse import unquote
 
 import structlog
 from django.test import override_settings
@@ -141,3 +142,63 @@ def test_logging_redaction_processor_order():
     assert processors.index(dummy_redactor) < processors.index(
         structlog.stdlib.ProcessorFormatter.wrap_for_formatter
     )
+
+
+def test_logging_redaction_fast_path_skips_boring_messages():
+    records = _capture_logs(
+        [("processed 42 items", {"detail": "iteration complete"})],
+        PII_LOGGING_REDACTION=True,
+        PII_DETERMINISTIC=False,
+        PII_HMAC_SECRET="",
+    )
+    record = records[0]
+    assert record["event"] == "processed 42 items"
+    assert record["detail"] == "iteration complete"
+
+
+def test_logging_redaction_fast_path_skips_harmless_query_strings():
+    records = _capture_logs(
+        [("https://h/p?ok=1", None)],
+        PII_LOGGING_REDACTION=True,
+        PII_DETERMINISTIC=False,
+        PII_HMAC_SECRET="",
+    )
+    assert records[0]["event"] == "https://h/p?ok=1"
+
+
+def test_logging_redaction_fast_path_masks_email_queries():
+    records = _capture_logs(
+        [("https://h/p?email=a@b.de&ok=1", None)],
+        PII_LOGGING_REDACTION=True,
+        PII_DETERMINISTIC=False,
+        PII_HMAC_SECRET="",
+    )
+    event = records[0]["event"]
+    decoded = unquote(event)
+    assert "a@b.de" not in decoded
+    assert "[REDACTED_EMAIL]" in decoded
+
+
+def test_logging_redaction_fast_path_masks_auth_headers():
+    records = _capture_logs(
+        [("login", {"auth": "Bearer eyJhbGciOi"})],
+        PII_LOGGING_REDACTION=True,
+        PII_DETERMINISTIC=False,
+        PII_HMAC_SECRET="",
+    )
+    auth_value = records[0]["auth"]
+    assert auth_value != "Bearer eyJhbGciOi"
+    assert auth_value.startswith("[REDACTED")
+
+
+def test_logging_redaction_fast_path_masks_phone_numbers():
+    records = _capture_logs(
+        [("contact", {"text": "call +49 151 2345678"})],
+        PII_LOGGING_REDACTION=True,
+        PII_DETERMINISTIC=False,
+        PII_HMAC_SECRET="",
+    )
+    masked = records[0]["text"]
+    assert masked.startswith("call ")
+    assert "[REDACTED_PHONE]" in masked
+    assert "2345678" not in masked

@@ -71,6 +71,10 @@ def mask_prompt(
     """Mask prompt text according to the active PII configuration."""
 
     pii_config = config or get_pii_config()
+    mode = str(pii_config.get("mode", "")).lower()
+    policy = str(pii_config.get("policy", "")).lower()
+    if mode == "off" or policy == "off":
+        return prompt
     return _apply_mask(
         prompt,
         pii_config,
@@ -88,6 +92,10 @@ def mask_response(
     """Mask LLM responses when post-response redaction is enabled."""
 
     pii_config = config or get_pii_config()
+    mode = str(pii_config.get("mode", "")).lower()
+    policy = str(pii_config.get("policy", "")).lower()
+    if mode == "off" or policy == "off":
+        return text
     if not pii_config.get("post_response"):
         return text
     return _apply_mask(
