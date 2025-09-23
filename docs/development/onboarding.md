@@ -73,10 +73,9 @@ Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/
 - Auto-Fixes anwenden: `npm run lint:fix`
 - Tailwind/PostCSS-Build: `npm run build:css`
 
-## 6. Optionale Jobs & RAG-Aktivierung
+## 6. Optionale Jobs & RAG-Checks
 - RAG-Schema anwenden: `npm run jobs:rag`
 - RAG-Gesundheit prüfen: `npm run jobs:rag:health`
-- Feature-Flag setzen & Dienste neustarten: `npm run rag:enable`
 
 Diese Kommandos greifen auf das `docs/rag/schema.sql` zurück und benötigen eine PostgreSQL-Instanz mit `pgvector`-Extension.
 

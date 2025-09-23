@@ -11,29 +11,8 @@ from common import logging as common_logging
 from common.celery import ContextTask
 
 
-def test_pipeline_skips_when_rag_disabled(tmp_path, monkeypatch, settings, caplog):
-    settings.RAG_ENABLED = False
-    monkeypatch.chdir(tmp_path)
-    meta = {"tenant": "t1", "case": "c1"}
-
-    raw = tasks.ingest_raw(meta, "doc.txt", b"User 123")
-    text = tasks.extract_text(meta, raw["path"])
-    masked = tasks.pii_mask(meta, text["path"])
-    chunks = tasks.chunk(meta, masked["path"])
-    embeds = tasks.embed(meta, chunks["path"])
-
-    with caplog.at_level("INFO"):
-        count = tasks.upsert(meta, embeds["path"])
-    assert count == 0
-    assert "RAG is disabled" in caplog.text
-
-    masked_file = tmp_path / ".ai_core_store/t1/c1/text/doc.masked.txt"
-    assert masked_file.read_text() == "User XXX"
-
-
 @pytest.mark.usefixtures("rag_database")
-def test_upsert_persists_chunks_when_rag_enabled(tmp_path, monkeypatch, settings):
-    settings.RAG_ENABLED = True
+def test_upsert_persists_chunks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     tenant = str(uuid.uuid4())
     case = str(uuid.uuid4())
@@ -58,9 +37,7 @@ def test_upsert_persists_chunks_when_rag_enabled(tmp_path, monkeypatch, settings
 
 
 @pytest.mark.usefixtures("rag_database")
-def test_upsert_no_chunks_is_noop(monkeypatch, settings):
-    settings.RAG_ENABLED = True
-
+def test_upsert_no_chunks_is_noop(monkeypatch):
     class _Counter:
         def __init__(self) -> None:
             self.value = 0

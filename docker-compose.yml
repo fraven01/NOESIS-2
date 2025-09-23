@@ -36,7 +36,6 @@ services:
       ALLOWED_HOSTS: ${ALLOWED_HOSTS:-example.com}
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      RAG_ENABLED: ${RAG_ENABLED:-false}
     depends_on:
       - db
       - redis
@@ -55,7 +54,6 @@ services:
       DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      RAG_ENABLED: ${RAG_ENABLED:-false}
     depends_on:
       - redis
     restart: unless-stopped

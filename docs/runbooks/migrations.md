@@ -43,8 +43,7 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 ## RAG / pgvector (optional)
 - Schema anwenden (idempotent, nur einmal nötig):
   - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
-- Feature aktivieren: `.env → RAG_ENABLED=true`, danach `npm run dev:restart` (Windows: `npm run win:dev:restart`)
-  (reicht für Flag-Änderungen; `dev:rebuild` nur bei neuen Abhängigkeiten notwendig).
+- Dienste nach Schemaänderungen neu starten: `npm run dev:restart` (Windows: `npm run win:dev:restart`).
 
 ## Fehlerbilder & Hinweise
 - Container restarten ständig → Logs prüfen:

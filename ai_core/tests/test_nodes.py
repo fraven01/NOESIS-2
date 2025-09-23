@@ -17,9 +17,7 @@ from ai_core.rag.schemas import Chunk
 META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
 
 
-def test_retrieve_returns_snippets(settings):
-    settings.RAG_ENABLED = True
-
+def test_retrieve_returns_snippets():
     class _Client:
         def __init__(self, chunks):
             self._chunks = chunks
@@ -35,20 +33,7 @@ def test_retrieve_returns_snippets(settings):
     assert result["snippets"][0]["text"] == "Hello 123"
     assert result["snippets"][0]["source"] == "s1"
     assert state["snippets"] == result["snippets"]
-
-
-def test_retrieve_skips_when_disabled(settings, caplog):
-    settings.RAG_ENABLED = False
-    with caplog.at_level("INFO"):
-        state, result = retrieve.run({"query": "Hello"}, META.copy(), client=None)
-    assert result["snippets"] == []
-    assert state["snippets"] == []
-    assert result["confidence"] == 0.0
-    assert "RAG is disabled" in caplog.text
-
-
-def test_retrieve_requires_client_when_enabled(settings):
-    settings.RAG_ENABLED = True
+def test_retrieve_requires_client_when_enabled():
     with pytest.raises(ValueError):
         retrieve.run({"query": "Hello"}, META.copy(), client=None)
 

@@ -34,10 +34,6 @@ ALLOWED_HOSTS = env.list(
 # Testing flag (auto-detected for pytest)
 TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 
-# Feature switches
-RAG_ENABLED = env.bool("RAG_ENABLED", default=False)
-
-
 # PII configuration defaults
 PII_MODE = os.getenv("PII_MODE", "industrial")
 PII_POLICY = os.getenv("PII_POLICY", "balanced")
