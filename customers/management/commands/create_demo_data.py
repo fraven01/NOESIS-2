@@ -89,6 +89,12 @@ class DemoDatasetBuilder:
     def _document_slug(self, project_slug: str, doc_index: int) -> str:
         return f"doc-{project_slug}-{doc_index:02d}"
 
+    def _project_index(self, project_slug: str) -> int:
+        match = re.match(r"proj-(\d+)", project_slug)
+        if not match:
+            return 0
+        return int(match.group(1))
+
     def _build_baseline(self) -> SeederDataset:
         project1 = ProjectSpec(
             slug=self._project_slug(1),
@@ -131,7 +137,11 @@ class DemoDatasetBuilder:
         while len(projects) < project_target:
             index = len(projects) + 1
             projects.append(
-                self._generate_project(index, docs_target, formats=("txt", "md"))
+                self._generate_project(
+                    index,
+                    docs_target,
+                    formats=("txt", "md", "json"),
+                )
             )
 
         for project in projects:
@@ -145,7 +155,7 @@ class DemoDatasetBuilder:
                     project_name=project.name,
                     start=len(project.documents) + 1,
                     count=additional,
-                    formats=("txt", "md"),
+                    formats=("txt", "md", "json"),
                     allow_minor_faults=True,
                 )
             )
@@ -173,8 +183,22 @@ class DemoDatasetBuilder:
         all_doc_refs: List[DocumentSpec] = [
             doc for project in projects for doc in project.documents
         ]
-        self.rng.shuffle(all_doc_refs)
-        broken_docs = all_doc_refs[:broken_target]
+        json_docs = [doc for doc in all_doc_refs if doc.filename.endswith(".json")]
+        self.rng.shuffle(json_docs)
+        invalid_json_quota = 0
+        if json_docs:
+            invalid_json_quota = min(max(1, min(2, len(json_docs))), broken_target)
+        invalid_json_docs = json_docs[:invalid_json_quota]
+        for doc in invalid_json_docs:
+            doc.content = b'{"invalid": true'
+            doc.broken = True
+            doc.metadata.update({"invalid": True, "reason": "invalid_json"})
+        remaining_needed = max(0, broken_target - len(invalid_json_docs))
+        remaining_pool = [
+            doc for doc in all_doc_refs if doc not in invalid_json_docs
+        ]
+        self.rng.shuffle(remaining_pool)
+        broken_docs = list(invalid_json_docs) + remaining_pool[:remaining_needed]
         toggles = [
             "empty",
             "invalid_bytes",
@@ -182,6 +206,8 @@ class DemoDatasetBuilder:
             "missing_type",
         ]
         for index, doc in enumerate(broken_docs):
+            if doc in invalid_json_docs:
+                continue
             mode = toggles[index % len(toggles)]
             if mode == "empty":
                 doc.content = None
@@ -233,13 +259,27 @@ class DemoDatasetBuilder:
     ) -> Iterable[DocumentSpec]:
         documents: List[DocumentSpec] = []
         formats_tuple = tuple(formats)
+        project_index = self._project_index(project_slug)
         for offset in range(count):
             doc_index = start + offset
-            fmt = formats_tuple[offset % len(formats_tuple)]
+            fmt = self._select_format(
+                project_index=project_index,
+                doc_index=doc_index,
+                formats=formats_tuple,
+                allow_minor_faults=allow_minor_faults,
+                offset=offset,
+            )
             doc_slug = self._document_slug(project_slug, doc_index)
             filename = f"{doc_slug}.{fmt}"
             title = self._build_title(project_name, doc_index)
-            content_bytes = self._build_content(fmt, title, doc_slug)
+            content_bytes = self._build_content(
+                fmt=fmt,
+                title=title,
+                doc_slug=doc_slug,
+                project_slug=project_slug,
+                project_index=project_index,
+                doc_index=doc_index,
+            )
             metadata: Dict[str, object] = {}
             broken = False
             if allow_minor_faults and offset == 0 and fmt == "md":
@@ -265,21 +305,48 @@ class DemoDatasetBuilder:
         title = f"{base_sentence} ({project_name} #{doc_index})"
         return title[:80]
 
-    def _build_content(self, fmt: str, title: str, doc_slug: str) -> bytes:
+    def _select_format(
+        self,
+        project_index: int,
+        doc_index: int,
+        formats: Iterable[str],
+        allow_minor_faults: bool,
+        offset: int,
+    ) -> str:
+        formats_tuple = tuple(formats)
+        if not formats_tuple:
+            return "txt"
+        if allow_minor_faults and offset == 0 and "md" in formats_tuple:
+            return "md"
+        idx = (project_index + doc_index) % len(formats_tuple)
+        return formats_tuple[idx]
+
+    def _build_content(
+        self,
+        fmt: str,
+        title: str,
+        doc_slug: str,
+        project_slug: str,
+        project_index: int,
+        doc_index: int,
+    ) -> bytes:
         if fmt == "txt":
-            text = f"{title}\n\n{self.faker.paragraph(nb_sentences=3)}"
+            word_span = 20 + ((project_index * 7 + doc_index * 3) % 41)
+            words = self.faker.words(nb=word_span)
+            text = f"{title}\n\n{' '.join(words)}"
             return text.encode("utf-8")
         if fmt == "md":
-            md = f"# {title}\n\n- {self.faker.bs()}\n- {self.faker.catch_phrase()}"
+            bullets = [self.faker.sentence(nb_words=6).rstrip(".") for _ in range(3)]
+            md = f"# {title}\n\n" + "\n".join(f"- {line}" for line in bullets)
             return md.encode("utf-8")
         if fmt == "json":
             payload = {
-                "slug": doc_slug,
+                "id": doc_slug,
+                "project": project_slug,
+                "idx": doc_index,
                 "title": title,
-                "summary": self.faker.sentence(nb_words=8),
-                "owner": self.faker.name(),
             }
-            return json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         return title.encode("utf-8")
 
     def _media_type(self, fmt: str) -> str:

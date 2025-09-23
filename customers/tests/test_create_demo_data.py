@@ -185,6 +185,55 @@ def test_profile_demo_overrides():
             for project in projects:
                 assert Document.objects.filter(project=project).count() == 4
 
+            documents = list(
+                Document.objects.filter(project__organization=org)
+            )
+            txt_docs = [doc for doc in documents if doc.file.name.endswith(".txt")]
+            md_docs = [doc for doc in documents if doc.file.name.endswith(".md")]
+            json_docs = [doc for doc in documents if doc.file.name.endswith(".json")]
+
+            assert txt_docs
+            assert md_docs
+            assert json_docs
+
+            txt_word_counts = []
+            for doc in txt_docs:
+                doc.file.open("rb")
+                txt_content = doc.file.read().decode("utf-8")
+                doc.file.close()
+                txt_lines = txt_content.splitlines()[1:]
+                txt_words = [
+                    word
+                    for segment in txt_lines
+                    for word in segment.split()
+                    if word
+                ]
+                if txt_words:
+                    txt_word_counts.append(len(txt_words))
+            assert any(20 <= count <= 60 for count in txt_word_counts)
+
+            md_has_heading_and_list = False
+            for doc in md_docs:
+                doc.file.open("rb")
+                md_content = doc.file.read().decode("utf-8")
+                doc.file.close()
+                md_lines = md_content.splitlines()
+                if not md_lines:
+                    continue
+                if md_lines[0].startswith("# ") and all(
+                    line.startswith("- ") for line in md_lines[2:]
+                ):
+                    md_has_heading_and_list = True
+                    break
+            assert md_has_heading_and_list
+
+            for doc in json_docs:
+                doc.file.open("rb")
+                json_content = doc.file.read().decode("utf-8")
+                doc.file.close()
+                payload = json.loads(json_content)
+                assert set(payload) == {"id", "project", "idx", "title"}
+
 
 @pytest.mark.django_db
 def test_wipe_removes_seeded_projects_and_docs_only():
@@ -285,6 +334,18 @@ def test_chaos_creates_flagged_invalid_documents():
                 )
             ]
             assert flagged
+
+            invalid_json_docs = []
+            for doc in documents:
+                if not doc.file.name.endswith(".json"):
+                    continue
+                doc.file.open("rb")
+                content = doc.file.read().decode("utf-8")
+                doc.file.close()
+                if doc.status == Document.STATUS_PROCESSING and not content.strip().endswith("}"):
+                    invalid_json_docs.append(doc)
+
+            assert 1 <= len(invalid_json_docs) <= 2
 
 
 @pytest.mark.django_db
