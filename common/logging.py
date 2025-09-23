@@ -6,6 +6,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import sys
 from typing import Any, Dict, Iterator, MutableMapping, Optional, Sequence, TextIO
 
@@ -14,7 +15,7 @@ from opentelemetry import trace
 
 from common.redaction import Redactor, hash_email, hash_str, hash_user_id  # noqa: F401
 from ai_core.infra.pii import mask_text
-from ai_core.infra.pii_flags import get_pii_config
+from ai_core.infra.pii_flags import get_pii_config, get_pii_config_version
 
 try:  # pragma: no cover - optional instrumentation
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
@@ -67,6 +68,26 @@ _LOG_JSON_DUMP_KWARGS: dict[str, object] = {
     "ensure_ascii": False,
     "separators": None,
 }
+_PII_LOG_CONFIG_CACHE: contextvars.ContextVar[
+    tuple[int, dict[str, object]] | None
+] = contextvars.ContextVar("log_pii_config_cache", default=None)
+_PII_FAST_PATH_MARKERS: tuple[str, ...] = (
+    "@",
+    "+",
+    "Bearer ",
+    "eyJ",
+    "-----BEGIN",
+    "token=",
+    "key=",
+    "secret=",
+    "password=",
+    "pass=",
+    "session=",
+    "auth=",
+)
+_PII_KEY_PATTERN = re.compile(
+    r"(?i)(email|token|secret|password|pass|session|auth|key)\s*[:=]"
+)
 
 
 def get_log_context() -> dict[str, str]:
@@ -215,40 +236,91 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
     if not getattr(django_settings, "configured", False):
         return None
 
-    config = get_pii_config()
-    if not config.get("logging_redaction"):
-        return None
-
-    policy = str(config["policy"])
-    deterministic = bool(config["deterministic"])
-    hmac_secret = config.get("hmac_secret")
-    hmac_key: Optional[bytes]
-    if deterministic:
-        hmac_key = hmac_secret if isinstance(hmac_secret, (bytes, bytearray)) else None
-    else:
-        hmac_key = None
-    mode = str(config.get("mode", "industrial"))
-    name_detection = bool(config.get("name_detection", False))
-    session_scope = config.get("session_scope")
+    def _resolve_scoped_pii_config() -> dict[str, object]:
+        cached = _PII_LOG_CONFIG_CACHE.get()
+        version = get_pii_config_version()
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        config = get_pii_config()
+        _PII_LOG_CONFIG_CACHE.set((version, config))
+        return config
 
     def _processor(
         _: structlog.typing.WrappedLogger,
         __: str,
         event_dict: MutableMapping[str, object],
     ) -> MutableMapping[str, object]:
-        for key, value in list(event_dict.items()):
-            if isinstance(value, str):
-                event_dict[key] = mask_text(
-                    value,
-                    policy,
-                    deterministic,
-                    hmac_key,
-                    mode=mode,
-                    name_detection=name_detection,
-                    session_scope=session_scope,
-                    structured_max_length=_MAX_LOG_STRUCTURED_BYTES,
-                    json_dump_kwargs=_LOG_JSON_DUMP_KWARGS,
-                )
+        config = _resolve_scoped_pii_config()
+        if not config.get("logging_redaction"):
+            return event_dict
+
+        mode = str(config.get("mode", "industrial"))
+        policy = str(config.get("policy", "balanced"))
+        if mode == "off" or policy == "off":
+            return event_dict
+
+        deterministic = bool(config.get("deterministic"))
+        hmac_secret = config.get("hmac_secret") if deterministic else None
+        if deterministic and not isinstance(hmac_secret, (bytes, bytearray)):
+            hmac_secret = None
+            deterministic = False
+        name_detection = bool(config.get("name_detection", False))
+        session_scope = config.get("session_scope")
+
+        def _looks_interesting(value: str) -> bool:
+            if any(marker in value for marker in _PII_FAST_PATH_MARKERS):
+                return True
+
+            lower_value = value.lower()
+            if "{" in value and '":' in value:
+                return True
+            if "=" in value and any(
+                token in lower_value
+                for token in ("email", "token", "secret", "password", "pass", "session", "auth", "key")
+            ):
+                return True
+
+            if _PII_KEY_PATTERN.search(value):
+                return True
+
+            consecutive = 0
+            for char in value:
+                if char.isdigit():
+                    consecutive += 1
+                    if consecutive >= 7:
+                        return True
+                else:
+                    consecutive = 0
+
+            return False
+
+        for key, raw_value in list(event_dict.items()):
+            if not isinstance(raw_value, str):
+                continue
+
+            if not name_detection and not _looks_interesting(raw_value):
+                continue
+
+            structured_limit = (
+                _MAX_LOG_STRUCTURED_BYTES
+                if len(raw_value) <= _MAX_LOG_STRUCTURED_BYTES
+                else 0
+            )
+            json_kwargs = _LOG_JSON_DUMP_KWARGS if structured_limit else None
+
+            masked = mask_text(
+                raw_value,
+                policy,
+                deterministic,
+                hmac_secret,
+                mode=mode,
+                name_detection=name_detection,
+                session_scope=session_scope,
+                structured_max_length=structured_limit,
+                json_dump_kwargs=json_kwargs,
+            )
+            if masked != raw_value:
+                event_dict[key] = masked
         return event_dict
 
     return _processor

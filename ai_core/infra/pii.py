@@ -7,6 +7,7 @@ import re
 from typing import Any, Iterable, Mapping, Optional
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
+from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.policy import (
     derive_scoped_hmac_key,
     detect_names,
@@ -148,6 +149,9 @@ def mask_text(
     """Mask PII in free-form text using regex detectors."""
 
     if not text or not isinstance(text, str):
+        return text
+
+    if str(policy).lower() == "off" or str(mode).lower() == "off":
         return text
 
     rules = get_policy_rules(policy, mode, name_detection=name_detection)
@@ -444,10 +448,11 @@ def mask_structured(
 ) -> str:
     """Detect structured inputs (JWT, JSON, URLs) and mask accordingly."""
 
+    rules = get_policy_rules(policy, mode, name_detection=name_detection)
+
     if not text:
         return text
 
-    rules = get_policy_rules(policy, mode, name_detection=name_detection)
     scoped_session = session_scope or get_session_scope()
 
     stripped = text.strip()
@@ -506,7 +511,22 @@ def mask_structured(
 def mask(text: str) -> str:
     """Legacy masking that defaults to balanced policy without determinism."""
 
-    return mask_text(text, "balanced", False, None)
+    config = get_pii_config()
+    mode = str(config.get("mode", "")).lower()
+    policy = str(config.get("policy", "balanced"))
+    if mode == "off" or policy.lower() == "off":
+        return text
+    deterministic = bool(config.get("deterministic"))
+    hmac_key = config.get("hmac_secret") if deterministic else None
+    return mask_text(
+        text,
+        policy,
+        deterministic,
+        hmac_key if isinstance(hmac_key, (bytes, bytearray)) else None,
+        mode=config.get("mode", "industrial"),
+        name_detection=bool(config.get("name_detection", False)),
+        session_scope=config.get("session_scope"),
+    )
 
 
 def mask_prompt(text: str, *, placeholder_only: bool = False) -> str:

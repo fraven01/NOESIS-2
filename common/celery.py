@@ -8,7 +8,8 @@ from celery.canvas import Signature
 
 from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
-from ai_core.infra.policy import clear_session_scope, set_session_scope
+from ai_core.infra.pii_flags import clear_pii_config, load_tenant_pii_config, set_pii_config
+from ai_core.infra.policy import clear_session_scope, get_session_scope, set_session_scope
 
 
 class ContextTask(Task):
@@ -127,21 +128,58 @@ class ScopedTask(ContextTask):
         case_id = scope_payload.get("case_id")
         trace_id = scope_payload.get("trace_id")
         session_salt = scope_payload.get("session_salt")
+        explicit_scope = scope_payload.get("session_scope")
+        scope_override: tuple[str, str, str] | None = None
+
+        if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
+            tenant_scope_val, case_scope_val, salt_scope_val = explicit_scope
+            scope_override = (
+                str(tenant_scope_val) if tenant_scope_val is not None else "",
+                str(case_scope_val) if case_scope_val is not None else "",
+                str(salt_scope_val) if salt_scope_val is not None else "",
+            )
+            if not case_id and case_scope_val:
+                case_id = case_scope_val
+            if not session_salt and salt_scope_val:
+                session_salt = salt_scope_val
 
         if not session_salt:
-            salt_parts = [value for value in (trace_id, case_id, tenant_id) if value]
+            salt_parts = [str(value) for value in (trace_id, case_id, tenant_id) if value]
             session_salt = "||".join(salt_parts) if salt_parts else None
 
+        tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
+
+        scope = None
         if tenant_id and case_id and session_salt:
+            tenant_scope = scope_override[0] if scope_override and scope_override[0] else tenant_id
+            case_scope = scope_override[1] if scope_override and scope_override[1] else case_id
+            salt_scope = scope_override[2] if scope_override and scope_override[2] else session_salt
             set_session_scope(
-                tenant_id=str(tenant_id),
-                case_id=str(case_id),
-                session_salt=str(session_salt),
+                tenant_id=str(tenant_scope),
+                case_id=str(case_scope),
+                session_salt=str(salt_scope),
             )
+            scope = get_session_scope()
+        elif scope_override and all(scope_override):
+            set_session_scope(
+                tenant_id=str(scope_override[0]),
+                case_id=str(scope_override[1]),
+                session_salt=str(scope_override[2]),
+            )
+            scope = get_session_scope()
+
+        if tenant_config:
+            if scope:
+                scoped_config = dict(tenant_config)
+                scoped_config["session_scope"] = scope
+            else:
+                scoped_config = tenant_config
+            set_pii_config(scoped_config)
 
         try:
             return super().__call__(*args, **call_kwargs)
         finally:
+            clear_pii_config()
             clear_session_scope()
 
 
