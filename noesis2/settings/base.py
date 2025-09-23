@@ -195,7 +195,29 @@ LOGGING_ALLOW_UNMASKED_CONTEXT = env.bool(
     "LOGGING_ALLOW_UNMASKED_CONTEXT", default=False
 )
 
-LOGGING = {"version": 1, "disable_existing_loggers": False}
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+        },
+        "json_console": {
+            "class": "logging.StreamHandler",
+            "level": "INFO",
+        },
+        "mail_admins": {
+            "level": "ERROR",
+            "class": "django.utils.log.AdminEmailHandler",
+        },
+    },
+    "loggers": {},
+    "root": {
+        "handlers": ["console"],
+        "level": "INFO",
+    },
+}
 
 # LiteLLM / AI Core
 LITELLM_BASE_URL = env("LITELLM_BASE_URL", default="http://localhost:4000")

@@ -27,8 +27,21 @@ SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 CSRF_TRUSTED_ORIGINS = ["https://*.run.app"]
 
 # Use JSON logging in production
-LOGGING["root"]["handlers"] = ["json_console"]  # noqa: F405
-LOGGING["loggers"]["django.request"] = {  # noqa: F405
+handlers = LOGGING.setdefault("handlers", {})  # noqa: F405
+handlers.setdefault(
+    "json_console",
+    {
+        "class": "logging.StreamHandler",
+        "level": "INFO",
+    },
+)
+
+root_logger_config = LOGGING.setdefault("root", {})  # noqa: F405
+root_logger_config["handlers"] = ["json_console"]
+root_logger_config.setdefault("level", "INFO")
+
+loggers = LOGGING.setdefault("loggers", {})  # noqa: F405
+loggers["django.request"] = {
     "handlers": ["mail_admins", "json_console"],
     "level": "ERROR",
     "propagate": False,
