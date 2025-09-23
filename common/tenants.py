@@ -15,13 +15,18 @@ def get_current_tenant():
         return None
 
 
+def _is_valid_tenant_request(request):
+    """Return whether the request targets the active tenant schema."""
+    tenant = get_current_tenant()
+    return bool(tenant and getattr(request, "tenant_schema", None) == tenant.schema_name)
+
+
 def tenant_schema_required(view_func):
     """Decorator ensuring the request matches the active tenant schema."""
 
     @wraps(view_func)
     def _wrapped(request, *args, **kwargs):
-        tenant = get_current_tenant()
-        if not tenant or getattr(request, "tenant_schema", None) != tenant.schema_name:
+        if not _is_valid_tenant_request(request):
             return HttpResponseForbidden("Invalid tenant schema")
         return view_func(request, *args, **kwargs)
 
@@ -32,7 +37,6 @@ class TenantSchemaRequiredMixin:
     """Mixin validating the active tenant schema for class-based views."""
 
     def dispatch(self, request, *args, **kwargs):
-        tenant = get_current_tenant()
-        if not tenant or getattr(request, "tenant_schema", None) != tenant.schema_name:
+        if not _is_valid_tenant_request(request):
             return HttpResponseForbidden("Invalid tenant schema")
         return super().dispatch(request, *args, **kwargs)

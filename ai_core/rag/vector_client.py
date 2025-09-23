@@ -28,6 +28,10 @@ DEFAULT_STATEMENT_TIMEOUT_MS = 15000
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
 
 
+DocumentKey = Tuple[str, str]
+GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
+
+
 class PgVectorClient:
     """pgvector-backed client for chunk storage and retrieval."""
 
@@ -184,10 +188,8 @@ class PgVectorClient:
         )
         return results
 
-    def _group_by_document(
-        self, chunks: Sequence[Chunk]
-    ) -> Dict[Tuple[str, str], Dict[str, object]]:
-        grouped: Dict[Tuple[str, str], Dict[str, object]] = {}
+    def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
+        grouped: GroupedDocuments = {}
         for chunk in chunks:
             tenant_value = chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
@@ -219,8 +221,12 @@ class PgVectorClient:
             )
         return grouped
 
-    def _ensure_documents(self, cur, grouped: Dict[Tuple[str, str], Dict[str, object]]) -> Dict[Tuple[str, str], uuid.UUID]:  # type: ignore[no-untyped-def]
-        document_ids: Dict[Tuple[str, str], uuid.UUID] = {}
+    def _ensure_documents(
+        self,
+        cur,
+        grouped: GroupedDocuments,
+    ) -> Dict[DocumentKey, uuid.UUID]:  # type: ignore[no-untyped-def]
+        document_ids: Dict[DocumentKey, uuid.UUID] = {}
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
             metadata = Json(doc["metadata"])
@@ -259,39 +265,46 @@ class PgVectorClient:
     def _replace_chunks(
         self,
         cur,
-        grouped: Dict[Tuple[str, str], Dict[str, object]],
-        document_ids: Dict[Tuple[str, str], uuid.UUID],
+        grouped: GroupedDocuments,
+        document_ids: Dict[DocumentKey, uuid.UUID],
     ) -> None:  # type: ignore[no-untyped-def]
+        chunk_insert_sql = """
+            INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """
+        embedding_insert_sql = """
+            INSERT INTO embeddings (id, chunk_id, embedding)
+            VALUES (%s, %s, %s::vector)
+            ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding
+        """
+
         for key, doc in grouped.items():
             document_id = document_ids[key]
             cur.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+
+            chunk_rows = []
+            embedding_rows = []
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 tokens = self._estimate_tokens(chunk.content)
-                cur.execute(
-                    """
-                    INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
+                chunk_rows.append(
                     (
                         chunk_id,
                         document_id,
                         index,
                         chunk.content,
                         tokens,
-                        Json(chunk.meta),
-                    ),
+                        Json(dict(chunk.meta)),
+                    )
                 )
                 if chunk.embedding is not None:
                     vector_value = self._format_vector(chunk.embedding)
-                    cur.execute(
-                        """
-                        INSERT INTO embeddings (id, chunk_id, embedding)
-                        VALUES (%s, %s, %s::vector)
-                        ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding
-                        """,
-                        (uuid.uuid4(), chunk_id, vector_value),
-                    )
+                    embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
+
+            if chunk_rows:
+                cur.executemany(chunk_insert_sql, chunk_rows)
+            if embedding_rows:
+                cur.executemany(embedding_insert_sql, embedding_rows)
 
     def _estimate_tokens(self, content: str) -> int:
         return max(1, len(content.split()))

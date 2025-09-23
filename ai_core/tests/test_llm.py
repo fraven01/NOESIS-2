@@ -10,6 +10,7 @@ import requests
 
 from ai_core.llm import routing
 from ai_core.llm.client import LlmClientError, RateLimitError, call
+from ai_core.infra.pii import mask_prompt
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -47,6 +48,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
         "prompt_version": "v1",
         "key_alias": "alias-01",
     }
+    sanitized_prompt = mask_prompt("secret")
 
     class FailOnce:
         def __init__(self):
@@ -58,7 +60,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
         def __call__(
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
         ):
-            assert json["messages"][0]["content"] == "XXXX"
+            assert json["messages"][0]["content"] == sanitized_prompt
             assert headers["Authorization"] == "Bearer token"
             assert headers[X_TRACE_ID_HEADER] == "tr1"
             assert headers[X_CASE_ID_HEADER] == "c1"
@@ -106,7 +108,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
 
     conf.get_config.cache_clear()
 
-    res = call("simple-query", "secret", metadata)
+    res = call("simple-query", sanitized_prompt, metadata)
     assert res["model"]
     assert res["prompt_version"] == "v1"
     assert ledger_calls["meta"]["label"] == "simple-query"
@@ -126,6 +128,7 @@ def test_llm_client_uses_configured_timeouts(monkeypatch):
         "trace_id": "tr1",
         "prompt_version": "v1",
     }
+    sanitized_prompt = mask_prompt("secret")
 
     class CaptureTimeout:
         def __init__(self):
@@ -161,8 +164,8 @@ def test_llm_client_uses_configured_timeouts(monkeypatch):
 
     conf.get_config.cache_clear()
 
-    call("configured", "secret", metadata)
-    call("fallback", "secret", metadata)
+    call("configured", sanitized_prompt, metadata)
+    call("fallback", sanitized_prompt, metadata)
 
     assert capture.timeouts == [7, 20]
 
@@ -209,6 +212,8 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
 
     conf.get_config.cache_clear()
 
+    sanitized_prompt = mask_prompt("secret")
+
     class RateLimitThenSuccess:
         def __init__(self, retry_after: str | None):
             self.retry_after = retry_after
@@ -219,7 +224,7 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
         def __call__(
             self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
         ):
-            assert json["messages"][0]["content"] == "XXXX"
+            assert json["messages"][0]["content"] == sanitized_prompt
             assert headers["Authorization"] == "Bearer token"
             self.idempotency_headers.append(headers[IDEMPOTENCY_KEY_HEADER])
             self.retry_headers.append(headers.get(X_RETRY_ATTEMPT_HEADER))
@@ -274,7 +279,7 @@ def test_llm_client_retries_on_rate_limit(monkeypatch):
         handler = RateLimitThenSuccess(scenario["retry_after"])
         monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
 
-        res = call("simple-query", "secret", metadata)
+        res = call("simple-query", sanitized_prompt, metadata)
         assert res["text"] == "ok"
 
         assert handler.calls == 2

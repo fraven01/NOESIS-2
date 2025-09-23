@@ -5,3 +5,9 @@ def test_load_finds_prompt_and_version():
     data = load("retriever/answer")
     assert data["version"] == "v1"
     assert "Beantworte die Frage faktenbasiert" in data["text"]
+
+
+def test_load_prefers_highest_numeric_version():
+    data = load("testdata/multi")
+    assert data["version"] == "v11"
+    assert "Test prompt version 11" in data["text"]

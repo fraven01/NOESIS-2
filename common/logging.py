@@ -6,10 +6,13 @@ import contextlib
 import contextvars
 import logging
 import os
-from typing import Dict, Iterator, MutableMapping
+import sys
+from typing import Any, Dict, Iterator, MutableMapping, Sequence, TextIO
 
 import structlog
 from opentelemetry import trace
+
+from common.redaction import Redactor, hash_email, hash_str, hash_user_id  # noqa: F401
 
 try:  # pragma: no cover - optional instrumentation
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
@@ -24,6 +27,9 @@ __all__ = [
     "get_log_context",
     "log_context",
     "mask_value",
+    "hash_str",
+    "hash_email",
+    "hash_user_id",
     "RequestTaskContextFilter",
 ]
 
@@ -52,6 +58,8 @@ _SERVICE_CONTEXT: dict[str, str] = {
 _TIME_STAMPER = structlog.processors.TimeStamper(fmt="iso", key="timestamp")
 _JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
+_REDACTOR: Redactor | None = None
+_CONFIGURED_STREAM: TextIO | None = None
 
 
 def get_log_context() -> dict[str, str]:
@@ -149,6 +157,51 @@ def _service_processor(
     return event_dict
 
 
+def _ensure_trace_keys(
+    _: structlog.typing.WrappedLogger,
+    __: str,
+    event_dict: MutableMapping[str, object],
+) -> MutableMapping[str, object]:
+    context = get_log_context()
+    if context:
+        mask = _masking_enabled()
+        for field in ("trace_id", "case_id", "tenant", "key_alias"):
+            value = event_dict.get(field)
+            if value not in (None, ""):
+                continue
+            raw_value = context.get(field)
+            if raw_value is None:
+                continue
+            event_dict[field] = (
+                mask_value(raw_value) if mask else str(raw_value)
+            )
+
+    if "tenant" in event_dict and "tenant_id" not in event_dict:
+        event_dict["tenant_id"] = event_dict["tenant"]
+
+    for key in ("trace_id", "span_id", "case_id", "tenant_id"):
+        event_dict.setdefault(key, None)
+
+    return event_dict
+
+
+def _stringify_ids_for_payload(
+    _: structlog.typing.WrappedLogger,
+    __: str,
+    event_dict: MutableMapping[str, object],
+) -> MutableMapping[str, object]:
+    is_payload_logger = bool(event_dict.pop("_payload_logger", False))
+
+    if not is_payload_logger:
+        return event_dict
+
+    for key in ("trace_id", "span_id"):
+        if event_dict.get(key) is None:
+            event_dict[key] = ""
+
+    return event_dict
+
+
 def _otel_trace_processor(
     _: structlog.typing.WrappedLogger,
     __: str,
@@ -157,44 +210,31 @@ def _otel_trace_processor(
     span = trace.get_current_span()
     span_context = span.get_span_context() if span else None
 
-    trace_id: str | None = None
-    span_id: str | None = None
+    def _format_hex(value: int, width: int) -> str:
+        return f"{value:0{width}x}"
 
-    if span_context and span_context.is_valid:
-        trace_id = f"{span_context.trace_id:032x}"
-        span_id = f"{span_context.span_id:016x}"
+    if not span_context or not span_context.is_valid:
+        event_dict["trace_id"] = None
+        event_dict["span_id"] = None
+        return event_dict
 
-    event_dict.setdefault("trace_id", trace_id)
-    event_dict.setdefault("span_id", span_id)
+    trace_id = _format_hex(span_context.trace_id, 32)
+    span_id = _format_hex(span_context.span_id, 16)
 
-    if trace_id:
-        gcp_project = os.getenv("GCP_PROJECT")
-        if gcp_project:
-            event_dict.setdefault(
-                "logging.googleapis.com/trace",
-                f"projects/{gcp_project}/traces/{trace_id}",
-            )
+    event_dict["trace_id"] = trace_id
+    event_dict["span_id"] = span_id
+
+    gcp_project = os.getenv("GCP_PROJECT") or os.getenv("GOOGLE_CLOUD_PROJECT")
+    if gcp_project:
+        event_dict.setdefault(
+            "logging.googleapis.com/trace",
+            f"projects/{gcp_project}/traces/{trace_id}",
+        )
+        event_dict.setdefault("logging.googleapis.com/spanId", span_id)
     return event_dict
 
 
-def _redaction_processor(
-    _: structlog.typing.WrappedLogger,
-    __: str,
-    event_dict: MutableMapping[str, object],
-) -> MutableMapping[str, object]:
-    """Placeholder processor for future structured redaction hooks."""
-
-    return event_dict
-
-
-def _structlog_processors() -> list[structlog.types.Processor]:
-    def _render_to_json(
-        logger: structlog.typing.WrappedLogger,
-        name: str,
-        event_dict: MutableMapping[str, object],
-    ) -> str:
-        return _JSON_RENDERER(logger, name, event_dict)
-
+def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]:
     return [
         structlog.stdlib.filter_by_level,
         _service_processor,
@@ -202,13 +242,97 @@ def _structlog_processors() -> list[structlog.types.Processor]:
         structlog.stdlib.add_log_level,
         _TIME_STAMPER,
         _otel_trace_processor,
-        _redaction_processor,
-        _render_to_json,
+        _ensure_trace_keys,
+        redactor,
+        _stringify_ids_for_payload,
+        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
 
 
-def _configure_stdlib_logging(level: int) -> None:
-    handler = logging.StreamHandler()
+class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
+    """Bound logger that enriches events with the active log context."""
+
+    def _process_event(
+        self,
+        method_name: str,
+        event: str | None,
+        event_kw: dict[str, object],
+    ) -> tuple[Sequence[Any], MutableMapping[str, object]]:
+        event_dict: Any = self._context.copy()
+        event_dict.update(**event_kw)
+
+        context = get_log_context()
+        if context:
+            mask = _masking_enabled()
+            for field in ("trace_id", "case_id", "tenant", "key_alias"):
+                current_value = event_dict.get(field)
+                if current_value not in (None, ""):
+                    continue
+                raw_value = context.get(field)
+                if raw_value is None:
+                    continue
+                event_dict[field] = (
+                    mask_value(raw_value) if mask else str(raw_value)
+                )
+
+            if "tenant_id" not in event_dict:
+                tenant_value = event_dict.get("tenant")
+                if tenant_value is None:
+                    tenant_raw = context.get("tenant")
+                    if tenant_raw is not None:
+                        tenant_value = mask_value(tenant_raw) if mask else str(
+                            tenant_raw
+                        )
+                if tenant_value is not None:
+                    event_dict["tenant_id"] = tenant_value
+
+        if event is not None:
+            event_dict["event"] = event
+
+        processors = self._processors or ()
+
+        for proc in processors:
+            event_dict = proc(self._logger, method_name, event_dict)
+
+        if isinstance(event_dict, (str, bytes, bytearray)):
+            return (event_dict,), {}
+
+        if isinstance(event_dict, tuple):
+            return event_dict
+
+        if isinstance(event_dict, dict):
+            return (), event_dict
+
+        msg = (
+            "Last processor didn't return an appropriate value.  "
+            "Valid return values are a dict, a tuple of (args, kwargs), bytes, or a str."
+        )
+        raise ValueError(msg)
+
+
+def _configure_stdlib_logging(
+    level: int, redactor: Redactor, stream: TextIO | None
+) -> None:
+    handler: logging.StreamHandler | None = None
+    root_logger = logging.getLogger()
+
+    for existing in root_logger.handlers:
+        if isinstance(existing, logging.StreamHandler):
+            handler = existing
+            break
+
+    stream_closed = bool(handler and getattr(handler.stream, "closed", False))
+
+    if handler is None or stream_closed:
+        handler = logging.StreamHandler(stream)
+    else:
+        try:
+            handler.flush()
+        except ValueError:
+            handler = logging.StreamHandler(stream)
+        else:
+            handler.setStream(stream)
+
     handler.setLevel(level)
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
@@ -219,12 +343,13 @@ def _configure_stdlib_logging(level: int) -> None:
                 structlog.stdlib.add_log_level,
                 _TIME_STAMPER,
                 _otel_trace_processor,
-                _redaction_processor,
+                _ensure_trace_keys,
+                redactor,
+                _stringify_ids_for_payload,
             ],
         )
     )
 
-    root_logger = logging.getLogger()
     root_logger.handlers = [handler]
     root_logger.setLevel(level)
 
@@ -236,39 +361,74 @@ def _instrument_logging() -> None:
         LoggingInstrumentor().instrument(set_logging_format=False)
     except Exception:
         pass
-
-
 def _log_level_from_env() -> int:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     return getattr(logging, level_name, logging.INFO)
 
 
-def configure_logging() -> None:
+def configure_logging(stream: TextIO | None = None) -> None:
     """Configure structlog and stdlib logging once."""
 
-    global _CONFIGURED
-    if _CONFIGURED:
-        return
+    global _CONFIGURED, _REDACTOR, _CONFIGURED_STREAM
+
+    active_stream = stream or sys.stderr
 
     level = _log_level_from_env()
-    _configure_stdlib_logging(level)
+
+    if _CONFIGURED:
+        if _REDACTOR is None:
+            _REDACTOR = Redactor()
+
+        if _CONFIGURED_STREAM is not active_stream and _REDACTOR is not None:
+            _configure_stdlib_logging(level, _REDACTOR, active_stream)
+            _CONFIGURED_STREAM = active_stream
+        return
+
+    redactor = Redactor()
+    _configure_stdlib_logging(level, redactor, active_stream)
 
     structlog.configure(
-        processors=_structlog_processors(),
-        wrapper_class=structlog.stdlib.BoundLogger,
+        processors=_structlog_processors(redactor),
+        wrapper_class=_ContextAwareBoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,
     )
 
+    _REDACTOR = redactor
     _instrument_logging()
     _CONFIGURED = True
+    _CONFIGURED_STREAM = active_stream
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
     """Return a structlog logger bound to service context."""
 
     logger = structlog.get_logger(name) if name else structlog.get_logger()
-    return logger.bind(**_SERVICE_CONTEXT)
+
+    if isinstance(logger, structlog._config.BoundLoggerLazyProxy):  # type: ignore[attr-defined]
+        logger = logger.bind()
+
+    if not isinstance(logger, _ContextAwareBoundLogger):
+        underlying = getattr(logger, "_logger", None)
+        if underlying is None:
+            underlying = structlog.PrintLoggerFactory()(name)
+        processors = getattr(logger, "_processors", None)
+        context = getattr(logger, "_context", {})
+        logger = _ContextAwareBoundLogger(underlying, processors, context)
+
+    bound = logger.bind(**_SERVICE_CONTEXT)
+
+    default_fields = {
+        "trace_id": None,
+        "span_id": None,
+        "case_id": None,
+        "tenant_id": None,
+    }
+
+    if name and name.startswith("ai_core"):
+        default_fields["_payload_logger"] = True
+
+    return bound.bind(**default_fields)
 
 
 class RequestTaskContextFilter(logging.Filter):
