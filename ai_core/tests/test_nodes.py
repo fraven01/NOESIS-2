@@ -1,7 +1,7 @@
 import pytest
 
+from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.infra.prompts import load
-from ai_core.infra.pii import mask_prompt
 from ai_core.nodes import (
     retrieve,
     compose,
@@ -115,7 +115,7 @@ def test_prompt_runner_default(monkeypatch):
         called["alias"] = alias
         return {"text": "Prompt", "version": "v42"}
 
-    def fake_mask(value):
+    def fake_mask(value, **kwargs):
         called["masked"] = value
         return value
 
@@ -154,7 +154,11 @@ def test_prompt_runner_with_result_shaper(monkeypatch):
         "ai_core.nodes._prompt_runner.load",
         lambda alias: {"text": "Prompt", "version": "v1"},
     )
-    monkeypatch.setattr("ai_core.nodes._prompt_runner.mask_prompt", lambda value: value)
+
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.mask_prompt", lambda value, **kwargs: value
+    )
+
 
     def fake_call(label, prompt, metadata):
         return {"text": "resp", "usage": {}}

@@ -40,6 +40,9 @@ Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` 
 ### Lokale Nutzung
 Das bestehende `docker compose`-Setup startet Web-App und Redis. Ein externer LiteLLM-Proxy kann über `LITELLM_BASE_URL` angebunden werden. Nach dem Start (`docker compose ... up`) können die Endpunkte lokal unter `http://localhost:8000/ai/` getestet werden.
 
+### PII-Scope Playbook
+Der Session-Scope sorgt dafür, dass dieselben deterministischen Platzhalter in Requests, LLM-Aufrufen, Logs und Tasks genutzt werden. Das Playbook [docs/pii-scope.md](docs/pii-scope.md) beschreibt die Reihenfolge (Middleware → Masking → Logging → Tasks → Egress), enthält eine Review-Checkliste und eine FastAPI-Referenz für Microservices.
+
 ---
 
 ## Docker Quickstart

@@ -6,13 +6,16 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import sys
-from typing import Any, Dict, Iterator, MutableMapping, Sequence, TextIO
+from typing import Any, Dict, Iterator, MutableMapping, Optional, Sequence, TextIO
 
 import structlog
 from opentelemetry import trace
 
 from common.redaction import Redactor, hash_email, hash_str, hash_user_id  # noqa: F401
+from ai_core.infra.pii import mask_text
+from ai_core.infra.pii_flags import get_pii_config, get_pii_config_version
 
 try:  # pragma: no cover - optional instrumentation
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
@@ -57,6 +60,31 @@ _JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
 _REDACTOR: Redactor | None = None
 _CONFIGURED_STREAM: TextIO | None = None
+_MAX_LOG_STRUCTURED_BYTES = 64 * 1024
+_LOG_JSON_DUMP_KWARGS: dict[str, object] = {
+    "ensure_ascii": False,
+    "separators": None,
+}
+_PII_LOG_CONFIG_CACHE: contextvars.ContextVar[
+    tuple[int, dict[str, object]] | None
+] = contextvars.ContextVar("log_pii_config_cache", default=None)
+_PII_FAST_PATH_MARKERS: tuple[str, ...] = (
+    "@",
+    "+",
+    "Bearer ",
+    "eyJ",
+    "-----BEGIN",
+    "token=",
+    "key=",
+    "secret=",
+    "password=",
+    "pass=",
+    "session=",
+    "auth=",
+)
+_PII_KEY_PATTERN = re.compile(
+    r"(?i)(email|token|secret|password|pass|session|auth|key)\s*[:=]"
+)
 
 
 def get_log_context() -> dict[str, str]:
@@ -197,6 +225,118 @@ def _stringify_ids_for_payload(
     return event_dict
 
 
+def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
+    from django.conf import settings as django_settings
+
+    if not getattr(django_settings, "configured", False):
+        return None
+
+    def _resolve_scoped_pii_config() -> dict[str, object]:
+        cached = _PII_LOG_CONFIG_CACHE.get()
+        version = get_pii_config_version()
+        if cached is not None and cached[0] == version:
+            return cached[1]
+        config = get_pii_config()
+        _PII_LOG_CONFIG_CACHE.set((version, config))
+        return config
+
+    def _processor(
+        _: structlog.typing.WrappedLogger,
+        __: str,
+        event_dict: MutableMapping[str, object],
+    ) -> MutableMapping[str, object]:
+        config = _resolve_scoped_pii_config()
+        if not config.get("logging_redaction"):
+            return event_dict
+
+        mode = str(config.get("mode", "industrial"))
+        policy = str(config.get("policy", "balanced"))
+        if mode == "off" or policy == "off":
+            return event_dict
+
+        deterministic = bool(config.get("deterministic"))
+        hmac_secret = config.get("hmac_secret") if deterministic else None
+        if deterministic and not isinstance(hmac_secret, (bytes, bytearray)):
+            hmac_secret = None
+            deterministic = False
+        name_detection = bool(config.get("name_detection", False))
+        session_scope = config.get("session_scope")
+
+        def _looks_interesting(value: str) -> bool:
+            if any(marker in value for marker in _PII_FAST_PATH_MARKERS):
+                return True
+
+            lower_value = value.lower()
+            if "{" in value and '":' in value:
+                return True
+            if "=" in value and any(
+                token in lower_value
+                for token in ("email", "token", "secret", "password", "pass", "session", "auth", "key")
+            ):
+                return True
+
+            if _PII_KEY_PATTERN.search(value):
+                return True
+
+            consecutive = 0
+            for char in value:
+                if char.isdigit():
+                    consecutive += 1
+                    if consecutive >= 7:
+                        return True
+                else:
+                    consecutive = 0
+
+            digit_sequences = [
+                len(chunk)
+                for chunk in re.split(r"\D+", value)
+                if chunk
+            ]
+            if digit_sequences:
+                if any(length >= 7 for length in digit_sequences):
+                    return True
+                if (
+                    len(digit_sequences) >= 2
+                    and sum(digit_sequences) >= 7
+                    and any(length >= 3 for length in digit_sequences[:-1])
+                    and digit_sequences[-1] >= 4
+                ):
+                    return True
+
+            return False
+
+        for key, raw_value in list(event_dict.items()):
+            if not isinstance(raw_value, str):
+                continue
+
+            if not name_detection and not _looks_interesting(raw_value):
+                continue
+
+            structured_limit = (
+                _MAX_LOG_STRUCTURED_BYTES
+                if len(raw_value) <= _MAX_LOG_STRUCTURED_BYTES
+                else 0
+            )
+            json_kwargs = _LOG_JSON_DUMP_KWARGS if structured_limit else None
+
+            masked = mask_text(
+                raw_value,
+                policy,
+                deterministic,
+                hmac_secret,
+                mode=mode,
+                name_detection=name_detection,
+                session_scope=session_scope,
+                structured_max_length=structured_limit,
+                json_dump_kwargs=json_kwargs,
+            )
+            if masked != raw_value:
+                event_dict[key] = masked
+        return event_dict
+
+    return _processor
+
+
 def _otel_trace_processor(
     _: structlog.typing.WrappedLogger,
     __: str,
@@ -229,8 +369,11 @@ def _otel_trace_processor(
     return event_dict
 
 
-def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]:
-    return [
+def _structlog_processors(
+    redactor: Redactor,
+    pii_processor: structlog.types.Processor | None,
+) -> list[structlog.types.Processor]:
+    processors: list[structlog.types.Processor] = [
         structlog.stdlib.filter_by_level,
         _service_processor,
         _context_processor,
@@ -238,10 +381,17 @@ def _structlog_processors(redactor: Redactor) -> list[structlog.types.Processor]
         _TIME_STAMPER,
         _otel_trace_processor,
         _ensure_trace_keys,
-        redactor,
-        _stringify_ids_for_payload,
-        structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
     ]
+    if pii_processor is not None:
+        processors.append(pii_processor)
+    processors.extend(
+        [
+            redactor,
+            _stringify_ids_for_payload,
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ]
+    )
+    return processors
 
 
 class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
@@ -304,7 +454,10 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
 
 
 def _configure_stdlib_logging(
-    level: int, redactor: Redactor, stream: TextIO | None
+    level: int,
+    redactor: Redactor,
+    stream: TextIO | None,
+    pii_processor: structlog.types.Processor | None,
 ) -> None:
     handler: logging.StreamHandler | None = None
     root_logger = logging.getLogger()
@@ -327,19 +480,22 @@ def _configure_stdlib_logging(
             handler.setStream(stream)
 
     handler.setLevel(level)
+    foreign_pre_chain = [
+        _service_processor,
+        _context_processor,
+        structlog.stdlib.add_log_level,
+        _TIME_STAMPER,
+        _otel_trace_processor,
+        _ensure_trace_keys,
+    ]
+    if pii_processor is not None:
+        foreign_pre_chain.append(pii_processor)
+    foreign_pre_chain.extend([redactor, _stringify_ids_for_payload])
+
     handler.setFormatter(
         structlog.stdlib.ProcessorFormatter(
             processor=_JSON_RENDERER,
-            foreign_pre_chain=[
-                _service_processor,
-                _context_processor,
-                structlog.stdlib.add_log_level,
-                _TIME_STAMPER,
-                _otel_trace_processor,
-                _ensure_trace_keys,
-                redactor,
-                _stringify_ids_for_payload,
-            ],
+            foreign_pre_chain=foreign_pre_chain,
         )
     )
 
@@ -370,20 +526,22 @@ def configure_logging(stream: TextIO | None = None) -> None:
 
     level = _log_level_from_env()
 
+    pii_processor = _pii_redaction_processor_factory()
+
     if _CONFIGURED:
         if _REDACTOR is None:
             _REDACTOR = Redactor()
 
         if _CONFIGURED_STREAM is not active_stream and _REDACTOR is not None:
-            _configure_stdlib_logging(level, _REDACTOR, active_stream)
+            _configure_stdlib_logging(level, _REDACTOR, active_stream, pii_processor)
             _CONFIGURED_STREAM = active_stream
         return
 
     redactor = Redactor()
-    _configure_stdlib_logging(level, redactor, active_stream)
+    _configure_stdlib_logging(level, redactor, active_stream, pii_processor)
 
     structlog.configure(
-        processors=_structlog_processors(redactor),
+        processors=_structlog_processors(redactor, pii_processor),
         wrapper_class=_ContextAwareBoundLogger,
         logger_factory=structlog.stdlib.LoggerFactory(),
         cache_logger_on_first_use=True,

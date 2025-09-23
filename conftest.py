@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import pytest
@@ -27,6 +28,54 @@ def tmp_media_root(tmp_path, settings):
 @pytest.fixture(autouse=True)
 def disable_auto_create_schema(monkeypatch):
     monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
+
+
+@pytest.fixture
+def pii_config_env(monkeypatch, settings):
+    """Configure PII-related environment variables for a test."""
+
+    env_keys = (
+        "PII_MODE",
+        "PII_POLICY",
+        "PII_DETERMINISTIC",
+        "PII_POST_RESPONSE",
+        "PII_LOGGING_REDACTION",
+        "PII_HMAC_SECRET",
+        "PII_NAME_DETECTION",
+    )
+    boolean_keys = {
+        "PII_DETERMINISTIC",
+        "PII_POST_RESPONSE",
+        "PII_LOGGING_REDACTION",
+        "PII_NAME_DETECTION",
+    }
+    baseline = {key: getattr(settings, key) for key in env_keys}
+
+    def _apply(**overrides):
+        config = baseline | overrides
+        for key in env_keys:
+            value = config[key]
+            if key in boolean_keys:
+                if isinstance(value, str):
+                    boolean_value = value.lower() == "true"
+                else:
+                    boolean_value = bool(value)
+                monkeypatch.setenv(key, "true" if boolean_value else "false")
+                setattr(settings, key, boolean_value)
+                config[key] = boolean_value
+            elif key == "PII_HMAC_SECRET":
+                secret = "" if value is None else str(value)
+                monkeypatch.setenv(key, secret)
+                setattr(settings, key, secret)
+                config[key] = secret
+            else:
+                text = str(value)
+                monkeypatch.setenv(key, text)
+                setattr(settings, key, text)
+                config[key] = text
+        return config
+
+    return _apply
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -120,6 +169,18 @@ def tolerate_existing_migration_table(monkeypatch):
             raise
 
     monkeypatch.setattr(MigrationRecorder, "ensure_schema", _safe_ensure)
+
+
+def pytest_collection_modifyitems(config, items):
+    """Skip gold-marked tests unless the gold feature mode is active."""
+
+    if os.getenv("PII_MODE", "industrial") == "gold":
+        return
+
+    skip_gold = pytest.mark.skip(reason="requires PII_MODE=gold")
+    for item in items:
+        if "gold" in item.keywords:
+            item.add_marker(skip_gold)
 
 
 @pytest.fixture

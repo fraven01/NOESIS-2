@@ -7,7 +7,7 @@ from typing import Callable, Dict, List
 from celery import shared_task
 from django.conf import settings
 
-from common.celery import ContextTask
+from common.celery import ScopedTask
 from common.logging import get_logger
 from .infra import object_store, pii
 from .rag.schemas import Chunk
@@ -25,7 +25,7 @@ def _build_path(meta: Dict[str, str], *parts: str) -> str:
     return "/".join([tenant, case, *parts])
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     """Persist raw document bytes."""
     path = _build_path(meta, "raw", name)
@@ -33,7 +33,7 @@ def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     return {"path": path}
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     """Decode bytes to text and store."""
     full = object_store.BASE_PATH / raw_path
@@ -43,7 +43,7 @@ def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Mask PII in text."""
     full = object_store.BASE_PATH / text_path
@@ -54,7 +54,7 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Split text into chunks; stubbed as a single chunk."""
     full = object_store.BASE_PATH / text_path
@@ -76,7 +76,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Attach dummy embedding vectors to chunks."""
     chunks = object_store.read_json(chunks_path)
@@ -86,7 +86,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ContextTask)
+@shared_task(base=ScopedTask)
 def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
     """Upsert embedded chunks into the vector client."""
     if not settings.RAG_ENABLED:

@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Mapping as TypingMapping
 
 from celery import Task
+from celery.canvas import Signature
 
 from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
+from ai_core.infra.pii_flags import clear_pii_config, load_tenant_pii_config, set_pii_config
+from ai_core.infra.policy import clear_session_scope, get_session_scope, set_session_scope
 
 
 class ContextTask(Task):
@@ -108,3 +111,148 @@ class ContextTask(Task):
         if isinstance(value, str):
             return value.strip()
         return str(value)
+
+
+class ScopedTask(ContextTask):
+    """Celery task base that propagates the PII session scope."""
+
+    abstract = True
+
+    _SCOPE_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
+
+    def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
+        call_kwargs = dict(kwargs)
+        scope_payload = {field: call_kwargs.pop(field, None) for field in self._SCOPE_FIELDS}
+
+        tenant_id = scope_payload.get("tenant_id")
+        case_id = scope_payload.get("case_id")
+        trace_id = scope_payload.get("trace_id")
+        session_salt = scope_payload.get("session_salt")
+        explicit_scope = scope_payload.get("session_scope")
+        scope_override: tuple[str, str, str] | None = None
+
+        if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
+            tenant_scope_val, case_scope_val, salt_scope_val = explicit_scope
+            scope_override = (
+                str(tenant_scope_val) if tenant_scope_val is not None else "",
+                str(case_scope_val) if case_scope_val is not None else "",
+                str(salt_scope_val) if salt_scope_val is not None else "",
+            )
+            if not case_id and case_scope_val:
+                case_id = case_scope_val
+            if not session_salt and salt_scope_val:
+                session_salt = salt_scope_val
+
+        if not session_salt:
+            salt_parts = [str(value) for value in (trace_id, case_id, tenant_id) if value]
+            session_salt = "||".join(salt_parts) if salt_parts else None
+
+        tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
+
+        scope = None
+        if tenant_id and case_id and session_salt:
+            tenant_scope = scope_override[0] if scope_override and scope_override[0] else tenant_id
+            case_scope = scope_override[1] if scope_override and scope_override[1] else case_id
+            salt_scope = scope_override[2] if scope_override and scope_override[2] else session_salt
+            set_session_scope(
+                tenant_id=str(tenant_scope),
+                case_id=str(case_scope),
+                session_salt=str(salt_scope),
+            )
+            scope = get_session_scope()
+        elif scope_override and all(scope_override):
+            set_session_scope(
+                tenant_id=str(scope_override[0]),
+                case_id=str(scope_override[1]),
+                session_salt=str(scope_override[2]),
+            )
+            scope = get_session_scope()
+
+        if tenant_config:
+            if scope:
+                scoped_config = dict(tenant_config)
+                scoped_config["session_scope"] = scope
+            else:
+                scoped_config = tenant_config
+            set_pii_config(scoped_config)
+
+        try:
+            return super().__call__(*args, **call_kwargs)
+        finally:
+            clear_pii_config()
+            clear_session_scope()
+
+
+_SCOPE_KWARG_KEYS = ("tenant_id", "case_id", "trace_id", "session_salt")
+
+
+def _derive_session_salt(scope: TypingMapping[str, Any]) -> str | None:
+    session_salt = scope.get("session_salt")
+    if session_salt:
+        return str(session_salt)
+
+    salt_parts = [scope.get("trace_id"), scope.get("case_id"), scope.get("tenant_id")]
+    filtered = [str(part) for part in salt_parts if part]
+    if filtered:
+        return "||".join(filtered)
+    return None
+
+
+def _clone_with_scope(signature: Signature, scope_kwargs: dict[str, Any]) -> Signature:
+    cloned = signature.clone()
+    if hasattr(cloned, "tasks"):
+        tasks = getattr(cloned, "tasks")
+        scoped_tasks = [
+            _clone_with_scope(sub_sig, scope_kwargs)
+            for sub_sig in tasks
+        ]
+        cloned.tasks = type(tasks)(scoped_tasks)
+        body = getattr(cloned, "body", None)
+        if body is not None:
+            cloned.body = _clone_with_scope(body, scope_kwargs)
+        return cloned
+
+    merged_kwargs = dict(getattr(cloned, "kwargs", {}) or {})
+    merged_kwargs.update(scope_kwargs)
+    cloned.kwargs = merged_kwargs
+    return cloned
+
+
+def with_scope_apply_async(
+    signature: Signature,
+    scope: TypingMapping[str, Any],
+    *args: Any,
+    **kwargs: Any,
+):
+    """Clone a Celery signature and schedule it with the given scope.
+
+    Example
+    -------
+    >>> from celery import chain
+    >>> scoped = with_scope_apply_async(
+    ...     chain(task_a.s(), task_b.s()),
+    ...     {"tenant_id": "t-1", "case_id": "c-1", "trace_id": "tr-1"},
+    ... )
+
+    All tasks in the chain receive ``tenant_id``, ``case_id`` and
+    ``session_salt`` keyword arguments so they can establish the masking scope.
+    """
+
+    if not isinstance(signature, Signature):
+        raise TypeError("signature must be a celery Signature instance")
+
+    scope_kwargs: dict[str, Any] = {}
+    for key in _SCOPE_KWARG_KEYS:
+        value = scope.get(key)
+        if value:
+            scope_kwargs[key] = value
+
+    derived_salt = _derive_session_salt(scope)
+    if derived_salt:
+        scope_kwargs.setdefault("session_salt", derived_salt)
+
+    if not scope_kwargs:
+        return signature.apply_async(*args, **kwargs)
+
+    scoped_signature = _clone_with_scope(signature, scope_kwargs)
+    return scoped_signature.apply_async(*args, **kwargs)
