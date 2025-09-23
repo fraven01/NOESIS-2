@@ -1,4 +1,5 @@
-.PHONY: jobs\:migrate jobs\:bootstrap tenant-new tenant-superuser jobs\:rag jobs\:rag\:health
+.PHONY: jobs\:migrate jobs\:bootstrap tenant-new tenant-superuser jobs\:rag jobs\:rag\:health \
+        seed-baseline seed-demo seed-heavy seed-chaos seed-wipe seed-check
 
 PYTHON ?= python
 MANAGE := $(PYTHON) manage.py
@@ -31,10 +32,10 @@ jobs\:rag:
 	psql "$$RAG_URL" -v ON_ERROR_STOP=1 -f docs/rag/schema.sql
 
 jobs\:rag\:health:
-	@RAG_URL="$$RAG_DATABASE_URL"; \
-	if [ -z "$$RAG_URL" ]; then RAG_URL="$$DATABASE_URL"; fi; \
-	test -n "$$RAG_URL" || (echo "RAG_DATABASE_URL or DATABASE_URL must be set" >&2; exit 1); \
-	psql "$$RAG_URL" -v ON_ERROR_STOP=1 <<-'SQL'
+        @RAG_URL="$$RAG_DATABASE_URL"; \
+        if [ -z "$$RAG_URL" ]; then RAG_URL="$$DATABASE_URL"; fi; \
+        test -n "$$RAG_URL" || (echo "RAG_DATABASE_URL or DATABASE_URL must be set" >&2; exit 1); \
+        psql "$$RAG_URL" -v ON_ERROR_STOP=1 <<-'SQL'
 	DO $$
 	BEGIN
 	    IF to_regnamespace('rag') IS NULL THEN
@@ -52,6 +53,18 @@ jobs\:rag\:health:
 	    IF NOT EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'vector') THEN
 	        RAISE EXCEPTION 'vector extension missing';
 	    END IF;
-	END;
-	$$;
-	SQL
+        END;
+        $$;
+        SQL
+
+seed-baseline: ; $(MANAGE) create_demo_data --profile baseline --seed 1337
+
+seed-demo: ; $(MANAGE) create_demo_data --profile demo --seed 1337
+
+seed-heavy: ; $(MANAGE) create_demo_data --profile heavy --seed 42
+
+seed-chaos: ; $(MANAGE) create_demo_data --profile chaos --seed 99
+
+seed-wipe: ; $(MANAGE) create_demo_data --wipe --include-org
+
+seed-check: ; $(MANAGE) check_demo_data --profile demo --seed 1337
