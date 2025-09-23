@@ -1,4 +1,5 @@
 import json
+import logging
 import math
 import os
 import random
@@ -627,6 +628,17 @@ class Command(BaseCommand):
         faker = Faker("de_DE")
         faker.seed_instance(seed)
 
+        logging.info(
+            json.dumps(
+                {
+                    "event": "seed.started",
+                    "profile": profile,
+                    "seed": seed,
+                },
+                ensure_ascii=False,
+            )
+        )
+
         # Ensure tenant/domain from the public schema
         with schema_context(get_public_schema_name()):
             tenant, _ = Tenant.objects.get_or_create(
@@ -647,9 +659,27 @@ class Command(BaseCommand):
                     changed = True
                 if changed:
                     domain_obj.save(update_fields=["tenant", "is_primary"])
+        logging.info(
+            json.dumps(
+                {
+                    "event": "seed.public.tenant_ensured",
+                    "tenant": tenant.schema_name,
+                },
+                ensure_ascii=False,
+            )
+        )
         # Ensure tenant schema exists for data seeding
         tenant.create_schema(check_if_exists=True)
 
+        logging.info(
+            json.dumps(
+                {
+                    "event": "seed.tenant.switch",
+                    "schema": tenant.schema_name,
+                },
+                ensure_ascii=False,
+            )
+        )
         with schema_context(tenant.schema_name):
             user, created = User.objects.get_or_create(
                 username="demo", defaults={"email": "demo@example.com"}
@@ -713,4 +743,5 @@ class Command(BaseCommand):
                 "orgs": 1,
             },
         }
+        logging.info(json.dumps(summary, ensure_ascii=False))
         self.stdout.write(json.dumps(summary, ensure_ascii=False))
