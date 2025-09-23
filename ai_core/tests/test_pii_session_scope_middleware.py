@@ -215,14 +215,14 @@ def test_session_scope_middleware_loads_tenant_from_header_when_missing_request_
         pii_hmac_secret="header-secret",
         pii_name_detection=True,
     )
-    monkeypatch.setattr("ai_core.middleware.pii_session.get_current_tenant", lambda: None)
+    monkeypatch.setattr(
+        "ai_core.middleware.pii_session.get_current_tenant", lambda: None
+    )
 
     factory = RequestFactory()
     headers = scope_headers_shared.copy()
     headers["HTTP_X_TENANT_ID"] = (
-        str(tenant.pk)
-        if tenant_header_source == "pk"
-        else tenant.schema_name
+        str(tenant.pk) if tenant_header_source == "pk" else tenant.schema_name
     )
 
     observed_configs: list[dict[str, object]] = []
@@ -436,7 +436,11 @@ def test_request_to_task_chain_preserves_session_scope(
         tenant_obj = getattr(request, "tenant", None)
         tenant_kwarg = getattr(tenant_obj, "id", None)
         scope = {
-            "tenant_id": tenant_kwarg if tenant_kwarg is not None else request.META["HTTP_X_TENANT_ID"],
+            "tenant_id": (
+                tenant_kwarg
+                if tenant_kwarg is not None
+                else request.META["HTTP_X_TENANT_ID"]
+            ),
             "case_id": request.META["HTTP_X_CASE_ID"],
             "trace_id": request.META["HTTP_X_TRACE_ID"],
             "session_salt": "||".join(
@@ -465,7 +469,9 @@ def test_request_to_task_chain_preserves_session_scope(
     assert len(task_records) == 2
 
     tenant_identifier = getattr(request, "tenant", None)
-    tenant_scope_id = str(getattr(tenant_identifier, "id", scope_headers_shared["HTTP_X_TENANT_ID"]))
+    tenant_scope_id = str(
+        getattr(tenant_identifier, "id", scope_headers_shared["HTTP_X_TENANT_ID"])
+    )
     expected_scope = (
         tenant_scope_id,
         scope_headers_shared["HTTP_X_CASE_ID"],

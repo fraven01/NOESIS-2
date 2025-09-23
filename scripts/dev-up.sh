@@ -3,6 +3,12 @@ set -euo pipefail
 
 # One-command local dev bootstrap: bring up stack, run migrations, ensure tenants.
 
+if [ ! -f .env ]; then
+  echo "[dev-up] Fehler: Keine .env im Projektstamm gefunden." >&2
+  echo "[dev-up] Bitte .env.example nach .env kopieren und Werte anpassen." >&2
+  exit 1
+fi
+
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 
 # Defaults (override via env when calling the script)

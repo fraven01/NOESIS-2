@@ -8,8 +8,16 @@ from celery.canvas import Signature
 
 from .constants import HEADER_CANDIDATE_MAP
 from .logging import bind_log_context, clear_log_context
-from ai_core.infra.pii_flags import clear_pii_config, load_tenant_pii_config, set_pii_config
-from ai_core.infra.policy import clear_session_scope, get_session_scope, set_session_scope
+from ai_core.infra.pii_flags import (
+    clear_pii_config,
+    load_tenant_pii_config,
+    set_pii_config,
+)
+from ai_core.infra.policy import (
+    clear_session_scope,
+    get_session_scope,
+    set_session_scope,
+)
 
 
 class ContextTask(Task):
@@ -122,7 +130,9 @@ class ScopedTask(ContextTask):
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         call_kwargs = dict(kwargs)
-        scope_payload = {field: call_kwargs.pop(field, None) for field in self._SCOPE_FIELDS}
+        scope_payload = {
+            field: call_kwargs.pop(field, None) for field in self._SCOPE_FIELDS
+        }
 
         tenant_id = scope_payload.get("tenant_id")
         case_id = scope_payload.get("case_id")
@@ -144,16 +154,26 @@ class ScopedTask(ContextTask):
                 session_salt = salt_scope_val
 
         if not session_salt:
-            salt_parts = [str(value) for value in (trace_id, case_id, tenant_id) if value]
+            salt_parts = [
+                str(value) for value in (trace_id, case_id, tenant_id) if value
+            ]
             session_salt = "||".join(salt_parts) if salt_parts else None
 
         tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
 
         scope = None
         if tenant_id and case_id and session_salt:
-            tenant_scope = scope_override[0] if scope_override and scope_override[0] else tenant_id
-            case_scope = scope_override[1] if scope_override and scope_override[1] else case_id
-            salt_scope = scope_override[2] if scope_override and scope_override[2] else session_salt
+            tenant_scope = (
+                scope_override[0] if scope_override and scope_override[0] else tenant_id
+            )
+            case_scope = (
+                scope_override[1] if scope_override and scope_override[1] else case_id
+            )
+            salt_scope = (
+                scope_override[2]
+                if scope_override and scope_override[2]
+                else session_salt
+            )
             set_session_scope(
                 tenant_id=str(tenant_scope),
                 case_id=str(case_scope),
@@ -202,10 +222,7 @@ def _clone_with_scope(signature: Signature, scope_kwargs: dict[str, Any]) -> Sig
     cloned = signature.clone()
     if hasattr(cloned, "tasks"):
         tasks = getattr(cloned, "tasks")
-        scoped_tasks = [
-            _clone_with_scope(sub_sig, scope_kwargs)
-            for sub_sig in tasks
-        ]
+        scoped_tasks = [_clone_with_scope(sub_sig, scope_kwargs) for sub_sig in tasks]
         cloned.tasks = type(tasks)(scoped_tasks)
         body = getattr(cloned, "body", None)
         if body is not None:

@@ -3,7 +3,10 @@ from urllib.parse import parse_qsl, urlparse
 
 import pytest
 
-from ai_core.infra.mask_prompt import mask_prompt as mask_prompt_with_config, mask_response
+from ai_core.infra.mask_prompt import (
+    mask_prompt as mask_prompt_with_config,
+    mask_response,
+)
 from ai_core.infra.pii import mask_structured, mask_text
 from ai_core.metrics.pii_metrics import PII_DETECTIONS
 
@@ -28,8 +31,10 @@ def test_email_is_masked():
 
 
 def test_jwt_structure_preserved():
-    token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6Ikpv" \
+    token = (
+        "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIiwibmFtZSI6Ikpv"
         "aG4gRG9lIiwiaWF0IjoxNTE2MjM5MDIyfQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c"
+    )
     masked = mask_structured(token, "balanced", False, None)
     assert masked.count(".") == 2
     assert masked != token
@@ -101,7 +106,9 @@ def test_high_entropy_key_parameter_masked():
     params = dict(parse_qsl(parsed.query))
     assert "key" in params
     assert params["key"] != secret
-    assert params["key"].startswith("[REDACTED_KEY]") or params["key"].startswith("<KEY_")
+    assert params["key"].startswith("[REDACTED_KEY]") or params["key"].startswith(
+        "<KEY_"
+    )
     assert params.get("next") == "/home"
 
 
@@ -164,8 +171,12 @@ def test_gold_policy_strict_masks_iban():
 def test_session_scope_stabilises_tokens():
     text = "user@example.com"
     scope = ("tenant", "case", "salt")
-    first = mask_text(text, "balanced", True, b"secret", mode="gold", session_scope=scope)
-    second = mask_text(text, "balanced", True, b"secret", mode="gold", session_scope=scope)
+    first = mask_text(
+        text, "balanced", True, b"secret", mode="gold", session_scope=scope
+    )
+    second = mask_text(
+        text, "balanced", True, b"secret", mode="gold", session_scope=scope
+    )
     assert first == second
 
 
@@ -224,7 +235,10 @@ def test_mask_prompt_appends_summary_block():
 
 def test_mask_prompt_placeholder_only():
     config = _default_config()
-    assert mask_prompt_with_config("secret", placeholder_only=True, config=config) == "XXXX"
+    assert (
+        mask_prompt_with_config("secret", placeholder_only=True, config=config)
+        == "XXXX"
+    )
 
 
 def test_mask_response_respects_flag():

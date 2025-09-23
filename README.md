@@ -137,15 +137,17 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
   `docker-compose exec web python manage.py collectstatic`.
   Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
 - Hinweis zu `.env`: Host-seitige Werte für `DATABASE_URL`/`REDIS_URL` bleiben für lokale Tools bestehen.
+
   Die Compose-Services `web` und `worker` lesen stattdessen `.env.docker` (Standardwerte sind
   `postgresql://noesis2:noesis2@db:5432/noesis2` bzw. `redis://redis:6379/0`).
   Passe Container-DSNs bei Bedarf über `COMPOSE_DATABASE_URL`/`COMPOSE_REDIS_URL` in `.env.docker`
   oder überschreibe sie gezielt in deiner `.env`.
+
 - Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
   `npm run dev:manage migrate`.
 
 ### Dev-Skripte (idempotent)
-- `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an.
+- `npm run dev:up`: Startet/initialisiert die Umgebung, führt `migrate_schemas`, bootstrapped den Public‑Tenant, legt `dev`‑Tenant und Superuser an. Bricht mit einem Hinweis ab, wenn keine `.env` im Projektstamm liegt (vorher `.env.example` kopieren).
 - `npm run dev:check`: Führt Smoke‑Checks aus (LiteLLM Health/Chat, `GET /ai/ping/`, `POST /ai/scope/`). Chat erfordert gültige `GEMINI_API_KEY`.
 - `npm run dev:down`: Stoppt und entfernt alle Container inkl. Volumes.
 - `npm run dev:rebuild`: Baut Web- und Worker-Images neu und aktualisiert Code-Abhängigkeiten, ohne Volumes zu löschen. Mit `npm run dev:rebuild -- --with-frontend` lässt sich optional auch das Frontend-Image aktualisieren.

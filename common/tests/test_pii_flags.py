@@ -290,8 +290,10 @@ def test_pii_middleware_order(settings):
     assert "ai_core.middleware.RequestContextMiddleware" in middleware
 
     scope_index = middleware.index("ai_core.middleware.PIISessionScopeMiddleware")
-    request_context_index = middleware.index("ai_core.middleware.RequestContextMiddleware")
-
-    assert scope_index < request_context_index, (
-        "PII session scope middleware must run before request context logging middleware"
+    request_context_index = middleware.index(
+        "ai_core.middleware.RequestContextMiddleware"
     )
+
+    assert (
+        scope_index < request_context_index
+    ), "PII session scope middleware must run before request context logging middleware"
