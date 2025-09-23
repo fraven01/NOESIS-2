@@ -89,8 +89,8 @@ services:
         condition: service_started
     restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-noesis2}:${DB_PASSWORD:-noesis2}@db:5432/${DB_NAME:-noesis2}}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
       RAG_ENABLED: ${RAG_ENABLED:-false}
 
   worker:
@@ -110,8 +110,8 @@ services:
         condition: service_started
     restart: unless-stopped
     environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-noesis2}:${DB_PASSWORD:-noesis2}@db:5432/${DB_NAME:-noesis2}}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
       RAG_ENABLED: ${RAG_ENABLED:-false}
 
   rag:

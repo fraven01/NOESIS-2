@@ -136,6 +136,10 @@ Der Befehl laedt die benoetigten Pakete in den temporaeren Container, fuehrt die
   Bei älteren Compose-Setups muss dieser Schritt manuell erfolgen:
   `docker-compose exec web python manage.py collectstatic`.
   Notwendig, da `CompressedManifestStaticFilesStorage` aktiv ist.
+- Hinweis zu `.env`: Host-seitige Werte für `DATABASE_URL`/`REDIS_URL` bleiben für lokale Tools bestehen.
+  Die Compose-Services `web` und `worker` verwenden dagegen ihre eigenen Defaults (`postgresql://noesis2:noesis2@db:5432/noesis2`
+  bzw. `redis://redis:6379/0`). Falls du abweichende Container-DSNs brauchst, setze dafür `COMPOSE_DATABASE_URL` bzw.
+  `COMPOSE_REDIS_URL` in deiner `.env` oder in einer separaten `.env.docker`.
 - Datenbankmigrationen laufen nicht automatisch mit. Führe sie bei Bedarf manuell aus, z. B. mit
   `npm run dev:manage migrate`.
 
