@@ -285,3 +285,35 @@ def test_chaos_creates_flagged_invalid_documents():
                 )
             ]
             assert flagged
+
+
+@pytest.mark.django_db
+def test_check_demo_data_passes_for_demo():
+    seed_stdout = StringIO()
+    call_command("create_demo_data", stdout=seed_stdout)
+    expected_summary = json.loads(seed_stdout.getvalue())
+
+    check_stdout = StringIO()
+    call_command("check_demo_data", stdout=check_stdout)
+    payload = json.loads(check_stdout.getvalue())
+
+    assert payload["event"] == "check.ok"
+    assert payload["profile"] == "demo"
+    assert payload["counts"]["projects"] == expected_summary["counts"]["projects"]
+    assert payload["counts"]["documents"] == expected_summary["counts"]["documents"]
+
+
+@pytest.mark.django_db
+def test_check_demo_data_fails_on_missing_type():
+    call_command("create_demo_data")
+
+    with schema_context("demo"):
+        DocumentType.objects.filter(name="Demo Type").delete()
+
+    stdout = StringIO()
+    with pytest.raises(CommandError):
+        call_command("check_demo_data", stdout=stdout)
+
+    payload = json.loads(stdout.getvalue())
+    assert payload["event"] == "check.failed"
+    assert payload["reason"] == "document_type_missing"
