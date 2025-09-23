@@ -2,12 +2,12 @@ import json
 import math
 import os
 import random
+import re
 from dataclasses import dataclass, field
-from typing import Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional
 
 from django.core.files.base import ContentFile
 from django.core.management.base import BaseCommand, CommandError
-from django.utils.text import slugify
 from django_tenants.utils import get_public_schema_name, schema_context
 from faker import Faker
 
@@ -22,20 +22,25 @@ from users.models import User
 
 @dataclass
 class DocumentSpec:
+    slug: str
     title: str
     filename: str
     content: Optional[bytes]
     media_type: str = "text/plain"
     broken: bool = False
     missing_type: bool = False
+    legacy_titles: List[str] = field(default_factory=list)
+    legacy_filenames: List[str] = field(default_factory=list)
+    metadata: Dict[str, object] = field(default_factory=dict)
 
 
 @dataclass
 class ProjectSpec:
-    code: str
+    slug: str
     name: str
     description: str
     documents: List[DocumentSpec] = field(default_factory=list)
+    legacy_names: List[str] = field(default_factory=list)
 
 
 class SeederDataset:
@@ -77,28 +82,40 @@ class DemoDatasetBuilder:
             return self._build_chaos()
         raise CommandError(f"Unknown profile '{self.profile}'")
 
+    def _project_slug(self, index: int) -> str:
+        return f"proj-{index:02d}"
+
+    def _document_slug(self, project_slug: str, doc_index: int) -> str:
+        return f"doc-{project_slug}-{doc_index:02d}"
+
     def _build_baseline(self) -> SeederDataset:
         project1 = ProjectSpec(
-            code="demo-project-1",
+            slug=self._project_slug(1),
             name="Demo Project 1",
             description="Erstes Demo-Projekt",
             documents=[
                 DocumentSpec(
+                    slug=self._document_slug("proj-01", 1),
                     title="Demo Document 1",
-                    filename="demo1.txt",
+                    filename="doc-proj-01-01.txt",
                     content=b"Demo content 1",
+                    legacy_titles=["Demo Document 1"],
+                    legacy_filenames=["demo1.txt"],
                 )
             ],
         )
         project2 = ProjectSpec(
-            code="demo-project-2",
+            slug=self._project_slug(2),
             name="Demo Project 2",
             description="Zweites Demo-Projekt",
             documents=[
                 DocumentSpec(
+                    slug=self._document_slug("proj-02", 1),
                     title="Demo Document 2",
-                    filename="demo2.txt",
+                    filename="doc-proj-02-01.txt",
                     content=b"Demo content 2",
+                    legacy_titles=["Demo Document 2"],
+                    legacy_filenames=["demo2.txt"],
                 )
             ],
         )
@@ -116,14 +133,14 @@ class DemoDatasetBuilder:
                 self._generate_project(index, docs_target, formats=("txt", "md"))
             )
 
-        for idx, project in enumerate(projects, start=1):
+        for project in projects:
             desired_docs = docs_target
             if len(project.documents) >= desired_docs:
                 continue
             additional = desired_docs - len(project.documents)
             project.documents.extend(
                 self._generate_documents(
-                    project_code=project.code or f"demo-project-{idx}",
+                    project_slug=project.slug,
                     project_name=project.name,
                     start=len(project.documents) + 1,
                     count=additional,
@@ -168,15 +185,19 @@ class DemoDatasetBuilder:
             if mode == "empty":
                 doc.content = None
                 doc.broken = True
+                doc.metadata.update({"invalid": True, "reason": "empty_content"})
             elif mode == "invalid_bytes":
                 doc.content = b"\x80\x81\xfe"
                 doc.broken = True
+                doc.metadata.update({"invalid": True, "reason": "invalid_bytes"})
             elif mode == "long_title":
                 doc.title = f"{doc.title} {self.faker.pystr(min_chars=30, max_chars=30)}"
                 doc.broken = True
+                doc.metadata.update({"invalid": True, "reason": "title_length"})
             elif mode == "missing_type":
                 doc.missing_type = True
                 doc.broken = True
+                doc.metadata.update({"invalid": True, "reason": "missing_type"})
         return SeederDataset(projects)
 
     def _generate_project(
@@ -185,12 +206,12 @@ class DemoDatasetBuilder:
         docs_target: int,
         formats: Iterable[str],
     ) -> ProjectSpec:
-        code = f"demo-project-{index}"
+        slug = self._project_slug(index)
         name = f"Demo Project {index}"
-        description = f"{self.faker.catch_phrase()} ({code})"
+        description = f"{self.faker.catch_phrase()} ({name})"
         documents = list(
             self._generate_documents(
-                project_code=code,
+                project_slug=slug,
                 project_name=name,
                 start=1,
                 count=docs_target,
@@ -198,11 +219,11 @@ class DemoDatasetBuilder:
                 allow_minor_faults=False,
             )
         )
-        return ProjectSpec(code=code, name=name, description=description, documents=documents)
+        return ProjectSpec(slug=slug, name=name, description=description, documents=documents)
 
     def _generate_documents(
         self,
-        project_code: str,
+        project_slug: str,
         project_name: str,
         start: int,
         count: int,
@@ -214,26 +235,36 @@ class DemoDatasetBuilder:
         for offset in range(count):
             doc_index = start + offset
             fmt = formats_tuple[offset % len(formats_tuple)]
-            base_slug = slugify(f"{project_code}-{doc_index}")
-            filename = f"{base_slug}.{fmt}"
-            title = f"{project_name} Dokument {doc_index}"
-            content_bytes = self._build_content(fmt, title)
+            doc_slug = self._document_slug(project_slug, doc_index)
+            filename = f"{doc_slug}.{fmt}"
+            title = self._build_title(project_name, doc_index)
+            content_bytes = self._build_content(fmt, title, doc_slug)
+            metadata: Dict[str, object] = {}
             broken = False
-            if allow_minor_faults and doc_index == start and fmt == "md":
+            if allow_minor_faults and offset == 0 and fmt == "md":
                 content_bytes = f"## {project_name} Liste [Unvollständig".encode("utf-8")
                 broken = True
+                metadata = {"invalid": True, "reason": "markdown_unclosed"}
             documents.append(
                 DocumentSpec(
+                    slug=doc_slug,
                     title=title,
                     filename=filename,
                     content=content_bytes,
                     media_type=self._media_type(fmt),
                     broken=broken,
+                    metadata=metadata,
                 )
             )
         return documents
 
-    def _build_content(self, fmt: str, title: str) -> bytes:
+    def _build_title(self, project_name: str, doc_index: int) -> str:
+        base_sentence = self.faker.sentence(nb_words=6).strip()
+        base_sentence = base_sentence.rstrip(".")
+        title = f"{base_sentence} ({project_name} #{doc_index})"
+        return title[:80]
+
+    def _build_content(self, fmt: str, title: str, doc_slug: str) -> bytes:
         if fmt == "txt":
             text = f"{title}\n\n{self.faker.paragraph(nb_sentences=3)}"
             return text.encode("utf-8")
@@ -242,6 +273,7 @@ class DemoDatasetBuilder:
             return md.encode("utf-8")
         if fmt == "json":
             payload = {
+                "slug": doc_slug,
                 "title": title,
                 "summary": self.faker.sentence(nb_words=8),
                 "owner": self.faker.name(),
@@ -258,6 +290,8 @@ class DemoDatasetBuilder:
 
 
 class DemoDatasetApplier:
+    PROJECT_DESC_PATTERN = re.compile(r"^\[demo-seed:(?P<slug>[^\]]+)\]\s*(?P<body>.*)$")
+
     def __init__(self, user: User, organization: Organization, doc_type: DocumentType):
         self.user = user
         self.organization = organization
@@ -275,51 +309,77 @@ class DemoDatasetApplier:
         deleted_documents = 0
         deleted_projects = 0
         with set_current_organization(self.organization):
-            for project_spec in dataset.projects:
-                try:
-                    project = Project.objects.get(
-                        organization=self.organization, name=project_spec.name
-                    )
-                except Project.DoesNotExist:
+            projects = list(Project.objects.filter(organization=self.organization))
+            slug_index: Dict[str, Project] = {}
+            name_index: Dict[str, Project] = {}
+            for project in projects:
+                slug = self._extract_project_slug(project.description)
+                if slug:
+                    slug_index.setdefault(slug, project)
+                name_index.setdefault(project.name, project)
+            for spec in dataset.projects:
+                project = slug_index.get(spec.slug)
+                if not project:
+                    for legacy_name in [spec.name, *spec.legacy_names]:
+                        project = name_index.get(legacy_name)
+                        if project:
+                            break
+                if not project:
                     continue
-                titles = [doc.title for doc in project_spec.documents]
-                if titles:
-                    deleted_documents += Document.objects.filter(
-                        project=project, title__in=titles
-                    ).delete()[0]
+                deleted_documents += self._wipe_documents(project, spec)
                 if not Document.objects.filter(project=project).exists():
                     project.delete()
                     deleted_projects += 1
         return {"projects": deleted_projects, "documents": deleted_documents}
 
-    def _ensure_projects(self, project_specs: Iterable[ProjectSpec]) -> dict:
+    def _ensure_projects(self, project_specs: Iterable[ProjectSpec]) -> Dict[str, Project]:
+        project_lookup: Dict[str, Project] = {}
         with set_current_organization(self.organization):
-            existing = {
-                project.name: project
-                for project in Project.objects.filter(organization=self.organization)
-            }
+            projects = list(Project.objects.filter(organization=self.organization))
+            slug_index: Dict[str, Project] = {}
+            name_index: Dict[str, Project] = {}
+            for project in projects:
+                slug = self._extract_project_slug(project.description)
+                if slug:
+                    slug_index[slug] = project
+                name_index.setdefault(project.name, project)
+
             to_create: List[Project] = []
+            pending_slug_by_name: Dict[str, str] = {}
             for spec in project_specs:
-                project = existing.get(spec.name)
+                project = slug_index.get(spec.slug)
+                if not project:
+                    for legacy_name in [spec.name, *spec.legacy_names]:
+                        project = name_index.get(legacy_name)
+                        if project:
+                            break
                 if project:
-                    update_fields = []
-                    if project.description != spec.description:
-                        project.description = spec.description
+                    update_fields: List[str] = []
+                    desired_description = self._format_project_description(spec)
+                    if project.description != desired_description:
+                        project.description = desired_description
                         update_fields.append("description")
+                    if project.name != spec.name:
+                        project.name = spec.name
+                        update_fields.append("name")
                     if project.owner_id != self.user.id:
                         project.owner = self.user
                         update_fields.append("owner")
                     if update_fields:
                         project.save(update_fields=update_fields)
+                    slug_index[spec.slug] = project
+                    project_lookup[spec.slug] = project
                     continue
+
                 project = Project(
                     name=spec.name,
-                    description=spec.description,
+                    description=self._format_project_description(spec),
                     owner=self.user,
                     organization=self.organization,
                 )
                 to_create.append(project)
-            created_projects = []
+                pending_slug_by_name[spec.name] = spec.slug
+
             if to_create:
                 Project.objects.bulk_create(to_create, batch_size=25)
                 created_projects = list(
@@ -328,74 +388,178 @@ class DemoDatasetApplier:
                         name__in=[project.name for project in to_create],
                     )
                 )
-                existing.update({project.name: project for project in created_projects})
-            return existing
+                for project in created_projects:
+                    slug = self._extract_project_slug(project.description)
+                    if not slug:
+                        slug = pending_slug_by_name.get(project.name)
+                    if slug:
+                        slug_index[slug] = project
+                        project_lookup[slug] = project
+
+        return project_lookup
 
     def _ensure_documents(
         self,
-        project_lookup: dict,
+        project_lookup: Dict[str, Project],
         project_specs: Iterable[ProjectSpec],
     ) -> int:
         total_documents = 0
         with set_current_organization(self.organization):
             for spec in project_specs:
-                project = project_lookup.get(spec.name)
+                project = project_lookup.get(spec.slug)
                 if not project:
                     continue
-                titles = [doc.title for doc in spec.documents]
-                existing_docs = {
-                    doc.title: doc
-                    for doc in Document.objects.filter(project=project, title__in=titles)
-                }
+                existing_docs = list(Document.objects.filter(project=project))
+                by_slug: Dict[str, Document] = {}
+                by_title: Dict[str, Document] = {}
+                by_filename: Dict[str, Document] = {}
+                for document in existing_docs:
+                    slug = self._extract_document_slug(document.file.name)
+                    if slug:
+                        by_slug.setdefault(slug, document)
+                    base_name = os.path.basename(document.file.name or "")
+                    if base_name:
+                        by_filename.setdefault(base_name, document)
+                    by_title.setdefault(document.title, document)
+
                 new_docs: List[Document] = []
                 for doc_spec in spec.documents:
                     if doc_spec.missing_type:
-                        # Skip creating a record to mimic missing metadata for chaos profile
                         continue
                     total_documents += 1
-                    document = existing_docs.get(doc_spec.title)
+                    document = by_slug.get(doc_spec.slug)
+                    if not document:
+                        for legacy_title in doc_spec.legacy_titles:
+                            document = by_title.get(legacy_title)
+                            if document:
+                                break
+                    if not document:
+                        for legacy_filename in [doc_spec.filename, *doc_spec.legacy_filenames]:
+                            document = by_filename.get(legacy_filename)
+                            if document:
+                                break
                     if document:
-                        update_fields = []
-                        if document.owner_id != self.user.id:
-                            document.owner = self.user
-                            update_fields.append("owner")
-                        if document.type_id != self.doc_type.id:
-                            document.type = self.doc_type
-                            update_fields.append("type")
-                        if update_fields:
-                            document.save(update_fields=update_fields)
-                        if doc_spec.content is not None:
-                            document.file.save(
-                                doc_spec.filename,
-                                ContentFile(doc_spec.content),
-                                save=True,
-                            )
-                        elif doc_spec.broken and document.file:
-                            document.file.delete(save=True)
+                        self._update_document(document, doc_spec)
                         continue
-                    new_document = Document(
-                        title=doc_spec.title,
-                        project=project,
-                        owner=self.user,
-                        type=self.doc_type,
-                    )
-                    if doc_spec.content is not None:
-                        new_document.file.save(
-                            doc_spec.filename,
-                            ContentFile(doc_spec.content),
-                            save=False,
-                        )
-                    elif doc_spec.broken:
-                        # Ensure an empty placeholder exists when content is flagged missing
-                        new_document.file.save(
-                            doc_spec.filename,
-                            ContentFile(b""),
-                            save=False,
-                        )
-                    new_docs.append(new_document)
+                    new_docs.append(self._build_document(project, doc_spec))
                 if new_docs:
                     Document.objects.bulk_create(new_docs, batch_size=25)
         return total_documents
+
+    def _wipe_documents(self, project: Project, spec: ProjectSpec) -> int:
+        doc_slugs = {doc.slug for doc in spec.documents}
+        doc_filenames = {doc.filename for doc in spec.documents}
+        doc_titles = {doc.title for doc in spec.documents}
+        for doc in spec.documents:
+            doc_titles.update(doc.legacy_titles)
+            doc_filenames.update(doc.legacy_filenames)
+
+        deleted = 0
+        for document in Document.objects.filter(project=project):
+            base_name = os.path.basename(document.file.name or "")
+            slug = self._extract_document_slug(document.file.name)
+            if (slug and slug in doc_slugs) or base_name in doc_filenames or document.title in doc_titles:
+                document.delete()
+                deleted += 1
+        return deleted
+
+    def _build_document(self, project: Project, doc_spec: DocumentSpec) -> Document:
+        title = self._normalize_title(doc_spec.title)
+        document = Document(
+            title=title,
+            project=project,
+            owner=self.user,
+            type=self.doc_type,
+            status=self._target_status(doc_spec),
+        )
+        file_content = doc_spec.content if doc_spec.content is not None else b""
+        try:
+            document.file.save(
+                doc_spec.filename,
+                ContentFile(file_content),
+                save=False,
+            )
+        except Exception:
+            document.status = Document.STATUS_PROCESSING
+            document.file.save(
+                doc_spec.filename,
+                ContentFile(file_content or b""),
+                save=False,
+            )
+        return document
+
+    def _update_document(self, document: Document, doc_spec: DocumentSpec) -> None:
+        update_fields: List[str] = []
+        title = self._normalize_title(doc_spec.title)
+        if document.title != title:
+            document.title = title
+            update_fields.append("title")
+        if document.owner_id != self.user.id:
+            document.owner = self.user
+            update_fields.append("owner")
+        if document.type_id != self.doc_type.id:
+            document.type = self.doc_type
+            update_fields.append("type")
+
+        target_status = self._target_status(doc_spec)
+        if document.status != target_status:
+            document.status = target_status
+            update_fields.append("status")
+
+        file_updated = False
+        should_update_file = doc_spec.content is not None or doc_spec.broken
+        if should_update_file:
+            file_content = doc_spec.content if doc_spec.content is not None else b""
+            try:
+                if document.file and os.path.basename(document.file.name) != doc_spec.filename:
+                    document.file.delete(save=False)
+                document.file.save(
+                    doc_spec.filename,
+                    ContentFile(file_content),
+                    save=False,
+                )
+                file_updated = True
+            except Exception:
+                document.status = Document.STATUS_PROCESSING
+                if "status" not in update_fields:
+                    update_fields.append("status")
+
+        if file_updated:
+            update_fields.append("file")
+
+        if update_fields:
+            document.save(update_fields=update_fields)
+
+    def _format_project_description(self, spec: ProjectSpec) -> str:
+        description = spec.description.strip()
+        return f"[demo-seed:{spec.slug}] {description}"
+
+    def _extract_project_slug(self, description: Optional[str]) -> Optional[str]:
+        if not description:
+            return None
+        match = self.PROJECT_DESC_PATTERN.match(description)
+        if match:
+            return match.group("slug")
+        return None
+
+    def _extract_document_slug(self, file_name: Optional[str]) -> Optional[str]:
+        if not file_name:
+            return None
+        base_name = os.path.basename(file_name)
+        if base_name.startswith("doc-") and "." in base_name:
+            return base_name.rsplit(".", 1)[0]
+        return None
+
+    def _normalize_title(self, title: str) -> str:
+        max_length = Document._meta.get_field("title").max_length
+        if len(title) > max_length:
+            return title[:max_length]
+        return title
+
+    def _target_status(self, doc_spec: DocumentSpec) -> str:
+        if doc_spec.metadata.get("invalid"):
+            return Document.STATUS_PROCESSING
+        return Document.STATUS_UPLOADED
 
 
 class Command(BaseCommand):
@@ -458,6 +622,7 @@ class Command(BaseCommand):
         if docs_override is not None and docs_override <= 0:
             raise CommandError("--docs-per-project must be a positive integer")
 
+        random.seed(seed)
         rng = random.Random(seed)
         faker = Faker("de_DE")
         faker.seed_instance(seed)

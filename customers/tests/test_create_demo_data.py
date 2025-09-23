@@ -97,8 +97,41 @@ def test_create_demo_data_baseline_profile_counts():
             assert Project.objects.filter(organization=org).count() == 2
             assert Document.objects.filter(project__organization=org).count() == 2
 
+            doc1 = Document.objects.get(
+                title="Demo Document 1", project__organization=org
+            )
+            doc2 = Document.objects.get(
+                title="Demo Document 2", project__organization=org
+            )
+            assert doc1.file.name.endswith("doc-proj-01-01.txt")
+            assert doc2.file.name.endswith("doc-proj-02-01.txt")
+
 
 @pytest.mark.django_db
 def test_create_demo_data_baseline_disallows_overrides():
     with pytest.raises(CommandError):
         call_command("create_demo_data", "--profile", "baseline", "--projects", "4")
+
+
+@pytest.mark.django_db
+def test_create_demo_data_chaos_marks_invalid_documents():
+    stdout = StringIO()
+    call_command(
+        "create_demo_data",
+        "--profile",
+        "chaos",
+        "--projects",
+        "5",
+        "--docs-per-project",
+        "3",
+        stdout=stdout,
+    )
+
+    summary = json.loads(stdout.getvalue())
+    assert summary["profile"] == "chaos"
+
+    with schema_context("demo"):
+        org = Organization.objects.get(slug="demo")
+        with set_current_organization(org):
+            documents = list(Document.objects.filter(project__organization=org))
+            assert any(doc.file.size == 0 for doc in documents)
