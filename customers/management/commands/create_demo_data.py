@@ -306,33 +306,6 @@ class DemoDatasetApplier:
             "documents": document_count,
         }
 
-    def wipe(self, dataset: SeederDataset) -> dict:
-        deleted_documents = 0
-        deleted_projects = 0
-        with set_current_organization(self.organization):
-            projects = list(Project.objects.filter(organization=self.organization))
-            slug_index: Dict[str, Project] = {}
-            name_index: Dict[str, Project] = {}
-            for project in projects:
-                slug = self._extract_project_slug(project.description)
-                if slug:
-                    slug_index.setdefault(slug, project)
-                name_index.setdefault(project.name, project)
-            for spec in dataset.projects:
-                project = slug_index.get(spec.slug)
-                if not project:
-                    for legacy_name in [spec.name, *spec.legacy_names]:
-                        project = name_index.get(legacy_name)
-                        if project:
-                            break
-                if not project:
-                    continue
-                deleted_documents += self._wipe_documents(project, spec)
-                if not Document.objects.filter(project=project).exists():
-                    project.delete()
-                    deleted_projects += 1
-        return {"projects": deleted_projects, "documents": deleted_documents}
-
     def _ensure_projects(self, project_specs: Iterable[ProjectSpec]) -> Dict[str, Project]:
         project_lookup: Dict[str, Project] = {}
         with set_current_organization(self.organization):
@@ -447,23 +420,6 @@ class DemoDatasetApplier:
                     Document.objects.bulk_create(new_docs, batch_size=25)
         return total_documents
 
-    def _wipe_documents(self, project: Project, spec: ProjectSpec) -> int:
-        doc_slugs = {doc.slug for doc in spec.documents}
-        doc_filenames = {doc.filename for doc in spec.documents}
-        doc_titles = {doc.title for doc in spec.documents}
-        for doc in spec.documents:
-            doc_titles.update(doc.legacy_titles)
-            doc_filenames.update(doc.legacy_filenames)
-
-        deleted = 0
-        for document in Document.objects.filter(project=project):
-            base_name = os.path.basename(document.file.name or "")
-            slug = self._extract_document_slug(document.file.name)
-            if (slug and slug in doc_slugs) or base_name in doc_filenames or document.title in doc_titles:
-                document.delete()
-                deleted += 1
-        return deleted
-
     def _build_document(self, project: Project, doc_spec: DocumentSpec) -> Document:
         title = self._normalize_title(doc_spec.title)
         document = Document(
@@ -535,15 +491,17 @@ class DemoDatasetApplier:
         description = spec.description.strip()
         return f"[demo-seed:{spec.slug}] {description}"
 
-    def _extract_project_slug(self, description: Optional[str]) -> Optional[str]:
+    @staticmethod
+    def _extract_project_slug(description: Optional[str]) -> Optional[str]:
         if not description:
             return None
-        match = self.PROJECT_DESC_PATTERN.match(description)
+        match = DemoDatasetApplier.PROJECT_DESC_PATTERN.match(description)
         if match:
             return match.group("slug")
         return None
 
-    def _extract_document_slug(self, file_name: Optional[str]) -> Optional[str]:
+    @staticmethod
+    def _extract_document_slug(file_name: Optional[str]) -> Optional[str]:
         if not file_name:
             return None
         base_name = os.path.basename(file_name)
@@ -561,6 +519,55 @@ class DemoDatasetApplier:
         if doc_spec.metadata.get("invalid"):
             return Document.STATUS_PROCESSING
         return Document.STATUS_UPLOADED
+
+
+def wipe_seeded_content(
+    organization: Organization,
+    *,
+    include_org: bool = False,
+    doc_type: Optional[DocumentType] = None,
+) -> Dict[str, int]:
+    deleted_documents = 0
+    deleted_projects = 0
+    org_deleted = False
+
+    with set_current_organization(organization):
+        documents = list(
+            Document.objects.filter(project__organization=organization)
+        )
+        for document in documents:
+            project_slug = DemoDatasetApplier._extract_project_slug(
+                document.project.description
+            )
+            doc_slug = DemoDatasetApplier._extract_document_slug(document.file.name)
+            if project_slug and doc_slug and project_slug.startswith("proj-"):
+                if doc_slug.startswith("doc-"):
+                    document.delete()
+                    deleted_documents += 1
+
+        for project in Project.objects.filter(organization=organization):
+            project_slug = DemoDatasetApplier._extract_project_slug(project.description)
+            if not project_slug or not project_slug.startswith("proj-"):
+                continue
+            if Document.objects.filter(project=project).exists():
+                continue
+            project.delete()
+            deleted_projects += 1
+
+        if include_org:
+            OrgMembership.objects.filter(organization=organization).delete()
+            organization.delete()
+            org_deleted = True
+
+    if doc_type and DocumentType.objects.filter(pk=doc_type.pk).exists():
+        if not Document.objects.filter(type=doc_type).exists():
+            doc_type.delete()
+
+    return {
+        "projects": deleted_projects,
+        "documents": deleted_documents,
+        "orgs": 1 if org_deleted else 0,
+    }
 
 
 class Command(BaseCommand):
@@ -591,6 +598,11 @@ class Command(BaseCommand):
             help="Remove demo seed data for the selected profile instead of seeding",
         )
         parser.add_argument(
+            "--include-org",
+            action="store_true",
+            help="Also remove the demo organization and memberships when wiping",
+        )
+        parser.add_argument(
             "--projects",
             type=int,
             help="Override project count (demo/heavy/chaos profiles only)",
@@ -608,6 +620,7 @@ class Command(BaseCommand):
         profile = options.get("profile", "demo")
         seed = options.get("seed", 1337)
         wipe_only = bool(options.get("wipe"))
+        include_org = bool(options.get("include_org"))
         projects_override = options.get("projects")
         docs_override = options.get("docs_per_project")
 
@@ -617,6 +630,9 @@ class Command(BaseCommand):
             raise CommandError(
                 "--projects/--docs-per-project are only allowed for demo, heavy or chaos profiles"
             )
+
+        if include_org and not wipe_only:
+            raise CommandError("--include-org can only be used together with --wipe")
 
         if projects_override is not None and projects_override <= 0:
             raise CommandError("--projects must be a positive integer")
@@ -681,56 +697,68 @@ class Command(BaseCommand):
             )
         )
         with schema_context(tenant.schema_name):
-            user, created = User.objects.get_or_create(
-                username="demo", defaults={"email": "demo@example.com"}
-            )
-            changed = False
-            if created or not user.password:
-                user.set_password("demo")
-                changed = True
-            if not user.is_staff:
-                user.is_staff = True
-                changed = True
-            if not user.is_superuser:
-                user.is_superuser = True
-                changed = True
-            if changed:
-                user.save()
+            if wipe_only:
+                user = User.objects.filter(username="demo").first()
+                org = Organization.objects.filter(slug="demo").first()
+                doc_type = DocumentType.objects.filter(name="Demo Type").first()
 
-            UserProfile.objects.update_or_create(
-                user=user, defaults={"role": UserProfile.Roles.ADMIN}
-            )
-
-            org, _ = Organization.objects.get_or_create(
-                slug="demo", defaults={"name": "Demo Organization"}
-            )
-            OrgMembership.objects.get_or_create(
-                organization=org,
-                user=user,
-                defaults={"role": OrgMembership.Role.ADMIN},
-            )
-
-            doc_type, _ = DocumentType.objects.get_or_create(
-                name="Demo Type", defaults={"description": "Demo documents"}
-            )
-
-            with set_current_organization(org):
-                builder = DemoDatasetBuilder(
-                    profile=profile,
-                    faker=faker,
-                    rng=rng,
-                    projects_override=projects_override,
-                    docs_override=docs_override,
-                )
-                dataset = builder.build()
-                applier = DemoDatasetApplier(user=user, organization=org, doc_type=doc_type)
-
-                if wipe_only:
-                    counts = applier.wipe(dataset)
-                    event = "seed.wipe"
+                if org is None:
+                    counts = {"projects": 0, "documents": 0, "orgs": 0}
                 else:
+                    counts = wipe_seeded_content(
+                        organization=org,
+                        include_org=include_org,
+                        doc_type=doc_type,
+                    )
+                event = "seed.wipe.done"
+            else:
+                user, created = User.objects.get_or_create(
+                    username="demo", defaults={"email": "demo@example.com"}
+                )
+                changed = False
+                if created or not user.password:
+                    user.set_password("demo")
+                    changed = True
+                if not user.is_staff:
+                    user.is_staff = True
+                    changed = True
+                if not user.is_superuser:
+                    user.is_superuser = True
+                    changed = True
+                if changed:
+                    user.save()
+
+                UserProfile.objects.update_or_create(
+                    user=user, defaults={"role": UserProfile.Roles.ADMIN}
+                )
+
+                org, _ = Organization.objects.get_or_create(
+                    slug="demo", defaults={"name": "Demo Organization"}
+                )
+                OrgMembership.objects.get_or_create(
+                    organization=org,
+                    user=user,
+                    defaults={"role": OrgMembership.Role.ADMIN},
+                )
+
+                doc_type, _ = DocumentType.objects.get_or_create(
+                    name="Demo Type", defaults={"description": "Demo documents"}
+                )
+
+                with set_current_organization(org):
+                    builder = DemoDatasetBuilder(
+                        profile=profile,
+                        faker=faker,
+                        rng=rng,
+                        projects_override=projects_override,
+                        docs_override=docs_override,
+                    )
+                    dataset = builder.build()
+                    applier = DemoDatasetApplier(
+                        user=user, organization=org, doc_type=doc_type
+                    )
                     counts = applier.seed(dataset)
-                    event = "seed.done"
+                event = "seed.done"
 
         summary = {
             "event": event,
@@ -739,8 +767,8 @@ class Command(BaseCommand):
             "counts": {
                 "projects": counts.get("projects", 0),
                 "documents": counts.get("documents", 0),
-                "users": 1,
-                "orgs": 1,
+                "users": 0 if wipe_only else 1,
+                "orgs": counts.get("orgs", 1 if not wipe_only else 0),
             },
         }
         logging.info(json.dumps(summary, ensure_ascii=False))

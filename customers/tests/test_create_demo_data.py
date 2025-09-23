@@ -7,8 +7,8 @@ from django.core.management.base import CommandError
 from django_tenants.utils import schema_context
 
 from customers.models import Tenant
-from documents.models import Document
-from organizations.models import Organization
+from documents.models import Document, DocumentType
+from organizations.models import Organization, OrgMembership
 from organizations.utils import set_current_organization
 from profiles.models import UserProfile
 from projects.models import Project
@@ -69,17 +69,55 @@ def test_create_demo_data_idempotent():
 def test_create_demo_data_wipe_removes_seeded_content():
     call_command("create_demo_data")
 
+    with schema_context("demo"):
+        org = Organization.objects.get(slug="demo")
+        with set_current_organization(org):
+            initial_project_count = Project.objects.filter(
+                organization=org
+            ).count()
+            initial_document_count = Document.objects.filter(
+                project__organization=org
+            ).count()
+
     wipe_stdout = StringIO()
     call_command("create_demo_data", "--wipe", stdout=wipe_stdout)
     summary = json.loads(wipe_stdout.getvalue())
 
-    assert summary["event"] == "seed.wipe"
+    assert summary["event"] == "seed.wipe.done"
+    assert summary["counts"]["projects"] == initial_project_count
+    assert summary["counts"]["documents"] == initial_document_count
+    assert summary["counts"]["users"] == 0
+    assert summary["counts"]["orgs"] == 0
 
     with schema_context("demo"):
         org = Organization.objects.get(slug="demo")
         with set_current_organization(org):
             assert Project.objects.filter(organization=org).count() == 0
             assert Document.objects.filter(project__organization=org).count() == 0
+
+        assert not DocumentType.objects.filter(name="Demo Type").exists()
+        assert OrgMembership.objects.filter(organization=org).exists()
+
+
+@pytest.mark.django_db
+def test_create_demo_data_wipe_include_org_removes_org():
+    call_command("create_demo_data")
+
+    wipe_stdout = StringIO()
+    call_command(
+        "create_demo_data",
+        "--wipe",
+        "--include-org",
+        stdout=wipe_stdout,
+    )
+    summary = json.loads(wipe_stdout.getvalue())
+
+    assert summary["event"] == "seed.wipe.done"
+    assert summary["counts"]["orgs"] == 1
+
+    with schema_context("demo"):
+        assert not Organization.objects.filter(slug="demo").exists()
+        assert not OrgMembership.objects.filter(organization__slug="demo").exists()
 
 
 @pytest.mark.django_db
