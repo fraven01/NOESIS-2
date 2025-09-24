@@ -82,8 +82,8 @@ def test_apply_std_headers_ignores_non_success_responses():
         assert "traceparent" not in result
 
 
-def test_pii_mask_replaces_digits():
-    assert pii.mask("User 123") == "User [REDACTED_NUMBER]"
+def test_pii_mask_leaves_plain_numbers():
+    assert pii.mask("User 123") == "User 123"
 
 
 def test_object_store_roundtrip(tmp_path, monkeypatch):

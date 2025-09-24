@@ -201,6 +201,8 @@ def mask_text(
             value = match.group(0)
             if _looks_masked(value):
                 return value
+            if tag == "NUMBER" and mode != "gold" and not deterministic:
+                return value
             placeholder = _make_placeholder(
                 tag,
                 value,
