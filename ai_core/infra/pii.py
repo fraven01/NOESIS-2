@@ -194,8 +194,6 @@ def mask_text(
     )
 
     for tag, pattern in _PII_PATTERNS:
-        if rules is None and tag == "NUMBER":
-            continue
         if rules is not None and tag not in rules:
             continue
 
