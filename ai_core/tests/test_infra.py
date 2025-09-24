@@ -128,7 +128,7 @@ def test_trace_sends_to_langfuse(monkeypatch):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
     monkeypatch.setattr(
-        "ai_core.infra.tracing._dispatch_langfuse",
+        "ai_core.infra.tracing.emit_span",
         lambda trace_id, node_name, metadata: dispatched.append(
             {"traceId": trace_id, "name": node_name, "metadata": metadata}
         ),
@@ -152,7 +152,7 @@ def test_trace_skips_langfuse_without_trace_id(monkeypatch):
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
     monkeypatch.setattr(
-        "ai_core.infra.tracing._dispatch_langfuse",
+        "ai_core.infra.tracing.emit_span",
         lambda trace_id, node_name, metadata: dispatched.append(
             {"traceId": trace_id, "name": node_name, "metadata": metadata}
         ),
@@ -195,7 +195,7 @@ def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
 
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
-    tracing._dispatch_langfuse("tid", "node", {"foo": "bar"})
+    tracing.emit_span("tid", "node", {"foo": "bar"})
 
     assert done.wait(1), "langfuse dispatch did not complete"
 

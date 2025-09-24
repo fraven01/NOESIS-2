@@ -4,6 +4,13 @@ on:
     branches: [ "main" ]
   push:
     branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      run_chaos:
+        description: "Run chaos fault-injection suite"
+        required: false
+        type: boolean
+        default: false
 env:
   RUN_CI: ${{ ((
       github.event_name == 'pull_request' && (
@@ -14,6 +21,7 @@ env:
       github.event_name == 'push' &&
       contains(join(github.event.commits.*.message, ' '), '[CI]')
     )) && 'true' || 'false' }}
+  RUN_CHAOS: ${{ github.event_name == 'workflow_dispatch' && (inputs.run_chaos == 'true' || inputs.run_chaos == true) && 'true' || 'false' }}
 jobs:
   verify-secrets:
     if: env.RUN_CI == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -191,6 +199,7 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
   schema-sdk:
     name: Export OpenAPI & SDKs
     runs-on: ubuntu-latest
@@ -201,6 +210,35 @@ jobs:
     env:
       DJANGO_SETTINGS_MODULE: noesis2.settings.development
       SECRET_KEY: ci-schema
+
+  tests-chaos:
+    name: Chaos tests
+    runs-on: ubuntu-latest
+    if: env.RUN_CHAOS == 'true'
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_DB: noesis2_ci
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 10s --health-timeout 5s --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+    env:
+      SECRET_KEY: ci-secret
+      DJANGO_SETTINGS_MODULE: noesis2.settings.development
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/noesis2_ci
+      REDIS_URL: redis://localhost:6379/0
+      AI_CORE_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      LANGFUSE_PUBLIC_KEY: ci-public
+      LANGFUSE_SECRET_KEY: ci-secret
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -216,6 +254,10 @@ jobs:
         run: python -m pip install --upgrade pip
       - name: Install Python deps
         run: pip install -r requirements.txt -r requirements-dev.txt
+      - name: Ensure pgvector extension is available
+        run: |
+          sudo apt-get update -y && sudo apt-get install -y postgresql-client
+          psql "postgresql://postgres:postgres@localhost:5432/postgres" -c "CREATE EXTENSION IF NOT EXISTS vector;" || true
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
@@ -254,6 +296,79 @@ jobs:
           name: sdk-python
           path: build/sdk/python
           if-no-files-found: error
+=======
+      - name: Install Node deps
+        run: npm ci
+      - name: Run public (shared) migrations
+        run: python manage.py migrate_schemas --shared
+      - name: Create CI tenant
+        run: python manage.py create_tenant --schema=ci --name="CI" --domain=ci.localhost
+      - name: Run tenant migrations
+        run: python manage.py migrate_schemas --tenant
+      - name: Prepare chaos artifact directories
+        run: |
+          rm -rf logs/app/chaos
+          mkdir -p logs/app/chaos artifacts/chaos
+      - name: Run chaos suite
+        run: |
+          python -m pytest -m chaos -q -n auto --junitxml=artifacts/chaos/junit.xml
+      - name: Collate chaos JSON report
+        if: always()
+        run: |
+          python - <<'PY'
+import json
+from pathlib import Path
+
+chaos_root = Path("logs/app/chaos")
+chaos_root.mkdir(parents=True, exist_ok=True)
+artifact_root = Path("artifacts/chaos")
+artifact_root.mkdir(parents=True, exist_ok=True)
+
+payload = []
+for path in sorted(chaos_root.glob("*.json")):
+    try:
+        payload.append(json.loads(path.read_text()))
+    except Exception as exc:  # pragma: no cover - diagnostic path
+        payload.append({"file": path.name, "error": str(exc)})
+
+(artifact_root / "chaos-report.json").write_text(json.dumps(payload, indent=2))
+PY
+      - name: Collect load summaries
+        if: always()
+        run: |
+          mkdir -p artifacts/load
+          found=0
+          while IFS= read -r file; do
+            cp "$file" "artifacts/load/$(basename "$file")"
+            found=1
+          done < <(find . -maxdepth 4 -type f \( -name 'k6-summary.json' -o -name 'k6-summary.txt' -o -name 'scope-latency.json' -o -name 'locust-summary.json' -o -name 'locust-summary.csv' \))
+          if [ "$found" -eq 0 ]; then
+            rmdir artifacts/load 2>/dev/null || true
+          fi
+      - name: Upload chaos reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-test-reports
+          path: |
+            artifacts/chaos/junit.xml
+            artifacts/chaos/chaos-report.json
+          if-no-files-found: warn
+      - name: Upload chaos JSON logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-json-artifacts
+          path: logs/app/chaos
+          if-no-files-found: warn
+      - name: Upload load summaries
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chaos-load-summaries
+          path: artifacts/load
+          if-no-files-found: ignore
+
   build:
     name: Build and Push Image
     runs-on: ubuntu-latest

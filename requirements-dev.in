@@ -1,4 +1,5 @@
 pytest
+pytest-xdist
 pytest-django
 django-tenants
 pytest-cov

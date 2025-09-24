@@ -1,0 +1,15 @@
+name: "API Changelog vor Prod aktivieren"
+labels: ["api", "release-blocker"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Vor Production-Release: API-Changelog einschalten und Gates setzen.
+  - type: checklist
+    attributes:
+      options:
+        - label: oasdiff/openapi-diff im CI installieren
+        - label: Job `api:changelog` nach `api:schema` einfügen
+        - label: SemVer-Autobump + Breaking/Non-Breaking Klassifizierung
+        - label: Pipeline bricht bei ungekennzeichneten BREAKINGs ab
+        - label: CHANGELOG.md erzeugt/aktualisiert (neueste oben)

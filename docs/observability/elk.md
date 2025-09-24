@@ -5,7 +5,7 @@ Die Elastic-Komponenten laufen in einem separaten Compose-Stack unter `docker/el
 ## Voraussetzungen
 - Docker und Docker Compose v2
 - Ausreichend Arbeitsspeicher (mind. 4 GB RAM für Elasticsearch + Kibana)
-- Ein Verzeichnis mit Anwendungs-Logs im JSON-Format (Standard: `logs/app/*.log`)
+- Ein Verzeichnis mit Anwendungs-Logs im JSON-Format (Standard: `logs/app/*.log` und `logs/app/chaos/*.json`)
 
 ## Starten
 ```bash
@@ -14,6 +14,9 @@ bash scripts/dev-up-all.sh
 
 # Nur den ELK-Stack starten (wenn App bereits läuft)
 docker compose -f docker/elk/docker-compose.yml up -d
+
+# ELK-Stack wieder stoppen
+docker compose -f docker/elk/docker-compose.yml down
 ```
 
 Das Oneshot-Skript `scripts/dev-up-all.sh` führt folgende Schritte aus:
@@ -41,7 +44,7 @@ Die Logs werden schreibgeschützt unter `/var/log/noesis` im Logstash-Container 
 
 ## Nutzung
 1. Kibana ist nach dem Start unter [http://localhost:5601](http://localhost:5601) erreichbar. Melde dich mit dem `elastic`-Benutzer an.
-2. Logstash liest lokale JSON-Logs (`timestamp`-Feld empfohlen) aus dem gemounteten Verzeichnis und schreibt sie in Indizes `noesis-app-*`.
+2. Logstash liest lokale JSON-Logs (`timestamp`-Feld empfohlen) aus dem gemounteten Verzeichnis und schreibt sie in Indizes `noesis-app-*`. Chaos-Testläufe landen unter `logs/app/chaos/*.json` und werden mit dem Feld `test_suite=chaos` markiert, sodass Kibana-Discover-Abfragen wie `test_suite:chaos` die Reports filtern.
 3. Für Filebeat-Setups kann `localhost:5044` als Ziel genutzt werden. Zertifikate müssen ggf. ergänzt werden.
 
 ## Betrieb in Google Cloud

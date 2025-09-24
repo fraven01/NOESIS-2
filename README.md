@@ -157,6 +157,37 @@ npm run e2e            # Playwright E2E
 
 Der Python-Test-Runner installiert die benötigten Abhängigkeiten on-the-fly in einem temporären Container und räumt nach dem Lauf automatisch auf.
 
+### Chaos-Tests (Fault Injection)
+
+- `pytest -m chaos` führt nur die gezielt markierten Fault-Injection-Szenarien aus. Die Tests nutzen den Fixture `chaos_env`, um die Runtime-Schalter `REDIS_DOWN`, `SQL_DOWN` und `SLOW_NET` konsistent zu setzen.
+- In GitHub Actions existiert der optionale Stage-Job `tests-chaos`, der über einen manuellen Workflow-Dispatch mit `run_chaos=true` gestartet wird. Der Job läuft parallelisiert via `pytest -m chaos -q -n auto`, erzeugt JUnit- und JSON-Artefakte sowie optionale k6-/Locust-Summaries und ist nach erfolgreichem Staging-Smoke-Test (Pipeline Stufen 8–10) als zusätzlicher QA-Gate vorgesehen. Weitere Details siehe [Pipeline-Dokumentation](docs/cicd/pipeline.md).
+  - Für das Eingabefeld `run_chaos` akzeptiert der Workflow sowohl Boolean- als auch String-Werte. Die interne Normalisierung ergibt `RUN_CHAOS=true` ausschließlich für folgende Eingaben:
+    - `true` (Boolean in der UI, Standard bei Häkchen)
+    - `"true"` (String via `gh workflow run` oder API)
+  - Jede andere Eingabe (`false`, `"false"`, leer, nicht gesetzt) führt zu `RUN_CHAOS=false`. Dieser Mini-Wahrheitstisch hilft, versehentliche Chaos-Runs bei benutzerdefinierten Dispatches oder Automatisierungen zu vermeiden.
+- Freigaben erfolgen nur, wenn die zugehörigen [QA-Checklisten](docs/qa/checklists.md) als Gate dokumentiert und abgehakt sind.
+
+#### Netzwerkchaos via Toxiproxy
+
+- `docker compose up -d toxiproxy` startet den Proxy-Container lokal und richtet feste Listener ein (`localhost:15432` → PostgreSQL, `localhost:16379` → Redis, Admin-API unter `localhost:8474`). Die Web-/Worker-Container sprechen standardmäßig weiterhin `db`/`redis` an; zum Testen über den Proxy setze `COMPOSE_DATABASE_URL=postgresql://noesis2:noesis2@toxiproxy:15432/noesis2` bzw. `COMPOSE_REDIS_URL=redis://toxiproxy:16379/0`.
+- Das Skript `scripts/chaos/toxiproxy.sh` verwaltet die benötigten Toxics. Mit `SLOW_NET=true scripts/chaos/toxiproxy.sh enable` werden Latenz, Bandbreitenlimit und Reset-Peers über die CLI injiziert; `scripts/chaos/toxiproxy.sh disable` räumt alles wieder auf. `status` zeigt den aktuellen Proxy-Zustand.
+- Jeder Start/Stop wird samt Parametern in `logs/chaos/toxiproxy.log` protokolliert. Das File dient als Marker im ELK-Stack (Filebeat-Pickup oder manuelles Hochladen), damit sich Chaosphasen eindeutig mit Applikationslogs und Langfuse-Traces korrelieren lassen.
+
+#### Chaos-Reporting & ELK-Verzahnung
+
+- Chaos-Tests erzeugen pro Testlauf strukturierte Artefakte unter `logs/app/chaos/*.json`. Die Dateien enthalten u. a. `test_suite: "chaos"`, das `nodeid`, den Ausgang sowie die aktivierten Schalter aus `chaos_env`.
+- Der lokale ELK-Stack liest die JSON-Artefakte automatisch ein. Starte ihn bei Bedarf mit `docker compose -f docker/elk/docker-compose.yml up -d` und stoppe ihn anschließend wieder mit `docker compose -f docker/elk/docker-compose.yml down`.
+- In Kibana genügt eine Discover-Abfrage `test_suite:chaos`, um ausschließlich Chaos-Reports zu filtern und die Laufzeiten/Fehler direkt mit Applikationslogs zu korrelieren. Weitere Details siehe [docs/observability/elk.md](docs/observability/elk.md).
+
+### Load-Testing Setup (k6 & Locust)
+
+- **Skripte:**
+  - `npm run load:k6` bzw. `make load:k6` startet das Spike+Soak-Szenario aus `load/k6/script.js`. Setze dafür die Staging-Parameter (`STAGING_WEB_URL`, `STAGING_TENANT_SCHEMA`, `STAGING_TENANT_ID`, `STAGING_CASE_ID`, optional `STAGING_BEARER_TOKEN`, `STAGING_KEY_ALIAS`). Zusätzliche Parameter wie `SCOPE_SOAK_DURATION` können via ENV angepasst werden.
+  - `npm run load:locust` bzw. `make load:locust` lädt die User-Klassen aus `load/locust/locustfile.py`. Übergib weitere Flags nach `--`, z. B. `npm run load:locust -- --headless -u 30 -r 10 --run-time 5m`.
+- **Matrix & Scaling:** Für Staging orientiert sich die Grundlast an der Web-Concurrency (~30 Worker). Nutze für Locust `-u 30` (gleichzeitige Nutzer) als Basis und erhöhe schrittweise (z. B. 30 → 60 → 90) je nach QA-Plan. Für k6 beschreibt das Script ein kurzes Spike+Soak-Profil mit Ramp-Up/-Down und optionalen Overrides (`SCOPE_SPIKE_RPS`, `SCOPE_SOAK_RPS`).
+- **Tenancy & Idempotency:** Beide Skripte injizieren die Header `X-Tenant-Schema`, `X-Tenant-ID`, `X-Case-ID` sowie eindeutige `Idempotency-Key`s. Standardpayloads folgen den Beispielen aus [docs/api/reference.md](docs/api/reference.md) und lassen sich über ENV-Overrides (`LOCUST_SCOPE_PAYLOAD`, `LOCUST_INGESTION_PAYLOAD`, …) anpassen.
+- **Ausführung:** Die Load-Skripte sind nicht in CI eingebunden. Führe sie manuell lokal oder gegen Staging aus (siehe [docs/cloud/gcp-staging.md](docs/cloud/gcp-staging.md) für URLs und Credentials) und archiviere Metriken/Artefakte als Bestandteil der QA-Gates.
+
 ## Manuelles Setup ohne Docker
 
 Für Systeme ohne Docker-Unterstützung gibt es einen dokumentierten Fallback:

@@ -51,6 +51,8 @@
     "format": "prettier --write \"**/*.{js,jsx,ts,tsx,css,md,json}\"",
     "hooks:install": "bash ./scripts/setup-git-hooks.sh",
     "win:hooks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\setup-git-hooks.ps1",
+    "load:k6": "k6 run load/k6/script.js",
+    "load:locust": "locust -f load/locust/locustfile.py",
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",
     "chromatic": "echo \"Add Chromatic or Percy command here\"",
