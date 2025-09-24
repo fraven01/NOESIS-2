@@ -437,7 +437,11 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
         if event is not None:
             event_dict["event"] = event
 
-        processors = self._processors or ()
+        config = structlog.get_config()
+        config_processors = (
+            config.get("processors") if isinstance(config, dict) else None
+        )
+        processors = config_processors or self._processors or ()
 
         for proc in processors:
             event_dict = proc(self._logger, method_name, event_dict)
