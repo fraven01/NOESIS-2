@@ -229,7 +229,14 @@ def load_tenant_pii_config(tenant_id: Any) -> dict[str, object] | None:
     if not tenant_id:
         return None
 
-    cached = _load_tenant_pii_config_cached(str(tenant_id))
+    try:
+        cached = _load_tenant_pii_config_cached(str(tenant_id))
+    except RuntimeError as exc:  # pragma: no cover - defensive guard
+        message = str(exc)
+        if "Database access not allowed" in message:
+            return None
+        raise
+
     if cached is None:
         return None
     return dict(cached)

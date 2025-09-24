@@ -284,6 +284,25 @@ def test_load_tenant_pii_config_accepts_schema_name():
             tenant.delete()
 
 
+def test_load_tenant_pii_config_gracefully_handles_blocked_db(monkeypatch):
+    def _raise_runtime_error(_cache_key: str):
+        raise RuntimeError(
+            "Database access not allowed, use the \"django_db\" mark, or the \"db\" or "
+            '"transactional_db" fixtures to enable it.'
+        )
+
+    _raise_runtime_error.cache_clear = lambda: None  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        "ai_core.infra.pii_flags._load_tenant_pii_config_cached",
+        _raise_runtime_error,
+    )
+
+    config = load_tenant_pii_config("tenant-1")
+
+    assert config is None
+
+
 def test_pii_middleware_order(settings):
     middleware = list(settings.MIDDLEWARE)
     assert "ai_core.middleware.PIISessionScopeMiddleware" in middleware
