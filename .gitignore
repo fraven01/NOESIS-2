@@ -224,3 +224,5 @@ k8s/secret.yaml
 litellm-proxy-key.json
 /staticfiles/
 .env.docker
+documents/demo*.txt
+documents/doc*.*
