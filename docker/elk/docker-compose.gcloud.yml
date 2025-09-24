@@ -1,0 +1,12 @@
+services:
+  logstash:
+    environment:
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:?Set GCP_PROJECT_ID}
+      GCP_PUBSUB_TOPIC: ${GCP_PUBSUB_TOPIC:?Set GCP_PUBSUB_TOPIC}
+      GCP_PUBSUB_SUBSCRIPTION: ${GCP_PUBSUB_SUBSCRIPTION:?Set GCP_PUBSUB_SUBSCRIPTION}
+      GCP_CREDENTIALS_FILE: ${GCP_CREDENTIALS_FILE:-/usr/share/logstash/config/gcp-service-account.json}
+    volumes:
+      - type: bind
+        source: ${GCP_CREDENTIALS_PATH:?Point to service account JSON}
+        target: ${GCP_CREDENTIALS_FILE:-/usr/share/logstash/config/gcp-service-account.json}
+        read_only: true
