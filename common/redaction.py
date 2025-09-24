@@ -68,7 +68,7 @@ class Redactor:
 
     _SUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         (re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE), MASK),
-        (re.compile(r"\b\+?[0-9]{1,3}[0-9()\s.-]{5,}[0-9]\b"), MASK),
+        (re.compile(r"(?<!\w)\+?[0-9]{1,3}[0-9()\s.-]{5,}[0-9]\b"), MASK),
         (re.compile(r"\b[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}\b"), MASK),
         (re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE), MASK),
         (
@@ -83,7 +83,7 @@ class Redactor:
         ),
         (
             re.compile(r'("type"\s*:\s*)"service_account"', re.IGNORECASE),
-            r"\1\"[REDACTED]\"",
+            r'\1"[REDACTED]"',
         ),
         (
             re.compile(r'("client_secret"\s*:\s*)"[^"]+"', re.IGNORECASE),
