@@ -287,7 +287,7 @@ def test_load_tenant_pii_config_accepts_schema_name():
 def test_load_tenant_pii_config_gracefully_handles_blocked_db(monkeypatch):
     def _raise_runtime_error(_cache_key: str):
         raise RuntimeError(
-            "Database access not allowed, use the \"django_db\" mark, or the \"db\" or "
+            'Database access not allowed, use the "django_db" mark, or the "db" or '
             '"transactional_db" fixtures to enable it.'
         )
 
