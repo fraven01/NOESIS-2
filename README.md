@@ -205,6 +205,11 @@ Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden
 
 Hinweis: `MODEL_ROUTING.local.yaml` ist git‑ignored und überschreibt nur lokal. In Prod wird ausschließlich `MODEL_ROUTING.yaml` verwendet.
 
+## Observability
+
+- [Langfuse Guide](docs/observability/langfuse.md)
+- [ELK Stack für lokale Entwicklung](docs/observability/elk.md) — Oneshot-Bootstrap: `bash scripts/dev-up-all.sh`
+
 ## GCloud Bootstrap (Windows)
 Mit dem Skript `scripts/gcloud-bootstrap.ps1` kannst du dich per `gcloud` anmelden, ein Projekt/Region wählen und häufige Laufzeitwerte aus GCP sammeln (Redis, Cloud SQL, Cloud Run URLs). Die Werte werden sicher in `.env.gcloud` geschrieben (Git-ignored) und können selektiv in deine `.env` übernommen werden.
 

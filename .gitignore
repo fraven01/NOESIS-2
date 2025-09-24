@@ -148,6 +148,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+docker/elk/*.json
 
 # Local model routing override (for dev)
 MODEL_ROUTING.local.yaml
