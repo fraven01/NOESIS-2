@@ -1,0 +1,65 @@
+name: K6 Spike+Soak (Staging)
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_k6:
+        description: 'Set to true to run the staging Spike+Soak scenario'
+        required: false
+        default: 'false'
+
+env:
+  RUN_K6: ${{ ((github.event_name == 'workflow_dispatch' && github.event.inputs.run_k6 == 'true') || (github.event_name != 'workflow_dispatch' && secrets.RUN_K6 == 'true')) && 'true' || 'false' }}
+
+jobs:
+  staging-spike-soak:
+    if: env.RUN_K6 == 'true'
+    name: Execute Spike+Soak load test against staging
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup k6 runtime
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run Spike+Soak scenario (Cloud Run staging)
+        env:
+          STAGING_WEB_URL: ${{ secrets.STAGING_WEB_URL }}
+          STAGING_TENANT_SCHEMA: ${{ secrets.STAGING_TENANT_SCHEMA }}
+          STAGING_TENANT_ID: ${{ secrets.STAGING_TENANT_ID }}
+          STAGING_CASE_ID: ${{ secrets.STAGING_CASE_ID }}
+          STAGING_BEARER_TOKEN: ${{ secrets.STAGING_BEARER_TOKEN }}
+          STAGING_KEY_ALIAS: ${{ secrets.STAGING_KEY_ALIAS }}
+          STAGING_WEB_CONCURRENCY: ${{ secrets.STAGING_WEB_CONCURRENCY }}
+          SCOPE_P95_THRESHOLD_MS: ${{ secrets.SCOPE_P95_THRESHOLD_MS }}
+          SCOPE_SPIKE_RPS: ${{ secrets.SCOPE_SPIKE_RPS }}
+          SCOPE_SOAK_RPS: ${{ secrets.SCOPE_SOAK_RPS }}
+          SCOPE_SOAK_DURATION: ${{ secrets.SCOPE_SOAK_DURATION }}
+          SCOPE_RAMP_UP: ${{ secrets.SCOPE_RAMP_UP }}
+          SCOPE_RAMP_DOWN: ${{ secrets.SCOPE_RAMP_DOWN }}
+          SCOPE_REQUEST_BODY: ${{ secrets.SCOPE_REQUEST_BODY }}
+          SCOPE_IDEMPOTENCY_PREFIX: ${{ secrets.SCOPE_IDEMPOTENCY_PREFIX }}
+          SCOPE_THINK_TIME_SECONDS: ${{ secrets.SCOPE_THINK_TIME_SECONDS }}
+        run: |
+          mkdir -p artifacts
+          k6 run load/k6/script.js --summary-export artifacts/k6-summary.json
+
+      - name: Collect k6 summaries
+        if: always()
+        run: |
+          mkdir -p artifacts
+          if [ -f k6-summary.json ]; then mv k6-summary.json artifacts/summary.json; fi
+          if [ -f k6-summary.txt ]; then mv k6-summary.txt artifacts/summary.txt; fi
+          if [ -f scope-latency.json ]; then mv scope-latency.json artifacts/scope-latency.json; fi
+        shell: bash
+
+      - name: Upload k6 artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-staging-spike-soak
+          path: artifacts
+          if-no-files-found: warn

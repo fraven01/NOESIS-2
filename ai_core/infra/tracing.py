@@ -35,6 +35,16 @@ def _log(payload: dict[str, Any]) -> None:
     print(json.dumps(payload))
 
 
+def emit_event(payload: dict[str, Any]) -> None:
+    """Public helper to emit structured tracing events.
+
+    Tests and instrumentation code should rely on this function rather than
+    patching the private :func:`_log` helper so refactors remain encapsulated.
+    """
+
+    _log(payload)
+
+
 _LANGFUSE_EXECUTOR: ThreadPoolExecutor | None = None
 _LANGFUSE_EXECUTOR_LOCK = threading.Lock()
 
@@ -101,6 +111,16 @@ def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) 
     executor.submit(_send)
 
 
+def emit_span(trace_id: str, node_name: str, metadata: dict[str, Any]) -> None:
+    """Public helper to dispatch Langfuse spans.
+
+    Exposes a stable interface for tests that want to assert emitted spans
+    without reaching into the module's private internals.
+    """
+
+    _dispatch_langfuse(trace_id=trace_id, node_name=node_name, metadata=metadata)
+
+
 def trace(node_name: str) -> Callable[[F], F]:
     """Decorator emitting start/end logs and optional Langfuse events."""
 
@@ -124,7 +144,7 @@ def trace(node_name: str) -> Callable[[F], F]:
                 "prompt_version": meta_enriched.get("prompt_version"),
                 "ts": start_ts,
             }
-            _log(start_payload)
+            emit_event(start_payload)
 
             try:
                 return func(*args, **kwargs)
@@ -140,14 +160,14 @@ def trace(node_name: str) -> Callable[[F], F]:
                     "ts": end_ts,
                     "duration_ms": int((end_ts - start_ts) * 1000),
                 }
-                _log(end_payload)
+                emit_event(end_payload)
 
                 trace_id = meta_enriched.get("trace_id")
                 if isinstance(trace_id, str):
                     trace_id = trace_id.strip()
 
                 if trace_id:
-                    _dispatch_langfuse(
+                    emit_span(
                         trace_id=str(trace_id),
                         node_name=node_name,
                         metadata={
