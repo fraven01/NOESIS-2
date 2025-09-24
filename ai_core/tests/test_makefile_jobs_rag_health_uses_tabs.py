@@ -15,7 +15,9 @@ def test_makefile_jobs_rag_health_uses_tabs():
     for next_line in lines[target_index + 1 :]:
         if not next_line.strip():
             continue
-        assert next_line.startswith("\t"), "jobs:rag:health recipe must start with a tab"
+        assert next_line.startswith(
+            "\t"
+        ), "jobs:rag:health recipe must start with a tab"
         break
     else:  # pragma: no cover - guard against missing recipe lines
         pytest.fail("jobs:rag:health has no recipe lines")

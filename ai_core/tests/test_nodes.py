@@ -33,6 +33,8 @@ def test_retrieve_returns_snippets():
     assert result["snippets"][0]["text"] == "Hello 123"
     assert result["snippets"][0]["source"] == "s1"
     assert state["snippets"] == result["snippets"]
+
+
 def test_retrieve_requires_client_when_enabled():
     with pytest.raises(ValueError):
         retrieve.run({"query": "Hello"}, META.copy(), client=None)

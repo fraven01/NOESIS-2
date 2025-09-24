@@ -200,9 +200,7 @@ class DemoDatasetBuilder:
             doc.broken = True
             doc.metadata.update(self._invalid_metadata("invalid_json"))
         remaining_needed = max(0, broken_target - len(invalid_json_docs))
-        remaining_pool = [
-            doc for doc in all_doc_refs if doc not in invalid_json_docs
-        ]
+        remaining_pool = [doc for doc in all_doc_refs if doc not in invalid_json_docs]
         self.rng.shuffle(remaining_pool)
         broken_docs = list(invalid_json_docs) + remaining_pool[:remaining_needed]
         toggles = [
@@ -224,7 +222,9 @@ class DemoDatasetBuilder:
                 doc.broken = True
                 doc.metadata.update(self._invalid_metadata("invalid_bytes"))
             elif mode == "long_title":
-                doc.title = f"{doc.title} {self.faker.pystr(min_chars=30, max_chars=30)}"
+                doc.title = (
+                    f"{doc.title} {self.faker.pystr(min_chars=30, max_chars=30)}"
+                )
                 doc.broken = True
                 doc.metadata.update(self._invalid_metadata("title_length"))
             elif mode == "missing_type":
@@ -252,7 +252,9 @@ class DemoDatasetBuilder:
                 allow_minor_faults=False,
             )
         )
-        return ProjectSpec(slug=slug, name=name, description=description, documents=documents)
+        return ProjectSpec(
+            slug=slug, name=name, description=description, documents=documents
+        )
 
     def _generate_documents(
         self,
@@ -289,7 +291,9 @@ class DemoDatasetBuilder:
             metadata: Dict[str, object] = {}
             broken = False
             if allow_minor_faults and offset == 0 and fmt == "md":
-                content_bytes = f"## {project_name} Liste [Unvollständig".encode("utf-8")
+                content_bytes = f"## {project_name} Liste [Unvollständig".encode(
+                    "utf-8"
+                )
                 broken = True
                 metadata = self._invalid_metadata("markdown_unclosed")
             documents.append(
@@ -352,7 +356,9 @@ class DemoDatasetBuilder:
                 "idx": doc_index,
                 "title": title,
             }
-            return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode(
+                "utf-8"
+            )
         return title.encode("utf-8")
 
     def _media_type(self, fmt: str) -> str:
@@ -362,7 +368,9 @@ class DemoDatasetBuilder:
             return "application/json"
         return "text/plain"
 
-    def _invalid_metadata(self, reason: str, *, error: Optional[str] = None, **extra: object) -> Dict[str, object]:
+    def _invalid_metadata(
+        self, reason: str, *, error: Optional[str] = None, **extra: object
+    ) -> Dict[str, object]:
         payload: Dict[str, object] = {
             "invalid": True,
             "reason": reason,
@@ -373,7 +381,9 @@ class DemoDatasetBuilder:
 
 
 class DemoDatasetApplier:
-    PROJECT_DESC_PATTERN = re.compile(r"^\[demo-seed:(?P<slug>[^\]]+)\]\s*(?P<body>.*)$")
+    PROJECT_DESC_PATTERN = re.compile(
+        r"^\[demo-seed:(?P<slug>[^\]]+)\]\s*(?P<body>.*)$"
+    )
 
     def __init__(self, user: User, organization: Organization, doc_type: DocumentType):
         self.user = user
@@ -388,7 +398,9 @@ class DemoDatasetApplier:
             "documents": document_count,
         }
 
-    def _ensure_projects(self, project_specs: Iterable[ProjectSpec]) -> Dict[str, Project]:
+    def _ensure_projects(
+        self, project_specs: Iterable[ProjectSpec]
+    ) -> Dict[str, Project]:
         project_lookup: Dict[str, Project] = {}
         with set_current_organization(self.organization):
             projects = list(Project.objects.filter(organization=self.organization))
@@ -490,7 +502,10 @@ class DemoDatasetApplier:
                             if document:
                                 break
                     if not document:
-                        for legacy_filename in [doc_spec.filename, *doc_spec.legacy_filenames]:
+                        for legacy_filename in [
+                            doc_spec.filename,
+                            *doc_spec.legacy_filenames,
+                        ]:
                             document = by_filename.get(legacy_filename)
                             if document:
                                 break
@@ -561,7 +576,10 @@ class DemoDatasetApplier:
         if should_update_file:
             file_content = doc_spec.content if doc_spec.content is not None else b""
             try:
-                if document.file and os.path.basename(document.file.name) != doc_spec.filename:
+                if (
+                    document.file
+                    and os.path.basename(document.file.name) != doc_spec.filename
+                ):
                     document.file.delete(save=False)
                 document.file.save(
                     doc_spec.filename,
@@ -626,6 +644,7 @@ class DemoDatasetApplier:
             metadata.setdefault("error", metadata.get("reason", "invalid_document"))
         return metadata
 
+
 def wipe_seeded_content(
     organization: Organization,
     *,
@@ -637,9 +656,7 @@ def wipe_seeded_content(
     org_deleted = False
 
     with set_current_organization(organization):
-        documents = list(
-            Document.objects.filter(project__organization=organization)
-        )
+        documents = list(Document.objects.filter(project__organization=organization))
         for document in documents:
             project_slug = DemoDatasetApplier._extract_project_slug(
                 document.project.description

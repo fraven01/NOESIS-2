@@ -33,9 +33,7 @@ def test_create_demo_data_chaos_sets_error_detail(monkeypatch):
         with schema_context("demo"):
             org = Organization.objects.get(slug="demo")
             with set_current_organization(org):
-                documents = list(
-                    Document.objects.filter(project__organization=org)
-                )
+                documents = list(Document.objects.filter(project__organization=org))
     finally:
         _wipe_demo_seed()
 

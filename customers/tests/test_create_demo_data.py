@@ -112,7 +112,6 @@ def test_profile_baseline_counts_stable():
                 assert os.path.basename(doc.file.name).startswith("doc-")
 
 
-
 @pytest.mark.django_db
 def test_create_demo_data_wipe_include_org_removes_org():
     call_command("create_demo_data")
@@ -210,9 +209,7 @@ def test_profile_demo_overrides():
             for project in projects:
                 assert Document.objects.filter(project=project).count() == 4
 
-            documents = list(
-                Document.objects.filter(project__organization=org)
-            )
+            documents = list(Document.objects.filter(project__organization=org))
             txt_docs = [doc for doc in documents if doc.file.name.endswith(".txt")]
             md_docs = [doc for doc in documents if doc.file.name.endswith(".md")]
             json_docs = [doc for doc in documents if doc.file.name.endswith(".json")]
@@ -228,10 +225,7 @@ def test_profile_demo_overrides():
                 doc.file.close()
                 txt_lines = txt_content.splitlines()[1:]
                 txt_words = [
-                    word
-                    for segment in txt_lines
-                    for word in segment.split()
-                    if word
+                    word for segment in txt_lines for word in segment.split() if word
                 ]
                 if txt_words:
                     txt_word_counts.append(len(txt_words))
@@ -370,7 +364,10 @@ def test_chaos_creates_flagged_invalid_documents():
                 doc.file.open("rb")
                 content = doc.file.read().decode("utf-8")
                 doc.file.close()
-                if doc.status == Document.STATUS_PROCESSING and not content.strip().endswith("}"):
+                if (
+                    doc.status == Document.STATUS_PROCESSING
+                    and not content.strip().endswith("}")
+                ):
                     invalid_json_docs.append(doc)
 
             assert 1 <= len(invalid_json_docs) <= 2
