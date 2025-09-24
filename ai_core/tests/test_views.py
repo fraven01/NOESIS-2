@@ -2,6 +2,8 @@ import json
 from types import SimpleNamespace
 
 import pytest
+from rest_framework.response import Response
+from django.conf import settings
 from django.test import RequestFactory
 from structlog.testing import capture_logs
 
@@ -55,8 +57,23 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
         **{META_CASE_ID_KEY: "c", META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp2.status_code == 429
-    assert resp2.json()["detail"] == "rate limit"
+    error_body = resp2.json()
+    assert error_body["detail"] == "Rate limit exceeded for tenant."
+    assert error_body["code"] == "rate_limit_exceeded"
     assert X_TRACE_ID_HEADER not in resp2
+
+
+@pytest.mark.django_db
+def test_v1_ping_does_not_require_authorization(
+    client, test_tenant_schema_name
+):
+    response = client.get(
+        "/v1/ai/ping/",
+        **{META_CASE_ID_KEY: "case-auth", META_TENANT_ID_KEY: test_tenant_schema_name},
+    )
+
+    assert response.status_code == 200
+    assert "WWW-Authenticate" not in response
 
 
 @pytest.mark.django_db
@@ -68,7 +85,9 @@ def test_missing_case_header_returns_400(client, test_tenant_schema_name):
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "invalid case header"
+    error_body = resp.json()
+    assert error_body["detail"] == "Case header is required and must use the documented format."
+    assert error_body["code"] == "invalid_case_header"
 
 
 @pytest.mark.django_db
@@ -83,7 +102,9 @@ def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
         },
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "invalid case header"
+    error_body = resp.json()
+    assert error_body["detail"] == "Case header is required and must use the documented format."
+    assert error_body["code"] == "invalid_case_header"
 
 
 @pytest.mark.django_db
@@ -99,7 +120,9 @@ def test_tenant_schema_header_mismatch_returns_400(client, test_tenant_schema_na
         },
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "tenant schema mismatch"
+    error_body = resp.json()
+    assert error_body["detail"] == "Tenant schema header does not match resolved schema."
+    assert error_body["code"] == "tenant_schema_mismatch"
 
 
 @pytest.mark.django_db
@@ -141,7 +164,36 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
         **{META_CASE_ID_KEY: "c"},
     )
     assert resp.status_code == 400
-    assert resp.json()["detail"] == "tenant not resolved"
+    error_body = resp.json()
+    assert error_body["detail"] == "Tenant schema could not be resolved from headers."
+    assert error_body["code"] == "tenant_not_found"
+
+
+@pytest.mark.django_db
+def test_non_json_payload_returns_415(client, test_tenant_schema_name):
+    resp = client.post(
+        "/ai/intake/",
+        data="raw body",
+        content_type="text/plain",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+    )
+
+    assert resp.status_code == 415
+    error_body = resp.json()
+    assert error_body["detail"] == "Request payload must be encoded as application/json."
+    assert error_body["code"] == "unsupported_media_type"
+
+    v1_response = client.post(
+        "/v1/ai/intake/",
+        data="raw body",
+        content_type="text/plain",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+    )
+
+    assert v1_response.status_code == 415
+    v1_error = v1_response.json()
+    assert v1_error["detail"] == "Request payload must be encoded as application/json."
+    assert v1_error["code"] == "unsupported_media_type"
 
 
 @pytest.mark.django_db
@@ -284,6 +336,56 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     assert event["tenant"] != "-"
     assert event.get("key_alias", "") != "-"
     assert common_logging.get_log_context() == {}
+
+
+@pytest.mark.django_db
+def test_legacy_routes_emit_deprecation_headers(client, test_tenant_schema_name):
+    headers = {META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case-legacy"}
+
+    legacy_response = client.get("/ai/ping/", **headers)
+    assert legacy_response.status_code == 200
+    assert legacy_response["Deprecation"] == settings.API_DEPRECATIONS["ai-core-legacy"][
+        "deprecation"
+    ]
+    assert legacy_response["Sunset"] == settings.API_DEPRECATIONS["ai-core-legacy"]["sunset"]
+
+    v1_response = client.get("/v1/ai/ping/", **headers)
+    assert v1_response.status_code == 200
+    assert "Deprecation" not in v1_response
+    assert "Sunset" not in v1_response
+
+
+@pytest.mark.django_db
+def test_legacy_post_routes_emit_deprecation_headers(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "_run_graph", lambda request, graph: Response({"ok": True}))
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "post-legacy",
+    }
+
+    legacy_response = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+    assert legacy_response.status_code == 200
+    assert "Deprecation" in legacy_response
+    assert "Sunset" in legacy_response
+
+    v1_response = client.post(
+        "/v1/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+    assert v1_response.status_code == 200
+    assert "Deprecation" not in v1_response
+    assert "Sunset" not in v1_response
 
 
 def test_state_helpers_sanitize_identifiers(monkeypatch, tmp_path):

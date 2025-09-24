@@ -1,13 +1,18 @@
 """Base settings for noesis2 project."""
 
+import logging
 import os
 from pathlib import Path
+from typing import Dict, List
 
 import environ
 
+from noesis2.api import schema as api_schema
 from common.logging import configure_logging
 
 configure_logging()
+
+logger = logging.getLogger(__name__)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 # This file is at noesis2/settings/base.py, so project root is three parents up
@@ -16,6 +21,36 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # django-environ setup
 env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
+
+
+def _load_common_headers_table() -> str:
+    """Return the reference markdown table describing shared API headers."""
+
+    reference_path = BASE_DIR / "docs" / "api" / "reference.md"
+    try:
+        lines: List[str] = reference_path.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        logger.info("Common header reference table not found at %s", reference_path)
+        return ""
+
+    try:
+        start_index = next(
+            index for index, line in enumerate(lines) if line.startswith("| Header |")
+        )
+    except StopIteration:
+        return ""
+
+    end_index = start_index
+    while end_index < len(lines) and lines[end_index].startswith("|"):
+        end_index += 1
+
+    table_lines = lines[start_index:end_index]
+    if not table_lines:
+        return ""
+
+    info_box_lines = ["> **Common Headers**", ">"]
+    info_box_lines.extend(f"> {line}" for line in table_lines)
+    return "\n".join(info_box_lines)
 
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
@@ -43,6 +78,16 @@ PII_LOGGING_REDACTION = os.getenv("PII_LOGGING_REDACTION", "true").lower() == "t
 PII_HMAC_SECRET = os.getenv("PII_HMAC_SECRET", "")
 PII_NAME_DETECTION = os.getenv("PII_NAME_DETECTION", "false").lower() == "true"
 
+ENABLE_API_DOCS = env.bool("ENABLE_API_DOCS", default=False)
+API_DOCS_TITLE = env("API_DOCS_TITLE", default="NOESIS 2 API")
+API_IMAGE_TAG = env("API_IMAGE_TAG", default="")
+API_DOCS_VERSION_LABEL = env("API_DOCS_VERSION_LABEL", default=API_IMAGE_TAG.strip())
+ENABLE_SWAGGER_TRY_IT_OUT = env.bool("ENABLE_SWAGGER_TRY_IT_OUT", default=False)
+COMMON_HEADERS_INFO_BOX = _load_common_headers_table()
+API_DOCS_DESCRIPTION = "OpenAPI schema for NOESIS 2 multi-tenant endpoints."
+if COMMON_HEADERS_INFO_BOX:
+    API_DOCS_DESCRIPTION = f"{API_DOCS_DESCRIPTION}\n\n{COMMON_HEADERS_INFO_BOX}"
+
 
 # Application definition
 
@@ -62,6 +107,8 @@ TENANT_APPS = [
     "django.contrib.sessions",
     "django.contrib.messages",
     "django.contrib.staticfiles",
+    "rest_framework",
+    "drf_spectacular",
     "projects",
     "documents",
     "workflows",
@@ -87,6 +134,7 @@ MIDDLEWARE = [
     "django.contrib.sessions.middleware.SessionMiddleware",
     "ai_core.middleware.PIISessionScopeMiddleware",
     "ai_core.middleware.RequestContextMiddleware",
+    "noesis2.api.middleware.DeprecationHeaderMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -217,6 +265,71 @@ LOGGING = {
         "handlers": ["console"],
         "level": "INFO",
     },
+}
+
+REST_FRAMEWORK = {
+    "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_AUTHENTICATION_CLASSES": [],
+}
+
+TENANT_HEADER_COMPONENTS = api_schema.tenant_header_components()
+SWAGGER_SUBMIT_METHODS = [
+    "get",
+    "post",
+    "put",
+    "delete",
+    "patch",
+    "options",
+    "head",
+    "trace",
+]
+
+
+def build_swagger_ui_settings(enable_try_it_out: bool) -> Dict[str, object]:
+    supported_methods = SWAGGER_SUBMIT_METHODS if enable_try_it_out else []
+    return {
+        "tryItOutEnabled": enable_try_it_out,
+        "supportedSubmitMethods": supported_methods,
+        "defaultModelRendering": "example",
+        "docExpansion": "none",
+        "displayRequestDuration": True,
+        "persistAuthorization": True,
+    }
+
+SPECTACULAR_SETTINGS = {
+    "TITLE": API_DOCS_TITLE,
+    "DESCRIPTION": API_DOCS_DESCRIPTION,
+    "VERSION": "v1",
+    "SECURITY": [{api_schema.ADMIN_BEARER_AUTH_SCHEME: []}],
+    "APPEND_COMPONENTS": {
+        "parameters": TENANT_HEADER_COMPONENTS,
+        "headers": {
+            api_schema.TRACE_ID_RESPONSE_HEADER_COMPONENT_NAME: api_schema.TRACE_ID_RESPONSE_HEADER_COMPONENT,
+        },
+        "securitySchemes": {
+            api_schema.ADMIN_BEARER_AUTH_SCHEME: {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "API Key",
+                "description": "LiteLLM Admin bearer token used for privileged endpoints.",
+            },
+        },
+    },
+    "POSTPROCESSING_HOOKS": [
+        "noesis2.api.schema.inject_trace_response_header",
+        "drf_spectacular.hooks.postprocess_schema_enums",
+    ],
+    "SWAGGER_UI_SETTINGS": build_swagger_ui_settings(ENABLE_SWAGGER_TRY_IT_OUT),
+    "REDOC_UI_SETTINGS": {
+        "hideDownloadButton": False,
+    },
+}
+
+API_DEPRECATIONS = {
+    "ai-core-legacy": {
+        "deprecation": "Wed, 01 Jan 2025 00:00:00 GMT",
+        "sunset": "Tue, 01 Jul 2025 00:00:00 GMT",
+    }
 }
 
 # LiteLLM / AI Core

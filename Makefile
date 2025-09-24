@@ -4,8 +4,12 @@
 
 PYTHON ?= python
 MANAGE := $(PYTHON) manage.py
+
+OPENAPI_SCHEMA := docs/api/openapi.yaml
+
 K6_BIN ?= k6
 LOCUST_BIN ?= locust
+
 
 jobs\:migrate:
 	$(MANAGE) migrate_schemas --noinput
@@ -72,8 +76,22 @@ seed-wipe: ; $(MANAGE) create_demo_data --wipe --include-org
 
 seed-check: ; $(MANAGE) check_demo_data --profile demo --seed 1337
 
+
+.PHONY: schema sdk
+
+schema:
+	mkdir -p $(dir $(OPENAPI_SCHEMA))
+	$(MANAGE) spectacular --format yaml --file $(OPENAPI_SCHEMA)
+
+sdk: schema
+	rm -rf clients/typescript
+	npx --yes openapi-typescript-codegen@0.28.1 --input $(OPENAPI_SCHEMA) --output clients/typescript
+	rm -rf clients/python
+	openapi-python-client generate --path $(OPENAPI_SCHEMA) --output-path clients/python --overwrite
+
 load\:k6:
 	$(K6_BIN) run $(K6_ARGS) load/k6/script.js
 
 load\:locust:
 	$(LOCUST_BIN) -f load/locust/locustfile.py $(LOCUST_ARGS)
+

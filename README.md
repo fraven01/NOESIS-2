@@ -34,6 +34,9 @@ Alle Pfade erfordern die Header `X-Tenant-ID`, `X-Case-ID` sowie `Idempotency-Ke
 - `POST /ai/needs/` – Informationen dem Tenant-Profil zuordnen, Abbruch bei Lücken
 - `POST /ai/sysdesc/` – Systembeschreibung nur wenn keine Informationen fehlen
 
+### API-Auth
+Die Django REST Framework Authentifizierung ist standardmäßig deaktiviert, damit öffentliche Mandanten-Endpunkte keinen Bearer-Token erfordern. Admin- oder LiteLLM-Routen binden den Master-Key explizit per View-Decorator. Weil keine SessionAuth aktiv ist, gelten auch keine CSRF-Cookies – Token-Clients können ohne CSRF-Header arbeiten.
+
 ### Graphen
 Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Gates wie `needs_mapping` oder `scope_check` brechen früh ab, statt unvollständige Drafts zu erzeugen.
 
@@ -99,6 +102,16 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 
 Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:rebuild`).
 
+### API-Schema & SDKs
+
+| Kommando | Ergebnis |
+| --- | --- |
+| `npm run api:schema` | Exportiert das OpenAPI-Schema in `docs/api/openapi.yaml` (lokal, ohne Docker-Compose) |
+| `make schema` | Baut `docs/api/openapi.yaml` via `manage.py spectacular` |
+| `make sdk` | Generiert TypeScript- (`clients/typescript`) und Python-SDKs (`clients/python`) auf Basis des aktuellen Schemas |
+
+`make sdk` ruft `make schema` implizit auf. Für die SDK-Generierung müssen Node.js (für `openapi-typescript-codegen`) und die Python-CLI `openapi-python-client` verfügbar sein – beide sind in den Projektabhängigkeiten enthalten.
+
 ### Frontend & Tooling
 
 | Script | Beschreibung |
@@ -128,6 +141,8 @@ Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung 
 | `make tenant-superuser` | Erstellt einen Tenant-Superuser (`SCHEMA`, `USERNAME`, `PASSWORD`, optional `EMAIL`) |
 | `make jobs:rag` | Spielt `docs/rag/schema.sql` gegen `RAG_DATABASE_URL`/`DATABASE_URL` ein |
 | `make jobs:rag:health` | Validiert RAG-Schema & `vector`-Extension |
+| `make schema` | Exportiert das OpenAPI-Schema nach `docs/api/openapi.yaml` |
+| `make sdk` | Generiert SDKs unter `clients/` auf Basis des aktuellen Schemas |
 
 Alle Make-Targets greifen auf lokale Tools (`psql`, `python`). Innerhalb des Compose-Stacks empfiehlt sich die Nutzung der äquivalenten npm-Skripte (`npm run jobs:*`).
 

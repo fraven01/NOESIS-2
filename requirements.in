@@ -2,6 +2,8 @@ celery
 django
 django-tenants
 django-environ
+djangorestframework
+drf-spectacular
 psycopg2-binary  # optional PostgreSQL driver
 python-json-logger==3.3.0
 pyyaml
