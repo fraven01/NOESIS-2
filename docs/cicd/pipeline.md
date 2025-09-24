@@ -15,6 +15,7 @@ Die Pipeline sorgt dafür, dass jede Änderung getestet, geprüft und kontrollie
 | 8 | Staging Deploy | Cloud Run Deploy für Web, Worker, Beat, LiteLLM mit `--set-env-vars` | Löst Smoke-Tests aus |
 | 9 | Ingestion-Smoke | Cloud Run Job (Queue `ingestion`) verarbeitet Mini-Batch, verifiziert Embeddings; keine Backfill-Jobs für Altbestände | Blockiert Approval bei Fehler |
 | 10 | Smoke Staging | Health-Checks (`/`, `/health/liveliness`) + Logsichtung laut [QA](../qa/checklists.md) | Gate für Approval |
+| 10a | Chaos Smoke (optional) | Manuell via `tests-chaos` Workflow-Dispatch (`run_chaos=true`), führt `pytest -m chaos -q -n auto` aus und lädt JUnit/JSON/k6/Locust-Artefakte hoch | QA-Abbruchkriterien: Fehlerquote <5 %, Latenz-P95 unter Grenzwert laut [QA-Checklisten](../qa/checklists.md) |
 | 11 | Approval | Manuelle Freigabe (Prod Approver) in GitHub Actions | Pflicht vor Prod |
 | 12 | Prod Migrate | Cloud Run Job mit Secrets aus Secret Manager | Stoppt Flow bei Fehler |
 | 13 | Prod Deploy (Traffic-Split) | Deploy neue Revision mit z.B. 10% Traffic | Startet Prod-Smoke |
@@ -42,3 +43,4 @@ Ein gemeinsames Service-Konto interagiert mit GCP über WIF. Es erhält ausschli
 3. Überprüfe vor jedem Release, ob WIF-Rollen für das Pipeline-Service-Konto aktuell sind.
 4. Folge dem Gate-Flow strikt: kein Prod-Deploy ohne bestandenes Staging und manuelle Freigabe.
 5. Dokumentiere Smoke-Ergebnisse und Traffic-Entscheidungen in den Release-Notizen.
+6. Optional: Nach bestandenem Staging-Smoke-Test löse den Workflow `CI` via `workflow_dispatch` mit `run_chaos=true` aus, analysiere die Artefakte des Jobs `tests-chaos` (JUnit, JSON, k6/Locust) und vergleiche Fehlerquote sowie P95-Latenz mit den Abbruchkriterien der [QA-Checklisten](../qa/checklists.md).

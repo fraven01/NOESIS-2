@@ -192,10 +192,10 @@ def test_needs_mapping():
 
 def test_tracing_called(monkeypatch):
     payloads = []
+    monkeypatch.setattr("ai_core.infra.tracing.emit_span", lambda *a, **k: None)
     monkeypatch.setattr(
-        "ai_core.infra.tracing._dispatch_langfuse", lambda *a, **k: None
+        "ai_core.infra.tracing.emit_event", lambda p: payloads.append(p)
     )
-    monkeypatch.setattr("ai_core.infra.tracing._log", lambda p: payloads.append(p))
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
     state = {"question": "Q?", "snippets": []}

@@ -37,6 +37,12 @@ Qualitätssicherung verhindert Überraschungen nach Deployments. Diese Checklist
 - Kontrolliere Celery-Queues und Redis-Keys auf Stabilität; LiteLLM `/health` darf keine Fehlerzählung anzeigen.
 - Vergleiche Schema-Versionen der `django_migrations` Tabelle mit dem erwarteten Stand aus dem Release.
 
+## Chaos Smoke (optional nach Staging)
+- Starte den GitHub Actions Workflow `CI` manuell mit `run_chaos=true`, sobald die Stufen 8–10 erfolgreich waren.
+- Prüfe im Artefakt `chaos-test-reports` die JUnit- und JSON-Ausgabe: Fehlerquote muss <5 % bleiben, P95-Latenz darf die Grenzwerte aus den Chaos-Smoke-Kennzahlen nicht überschreiten.
+- Lade die optionalen k6-/Locust-Summaries (`chaos-load-summaries`) herunter und dokumentiere Spike-/Soak-Raten, Latenz-P95 sowie Trefferquote.
+- Bei Verletzung der Schwellenwerte: Release stoppen, Incident-Runbook öffnen und Chaos-Toggles deaktivieren, bevor erneute Deployments erfolgen.
+
 ## Prod Smoke & Traffic-Freigabe (Pipeline Stufen 14–15)
 - Wiederhole alle Staging-Smoke-Prüfungen in Prod unmittelbar nach dem Traffic-Split.
 - Beobachte Cloud Monitoring Metriken (Latenz, Fehler, Queue-Tiefe) engmaschig und vergleiche sie mit den letzten 24 Stunden.
