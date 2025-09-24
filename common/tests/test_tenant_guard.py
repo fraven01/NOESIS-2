@@ -3,7 +3,9 @@ from django_tenants.utils import schema_context
 
 from customers.tests.factories import TenantFactory
 from customers.models import Domain
-from common.tenants import get_current_tenant
+from common.tenants import TenantSchemaRequiredMixin, get_current_tenant
+from common.views import DemoView
+from rest_framework.views import APIView
 
 
 @pytest.mark.django_db
@@ -16,6 +18,11 @@ def test_demo_view_requires_tenant_header(client):
     with schema_context(tenant.schema_name):
         response = client.get("/tenant-demo/")
     assert response.status_code == 403
+
+
+def test_demo_view_mro_places_tenant_mixin_before_apiview():
+    mro = DemoView.mro()
+    assert mro.index(TenantSchemaRequiredMixin) < mro.index(APIView)
 
 
 @pytest.mark.django_db

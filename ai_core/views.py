@@ -1,14 +1,11 @@
 from __future__ import annotations
-
 import json
 import re
 from uuid import uuid4
 
 from django.conf import settings
 from django.db import connection
-from django.http import HttpRequest, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-from django.views.decorators.http import require_POST
+from django.http import HttpRequest
 
 from common.constants import (
     META_CASE_ID_KEY,
@@ -22,6 +19,26 @@ from common.constants import (
     X_TENANT_SCHEMA_HEADER,
 )
 from common.logging import bind_log_context
+from noesis2.api import (
+    DeprecationHeadersMixin,
+    RATE_LIMIT_ERROR_STATUSES,
+    RATE_LIMIT_JSON_ERROR_STATUSES,
+    curl_code_sample,
+    default_extend_schema,
+)
+from noesis2.api.serializers import (
+    IntakeRequestSerializer,
+    IntakeResponseSerializer,
+    NeedsResponseSerializer,
+    PingResponseSerializer,
+    ScopeResponseSerializer,
+    SysDescResponseSerializer,
+)
+from drf_spectacular.utils import OpenApiExample
+from rest_framework import status
+from rest_framework.request import Request
+from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
@@ -57,44 +74,78 @@ CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
-def _prepare_request(request: HttpRequest):
+def _error_response(detail: str, code: str, status_code: int) -> Response:
+    """Return a standardised error payload."""
+
+    return Response({"detail": detail, "code": code}, status=status_code)
+
+
+def _prepare_request(request: Request):
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
 
     tenant_schema = _resolve_tenant_id(request)
     if not tenant_schema:
-        return None, JsonResponse({"detail": "tenant not resolved"}, status=400)
+        return None, _error_response(
+            "Tenant schema could not be resolved from headers.",
+            "tenant_not_found",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     if tenant_header is None:
-        return None, JsonResponse({"detail": "invalid tenant header"}, status=400)
+        return None, _error_response(
+            "Tenant header is required for multi-tenant requests.",
+            "invalid_tenant_header",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     tenant_id = tenant_header.strip()
     if not tenant_id or not TENANT_ID_RE.fullmatch(tenant_id):
-        return None, JsonResponse({"detail": "invalid tenant header"}, status=400)
+        return None, _error_response(
+            "Tenant header is required for multi-tenant requests.",
+            "invalid_tenant_header",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     schema_header = request.headers.get(X_TENANT_SCHEMA_HEADER)
     if schema_header is not None:
         header_schema = schema_header.strip()
         if not header_schema:
-            return None, JsonResponse(
-                {"detail": "invalid tenant schema header"}, status=400
+            return None, _error_response(
+                "Tenant schema header must not be empty.",
+                "invalid_tenant_schema",
+                status.HTTP_400_BAD_REQUEST,
             )
         if header_schema != tenant_schema:
-            return None, JsonResponse({"detail": "tenant schema mismatch"}, status=400)
+            return None, _error_response(
+                "Tenant schema header does not match resolved schema.",
+                "tenant_schema_mismatch",
+                status.HTTP_400_BAD_REQUEST,
+            )
 
     if not CASE_ID_RE.fullmatch(case_id):
-        return None, JsonResponse({"detail": "invalid case header"}, status=400)
+        return None, _error_response(
+            "Case header is required and must use the documented format.",
+            "invalid_case_header",
+            status.HTTP_400_BAD_REQUEST,
+        )
 
     if not rate_limit.check(tenant_id):
-        return None, JsonResponse({"detail": "rate limit"}, status=429)
+        return None, _error_response(
+            "Rate limit exceeded for tenant.",
+            "rate_limit_exceeded",
+            status.HTTP_429_TOO_MANY_REQUESTS,
+        )
 
     key_alias = None
     if key_alias_header is not None:
         key_alias = key_alias_header.strip()
         if not key_alias or not KEY_ALIAS_RE.fullmatch(key_alias):
-            return None, JsonResponse(
-                {"detail": "invalid key alias header"}, status=400
+            return None, _error_response(
+                "Key alias header does not match the required format.",
+                "invalid_key_alias",
+                status.HTTP_400_BAD_REQUEST,
             )
 
     trace_id = uuid4().hex
@@ -143,7 +194,7 @@ def _save_state(tenant: str, case_id: str, state: dict) -> None:
     write_json(f"{safe_tenant}/{safe_case}/state.json", state)
 
 
-def _run_graph(request: HttpRequest, graph) -> JsonResponse:
+def _run_graph(request: Request, graph) -> Response:
     meta, error = _prepare_request(request)
     if error:
         return error
@@ -151,59 +202,440 @@ def _run_graph(request: HttpRequest, graph) -> JsonResponse:
     try:
         state = _load_state(meta["tenant"], meta["case"])
     except ValueError as exc:
-        return JsonResponse({"detail": str(exc)}, status=400)
-    if request.body:
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+    raw_body = getattr(request, "body", b"")
+    if not raw_body and hasattr(request, "_request"):
+        raw_body = getattr(request._request, "body", b"")
+
+    content_type_header = request.headers.get("Content-Type")
+    normalized_content_type = ""
+    if content_type_header:
+        normalized_content_type = content_type_header.split(";")[0].strip().lower()
+
+    if raw_body:
+        if normalized_content_type and not (
+            normalized_content_type == "application/json"
+            or normalized_content_type.endswith("+json")
+        ):
+            return _error_response(
+                "Request payload must be encoded as application/json.",
+                "unsupported_media_type",
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
         try:
-            payload = json.loads(request.body)
+            payload = json.loads(raw_body)
             if isinstance(payload, dict):
                 state.update(payload)
         except json.JSONDecodeError:
-            return JsonResponse({"detail": "invalid json"}, status=400)
+            return _error_response(
+                "Request payload contained invalid JSON.",
+                "invalid_json",
+                status.HTTP_400_BAD_REQUEST,
+            )
 
     try:
         new_state, result = graph.run(state, meta)
     except ValueError as exc:
-        return JsonResponse({"detail": str(exc)}, status=400)
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except Exception:
-        return JsonResponse({"detail": "internal error"}, status=500)
+        return _error_response(
+            "Service temporarily unavailable.",
+            "service_unavailable",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     try:
         _save_state(meta["tenant"], meta["case"], new_state)
     except ValueError as exc:
-        return JsonResponse({"detail": str(exc)}, status=400)
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
-    response = JsonResponse(result)
+    response = Response(result)
     return apply_std_headers(response, meta)
 
 
-def ping(request: HttpRequest) -> JsonResponse:
+LEGACY_DEPRECATION_ID = "ai-core-legacy"
+
+
+def _legacy_schema_kwargs(base_kwargs: dict[str, object]) -> dict[str, object]:
+    legacy_kwargs = dict(base_kwargs)
+    legacy_kwargs["deprecated"] = True
+    return legacy_kwargs
+
+
+def _curl(command: str) -> dict[str, object]:
+    """Return extensions embedding a curl code sample."""
+
+    return curl_code_sample(command)
+
+
+PING_RESPONSE_EXAMPLE = OpenApiExample(
+    name="PingResponse",
+    summary="Successful heartbeat",
+    description="Minimal response confirming that AI Core is reachable.",
+    value={"ok": True},
+    response_only=True,
+)
+
+PING_CURL = _curl(
+    " ".join(
+        [
+            "curl -i",
+            "-H \"X-Tenant-Schema: dev\"",
+            "-H \"X-Tenant-Id: dev-tenant\"",
+            "-H \"X-Case-Id: local\"",
+            "https://api.noesis.example/v1/ai/ping/",
+        ]
+    )
+)
+
+INTAKE_REQUEST_EXAMPLE = OpenApiExample(
+    name="IntakeRequest",
+    summary="Initial workflow context",
+    description="Submit the first intake payload to capture tenant metadata and workflow scope.",
+    value={
+        "prompt": "Starte Intake für Projekt Kickoff",
+        "metadata": {"project": "acme-kickoff", "initiator": "alex@example.com"},
+        "scope": "kickoff",
+        "needs_input": ["agenda", "timeline"],
+    },
+    request_only=True,
+)
+
+INTAKE_RESPONSE_EXAMPLE = OpenApiExample(
+    name="IntakeResponse",
+    summary="Recorded intake state",
+    description="Echoes the tenant metadata after the intake step persisted the workflow.",
+    value={
+        "received": True,
+        "tenant": "acme",
+        "case": "crm-7421",
+        "idempotent": False,
+    },
+    response_only=True,
+)
+
+INTAKE_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/ai/intake/",
+            "-H \"Content-Type: application/json\"",
+            "-H \"X-Tenant-Schema: acme_prod\"",
+            "-H \"X-Tenant-Id: acme\"",
+            "-H \"X-Case-Id: crm-7421\"",
+            "-H \"Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a\"",
+            "-d '{\"prompt\": \"Erstelle Meeting-Notizen\"}'",
+        ]
+    )
+)
+
+SCOPE_REQUEST_EXAMPLE = OpenApiExample(
+    name="ScopeRequest",
+    summary="Scope payload",
+    description="Provide the captured scope inputs that should be validated.",
+    value={
+        "prompt": "Zeige den Projektstatus",
+        "metadata": {"project": "acme-kickoff"},
+        "scope": "discovery",
+    },
+    request_only=True,
+)
+
+SCOPE_RESPONSE_EXAMPLE = OpenApiExample(
+    name="ScopeResponse",
+    summary="Scope validation result",
+    description="Lists missing prerequisites that must be provided before scope validation passes.",
+    value={"missing": ["project_brief"], "idempotent": False},
+    response_only=True,
+)
+
+SCOPE_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/ai/scope/",
+            "-H \"Content-Type: application/json\"",
+            "-H \"X-Tenant-Schema: acme_prod\"",
+            "-H \"X-Tenant-Id: acme\"",
+            "-H \"X-Case-Id: crm-7421\"",
+            "-H \"Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a\"",
+            "-d '{\"prompt\": \"Erstelle Meeting-Notizen\"}'",
+        ]
+    )
+)
+
+NEEDS_REQUEST_EXAMPLE = OpenApiExample(
+    name="NeedsRequest",
+    summary="Needs mapping payload",
+    description="Submit captured inputs so the needs mapping node can derive tasks.",
+    value={
+        "metadata": {"project": "acme-kickoff"},
+        "needs_input": ["stakeholder_alignment", "timeline"],
+    },
+    request_only=True,
+)
+
+NEEDS_RESPONSE_EXAMPLE = OpenApiExample(
+    name="NeedsResponse",
+    summary="Needs mapping outcome",
+    description="Shows whether actionable needs were derived and highlights any missing context.",
+    value={
+        "mapped": True,
+        "missing": ["stakeholder_alignment"],
+        "idempotent": False,
+    },
+    response_only=True,
+)
+
+NEEDS_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/ai/needs/",
+            "-H \"Content-Type: application/json\"",
+            "-H \"X-Tenant-Schema: acme_prod\"",
+            "-H \"X-Tenant-Id: acme\"",
+            "-H \"X-Case-Id: crm-7421\"",
+            "-H \"Idempotency-Key: 9c2ef7a8-7e6b-4a55-8cb3-bf6203d86016\"",
+            "-d '{\"metadata\": {\"project\": \"acme-kickoff\"}}'",
+        ]
+    )
+)
+
+SYSDESC_REQUEST_EXAMPLE = OpenApiExample(
+    name="SysDescRequest",
+    summary="System description payload",
+    description="Provide the finalised scope so the system description can be generated.",
+    value={
+        "scope": "kickoff",
+        "metadata": {"project": "acme-kickoff"},
+    },
+    request_only=True,
+)
+
+SYSDESC_RESPONSE_EXAMPLE = OpenApiExample(
+    name="SysDescResponse",
+    summary="System description",
+    description="Outputs the deterministic system prompt once all workflow prerequisites are met.",
+    value={
+        "description": "You are the NOESIS kickoff agent.",
+        "skipped": False,
+        "missing": [],
+        "idempotent": True,
+    },
+    response_only=True,
+)
+
+SYSDESC_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/ai/sysdesc/",
+            "-H \"Content-Type: application/json\"",
+            "-H \"X-Tenant-Schema: acme_prod\"",
+            "-H \"X-Tenant-Id: acme\"",
+            "-H \"X-Case-Id: crm-7421\"",
+            "-H \"Idempotency-Key: f2b0b0f4-3c4b-4b9c-a8b5-5a4a9c8796c1\"",
+            "-d '{\"scope\": \"kickoff\"}'",
+        ]
+    )
+)
+
+PING_SCHEMA = {
+    "responses": {200: PingResponseSerializer},
+    "error_statuses": RATE_LIMIT_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Simple heartbeat used by agents and operators to verify that AI Core is responsive.",
+    "examples": [PING_RESPONSE_EXAMPLE],
+    "extensions": PING_CURL,
+}
+
+INTAKE_SCHEMA = {
+    "request": IntakeRequestSerializer,
+    "responses": {200: IntakeResponseSerializer},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Persist initial workflow context and return the recorded metadata.",
+    "examples": [INTAKE_REQUEST_EXAMPLE, INTAKE_RESPONSE_EXAMPLE],
+    "extensions": INTAKE_CURL,
+}
+
+SCOPE_SCHEMA = {
+    "request": IntakeRequestSerializer,
+    "responses": {200: ScopeResponseSerializer},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Check whether the current workflow state contains the required scope metadata.",
+    "examples": [SCOPE_REQUEST_EXAMPLE, SCOPE_RESPONSE_EXAMPLE],
+    "extensions": SCOPE_CURL,
+}
+
+NEEDS_SCHEMA = {
+    "request": IntakeRequestSerializer,
+    "responses": {200: NeedsResponseSerializer},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Map captured inputs to actionable needs and signal any missing prerequisites.",
+    "examples": [NEEDS_REQUEST_EXAMPLE, NEEDS_RESPONSE_EXAMPLE],
+    "extensions": NEEDS_CURL,
+}
+
+SYSDESC_SCHEMA = {
+    "request": IntakeRequestSerializer,
+    "responses": {200: SysDescResponseSerializer},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Produce a deterministic system prompt when all prerequisites have been satisfied.",
+    "examples": [SYSDESC_REQUEST_EXAMPLE, SYSDESC_RESPONSE_EXAMPLE],
+    "extensions": SYSDESC_CURL,
+}
+
+
+class _BaseAgentView(DeprecationHeadersMixin, APIView):
+    authentication_classes: list = []
+    permission_classes: list = []
+
+
+class _PingBase(_BaseAgentView):
+    def get(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+        response = Response({"ok": True})
+        return apply_std_headers(response, meta)
+
+
+class PingViewV1(_PingBase):
     """Lightweight endpoint used to verify AI Core availability."""
-    meta, error = _prepare_request(request)
-    if error:
-        return error
-    response = JsonResponse({"ok": True})
-    return apply_std_headers(response, meta)
+
+    @default_extend_schema(**PING_SCHEMA)
+    def get(self, request: Request) -> Response:
+        return super().get(request)
 
 
-@csrf_exempt
-@require_POST
-def intake(request: HttpRequest) -> JsonResponse:
-    return _run_graph(request, info_intake)
+class LegacyPingView(_PingBase):
+    """Legacy heartbeat endpoint served under the unversioned prefix."""
+
+    api_deprecated = True
+    api_deprecation_id = LEGACY_DEPRECATION_ID
+
+    @default_extend_schema(**_legacy_schema_kwargs(PING_SCHEMA))
+    def get(self, request: Request) -> Response:
+        return super().get(request)
 
 
-@csrf_exempt
-@require_POST
-def scope(request: HttpRequest) -> JsonResponse:
-    return _run_graph(request, scope_check)
+class _GraphView(_BaseAgentView):
+    graph_name: str | None = None
+
+    def get_graph(self):  # pragma: no cover - trivial indirection
+        if not self.graph_name:
+            raise NotImplementedError("graph_name must be configured on subclasses")
+        return globals()[self.graph_name]
+
+    def post(self, request: Request) -> Response:
+        return _run_graph(request, self.get_graph())
 
 
-@csrf_exempt
-@require_POST
-def needs(request: HttpRequest) -> JsonResponse:
-    return _run_graph(request, needs_mapping)
+class IntakeViewV1(_GraphView):
+    """Entry point for the agent intake workflow."""
+
+    graph_name = "info_intake"
+
+    @default_extend_schema(**INTAKE_SCHEMA)
+    def post(self, request: Request) -> Response:
+        return super().post(request)
 
 
-@csrf_exempt
-@require_POST
-def sysdesc(request: HttpRequest) -> JsonResponse:
-    return _run_graph(request, system_description)
+class LegacyIntakeView(_GraphView):
+    """Deprecated intake endpoint retained for backwards compatibility."""
+
+    api_deprecated = True
+    api_deprecation_id = LEGACY_DEPRECATION_ID
+    graph_name = "info_intake"
+
+    @default_extend_schema(**_legacy_schema_kwargs(INTAKE_SCHEMA))
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class ScopeViewV1(_GraphView):
+    """Validate that a workflow has sufficient scope information."""
+
+    graph_name = "scope_check"
+
+    @default_extend_schema(**SCOPE_SCHEMA)
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class LegacyScopeView(_GraphView):
+    """Deprecated scope validation endpoint retained for clients on /ai/."""
+
+    api_deprecated = True
+    api_deprecation_id = LEGACY_DEPRECATION_ID
+    graph_name = "scope_check"
+
+    @default_extend_schema(**_legacy_schema_kwargs(SCOPE_SCHEMA))
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class NeedsViewV1(_GraphView):
+    """Derive concrete needs from the captured workflow state."""
+
+    graph_name = "needs_mapping"
+
+    @default_extend_schema(**NEEDS_SCHEMA)
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class LegacyNeedsView(_GraphView):
+    """Deprecated needs endpoint retained for clients on /ai/."""
+
+    api_deprecated = True
+    api_deprecation_id = LEGACY_DEPRECATION_ID
+    graph_name = "needs_mapping"
+
+    @default_extend_schema(**_legacy_schema_kwargs(NEEDS_SCHEMA))
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class SysDescViewV1(_GraphView):
+    """Generate a system description for downstream agents."""
+
+    graph_name = "system_description"
+
+    @default_extend_schema(**SYSDESC_SCHEMA)
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+class LegacySysDescView(_GraphView):
+    """Deprecated system description endpoint retained for clients on /ai/."""
+
+    api_deprecated = True
+    api_deprecation_id = LEGACY_DEPRECATION_ID
+    graph_name = "system_description"
+
+    @default_extend_schema(**_legacy_schema_kwargs(SYSDESC_SCHEMA))
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
+ping_v1 = PingViewV1.as_view()
+ping_legacy = LegacyPingView.as_view()
+ping = ping_legacy
+
+intake_v1 = IntakeViewV1.as_view()
+intake_legacy = LegacyIntakeView.as_view()
+intake = intake_legacy
+
+scope_v1 = ScopeViewV1.as_view()
+scope_legacy = LegacyScopeView.as_view()
+scope = scope_legacy
+
+needs_v1 = NeedsViewV1.as_view()
+needs_legacy = LegacyNeedsView.as_view()
+needs = needs_legacy
+
+sysdesc_v1 = SysDescViewV1.as_view()
+sysdesc_legacy = LegacySysDescView.as_view()
+sysdesc = sysdesc_legacy

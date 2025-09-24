@@ -6,3 +6,4 @@ factory-boy
 ruff
 black
 pip-tools
+openapi-python-client

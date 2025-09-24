@@ -15,6 +15,7 @@
     "dev:restart": "bash ./scripts/dev-restart.sh",
     "dev:demo": "bash ./scripts/dev-demo.sh",
     "dev:manage": "bash ./scripts/dev-manage.sh",
+    "api:schema": "python manage.py spectacular --format yaml --file docs/api/openapi.yaml",
     "seed:baseline": "npm run dev:manage -- create_demo_data --profile baseline --seed 1337",
     "seed:demo": "npm run dev:manage -- create_demo_data --profile demo --seed 1337",
     "seed:heavy": "npm run dev:manage -- create_demo_data --profile heavy --seed 42",

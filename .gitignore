@@ -226,3 +226,7 @@ litellm-proxy-key.json
 .env.docker
 documents/demo*.txt
 documents/doc*.*
+
+# Generated API artifacts
+docs/api/openapi.yaml
+clients/
