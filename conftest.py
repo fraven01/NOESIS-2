@@ -5,6 +5,28 @@ import pytest
 
 
 @pytest.fixture(autouse=True, scope="session")
+def ensure_default_pii_secret():
+    """Guarantee tests start with an empty default PII secret.
+
+    Some CI environments define ``PII_HMAC_SECRET`` with placeholder values
+    (for example ``"test"``) which would otherwise bleed into the Django
+    settings during import time. The default behaviour in "industrial" mode
+    expects the secret to be unset, so we proactively clear both the
+    environment variable and the derived setting before any tests run.
+    """
+
+    from pytest import MonkeyPatch
+    from django.conf import settings as django_settings
+
+    patcher = MonkeyPatch()
+    patcher.delenv("PII_HMAC_SECRET", raising=False)
+    django_settings.PII_HMAC_SECRET = ""
+    yield
+    patcher.undo()
+    django_settings.PII_HMAC_SECRET = ""
+
+
+@pytest.fixture(autouse=True, scope="session")
 def ensure_tenant_engine():
     """Skip tests if the PostgreSQL tenant backend isn't configured."""
     from django.conf import settings
