@@ -51,6 +51,13 @@ if ($IncludeElk -and (Test-Path '.env.dev-elk' -PathType Leaf)) {
 }
 
 if ($IncludeElk) {
+    # Try to ensure vm.max_map_count is set for Elasticsearch on Docker Desktop's Linux VM
+    try {
+        Write-Host '[dev-up] Ensuring vm.max_map_count=262144 in docker-desktop WSL VM'
+        & wsl -d docker-desktop -u root sh -lc "sysctl -w vm.max_map_count=262144" | Out-Null
+    } catch {
+        Write-Host '[dev-up] Could not set vm.max_map_count automatically (continuing)'
+    }
     $AppLogPath = $env:APP_LOG_PATH
     if (-not $AppLogPath) {
         $AppLogPath = Join-Path -Path (Get-Location) -ChildPath 'logs/app'
@@ -68,6 +75,12 @@ if ($IncludeElk) {
     }
     Write-Host "[dev-up] Log-Verzeichnis: $AppLogPath"
 
+    # Ensure env compatibility: if only KIBANA_SYSTEM_PASSWORD is set, mirror to KIBANA_PASSWORD
+    if (-not $env:KIBANA_PASSWORD -and $env:KIBANA_SYSTEM_PASSWORD) {
+        $env:KIBANA_PASSWORD = $env:KIBANA_SYSTEM_PASSWORD
+        Write-Host '[dev-up] Using KIBANA_SYSTEM_PASSWORD as KIBANA_PASSWORD for Kibana/Elasticsearch'
+    }
+
     Write-Host '[dev-up] Building application stack images'
     Invoke-Expression "$AppCompose build"
 
@@ -79,8 +92,39 @@ Write-Host "[dev-up] Bringing up services (db, redis, litellm, web, worker)"
 Invoke-Expression "$AppCompose up -d"
 
 if ($IncludeElk) {
-    Write-Host '[dev-up] Starting ELK stack'
-    Invoke-Expression "$ElkCompose up -d"
+    # Start Elasticsearch first to control password bootstrap order
+    Write-Host '[dev-up] Starting Elasticsearch (ELK)'
+    Invoke-Expression "$ElkCompose up -d elasticsearch"
+
+    # Wait until Elasticsearch is healthy
+    $esOk = $false
+    $esPassword = if ($env:ELASTIC_PASSWORD) { $env:ELASTIC_PASSWORD } else { 'changeme' }
+    for ($i = 0; $i -lt 60; $i++) {
+        try {
+            $pair = "elastic:$esPassword"
+            $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+            $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:9200' -Headers @{ Authorization = "Basic $basic" } -TimeoutSec 3
+            if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) { $esOk = $true; break }
+        } catch { Start-Sleep -Seconds 2 }
+    }
+    if (-not $esOk) { Write-Host '[dev-up] Elasticsearch not ready yet, continuing but Kibana may fail to auth' }
+
+    # Ensure kibana_system password matches KIBANA_PASSWORD (idempotent) via REST API
+    $kibanaPwd = if ($env:KIBANA_PASSWORD) { $env:KIBANA_PASSWORD } else { 'changeme' }
+    try {
+        Write-Host '[dev-up] Ensuring kibana_system password in Elasticsearch via REST API'
+        $pair = "elastic:$esPassword"
+        $basic = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
+        $headers = @{ Authorization = "Basic $basic"; 'Content-Type' = 'application/json' }
+        $body = @{ password = $kibanaPwd } | ConvertTo-Json -Compress
+        Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:9200/_security/user/kibana_system/_password' -Method Post -Headers $headers -Body $body -TimeoutSec 5 | Out-Null
+    } catch {
+        Write-Host '[dev-up] Could not set kibana_system password via API (continuing)'
+    }
+
+    # Start Kibana and Logstash after password is ensured
+    Write-Host '[dev-up] Starting Kibana and Logstash'
+    Invoke-Expression "$ElkCompose up -d kibana logstash"
 }
 
 Write-Host "[dev-up] Waiting for web to respond (warm-up)"

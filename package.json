@@ -24,6 +24,7 @@
     "seed:wipe": "npm run dev:manage -- create_demo_data --wipe --include-org",
     "seed:check": "npm run dev:manage -- check_demo_data --profile demo --seed 1337",
     "win:dev:up": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-up.ps1",
+    "win:dev:stack": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-up.ps1 -IncludeElk",
     "win:dev:check": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-check.ps1",
     "win:dev:down": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v",
     "win:dev:stack": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-up.ps1 -IncludeElk",

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+# Enable pipefail when supported (e.g., bash); ignore on shells that don't support it
+{ set -o pipefail; } 2>/dev/null || true
 
 # One-command local dev bootstrap: bring up stack, run migrations, ensure tenants.
 
@@ -23,7 +25,7 @@ echo "[dev-up] Bringing up services (db, redis, litellm, web, worker)"
 $COMPOSE up -d
 
 echo "[dev-up] Waiting for web to respond (warm-up)"
-for i in {1..20}; do
+for i in $(seq 1 20); do
   code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ai/ping/ || true)
   # Consider 200..499 as web up; 5xx or 000 means not ready yet
   if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then

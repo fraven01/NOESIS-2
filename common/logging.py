@@ -526,12 +526,30 @@ def _log_level_from_env() -> int:
     return getattr(logging, level_name, logging.INFO)
 
 
+def _stream_from_env() -> TextIO | None:
+    """Optionally open a log file when APP_LOG_DIR or LOG_FILE_PATH is set."""
+
+    path = os.getenv("LOG_FILE_PATH")
+    if not path:
+        app_log_dir = os.getenv("APP_LOG_DIR")
+        if app_log_dir:
+            path = os.path.join(app_log_dir, "noesis-app.log")
+    if not path:
+        return None
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        # line-buffered text stream
+        return open(path, mode="a", encoding="utf-8", buffering=1)
+    except Exception:
+        return None
+
+
 def configure_logging(stream: TextIO | None = None) -> None:
     """Configure structlog and stdlib logging once."""
 
     global _CONFIGURED, _REDACTOR, _CONFIGURED_STREAM
 
-    active_stream = stream or sys.stderr
+    active_stream = stream or _stream_from_env() or sys.stderr
 
     level = _log_level_from_env()
 

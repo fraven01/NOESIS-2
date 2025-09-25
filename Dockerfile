@@ -75,7 +75,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     DJANGO_SETTINGS_MODULE=noesis2.settings.production \
-    PORT=8000
+    PORT=8000 \
+    PATH="/home/appuser/.local/bin:${PATH}"
 
 WORKDIR /app
 

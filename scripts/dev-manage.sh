@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 COMPOSE_CMD=(docker compose -f docker-compose.yml -f docker-compose.dev.yml exec)
 if [ ! -t 0 ]; then

@@ -3,7 +3,8 @@ FROM docker.elastic.co/logstash/logstash:8.13.4
 USER root
 RUN /usr/share/logstash/bin/logstash-plugin install logstash-input-google_pubsub \
     && mkdir -p /var/log/noesis \
-    && chown -R logstash:logstash /var/log/noesis \
+    && mkdir -p /usr/share/logstash/data \
+    && chown -R logstash:logstash /var/log/noesis /usr/share/logstash/data \
     && rm -f /usr/share/logstash/pipeline/*.conf
 USER logstash
 
