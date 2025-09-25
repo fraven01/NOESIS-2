@@ -10,8 +10,6 @@ import environ
 from noesis2.api import schema as api_schema
 from common.logging import configure_logging
 
-configure_logging()
-
 logger = logging.getLogger(__name__)
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
@@ -21,6 +19,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent.parent
 # django-environ setup
 env = environ.Env()
 environ.Env.read_env(BASE_DIR / ".env")
+
+configure_logging()
 
 
 def _load_common_headers_table() -> str:
