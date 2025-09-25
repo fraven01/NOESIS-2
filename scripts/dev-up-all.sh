@@ -26,7 +26,8 @@ APP_LOG_PATH=${APP_LOG_PATH:-"$(pwd)/logs/app"}
 if [ "${APP_LOG_PATH#/}" = "$APP_LOG_PATH" ]; then
   APP_LOG_PATH="$(pwd)/${APP_LOG_PATH#./}"
 fi
-export APP_LOG_PATH
+APP_LOG_DIR="$APP_LOG_PATH"
+export APP_LOG_PATH APP_LOG_DIR
 
 mkdir -p "$APP_LOG_PATH"
 echo "[dev-up-all] Log-Verzeichnis: $APP_LOG_PATH"
