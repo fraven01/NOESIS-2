@@ -11,6 +11,7 @@
     "dev:up": "bash ./scripts/dev-up.sh",
     "dev:check": "bash ./scripts/dev-check.sh",
     "dev:down": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v",
+    "dev:stack": "bash ./scripts/dev-up-all.sh",
     "dev:rebuild": "bash ./scripts/dev-rebuild.sh",
     "dev:restart": "bash ./scripts/dev-restart.sh",
     "dev:demo": "bash ./scripts/dev-demo.sh",
