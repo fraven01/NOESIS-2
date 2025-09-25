@@ -9,10 +9,22 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
+if [ -f .env.dev-elk ]; then
+  echo "[dev-up-all] Lade .env.dev-elk (ELK Default-Credentials)"
+  # Export Werte aus dem optionalen ELK-Template, ohne die bestehende .env zu verändern.
+  set -a
+  # shellcheck disable=SC1091
+  source .env.dev-elk
+  set +a
+fi
+
 APP_COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 ELK_COMPOSE="docker compose -f docker/elk/docker-compose.yml"
 
 APP_LOG_PATH=${APP_LOG_PATH:-"$(pwd)/logs/app"}
+if [ "${APP_LOG_PATH#/}" = "$APP_LOG_PATH" ]; then
+  APP_LOG_PATH="$(pwd)/${APP_LOG_PATH#./}"
+fi
 export APP_LOG_PATH
 
 mkdir -p "$APP_LOG_PATH"
@@ -43,5 +55,11 @@ done
 
 echo "[dev-up-all] Running migrations and bootstrap tasks"
 npm run dev:init
+
+echo "[dev-up-all] Seeding demo tenant dataset"
+npm run seed:demo
+
+echo "[dev-up-all] Seeding heavy dataset"
+npm run seed:heavy
 
 echo "[dev-up-all] Done. Kibana läuft unter http://localhost:5601 (ELASTIC_PASSWORD erforderlich)."
