@@ -1,10 +1,10 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$dockerArgs = @('compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml', 'exec')
-if ([Console]::IsInputRedirected) {
-    $dockerArgs += '-T'
-}
+$baseArgs = @('compose', '-f', 'docker-compose.yml', '-f', 'docker-compose.dev.yml')
+$execArgs = $baseArgs + @('exec')
+$runArgs = $baseArgs + @('run','--rm')
+if ([Console]::IsInputRedirected) { $execArgs += '-T'; $runArgs += '-T' }
 
 $envArgs = @()
 $index = 0
@@ -39,6 +39,11 @@ for ($j = $index; $j -lt $args.Count; $j++) {
     $manageArgs += $args[$j]
 }
 
-$fullArgs = $dockerArgs + $envArgs + @('web', 'python', 'manage.py') + $manageArgs
-
-& docker @fullArgs
+# Prefer exec; if it fails (service not running), fallback to run --no-deps
+$execFull = $execArgs + $envArgs + @('web','python','manage.py') + $manageArgs
+try {
+    & docker @execFull
+} catch {
+    $runFull = $runArgs + @('--no-deps') + $envArgs + @('web','python','manage.py') + $manageArgs
+    & docker @runFull
+}

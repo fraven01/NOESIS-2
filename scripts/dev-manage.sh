@@ -2,9 +2,12 @@
 set -euo
 { set -o pipefail; } 2>/dev/null || true
 
-COMPOSE_CMD=(docker compose -f docker-compose.yml -f docker-compose.dev.yml exec)
+BASE_COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.dev.yml)
+EXEC_CMD=("${BASE_COMPOSE[@]}" exec)
+RUN_CMD=("${BASE_COMPOSE[@]}" run --rm)
 if [ ! -t 0 ]; then
-  COMPOSE_CMD+=(-T)
+  EXEC_CMD+=(-T)
+  RUN_CMD+=(-T)
 fi
 
 ENV_ARGS=()
@@ -44,4 +47,6 @@ if ((${#POSITIONAL[@]} == 0)); then
   exit 1
 fi
 
-exec "${COMPOSE_CMD[@]}" "${ENV_ARGS[@]}" web python manage.py "${POSITIONAL[@]}"
+# Prefer exec; on failure (service not running), fallback to run --no-deps
+"${EXEC_CMD[@]}" "${ENV_ARGS[@]}" web python manage.py "${POSITIONAL[@]}" && exit 0
+exec "${RUN_CMD[@]}" --no-deps "${ENV_ARGS[@]}" web python manage.py "${POSITIONAL[@]}"
