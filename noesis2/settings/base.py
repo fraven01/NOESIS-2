@@ -8,7 +8,9 @@ from typing import Dict, List
 import environ
 
 from noesis2.api import schema as api_schema
+
 from common.logging import configure_logging
+
 
 logger = logging.getLogger(__name__)
 
@@ -240,6 +242,8 @@ ADMINS = [
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
 
 # Logging / observability
+LOGGING_CONFIG = "common.logging.configure_django_logging"
+
 LOGGING_ALLOW_UNMASKED_CONTEXT = env.bool(
     "LOGGING_ALLOW_UNMASKED_CONTEXT", default=False
 )

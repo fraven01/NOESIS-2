@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
+import copy
 import logging
+import logging.config
 import os
 import re
 import sys
@@ -24,6 +26,7 @@ except Exception:  # pragma: no cover - fallback when OTEL extras missing
 
 __all__ = [
     "configure_logging",
+    "configure_django_logging",
     "get_logger",
     "bind_log_context",
     "clear_log_context",
@@ -578,6 +581,29 @@ def configure_logging(stream: TextIO | None = None) -> None:
     _instrument_logging()
     _CONFIGURED = True
     _CONFIGURED_STREAM = active_stream
+
+
+def configure_django_logging(logging_settings: dict[str, object] | None) -> None:
+    """Django `LOGGING_CONFIG` hook that preserves structlog configuration."""
+
+    configure_logging()
+
+    if not logging_settings:
+        return
+
+    config = copy.deepcopy(logging_settings)
+    config.pop("root", None)
+
+    extras_present = any(
+        bool(config.get(key)) for key in ("handlers", "loggers", "filters")
+    )
+    if not extras_present:
+        return
+
+    config.setdefault("version", 1)
+    config.setdefault("disable_existing_loggers", False)
+
+    logging.config.dictConfig(config)
 
 
 def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
