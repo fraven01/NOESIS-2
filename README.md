@@ -61,7 +61,9 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
 
+
 > 💡 **Alles in einem Schritt?** `npm run dev:stack` (Windows: `npm run win:dev:stack`) baut App- und ELK-Images, startet beide Compose-Stacks, führt Migrationen/Bootstrap aus und seedet Demo- sowie Heavy-Datensätze.
+
 
 ### 3️⃣ Bootstrap & Smoke-Checks
 ```bash
