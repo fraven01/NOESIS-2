@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 ACTION="${1:-status}"
 COMPOSE_CMD="${COMPOSE_CMD:-docker compose}"

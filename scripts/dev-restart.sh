@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 

@@ -1,4 +1,6 @@
-set -euo pipefail
+#!/usr/bin/env bash
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 # Hinweis: Cloud Run (LiteLLM) läuft in der EU-Region, Vertex AI bleibt in us-central1.
 # Zugriffe von LiteLLM auf Vertex AI verlassen damit die EU-Region (technisch erforderlich).

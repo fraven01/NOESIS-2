@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 if [ ! -f .env ]; then
   echo "[dev-demo] Fehler: Keine .env im Projektstamm gefunden." >&2

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Be tolerant to shells without pipefail
-set -euo pipefail 2>/dev/null || set -euo
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 # Simple smoketests for local dev stack
 
@@ -15,7 +16,7 @@ bash ./scripts/smoke_litellm.sh || {
 
 echo "[dev-check] AI Core ping with tenant headers"
 # Retry a few times in case web is still warming up
-for i in {1..5}; do
+for i in $(seq 1 5); do
   if curl -fsSI \
   -H "X-Tenant-Schema: ${DEV_TENANT_SCHEMA}" \
   -H "X-Tenant-ID: ${TENANT_ID}" \

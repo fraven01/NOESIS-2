@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 # Bootstrap both the application stack and the local ELK stack for development.
 
@@ -43,7 +44,7 @@ echo "[dev-up-all] Starting ELK stack"
 $ELK_COMPOSE up -d
 
 echo "[dev-up-all] Waiting for web to respond (warm-up)"
-for i in {1..20}; do
+for i in $(seq 1 20); do
   code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ai/ping/ || true)
   if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then
     echo "[dev-up-all] Web responded with HTTP $code"

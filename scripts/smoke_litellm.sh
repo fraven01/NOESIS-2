@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Be tolerant if pipefail isn't supported in some shells on Windows
-set -euo pipefail 2>/dev/null || set -euo
+set -euo
+{ set -o pipefail; } 2>/dev/null || true
 
 # Liveliness (no auth required) with small retry loop
-for i in {1..10}; do
+for i in $(seq 1 10); do
   if curl -s http://localhost:4000/health/liveliness | grep -qi "alive"; then
     echo "LiteLLM alive"; break
   fi
