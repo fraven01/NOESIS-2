@@ -1,6 +1,6 @@
 # ELK Stack für lokale Entwicklung
 
-Die Elastic-Komponenten laufen in einem separaten Compose-Stack unter `docker/elk`. Die Konfiguration ist für Entwicklungszwecke gedacht und verzichtet auf TLS-Zertifikate, erfordert aber Dev-Passwörter.
+Die Elastic-Komponenten laufen in einem separaten Compose-Stack unter `docker/elk`. Die Konfiguration ist für Entwicklungszwecke gedacht und verzichtet auf TLS-Zertifikate, erfordert aber Dev-Passwörter. Standardmäßig verarbeitet Logstash nur lokale Datei- und Beats-Quellen; der optionale Google-Pub/Sub-Input wird ausschließlich über das Compose-Override `docker-compose.gcloud.yml` zugeschaltet.
 
 ## Voraussetzungen
 - Docker und Docker Compose v2
@@ -21,6 +21,12 @@ bash scripts/dev-up-all.sh
 
 # Nur den ELK-Stack starten (wenn App bereits läuft)
 docker compose -f docker/elk/docker-compose.yml up -d
+
+# ELK-Stack inkl. Google-Pub/Sub-Empfang starten
+docker compose \
+  -f docker/elk/docker-compose.yml \
+  -f docker/elk/docker-compose.gcloud.yml \
+  up -d
 
 # ELK-Stack wieder stoppen
 docker compose -f docker/elk/docker-compose.yml down
@@ -59,7 +65,7 @@ Die Logs werden schreibgeschützt unter `/var/log/noesis` im Logstash-Container 
 3. Für Filebeat-Setups kann `localhost:5044` als Ziel genutzt werden. Zertifikate müssen ggf. ergänzt werden.
 
 ## Betrieb in Google Cloud
-Für produktionsnahe Tests nutzen wir die Google-Cloud-Logging-Pipeline als Quelle. Die Logstash-Konfiguration enthält dafür einen optionalen `google_pubsub`-Input. Vorgehen:
+Für produktionsnahe Tests nutzen wir die Google-Cloud-Logging-Pipeline als Quelle. Der Pub/Sub-Input liegt in einer separaten Logstash-Pipeline (`pipeline.pubsub.conf`), die nur geladen wird, wenn das Compose-Override `docker-compose.gcloud.yml` eingebunden ist. Vorgehen:
 
 1. **Cloud Logging → Pub/Sub**
    ```bash
@@ -95,9 +101,9 @@ Für produktionsnahe Tests nutzen wir die Google-Cloud-Logging-Pipeline als Quel
      -f docker/elk/docker-compose.gcloud.yml \
      up
    ```
-   Standardmäßig erwartet Logstash die Credentials unter `/usr/share/logstash/config/gcp-service-account.json`. Du kannst den Zielpfad mit `GCP_CREDENTIALS_FILE` überschreiben.
+   Das Override mountet `pipeline.pubsub.conf` in das Logstash-Pipeline-Verzeichnis und aktiviert damit den Pub/Sub-Input. Standardmäßig erwartet Logstash die Credentials unter `/usr/share/logstash/config/gcp-service-account.json`. Du kannst den Zielpfad mit `GCP_CREDENTIALS_FILE` überschreiben.
 
-Die GCP-Pfade ergänzen die lokale Volume-Quelle; beide Inputs (Datei + Pub/Sub) können parallel aktiv sein. Für produktive Workloads sollten Pub/Sub-Acks überwacht und Retention/Dead-Letter-Queues konfiguriert werden.
+Die GCP-Pfade ergänzen die lokale Volume-Quelle; sobald das Override aktiv ist, laufen Datei- und Pub/Sub-Inputs parallel. Für produktive Workloads sollten Pub/Sub-Acks überwacht und Retention/Dead-Letter-Queues konfiguriert werden.
 
 ## Bekannte Einschränkungen
 - Elasticsearch benötigt ca. 4 GB RAM; auf schwächeren Maschinen kann der Dienst nicht starten.
