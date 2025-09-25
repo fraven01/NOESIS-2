@@ -53,10 +53,6 @@ services:
     environment:
       ELASTIC_PASSWORD: ${ELASTIC_PASSWORD:-changeme}
       ELASTICSEARCH_HOST: http://elasticsearch:9200
-      GCP_PROJECT_ID: ${GCP_PROJECT_ID:-}
-      GCP_PUBSUB_TOPIC: ${GCP_PUBSUB_TOPIC:-}
-      GCP_PUBSUB_SUBSCRIPTION: ${GCP_PUBSUB_SUBSCRIPTION:-}
-      GCP_CREDENTIALS_FILE: ${GCP_CREDENTIALS_FILE:-/usr/share/logstash/config/gcp-service-account.json}
     volumes:
       - ${APP_LOG_PATH:-../../logs/app}:/var/log/noesis:ro
     ports:
