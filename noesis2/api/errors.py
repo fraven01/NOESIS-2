@@ -16,11 +16,15 @@ from rest_framework import serializers
 class ErrorResponseSerializer(serializers.Serializer):
     """Generic error payload emitted by API endpoints on failure."""
 
-    detail = serializers.CharField(help_text="Human readable description of the failure.")
+    detail = serializers.CharField(
+        help_text="Human readable description of the failure."
+    )
     code = serializers.CharField(help_text="Stable machine readable error identifier.")
 
 
-if BaseModel is not None:  # pragma: no branch - executed only when pydantic is available
+if (
+    BaseModel is not None
+):  # pragma: no branch - executed only when pydantic is available
 
     class ErrorResponseModel(BaseModel):
         """Pydantic representation of :class:`ErrorResponseSerializer`."""
@@ -119,7 +123,9 @@ def _dedupe_statuses(statuses: Iterable[int]) -> Sequence[int]:
     return tuple(ordered.keys())
 
 
-def default_error_responses(statuses: Sequence[int] | None = None) -> Dict[int, OpenApiResponse]:
+def default_error_responses(
+    statuses: Sequence[int] | None = None,
+) -> Dict[int, OpenApiResponse]:
     """Return OpenAPI response objects for the given HTTP status codes."""
 
     if statuses is None:
@@ -173,4 +179,3 @@ __all__ = [
     "RATE_LIMIT_JSON_ERROR_STATUSES",
     "default_error_responses",
 ]
-

@@ -23,7 +23,9 @@ class IntakeRequestSerializer(serializers.Serializer):
 
     prompt = serializers.CharField(required=False, allow_blank=True)
     metadata = serializers.DictField(
-        child=serializers.JSONField(), required=False, help_text="Arbitrary metadata attached to the workflow state."
+        child=serializers.JSONField(),
+        required=False,
+        help_text="Arbitrary metadata attached to the workflow state.",
     )
     scope = serializers.CharField(required=False, allow_blank=True)
     needs_input = serializers.ListField(

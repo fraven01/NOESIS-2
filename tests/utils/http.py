@@ -49,7 +49,10 @@ def stable_idempotency_key(test_id: str) -> str:
 
 
 def apply_idempotency_header(
-    headers: MutableMapping[str, str], *, test_id: str, idempotency_key: str | None = None
+    headers: MutableMapping[str, str],
+    *,
+    test_id: str,
+    idempotency_key: str | None = None,
 ) -> str:
     """Populate the idempotency header on the provided mapping.
 
@@ -92,4 +95,3 @@ def build_request_headers(
     if extra:
         headers.update(extra)
     return headers
-

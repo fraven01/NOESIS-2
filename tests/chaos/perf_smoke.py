@@ -149,4 +149,7 @@ def test_scope_perf_smoke(
     # Document the key headers to aid debugging if a percentile spike occurs
     sample = results[0]
     record_property("scope_perf_first_status", sample.status)
-    record_property("scope_perf_headers", [X_TENANT_ID_HEADER, X_CASE_ID_HEADER, IDEMPOTENCY_KEY_HEADER])
+    record_property(
+        "scope_perf_headers",
+        [X_TENANT_ID_HEADER, X_CASE_ID_HEADER, IDEMPOTENCY_KEY_HEADER],
+    )

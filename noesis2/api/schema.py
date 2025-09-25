@@ -75,13 +75,17 @@ TRACE_ID_RESPONSE_HEADER_COMPONENT = {
     "schema": {"type": "string"},
     "style": "simple",
 }
-TRACE_ID_RESPONSE_HEADER_REF = f"#/components/headers/{TRACE_ID_RESPONSE_HEADER_COMPONENT_NAME}"
+TRACE_ID_RESPONSE_HEADER_REF = (
+    f"#/components/headers/{TRACE_ID_RESPONSE_HEADER_COMPONENT_NAME}"
+)
 TRACE_HEADER_EXTENSION_FLAG = "x-noesis-trace-response-header"
 
 ADMIN_BEARER_AUTH_SCHEME = "bearerAuth"
 
 
-def curl_code_sample(command: str, *, label: str = "cURL", lang: str = "bash") -> Dict[str, object]:
+def curl_code_sample(
+    command: str, *, label: str = "cURL", lang: str = "bash"
+) -> Dict[str, object]:
     """Return an ``x-codeSamples`` extension describing a curl invocation."""
 
     return {
@@ -111,7 +115,10 @@ def _build_parameter(parameter_definition: Dict[str, object]) -> OpenApiParamete
 def tenant_headers_parameters() -> List[OpenApiParameter]:
     """Return reusable tenant header parameters for schema decoration."""
 
-    return [_build_parameter(definition) for definition in TENANT_HEADER_COMPONENT_DEFINITIONS]
+    return [
+        _build_parameter(definition)
+        for definition in TENANT_HEADER_COMPONENT_DEFINITIONS
+    ]
 
 
 def tenant_header_components() -> Dict[str, Dict[str, object]]:
@@ -136,7 +143,9 @@ def trace_response_headers() -> Dict[str, Dict[str, str]]:
     return {X_TRACE_ID_HEADER: {"$ref": TRACE_ID_RESPONSE_HEADER_REF}}
 
 
-def _prepare_parameters(parameters: Sequence[OpenApiParameter]) -> List[OpenApiParameter]:
+def _prepare_parameters(
+    parameters: Sequence[OpenApiParameter],
+) -> List[OpenApiParameter]:
     """Make defensive copies of parameters so they are safe to reuse."""
 
     prepared: List[OpenApiParameter] = []
@@ -203,7 +212,9 @@ def default_extend_schema(**kwargs):
     include_tenant_headers: bool = kwargs.pop("include_tenant_headers", True)
     include_trace_header: bool = kwargs.pop("include_trace_header", False)
     include_error_responses: bool = kwargs.pop("include_error_responses", True)
-    error_statuses: Sequence[int] | None = kwargs.pop("error_statuses", DEFAULT_ERROR_STATUSES)
+    error_statuses: Sequence[int] | None = kwargs.pop(
+        "error_statuses", DEFAULT_ERROR_STATUSES
+    )
 
     parameters: Sequence[OpenApiParameter] = kwargs.pop("parameters", []) or []
     prepared_parameters: List[OpenApiParameter] = []
@@ -276,9 +287,9 @@ def default_extend_schema_view(**kwargs):
         return spectacular_extend_schema_view(**method_decorators)(view)
 
     return decorator
-def inject_trace_response_header(
-    generator, request, public, result
-):
+
+
+def inject_trace_response_header(generator, request, public, result):
     """Post-processing hook that appends the trace header to marked operations."""
 
     paths = result.get("paths", {})

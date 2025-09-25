@@ -10,9 +10,7 @@ def openapi_schema():
     """Render the OpenAPI schema once for the module-level contract tests."""
     factory = APIRequestFactory()
     view = SpectacularAPIView.as_view()
-    response = view(
-        factory.get("/api/schema/")
-    )
+    response = view(factory.get("/api/schema/"))
     assert response.status_code == 200
     return response.data
 
@@ -102,7 +100,9 @@ def test_post_responses_include_idempotent_flag(openapi_schema):
             assert content, f"{path} {method} missing JSON response content"
             resolved = _resolve_component(openapi_schema, content["schema"])
             properties = resolved.get("properties", {})
-            assert "idempotent" in properties, f"{path} {method} missing idempotent flag"
+            assert (
+                "idempotent" in properties
+            ), f"{path} {method} missing idempotent flag"
             idempotent_schema = properties["idempotent"]
             assert idempotent_schema.get("type") == "boolean"
 
@@ -138,9 +138,7 @@ def test_post_requests_document_unsupported_media_type(openapi_schema):
 
             json_error = responses.get("400")
             if json_error:
-                json_content = json_error.get("content", {}).get(
-                    "application/json", {}
-                )
+                json_content = json_error.get("content", {}).get("application/json", {})
                 json_examples = json_content.get("examples") or {}
                 assert any(
                     example.get("value", {}).get("code") == "invalid_json"

@@ -85,8 +85,12 @@ class MockLangfuseClient:
     spans: List[LangfuseSpan] = field(default_factory=list)
     events: List[Dict[str, Any]] = field(default_factory=list)
 
-    def record_span(self, trace_id: str, operation: str, metadata: Dict[str, Any]) -> None:
-        self.spans.append(LangfuseSpan(trace_id=trace_id, operation=operation, metadata=metadata))
+    def record_span(
+        self, trace_id: str, operation: str, metadata: Dict[str, Any]
+    ) -> None:
+        self.spans.append(
+            LangfuseSpan(trace_id=trace_id, operation=operation, metadata=metadata)
+        )
 
     def record_event(self, payload: Dict[str, Any]) -> None:
         self.events.append(dict(payload))
@@ -135,7 +139,9 @@ def langfuse_mock(monkeypatch: pytest.MonkeyPatch) -> MockLangfuseClient:
 
     client = MockLangfuseClient()
 
-    def _capture_dispatch(trace_id: str, node_name: str, metadata: Dict[str, Any]) -> None:
+    def _capture_dispatch(
+        trace_id: str, node_name: str, metadata: Dict[str, Any]
+    ) -> None:
         client.record_span(trace_id, node_name, metadata)
 
     def _capture_log(payload: Dict[str, Any]) -> None:

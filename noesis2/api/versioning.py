@@ -9,7 +9,9 @@ from django.http import HttpRequest, HttpResponse
 _DEFAULT_DEPRECATION_VALUE = "true"
 
 
-def _normalise_config(config: Mapping[str, Mapping[str, str]] | None) -> Mapping[str, Mapping[str, str]]:
+def _normalise_config(
+    config: Mapping[str, Mapping[str, str]] | None,
+) -> Mapping[str, Mapping[str, str]]:
     if not isinstance(config, Mapping):
         return {}
     normalised: Dict[str, Mapping[str, str]] = {}

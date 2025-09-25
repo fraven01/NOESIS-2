@@ -62,7 +62,9 @@ def pytest_runtest_logreport(report: TestReport) -> None:
         "phase": report.when,
         "duration": getattr(report, "duration", None),
         "worker": os.getenv("PYTEST_XDIST_WORKER", "master"),
-        "markers": markers if markers is not None else _serialise_keywords(report.keywords),
+        "markers": (
+            markers if markers is not None else _serialise_keywords(report.keywords)
+        ),
         "metadata": metadata,
     }
 

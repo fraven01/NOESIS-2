@@ -51,7 +51,9 @@ RUNBOOK_SCENARIOS: Iterable[tuple[str, tuple[str, ...]]] = (
 
 
 @pytest.mark.parametrize("scenario_label, actions", RUNBOOK_SCENARIOS)
-def test_runbook_documents_core_incident_scenarios(scenario_label: str, actions: tuple[str, ...]):
+def test_runbook_documents_core_incident_scenarios(
+    scenario_label: str, actions: tuple[str, ...]
+):
     """Ensure the incident runbook lists required scenarios and first actions."""
 
     runbook_text = RUNBOOK_PATH.read_text(encoding="utf-8")
@@ -99,7 +101,9 @@ def test_redis_outage_behaviour_matches_runbook(
     assert success is False, "task producers must pause when Redis is unavailable"
 
     backoff_logs = [log for log in logs if log.get("event") == "agents.queue.backoff"]
-    assert len(backoff_logs) == 1, "workers should not flood retries during Redis outages"
+    assert (
+        len(backoff_logs) == 1
+    ), "workers should not flood retries during Redis outages"
 
     runbook_hints = [
         log
@@ -124,4 +128,6 @@ def test_redis_outage_behaviour_matches_runbook(
     services = payload.get("services", {})
     redis_status = services.get("redis")
     assert isinstance(redis_status, str)
-    assert any(keyword in redis_status.lower() for keyword in ("degraded", "down", "paused"))
+    assert any(
+        keyword in redis_status.lower() for keyword in ("degraded", "down", "paused")
+    )

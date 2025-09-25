@@ -58,7 +58,9 @@ def test_ingestion_embed_retry_profile_and_dead_letter(monkeypatch):
     with pytest.raises(embed_task.MaxRetriesExceededError):
         embed_task(meta, "embeddings/chunks.json")
 
-    assert any(event.get("event") == "ingestion.dead_letter" for event in observed_events)
+    assert any(
+        event.get("event") == "ingestion.dead_letter" for event in observed_events
+    )
     assert recorded_delays == expected_delays
 
 

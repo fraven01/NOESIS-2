@@ -15,7 +15,6 @@ from rest_framework.views import APIView
 from customers.models import Domain
 from customers.tests.factories import TenantFactory
 from noesis2.api import (
-    RATE_LIMIT_ERROR_STATUSES,
     RATE_LIMIT_JSON_ERROR_STATUSES,
     schema as api_schema,
 )
@@ -92,7 +91,9 @@ def test_redoc_uses_custom_title(client, tenant):
 @pytest.mark.django_db
 @override_settings(ENABLE_API_DOCS=True, ENABLE_SWAGGER_TRY_IT_OUT=True)
 def test_swagger_ui_try_it_out_enabled(client, tenant, settings, monkeypatch):
-    settings.SPECTACULAR_SETTINGS["SWAGGER_UI_SETTINGS"] = build_swagger_ui_settings(True)
+    settings.SPECTACULAR_SETTINGS["SWAGGER_UI_SETTINGS"] = build_swagger_ui_settings(
+        True
+    )
     monkeypatch.setattr(
         spectacular_settings,
         "SWAGGER_UI_SETTINGS",
@@ -184,7 +185,10 @@ def test_default_extend_schema_view_auto_decorates_apiview():
     get_operation = schema["paths"]["/decorated/"]["get"]
 
     parameter_names = {parameter["name"] for parameter in get_operation["parameters"]}
-    expected_names = {definition["name"] for definition in api_schema.tenant_header_components().values()}
+    expected_names = {
+        definition["name"]
+        for definition in api_schema.tenant_header_components().values()
+    }
     assert expected_names.issubset(parameter_names)
 
     responses = get_operation["responses"]
@@ -200,8 +204,8 @@ def test_default_extend_schema_view_auto_decorates_apiview():
         _, error_component = _extract_component(schema, error_ref)
         assert {"detail", "code"}.issubset(error_component["properties"].keys())
 
-    bad_request_examples = (
-        responses["400"]["content"]["application/json"].get("examples", {})
+    bad_request_examples = responses["400"]["content"]["application/json"].get(
+        "examples", {}
     )
     assert any(
         example.get("value", {}).get("code") == "tenant_not_found"
@@ -219,7 +223,10 @@ def test_default_extend_schema_view_auto_decorates_viewset():
     get_operation = schema["paths"]["/decorated-viewset/"]["get"]
 
     parameter_names = {parameter["name"] for parameter in get_operation["parameters"]}
-    expected_names = {definition["name"] for definition in api_schema.tenant_header_components().values()}
+    expected_names = {
+        definition["name"]
+        for definition in api_schema.tenant_header_components().values()
+    }
     assert expected_names.issubset(parameter_names)
 
     responses = get_operation["responses"]
@@ -241,7 +248,9 @@ def test_ai_core_endpoints_expose_serializers():
     )
 
     ping_operation = schema["paths"]["/v1/ai/ping/"]["get"]
-    ping_ref = ping_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    ping_ref = ping_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
     component_name, component = _extract_component(schema, ping_ref)
     assert component_name.startswith("PingResponse")
     assert component["properties"]["ok"]["type"] == "boolean"
@@ -249,39 +258,44 @@ def test_ai_core_endpoints_expose_serializers():
         "curl" in sample.get("source", "")
         for sample in ping_operation.get("x-codeSamples", [])
     )
-    ping_examples = (
-        ping_operation["responses"]["200"]["content"]["application/json"].get("examples", {})
-    )
+    ping_examples = ping_operation["responses"]["200"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
-        example.get("value", {}).get("ok") is True
-        for example in ping_examples.values()
+        example.get("value", {}).get("ok") is True for example in ping_examples.values()
     )
     legacy_ping_operation = schema["paths"]["/ai/ping/"]["get"]
     assert legacy_ping_operation.get("deprecated") is True
     assert not ping_operation.get("deprecated")
 
     intake_operation = schema["paths"]["/v1/ai/intake/"]["post"]
-    intake_request_ref = intake_operation["requestBody"]["content"]["application/json"]["schema"]["$ref"]
-    request_component_name, request_component = _extract_component(schema, intake_request_ref)
+    intake_request_ref = intake_operation["requestBody"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
+    request_component_name, request_component = _extract_component(
+        schema, intake_request_ref
+    )
     assert request_component_name.startswith("IntakeRequest")
     assert request_component["type"] == "object"
     assert "metadata" in request_component.get("properties", {})
 
-    intake_response_ref = intake_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    intake_response_ref = intake_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
     _, intake_response_component = _extract_component(schema, intake_response_ref)
     assert "tenant" in intake_response_component["properties"]
     assert intake_response_component["properties"]["tenant"]["type"] == "string"
     assert intake_response_component["properties"]["idempotent"]["type"] == "boolean"
-    intake_request_examples = (
-        intake_operation["requestBody"]["content"]["application/json"].get("examples", {})
-    )
+    intake_request_examples = intake_operation["requestBody"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
         "prompt" in example.get("value", {})
         for example in intake_request_examples.values()
     )
-    intake_response_examples = (
-        intake_operation["responses"]["200"]["content"]["application/json"].get("examples", {})
-    )
+    intake_response_examples = intake_operation["responses"]["200"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
         example.get("value", {}).get("tenant") == "acme"
         for example in intake_response_examples.values()
@@ -298,30 +312,32 @@ def test_ai_core_endpoints_expose_serializers():
     for status_code in map(str, RATE_LIMIT_JSON_ERROR_STATUSES):
         assert status_code in intake_responses
 
-    rate_limit_examples = (
-        intake_responses["429"]["content"]["application/json"].get("examples", {})
+    rate_limit_examples = intake_responses["429"]["content"]["application/json"].get(
+        "examples", {}
     )
     assert any(
         example.get("value", {}).get("code") == "rate_limit_exceeded"
         for example in rate_limit_examples.values()
     )
-    unsupported_media_examples = (
-        intake_responses["415"]["content"]["application/json"].get("examples", {})
-    )
+    unsupported_media_examples = intake_responses["415"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
         example.get("value", {}).get("code") == "unsupported_media_type"
         for example in unsupported_media_examples.values()
     )
-    service_unavailable_examples = (
-        intake_responses["503"]["content"]["application/json"].get("examples", {})
-    )
+    service_unavailable_examples = intake_responses["503"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
         example.get("value", {}).get("code") == "service_unavailable"
         for example in service_unavailable_examples.values()
     )
 
     scope_operation = schema["paths"]["/ai/scope/"]["post"]
-    scope_response_ref = scope_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    scope_response_ref = scope_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
     _, scope_component = _extract_component(schema, scope_response_ref)
     assert scope_component["properties"]["missing"]["type"] == "array"
     assert scope_component["properties"]["idempotent"]["type"] == "boolean"
@@ -331,7 +347,9 @@ def test_ai_core_endpoints_expose_serializers():
     )
 
     needs_operation = schema["paths"]["/ai/needs/"]["post"]
-    needs_response_ref = needs_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    needs_response_ref = needs_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
     _, needs_component = _extract_component(schema, needs_response_ref)
     assert set(needs_component["properties"].keys()) >= {"missing", "mapped"}
     assert needs_component["properties"]["idempotent"]["type"] == "boolean"
@@ -341,7 +359,9 @@ def test_ai_core_endpoints_expose_serializers():
     )
 
     sysdesc_operation = schema["paths"]["/ai/sysdesc/"]["post"]
-    sysdesc_response_ref = sysdesc_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    sysdesc_response_ref = sysdesc_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
     _, sysdesc_component = _extract_component(schema, sysdesc_response_ref)
     assert set(sysdesc_component["properties"].keys()) >= {"description", "skipped"}
     assert sysdesc_component["properties"]["idempotent"]["type"] == "boolean"
@@ -375,18 +395,22 @@ def test_schema_operations_do_not_duplicate_parameters():
 def test_tenant_demo_endpoint_documented():
     from common.views import DemoView
 
-    schema = _generate_schema([path("tenant-demo/", DemoView.as_view(), name="tenant-demo")])
+    schema = _generate_schema(
+        [path("tenant-demo/", DemoView.as_view(), name="tenant-demo")]
+    )
     demo_operation = schema["paths"]["/tenant-demo/"]["get"]
-    demo_ref = demo_operation["responses"]["200"]["content"]["application/json"]["schema"]["$ref"]
+    demo_ref = demo_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
     _, demo_component = _extract_component(schema, demo_ref)
     assert demo_component["properties"]["status"]["type"] == "string"
     assert any(
         "curl" in sample.get("source", "")
         for sample in demo_operation.get("x-codeSamples", [])
     )
-    demo_examples = (
-        demo_operation["responses"]["200"]["content"]["application/json"].get("examples", {})
-    )
+    demo_examples = demo_operation["responses"]["200"]["content"][
+        "application/json"
+    ].get("examples", {})
     assert any(
         example.get("value", {}).get("status") == "ok"
         for example in demo_examples.values()
@@ -398,9 +422,9 @@ class _DecoratedAPIView(APIView):
         return Response({"status": "ok"})
 
 
-_decorated_api_view = api_schema.default_extend_schema_view(
-    include_trace_header=True
-)(_DecoratedAPIView)
+_decorated_api_view = api_schema.default_extend_schema_view(include_trace_header=True)(
+    _DecoratedAPIView
+)
 
 
 class _DummySerializer(serializers.Serializer):
@@ -414,7 +438,6 @@ class _DecoratedViewSet(viewsets.ViewSet):
         return Response([])
 
 
-_decorated_viewset = api_schema.default_extend_schema_view(
-    include_trace_header=True
-)(_DecoratedViewSet)
-
+_decorated_viewset = api_schema.default_extend_schema_view(include_trace_header=True)(
+    _DecoratedViewSet
+)

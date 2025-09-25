@@ -4,6 +4,7 @@ The implementation focuses on staging-ready defaults without executing
 anything automatically.  Header contracts follow docs/api/reference.md
 and can be overridden through environment variables.
 """
+
 from __future__ import annotations
 
 import json
@@ -38,7 +39,9 @@ class TenantHttpUser(HttpUser):
     """Base class that injects tenant headers and idempotency handling."""
 
     abstract = True
-    wait_time = between(float(os.getenv("LOCUST_WAIT_MIN", 0.5)), float(os.getenv("LOCUST_WAIT_MAX", 2)))
+    wait_time = between(
+        float(os.getenv("LOCUST_WAIT_MIN", 0.5)), float(os.getenv("LOCUST_WAIT_MAX", 2))
+    )
 
     tenant_schema = os.getenv("STAGING_TENANT_SCHEMA") or os.getenv("TENANT_SCHEMA")
     tenant_id = os.getenv("STAGING_TENANT_ID") or os.getenv("TENANT_ID")
@@ -48,7 +51,11 @@ class TenantHttpUser(HttpUser):
     idempotency_prefix = os.getenv("LOAD_IDEMPOTENCY_PREFIX", "locust-chaos")
 
     # Allows overriding host via LOCUST_BASE_URL if not passed on the command line.
-    host = (os.getenv("LOCUST_BASE_URL") or os.getenv("STAGING_WEB_URL") or "http://localhost:8000").rstrip("/")
+    host = (
+        os.getenv("LOCUST_BASE_URL")
+        or os.getenv("STAGING_WEB_URL")
+        or "http://localhost:8000"
+    ).rstrip("/")
 
     def build_headers(self) -> Dict[str, str]:
         if not self.tenant_schema or not self.tenant_id or not self.case_id:
@@ -67,21 +74,29 @@ class TenantHttpUser(HttpUser):
 
         if self.bearer_token:
             headers["Authorization"] = (
-                self.bearer_token if self.bearer_token.startswith("Bearer ") else f"Bearer {self.bearer_token}"
+                self.bearer_token
+                if self.bearer_token.startswith("Bearer ")
+                else f"Bearer {self.bearer_token}"
             )
         if self.key_alias:
             headers["X-Key-Alias"] = self.key_alias
 
         return headers
 
-    def post_json(self, path: str, payload: Dict[str, Any], *, name: str | None = None) -> None:
+    def post_json(
+        self, path: str, payload: Dict[str, Any], *, name: str | None = None
+    ) -> None:
         """Issue a POST request with tenant headers and minimal validation."""
 
         headers = self.build_headers()
         # locust's client joins host automatically; path should contain trailing slash.
-        with self.client.post(path, json=payload, headers=headers, name=name or path, catch_response=True) as response:
+        with self.client.post(
+            path, json=payload, headers=headers, name=name or path, catch_response=True
+        ) as response:
             if response.status_code >= 400:
-                response.failure(f"Unexpected status {response.status_code}: {response.text}")
+                response.failure(
+                    f"Unexpected status {response.status_code}: {response.text}"
+                )
             else:
                 response.success()
 

@@ -35,7 +35,7 @@ class DemoView(TenantSchemaRequiredMixin, APIView):
             )
         ],
         extensions=curl_code_sample(
-            "curl -H \"Host: demo.localhost\" -H \"X-Tenant-Schema: demo\" "
+            'curl -H "Host: demo.localhost" -H "X-Tenant-Schema: demo" '
             "https://api.noesis.example/tenant-demo/"
         ),
     )

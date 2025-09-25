@@ -130,8 +130,7 @@ def test_chaos_profile_exposes_invalid_documents(reason: str, chaos_env) -> None
     documents = _collect_demo_documents()
 
     assert any(
-        _matches_reason(document, reason)
-        for document in documents
+        _matches_reason(document, reason) for document in documents
     ), f"Expected demo seed to contain a document flagged with {reason}"
 
 
@@ -147,9 +146,7 @@ def test_chaos_dataset_marks_missing_type_documents(chaos_env) -> None:
     dataset = _build_chaos_dataset(profile, seed_value)
 
     assert any(
-        doc.missing_type
-        for project in dataset.projects
-        for doc in project.documents
+        doc.missing_type for project in dataset.projects for doc in project.documents
     )
 
 
@@ -187,7 +184,9 @@ def test_agent_intake_handles_invalid_seed_documents(
     documents = _collect_demo_documents()
 
     target = next((doc for doc in documents if _matches_reason(doc, reason)), None)
-    assert target is not None, f"Document with reason {reason} not present in chaos seed"
+    assert (
+        target is not None
+    ), f"Document with reason {reason} not present in chaos seed"
 
     meta = target.meta if isinstance(target.meta, dict) else {}
     payload_document = {

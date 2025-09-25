@@ -40,7 +40,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .graphs import info_intake, needs_mapping, scope_check, system_description
 from .infra import rate_limit
 from .infra.object_store import read_json, sanitize_identifier, write_json
 from .infra.resp import apply_std_headers
@@ -280,9 +279,9 @@ PING_CURL = _curl(
     " ".join(
         [
             "curl -i",
-            "-H \"X-Tenant-Schema: dev\"",
-            "-H \"X-Tenant-Id: dev-tenant\"",
-            "-H \"X-Case-Id: local\"",
+            '-H "X-Tenant-Schema: dev"',
+            '-H "X-Tenant-Id: dev-tenant"',
+            '-H "X-Case-Id: local"',
             "https://api.noesis.example/v1/ai/ping/",
         ]
     )
@@ -318,12 +317,12 @@ INTAKE_CURL = _curl(
     " ".join(
         [
             "curl -X POST https://api.noesis.example/v1/ai/intake/",
-            "-H \"Content-Type: application/json\"",
-            "-H \"X-Tenant-Schema: acme_prod\"",
-            "-H \"X-Tenant-Id: acme\"",
-            "-H \"X-Case-Id: crm-7421\"",
-            "-H \"Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a\"",
-            "-d '{\"prompt\": \"Erstelle Meeting-Notizen\"}'",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a"',
+            '-d \'{"prompt": "Erstelle Meeting-Notizen"}\'',
         ]
     )
 )
@@ -352,12 +351,12 @@ SCOPE_CURL = _curl(
     " ".join(
         [
             "curl -X POST https://api.noesis.example/v1/ai/scope/",
-            "-H \"Content-Type: application/json\"",
-            "-H \"X-Tenant-Schema: acme_prod\"",
-            "-H \"X-Tenant-Id: acme\"",
-            "-H \"X-Case-Id: crm-7421\"",
-            "-H \"Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a\"",
-            "-d '{\"prompt\": \"Erstelle Meeting-Notizen\"}'",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a"',
+            '-d \'{"prompt": "Erstelle Meeting-Notizen"}\'',
         ]
     )
 )
@@ -389,12 +388,12 @@ NEEDS_CURL = _curl(
     " ".join(
         [
             "curl -X POST https://api.noesis.example/v1/ai/needs/",
-            "-H \"Content-Type: application/json\"",
-            "-H \"X-Tenant-Schema: acme_prod\"",
-            "-H \"X-Tenant-Id: acme\"",
-            "-H \"X-Case-Id: crm-7421\"",
-            "-H \"Idempotency-Key: 9c2ef7a8-7e6b-4a55-8cb3-bf6203d86016\"",
-            "-d '{\"metadata\": {\"project\": \"acme-kickoff\"}}'",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 9c2ef7a8-7e6b-4a55-8cb3-bf6203d86016"',
+            '-d \'{"metadata": {"project": "acme-kickoff"}}\'',
         ]
     )
 )
@@ -427,12 +426,12 @@ SYSDESC_CURL = _curl(
     " ".join(
         [
             "curl -X POST https://api.noesis.example/v1/ai/sysdesc/",
-            "-H \"Content-Type: application/json\"",
-            "-H \"X-Tenant-Schema: acme_prod\"",
-            "-H \"X-Tenant-Id: acme\"",
-            "-H \"X-Case-Id: crm-7421\"",
-            "-H \"Idempotency-Key: f2b0b0f4-3c4b-4b9c-a8b5-5a4a9c8796c1\"",
-            "-d '{\"scope\": \"kickoff\"}'",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: f2b0b0f4-3c4b-4b9c-a8b5-5a4a9c8796c1"',
+            '-d \'{"scope": "kickoff"}\'',
         ]
     )
 )

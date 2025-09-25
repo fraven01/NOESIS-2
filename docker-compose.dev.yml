@@ -180,7 +180,10 @@ services:
       dockerfile: Dockerfile
     container_name: noesis2_migrate
     profiles: ["jobs"]
-    command: sh -c "python manage.py migrate_schemas --shared && python manage.py migrate_schemas --tenant"
+    command: >-
+      sh -c "pip install -r requirements.txt -r requirements-dev.txt &&
+      python manage.py migrate_schemas --shared &&
+      python manage.py migrate_schemas --tenant"
     volumes:
       - .:/app
       - staticfiles:/app/staticfiles
@@ -201,7 +204,8 @@ services:
     container_name: noesis2_bootstrap
     profiles: ["jobs"]
     command: >-
-      sh -c "python manage.py bootstrap_public_tenant --domain=localhost &&
+      sh -c "pip install -r requirements.txt -r requirements-dev.txt &&
+      python manage.py bootstrap_public_tenant --domain=localhost &&
       python manage.py create_tenant --schema=${DEV_TENANT_SCHEMA:-dev} --name='${DEV_TENANT_NAME:-Dev Tenant}' --domain=${DEV_DOMAIN:-dev.localhost} || true &&
       python manage.py migrate_schemas --tenant --schema=${DEV_TENANT_SCHEMA:-dev} &&
       DJANGO_SUPERUSER_PASSWORD=${DEV_SUPERUSER_PASSWORD:-admin123} python manage.py create_tenant_superuser --schema=${DEV_TENANT_SCHEMA:-dev} --username=${DEV_SUPERUSER_USERNAME:-admin} --email=${DEV_SUPERUSER_EMAIL:-admin@example.com} --noinput"

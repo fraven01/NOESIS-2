@@ -11,7 +11,9 @@ from drf_spectacular.views import SpectacularRedocView, SpectacularSwaggerView
 def _build_docs_title() -> str:
     """Compose the UI title including the optional deployment version label."""
 
-    base_title = getattr(settings, "API_DOCS_TITLE", settings.SPECTACULAR_SETTINGS["TITLE"])
+    base_title = getattr(
+        settings, "API_DOCS_TITLE", settings.SPECTACULAR_SETTINGS["TITLE"]
+    )
     version_label = getattr(settings, "API_DOCS_VERSION_LABEL", "").strip()
     if version_label:
         return f"{base_title} ({version_label})"

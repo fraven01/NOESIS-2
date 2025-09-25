@@ -52,6 +52,7 @@ def _load_common_headers_table() -> str:
     info_box_lines.extend(f"> {line}" for line in table_lines)
     return "\n".join(info_box_lines)
 
+
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -295,6 +296,7 @@ def build_swagger_ui_settings(enable_try_it_out: bool) -> Dict[str, object]:
         "displayRequestDuration": True,
         "persistAuthorization": True,
     }
+
 
 SPECTACULAR_SETTINGS = {
     "TITLE": API_DOCS_TITLE,

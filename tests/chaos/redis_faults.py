@@ -203,7 +203,9 @@ def test_task_producer_backoff_logs_metrics(
         success = _produce_agents_task(scope)
 
     assert success is False
-    assert any(entry.get("event") == "agents.queue.backoff" for entry in captured_events)
+    assert any(
+        entry.get("event") == "agents.queue.backoff" for entry in captured_events
+    )
     assert any(log.get("event") == "agents.queue.backoff" for log in logs)
 
 
@@ -233,7 +235,9 @@ def test_agent_error_records_langfuse_tags(
 
     assert success is False
     assert langfuse_mock.sample_rate == "1.0"
-    agent_spans = [span for span in langfuse_mock.spans if span.operation == "agents.run"]
+    agent_spans = [
+        span for span in langfuse_mock.spans if span.operation == "agents.run"
+    ]
 
     assert agent_spans, "Expected agents.run span to be recorded for AgentError"
     assert any(
