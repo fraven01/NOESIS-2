@@ -53,12 +53,15 @@ Der Session-Scope sorgt dafür, dass dieselben deterministischen Platzhalter in 
 ### 1️⃣ Vorbereitung
 - `.env.example` nach `.env` kopieren (Windows: `copy`, Linux/macOS: `cp`).
 - Optional: vorhandene Secrets und API-Keys ergänzen (LiteLLM, Gemini, Langfuse …).
+- Für den ELK-Stack die Defaults aus `.env.dev-elk` übernehmen (z. B. `cat .env.dev-elk >> .env`), damit Passwörter für `elastic` und `kibana_system` gesetzt sind.
 
 ### 2️⃣ Build & Start
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.dev.yml build
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
 ```
+
+> 💡 **Alles in einem Schritt?** `npm run dev:stack` (Windows: `npm run win:dev:stack`) baut App- und ELK-Images, startet beide Compose-Stacks, führt Migrationen/Bootstrap aus und seedet Demo- sowie Heavy-Datensätze.
 
 ### 3️⃣ Bootstrap & Smoke-Checks
 ```bash
@@ -90,6 +93,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run dev:up` | Initialisiert Datenbank & Tenants im Compose-Stack, erstellt Superuser |
 | `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/ai/scope`) aus |
 | `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`) |
+| `npm run dev:stack` / `npm run win:dev:stack` | Startet App + ELK, Migrationen, Bootstrap, Demo- & Heavy-Seeding |
 | `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
 | `npm run dev:restart` | Neustart von Web- und Worker-Containern |
 | `npm run dev:rebuild` | Rebuild von Web-/Worker-Images (`-- --with-frontend` für Tailwind) |
@@ -100,7 +104,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run jobs:rag` | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus |
 | `npm run jobs:rag:health` | Prüft pgvector/RAG-Schema |
 
-Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:rebuild`).
+Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:stack`, `win:dev:rebuild`).
 
 ### API-Schema & SDKs
 

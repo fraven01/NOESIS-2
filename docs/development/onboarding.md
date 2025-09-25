@@ -25,8 +25,12 @@ cd NOESIS-2
    docker compose -f docker-compose.yml -f docker-compose.dev.yml build
    docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d
    ```
-3. Idempotente Bootstrap-Skripte ausführen:
+3. Idempotente Bootstrap-Skripte ausführen oder den Komplettstack hochfahren:
    ```bash
+   npm run dev:stack         # App + ELK + Migrationen + Demo/Heavy-Seeding
+   # Windows-Variante:
+   npm run win:dev:stack
+   # Alternativ (nur App-Stack):
    npm run dev:up      # Migrationen, Public-Tenant, Demo-Daten & Superuser
    npm run dev:check   # Smoke-Checks (LiteLLM, /ai/ping, /ai/scope)
    ```
@@ -36,6 +40,12 @@ cd NOESIS-2
    - `npm run dev:down` stoppt und entfernt alle Container samt Volumes.
    - `npm run dev:rebuild` baut Web- und Worker-Images neu, um Python-/Node-Abhängigkeiten aufzufrischen, ohne Daten-Volumes zu
      löschen. Optional `npm run dev:rebuild -- --with-frontend`, falls auch das Frontend-Image aktualisiert werden soll.
+
+### 3.1 ELK-Smoke-Test nach dem Start
+- Übernimm die Standard-Credentials aus [`../../.env.dev-elk`](../../.env.dev-elk) in deine `.env`, falls noch nicht geschehen (`elastic`/`changeme`).
+- Öffne [http://localhost:5601](http://localhost:5601) und melde dich mit `elastic` + `ELASTIC_PASSWORD` an.
+- Navigiere zu **Discover** und setze den Filter `test_suite:chaos`, um die strukturierten Chaos-Logs zu validieren.
+- Prüfe in der Trace-Ansicht, dass Felder wie `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key` in den Log-Dokumenten auftauchen.
 
 Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/` erreichbar. Die AI-Core-Endpunkte laufen unter `http://localhost:8000/ai/` und erwarten die Header `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key`.
 
