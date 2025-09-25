@@ -98,7 +98,7 @@ services:
     volumes:
       - .:/app
       - staticfiles:/app/staticfiles
-      - ${APP_LOG_PATH:-./logs/app}:/var/log/noesis
+      - ${APP_LOG_PATH:-./logs/app}:/app/logs
     env_file:
       - .env
       - .env.docker
@@ -115,7 +115,7 @@ services:
     environment:
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      APP_LOG_DIR: /var/log/noesis
+      APP_LOG_DIR: /app/logs
 
   worker:
     build:
@@ -125,7 +125,7 @@ services:
     command: celery -A noesis2 worker -l info
     volumes:
       - .:/app
-      - ${APP_LOG_PATH:-./logs/app}:/var/log/noesis
+      - ${APP_LOG_PATH:-./logs/app}:/app/logs
     env_file:
       - .env
       - .env.docker
@@ -140,7 +140,7 @@ services:
     environment:
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      APP_LOG_DIR: /var/log/noesis
+      APP_LOG_DIR: /app/logs
 
   rag:
     image: postgres:16-alpine
