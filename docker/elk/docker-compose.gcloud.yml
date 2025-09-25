@@ -6,6 +6,11 @@ services:
       GCP_PUBSUB_SUBSCRIPTION: ${GCP_PUBSUB_SUBSCRIPTION:?Set GCP_PUBSUB_SUBSCRIPTION}
       GCP_CREDENTIALS_FILE: ${GCP_CREDENTIALS_FILE:-/usr/share/logstash/config/gcp-service-account.json}
     volumes:
+      - ${APP_LOG_PATH:-../../logs/app}:/var/log/noesis:ro
+      - type: bind
+        source: ./pipeline.pubsub.conf
+        target: /usr/share/logstash/pipeline/pipeline.pubsub.conf
+        read_only: true
       - type: bind
         source: ${GCP_CREDENTIALS_PATH:?Point to service account JSON}
         target: ${GCP_CREDENTIALS_FILE:-/usr/share/logstash/config/gcp-service-account.json}
