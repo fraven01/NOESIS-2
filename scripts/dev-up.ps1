@@ -69,6 +69,7 @@ if ($IncludeElk) {
         $AppLogPath = Join-Path -Path (Get-Location) -ChildPath $relativeLogPath
     }
     $env:APP_LOG_PATH = $AppLogPath
+    $env:APP_LOG_DIR = $AppLogPath
 
     if (-not (Test-Path -Path $AppLogPath)) {
         New-Item -ItemType Directory -Path $AppLogPath | Out-Null

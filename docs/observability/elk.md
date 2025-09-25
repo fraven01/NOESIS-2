@@ -51,6 +51,7 @@ Vor dem Start können folgende Variablen gesetzt werden:
 | `ELASTIC_PASSWORD` | Passwort für den `elastic`-User | `changeme` |
 | `KIBANA_SYSTEM_PASSWORD` | Passwort für den `kibana_system`-Account | `changeme` |
 | `APP_LOG_PATH` | Pfad zum Log-Verzeichnis der Anwendung | `../../logs/app` relativ zu `docker/elk` |
+| `APP_LOG_DIR` | Alias für denselben Host-Pfad; wird in den App-Compose-Files verwendet | `../../logs/app` relativ zu `docker/elk` |
 | `KIBANA_PUBLIC_URL` | Öffentliche URL (Proxy) für Kibana | `http://localhost:5601` |
 
 Die Logs werden schreibgeschützt unter `/var/log/noesis` im Logstash-Container gemountet. Der Stack öffnet folgende Ports:
