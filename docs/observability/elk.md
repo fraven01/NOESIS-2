@@ -12,6 +12,10 @@ Die Elastic-Komponenten laufen in einem separaten Compose-Stack unter `docker/el
 # Gesamtes Dev-Setup per npm (App + ELK + Seeding)
 npm run dev:stack
 
+# Windows-Variante
+npm run win:dev:stack
+
+
 # Gesamtes Dev-Setup (App + ELK) von Grund auf bauen & starten
 bash scripts/dev-up-all.sh
 
@@ -22,7 +26,8 @@ docker compose -f docker/elk/docker-compose.yml up -d
 docker compose -f docker/elk/docker-compose.yml down
 ```
 
-Das Oneshot-Skript `scripts/dev-up-all.sh` (alias `npm run dev:stack`) führt folgende Schritte aus:
+Das Oneshot-Skript `scripts/dev-up-all.sh` (Aliases `npm run dev:stack` bzw. `npm run win:dev:stack`) führt folgende Schritte aus:
+
 
 1. Baut die lokalen Docker-Images für Anwendung und ELK-Stack.
 2. Startet beide Compose-Stacks.

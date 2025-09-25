@@ -27,7 +27,10 @@ cd NOESIS-2
    ```
 3. Idempotente Bootstrap-Skripte ausführen oder den Komplettstack hochfahren:
    ```bash
-   npm run dev:stack   # App + ELK + Migrationen + Demo/Heavy-Seeding
+
+   npm run dev:stack         # App + ELK + Migrationen + Demo/Heavy-Seeding
+   # Windows-Variante:
+   npm run win:dev:stack
    # Alternativ (nur App-Stack):
    npm run dev:up      # Migrationen, Public-Tenant, Demo-Daten & Superuser
    npm run dev:check   # Smoke-Checks (LiteLLM, /ai/ping, /ai/scope)
