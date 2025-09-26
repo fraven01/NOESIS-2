@@ -6,13 +6,16 @@ import pytest
 
 @pytest.fixture(autouse=True, scope="session")
 def ensure_default_pii_secret():
-    """Guarantee tests start with an empty default PII secret.
+    """Guarantee tests start with hardened PII defaults.
 
-    Some CI environments define ``PII_HMAC_SECRET`` with placeholder values
-    (for example ``"test"``) which would otherwise bleed into the Django
-    settings during import time. The default behaviour in "industrial" mode
-    expects the secret to be unset, so we proactively clear both the
-    environment variable and the derived setting before any tests run.
+    Some CI environments define ``PII_HMAC_SECRET`` or tweak redaction toggles
+    like ``PII_LOGGING_REDACTION`` to ease local debugging.  When these
+    environment variables leak into the pytest process they flip the Django
+    settings before the test suite has a chance to run, causing the "default"
+    assertions in ``common/tests/test_pii_flags.py`` to fail.
+
+    We therefore reset the critical defaults that industrial mode relies on:
+    an empty HMAC secret and logging redaction enabled.
     """
 
     from pytest import MonkeyPatch
@@ -20,10 +23,13 @@ def ensure_default_pii_secret():
 
     patcher = MonkeyPatch()
     patcher.delenv("PII_HMAC_SECRET", raising=False)
+    patcher.delenv("PII_LOGGING_REDACTION", raising=False)
     django_settings.PII_HMAC_SECRET = ""
+    django_settings.PII_LOGGING_REDACTION = True
     yield
     patcher.undo()
     django_settings.PII_HMAC_SECRET = ""
+    django_settings.PII_LOGGING_REDACTION = True
 
 
 @pytest.fixture(autouse=True, scope="session")
