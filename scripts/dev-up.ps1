@@ -132,7 +132,7 @@ Write-Host "[dev-up] Waiting for web to respond (warm-up)"
 $ok = $false
 for ($i = 0; $i -lt 20; $i++) {
     try {
-        $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/ai/ping/' -Method GET
+        $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/' -Method GET
         if ($resp.StatusCode -ge 200 -and $resp.StatusCode -lt 500) {
             Write-Host "[dev-up] Web responded with HTTP $($resp.StatusCode)"
             $ok = $true
@@ -151,16 +151,28 @@ Invoke-Expression 'npm run dev:init'
 
 if ($IncludeElk -or $SeedDemo) {
     Write-Host '[dev-up] Seeding demo tenant dataset'
-    Invoke-Expression 'npm run seed:demo'
+    Invoke-Expression "$AppCompose exec web python manage.py create_demo_data --profile demo --seed 1337"
 }
 
 if ($IncludeElk -or $SeedHeavy) {
     Write-Host '[dev-up] Seeding heavy dataset'
-    Invoke-Expression 'npm run seed:heavy'
+    Invoke-Expression "$AppCompose exec web python manage.py create_demo_data --profile heavy --seed 42"
 }
 
-Write-Host "[dev-up] Done. Try:"
-Write-Host "curl -i -H 'X-Tenant-Schema: $DevTenantSchema' -H 'X-Tenant-ID: dev-tenant' -H 'X-Case-ID: local' http://localhost:8000/ai/ping/'"
+$tenantSchema = if ($env:DEV_TENANT_SCHEMA) { $env:DEV_TENANT_SCHEMA } else { 'demo' }
+$tenantId = if ($env:DEV_TENANT_ID) { $env:DEV_TENANT_ID } else { 'demo' }
+Write-Host '[dev-up] Optional tenant ping (nach Bootstrap):'
+$tenantPing = @"
+curl -i `
+  -H 'X-Tenant-Schema: $tenantSchema' `
+  -H 'X-Tenant-Id: $tenantId' `
+  -H 'X-Case-ID: local' `
+  http://localhost:8000/ai/ping/
+"@
+Write-Host $tenantPing
+
+Write-Host '[dev-up] Done. Optional tenant ping (einzeilig):'
+Write-Host "curl -i -H 'X-Tenant-Schema: $tenantSchema' -H 'X-Tenant-Id: $tenantId' -H 'X-Case-ID: local' http://localhost:8000/ai/ping/"
 
 if ($IncludeElk) {
     Write-Host '[dev-up] Kibana läuft unter http://localhost:5601 (ELASTIC_PASSWORD erforderlich).'
