@@ -104,7 +104,7 @@ class Redactor:
         (re.compile(r"\bGOCSPX-[A-Za-z0-9_-]{10,}\b"), MASK),
     )
 
-    _CARD_PATTERN = re.compile(r"(?:\d[ -]?){13,19}")
+    _CARD_PATTERN = re.compile(r"\b(?:\d[ -]?){12,18}\d\b")
 
     def __init__(self, mask: str = MASK) -> None:
         self.mask = mask
