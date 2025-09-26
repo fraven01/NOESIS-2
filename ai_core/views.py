@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import re
+from importlib import import_module
 from uuid import uuid4
 
 from django.conf import settings
@@ -525,7 +526,12 @@ class _GraphView(_BaseAgentView):
     def get_graph(self):  # pragma: no cover - trivial indirection
         if not self.graph_name:
             raise NotImplementedError("graph_name must be configured on subclasses")
-        return globals()[self.graph_name]
+
+        module_path = f"ai_core.graphs.{self.graph_name}"
+        try:
+            return import_module(module_path)
+        except ModuleNotFoundError as exc:  # pragma: no cover - defensive
+            raise KeyError(self.graph_name) from exc
 
     def post(self, request: Request) -> Response:
         return _run_graph(request, self.get_graph())
