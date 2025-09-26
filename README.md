@@ -130,7 +130,7 @@ Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung 
 | `npm run e2e` | Playwright E2E-Tests |
 | `npm run test` | Vitest-Unit-Tests für Frontend |
 | `npm run test:py` | Python-Tests innerhalb des Web-Containers |
-| `npm run test:py:cov` | Python-Tests inkl. Coverage |
+| `npm run test:py:cov` | Python-Tests inkl. Coverage für `ai_core`, `common`, `customers`, `documents`, `organizations`, `profiles`, `projects`, `users`, `theme` und `noesis2` |
 | `npm run lint` | Ruff + Black (Check-Modus) |
 | `npm run lint:fix` | Ruff (Fix) + Black Formatierung |
 | `npm run format` | Prettier für JS/TS/CSS/MD/JSON |
@@ -162,6 +162,8 @@ npm run e2e            # Playwright E2E
 ```
 
 Der Python-Test-Runner installiert die benötigten Abhängigkeiten on-the-fly in einem temporären Container und räumt nach dem Lauf automatisch auf.
+
+`npm run test:py:cov` ruft `pytest` mit gezielten `--cov`-Parametern für alle relevanten Django- und Service-Module auf. Die `.coveragerc` blendet Migrations- und Settings-Pfade aus, sodass der Bericht nur produktiven Quellcode berücksichtigt.
 
 ### Chaos-Tests (Fault Injection)
 
