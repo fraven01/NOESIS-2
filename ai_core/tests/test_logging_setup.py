@@ -30,7 +30,10 @@ def _emit_log_line(capsys) -> dict[str, object]:
 
     with tracer.start_as_current_span("test-span"):
         logger = get_logger(__name__)
-        logger.info("logging smoke test", foo="bar")
+        level = logging.getLogger().getEffectiveLevel()
+        if level < logging.INFO:
+            level = logging.INFO
+        logger.log(level, "logging smoke test", foo="bar")
 
     captured = capsys.readouterr()
     line = captured.err.strip().splitlines()[-1]
