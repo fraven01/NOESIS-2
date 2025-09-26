@@ -65,10 +65,22 @@ class Redactor:
     )
 
     _PROMPT_FIELDS: tuple[str, ...] = ("prompt", "response")
+    _ALLOWLISTED_KEYS: frozenset[str] = frozenset({"@timestamp", "timestamp"})
 
     _SUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         (re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE), MASK),
-        (re.compile(r"(?<!\w)\+?[0-9]{1,3}[0-9()\s.-]{5,}[0-9]\b"), MASK),
+        (
+            re.compile(
+                r"(?m)^\s*(?:\+49(?:[ ()\-/]?\d){6,14}\d|0\d{2,5}(?:[ ()\-/]?\d){3,}\d)\s*$"
+            ),
+            MASK,
+        ),
+        (
+            re.compile(
+                r"(?<!\w)(?:\+49(?:[ ()\-/]?\d){6,14}\d|0\d{2,5}(?:[ ()\-/]?\d){3,}\d)",
+            ),
+            MASK,
+        ),
         (re.compile(r"\b[A-Z]{2}[0-9]{2}[A-Z0-9]{10,30}\b"), MASK),
         (re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE), MASK),
         (
@@ -114,6 +126,8 @@ class Redactor:
 
     def _redact_value(self, key: str | None, value: object) -> object:
         if key in {"logging.googleapis.com/spanId"}:
+            return value
+        if key in self._ALLOWLISTED_KEYS:
             return value
         if isinstance(value, str):
             return self._redact_string(key, value)
