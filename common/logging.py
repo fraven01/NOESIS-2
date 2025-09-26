@@ -562,9 +562,8 @@ def configure_logging(stream: TextIO | None = None) -> None:
         if _REDACTOR is None:
             _REDACTOR = Redactor()
 
-        if _CONFIGURED_STREAM is not active_stream and _REDACTOR is not None:
-            _configure_stdlib_logging(level, _REDACTOR, active_stream, pii_processor)
-            _CONFIGURED_STREAM = active_stream
+        _configure_stdlib_logging(level, _REDACTOR, active_stream, pii_processor)
+        _CONFIGURED_STREAM = active_stream
         return
 
     redactor = Redactor()
