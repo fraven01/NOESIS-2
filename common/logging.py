@@ -357,8 +357,8 @@ def _otel_trace_processor(
         return f"{value:0{width}x}"
 
     if not span_context or not span_context.is_valid:
-        event_dict["trace_id"] = None
-        event_dict["span_id"] = None
+        event_dict["trace_id"] = ""
+        event_dict["span_id"] = ""
         return event_dict
 
     trace_id = _format_hex(span_context.trace_id, 32)
