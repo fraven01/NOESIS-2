@@ -530,6 +530,10 @@ class _GraphView(_BaseAgentView):
         if not self.graph_name:
             raise NotImplementedError("graph_name must be configured on subclasses")
 
+        candidate = globals().get(self.graph_name)
+        if candidate is not None and hasattr(candidate, "run"):
+            return candidate
+
         module_path = f"ai_core.graphs.{self.graph_name}"
         try:
             return import_module(module_path)
