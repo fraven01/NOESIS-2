@@ -63,6 +63,9 @@ _JSON_RENDERER = structlog.processors.JSONRenderer()
 _CONFIGURED = False
 _REDACTOR: Redactor | None = None
 _CONFIGURED_STREAM: TextIO | None = None
+_FILE_STREAM: TextIO | None = None
+_FILE_STREAM_PATH: str | None = None
+_FILE_HANDLER: logging.StreamHandler | None = None
 _MAX_LOG_STRUCTURED_BYTES = 64 * 1024
 _LOG_JSON_DUMP_KWARGS: dict[str, object] = {
     "ensure_ascii": False,
@@ -468,13 +471,16 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
 def _configure_stdlib_logging(
     level: int,
     redactor: Redactor,
-    stream: TextIO | None,
+    target_stream: TextIO | None,
     pii_processor: structlog.types.Processor | None,
+    file_stream: TextIO | None,
 ) -> None:
     handler: logging.StreamHandler | None = None
     root_logger = logging.getLogger()
 
     for existing in root_logger.handlers:
+        if getattr(existing, "_noesis_file_handler", False):  # type: ignore[attr-defined]
+            continue
         if isinstance(existing, logging.StreamHandler):
             handler = existing
             break
@@ -482,14 +488,14 @@ def _configure_stdlib_logging(
     stream_closed = bool(handler and getattr(handler.stream, "closed", False))
 
     if handler is None or stream_closed:
-        handler = logging.StreamHandler(stream)
+        handler = logging.StreamHandler(target_stream)
     else:
         try:
             handler.flush()
         except ValueError:
-            handler = logging.StreamHandler(stream)
+            handler = logging.StreamHandler(target_stream)
         else:
-            handler.setStream(stream)
+            handler.setStream(target_stream)
 
     handler.setLevel(level)
     foreign_pre_chain = [
@@ -504,14 +510,52 @@ def _configure_stdlib_logging(
         foreign_pre_chain.append(pii_processor)
     foreign_pre_chain.extend([redactor, _stringify_ids_for_payload])
 
-    handler.setFormatter(
-        structlog.stdlib.ProcessorFormatter(
-            processor=_JSON_RENDERER,
-            foreign_pre_chain=foreign_pre_chain,
-        )
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processor=_JSON_RENDERER,
+        foreign_pre_chain=foreign_pre_chain,
     )
 
-    root_logger.handlers = [handler]
+    handler.setFormatter(formatter)
+
+    handlers: list[logging.Handler] = [handler]
+
+    global _FILE_HANDLER
+    if file_stream is not None:
+        file_handler = _FILE_HANDLER
+        needs_new_handler = True
+        if isinstance(file_handler, logging.StreamHandler):
+            file_closed = bool(getattr(file_handler.stream, "closed", False))
+            if not file_closed:
+                try:
+                    file_handler.flush()
+                except ValueError:
+                    file_handler = None
+                else:
+                    file_handler.setStream(file_stream)
+                    needs_new_handler = False
+        if file_handler is None or needs_new_handler:
+            file_handler = logging.StreamHandler(file_stream)
+        file_handler.setLevel(level)
+        file_handler.setFormatter(
+            structlog.stdlib.ProcessorFormatter(
+                processor=_JSON_RENDERER,
+                foreign_pre_chain=foreign_pre_chain.copy(),
+            )
+        )
+        setattr(file_handler, "_noesis_file_handler", True)
+        handlers.append(file_handler)
+        _FILE_HANDLER = file_handler
+    else:
+        if _FILE_HANDLER is not None:
+            try:
+                stream_obj = getattr(_FILE_HANDLER, "stream", None)
+                if stream_obj not in (None, target_stream, sys.stderr):
+                    stream_obj.close()
+            except Exception:
+                pass
+        _FILE_HANDLER = None
+
+    root_logger.handlers = handlers
     root_logger.setLevel(level)
 
 
@@ -529,8 +573,28 @@ def _log_level_from_env() -> int:
     return getattr(logging, level_name, logging.INFO)
 
 
+def _close_file_stream() -> None:
+    """Close and reset the cached file stream if present."""
+
+    global _FILE_STREAM, _FILE_STREAM_PATH
+
+    stream = _FILE_STREAM
+    _FILE_STREAM = None
+    _FILE_STREAM_PATH = None
+
+    if stream is None:
+        return
+
+    try:
+        stream.close()
+    except Exception:
+        pass
+
+
 def _stream_from_env() -> TextIO | None:
-    """Optionally open a log file when APP_LOG_DIR or LOG_FILE_PATH is set."""
+    """Optionally open or reuse a log file when APP_LOG_DIR or LOG_FILE_PATH is set."""
+
+    global _FILE_STREAM, _FILE_STREAM_PATH
 
     path = os.getenv("LOG_FILE_PATH")
     if not path:
@@ -538,12 +602,24 @@ def _stream_from_env() -> TextIO | None:
         if app_log_dir:
             path = os.path.join(app_log_dir, "noesis-app.log")
     if not path:
+        _close_file_stream()
         return None
+
+    cached = _FILE_STREAM
+    if cached is not None:
+        closed = bool(getattr(cached, "closed", False))
+        if not closed and _FILE_STREAM_PATH == path:
+            return cached
+        _close_file_stream()
+
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # line-buffered text stream
-        return open(path, mode="a", encoding="utf-8", buffering=1)
+        _FILE_STREAM = open(path, mode="a", encoding="utf-8", buffering=1)
+        _FILE_STREAM_PATH = path
+        return _FILE_STREAM
     except Exception:
+        _close_file_stream()
         return None
 
 
@@ -552,7 +628,13 @@ def configure_logging(stream: TextIO | None = None) -> None:
 
     global _CONFIGURED, _REDACTOR, _CONFIGURED_STREAM
 
-    active_stream = stream or _stream_from_env() or sys.stderr
+    file_stream: TextIO | None = None
+    if stream is None:
+        file_stream = _stream_from_env()
+    else:
+        _close_file_stream()
+
+    active_stream = stream or sys.stderr
 
     level = _log_level_from_env()
 
@@ -562,12 +644,33 @@ def configure_logging(stream: TextIO | None = None) -> None:
         if _REDACTOR is None:
             _REDACTOR = Redactor()
 
-        _configure_stdlib_logging(level, _REDACTOR, active_stream, pii_processor)
-        _CONFIGURED_STREAM = active_stream
+
+        file_handler_missing = file_stream is not None and _FILE_HANDLER is None
+        file_handler_should_remove = file_stream is None and _FILE_HANDLER is not None
+
+        if (
+            (_CONFIGURED_STREAM is not active_stream)
+            or file_handler_missing
+            or file_handler_should_remove
+        ) and _REDACTOR is not None:
+            _configure_stdlib_logging(
+                level,
+                _REDACTOR,
+                active_stream,
+                pii_processor,
+                file_stream,
+            )
+            _CONFIGURED_STREAM = active_stream
         return
 
     redactor = Redactor()
-    _configure_stdlib_logging(level, redactor, active_stream, pii_processor)
+    _configure_stdlib_logging(
+        level,
+        redactor,
+        active_stream,
+        pii_processor,
+        file_stream,
+    )
 
     structlog.configure(
         processors=_structlog_processors(redactor, pii_processor),
