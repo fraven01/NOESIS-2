@@ -40,6 +40,13 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from ai_core.graphs import (
+    info_intake,
+    needs_mapping,
+    scope_check,
+    system_description,
+)
+
 from .infra import rate_limit
 from .infra.object_store import read_json, sanitize_identifier, write_json
 from .infra.resp import apply_std_headers
