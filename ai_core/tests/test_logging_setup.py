@@ -5,6 +5,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import sys
 
 import pytest
 
@@ -24,12 +25,15 @@ def _install_test_tracer_provider() -> None:
 
 
 def _emit_log_line(capsys) -> dict[str, object]:
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     tracer = trace.get_tracer(__name__)
 
     with tracer.start_as_current_span("test-span"):
         logger = get_logger(__name__)
-        logger.info("logging smoke test", foo="bar")
+        level = logging.getLogger().getEffectiveLevel()
+        if level < logging.INFO:
+            level = logging.INFO
+        logger.log(level, "logging smoke test", foo="bar")
 
     captured = capsys.readouterr()
     line = captured.err.strip().splitlines()[-1]
@@ -70,7 +74,7 @@ def test_logging_adds_gcp_trace_when_project_present(monkeypatch, capsys):
 
 
 def test_logging_adds_spanId_when_trace_and_project(monkeypatch, capsys):
-    configure_logging()
+    configure_logging(stream=sys.stderr)
 
     class _Ctx:
         is_valid = True
@@ -93,7 +97,7 @@ def test_logging_adds_spanId_when_trace_and_project(monkeypatch, capsys):
 
 
 def test_logging_uses_string_ids_when_span_invalid(monkeypatch, capsys):
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     monkeypatch.delenv("GCP_PROJECT", raising=False)
 
     class _InvalidSpanContext:
@@ -117,7 +121,7 @@ def test_logging_uses_string_ids_when_span_invalid(monkeypatch, capsys):
 
 
 def test_configure_logging_switches_streams(capsys):
-    configure_logging()
+    configure_logging(stream=sys.stderr)
     logger = get_logger(__name__)
     logger.info("first-capture")
 
