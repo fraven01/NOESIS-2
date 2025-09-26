@@ -360,8 +360,8 @@ def _otel_trace_processor(
         return f"{value:0{width}x}"
 
     if not span_context or not span_context.is_valid:
-        event_dict["trace_id"] = None
-        event_dict["span_id"] = None
+        event_dict["trace_id"] = ""
+        event_dict["span_id"] = ""
         return event_dict
 
     trace_id = _format_hex(span_context.trace_id, 32)
@@ -643,6 +643,7 @@ def configure_logging(stream: TextIO | None = None) -> None:
     if _CONFIGURED:
         if _REDACTOR is None:
             _REDACTOR = Redactor()
+
 
         file_handler_missing = file_stream is not None and _FILE_HANDLER is None
         file_handler_should_remove = file_stream is None and _FILE_HANDLER is not None
