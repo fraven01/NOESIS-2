@@ -46,7 +46,7 @@ $ELK_COMPOSE up -d
 
 echo "[dev-up-all] Waiting for web to respond (warm-up)"
 for i in $(seq 1 20); do
-  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ai/ping/ || true)
+  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ || true)
   if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then
     echo "[dev-up-all] Web responded with HTTP $code"
     break

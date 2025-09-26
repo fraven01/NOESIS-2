@@ -26,8 +26,8 @@ $COMPOSE up -d
 
 echo "[dev-up] Waiting for web to respond (warm-up)"
 for i in $(seq 1 20); do
-  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ai/ping/ || true)
-  # Consider 200..499 as web up; 5xx or 000 means not ready yet
+  code=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/ || true)
+  # Consider 200..499 as web up; 5xx/000 means not ready yet
   if [ -n "$code" ] && [ "$code" -ge 200 ] && [ "$code" -lt 500 ]; then
     echo "[dev-up] Web responded with HTTP $code"; break
   fi
@@ -37,4 +37,9 @@ done
 echo "[dev-up] Init jobs: migrate + bootstrap"
 npm run dev:init
 
-echo "[dev-up] Done. Try: curl -i -H 'X-Tenant-Schema: ${DEV_TENANT_SCHEMA}' -H 'X-Tenant-ID: dev-tenant' -H 'X-Case-ID: local' http://localhost:8000/ai/ping/"
+echo "[dev-up] Optional tenant ping (nach Bootstrap):"
+echo "curl -i \\" 
+echo "  -H 'X-Tenant-Schema: \${DEV_TENANT_SCHEMA:-demo}' \\" 
+echo "  -H 'X-Tenant-Id: \${DEV_TENANT_ID:-demo}' \\" 
+echo "  -H 'X-Case-ID: local' \\" 
+echo "  http://localhost:8000/ai/ping/"
