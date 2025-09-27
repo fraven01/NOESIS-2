@@ -71,7 +71,9 @@ class VectorStoreRouter:
     defensive cap on ``top_k`` values (minimum 1, maximum 10).
     """
 
-    def __init__(self, stores: Mapping[str, VectorStore], default_scope: str = "global"):
+    def __init__(
+        self, stores: Mapping[str, VectorStore], default_scope: str = "global"
+    ):
         if default_scope not in stores:
             msg = "default_scope '%s' is not present in provided stores"
             raise ValueError(msg % default_scope)

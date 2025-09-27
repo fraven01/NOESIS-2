@@ -43,11 +43,15 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graph.schemas import merge_state, normalize_meta
 from ai_core.graphs import info_intake, needs_mapping, scope_check, system_description  # noqa: F401
+
+# Import graphs so they are available via module globals for Legacy views.
+
 
 from .infra import rate_limit
 from .infra.resp import apply_std_headers

@@ -53,7 +53,9 @@ def run(
         raise ValueError("tenant_id required")
     case_id = meta.get("case") or meta.get("case_id")
     router = _get_router()
-    logger.debug("Executing RAG retrieval", extra={"tenant_id": tenant_id, "top_k": top_k})
+    logger.debug(
+        "Executing RAG retrieval", extra={"tenant_id": tenant_id, "top_k": top_k}
+    )
     chunks = router.search(
         query,
         tenant_id=tenant_id,
