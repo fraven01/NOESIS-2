@@ -533,3 +533,41 @@ def test_check_demo_data_chaos_requires_invalid_documents():
     payload = json.loads(stdout.getvalue())
     assert payload["event"] == "check.failed"
     assert payload["reason"] == "chaos_missing_invalids"
+
+
+@pytest.mark.django_db
+def test_create_demo_data_include_org_requires_wipe():
+    with pytest.raises(CommandError) as excinfo:
+        call_command("create_demo_data", "--include-org")
+
+    assert "--wipe" in str(excinfo.value)
+
+
+@pytest.mark.django_db
+def test_create_demo_data_heavy_profile_with_overrides():
+    stdout = StringIO()
+    call_command(
+        "create_demo_data",
+        "--profile",
+        "heavy",
+        "--seed",
+        "777",
+        "--projects",
+        "2",
+        "--docs-per-project",
+        "1",
+        stdout=stdout,
+    )
+
+    summary = json.loads(stdout.getvalue())
+    assert summary["profile"] == "heavy"
+    assert summary["counts"]["projects"] == 2
+    assert summary["counts"]["documents"] == 2
+
+    with schema_context("demo"):
+        org = Organization.objects.get(slug="demo")
+        with set_current_organization(org):
+            projects = list(Project.objects.filter(organization=org))
+            assert len(projects) == 2
+            for project in projects:
+                assert Document.objects.filter(project=project).count() == 1
