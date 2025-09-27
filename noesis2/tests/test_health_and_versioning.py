@@ -4,7 +4,6 @@ from typing import Any, Dict
 from unittest import mock
 
 import pytest
-from django.conf import settings
 from django.http import HttpRequest, HttpResponse
 from django.test import override_settings
 from django.urls import path
@@ -21,6 +20,14 @@ from noesis2.api.versioning import (
     mark_deprecated_response,
 )
 from noesis2.tests.test_api_schema import tenant  # noqa: F401 re-export fixture
+
+
+DEPRECATION_CONFIG = {
+    "ai-core-legacy": {
+        "deprecation": "Mon, 01 Jan 2024 00:00:00 GMT",
+        "sunset": "Mon, 01 Jul 2024 00:00:00 GMT",
+    }
+}
 
 
 @pytest.fixture
@@ -119,7 +126,10 @@ def test_version_endpoint_rejects_unsupported_version(api_client, tenant):
     assert payload["supported"] == ["legacy", "2024-01-01"]
 
 
-@override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@override_settings(
+    ROOT_URLCONF="noesis2.tests.test_health_and_versioning",
+    API_DEPRECATIONS=DEPRECATION_CONFIG,
+)
 @pytest.mark.django_db
 def test_version_endpoint_legacy_version_marks_deprecated(api_client, tenant):
     response = api_client.get(
@@ -130,8 +140,8 @@ def test_version_endpoint_legacy_version_marks_deprecated(api_client, tenant):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "version": "legacy"}
-    assert response["Deprecation"] == settings.API_DEPRECATIONS["ai-core-legacy"]["deprecation"]
-    assert response["Sunset"] == settings.API_DEPRECATIONS["ai-core-legacy"]["sunset"]
+    assert response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    assert response["Sunset"] == DEPRECATION_CONFIG["ai-core-legacy"]["sunset"]
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
@@ -149,15 +159,18 @@ def test_version_endpoint_modern_version_has_no_deprecation_headers(api_client, 
     assert "Sunset" not in response
 
 
-@override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
+@override_settings(
+    ROOT_URLCONF="noesis2.tests.test_health_and_versioning",
+    API_DEPRECATIONS=DEPRECATION_CONFIG,
+)
 @pytest.mark.django_db
 def test_mixin_adds_deprecation_headers(api_client, tenant):
     response = api_client.get("/test/mixin/")
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    assert response["Deprecation"] == settings.API_DEPRECATIONS["ai-core-legacy"]["deprecation"]
-    assert response["Sunset"] == settings.API_DEPRECATIONS["ai-core-legacy"]["sunset"]
+    assert response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    assert response["Sunset"] == DEPRECATION_CONFIG["ai-core-legacy"]["sunset"]
 
 
 def test_health_handler_writes_plain_response():
@@ -326,6 +339,7 @@ class _DummyView(DeprecationHeadersMixin, _DummyBase):
     api_deprecation_id = "ai-core-legacy"
 
 
+@override_settings(API_DEPRECATIONS=DEPRECATION_CONFIG)
 def test_mixin_finalize_response_adds_headers():
     request = HttpRequest()
     response = HttpResponse()
@@ -334,9 +348,12 @@ def test_mixin_finalize_response_adds_headers():
     result = view.finalize_response(request, response)
 
     assert result["X-Base"] == "called"
-    assert result["Deprecation"] == settings.API_DEPRECATIONS["ai-core-legacy"]["deprecation"]
-    assert result["Sunset"] == settings.API_DEPRECATIONS["ai-core-legacy"]["sunset"]
-    assert request._api_deprecation_headers["Deprecation"] == settings.API_DEPRECATIONS["ai-core-legacy"]["deprecation"]
+    assert result["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    assert result["Sunset"] == DEPRECATION_CONFIG["ai-core-legacy"]["sunset"]
+    assert (
+        request._api_deprecation_headers["Deprecation"]
+        == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    )
 
 
 def test_build_deprecation_headers_defaults_without_config():
