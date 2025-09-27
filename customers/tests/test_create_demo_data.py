@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 from io import StringIO
 
@@ -8,7 +9,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django_tenants.utils import schema_context
 
-from customers.models import Tenant
+from customers.models import Domain, Tenant
 from documents.models import Document, DocumentType
 from organizations.models import Organization, OrgMembership
 from organizations.utils import set_current_organization
@@ -252,6 +253,54 @@ def test_profile_demo_overrides():
                 doc.file.close()
                 payload = json.loads(json_content)
                 assert set(payload) == {"id", "project", "idx", "title"}
+
+
+@pytest.mark.django_db
+def test_create_demo_data_logging_events_snapshot(caplog):
+    caplog.set_level(logging.INFO)
+
+    stdout = StringIO()
+    call_command(
+        "create_demo_data",
+        "--profile",
+        "baseline",
+        "--seed",
+        "2025",
+        "--domain",
+        "seed-demo.example",
+        stdout=stdout,
+    )
+
+    parsed_events = []
+    for record in caplog.records:
+        message = record.getMessage()
+        if not message.startswith("{"):
+            continue
+        try:
+            payload = json.loads(message)
+        except json.JSONDecodeError:
+            continue
+        if payload.get("event", "").startswith("seed."):
+            parsed_events.append(payload)
+
+    assert parsed_events == [
+        {"event": "seed.started", "profile": "baseline", "seed": 2025},
+        {"event": "seed.public.tenant_ensured", "tenant": "demo"},
+        {"event": "seed.tenant.switch", "schema": "demo"},
+        {
+            "event": "seed.done",
+            "profile": "baseline",
+            "seed": 2025,
+            "counts": {"projects": 2, "documents": 2, "users": 1, "orgs": 1},
+        },
+    ]
+
+    summary = json.loads(stdout.getvalue())
+    assert summary == parsed_events[-1]
+
+    domain = Domain.objects.get(domain="seed-demo.example")
+    assert domain.tenant.schema_name == "demo"
+    assert domain.is_primary is True
 
 
 @pytest.mark.django_db
