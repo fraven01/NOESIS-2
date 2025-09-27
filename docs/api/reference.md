@@ -169,6 +169,9 @@ Startet einen Ingestion-Workflow für zuvor hochgeladene Dokumente. Der Prozess 
 ### POST `/ai/scope/`
 Validiert Zugriffsscope und Kontextinformationen für eine Anfrage. Triggert den LangGraph-Knoten `scope_check`.
 
+> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
+> shallow overwrite mit dem bestehenden State zusammen.
+
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
@@ -206,6 +209,9 @@ Validiert Zugriffsscope und Kontextinformationen für eine Anfrage. Triggert den
 ### POST `/ai/intake/`
 Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 
+> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
+> shallow overwrite mit dem bestehenden State zusammen.
+
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
@@ -232,6 +238,9 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 
 ### POST `/ai/needs/`
 Ermittelt offene Aufgaben und Anforderungen (`needs_mapping`).
+
+> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
+> shallow overwrite mit dem bestehenden State zusammen.
 
 **Headers** wie `/ai/intake/`.
 
@@ -260,6 +269,9 @@ Ermittelt offene Aufgaben und Anforderungen (`needs_mapping`).
 
 ### POST `/ai/sysdesc/`
 Erzeugt eine Systembeschreibung zur Weiterleitung an nachgelagerte Agenten (`system_description`).
+
+> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
+> shallow overwrite mit dem bestehenden State zusammen.
 
 **Headers** wie `/ai/intake/`.
 
