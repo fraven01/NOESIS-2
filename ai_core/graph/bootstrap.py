@@ -2,7 +2,13 @@
 
 from __future__ import annotations
 
-from ai_core.graphs import info_intake, needs_mapping, scope_check, system_description
+from ai_core.graphs import (
+    info_intake,
+    needs_mapping,
+    rag_demo,
+    scope_check,
+    system_description,
+)
 
 from .adapters import module_runner
 from .registry import register
@@ -19,3 +25,4 @@ def bootstrap() -> None:
     register("scope_check", module_runner(scope_check))
     register("needs_mapping", module_runner(needs_mapping))
     register("system_description", module_runner(system_description))
+    register("rag_demo", module_runner(rag_demo))

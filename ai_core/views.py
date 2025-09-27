@@ -52,6 +52,7 @@ from ai_core.graph.schemas import merge_state, normalize_meta
 from ai_core.graphs import (
     info_intake,
     needs_mapping,
+    rag_demo,
     scope_check,
     system_description,
 )  # noqa: F401
@@ -696,6 +697,27 @@ class LegacySysDescView(_GraphView):
         return super().post(request)
 
 
+class RagDemoViewV1(_GraphView):
+    """Minimal RAG retrieval demo: returns top-k matches for a query."""
+
+    graph_name = "rag_demo"
+
+    @default_extend_schema(
+        request=IntakeRequestSerializer,
+        responses={200: IntakeResponseSerializer},
+        examples=[
+            OpenApiExample(
+                name="RagDemo",
+                summary="RAG demo",
+                description="Send {'query': 'your question'} to retrieve top-k matches",
+                value={"query": "Wie konfiguriere ich Tenant-Filter?"},
+            )
+        ],
+    )
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
 ping_v1 = PingViewV1.as_view()
 ping_legacy = LegacyPingView.as_view()
 ping = ping_legacy
@@ -715,3 +737,6 @@ needs = needs_legacy
 sysdesc_v1 = SysDescViewV1.as_view()
 sysdesc_legacy = LegacySysDescView.as_view()
 sysdesc = sysdesc_legacy
+
+rag_demo_v1 = RagDemoViewV1.as_view()
+rag_demo = rag_demo_v1
