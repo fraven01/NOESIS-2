@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import inspect
+
 from typing import Any, Dict, Iterable, List, Tuple
 
 try:
@@ -127,7 +129,35 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     try:
                         scoped_router = for_tenant(tenant_id=tenant_id)
                     except TypeError:
-                        scoped_router = for_tenant()
+                        scoped_router = None
+                        try:
+                            signature = inspect.signature(for_tenant)
+                        except (TypeError, ValueError):
+                            signature = None
+
+                        call_kwargs: Dict[str, Any] = {}
+                        if signature is not None:
+                            for name, parameter in signature.parameters.items():
+                                if name == "self":
+                                    continue
+                                if parameter.kind in (
+                                    inspect.Parameter.VAR_POSITIONAL,
+                                    inspect.Parameter.VAR_KEYWORD,
+                                ):
+                                    continue
+                                if name == "tenant_id" and "tenant_id" not in call_kwargs:
+                                    call_kwargs[name] = tenant_id
+                                elif name in meta:
+                                    call_kwargs[name] = meta[name]
+
+                        if not call_kwargs:
+                            call_kwargs = {"tenant_id": tenant_id}
+
+                        try:
+                            scoped_router = for_tenant(**call_kwargs)
+                        except Exception as exc:  # pragma: no cover - defensive fallback
+                            router_error = str(exc)
+                            scoped_router = None
                 except Exception as exc:  # pragma: no cover - defensive fallback
                     router_error = str(exc)
                     scoped_router = None
