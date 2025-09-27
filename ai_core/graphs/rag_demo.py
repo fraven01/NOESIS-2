@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Tuple
+
+from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 try:
     from ai_core.rag.vector_store import get_default_router
@@ -91,6 +92,45 @@ def _demo_matches(query: str, tenant_id: str, *, top_k: int) -> List[Dict[str, A
     return demo_corpus[:top_k]
 
 
+def _resolve_tenant_router(
+    for_tenant: Callable[..., Any],
+    tenant_id: Any,
+    tenant_schema: Any | None,
+) -> Tuple[Any | None, str | None]:
+    """Call ``for_tenant`` defensively across common signatures."""
+
+    attempts: List[Tuple[Tuple[Any, ...], Dict[str, Any]]] = []
+    if tenant_schema is not None:
+        attempts.extend(
+            [
+                ((tenant_id, tenant_schema), {}),
+                ((), {"tenant_id": tenant_id, "tenant_schema": tenant_schema}),
+            ]
+        )
+    attempts.extend(
+        [
+            ((tenant_id,), {}),
+            ((), {"tenant_id": tenant_id}),
+            ((), {}),
+        ]
+    )
+
+    last_type_error: str | None = None
+    for args, kwargs in attempts:
+        try:
+            return for_tenant(*args, **kwargs), None
+        except TypeError as exc:
+            last_type_error = str(exc)
+            continue
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            return None, str(exc)
+
+    if last_type_error is None:
+        return None, None
+    return None, last_type_error
+
+
+
 def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     query = _extract_query(state)
     if not query:
@@ -116,6 +156,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
         if project_id:
             filters["project_id"] = project_id
 
+        tenant_schema = meta.get("tenant_schema") or meta.get("schema")
+
+
         try:
             router = get_default_router()
         except Exception as exc:  # pragma: no cover - defensive fallback
@@ -126,16 +169,15 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
             scoped_router = router
             for_tenant = getattr(router, "for_tenant", None)
             if callable(for_tenant):
-                try:
-                    scoped_router = for_tenant(tenant_id)
-                except TypeError:
-                    try:
-                        scoped_router = for_tenant(tenant_id=tenant_id)
-                    except TypeError:
-                        scoped_router = for_tenant()
-                except Exception as exc:  # pragma: no cover - defensive fallback
-                    router_error = str(exc)
-                    scoped_router = None
+
+                scoped_router, scoped_error = _resolve_tenant_router(
+                    for_tenant, tenant_id, tenant_schema
+                )
+                if scoped_router is None and scoped_error:
+                    router_error = scoped_error
+                elif scoped_router is None:
+                    scoped_router = router
+
 
             search = (
                 getattr(scoped_router, "search", None)
@@ -165,6 +207,13 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     else:
         matches = _demo_matches(query, str(tenant_id), top_k=top_k)
 
+
+    warnings: List[str] = []
+    if not matches:
+        matches = _demo_matches(query, str(tenant_id), top_k=top_k)
+        warnings.append("no_vector_matches_demo_fallback")
+
+
     new_state = dict(state)
     new_state["rag_demo"] = {
         "query": query,
@@ -175,6 +224,10 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     result: GraphResult = {"ok": True, "query": query, "matches": matches}
     if router_error:
         result["error"] = router_error
+
+    if warnings:
+        result["warnings"] = warnings
+
 
     return new_state, result
 

@@ -137,3 +137,85 @@ def test_rag_demo_run_handles_for_tenant_router(
     assert result["ok"] is True
     assert len(result["matches"]) == 2
     assert router.calls == ["dev"]
+
+
+
+def test_rag_demo_run_handles_for_tenant_with_schema(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Router:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, str]] = []
+
+        def for_tenant(self, tenant_id: str, tenant_schema: str) -> _TenantRouter:
+            self.calls.append((tenant_id, tenant_schema))
+            return _TenantRouter()
+
+    router = Router()
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: router)
+
+    state = {"query": "Alpha"}
+    meta = {"tenant_id": "dev", "tenant_schema": "public"}
+
+    _, result = rag_demo.run(state, meta)
+
+    assert result["ok"] is True
+    assert len(result["matches"]) == 2
+    assert router.calls == [("dev", "public")]
+
+
+def test_rag_demo_zero_hits_falls_back_to_demo(monkeypatch: pytest.MonkeyPatch) -> None:
+    class RouterZero:
+        def for_tenant(self, tenant_id: str):
+            class Client:
+                def search(
+                    self,
+                    query: str,
+                    tenant_id: str,
+                    case_id: str | None = None,
+                    top_k: int = 5,
+                    filters: dict[str, object] | None = None,
+                ) -> Iterable[Chunk]:
+                    assert filters is not None
+                    assert filters.get("tenant_id") == tenant_id
+                    del query, tenant_id, case_id, top_k
+                    return []  # zero hits
+
+            return Client()
+
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: RouterZero())
+
+    state = {"query": "Alpha", "top_k": 2}
+    meta = {"tenant_id": "demo", "case_id": "local"}
+    new_state, result = rag_demo.run(state, meta)
+
+    assert result["ok"] is True
+    assert len(result["matches"]) > 0  # demo fallback kicked in
+    assert "warnings" in result and "no_vector_matches_demo_fallback" in result["warnings"]
+    assert new_state["rag_demo"]["retrieved_count"] == len(result["matches"])
+
+
+def test_rag_demo_run_zero_matches_adds_warning(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Router:
+        def search(
+            self,
+            query: str,
+            *,
+            tenant_id: str,
+            case_id: str | None = None,
+            top_k: int = 5,
+            filters: dict[str, object] | None = None,
+        ) -> Iterable[Chunk]:
+            del query, tenant_id, case_id, top_k, filters
+            return []
+
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: Router())
+
+    state = {"query": "Alpha"}
+    meta = {"tenant_id": "dev"}
+
+    new_state, result = rag_demo.run(state, meta)
+
+    assert result["ok"] is True
+    assert result["warnings"] == ["no_vector_matches_demo_fallback"]
+    assert len(result["matches"]) == 2
+    assert new_state["rag_demo"]["retrieved_count"] == 2
+
