@@ -13,7 +13,9 @@ from ai_core.rag.vector_store import VectorStore, VectorStoreRouter
 class FakeStore(VectorStore):
     """In-memory fake that records invocations for assertions."""
 
-    def __init__(self, name: str, *, search_result: Iterable[Chunk] | None = None) -> None:
+    def __init__(
+        self, name: str, *, search_result: Iterable[Chunk] | None = None
+    ) -> None:
         self.name = name
         self.search_calls: list[Mapping[str, object]] = []
         self.upsert_calls: list[list[Chunk]] = []
@@ -59,19 +61,25 @@ def router_and_stores() -> tuple[VectorStoreRouter, FakeStore, FakeStore]:
     return router, global_store, silo_store
 
 
-def test_router_requires_tenant_id(router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore]) -> None:
+def test_router_requires_tenant_id(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
     router, _, _ = router_and_stores
     with pytest.raises(ValueError, match="tenant_id is required"):
         router.search("query", tenant_id="")
 
 
-def test_router_caps_top_k_to_10(router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore]) -> None:
+def test_router_caps_top_k_to_10(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
     router, global_store, _ = router_and_stores
     router.search("query", tenant_id="tenant", top_k=25)
     assert global_store.search_calls[-1]["top_k"] == 10
 
 
-def test_router_normalizes_empty_filters(router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore]) -> None:
+def test_router_normalizes_empty_filters(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
     router, global_store, _ = router_and_stores
     router.search(
         "query",
@@ -82,7 +90,9 @@ def test_router_normalizes_empty_filters(router_and_stores: tuple[VectorStoreRou
     assert filters == {"case": None, "source": "doc", "extra": None}
 
 
-def test_router_delegates_to_scope_or_default(router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore]) -> None:
+def test_router_delegates_to_scope_or_default(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
     router, global_store, silo_store = router_and_stores
     router.search("query", tenant_id="tenant", scope="silo")
     assert len(silo_store.search_calls) == 1
@@ -92,7 +102,9 @@ def test_router_delegates_to_scope_or_default(router_and_stores: tuple[VectorSto
     assert len(global_store.search_calls) == 1
 
 
-def test_router_upsert_delegates_global(router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore]) -> None:
+def test_router_upsert_delegates_global(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
     router, global_store, silo_store = router_and_stores
     chunk = Chunk(content="foo", meta={"tenant": "t"})
     router.upsert_chunks([chunk])

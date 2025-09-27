@@ -92,4 +92,6 @@ def test_reporting_plugin_writes_artifact(
     assert payload["metadata"]["chaos_env"] == env_values
     assert payload["metadata"]["user_note"] == {"severity": "medium"}
     assert payload["metadata"]["unserialisable"] == "custom-object-value"
-    assert "chaos_markers" not in payload["metadata"], "chaos markers should be promoted to top-level markers"
+    assert (
+        "chaos_markers" not in payload["metadata"]
+    ), "chaos markers should be promoted to top-level markers"

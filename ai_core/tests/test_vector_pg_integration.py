@@ -45,8 +45,7 @@ def test_router_roundtrip_with_pgvector_backend() -> None:
     other_tenant_id = str(uuid.uuid4())
 
     tenant_chunks = [
-        _make_chunk(tenant_id, idx, hash_id=f"doc-{tenant_id}")
-        for idx in range(3)
+        _make_chunk(tenant_id, idx, hash_id=f"doc-{tenant_id}") for idx in range(3)
     ]
     other_chunks = [
         _make_chunk(other_tenant_id, idx, hash_id=f"doc-{other_tenant_id}")

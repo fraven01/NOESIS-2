@@ -14,6 +14,7 @@ from .rag.vector_store import get_default_router
 
 logger = get_logger(__name__)
 
+
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
     tenant = object_store.sanitize_identifier(meta["tenant"])
     case = object_store.sanitize_identifier(meta["case"])
