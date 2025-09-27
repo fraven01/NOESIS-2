@@ -164,6 +164,51 @@ Startet einen Ingestion-Workflow für zuvor hochgeladene Dokumente. Der Prozess 
 - `400 Bad Request`: Leere Dokumentliste.
 - `429 Too Many Requests`: Rate-Limit auf Tenant-Level erreicht.
 
+### POST `/ai/v1/rag-demo/`
+Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit. Er beantwortet eine Query ohne LLM-Beteiligung, liest die Anfrage aus `{"query": ...}` (bzw. kompatiblen Alias-Feldern) und liefert die Top-K Treffer aus dem mandantenspezifisch gefilterten Vektor-Index. Ohne angebundenen Vektorstore werden deterministische Demo-Matches zurückgegeben.
+
+**Headers**
+- `X-Tenant-Schema` (required)
+- `X-Tenant-Id` (required)
+- `X-Case-Id` (required)
+- `Content-Type: application/json`
+
+**Body Schema**
+```json
+{
+  "query": "Wie konfiguriere ich Tenant-Filter?",
+  "top_k": 5
+}
+```
+
+**Response 200 Beispiel**
+```json
+{
+  "ok": true,
+  "query": "Wie konfiguriere ich Tenant-Filter?",
+  "matches": [
+    {
+      "id": "demo-1",
+      "score": 0.42,
+      "text": "Tenant-scoped Retrieval Beispiel …",
+      "metadata": {
+        "tenant_id": "acme"
+      }
+    }
+  ]
+}
+```
+
+**cURL Beispiel**
+```bash
+curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
+  -H "X-Tenant-Schema: acme_prod" \
+  -H "X-Tenant-Id: acme" \
+  -H "X-Case-Id: crm-7421" \
+  -H "Content-Type: application/json" \
+  -d '{"query": "Wie konfiguriere ich Tenant-Filter?", "top_k": 3}'
+```
+
 ## Agenten (Queue `agents`)
 
 ### POST `/ai/scope/`

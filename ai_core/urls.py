@@ -12,4 +12,5 @@ urlpatterns = [
     path("scope/", views.scope, name="scope"),
     path("needs/", views.needs, name="needs"),
     path("sysdesc/", views.sysdesc, name="sysdesc"),
+    path("v1/rag-demo/", views.rag_demo, name="rag_demo"),
 ]
