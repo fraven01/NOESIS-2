@@ -2,20 +2,17 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Dict, List, Optional
 
 from celery import shared_task
 from common.celery import ScopedTask
 from common.logging import get_logger
 from .infra import object_store, pii
 from .rag.schemas import Chunk
-from .rag.vector_client import EMBEDDING_DIM, PgVectorClient, get_default_client
+from .rag.vector_client import EMBEDDING_DIM
+from .rag.vector_store import get_default_router
 
 logger = get_logger(__name__)
-
-# Factory returning the default pgvector client (can be patched in tests)
-VECTOR_CLIENT_FACTORY: Callable[[], PgVectorClient] = get_default_client
-
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
     tenant = object_store.sanitize_identifier(meta["tenant"])
@@ -96,6 +93,24 @@ def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
             Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding)
         )
 
-    client = VECTOR_CLIENT_FACTORY()
-    written = client.upsert_chunks(chunk_objs)
+    tenant_id: Optional[str] = meta.get("tenant") if meta else None
+    if not tenant_id:
+        tenant_id = next(
+            (
+                str(chunk.meta.get("tenant"))
+                for chunk in chunk_objs
+                if chunk.meta and chunk.meta.get("tenant")
+            ),
+            None,
+        )
+    if not tenant_id:
+        raise ValueError("tenant_id required for upsert")
+
+    for chunk in chunk_objs:
+        chunk_tenant = chunk.meta.get("tenant") if chunk.meta else None
+        if chunk_tenant and str(chunk_tenant) != tenant_id:
+            raise ValueError("chunk tenant mismatch")
+
+    router = get_default_router()
+    written = router.upsert_chunks(chunk_objs)
     return written

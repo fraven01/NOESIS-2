@@ -64,7 +64,12 @@ class TestPgVectorClient:
         assert written == 1
         assert counter.value == 1
 
-        results = client.search("legacy", {"tenant": None, "case": None}, top_k=1)
+        results = client.search(
+            "legacy",
+            tenant_id=chunk.meta["tenant"],
+            filters={"case": None},
+            top_k=1,
+        )
         assert len(results) == 1
         assert histogram.samples
         assert uuid.UUID(results[0].meta["tenant"])  # tenant ids are normalised
@@ -110,3 +115,23 @@ class TestPgVectorClient:
                 ]
                 cur.execute("SELECT COUNT(*) FROM embeddings")
                 assert cur.fetchone()[0] == 2
+
+    def test_search_caps_top_k(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        chunk_hash = "limit"
+
+        chunks = [
+            Chunk(
+                content="Result",
+                meta={"tenant": tenant, "hash": chunk_hash, "source": "src"},
+                embedding=[0.02] * vector_client.EMBEDDING_DIM,
+            )
+            for index in range(12)
+        ]
+
+        written = client.upsert_chunks(chunks)
+        assert written == len(chunks)
+
+        results = client.search("Result", tenant_id=tenant, top_k=25)
+        assert len(results) == 10

@@ -17,27 +17,50 @@ from ai_core.rag.schemas import Chunk
 META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
 
 
-def test_retrieve_returns_snippets():
-    class _Client:
+def test_retrieve_returns_snippets(monkeypatch):
+    class _Router:
         def __init__(self, chunks):
             self._chunks = chunks
+            self.last_call = {}
 
-        def search(self, query, filters, top_k=5):
+        def search(
+            self,
+            query,
+            tenant_id,
+            *,
+            case_id=None,
+            top_k=5,
+            filters=None,
+        ):
+            self.last_call = {
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "top_k": top_k,
+                "filters": filters,
+            }
             return self._chunks
 
     chunk = Chunk(
         "Hello 123", {"tenant": "t1", "case": "c1", "source": "s1", "hash": "h"}
     )
-    client = _Client([chunk])
-    state, result = retrieve.run({"query": "Hello"}, META.copy(), client=client)
+    router = _Router([chunk])
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+    state, result = retrieve.run({"query": "Hello"}, META.copy(), top_k=3)
     assert result["snippets"][0]["text"] == "Hello 123"
     assert result["snippets"][0]["source"] == "s1"
     assert state["snippets"] == result["snippets"]
+    assert router.last_call == {
+        "tenant_id": "t1",
+        "case_id": "c1",
+        "top_k": 3,
+        "filters": None,
+    }
 
 
-def test_retrieve_requires_client_when_enabled():
-    with pytest.raises(ValueError):
-        retrieve.run({"query": "Hello"}, META.copy(), client=None)
+def test_retrieve_requires_tenant_id(monkeypatch):
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: None)
+    with pytest.raises(ValueError, match="tenant_id required"):
+        retrieve.run({"query": "Hello"}, {"case": "c1"})
 
 
 def _mock_call(called):

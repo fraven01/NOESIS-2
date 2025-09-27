@@ -31,6 +31,16 @@ Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenan
 | Schema pro Mandant | Eigenes Schema `tenant_<slug>` für Tabellen `documents`, `chunks`, `embeddings` | Skalierungspfad für Großkunden oder erhöhte Isolation |
 | Hybrid | Kern-Tabellen pro Schema, Embeddings global mit `tenant_id` | Wenn LiteLLM und Django gemeinsame Daten teilen müssen |
 
+## VectorStore Router
+Der VectorStore Router kapselt die Auswahl des Backends und erzwingt, dass jede Suche mit einer gültigen `tenant_id` ausgeführt wird. Er normalisiert Filter, deckelt `top_k` hart auf zehn Ergebnisse und schützt damit Agenten vor übermäßigen Resultatmengen. Silos pro Tenant lassen sich später über zusätzliche Router-Scopes konfigurieren, während der Standard weiterhin auf den globalen Store zeigt. Weil der Router immer aktiv ist, entfällt das frühere Feature-Flagging für RAG. Tests können dank Fake-Stores ohne PostgreSQL durchgeführt werden, während optionale Integrationsläufe weiterhin gegen pgvector laufen. Die Delegation sorgt zugleich dafür, dass PII-Redaktionen und Hash-Prüfungen im bestehenden `PgVectorClient` unverändert greifen.
+
+```python
+from ai_core.rag import get_default_router
+
+router = get_default_router()
+results = router.search("fallback instructions", tenant_id="tenant-uuid", top_k=5)
+```
+
 ## Löschkonzept
 - Dokumente erhalten Hashes (siehe [Schema](schema.sql)) und `metadata` mit Herkunft.
 - Löschläufe laufen als Ingestion-Task mit Modus „delete“ und markieren `documents.deleted_at` (Soft Delete). Hard Delete optional über `DELETE ... WHERE tenant_id = ?`.

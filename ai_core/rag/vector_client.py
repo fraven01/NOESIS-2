@@ -7,13 +7,14 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
 
 from psycopg2 import sql
 from psycopg2.extras import Json, register_default_jsonb
 from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_logger
+from ai_core.rag.vector_store import VectorStore
 
 from . import metrics
 from .filters import strict_match
@@ -147,11 +148,40 @@ class PgVectorClient:
     def search(
         self,
         query: str,
-        filters: Dict[str, Optional[str]],
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
         top_k: int = 5,
+        filters: Mapping[str, str | None] | None = None,
     ) -> List[Chunk]:
-        tenant = filters.get("tenant")
-        case = filters.get("case")
+        top_k = min(max(1, top_k), 10)
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        tenant = str(tenant_uuid)
+        normalized_filters: Dict[str, Optional[str]] = {}
+        if filters:
+            normalized_filters = {
+                key: (value if value not in {"", None} else None)
+                for key, value in filters.items()
+            }
+        case_value: Optional[str]
+        if case_id not in {None, ""}:
+            case_value = case_id
+        else:
+            case_value = normalized_filters.get("case")
+        if case_value is not None:
+            case_value = str(case_value)
+        normalized_filters["tenant"] = tenant
+        normalized_filters["case"] = case_value
+        filter_debug = {
+            key: ("<set>" if value is not None else None)
+            for key, value in normalized_filters.items()
+        }
+        logger.debug(
+            "RAG search normalised inputs: tenant=%s top_k=%d filters=%s",
+            tenant,
+            top_k,
+            filter_debug,
+        )
         query_vec = self._format_vector(self._embed_query(query))
         started = time.perf_counter()
         with self._connection() as conn:
@@ -162,18 +192,18 @@ class PgVectorClient:
                     FROM embeddings e
                     JOIN chunks c ON e.chunk_id = c.id
                     JOIN documents d ON c.document_id = d.id
-                    WHERE (%s IS NULL OR d.tenant_id::text = %s)
+                    WHERE d.tenant_id::text = %s
                       AND (%s IS NULL OR c.metadata ->> 'case' = %s)
                     ORDER BY e.embedding <-> %s::vector
                     LIMIT %s
                     """,
-                    (tenant, tenant, case, case, query_vec, top_k),
+                    (tenant, case_value, case_value, query_vec, top_k),
                 )
                 rows = cur.fetchall()
         results: List[Chunk] = []
         for text, metadata in rows:
             meta = dict(metadata or {})
-            if not strict_match(meta, tenant, case):
+            if not strict_match(meta, tenant, case_value):
                 continue
             results.append(Chunk(content=text, meta=meta))
         duration_ms = (time.perf_counter() - started) * 1000
@@ -181,7 +211,7 @@ class PgVectorClient:
         logger.info(
             "RAG search executed: tenant=%s case=%s query_chars=%d results=%d duration_ms=%.2f",
             tenant,
-            case,
+            case_value,
             len(query),
             len(results),
             duration_ms,
@@ -321,14 +351,14 @@ class PgVectorClient:
         return [base] + [0.0] * (EMBEDDING_DIM - 1)
 
 
-_DEFAULT_CLIENT: Optional[PgVectorClient] = None
+_DEFAULT_CLIENT: Optional[VectorStore] = None
 
 
 def get_default_client() -> PgVectorClient:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
         _DEFAULT_CLIENT = PgVectorClient.from_env()
-    return _DEFAULT_CLIENT
+    return cast(PgVectorClient, _DEFAULT_CLIENT)
 
 
 def reset_default_client() -> None:
