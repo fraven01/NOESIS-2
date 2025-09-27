@@ -130,7 +130,6 @@ def _resolve_tenant_router(
     return None, last_type_error
 
 
-
 def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     query = _extract_query(state)
     if not query:
@@ -158,7 +157,6 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
 
         tenant_schema = meta.get("tenant_schema") or meta.get("schema")
 
-
         try:
             router = get_default_router()
         except Exception as exc:  # pragma: no cover - defensive fallback
@@ -177,7 +175,6 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     router_error = scoped_error
                 elif scoped_router is None:
                     scoped_router = router
-
 
             search = (
                 getattr(scoped_router, "search", None)
@@ -207,12 +204,10 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     else:
         matches = _demo_matches(query, str(tenant_id), top_k=top_k)
 
-
     warnings: List[str] = []
     if not matches:
         matches = _demo_matches(query, str(tenant_id), top_k=top_k)
         warnings.append("no_vector_matches_demo_fallback")
-
 
     new_state = dict(state)
     new_state["rag_demo"] = {
@@ -227,7 +222,6 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
 
     if warnings:
         result["warnings"] = warnings
-
 
     return new_state, result
 
