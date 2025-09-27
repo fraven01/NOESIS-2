@@ -1,9 +1,12 @@
+from io import StringIO
+
 import pytest
 from django.core.management import call_command, CommandError
 from django.db import connection, OperationalError
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
+from users.models import User
 from .factories import DomainFactory, TenantFactory
 
 
@@ -126,6 +129,240 @@ def test_create_tenant_superuser_missing_tables(monkeypatch):
 
     assert "migrate" in str(excinfo.value).lower()
     assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_creates_user(monkeypatch):
+    tenant = TenantFactory(schema_name="createuser")
+    tenant.create_schema(check_if_exists=True)
+
+    recorded_calls = []
+
+    def fake_call_command(name, *args, **kwargs):
+        recorded_calls.append((name, args, kwargs))
+        return None
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.call_command",
+        fake_call_command,
+    )
+
+    stdout = StringIO()
+
+    call_command(
+        "create_tenant_superuser",
+        schema=tenant.schema_name,
+        username="demo-admin",
+        email="demo@example.com",
+        password="super-secret",
+        stdout=stdout,
+    )
+
+    assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
+    assert "created" in stdout.getvalue()
+
+    with schema_context(tenant.schema_name):
+        user = User.objects.get(username="demo-admin")
+        assert user.email == "demo@example.com"
+        assert user.is_staff is True
+        assert user.is_superuser is True
+        assert user.check_password("super-secret")
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_updates_existing_user(monkeypatch):
+    tenant = TenantFactory(schema_name="updateuser")
+    tenant.create_schema(check_if_exists=True)
+
+    with schema_context(tenant.schema_name):
+        user = User.objects.create_user(
+            username="demo-admin", email="old@example.com", password="oldpass"
+        )
+        user.is_staff = False
+        user.is_superuser = False
+        user.save(update_fields=["is_staff", "is_superuser"])
+
+    recorded_calls = []
+
+    def fake_call_command(name, *args, **kwargs):
+        recorded_calls.append((name, args, kwargs))
+        return None
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.call_command",
+        fake_call_command,
+    )
+
+    stdout = StringIO()
+    call_command(
+        "create_tenant_superuser",
+        schema=tenant.schema_name,
+        username="demo-admin",
+        password="newpass",
+        stdout=stdout,
+    )
+
+    assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
+    assert "ensured" in stdout.getvalue()
+
+    with schema_context(tenant.schema_name):
+        user = User.objects.get(username="demo-admin")
+        assert user.is_staff is True
+        assert user.is_superuser is True
+        assert user.check_password("newpass")
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_requires_password(monkeypatch):
+    tenant = TenantFactory(schema_name="requirespass")
+    tenant.create_schema(check_if_exists=True)
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.call_command",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.delenv("DJANGO_SUPERUSER_PASSWORD", raising=False)
+
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "create_tenant_superuser",
+            schema=tenant.schema_name,
+            username="demo-admin",
+        )
+
+    assert "Missing password" in str(excinfo.value)
+
+    with schema_context(tenant.schema_name):
+        assert not User.objects.filter(username="demo-admin").exists()
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_requires_username(monkeypatch):
+    tenant = TenantFactory(schema_name="requiresuser")
+    tenant.create_schema(check_if_exists=True)
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.call_command",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.delenv("DJANGO_SUPERUSER_USERNAME", raising=False)
+
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "create_tenant_superuser",
+            schema=tenant.schema_name,
+            password="secret",
+        )
+
+    assert "Missing username" in str(excinfo.value)
+
+
+@pytest.mark.django_db
+def test_create_tenant_superuser_missing_tenant():
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "create_tenant_superuser",
+            schema="does-not-exist",
+            username="demo-admin",
+            password="secret",
+        )
+
+    assert "does not exist" in str(excinfo.value)
+
+
+@pytest.mark.django_db
+def test_add_domain_creates_and_sets_primary():
+    tenant = TenantFactory(schema_name="tenant-add-domain")
+
+    stdout = StringIO()
+    call_command(
+        "add_domain",
+        "--schema",
+        tenant.schema_name,
+        "--domain",
+        "HTTPS://Example.Com/demo",
+        "--primary",
+        stdout=stdout,
+    )
+
+    domain = Domain.objects.get(domain="example.com")
+    assert domain.tenant_id == tenant.id
+    assert domain.is_primary is True
+    assert "set as primary" in stdout.getvalue()
+
+
+@pytest.mark.django_db
+def test_add_domain_requires_force_for_existing_assignment():
+    original = TenantFactory(schema_name="original")
+    DomainFactory(tenant=original, domain="shared.example.com")
+    target = TenantFactory(schema_name="target")
+
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "add_domain",
+            "--schema",
+            target.schema_name,
+            "--domain",
+            "shared.example.com",
+        )
+
+    assert "already assigned" in str(excinfo.value)
+
+
+@pytest.mark.django_db
+def test_add_domain_force_reassigns_and_sets_primary():
+    original = TenantFactory(schema_name="orig-force")
+    domain = DomainFactory(tenant=original, domain="force.example.com", is_primary=True)
+    target = TenantFactory(schema_name="target-force")
+
+    call_command(
+        "add_domain",
+        "--schema",
+        target.schema_name,
+        "--domain",
+        "force.example.com",
+        "--force-reassign",
+        "--primary",
+    )
+
+    domain.refresh_from_db()
+    assert domain.tenant_id == target.id
+    assert domain.is_primary is True
+
+
+@pytest.mark.django_db
+def test_add_domain_switches_primary_within_tenant():
+    tenant = TenantFactory(schema_name="swap-primary")
+    old = DomainFactory(tenant=tenant, domain="old.example.com", is_primary=True)
+    new = DomainFactory(tenant=tenant, domain="new.example.com", is_primary=False)
+
+    call_command(
+        "add_domain",
+        "--schema",
+        tenant.schema_name,
+        "--domain",
+        "new.example.com",
+        "--primary",
+    )
+
+    old.refresh_from_db()
+    new.refresh_from_db()
+    assert old.is_primary is False
+    assert new.is_primary is True
+
+
+@pytest.mark.django_db
+def test_add_domain_missing_tenant():
+    with pytest.raises(CommandError) as excinfo:
+        call_command(
+            "add_domain",
+            "--schema",
+            "missing",
+            "--domain",
+            "missing.example.com",
+        )
+
+    assert "does not exist" in str(excinfo.value)
 
 
 @pytest.mark.django_db
