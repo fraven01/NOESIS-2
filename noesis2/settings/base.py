@@ -25,6 +25,15 @@ environ.Env.read_env(BASE_DIR / ".env")
 configure_logging()
 
 
+if "RAG_VECTOR_STORES" not in globals():
+    RAG_VECTOR_STORES = {
+        "global": {
+            "backend": "pgvector",
+            # "dsn_env": "RAG_DATABASE_URL",
+        }
+    }
+
+
 def _load_common_headers_table() -> str:
     """Return the reference markdown table describing shared API headers."""
 
