@@ -8,6 +8,7 @@ from psycopg2 import OperationalError, errors
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 from ai_core.rag import vector_client as rag_vector_client
+from common import logging as common_logging
 
 os.environ.setdefault("RAG_EMBEDDING_DIM", "1536")
 
@@ -15,6 +16,15 @@ pytest.importorskip(
     "pytest_django",
     reason="pytest-django is required for ai_core tests",
 )
+
+
+@pytest.fixture(autouse=True)
+def clear_structlog_context():
+    common_logging.clear_log_context()
+    try:
+        yield
+    finally:
+        common_logging.clear_log_context()
 
 
 SCHEMA_SQL = (

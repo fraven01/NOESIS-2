@@ -1,7 +1,9 @@
 from __future__ import annotations
+
 import json
+import logging
 import re
-from importlib import import_module
+from types import ModuleType
 from uuid import uuid4
 
 from django.conf import settings
@@ -41,6 +43,13 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+
+from ai_core.graph.adapters import module_runner
+from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
+from ai_core.graph.registry import get as get_graph_runner, register as register_graph
+from ai_core.graph.schemas import merge_state, normalize_meta
+from ai_core.graphs import info_intake, needs_mapping, scope_check, system_description  # noqa: F401
+
 # Import graphs so they are available via module globals for Legacy views.
 # This enables tests to monkeypatch e.g. `views.info_intake` directly and
 # allows _GraphView.get_graph to resolve from globals() without importing.
@@ -53,9 +62,15 @@ except Exception:  # defensive: don't break module import if graphs change
     # Fallback to lazy import via _GraphView.get_graph when not present.
     pass
 
+
 from .infra import rate_limit
-from .infra.object_store import read_json, sanitize_identifier, write_json
 from .infra.resp import apply_std_headers
+
+
+logger = logging.getLogger(__name__)
+
+
+CHECKPOINTER = FileCheckpointer()
 
 
 def assert_case_active(tenant: str, case_id: str) -> None:
@@ -191,30 +206,29 @@ def _prepare_request(request: Request):
     return meta, None
 
 
-def _load_state(tenant: str, case_id: str) -> dict:
-    try:
-        safe_tenant = sanitize_identifier(tenant)
-        safe_case = sanitize_identifier(case_id)
-        return read_json(f"{safe_tenant}/{safe_case}/state.json")
-    except FileNotFoundError:
-        return {}
-
-
-def _save_state(tenant: str, case_id: str, state: dict) -> None:
-    safe_tenant = sanitize_identifier(tenant)
-    safe_case = sanitize_identifier(case_id)
-    write_json(f"{safe_tenant}/{safe_case}/state.json", state)
-
-
-def _run_graph(request: Request, graph) -> Response:
+def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
     meta, error = _prepare_request(request)
     if error:
         return error
 
     try:
-        state = _load_state(meta["tenant"], meta["case"])
+        normalized_meta = normalize_meta(request)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+    context = GraphContext(
+        tenant_id=normalized_meta["tenant_id"],
+        case_id=normalized_meta["case_id"],
+        trace_id=normalized_meta["trace_id"],
+        graph_name=normalized_meta["graph_name"],
+        graph_version=normalized_meta["graph_version"],
+    )
+
+    try:
+        state = CHECKPOINTER.load(context)
+    except (TypeError, ValueError) as exc:
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
     raw_body = getattr(request, "body", b"")
     if not raw_body and hasattr(request, "_request"):
         raw_body = getattr(request._request, "body", b"")
@@ -223,6 +237,8 @@ def _run_graph(request: Request, graph) -> Response:
     normalized_content_type = ""
     if content_type_header:
         normalized_content_type = content_type_header.split(";")[0].strip().lower()
+
+    incoming_state = None
 
     if raw_body:
         if normalized_content_type and not (
@@ -237,7 +253,7 @@ def _run_graph(request: Request, graph) -> Response:
         try:
             payload = json.loads(raw_body)
             if isinstance(payload, dict):
-                state.update(payload)
+                incoming_state = payload
         except json.JSONDecodeError:
             return _error_response(
                 "Request payload contained invalid JSON.",
@@ -245,8 +261,18 @@ def _run_graph(request: Request, graph) -> Response:
                 status.HTTP_400_BAD_REQUEST,
             )
 
+    merged_state = merge_state(state, incoming_state)
+
+    runner_meta = dict(normalized_meta)
+    runner_meta["tenant"] = normalized_meta["tenant_id"]
+    runner_meta["case"] = normalized_meta["case_id"]
+    if normalized_meta.get("tenant_schema"):
+        runner_meta["tenant_schema"] = normalized_meta["tenant_schema"]
+    if normalized_meta.get("key_alias"):
+        runner_meta["key_alias"] = normalized_meta["key_alias"]
+
     try:
-        new_state, result = graph.run(state, meta)
+        new_state, result = graph_runner.run(merged_state, runner_meta)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except Exception:
@@ -257,8 +283,8 @@ def _run_graph(request: Request, graph) -> Response:
         )
 
     try:
-        _save_state(meta["tenant"], meta["case"], new_state)
-    except ValueError as exc:
+        CHECKPOINTER.save(context, new_state)
+    except (TypeError, ValueError) as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
     response = Response(result)
@@ -535,22 +561,45 @@ class LegacyPingView(_PingBase):
 class _GraphView(_BaseAgentView):
     graph_name: str | None = None
 
-    def get_graph(self):  # pragma: no cover - trivial indirection
+    def get_graph(self) -> GraphRunner:  # pragma: no cover - trivial indirection
         if not self.graph_name:
             raise NotImplementedError("graph_name must be configured on subclasses")
-
         candidate = globals().get(self.graph_name)
-        if candidate is not None and hasattr(candidate, "run"):
-            return candidate
 
-        module_path = f"ai_core.graphs.{self.graph_name}"
         try:
-            return import_module(module_path)
-        except ModuleNotFoundError as exc:  # pragma: no cover - defensive
-            raise KeyError(self.graph_name) from exc
+            registered = get_graph_runner(self.graph_name)
+        except KeyError:
+            registered = None
+
+        if candidate is not None:
+            runner: GraphRunner | None = None
+            if isinstance(candidate, ModuleType):
+                if registered is None:
+                    runner = module_runner(candidate)
+            elif hasattr(candidate, "run"):
+                if registered is None or registered is not candidate:
+                    runner = candidate
+
+            if runner is not None:
+                logger.info(
+                    "graph_runner_lazy_registered",
+                    extra={
+                        "graph": self.graph_name,
+                        "source": getattr(candidate, "__name__", repr(candidate)),
+                    },
+                )
+                register_graph(self.graph_name, runner)
+                registered = runner
+
+        if registered is None:
+            raise KeyError(f"graph runner '{self.graph_name}' is not registered")
+
+        return registered
 
     def post(self, request: Request) -> Response:
-        return _run_graph(request, self.get_graph())
+        graph_runner = self.get_graph()
+        request.graph_name = self.graph_name
+        return _run_graph(request, graph_runner)
 
 
 class IntakeViewV1(_GraphView):

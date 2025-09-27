@@ -1,5 +1,5 @@
 import json
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 from rest_framework.response import Response
@@ -8,7 +8,9 @@ from django.test import RequestFactory
 from structlog.testing import capture_logs
 
 from ai_core import views
+from ai_core.graph.core import GraphContext
 from ai_core.infra import object_store, rate_limit
+from ai_core.graph import registry
 from common import logging as common_logging
 from common.constants import (
     META_CASE_ID_KEY,
@@ -21,6 +23,14 @@ from common.constants import (
     X_TRACE_ID_HEADER,
 )
 from common.middleware import RequestLogContextMiddleware
+
+
+@pytest.fixture(autouse=True)
+def _reset_log_context():
+    try:
+        yield
+    finally:
+        common_logging.clear_log_context()
 
 
 class DummyRedis:
@@ -405,10 +415,20 @@ def test_legacy_post_routes_emit_deprecation_headers(
     assert "Sunset" not in v1_response
 
 
+def _graph_context(tenant: str, case_id: str) -> GraphContext:
+    return GraphContext(
+        tenant_id=tenant,
+        case_id=case_id,
+        trace_id="test-trace",
+        graph_name="info_intake",
+    )
+
+
 def test_state_helpers_sanitize_identifiers(monkeypatch, tmp_path):
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    views._save_state("Tenant Name", "Case*ID", {"ok": True})
+    ctx = _graph_context("Tenant Name", "Case*ID")
+    views.CHECKPOINTER.save(ctx, {"ok": True})
 
     safe_tenant = object_store.sanitize_identifier("Tenant Name")
     safe_case = object_store.sanitize_identifier("Case*ID")
@@ -420,7 +440,7 @@ def test_state_helpers_sanitize_identifiers(monkeypatch, tmp_path):
     assert stored.exists()
     assert json.loads(stored.read_text()) == {"ok": True}
 
-    loaded = views._load_state("Tenant Name", "Case*ID")
+    loaded = views.CHECKPOINTER.load(ctx)
     assert loaded == {"ok": True}
 
 
@@ -428,7 +448,142 @@ def test_state_helpers_reject_unsafe_identifiers(monkeypatch, tmp_path):
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     with pytest.raises(ValueError):
-        views._save_state("tenant/../", "case", {})
+        views.CHECKPOINTER.save(_graph_context("tenant/../", "case"), {})
 
     with pytest.raises(ValueError):
-        views._load_state("tenant", "../case")
+        views.CHECKPOINTER.load(_graph_context("tenant", "../case"))
+
+
+def test_graph_view_lazy_registration_reuses_cached_runner(monkeypatch):
+    monkeypatch.setattr(registry, "_REGISTRY", {})
+
+    module = ModuleType("ai_core.graphs.lazy_mod")
+
+    def _run(state, meta):
+        return state or {}, {"result": True, "meta": meta["graph_name"]}
+
+    module.run = _run
+    monkeypatch.setattr(views, "lazy_mod", module, raising=False)
+
+    calls: list[ModuleType] = []
+
+    def _module_runner(mod):
+        calls.append(mod)
+        return SimpleNamespace(run=lambda state, meta: (state, {"ok": True}))
+
+    monkeypatch.setattr(views, "module_runner", _module_runner)
+
+    view_cls = type("LazyView", (views._GraphView,), {"graph_name": "lazy_mod"})
+    view = view_cls()
+
+    first = view.get_graph()
+    second = view.get_graph()
+
+    assert first is second
+    assert calls == [module]
+    assert registry.get("lazy_mod") is first
+
+
+@pytest.mark.django_db
+def test_graph_view_missing_runner_returns_server_error(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(registry, "_REGISTRY", {})
+    monkeypatch.delattr("ai_core.views.info_intake", raising=False)
+    client.raise_request_exception = False
+
+    response = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+    )
+
+    assert response.status_code == 500
+    common_logging.clear_log_context()
+
+
+@pytest.mark.django_db
+def test_response_includes_key_alias_header(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    response = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-alias",
+            META_KEY_ALIAS_KEY: "alias-1",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response[X_KEY_ALIAS_HEADER] == "alias-1"
+    common_logging.clear_log_context()
+
+
+@pytest.mark.django_db
+def test_v1_intake_rate_limit_returns_json_error(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "get_quota", lambda: 1)
+    rate_limit._get_redis.cache_clear()
+    monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-rate",
+    }
+
+    first = client.post(
+        "/v1/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/v1/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+
+    assert second.status_code == 429
+    body = second.json()
+    assert body == {
+        "detail": "Rate limit exceeded for tenant.",
+        "code": "rate_limit_exceeded",
+    }
+    common_logging.clear_log_context()
+
+
+@pytest.mark.django_db
+def test_corrupted_state_file_returns_400(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    tenant = test_tenant_schema_name
+    case = "case-corrupt"
+    safe_tenant = object_store.sanitize_identifier(tenant)
+    safe_case = object_store.sanitize_identifier(case)
+    state_path = tmp_path / safe_tenant / safe_case / "state.json"
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text("[]", encoding="utf-8")
+
+    response = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **{META_TENANT_ID_KEY: tenant, META_CASE_ID_KEY: case},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "invalid_request"
+    common_logging.clear_log_context()
