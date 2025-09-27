@@ -19,7 +19,8 @@ from noesis2.api.versioning import (
     build_deprecation_headers,
     mark_deprecated_response,
 )
-from noesis2.tests.test_api_schema import tenant  # noqa: F401 re-export fixture
+
+pytest_plugins = ("noesis2.tests.test_api_schema",)
 
 
 DEPRECATION_CONFIG = {
@@ -96,7 +97,10 @@ def test_version_endpoint_requires_tenant(api_client, tenant):
     response = api_client.get("/test/version/")
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Tenant header is required for versioned endpoints."
+    assert (
+        response.json()["detail"]
+        == "Tenant header is required for versioned endpoints."
+    )
 
 
 @override_settings(ROOT_URLCONF="noesis2.tests.test_health_and_versioning")
@@ -140,7 +144,9 @@ def test_version_endpoint_legacy_version_marks_deprecated(api_client, tenant):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True, "version": "legacy"}
-    assert response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    assert (
+        response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    )
     assert response["Sunset"] == DEPRECATION_CONFIG["ai-core-legacy"]["sunset"]
 
 
@@ -169,7 +175,9 @@ def test_mixin_adds_deprecation_headers(api_client, tenant):
 
     assert response.status_code == 200
     assert response.json() == {"ok": True}
-    assert response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    assert (
+        response["Deprecation"] == DEPRECATION_CONFIG["ai-core-legacy"]["deprecation"]
+    )
     assert response["Sunset"] == DEPRECATION_CONFIG["ai-core-legacy"]["sunset"]
 
 
@@ -268,7 +276,9 @@ def test_health_main_sets_socket_reuse_and_falls_back(monkeypatch, capsys):
 
 
 def test_normalise_config_filters_invalid_entries():
-    config = versioning._normalise_config({"valid": {"deprecation": "soon"}, "bad": object()})
+    config = versioning._normalise_config(
+        {"valid": {"deprecation": "soon"}, "bad": object()}
+    )
 
     assert config == {"valid": {"deprecation": "soon"}}
 
