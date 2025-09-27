@@ -42,6 +42,16 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 # Import graphs so they are available via module globals for Legacy views.
+# This enables tests to monkeypatch e.g. `views.info_intake` directly and
+# allows _GraphView.get_graph to resolve from globals() without importing.
+try:  # pragma: no cover - exercised indirectly via tests
+    info_intake = import_module("ai_core.graphs.info_intake")
+    scope_check = import_module("ai_core.graphs.scope_check")
+    needs_mapping = import_module("ai_core.graphs.needs_mapping")
+    system_description = import_module("ai_core.graphs.system_description")
+except Exception:  # defensive: don't break module import if graphs change
+    # Fallback to lazy import via _GraphView.get_graph when not present.
+    pass
 
 from .infra import rate_limit
 from .infra.object_store import read_json, sanitize_identifier, write_json
