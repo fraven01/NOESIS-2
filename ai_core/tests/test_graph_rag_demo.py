@@ -135,6 +135,7 @@ def test_rag_demo_run_handles_for_tenant_router(monkeypatch: pytest.MonkeyPatch)
     assert router.calls == ["dev"]
 
 
+
 def test_rag_demo_run_handles_for_tenant_with_schema(monkeypatch: pytest.MonkeyPatch) -> None:
     class Router:
         def __init__(self) -> None:
@@ -213,3 +214,4 @@ def test_rag_demo_run_zero_matches_adds_warning(monkeypatch: pytest.MonkeyPatch)
     assert result["warnings"] == ["no_vector_matches_demo_fallback"]
     assert len(result["matches"]) == 2
     assert new_state["rag_demo"]["retrieved_count"] == 2
+

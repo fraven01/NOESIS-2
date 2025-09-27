@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+
 from typing import Any, Callable, Dict, Iterable, List, Tuple
 
 try:
@@ -129,6 +130,7 @@ def _resolve_tenant_router(
     return None, last_type_error
 
 
+
 def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     query = _extract_query(state)
     if not query:
@@ -151,6 +153,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
 
         tenant_schema = meta.get("tenant_schema") or meta.get("schema")
 
+
         try:
             router = get_default_router()
         except Exception as exc:  # pragma: no cover - defensive fallback
@@ -161,6 +164,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
             scoped_router = router
             for_tenant = getattr(router, "for_tenant", None)
             if callable(for_tenant):
+
                 scoped_router, scoped_error = _resolve_tenant_router(
                     for_tenant, tenant_id, tenant_schema
                 )
@@ -168,6 +172,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     router_error = scoped_error
                 elif scoped_router is None:
                     scoped_router = router
+
 
             search = getattr(scoped_router, "search", None) if scoped_router is not None else None
             if callable(search):
@@ -193,10 +198,12 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     else:
         matches = _demo_matches(query, str(tenant_id), top_k=top_k)
 
+
     warnings: List[str] = []
     if not matches:
         matches = _demo_matches(query, str(tenant_id), top_k=top_k)
         warnings.append("no_vector_matches_demo_fallback")
+
 
     new_state = dict(state)
     new_state["rag_demo"] = {
@@ -208,8 +215,10 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     result: GraphResult = {"ok": True, "query": query, "matches": matches}
     if router_error:
         result["error"] = router_error
+
     if warnings:
         result["warnings"] = warnings
+
 
     return new_state, result
 
