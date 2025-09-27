@@ -94,7 +94,12 @@ def _demo_matches(query: str, tenant_id: str, *, top_k: int) -> List[Dict[str, A
 def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     query = _extract_query(state)
     if not query:
-        return state, {"ok": False, "query": None, "matches": [], "error": "missing_query"}
+        return state, {
+            "ok": False,
+            "query": None,
+            "matches": [],
+            "error": "missing_query",
+        }
 
     tenant_id = meta.get("tenant_id") or meta.get("tenant")
     if not tenant_id:
@@ -132,7 +137,11 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     router_error = str(exc)
                     scoped_router = None
 
-            search = getattr(scoped_router, "search", None) if scoped_router is not None else None
+            search = (
+                getattr(scoped_router, "search", None)
+                if scoped_router is not None
+                else None
+            )
             if callable(search):
                 case_id = meta.get("case_id") or meta.get("case")
                 try:

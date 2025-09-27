@@ -98,7 +98,9 @@ def test_rag_demo_missing_query_returns_error(client) -> None:
     assert data["matches"] == []
 
 
-def test_rag_demo_run_falls_back_to_demo_matches(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rag_demo_run_falls_back_to_demo_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(rag_demo, "get_default_router", lambda: object())
 
     state = {"query": "Alpha"}
@@ -113,7 +115,9 @@ def test_rag_demo_run_falls_back_to_demo_matches(monkeypatch: pytest.MonkeyPatch
     assert new_state["rag_demo"]["retrieved_count"] == 2
 
 
-def test_rag_demo_run_handles_for_tenant_router(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rag_demo_run_handles_for_tenant_router(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Router:
         def __init__(self) -> None:
             self.calls: list[str] = []

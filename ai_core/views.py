@@ -52,7 +52,6 @@ from ai_core.graph.schemas import merge_state, normalize_meta
 from ai_core.graphs import (
     info_intake,
     needs_mapping,
-    rag_demo,
     scope_check,
     system_description,
 )  # noqa: F401
@@ -705,6 +704,8 @@ class RagDemoViewV1(_GraphView):
     @default_extend_schema(
         request=IntakeRequestSerializer,
         responses={200: IntakeResponseSerializer},
+        error_statuses=RATE_LIMIT_JSON_ERROR_STATUSES,
+        include_trace_header=True,
         examples=[
             OpenApiExample(
                 name="RagDemo",
