@@ -91,7 +91,9 @@ def normalize_meta(request: Any) -> dict:
     return meta
 
 
-def merge_state(old: Mapping[str, Any] | None, incoming: Mapping[str, Any] | None) -> dict:
+def merge_state(
+    old: Mapping[str, Any] | None, incoming: Mapping[str, Any] | None
+) -> dict:
     """Return a new state mapping with ``incoming`` values overwriting ``old``."""
 
     merged: dict[str, Any] = {}

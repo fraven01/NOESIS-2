@@ -19,4 +19,3 @@ def bootstrap() -> None:
     register("scope_check", module_runner(scope_check))
     register("needs_mapping", module_runner(needs_mapping))
     register("system_description", module_runner(system_description))
-

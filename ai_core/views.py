@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from types import ModuleType
+from importlib import import_module
 from uuid import uuid4
 
 from django.conf import settings
@@ -48,7 +49,12 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graph.schemas import merge_state, normalize_meta
-from ai_core.graphs import info_intake, needs_mapping, scope_check, system_description  # noqa: F401
+from ai_core.graphs import (
+    info_intake,
+    needs_mapping,
+    scope_check,
+    system_description,
+)  # noqa: F401
 
 # Import graphs so they are available via module globals for Legacy views.
 # This enables tests to monkeypatch e.g. `views.info_intake` directly and
