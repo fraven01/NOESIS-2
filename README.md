@@ -213,6 +213,36 @@ Benötigte Variablen (siehe `.env.example` oder `.env.dev.sample`):
   Stelle sicher, dass [`docs/rag/schema.sql`](docs/rag/schema.sql) angewendet wurde und die `vector`-Extension aktiv ist.
   Mandanten-IDs müssen UUIDs sein; vorhandene Legacy-IDs werden deterministisch gemappt, sollten aber per Migration bereinigt
   werden, bevor produktive Daten geladen werden.
+- RAG_STATEMENT_TIMEOUT_MS (optional, default `15000`): maximale Laufzeit für SQL-Statements des pgvector-Clients. Höhere Werte
+  erhöhen das Timeout, niedrigere brechen Abfragen früher ab.
+- RAG_RETRY_ATTEMPTS (optional, default `3`): Anzahl der Wiederholungsversuche für fehlgeschlagene pgvector-Operationen.
+- RAG_RETRY_BASE_DELAY_MS (optional, default `50`): Basiswartezeit zwischen Wiederholungen; skaliert linear mit dem Versuch.
+
+> ⚠️ **Vector-Backend Auswahl:** `RAG_VECTOR_STORES` unterstützt aktuell nur
+> `pgvector`. Abweichende `backend`-Werte führen beim Start zu einem
+> `ValueError` aus `get_default_router()`, sodass Fehlkonfigurationen früh
+> auffallen.
+
+Beispielkonfiguration für getrennte Scopes (z. B. isolierte Großmandanten):
+
+```python
+RAG_VECTOR_STORES = {
+    "global": {
+        "backend": "pgvector",
+        "dsn_env": "RAG_DATABASE_URL",
+        "default": True,
+    },
+    "enterprise": {
+        "backend": "pgvector",
+        "schema": "rag_enterprise",
+        "tenants": ["f1d8f7af-4d4a-4f13-9d5b-a1c46b0d5b61"],
+        "schemas": ["acme_prod"],
+    },
+}
+```
+
+Der Router mappt automatisch alle aufgeführten Tenant-IDs oder Schema-Namen auf
+den jeweiligen Scope und fällt ansonsten auf `global` zurück.
 
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys

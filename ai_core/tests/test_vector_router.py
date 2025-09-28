@@ -6,6 +6,7 @@ from typing import Iterable, Mapping
 
 import pytest
 
+from ai_core.rag import metrics
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStore, VectorStoreRouter
 
@@ -20,6 +21,7 @@ class FakeStore(VectorStore):
         self.search_calls: list[Mapping[str, object]] = []
         self.upsert_calls: list[list[Chunk]] = []
         self._search_result = list(search_result or [])
+        self.health_checks = 0
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
         chunk_list = list(chunks)
@@ -45,6 +47,10 @@ class FakeStore(VectorStore):
             }
         )
         return self._search_result
+
+    def health_check(self) -> bool:
+        self.health_checks += 1
+        return True
 
 
 @pytest.fixture
@@ -111,3 +117,61 @@ def test_router_upsert_delegates_global(
     assert len(global_store.upsert_calls) == 1
     assert global_store.upsert_calls[0] == [chunk]
     assert len(silo_store.upsert_calls) == 0
+
+
+def test_router_for_tenant_returns_scoped_client(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    _, global_store, silo_store = router_and_stores
+    scoped_router = VectorStoreRouter(
+        {"global": global_store, "silo": silo_store},
+        tenant_scopes={"tenant-123": "silo"},
+    )
+    tenant_client = scoped_router.for_tenant("tenant-123")
+    tenant_client.search("q", tenant_id="tenant-123", top_k=1)
+    assert len(silo_store.search_calls) == 1
+    assert len(global_store.search_calls) == 0
+
+
+def test_router_upsert_requires_tenant_metadata(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, _, _ = router_and_stores
+    chunk = Chunk(content="foo", meta={})
+    with pytest.raises(ValueError):
+        router.upsert_chunks([chunk])
+
+
+def test_router_health_check_aggregates_scope_results(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, silo_store = router_and_stores
+    results = router.health_check()
+    assert results == {"global": True, "silo": True}
+    assert global_store.health_checks == 1
+    assert silo_store.health_checks == 1
+
+
+def test_router_health_check_records_metrics(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Counter:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str]] = []
+
+        def labels(self, **labels: str) -> "_Counter":
+            self.calls.append(labels)
+            return self
+
+        def inc(self, amount: float = 1.0) -> None:  # noqa: ARG002 - interface compat
+            return None
+
+    counter = _Counter()
+    monkeypatch.setattr(metrics, "RAG_HEALTH_CHECKS", counter)
+
+    router, _, _ = router_and_stores
+    router.health_check()
+
+    assert {"scope": "global", "status": "success"} in counter.calls
+    assert {"scope": "silo", "status": "success"} in counter.calls

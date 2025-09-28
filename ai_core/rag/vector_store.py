@@ -1,34 +1,13 @@
-"""Vector store abstractions for routing Retrieval-Augmented Generation data.
-
-This module defines a `VectorStore` protocol along with a `VectorStoreRouter`
-that can dispatch calls to scoped backends. The router enforces tenant
-identifiers and caps retrieval sizes to keep usage predictable.
-
-Example:
-    >>> from ai_core.rag.schemas import Chunk
-    >>> class InMemoryStore(VectorStore):
-    ...     def __init__(self):
-    ...         self._chunks: list[Chunk] = []
-    ...     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
-    ...         self._chunks.extend(chunks)
-    ...         return len(self._chunks)
-    ...     def search(self, query: str, tenant_id: str, *, case_id: str | None = None,
-    ...                top_k: int = 5, filters: Mapping[str, str | None] | None = None
-    ...                ) -> list[Chunk]:
-    ...         return self._chunks[:top_k]
-    >>> router = VectorStoreRouter({"global": InMemoryStore()})
-    >>> router.upsert_chunks([Chunk(content="hello", meta={"tenant": "t"})])
-    1
-    >>> router.search("hi", tenant_id="t")
-    [Chunk(content='hello', meta={'tenant': 't'}, embedding=None)]
-"""
+"""Vector store abstractions for routing Retrieval-Augmented Generation data."""
 
 from __future__ import annotations
 
+import atexit
 import logging
-from typing import Iterable, Mapping, Protocol
+from typing import Dict, Iterable, Mapping, Protocol
 
 from ai_core.rag.schemas import Chunk
+from . import metrics
 
 logger = logging.getLogger(__name__)
 
@@ -51,9 +30,30 @@ class VectorStore(Protocol):
         *,
         case_id: str | None = None,
         top_k: int = 5,
-        filters: Mapping[str, str | None] | None = None,
+        filters: Mapping[str, object | None] | None = None,
     ) -> list[Chunk]:
         """Return the most relevant chunks for a query."""
+
+    def close(self) -> None:
+        """Release underlying resources if applicable."""
+
+
+class TenantScopedVectorStore(Protocol):
+    """Protocol for clients that are already bound to a tenant context."""
+
+    def search(
+        self,
+        query: str,
+        tenant_id: str | None = None,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+    ) -> list[Chunk]:
+        """Search within the tenant scope."""
+
+    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
+        """Insert or update chunks within the tenant scope."""
 
     def close(self) -> None:
         """Release underlying resources if applicable."""
@@ -66,19 +66,29 @@ class VectorStoreRouter:
         stores: Mapping of scope names to :class:`VectorStore` implementations.
         default_scope: Name of the scope that receives upsert operations and
             serves as fallback for unknown scopes.
+        tenant_scopes: Optional explicit mapping of tenant identifiers to scope
+            names. Useful when large tenants are isolated in dedicated silos.
+        schema_scopes: Optional mapping of tenant schema names to scope names.
 
     The router guarantees tenant enforcement, filter normalisation and a
     defensive cap on ``top_k`` values (minimum 1, maximum 10).
     """
 
     def __init__(
-        self, stores: Mapping[str, VectorStore], default_scope: str = "global"
+        self,
+        stores: Mapping[str, VectorStore],
+        default_scope: str = "global",
+        *,
+        tenant_scopes: Mapping[str, str] | None = None,
+        schema_scopes: Mapping[str, str] | None = None,
     ):
         if default_scope not in stores:
             msg = "default_scope '%s' is not present in provided stores"
             raise ValueError(msg % default_scope)
         self._stores = dict(stores)
         self._default_scope = default_scope
+        self._tenant_scopes = {str(key): value for key, value in (tenant_scopes or {}).items()}
+        self._schema_scopes = {str(key): value for key, value in (schema_scopes or {}).items()}
         logger.debug(
             "VectorStoreRouter initialised",
             extra={"default_scope": default_scope, "scopes": list(self._stores)},
@@ -96,6 +106,13 @@ class VectorStoreRouter:
         logger.debug("Scope '%s' missing, falling back to default", scope)
         return self._stores[self._default_scope]
 
+    def _resolve_scope(self, tenant_id: str | None, tenant_schema: str | None) -> str | None:
+        if tenant_schema and tenant_schema in self._schema_scopes:
+            return self._schema_scopes[tenant_schema]
+        if tenant_id and tenant_id in self._tenant_scopes:
+            return self._tenant_scopes[tenant_id]
+        return None
+
     def search(
         self,
         query: str,
@@ -103,7 +120,7 @@ class VectorStoreRouter:
         *,
         case_id: str | None = None,
         top_k: int = 5,
-        filters: Mapping[str, str | None] | None = None,
+        filters: Mapping[str, object | None] | None = None,
         scope: str = "global",
     ) -> list[Chunk]:
         """Search within the given scope while enforcing tenant and limits.
@@ -119,7 +136,12 @@ class VectorStoreRouter:
         capped_top_k = max(1, min(top_k, 10))
         normalised_filters = None
         if filters is not None:
-            normalised_filters = {key: value or None for key, value in filters.items()}
+            normalised_filters = {}
+            for key, value in filters.items():
+                if isinstance(value, str):
+                    normalised_filters[key] = value or None
+                else:
+                    normalised_filters[key] = value
 
         logger.debug(
             "Vector search",
@@ -141,11 +163,19 @@ class VectorStoreRouter:
             filters=normalised_filters,
         )
 
-    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
-        """Delegate writes to the default scope store."""
+    def upsert_chunks(
+        self, chunks: Iterable[Chunk], *, scope: str | None = None
+    ) -> int:
+        """Delegate writes to the configured scope (default if omitted)."""
 
-        logger.debug("Upserting chunks", extra={"scope": self._default_scope})
-        return self._stores[self._default_scope].upsert_chunks(chunks)
+        target_scope = scope or self._default_scope
+        chunk_list = list(chunks)
+        for chunk in chunk_list:
+            tenant_meta = str(chunk.meta.get("tenant") or "").strip()
+            if not tenant_meta:
+                raise ValueError("chunk metadata must include tenant")
+        logger.debug("Upserting chunks", extra={"scope": target_scope})
+        return self._get_store(target_scope).upsert_chunks(chunk_list)
 
     def close(self) -> None:
         """Close all scoped stores if they expose a ``close`` method."""
@@ -156,14 +186,192 @@ class VectorStoreRouter:
                 logger.debug("Closing vector store scope", extra={"scope": scope})
                 close()
 
+    def health_check(self) -> dict[str, bool]:
+        """Run health checks for each configured scope."""
+
+        results: dict[str, bool] = {}
+        for scope, store in self._stores.items():
+            check = getattr(store, "health_check", None)
+            if not callable(check):
+                results[scope] = True
+                metrics.RAG_HEALTH_CHECKS.labels(scope=scope, status="success").inc()
+                continue
+            try:
+                healthy = bool(check())
+                results[scope] = healthy
+                metrics.RAG_HEALTH_CHECKS.labels(
+                    scope=scope,
+                    status="success" if healthy else "failure",
+                ).inc()
+            except Exception:  # pragma: no cover - defensive logging
+                logger.exception("Vector store health check failed", extra={"scope": scope})
+                results[scope] = False
+                metrics.RAG_HEALTH_CHECKS.labels(scope=scope, status="failure").inc()
+        return results
+
+    def for_tenant(
+        self, tenant_id: str, tenant_schema: str | None = None
+    ) -> TenantScopedVectorStore:
+        """Return a client bound to a specific tenant context."""
+
+        if not tenant_id:
+            raise ValueError("tenant_id is required for tenant routing")
+        scope = self._resolve_scope(str(tenant_id), tenant_schema)
+        return _TenantScopedClient(self, tenant_id=str(tenant_id), scope=scope)
+
+
+class _TenantScopedClient:
+    """Wrapper that binds vector store operations to a tenant context."""
+
+    def __init__(
+        self,
+        router: VectorStoreRouter,
+        *,
+        tenant_id: str,
+        scope: str | None,
+    ) -> None:
+        self._router = router
+        self._tenant_id = tenant_id
+        self._scope = scope
+
+    def search(
+        self,
+        query: str,
+        tenant_id: str | None = None,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+    ) -> list[Chunk]:
+        effective_tenant = tenant_id or self._tenant_id
+        return self._router.search(
+            query,
+            tenant_id=effective_tenant,
+            case_id=case_id,
+            top_k=top_k,
+            filters=filters,
+            scope=self._scope or self._router.default_scope,
+        )
+
+    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
+        chunk_list = list(chunks)
+        coerced: list[Chunk] = []
+        for chunk in chunk_list:
+            meta = dict(chunk.meta)
+            if not meta.get("tenant"):
+                meta["tenant"] = self._tenant_id
+                coerced.append(
+                    Chunk(content=chunk.content, meta=meta, embedding=chunk.embedding)
+                )
+            else:
+                coerced.append(chunk)
+        return self._router.upsert_chunks(
+            coerced,
+            scope=self._scope,
+        )
+
+    def health_check(self) -> dict[str, bool]:
+        return self._router.health_check()
+
+    def close(self) -> None:
+        self._router.close()
+
 
 def get_default_router() -> VectorStoreRouter:
     """Return a router configured with the default pgvector backend."""
 
-    from .vector_client import get_default_client
+    stores_config: Dict[str, Dict[str, object]] = {}
+    default_scope: str | None = None
+    tenant_scopes: Dict[str, str] = {}
+    schema_scopes: Dict[str, str] = {}
 
-    client = get_default_client()
-    return VectorStoreRouter({"global": client}, default_scope="global")
+    try:  # pragma: no cover - requires Django settings
+        from django.conf import settings  # type: ignore
+
+        configured = getattr(settings, "RAG_VECTOR_STORES", None)
+        if isinstance(configured, dict):
+            stores_config = configured
+        default_scope = getattr(settings, "RAG_VECTOR_DEFAULT_SCOPE", None)
+    except Exception:
+        stores_config = {}
+
+    if not stores_config:
+        stores_config = {"global": {"backend": "pgvector"}}
+
+    stores: Dict[str, VectorStore] = {}
+    for scope_name, config in stores_config.items():
+        backend = str(config.get("backend", "")).lower()
+        if backend != "pgvector":
+            raise ValueError(f"Unsupported vector store backend '{backend}' for scope '{scope_name}'")
+        stores[scope_name] = _build_pgvector_store(scope_name, config)
+        if config.get("default") and default_scope is None:
+            default_scope = scope_name
+        for tenant_value in config.get("tenants", []):
+            tenant_scopes[str(tenant_value)] = scope_name
+        for schema_value in config.get("schemas", []):
+            schema_scopes[str(schema_value)] = scope_name
+
+    if default_scope is None:
+        default_scope = "global" if "global" in stores else next(iter(stores))
+
+    router = VectorStoreRouter(
+        stores,
+        default_scope=default_scope,
+        tenant_scopes=tenant_scopes,
+        schema_scopes=schema_scopes,
+    )
+    return router
 
 
-__all__ = ["VectorStore", "VectorStoreRouter", "get_default_router"]
+def _build_pgvector_store(scope: str, config: Mapping[str, object]) -> VectorStore:
+    from .vector_client import PgVectorClient, get_default_client
+
+    dsn = config.get("dsn")
+    kwargs: Dict[str, object] = {}
+
+    for key in ("schema", "minconn", "maxconn", "statement_timeout_ms", "retries", "retry_base_delay_ms"):
+        if key in config:
+            value = config[key]
+            if key in {"minconn", "maxconn", "statement_timeout_ms", "retries", "retry_base_delay_ms"} and value is not None:
+                kwargs[key] = int(value)
+            else:
+                kwargs[key] = value
+
+    if dsn:
+        logger.info("Initialising pgvector store for scope %s via explicit DSN", scope)
+        return PgVectorClient(str(dsn), **kwargs)
+
+    env_var = str(config.get("dsn_env", "RAG_DATABASE_URL"))
+    fallback_env_var = str(config.get("fallback_env", "DATABASE_URL"))
+    try:
+        logger.info(
+            "Initialising pgvector store for scope %s via env var %s", scope, env_var
+        )
+        return PgVectorClient.from_env(
+            env_var=env_var,
+            fallback_env_var=fallback_env_var,
+            **kwargs,
+        )
+    except RuntimeError:
+        logger.info(
+            "Falling back to shared pgvector client for scope %s; env vars %s/%s unset",
+            scope,
+            env_var,
+            fallback_env_var,
+        )
+        return get_default_client()
+
+
+def reset_default_router() -> None:
+    """Reset cached router state and close stores if needed."""
+
+    # Routers are currently built on demand without caching. The hook ensures
+    # compatibility with potential future caching and mirrors the client reset
+    # helper used in tests.
+    logger.debug("reset_default_router called - no cached router to clear")
+
+
+__all__ = ["VectorStore", "VectorStoreRouter", "get_default_router", "TenantScopedVectorStore"]
+
+
+atexit.register(reset_default_router)

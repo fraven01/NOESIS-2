@@ -198,6 +198,24 @@ Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit
 }
 ```
 
+#### Result-Metadaten
+
+> ℹ️ **Response-Formate:** Graph-Nodes wie `retrieve` liefern Snippets mit
+> flachen Feldern (`text`, `source`, `score`, `hash`, `id`) und einem optionalen
+> `meta`-Dictionary, das zusätzliche Schlüssel aus dem Chunk (z. B.
+> `doctype`, `published`) unverändert durchreicht. HTTP-Endpunkte wie
+> `/ai/v1/rag-demo/` bündeln dieselben Informationen dagegen im Feld
+> `metadata` und verwenden `snippets[].metadata.score` statt eines Top-Level
+> Keys. Prüfen Sie daher stets den spezifischen Endpoint-Contract, bevor Sie
+> Felder downstream weiterverarbeiten. Beide Varianten enthalten Hash und
+> Dokument-ID zur nachträglichen Deduplication sowie den Similarity-Score.
+
+> 📈 **Score-Interpretation:** Die Ähnlichkeitswerte basieren auf
+> `1 / (1 + distance)` aus der pgvector-Metrik. Höhere Werte bedeuten größere
+> Nähe zum Query-Embedding, die Skala ist aber nicht linear normalisiert.
+> Deklarieren Sie Scores im UI daher als „Similarity Score“ statt als Prozent-
+> oder Qualitätswert.
+
 **cURL Beispiel**
 ```bash
 curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
@@ -207,6 +225,14 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
   -H "Content-Type: application/json" \
   -d '{"query": "Wie konfiguriere ich Tenant-Filter?", "top_k": 3}'
 ```
+
+### RAG Umgebungsvariablen
+
+| Variable | Default | Beschreibung |
+| --- | --- | --- |
+| `RAG_STATEMENT_TIMEOUT_MS` | `15000` | Maximale Ausführungszeit (in Millisekunden) für SQL-Statements des pgvector Clients. |
+| `RAG_RETRY_ATTEMPTS` | `3` | Anzahl der Wiederholungsversuche für Datenbankoperationen, bevor der Fehler propagiert wird. |
+| `RAG_RETRY_BASE_DELAY_MS` | `50` | Basiswartezeit zwischen Wiederholungsversuchen (linear skaliert mit dem Versuchszähler). |
 
 ## Agenten (Queue `agents`)
 

@@ -8,6 +8,7 @@ from psycopg2 import OperationalError, errors
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 from ai_core.rag import vector_client as rag_vector_client
+from ai_core.rag.vector_store import reset_default_router
 from common import logging as common_logging
 
 os.environ.setdefault("RAG_EMBEDDING_DIM", "1536")
@@ -78,7 +79,9 @@ def rag_database(rag_test_dsn: str, monkeypatch) -> Iterator[str]:
     monkeypatch.setenv("DATABASE_URL", rag_test_dsn)
     monkeypatch.setenv("RAG_DATABASE_URL", rag_test_dsn)
     rag_vector_client.reset_default_client()
+    reset_default_router()
     try:
         yield rag_test_dsn
     finally:
         rag_vector_client.reset_default_client()
+        reset_default_router()
