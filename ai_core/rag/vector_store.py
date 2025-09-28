@@ -87,8 +87,12 @@ class VectorStoreRouter:
             raise ValueError(msg % default_scope)
         self._stores = dict(stores)
         self._default_scope = default_scope
-        self._tenant_scopes = {str(key): value for key, value in (tenant_scopes or {}).items()}
-        self._schema_scopes = {str(key): value for key, value in (schema_scopes or {}).items()}
+        self._tenant_scopes = {
+            str(key): value for key, value in (tenant_scopes or {}).items()
+        }
+        self._schema_scopes = {
+            str(key): value for key, value in (schema_scopes or {}).items()
+        }
         logger.debug(
             "VectorStoreRouter initialised",
             extra={"default_scope": default_scope, "scopes": list(self._stores)},
@@ -106,7 +110,9 @@ class VectorStoreRouter:
         logger.debug("Scope '%s' missing, falling back to default", scope)
         return self._stores[self._default_scope]
 
-    def _resolve_scope(self, tenant_id: str | None, tenant_schema: str | None) -> str | None:
+    def _resolve_scope(
+        self, tenant_id: str | None, tenant_schema: str | None
+    ) -> str | None:
         if tenant_schema and tenant_schema in self._schema_scopes:
             return self._schema_scopes[tenant_schema]
         if tenant_id and tenant_id in self._tenant_scopes:
@@ -204,7 +210,9 @@ class VectorStoreRouter:
                     status="success" if healthy else "failure",
                 ).inc()
             except Exception:  # pragma: no cover - defensive logging
-                logger.exception("Vector store health check failed", extra={"scope": scope})
+                logger.exception(
+                    "Vector store health check failed", extra={"scope": scope}
+                )
                 results[scope] = False
                 metrics.RAG_HEALTH_CHECKS.labels(scope=scope, status="failure").inc()
         return results
@@ -302,7 +310,9 @@ def get_default_router() -> VectorStoreRouter:
     for scope_name, config in stores_config.items():
         backend = str(config.get("backend", "")).lower()
         if backend != "pgvector":
-            raise ValueError(f"Unsupported vector store backend '{backend}' for scope '{scope_name}'")
+            raise ValueError(
+                f"Unsupported vector store backend '{backend}' for scope '{scope_name}'"
+            )
         stores[scope_name] = _build_pgvector_store(scope_name, config)
         if config.get("default") and default_scope is None:
             default_scope = scope_name
@@ -329,10 +339,27 @@ def _build_pgvector_store(scope: str, config: Mapping[str, object]) -> VectorSto
     dsn = config.get("dsn")
     kwargs: Dict[str, object] = {}
 
-    for key in ("schema", "minconn", "maxconn", "statement_timeout_ms", "retries", "retry_base_delay_ms"):
+    for key in (
+        "schema",
+        "minconn",
+        "maxconn",
+        "statement_timeout_ms",
+        "retries",
+        "retry_base_delay_ms",
+    ):
         if key in config:
             value = config[key]
-            if key in {"minconn", "maxconn", "statement_timeout_ms", "retries", "retry_base_delay_ms"} and value is not None:
+            if (
+                key
+                in {
+                    "minconn",
+                    "maxconn",
+                    "statement_timeout_ms",
+                    "retries",
+                    "retry_base_delay_ms",
+                }
+                and value is not None
+            ):
                 kwargs[key] = int(value)
             else:
                 kwargs[key] = value
@@ -371,7 +398,12 @@ def reset_default_router() -> None:
     logger.debug("reset_default_router called - no cached router to clear")
 
 
-__all__ = ["VectorStore", "VectorStoreRouter", "get_default_router", "TenantScopedVectorStore"]
+__all__ = [
+    "VectorStore",
+    "VectorStoreRouter",
+    "get_default_router",
+    "TenantScopedVectorStore",
+]
 
 
 atexit.register(reset_default_router)

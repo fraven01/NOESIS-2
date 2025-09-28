@@ -8,7 +8,18 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar, cast
+from typing import (
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    cast,
+)
 
 from psycopg2 import sql
 from psycopg2.extras import Json, register_default_jsonb
@@ -189,7 +200,8 @@ class PgVectorClient:
             normalized_filters = {
                 key: (
                     value
-                    if not (isinstance(value, str) and value == "") and value is not None
+                    if not (isinstance(value, str) and value == "")
+                    and value is not None
                     else None
                 )
                 for key, value in filters.items()
@@ -215,7 +227,9 @@ class PgVectorClient:
             if key == "tenant":
                 continue
             filter_debug[key] = (
-                "<set>" if value is not None and key in SUPPORTED_METADATA_FILTERS else None
+                "<set>"
+                if value is not None and key in SUPPORTED_METADATA_FILTERS
+                else None
             )
         logger.debug(
             "RAG search normalised inputs: tenant=%s top_k=%d filters=%s",
@@ -444,7 +458,6 @@ class PgVectorClient:
         if value < 0:
             value = 0.0
         return 1.0 / (1.0 + value)
-
 
     def _normalise_filter_value(self, value: object) -> str:
         if isinstance(value, bool):

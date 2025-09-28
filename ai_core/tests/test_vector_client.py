@@ -214,7 +214,6 @@ class TestPgVectorClient:
         )
         assert negative == []
 
-
     def test_search_ignores_unknown_filters(self):
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
@@ -242,7 +241,6 @@ class TestPgVectorClient:
 
         assert results, "Erwartet mindestens ein Ergebnis trotz unbekannter Filter"
         assert any(r.meta.get("hash") == "doc-filter-tolerant" for r in results)
-
 
     def test_retry_metrics_record_attempts(self, monkeypatch):
         client = vector_client.get_default_client()

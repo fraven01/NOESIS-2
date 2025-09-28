@@ -40,6 +40,7 @@ from noesis2.api.serializers import (
     ScopeResponseSerializer,
     SysDescResponseSerializer,
 )
+
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
 # near the view definitions.
@@ -581,7 +582,7 @@ RAG_INGESTION_RUN_CURL = _curl(
             '-H "X-Tenant-Id: acme"',
             '-H "X-Case-Id: crm-7421"',
             '-H "Idempotency-Key: 9c6d9b07-52c8-4fb2-8c49-0a8e3a8a1d2d"',
-            "-d '{\"document_ids\": [\"0f0a6d5e49e14e79bc2d0da52c5b2f4a\"], \"priority\": \"normal\"}'",
+            '-d \'{"document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"], "priority": "normal"}\'',
         ]
     )
 )
