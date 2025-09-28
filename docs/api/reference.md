@@ -103,7 +103,7 @@ Aggregierter Health-Endpunkt für Web- und Worker-Dienste. Gibt auch Tenant-agno
 ## RAG & Ingestion
 
 ### POST `/rag/documents/upload/`
-Lädt Rohdokumente in den Object-Store hoch und legt einen Ingestion-Job an.
+Lädt Rohdokumente in den Object-Store hoch und macht sie für nachfolgende Ingestion-Läufe verfügbar.
 
 **Headers**
 - `X-Tenant-Schema` (required)
@@ -120,8 +120,7 @@ Lädt Rohdokumente in den Object-Store hoch und legt einen Ingestion-Job an.
 ```json
 {
   "status": "accepted",
-  "document_id": "doc_8fb6f3f4",
-  "ingestion_job_id": "job_7c92f4",
+  "document_id": "c5b406ad3e6f4a26a0f4f06ef8753d9e",
   "idempotent": false,
   "trace_id": "b1ca46f2191b44abbb74116bb6c1b724"
 }
@@ -129,7 +128,7 @@ Lädt Rohdokumente in den Object-Store hoch und legt einen Ingestion-Job an.
 
 **Fehler**
 - `400 Bad Request`: Kein File-Part oder ungültige Metadaten.
-- `409 Conflict`: Wiederholter Upload ohne `Idempotency-Key`.
+- `415 Unsupported Media Type`: Kein `multipart/form-data` Request.
 
 ### POST `/rag/ingestion/run/`
 Startet einen Ingestion-Workflow für zuvor hochgeladene Dokumente. Der Prozess läuft asynchron über die Celery-Queue `ingestion`.
