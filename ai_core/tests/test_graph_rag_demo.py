@@ -81,6 +81,7 @@ def test_rag_demo_route_returns_matches(client) -> None:
     assert data["ok"] is True
     assert data["query"] == "Alpha"
     assert len(data["matches"]) >= 2
+    assert "warnings" not in data
 
 
 def test_rag_demo_missing_query_returns_error(client) -> None:

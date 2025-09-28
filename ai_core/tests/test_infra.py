@@ -94,6 +94,10 @@ def test_object_store_roundtrip(tmp_path, monkeypatch):
     stored = tmp_path / ".ai_core_store/tenant/case/raw/data.bin"
     assert stored.read_bytes() == b"hi"
 
+    object_store.write_bytes("tenant/case/raw/data-copy.bin", b"hi-2")
+    stored_copy = tmp_path / ".ai_core_store/tenant/case/raw/data-copy.bin"
+    assert stored_copy.read_bytes() == b"hi-2"
+
 
 def test_sanitize_identifier_replaces_invalid_characters():
     assert object_store.sanitize_identifier("tenant name!@#") == "tenant_name___"

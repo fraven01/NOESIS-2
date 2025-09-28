@@ -8,6 +8,7 @@ from celery import shared_task
 from common.celery import ScopedTask
 from common.logging import get_logger
 from .infra import object_store, pii
+from django.utils import timezone
 from .rag.schemas import Chunk
 from .rag.vector_client import EMBEDDING_DIM
 from .rag.vector_store import get_default_router
@@ -113,5 +114,36 @@ def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
             raise ValueError("chunk tenant mismatch")
 
     router = get_default_router()
-    written = router.upsert_chunks(chunk_objs)
+    tenant_client = router
+    for_tenant = getattr(router, "for_tenant", None)
+    if callable(for_tenant):
+        tenant_client = for_tenant(tenant_id)
+    written = tenant_client.upsert_chunks(chunk_objs)
     return written
+
+
+@shared_task(base=ScopedTask, queue="ingestion")
+def ingestion_run(
+    tenant_id: str,
+    case_id: str,
+    document_ids: List[str],
+    priority: str = "normal",
+    trace_id: str | None = None,
+) -> Dict[str, object]:
+    """Placeholder ingestion dispatcher used by the ingestion run endpoint."""
+
+    # Keep relying on django.utils.timezone.now so call sites and tests can
+    # monkeypatch the module-level helper consistently.
+    queued_at = timezone.now().isoformat()
+    logger.info(
+        "Queued ingestion run",
+        extra={
+            "tenant": tenant_id,
+            "case_id": case_id,
+            "document_ids": document_ids,
+            "priority": priority,
+            "queued_at": queued_at,
+            "trace_id": trace_id,
+        },
+    )
+    return {"status": "queued", "queued_at": queued_at}

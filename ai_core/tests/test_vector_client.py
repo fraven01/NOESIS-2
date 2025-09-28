@@ -73,6 +73,8 @@ class TestPgVectorClient:
         assert len(results) == 1
         assert histogram.samples
         assert uuid.UUID(results[0].meta["tenant"])  # tenant ids are normalised
+        assert 0.0 <= results[0].meta["score"] <= 1.0
+        assert results[0].meta.get("hash") == chunk.meta["hash"]
 
     def test_upsert_replaces_existing_chunks_in_batches(self):
         client = vector_client.get_default_client()
@@ -135,3 +137,146 @@ class TestPgVectorClient:
 
         results = client.search("Result", tenant_id=tenant, top_k=25)
         assert len(results) == 10
+
+    def test_search_applies_metadata_filters(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        chunks = [
+            Chunk(
+                content="Filtered",
+                meta={
+                    "tenant": tenant,
+                    "hash": "doc-a",
+                    "source": "alpha",
+                    "doctype": "contract",
+                },
+                embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            ),
+            Chunk(
+                content="Filtered",
+                meta={
+                    "tenant": tenant,
+                    "hash": "doc-b",
+                    "source": "beta",
+                    "doctype": "contract",
+                },
+                embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            ),
+        ]
+        written = client.upsert_chunks(chunks)
+        assert written == len(chunks)
+
+        results = client.search(
+            "Filtered",
+            tenant_id=tenant,
+            filters={"source": "alpha"},
+            top_k=5,
+        )
+        assert [chunk.meta.get("hash") for chunk in results] == ["doc-a"]
+        assert all(chunk.meta.get("source") == "alpha" for chunk in results)
+
+        empty = client.search(
+            "Filtered",
+            tenant_id=tenant,
+            filters={"source": "gamma"},
+            top_k=5,
+        )
+        assert empty == []
+
+    def test_search_supports_boolean_filters(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        chunk = Chunk(
+            content="Boolean",
+            meta={
+                "tenant": tenant,
+                "hash": "doc-bool",
+                "source": "gamma",
+                "published": True,
+            },
+            embedding=[0.04] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        positive = client.search(
+            "Boolean",
+            tenant_id=tenant,
+            filters={"published": True},
+            top_k=5,
+        )
+        assert [c.meta.get("hash") for c in positive] == ["doc-bool"]
+
+        negative = client.search(
+            "Boolean",
+            tenant_id=tenant,
+            filters={"published": False},
+            top_k=5,
+        )
+        assert negative == []
+
+
+    def test_search_ignores_unknown_filters(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        chunk = Chunk(
+            content="Filter tolerant",
+            meta={
+                "tenant": tenant,
+                "hash": "doc-filter-tolerant",
+                "source": "alpha",
+            },
+            embedding=[0.05] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        results = client.search(
+            "Filter tolerant",
+            tenant_id=tenant,
+            filters={
+                "source": "alpha",
+                "project_id": "legacy",  # unbekannter Key, sollte ignoriert werden
+                "some_unknown_key": "value",
+            },
+            top_k=5,
+        )
+
+        assert results, "Erwartet mindestens ein Ergebnis trotz unbekannter Filter"
+        assert any(r.meta.get("hash") == "doc-filter-tolerant" for r in results)
+
+
+    def test_retry_metrics_record_attempts(self, monkeypatch):
+        client = vector_client.get_default_client()
+        client._retries = 2  # type: ignore[attr-defined]
+
+        class _RetryCounter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_RetryCounter":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        counter = _RetryCounter()
+        monkeypatch.setattr(metrics, "RAG_RETRY_ATTEMPTS", counter)
+        monkeypatch.setattr(vector_client.time, "sleep", lambda _x: None)
+
+        attempts = {"count": 0}
+
+        def _sometimes_fails() -> str:
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise RuntimeError("transient")
+            return "ok"
+
+        result = client._run_with_retries(_sometimes_fails, op_name="search")
+        assert result == "ok"
+        assert counter.value == 1.0
+        assert counter.calls == [{"operation": "search"}]
+
+    def test_health_check_runs_simple_query(self):
+        client = vector_client.get_default_client()
+        assert client.health_check() is True

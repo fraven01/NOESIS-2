@@ -10,8 +10,10 @@ from uuid import uuid4
 from django.conf import settings
 from django.db import connection
 from django.http import HttpRequest
+from django.utils import timezone
 
 from common.constants import (
+    IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
@@ -38,8 +40,11 @@ from noesis2.api.serializers import (
     ScopeResponseSerializer,
     SysDescResponseSerializer,
 )
-from drf_spectacular.utils import OpenApiExample
-from rest_framework import status
+# OpenAPI helpers and serializer types are referenced throughout the schema
+# declarations below, so keep the imports explicit even if they appear unused
+# near the view definitions.
+from drf_spectacular.utils import OpenApiExample, inline_serializer
+from rest_framework import serializers, status
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -69,7 +74,8 @@ except Exception:  # defensive: don't break module import if graphs change
     pass
 
 
-from .infra import rate_limit
+from .infra import object_store, rate_limit
+from .tasks import ingestion_run
 from .infra.resp import apply_std_headers
 
 
@@ -481,6 +487,139 @@ SYSDESC_CURL = _curl(
     )
 )
 
+RAG_UPLOAD_REQUEST_EXAMPLE = OpenApiExample(
+    name="RagDocumentUploadRequest",
+    summary="Document upload payload",
+    description="Multipart form data containing the binary document and optional metadata JSON.",
+    value={"file": "<binary>", "metadata": '{"tags":["handbook"]}'},
+    request_only=True,
+)
+
+RAG_UPLOAD_RESPONSE_EXAMPLE = OpenApiExample(
+    name="RagDocumentUploadResponse",
+    summary="Document upload accepted",
+    description="Signals that the document bytes were written to the tenant-scoped object store.",
+    value={
+        "status": "accepted",
+        "document_id": "0f0a6d5e49e14e79bc2d0da52c5b2f4a",
+        "trace_id": "f82c8a4f3f94484a8b1c9d03b1f65e10",
+        "idempotent": False,
+    },
+    response_only=True,
+)
+
+RAG_UPLOAD_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/rag/documents/upload/",
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 3f9d2c68-ffb0-4f7d-969e-1e6c5f8c1234"',
+            '-F "file=@document.txt"',
+            '-F \'metadata={"tags":["handbook"]}\'',
+        ]
+    )
+)
+
+RAG_UPLOAD_REQUEST = inline_serializer(
+    name="RagDocumentUploadRequest",
+    fields={
+        "file": serializers.FileField(),
+        "metadata": serializers.CharField(required=False),
+    },
+)
+
+RAG_UPLOAD_RESPONSE = inline_serializer(
+    name="RagDocumentUploadResponse",
+    fields={
+        "status": serializers.CharField(),
+        "document_id": serializers.CharField(),
+        "trace_id": serializers.CharField(),
+        "idempotent": serializers.BooleanField(),
+    },
+)
+
+RAG_UPLOAD_SCHEMA = {
+    "request": RAG_UPLOAD_REQUEST,
+    "responses": {202: RAG_UPLOAD_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Upload a raw document to the tenant-scoped object store for later ingestion.",
+    "examples": [RAG_UPLOAD_REQUEST_EXAMPLE, RAG_UPLOAD_RESPONSE_EXAMPLE],
+    "extensions": RAG_UPLOAD_CURL,
+}
+
+RAG_INGESTION_RUN_REQUEST_EXAMPLE = OpenApiExample(
+    name="RagIngestionRunRequest",
+    summary="Queue ingestion run",
+    description="Dispatches the ingestion pipeline for the provided document identifiers.",
+    value={"document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"], "priority": "normal"},
+    request_only=True,
+)
+
+RAG_INGESTION_RUN_RESPONSE_EXAMPLE = OpenApiExample(
+    name="RagIngestionRunResponse",
+    summary="Ingestion run queued",
+    description="Confirms that the ingestion pipeline was scheduled for execution.",
+    value={
+        "status": "queued",
+        "queued_at": "2024-01-01T12:00:00+00:00",
+        "ingestion_run_id": "4b0b2834606e4e4eb3d3933e9a735cbc",
+        "trace_id": "f82c8a4f3f94484a8b1c9d03b1f65e10",
+        "idempotent": False,
+    },
+    response_only=True,
+)
+
+RAG_INGESTION_RUN_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/rag/ingestion/run/",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 9c6d9b07-52c8-4fb2-8c49-0a8e3a8a1d2d"',
+            "-d '{\"document_ids\": [\"0f0a6d5e49e14e79bc2d0da52c5b2f4a\"], \"priority\": \"normal\"}'",
+        ]
+    )
+)
+
+RAG_INGESTION_RUN_REQUEST = inline_serializer(
+    name="RagIngestionRunRequest",
+    fields={
+        "document_ids": serializers.ListField(
+            child=serializers.CharField(), allow_empty=False
+        ),
+        "priority": serializers.CharField(required=False),
+    },
+)
+
+RAG_INGESTION_RUN_RESPONSE = inline_serializer(
+    name="RagIngestionRunResponse",
+    fields={
+        "status": serializers.CharField(),
+        "queued_at": serializers.DateTimeField(),
+        "ingestion_run_id": serializers.CharField(),
+        "trace_id": serializers.CharField(),
+        "idempotent": serializers.BooleanField(),
+    },
+)
+
+RAG_INGESTION_RUN_SCHEMA = {
+    "request": RAG_INGESTION_RUN_REQUEST,
+    "responses": {202: RAG_INGESTION_RUN_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Queue an ingestion run for previously uploaded documents.",
+    "examples": [
+        RAG_INGESTION_RUN_REQUEST_EXAMPLE,
+        RAG_INGESTION_RUN_RESPONSE_EXAMPLE,
+    ],
+    "extensions": RAG_INGESTION_RUN_CURL,
+}
+
 PING_SCHEMA = {
     "responses": {200: PingResponseSerializer},
     "error_statuses": RATE_LIMIT_ERROR_STATUSES,
@@ -696,6 +835,167 @@ class LegacySysDescView(_GraphView):
         return super().post(request)
 
 
+class RagUploadView(APIView):
+    """Handle multipart document uploads for ingestion pipelines."""
+
+    @default_extend_schema(**RAG_UPLOAD_SCHEMA)
+    def post(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
+        content_type = request.headers.get("Content-Type", "")
+        if content_type:
+            content_type = content_type.split(";")[0].strip().lower()
+        if not content_type.startswith("multipart/"):
+            return _error_response(
+                "Request payload must be encoded as multipart/form-data.",
+                "unsupported_media_type",
+                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            )
+
+        upload = request.FILES.get("file")
+        if upload is None:
+            return _error_response(
+                "File form part is required for document uploads.",
+                "missing_file",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        metadata_obj = None
+        metadata_raw = request.data.get("metadata")
+        if metadata_raw not in (None, ""):
+            if isinstance(metadata_raw, (bytes, bytearray)):
+                try:
+                    metadata_text = metadata_raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    return _error_response(
+                        "Metadata must be valid JSON.",
+                        "invalid_metadata",
+                        status.HTTP_400_BAD_REQUEST,
+                    )
+            else:
+                metadata_text = str(metadata_raw)
+
+            metadata_text = metadata_text.strip()
+            if metadata_text:
+                try:
+                    metadata_obj = json.loads(metadata_text)
+                except json.JSONDecodeError:
+                    return _error_response(
+                        "Metadata must be valid JSON.",
+                        "invalid_metadata",
+                        status.HTTP_400_BAD_REQUEST,
+                    )
+
+        original_name = getattr(upload, "name", "") or "upload.bin"
+        try:
+            safe_name = object_store.safe_filename(original_name)
+        except ValueError:
+            safe_name = object_store.safe_filename("upload.bin")
+
+        try:
+            tenant_segment = object_store.sanitize_identifier(meta["tenant"])
+            case_segment = object_store.sanitize_identifier(meta["case"])
+        except ValueError:
+            return _error_response(
+                "Request metadata was invalid.",
+                "invalid_request",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        document_id = uuid4().hex
+        storage_prefix = f"{tenant_segment}/{case_segment}/uploads"
+        object_path = f"{storage_prefix}/{document_id}_{safe_name}"
+
+        file_bytes = upload.read()
+        if not isinstance(file_bytes, (bytes, bytearray)):
+            file_bytes = bytes(file_bytes)
+
+        object_store.write_bytes(object_path, file_bytes)
+        if metadata_obj is not None:
+            object_store.write_json(
+                f"{storage_prefix}/{document_id}.meta.json", metadata_obj
+            )
+
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        response_payload = {
+            "status": "accepted",
+            "document_id": document_id,
+            "trace_id": meta["trace_id"],
+            "idempotent": idempotent,
+        }
+
+        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
+        return apply_std_headers(response, meta)
+
+
+class RagIngestionRunView(APIView):
+    """Queue ingestion runs for previously uploaded documents."""
+
+    @default_extend_schema(**RAG_INGESTION_RUN_SCHEMA)
+    def post(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
+        payload = request.data if isinstance(request.data, dict) else {}
+
+        document_ids = payload.get("document_ids")
+        if not isinstance(document_ids, list) or not document_ids:
+            return _error_response(
+                "document_ids must be a non-empty list.",
+                "invalid_document_ids",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        normalized_document_ids = []
+        for value in document_ids:
+            if not isinstance(value, str) or not value.strip():
+                return _error_response(
+                    "document_ids must contain non-empty strings.",
+                    "invalid_document_ids",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            normalized_document_ids.append(value)
+
+        priority = payload.get("priority", "normal")
+        if priority is None:
+            priority = "normal"
+        if not isinstance(priority, str) or not priority.strip():
+            return _error_response(
+                "priority must be a non-empty string when provided.",
+                "invalid_priority",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        priority = priority.strip()
+
+        ingestion_run_id = uuid4().hex
+        # Tests monkeypatch django.utils.timezone.now, so keep using the module
+        # import instead of a local alias to ensure the override is observed.
+        queued_at = timezone.now().isoformat()
+
+        ingestion_run.delay(
+            meta["tenant"],
+            meta["case"],
+            normalized_document_ids,
+            priority,
+            meta["trace_id"],
+        )
+
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        response_payload = {
+            "status": "queued",
+            "queued_at": queued_at,
+            "ingestion_run_id": ingestion_run_id,
+            "trace_id": meta["trace_id"],
+            "idempotent": idempotent,
+        }
+
+        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
+        return apply_std_headers(response, meta)
+
+
 class RagDemoViewV1(_GraphView):
     """Minimal RAG retrieval demo: returns top-k matches for a query."""
 
@@ -741,3 +1041,9 @@ sysdesc = sysdesc_legacy
 
 rag_demo_v1 = RagDemoViewV1.as_view()
 rag_demo = rag_demo_v1
+
+rag_upload_v1 = RagUploadView.as_view()
+rag_upload = rag_upload_v1
+
+rag_ingestion_run_v1 = RagIngestionRunView.as_view()
+rag_ingestion_run = rag_ingestion_run_v1
