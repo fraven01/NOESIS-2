@@ -214,6 +214,36 @@ class TestPgVectorClient:
         )
         assert negative == []
 
+
+    def test_search_ignores_unknown_filters(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        chunk = Chunk(
+            content="Filter tolerant",
+            meta={
+                "tenant": tenant,
+                "hash": "doc-filter-tolerant",
+                "source": "alpha",
+            },
+            embedding=[0.05] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        results = client.search(
+            "Filter tolerant",
+            tenant_id=tenant,
+            filters={
+                "source": "alpha",
+                "project_id": "legacy",  # unbekannter Key, sollte ignoriert werden
+                "some_unknown_key": "value",
+            },
+            top_k=5,
+        )
+
+        assert results, "Erwartet mindestens ein Ergebnis trotz unbekannter Filter"
+        assert any(r.meta.get("hash") == "doc-filter-tolerant" for r in results)
+
+
     def test_retry_metrics_record_attempts(self, monkeypatch):
         client = vector_client.get_default_client()
         client._retries = 2  # type: ignore[attr-defined]

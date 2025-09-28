@@ -26,6 +26,21 @@ register_default_jsonb(loads=json.loads, globally=True)
 
 logger = get_logger(__name__)
 
+
+# Welche Filter-Schlüssel sind erlaubt und worauf mappen sie?
+# - "chunk_meta": JSONB c.metadata ->> '<key>'
+# - "document_hash": Spalte d.hash
+# - "document_id":  Spalte d.id::text
+SUPPORTED_METADATA_FILTERS = {
+    "case": "chunk_meta",
+    "source": "chunk_meta",
+    "doctype": "chunk_meta",
+    "published": "chunk_meta",
+    "hash": "document_hash",
+    "id": "document_id",
+}
+
+
 DEFAULT_STATEMENT_TIMEOUT_MS = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "15000"))
 DEFAULT_RETRY_ATTEMPTS = int(os.getenv("RAG_RETRY_ATTEMPTS", "3"))
 DEFAULT_RETRY_BASE_DELAY_MS = int(os.getenv("RAG_RETRY_BASE_DELAY_MS", "50"))
@@ -191,12 +206,17 @@ class PgVectorClient:
         metadata_filters = [
             (key, value)
             for key, value in normalized_filters.items()
-            if key not in {"tenant"} and value is not None
+            if key not in {"tenant"}
+            and value is not None
+            and key in SUPPORTED_METADATA_FILTERS
         ]
-        filter_debug = {
-            key: ("<set>" if value is not None else None)
-            for key, value in normalized_filters.items()
-        }
+        filter_debug: Dict[str, object | None] = {"tenant": "<set>"}
+        for key, value in normalized_filters.items():
+            if key == "tenant":
+                continue
+            filter_debug[key] = (
+                "<set>" if value is not None and key in SUPPORTED_METADATA_FILTERS else None
+            )
         logger.debug(
             "RAG search normalised inputs: tenant=%s top_k=%d filters=%s",
             tenant,
@@ -215,10 +235,18 @@ class PgVectorClient:
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
                     for key, value in metadata_filters:
-                        where_clauses.append("c.metadata @> %s::jsonb")
-                        where_params.append(
-                            Json({key: self._normalise_filter_json_value(value)})
-                        )
+
+                        kind = SUPPORTED_METADATA_FILTERS[key]
+                        normalised = self._normalise_filter_value(value)
+                        if kind == "chunk_meta":
+                            where_clauses.append("c.metadata ->> %s = %s")
+                            where_params.extend([key, normalised])
+                        elif kind == "document_hash":
+                            where_clauses.append("d.hash = %s")
+                            where_params.append(normalised)
+                        elif kind == "document_id":
+                            where_clauses.append("d.id::text = %s")
+                            where_params.append(normalised)
                     where_sql = "\n          AND ".join(where_clauses)
                     query_sql = f"""
                         SELECT
@@ -417,11 +445,12 @@ class PgVectorClient:
             value = 0.0
         return 1.0 / (1.0 + value)
 
-    def _normalise_filter_json_value(self, value: object) -> object:
-        if value is None:
-            return None
-        if isinstance(value, (str, bool, int, float)):
-            return value
+
+    def _normalise_filter_value(self, value: object) -> str:
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
         if isinstance(value, uuid.UUID):
             return str(value)
         return str(value)
