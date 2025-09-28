@@ -12,3 +12,13 @@ model_list:
     litellm_params:
       model: gemini/gemini-2.5-pro
       api_key: os.environ/GEMINI_API_KEY
+  - model_name: oai-embed-large   # Dein Alias, den du verwenden wirst (z.B. in LiteLLM UI oder RAG-App)
+    litellm_params:
+      model: openai/text-embedding-3-large  # Der offizielle OpenAI Modell-String
+      api_key: os.environ/OPENAI_API_KEY    # Dein API-Schlüssel
+      
+  # 2. Das kostengünstigste/effizienteste Modell
+  - model_name: oai-embed-small  # Ein zweiter Alias
+    litellm_params:
+      model: openai/text-embedding-3-small  # Der offizielle OpenAI Modell-String
+      api_key: os.environ/OPENAI_API_KEY    # Dein API-Schlüssel

@@ -231,3 +231,4 @@ documents/doc*.*
 # Generated API artifacts
 docs/api/openapi.yaml
 clients/
+hello.txt

@@ -58,6 +58,7 @@ services:
       - UI_USERNAME=${DB_USER:-noesis2}
       - UI_PASSWORD=${DB_PASSWORD:-noesis2}
       - CONFIG_FILE_PATH=/config/config.yaml
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
     entrypoint: ["litellm"]
     command:
       - "--config"
