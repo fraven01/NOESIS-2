@@ -39,6 +39,10 @@ CREATE INDEX IF NOT EXISTS chunks_document_ord_idx
 CREATE INDEX IF NOT EXISTS chunks_metadata_gin_idx
     ON chunks USING GIN (metadata);
 
+-- Targeted index to accelerate equality filters on common metadata keys
+CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
+    ON chunks ((metadata->>'case'));
+
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY,
     chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,

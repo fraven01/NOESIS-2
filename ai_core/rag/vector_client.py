@@ -2,12 +2,13 @@ from __future__ import annotations
 
 import atexit
 import json
+import math
 import os
 import threading
 import time
 import uuid
 from contextlib import contextmanager
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, cast
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, TypeVar, cast
 
 from psycopg2 import sql
 from psycopg2.extras import Json, register_default_jsonb
@@ -25,12 +26,15 @@ register_default_jsonb(loads=json.loads, globally=True)
 
 logger = get_logger(__name__)
 
-DEFAULT_STATEMENT_TIMEOUT_MS = 15000
+DEFAULT_STATEMENT_TIMEOUT_MS = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "15000"))
+DEFAULT_RETRY_ATTEMPTS = int(os.getenv("RAG_RETRY_ATTEMPTS", "3"))
+DEFAULT_RETRY_BASE_DELAY_MS = int(os.getenv("RAG_RETRY_BASE_DELAY_MS", "50"))
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
 
 
 DocumentKey = Tuple[str, str]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
+T = TypeVar("T")
 
 
 class PgVectorClient:
@@ -44,6 +48,8 @@ class PgVectorClient:
         minconn: int = 1,
         maxconn: int = 5,
         statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
+        retries: int = DEFAULT_RETRY_ATTEMPTS,
+        retry_base_delay_ms: int = DEFAULT_RETRY_BASE_DELAY_MS,
     ) -> None:
         if minconn < 1 or maxconn < minconn:
             raise ValueError("Invalid connection pool configuration")
@@ -52,6 +58,8 @@ class PgVectorClient:
         self._pool = SimpleConnectionPool(minconn, maxconn, dsn)
         self._prepare_lock = threading.Lock()
         self._indexes_ready = False
+        self._retries = max(1, retries)
+        self._retry_base_delay = max(0, retry_base_delay_ms) / 1000.0
 
     @classmethod
     def from_env(
@@ -118,23 +126,27 @@ class PgVectorClient:
             return 0
 
         grouped = self._group_by_document(chunk_list)
-        started = time.perf_counter()
-        with self._connection() as conn:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SET LOCAL statement_timeout = %s",
-                        (str(self._statement_timeout_ms),),
-                    )
-                    document_ids = self._ensure_documents(cur, grouped)
-                    self._replace_chunks(cur, grouped, document_ids)
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-
-        duration_ms = (time.perf_counter() - started) * 1000
         tenants = sorted({key[0] for key in grouped})
+
+        def _operation() -> float:
+            started = time.perf_counter()
+            with self._connection() as conn:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SET LOCAL statement_timeout = %s",
+                            (str(self._statement_timeout_ms),),
+                        )
+                        document_ids = self._ensure_documents(cur, grouped)
+                        self._replace_chunks(cur, grouped, document_ids)
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                    raise
+            return (time.perf_counter() - started) * 1000
+
+        duration_ms = self._run_with_retries(_operation, op_name="upsert_chunks")
+
         metrics.RAG_UPSERT_CHUNKS.inc(len(chunk_list))
         logger.info(
             "RAG upsert completed: chunks=%d documents=%d tenants=%s duration_ms=%.2f",
@@ -152,15 +164,19 @@ class PgVectorClient:
         *,
         case_id: str | None = None,
         top_k: int = 5,
-        filters: Mapping[str, str | None] | None = None,
+        filters: Mapping[str, object | None] | None = None,
     ) -> List[Chunk]:
         top_k = min(max(1, top_k), 10)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
-        normalized_filters: Dict[str, Optional[str]] = {}
+        normalized_filters: Dict[str, object | None] = {}
         if filters:
             normalized_filters = {
-                key: (value if value not in {"", None} else None)
+                key: (
+                    value
+                    if not (isinstance(value, str) and value == "") and value is not None
+                    else None
+                )
                 for key, value in filters.items()
             }
         case_value: Optional[str]
@@ -172,6 +188,11 @@ class PgVectorClient:
             case_value = str(case_value)
         normalized_filters["tenant"] = tenant
         normalized_filters["case"] = case_value
+        metadata_filters = [
+            (key, value)
+            for key, value in normalized_filters.items()
+            if key not in {"tenant"} and value is not None
+        ]
         filter_debug = {
             key: ("<set>" if value is not None else None)
             for key, value in normalized_filters.items()
@@ -183,30 +204,53 @@ class PgVectorClient:
             filter_debug,
         )
         query_vec = self._format_vector(self._embed_query(query))
-        started = time.perf_counter()
-        with self._connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
+
+        def _operation() -> Tuple[
+            List[Tuple[str, Mapping[str, object], Optional[str], object, float]],
+            float,
+        ]:
+            started = time.perf_counter()
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    where_clauses = ["d.tenant_id::text = %s"]
+                    where_params: List[object] = [tenant]
+                    for key, value in metadata_filters:
+                        where_clauses.append("c.metadata @> %s::jsonb")
+                        where_params.append(
+                            Json({key: self._normalise_filter_json_value(value)})
+                        )
+                    where_sql = "\n          AND ".join(where_clauses)
+                    query_sql = f"""
+                        SELECT
+                            c.text,
+                            c.metadata,
+                            d.hash,
+                            d.id,
+                            e.embedding <-> %s::vector AS distance
+                        FROM embeddings e
+                        JOIN chunks c ON e.chunk_id = c.id
+                        JOIN documents d ON c.document_id = d.id
+                        WHERE {where_sql}
+                        ORDER BY distance
+                        LIMIT %s
                     """
-                    SELECT c.text, c.metadata
-                    FROM embeddings e
-                    JOIN chunks c ON e.chunk_id = c.id
-                    JOIN documents d ON c.document_id = d.id
-                    WHERE d.tenant_id::text = %s
-                      AND (%s IS NULL OR c.metadata ->> 'case' = %s)
-                    ORDER BY e.embedding <-> %s::vector
-                    LIMIT %s
-                    """,
-                    (tenant, case_value, case_value, query_vec, top_k),
-                )
-                rows = cur.fetchall()
+                    cur.execute(query_sql, (query_vec, *where_params, top_k))
+                    rows = cur.fetchall()
+            return rows, (time.perf_counter() - started) * 1000
+
+        rows, duration_ms = self._run_with_retries(_operation, op_name="search")
+
         results: List[Chunk] = []
-        for text, metadata in rows:
+        for text, metadata, doc_hash, doc_id, distance in rows:
             meta = dict(metadata or {})
+            if doc_hash and not meta.get("hash"):
+                meta["hash"] = doc_hash
+            if doc_id is not None and "id" not in meta:
+                meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
                 continue
+            meta["score"] = self._distance_to_score(distance)
             results.append(Chunk(content=text, meta=meta))
-        duration_ms = (time.perf_counter() - started) * 1000
         metrics.RAG_SEARCH_MS.observe(duration_ms)
         logger.info(
             "RAG search executed: tenant=%s case=%s query_chars=%d results=%d duration_ms=%.2f",
@@ -217,6 +261,18 @@ class PgVectorClient:
             duration_ms,
         )
         return results
+
+    def health_check(self) -> bool:
+        """Run a lightweight query to assert connectivity."""
+
+        def _operation() -> bool:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("SELECT 1")
+                    cur.fetchone()
+            return True
+
+        return bool(self._run_with_retries(_operation, op_name="health_check"))
 
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
@@ -349,6 +405,54 @@ class PgVectorClient:
     def _embed_query(self, query: str) -> List[float]:
         base = float(len(query.strip()) or 1)
         return [base] + [0.0] * (EMBEDDING_DIM - 1)
+
+    def _distance_to_score(self, distance: float) -> float:
+        try:
+            value = float(distance)
+        except (TypeError, ValueError):
+            return 0.0
+        if math.isnan(value) or math.isinf(value):
+            return 0.0
+        if value < 0:
+            value = 0.0
+        return 1.0 / (1.0 + value)
+
+    def _normalise_filter_json_value(self, value: object) -> object:
+        if value is None:
+            return None
+        if isinstance(value, (str, bool, int, float)):
+            return value
+        if isinstance(value, uuid.UUID):
+            return str(value)
+        return str(value)
+
+    def _run_with_retries(self, fn: Callable[[], T], *, op_name: str) -> T:
+        """Execute ``fn`` with retry semantics and return its ``TypeVar`` result.
+
+        The callable ``fn`` is invoked until it succeeds or the configured
+        number of attempts is exhausted. Each retry waits ``attempt *
+        self._retry_base_delay`` seconds, providing a linear backoff. Using the
+        ``Callable[[], T]`` signature together with ``TypeVar('T')`` preserves
+        the original return type (float, tuple, bool, ...), so callers receive
+        the exact value produced by ``fn`` once it finally succeeds.
+        """
+        last_exc: Exception | None = None
+        for attempt in range(1, self._retries + 1):
+            try:
+                return fn()
+            except Exception as exc:  # pragma: no cover - requires failure injection
+                last_exc = exc
+                logger.warning(
+                    "pgvector operation failed, retrying",
+                    extra={"operation": op_name, "attempt": attempt},
+                )
+                metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
+                if attempt == self._retries:
+                    raise
+                time.sleep(self._retry_base_delay * attempt)
+        if last_exc is not None:  # pragma: no cover - defensive
+            raise last_exc
+        raise RuntimeError("retry loop exited without result")
 
 
 _DEFAULT_CLIENT: Optional[VectorStore] = None

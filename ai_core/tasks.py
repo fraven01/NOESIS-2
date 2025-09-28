@@ -114,7 +114,11 @@ def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
             raise ValueError("chunk tenant mismatch")
 
     router = get_default_router()
-    written = router.upsert_chunks(chunk_objs)
+    tenant_client = router
+    for_tenant = getattr(router, "for_tenant", None)
+    if callable(for_tenant):
+        tenant_client = for_tenant(tenant_id)
+    written = tenant_client.upsert_chunks(chunk_objs)
     return written
 
 

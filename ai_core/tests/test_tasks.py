@@ -29,9 +29,11 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
     assert count == 1
 
     client = vector_client.get_default_client()
-    results = client.search("User", {"tenant": tenant, "case": case})
+    results = client.search("User", tenant_id=tenant, case_id=case, top_k=5)
     assert len(results) == 1
     assert results[0].content == "User XXX"
+    assert results[0].meta.get("hash")
+    assert 0.0 <= results[0].meta.get("score", 0.0) <= 1.0
 
     vector_client.reset_default_client()
 
