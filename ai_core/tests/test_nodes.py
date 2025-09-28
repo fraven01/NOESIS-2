@@ -41,19 +41,35 @@ def test_retrieve_returns_snippets(monkeypatch):
             return self._chunks
 
     chunk = Chunk(
-        "Hello 123", {"tenant": "t1", "case": "c1", "source": "s1", "hash": "h"}
+        "Hello 123",
+        {
+            "tenant": "t1",
+            "case": "c1",
+            "source": "s1",
+            "hash": "h",
+            "id": "doc-1",
+            "score": 0.42,
+            "category": "demo",
+        },
     )
     router = _Router([chunk])
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
     state, result = retrieve.run({"query": "Hello"}, META.copy(), top_k=3)
-    assert result["snippets"][0]["text"] == "Hello 123"
-    assert result["snippets"][0]["source"] == "s1"
+    snippet = result["snippets"][0]
+    assert snippet == {
+        "text": "Hello 123",
+        "source": "s1",
+        "score": 0.42,
+        "hash": "h",
+        "id": "doc-1",
+        "meta": {"tenant": "t1", "case": "c1", "category": "demo"},
+    }
     assert state["snippets"] == result["snippets"]
     assert router.last_call == {
         "tenant_id": "t1",
         "case_id": "c1",
         "top_k": 3,
-        "filters": None,
+        "filters": {"tenant": "t1", "case": "c1"},
     }
 
 

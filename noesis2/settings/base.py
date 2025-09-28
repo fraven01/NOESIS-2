@@ -33,6 +33,20 @@ if "RAG_VECTOR_STORES" not in globals():
         }
     }
 
+    # Beispiel für ein Setup mit dediziertem Scope:
+    # RAG_VECTOR_STORES = {
+    #     "global": {
+    #         "backend": "pgvector",
+    #         "default": True,
+    #     },
+    #     "enterprise": {
+    #         "backend": "pgvector",
+    #         "schema": "rag_enterprise",
+    #         "tenants": ["<uuid-tenant-id>"],
+    #         "schemas": ["acme_prod"],
+    #     },
+    # }
+
 
 def _load_common_headers_table() -> str:
     """Return the reference markdown table describing shared API headers."""
