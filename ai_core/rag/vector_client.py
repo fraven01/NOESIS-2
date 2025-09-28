@@ -26,6 +26,7 @@ register_default_jsonb(loads=json.loads, globally=True)
 
 logger = get_logger(__name__)
 
+
 # Welche Filter-Schlüssel sind erlaubt und worauf mappen sie?
 # - "chunk_meta": JSONB c.metadata ->> '<key>'
 # - "document_hash": Spalte d.hash
@@ -38,6 +39,7 @@ SUPPORTED_METADATA_FILTERS = {
     "hash": "document_hash",
     "id": "document_id",
 }
+
 
 DEFAULT_STATEMENT_TIMEOUT_MS = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "15000"))
 DEFAULT_RETRY_ATTEMPTS = int(os.getenv("RAG_RETRY_ATTEMPTS", "3"))
@@ -233,6 +235,7 @@ class PgVectorClient:
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
                     for key, value in metadata_filters:
+
                         kind = SUPPORTED_METADATA_FILTERS[key]
                         normalised = self._normalise_filter_value(value)
                         if kind == "chunk_meta":
@@ -441,6 +444,7 @@ class PgVectorClient:
         if value < 0:
             value = 0.0
         return 1.0 / (1.0 + value)
+
 
     def _normalise_filter_value(self, value: object) -> str:
         if isinstance(value, bool):
