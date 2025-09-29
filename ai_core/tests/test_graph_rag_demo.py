@@ -11,6 +11,7 @@ from ai_core.graph import registry
 from ai_core.graph.adapters import module_runner
 from ai_core.graphs import rag_demo
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import HybridSearchResult
 
 
 pytestmark = pytest.mark.django_db
@@ -40,10 +41,21 @@ class _TenantRouter:
         ), "tenant_id filter must match requested tenant"
         del case_id  # not used in the fake router
         del query  # the fake router does not evaluate query semantics
-        chunks = [
-            Chunk(content=text, meta={"id": match_id, "tenant_id": tenant_id})
-            for text, match_id in self._matches
-        ]
+        chunks = []
+        for idx, (text, match_id) in enumerate(self._matches):
+            chunks.append(
+                Chunk(
+                    content=text,
+                    meta={
+                        "id": match_id,
+                        "tenant_id": tenant_id,
+                        "vscore": 0.6 - idx * 0.1,
+                        "lscore": 0.4 - idx * 0.1,
+                        "fused": 0.5 - idx * 0.1,
+                        "score": 0.5 - idx * 0.1,
+                    },
+                )
+            )
         return chunks[:top_k]
 
 
@@ -81,6 +93,10 @@ def test_rag_demo_route_returns_matches(client) -> None:
     assert data["ok"] is True
     assert data["query"] == "Alpha"
     assert len(data["matches"]) >= 2
+    assert "meta" in data
+    assert data["meta"]["index_kind"]
+    assert "db_latency_ms" in data["meta"]
+    assert all("fused" in match for match in data["matches"])
     assert "warnings" not in data
 
 
@@ -164,6 +180,22 @@ def test_rag_demo_run_handles_for_tenant_with_schema(
     assert router.calls == [("dev", "public")]
 
 
+def test_rag_demo_response_contains_scores_and_meta() -> None:
+    state = {"query": "Alpha", "top_k": 1}
+    meta = {"tenant_id": "dev"}
+
+    _, result = rag_demo.run(state, meta)
+
+    assert result["ok"] is True
+    assert result["meta"]["index_kind"]
+    assert "latency_ms" in result["meta"]
+    assert "db_latency_ms" in result["meta"]
+    assert result["matches"]
+    match = result["matches"][0]
+    assert "vscore" in match and "lscore" in match and "fused" in match
+    assert match["fused"] == match["score"]
+
+
 def test_rag_demo_zero_hits_falls_back_to_demo(monkeypatch: pytest.MonkeyPatch) -> None:
     class RouterZero:
         def for_tenant(self, tenant_id: str):
@@ -224,3 +256,47 @@ def test_rag_demo_run_zero_matches_adds_warning(
     assert result["warnings"] == ["no_vector_matches_demo_fallback"]
     assert len(result["matches"]) == 2
     assert new_state["rag_demo"]["retrieved_count"] == 2
+
+
+def test_rag_demo_no_hit_above_threshold_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Router:
+        def hybrid_search(
+            self,
+            query: str,
+            tenant_id: str,
+            *,
+            case_id: str | None = None,
+            top_k: int = 5,
+            filters: dict[str, object] | None = None,
+            alpha: float | None = None,
+            min_sim: float | None = None,
+        ) -> HybridSearchResult:
+            del query, tenant_id, case_id, top_k, filters, alpha, min_sim
+            return HybridSearchResult(
+                chunks=[],
+                vector_candidates=2,
+                lexical_candidates=1,
+                fused_candidates=2,
+                duration_ms=5.0,
+                alpha=0.7,
+                min_sim=0.95,
+                vec_limit=5,
+                lex_limit=5,
+                below_cutoff=2,
+                returned_after_cutoff=0,
+            )
+
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: Router())
+
+    state = {"query": "Alpha"}
+    meta = {"tenant_id": "dev"}
+
+    _, result = rag_demo.run(state, meta)
+
+    assert result["ok"] is True
+    assert result["matches"] == []
+    assert result["warnings"] == ["no_hit_above_threshold"]
+    assert result["meta"]["below_cutoff"] == 2
+    assert result["meta"]["returned_after_cutoff"] == 0

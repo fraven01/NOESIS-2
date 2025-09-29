@@ -47,6 +47,17 @@ if "RAG_VECTOR_STORES" not in globals():
     #     },
     # }
 
+RAG_INDEX_KIND = env("RAG_INDEX_KIND", default="HNSW").upper()
+RAG_HNSW_M = env.int("RAG_HNSW_M", default=32)
+RAG_HNSW_EF_CONSTRUCTION = env.int("RAG_HNSW_EF_CONSTRUCTION", default=200)
+RAG_HNSW_EF_SEARCH = env.int("RAG_HNSW_EF_SEARCH", default=80)
+RAG_IVF_LISTS = env.int("RAG_IVF_LISTS", default=2048)
+RAG_IVF_PROBES = env.int("RAG_IVF_PROBES", default=64)
+RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
+RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
+RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
+RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
+
 
 def _load_common_headers_table() -> str:
     """Return the reference markdown table describing shared API headers."""

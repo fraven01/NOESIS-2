@@ -1,17 +1,20 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from celery import shared_task
 from common.celery import ScopedTask
 from common.logging import get_logger
+from django.conf import settings
 from django.utils import timezone
 
 from .infra import object_store, pii
 from .rag import metrics
 from .rag.schemas import Chunk
+from .rag.normalization import normalise_text
 from .rag.vector_client import EMBEDDING_DIM
 from .rag.vector_store import get_default_router
 
@@ -115,8 +118,100 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
 
 @shared_task(base=ScopedTask)
+def _split_sentences(text: str) -> List[str]:
+    """Best-effort sentence segmentation that retains punctuation."""
+
+    pattern = re.compile(r"[^.!?]+(?:[.!?]+|\Z)")
+    sentences = [segment.strip() for segment in pattern.findall(text)]
+    if sentences:
+        return [s for s in sentences if s]
+    # Fallback: use paragraphs or lines if no sentence boundary detected
+    parts = [part.strip() for part in text.splitlines() if part.strip()]
+    return parts or [text.strip()]
+
+
+def _token_count(text: str) -> int:
+    return max(1, len(text.split()))
+
+
+def _chunkify(
+    sentences: Sequence[str],
+    *,
+    target_tokens: int,
+    overlap_tokens: int,
+    hard_limit: int,
+) -> List[str]:
+    chunks: List[str] = []
+    current: List[Tuple[str, int]] = []
+    current_tokens = 0
+
+    def flush() -> None:
+        nonlocal current, current_tokens
+        if not current:
+            return
+        chunk_text = " ".join(sentence for sentence, _ in current).strip()
+        if chunk_text:
+            chunks.append(chunk_text)
+        if overlap_tokens > 0:
+            retained: List[Tuple[str, int]] = []
+            retained_tokens = 0
+            for sentence, tokens in reversed(current):
+                retained.insert(0, (sentence, tokens))
+                retained_tokens += tokens
+                if retained_tokens >= overlap_tokens:
+                    break
+            current = retained
+            current_tokens = retained_tokens
+        else:
+            current = []
+            current_tokens = 0
+
+    for sentence in sentences:
+        tokens = _token_count(sentence)
+        if tokens > hard_limit:
+            words = sentence.split()
+            start = 0
+            while start < len(words):
+                end = min(start + hard_limit, len(words))
+                sub_sentence = " ".join(words[start:end])
+                start = end
+                if current_tokens + _token_count(sub_sentence) > hard_limit:
+                    flush()
+                current.append((sub_sentence, _token_count(sub_sentence)))
+                current_tokens += _token_count(sub_sentence)
+                if current_tokens >= target_tokens:
+                    flush()
+            continue
+
+        if current_tokens + tokens > hard_limit and current:
+            flush()
+
+        current.append((sentence, tokens))
+        current_tokens += tokens
+
+        if current_tokens >= target_tokens:
+            flush()
+
+    flush()
+    return chunks
+
+
+def _build_chunk_prefix(meta: Dict[str, str]) -> str:
+    parts: List[str] = []
+    breadcrumbs = meta.get("breadcrumbs")
+    if isinstance(breadcrumbs, Iterable) and not isinstance(breadcrumbs, (str, bytes)):
+        crumb_parts = [str(item).strip() for item in breadcrumbs if str(item).strip()]
+        if crumb_parts:
+            parts.append(" / ".join(crumb_parts))
+    title = meta.get("title")
+    if title:
+        parts.append(str(title).strip())
+    return " — ".join(part for part in parts if part)
+
+
 def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
-    """Split text into chunks; stubbed as a single chunk."""
+    """Split text into overlapping chunks for embeddings."""
+
     full = object_store.BASE_PATH / text_path
     text = full.read_text(encoding="utf-8")
     content_hash = meta.get("content_hash")
@@ -126,19 +221,57 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     external_id = meta.get("external_id")
     if not external_id:
         raise ValueError("external_id required for chunk")
-    chunks: List[Dict[str, object]] = [
-        {
-            "content": text,
-            "meta": {
-                "tenant": meta["tenant"],
-                "case": meta["case"],
-                "source": text_path,
-                "hash": content_hash,
-                "external_id": external_id,
-                "content_hash": content_hash,
-            },
-        }
-    ]
+
+    target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
+    overlap_tokens = int(getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80))
+    hard_limit = max(target_tokens, 512)
+    sentences = _split_sentences(text)
+    prefix = _build_chunk_prefix(meta)
+    chunk_bodies = _chunkify(
+        sentences,
+        target_tokens=target_tokens,
+        overlap_tokens=overlap_tokens,
+        hard_limit=hard_limit,
+    )
+
+    chunks: List[Dict[str, object]] = []
+    for body in chunk_bodies:
+        chunk_text = body
+        if prefix:
+            chunk_text = f"{prefix}\n\n{body}" if body else prefix
+        normalised = normalise_text(chunk_text)
+        chunks.append(
+            {
+                "content": chunk_text,
+                "normalized": normalised,
+                "meta": {
+                    "tenant": meta["tenant"],
+                    "case": meta.get("case"),
+                    "source": text_path,
+                    "hash": content_hash,
+                    "external_id": external_id,
+                    "content_hash": content_hash,
+                },
+            }
+        )
+
+    if not chunks:
+        normalised = normalise_text(text)
+        chunks.append(
+            {
+                "content": text,
+                "normalized": normalised,
+                "meta": {
+                    "tenant": meta["tenant"],
+                    "case": meta.get("case"),
+                    "source": text_path,
+                    "hash": content_hash,
+                    "external_id": external_id,
+                    "content_hash": content_hash,
+                },
+            }
+        )
+
     out_path = _build_path(meta, "embeddings", "chunks.json")
     object_store.write_json(out_path, chunks)
     return {"path": out_path}
@@ -147,8 +280,15 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 @shared_task(base=ScopedTask)
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Attach dummy embedding vectors to chunks."""
+
     chunks = object_store.read_json(chunks_path)
-    embeddings = [{**ch, "embedding": [0.0] * EMBEDDING_DIM} for ch in chunks]
+    embeddings = []
+    for ch in chunks:
+        normalised = ch.get("normalized") or normalise_text(ch.get("content", ""))
+        magnitude = float(len((normalised or "").split()) or 1)
+        embedding = [0.0] * EMBEDDING_DIM
+        embedding[0] = magnitude
+        embeddings.append({**ch, "embedding": embedding, "normalized": normalised})
     out_path = _build_path(meta, "embeddings", "vectors.json")
     object_store.write_json(out_path, embeddings)
     return {"path": out_path}
