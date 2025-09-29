@@ -227,6 +227,7 @@ litellm-proxy-key.json
 .env.docker
 documents/demo*.txt
 documents/doc*.*
+.ai_core_store/
 
 # Generated API artifacts
 docs/api/openapi.yaml
