@@ -103,7 +103,9 @@ class PgVectorClient:
         env_retry_delay = int(
             os.getenv("RAG_RETRY_BASE_DELAY_MS", str(FALLBACK_RETRY_BASE_DELAY_MS))
         )
-        timeout_value = statement_timeout_ms if statement_timeout_ms is not None else env_timeout
+        timeout_value = (
+            statement_timeout_ms if statement_timeout_ms is not None else env_timeout
+        )
         retries_value = retries if retries is not None else env_retries
         retry_delay_value = (
             retry_base_delay_ms if retry_base_delay_ms is not None else env_retry_delay
@@ -195,9 +197,7 @@ class PgVectorClient:
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
-                        document_ids, doc_actions = self._ensure_documents(
-                            cur, grouped
-                        )
+                        document_ids, doc_actions = self._ensure_documents(cur, grouped)
                         inserted_chunks, per_doc_timings = self._replace_chunks(
                             cur, grouped, document_ids, doc_actions
                         )
@@ -209,7 +209,9 @@ class PgVectorClient:
 
         duration_ms = self._run_with_retries(_operation, op_name="upsert_chunks")
 
-        skipped_documents = sum(1 for action in doc_actions.values() if action == "skipped")
+        skipped_documents = sum(
+            1 for action in doc_actions.values() if action == "skipped"
+        )
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
         for key, doc in grouped.items():

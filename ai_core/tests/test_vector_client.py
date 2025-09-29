@@ -276,9 +276,10 @@ class TestPgVectorClient:
         )
         assert len(updated_results) == 1
         assert updated_results[0].content == "updated content"
-        assert updated_results[0].meta.get("hash") == hashlib.sha256(
-            b"updated content"
-        ).hexdigest()
+        assert (
+            updated_results[0].meta.get("hash")
+            == hashlib.sha256(b"updated content").hexdigest()
+        )
 
         with client._connection() as conn:  # type: ignore[attr-defined]
             with conn.cursor() as cur:

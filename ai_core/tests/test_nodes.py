@@ -99,6 +99,7 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
     base_router = _BaseRouter()
 
     if scoped_router:
+
         class _ScopedRouter:
             def __init__(self, inner):
                 self.inner = inner
@@ -133,7 +134,10 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
         assert router.tenants == ["tenant-1"]
         assert base_router.calls[0]["filters"] == {"case": "case-1"}
     else:
-        assert base_router.calls[0]["filters"] == {"tenant": "tenant-1", "case": "case-1"}
+        assert base_router.calls[0]["filters"] == {
+            "tenant": "tenant-1",
+            "case": "case-1",
+        }
 
 
 def test_retrieve_requires_tenant_id(monkeypatch):

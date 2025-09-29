@@ -142,7 +142,4 @@ def test_ingestion_run_reports_missing_documents(
 
 def test_fallback_external_id_consistency():
     result = make_fallback_external_id("note.txt", 11, b"hello world")
-    assert (
-        result
-        == "730b11756bd5a6af33f1ee8c07433a1042d6626af49ba4296d1170f0fdd71eff"
-    )
+    assert result == "730b11756bd5a6af33f1ee8c07433a1042d6626af49ba4296d1170f0fdd71eff"

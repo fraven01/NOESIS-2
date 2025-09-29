@@ -835,6 +835,8 @@ class LegacySysDescView(_GraphView):
     @default_extend_schema(**_legacy_schema_kwargs(SYSDESC_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
+
+
 class RagUploadView(APIView):
     """Handle multipart document uploads for ingestion pipelines."""
 

@@ -36,7 +36,9 @@ def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
     )
 
 
-def _resolve_upload(tenant: str, case: str, document_id: str) -> tuple[Path, Dict[str, object]]:
+def _resolve_upload(
+    tenant: str, case: str, document_id: str
+) -> tuple[Path, Dict[str, object]]:
     updir = _upload_dir(tenant, case)
 
     meta_path = updir / f"{document_id}.meta.json"
@@ -67,7 +69,9 @@ def _resolve_upload(tenant: str, case: str, document_id: str) -> tuple[Path, Dic
         sanitized_metadata = dict(metadata)
         sanitized_metadata.pop("tenant", None)
         sanitized_metadata.pop("case", None)
-        object_store.write_json(_meta_store_path(tenant, case, document_id), sanitized_metadata)
+        object_store.write_json(
+            _meta_store_path(tenant, case, document_id), sanitized_metadata
+        )
         metadata = sanitized_metadata
 
     metadata.pop("tenant", None)
@@ -124,8 +128,12 @@ def process_document(tenant: str, case: str, document_id: str) -> Dict[str, obje
     written = int(upsert_result)
     documents = getattr(upsert_result, "documents", [])
     if documents:
-        inserted_count = sum(1 for info in documents if info.get("action") == "inserted")
-        replaced_count = sum(1 for info in documents if info.get("action") == "replaced")
+        inserted_count = sum(
+            1 for info in documents if info.get("action") == "inserted"
+        )
+        replaced_count = sum(
+            1 for info in documents if info.get("action") == "replaced"
+        )
         skipped_count = sum(1 for info in documents if info.get("action") == "skipped")
         chunk_count = sum(int(info.get("chunk_count", 0)) for info in documents)
         if len(documents) == 1:
@@ -207,7 +215,9 @@ def run_ingestion(
     inserted = sum(int(result.get("inserted", 0)) for result in results)
     replaced = sum(int(result.get("replaced", 0)) for result in results)
     skipped = sum(int(result.get("skipped", 0)) for result in results)
-    total_chunks = sum(int(result.get("chunk_count", result.get("written", 0))) for result in results)
+    total_chunks = sum(
+        int(result.get("chunk_count", result.get("written", 0))) for result in results
+    )
 
     pipe.log_ingestion_run_end(
         tenant=tenant,

@@ -38,7 +38,9 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
             }
         )
 
-    monkeypatch.setattr("ai_core.views.run_ingestion", SimpleNamespace(delay=fake_delay))
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=fake_delay)
+    )
 
     fixed_now = datetime(2024, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
     monkeypatch.setattr(timezone, "now", lambda: fixed_now)
