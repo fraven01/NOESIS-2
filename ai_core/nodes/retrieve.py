@@ -94,17 +94,7 @@ def run(
         extra_meta = {
             key: value
             for key, value in chunk_meta.items()
-            if key
-            not in {
-                "source",
-                "score",
-                "hash",
-                "id",
-                "tenant",
-                "case",
-                "tenant_id",
-                "case_id",
-            }
+            if key not in {"source", "score", "hash", "id"}
         }
         if extra_meta:
             snippet["meta"] = extra_meta
