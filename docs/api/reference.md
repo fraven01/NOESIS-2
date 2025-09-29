@@ -233,6 +233,16 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 | `RAG_STATEMENT_TIMEOUT_MS` | `15000` | Maximale Ausführungszeit (in Millisekunden) für SQL-Statements des pgvector Clients. |
 | `RAG_RETRY_ATTEMPTS` | `3` | Anzahl der Wiederholungsversuche für Datenbankoperationen, bevor der Fehler propagiert wird. |
 | `RAG_RETRY_BASE_DELAY_MS` | `50` | Basiswartezeit zwischen Wiederholungsversuchen (linear skaliert mit dem Versuchszähler). |
+| `RAG_INDEX_KIND` | `HNSW` | Auswahl des Vektorindex (HNSW oder IVFFLAT) für das Embedding-Backend. |
+| `RAG_HNSW_M` | `32` | Kantenfaktor `m` für HNSW-Indizes; bestimmt die Graph-Konnektivität. |
+| `RAG_HNSW_EF_CONSTRUCTION` | `200` | `ef_construction`-Parameter für HNSW beim Aufbau des Index. |
+| `RAG_HNSW_EF_SEARCH` | `80` | Laufzeit-Parameter `ef_search` für HNSW-Abfragen (per Session gesetzt). |
+| `RAG_IVF_LISTS` | `2048` | Anzahl der Listen (`lists`) für IVFFLAT-Indizes. |
+| `RAG_IVF_PROBES` | `64` | Anzahl der `probes` für IVFFLAT-Suchen (per Session gesetzt). |
+| `RAG_MIN_SIM` | `0.15` | Minimale Fused-Similarity für Treffer (Werte darunter werden verworfen). |
+| `RAG_HYBRID_ALPHA` | `0.7` | Gewichtung der semantischen Similarität in der Late-Fusion (0 = nur Lexikalik). |
+| `RAG_CHUNK_TARGET_TOKENS` | `450` | Zielgröße pro Chunk in Tokens für die Vorverarbeitung. |
+| `RAG_CHUNK_OVERLAP_TOKENS` | `80` | Token-Overlap zwischen aufeinanderfolgenden Chunks. |
 
 ## Agenten (Queue `agents`)
 

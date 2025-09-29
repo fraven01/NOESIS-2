@@ -8,6 +8,7 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from dataclasses import dataclass
 from typing import (
     Callable,
     Dict,
@@ -27,6 +28,7 @@ from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_logger
 from ai_core.rag.vector_store import VectorStore
+from .normalization import normalise_text
 
 from . import metrics
 from .filters import strict_match
@@ -57,11 +59,47 @@ FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
+_ZERO_EPSILON = 1e-12
+
+
+def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
+    if not values:
+        return True
+    try:
+        norm_sq = math.fsum(float(value) * float(value) for value in values)
+    except (TypeError, ValueError):
+        return True
+    return norm_sq <= _ZERO_EPSILON
+
+
+def _get_setting(name: str, default: float | int | str) -> float | int | str:
+    try:  # pragma: no cover - requires Django settings
+        from django.conf import settings  # type: ignore
+
+        return cast(float | int | str, getattr(settings, name, default))
+    except Exception:
+        return default
 
 
 DocumentKey = Tuple[str, str]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
+
+
+@dataclass
+class HybridSearchResult:
+    chunks: List[Chunk]
+    vector_candidates: int
+    lexical_candidates: int
+    fused_candidates: int
+    duration_ms: float
+    alpha: float
+    min_sim: float
+    vec_limit: int
+    lex_limit: int
+    below_cutoff: int = 0
+    returned_after_cutoff: int = 0
+    query_embedding_empty: bool = False
 
 
 class UpsertResult(int):
@@ -158,21 +196,6 @@ class PgVectorClient:
         with self._prepare_lock:
             if self._indexes_ready:
                 return
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    CREATE INDEX IF NOT EXISTS embeddings_embedding_hnsw
-                    ON embeddings USING hnsw (embedding vector_l2_ops)
-                    """
-                )
-                cur.execute("ANALYZE embeddings")
-            conn.commit()
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL("SET search_path TO {}, public").format(
-                        sql.Identifier(self._schema)
-                    )
-                )
             self._indexes_ready = True
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
@@ -263,6 +286,28 @@ class PgVectorClient:
         top_k: int = 5,
         filters: Mapping[str, object | None] | None = None,
     ) -> List[Chunk]:
+        result = self.hybrid_search(
+            query,
+            tenant_id,
+            case_id=case_id,
+            top_k=top_k,
+            filters=filters,
+        )
+        return result.chunks
+
+    def hybrid_search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> HybridSearchResult:
         top_k = min(max(1, top_k), 10)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
@@ -302,25 +347,52 @@ class PgVectorClient:
                 if value is not None and key in SUPPORTED_METADATA_FILTERS
                 else None
             )
+        alpha_value = float(alpha if alpha is not None else _get_setting("RAG_HYBRID_ALPHA", 0.7))
+        min_sim_value = float(min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15))
+        vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
+        lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
+        query_norm = normalise_text(query)
+        query_vec_raw = self._embed_query(query_norm)
+        query_vec: Optional[str]
+        query_embedding_empty = _is_effectively_zero_vector(query_vec_raw)
+        if query_embedding_empty:
+            query_vec = None
+            metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant=tenant).inc()
+            logger.info(
+                "query.embedding.empty_fallback",
+                extra={
+                    "tenant": tenant,
+                    "case": case_value,
+                    "top_k": top_k,
+                    "normalized_query_length": len(query_norm),
+                },
+            )
+        else:
+            query_vec = self._format_vector(query_vec_raw)
+        index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
+        ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
+        probes = int(_get_setting("RAG_IVF_PROBES", 64))
+
         logger.debug(
-            "RAG search normalised inputs: tenant=%s top_k=%d filters=%s",
+            "RAG hybrid search inputs: tenant=%s top_k=%d vec_limit=%d lex_limit=%d filters=%s",
             tenant,
             top_k,
+            vec_limit_value,
+            lex_limit_value,
             filter_debug,
         )
-        query_vec = self._format_vector(self._embed_query(query))
 
-        def _operation() -> Tuple[
-            List[Tuple[str, Mapping[str, object], Optional[str], object, float]],
-            float,
-        ]:
+        def _operation() -> Tuple[List[tuple], List[tuple], float]:
             started = time.perf_counter()
             with self._connection() as conn:
                 with conn.cursor() as cur:
+                    cur.execute(
+                        "SET LOCAL statement_timeout = %s",
+                        (str(self._statement_timeout_ms),),
+                    )
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
                     for key, value in metadata_filters:
-
                         kind = SUPPORTED_METADATA_FILTERS[key]
                         normalised = self._normalise_filter_value(value)
                         if kind == "chunk_meta":
@@ -336,47 +408,173 @@ class PgVectorClient:
                             where_clauses.append("d.external_id = %s")
                             where_params.append(normalised)
                     where_sql = "\n          AND ".join(where_clauses)
-                    query_sql = f"""
+                    vector_rows: List[tuple] = []
+                    if query_vec is not None:
+                        if index_kind == "HNSW":
+                            cur.execute(
+                                "SET LOCAL hnsw.ef_search = %s",
+                                (str(ef_search),),
+                            )
+                        elif index_kind == "IVFFLAT":
+                            cur.execute(
+                                "SET LOCAL ivfflat.probes = %s",
+                                (str(probes),),
+                            )
+                        vector_sql = f"""
+                            SELECT
+                                c.id,
+                                c.text,
+                                c.metadata,
+                                d.hash,
+                                d.id,
+                                e.embedding <=> %s::vector AS distance
+                            FROM embeddings e
+                            JOIN chunks c ON e.chunk_id = c.id
+                            JOIN documents d ON c.document_id = d.id
+                            WHERE {where_sql}
+                            ORDER BY distance
+                            LIMIT %s
+                        """
+                        cur.execute(
+                            vector_sql, (query_vec, *where_params, vec_limit_value)
+                        )
+                        vector_rows = cur.fetchall()
+                    lexical_sql = f"""
                         SELECT
+                            c.id,
                             c.text,
                             c.metadata,
                             d.hash,
                             d.id,
-                            e.embedding <-> %s::vector AS distance
-                        FROM embeddings e
-                        JOIN chunks c ON e.chunk_id = c.id
+                            similarity(c.text_norm, %s) AS lscore
+                        FROM chunks c
                         JOIN documents d ON c.document_id = d.id
                         WHERE {where_sql}
-                        ORDER BY distance
+                          AND c.text_norm % %s
+                        ORDER BY lscore DESC
                         LIMIT %s
                     """
-                    cur.execute(query_sql, (query_vec, *where_params, top_k))
-                    rows = cur.fetchall()
-            return rows, (time.perf_counter() - started) * 1000
+                    if query_norm:
+                        cur.execute(
+                            lexical_sql,
+                            (query_norm, *where_params, query_norm, lex_limit_value),
+                        )
+                        lexical_rows = cur.fetchall()
+                    else:
+                        lexical_rows = []
+            return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
 
-        rows, duration_ms = self._run_with_retries(_operation, op_name="search")
+        vector_rows, lexical_rows, duration_ms = self._run_with_retries(
+            _operation, op_name="search"
+        )
 
+        candidates: Dict[str, Dict[str, object]] = {}
+        for chunk_id, text_value, metadata, doc_hash, doc_id, distance in vector_rows:
+            key = str(chunk_id)
+            entry = candidates.setdefault(
+                key,
+                {
+                    "content": text_value,
+                    "metadata": dict(metadata or {}),
+                    "doc_hash": doc_hash,
+                    "doc_id": doc_id,
+                    "vscore": 0.0,
+                    "lscore": 0.0,
+                },
+            )
+            try:
+                distance_value = float(distance)
+            except (TypeError, ValueError):
+                distance_value = 1.0
+            vscore = max(0.0, 1.0 - distance_value)
+            entry["vscore"] = max(float(entry["vscore"]), vscore)
+
+        for chunk_id, text_value, metadata, doc_hash, doc_id, lscore in lexical_rows:
+            key = str(chunk_id)
+            entry = candidates.setdefault(
+                key,
+                {
+                    "content": text_value,
+                    "metadata": dict(metadata or {}),
+                    "doc_hash": doc_hash,
+                    "doc_id": doc_id,
+                    "vscore": 0.0,
+                    "lscore": 0.0,
+                },
+            )
+            try:
+                lscore_value = float(lscore)
+            except (TypeError, ValueError):
+                lscore_value = 0.0
+            entry["lscore"] = max(float(entry["lscore"]), max(0.0, lscore_value))
+
+        fused_candidates = len(candidates)
         results: List[Chunk] = []
-        for text, metadata, doc_hash, doc_id, distance in rows:
-            meta = dict(metadata or {})
+        for entry in candidates.values():
+            meta = dict(entry["metadata"])
+            doc_hash = entry.get("doc_hash")
+            doc_id = entry.get("doc_id")
             if doc_hash and not meta.get("hash"):
                 meta["hash"] = doc_hash
             if doc_id is not None and "id" not in meta:
                 meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
                 continue
-            meta["score"] = self._distance_to_score(distance)
-            results.append(Chunk(content=text, meta=meta))
+            vscore = float(entry.get("vscore", 0.0))
+            lscore = float(entry.get("lscore", 0.0))
+            fused = max(0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore))
+            meta["vscore"] = vscore
+            meta["lscore"] = lscore
+            meta["fused"] = fused
+            meta["score"] = fused
+            results.append(Chunk(content=str(entry.get("content", "")), meta=meta))
+
+        results.sort(key=lambda chunk: float(chunk.meta.get("fused", 0.0)), reverse=True)
+        below_cutoff = 0
+        filtered_results = results
+        if min_sim_value > 0.0:
+            below_cutoff = sum(
+                1
+                for chunk in filtered_results
+                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
+            )
+            if below_cutoff > 0:
+                metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
+                    float(below_cutoff)
+                )
+            filtered_results = [
+                chunk
+                for chunk in filtered_results
+                if float(chunk.meta.get("fused", 0.0)) >= min_sim_value
+            ]
+        limited_results = filtered_results[:top_k]
+
         metrics.RAG_SEARCH_MS.observe(duration_ms)
         logger.info(
-            "RAG search executed: tenant=%s case=%s query_chars=%d results=%d duration_ms=%.2f",
+            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d duration_ms=%.2f",
             tenant,
             case_value,
-            len(query),
-            len(results),
+            len(vector_rows),
+            len(lexical_rows),
+            fused_candidates,
+            len(limited_results),
             duration_ms,
         )
-        return results
+
+        return HybridSearchResult(
+            chunks=limited_results,
+            vector_candidates=len(vector_rows),
+            lexical_candidates=len(lexical_rows),
+            fused_candidates=fused_candidates,
+            duration_ms=duration_ms,
+            alpha=alpha_value,
+            min_sim=min_sim_value,
+            vec_limit=vec_limit_value,
+            lex_limit=lex_limit_value,
+            below_cutoff=below_cutoff,
+            returned_after_cutoff=len(filtered_results),
+            query_embedding_empty=query_embedding_empty,
+        )
 
     def health_check(self) -> bool:
         """Run a lightweight query to assert connectivity."""
@@ -547,6 +745,19 @@ class PgVectorClient:
             chunk_count = 0
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
+                embedding_values = chunk.embedding
+                if embedding_values is None or _is_effectively_zero_vector(embedding_values):
+                    metrics.RAG_EMBEDDINGS_EMPTY_TOTAL.inc()
+                    logger.warning(
+                        "embedding.empty",
+                        extra={
+                            "tenant": doc["tenant_id"],
+                            "doc_id": str(document_id),
+                            "chunk_id": str(chunk_id),
+                            "source": doc.get("source"),
+                        },
+                    )
+                    continue
                 tokens = self._estimate_tokens(chunk.content)
                 chunk_rows.append(
                     (
@@ -559,9 +770,8 @@ class PgVectorClient:
                     )
                 )
                 chunk_count += 1
-                if chunk.embedding is not None:
-                    vector_value = self._format_vector(chunk.embedding)
-                    embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
+                vector_value = self._format_vector(embedding_values)
+                embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
 
             if chunk_rows:
                 cur.executemany(chunk_insert_sql, chunk_rows)
