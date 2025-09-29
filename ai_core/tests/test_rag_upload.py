@@ -59,6 +59,43 @@ def test_rag_upload_persists_file_and_metadata(
 
 
 @pytest.mark.django_db
+def test_rag_upload_external_id_fallback(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    def _upload_once() -> dict:
+        upload = SimpleUploadedFile(
+            "notes.txt", b"hello world", content_type="text/plain"
+        )
+        metadata = {"label": "fallback"}
+        payload = encode_multipart(
+            BOUNDARY, {"file": upload, "metadata": json.dumps(metadata)}
+        )
+        response = client.generic(
+            "POST",
+            "/ai/rag/documents/upload/",
+            payload,
+            content_type=MULTIPART_CONTENT,
+            **{
+                META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+                META_TENANT_ID_KEY: test_tenant_schema_name,
+                META_CASE_ID_KEY: "case-123",
+            },
+        )
+        assert response.status_code == 202
+        return response.json()
+
+    first = _upload_once()
+    second = _upload_once()
+
+    assert first["external_id"]
+    assert first["external_id"] == second["external_id"]
+    assert first["document_id"] != second["document_id"]
+
+
+@pytest.mark.django_db
 def test_rag_upload_without_file_returns_400(
     client, monkeypatch, tmp_path, test_tenant_schema_name
 ):

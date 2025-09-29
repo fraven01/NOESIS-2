@@ -73,6 +73,69 @@ def test_retrieve_returns_snippets(monkeypatch):
     }
 
 
+@pytest.mark.parametrize("scoped_router", [False, True])
+def test_retrieve_snippets_shape(monkeypatch, scoped_router):
+    retrieve._reset_router_for_tests()
+
+    chunk = Chunk(
+        "Body",
+        {
+            "source": "src",
+            "score": 0.9,
+            "hash": "hash-1",
+            "id": "doc-1",
+            "custom_kv": "value",
+        },
+    )
+
+    class _BaseRouter:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            return [chunk]
+
+    base_router = _BaseRouter()
+
+    if scoped_router:
+        class _ScopedRouter:
+            def __init__(self, inner):
+                self.inner = inner
+                self.tenants = []
+
+            def for_tenant(self, tenant_id):
+                self.tenants.append(tenant_id)
+                return self.inner
+
+        router = _ScopedRouter(base_router)
+    else:
+        router = base_router
+
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    state = {"query": "hello"}
+    meta = {"tenant": "tenant-1", "case": "case-1"}
+    _, result = retrieve.run(state, meta, top_k=2)
+
+    assert result["snippets"], "expected snippets in result"
+    snippet = result["snippets"][0]
+    assert snippet == {
+        "text": "Body",
+        "source": "src",
+        "score": 0.9,
+        "hash": "hash-1",
+        "id": "doc-1",
+        "meta": {"custom_kv": "value"},
+    }
+
+    if scoped_router:
+        assert router.tenants == ["tenant-1"]
+        assert base_router.calls[0]["filters"] == {"case": "case-1"}
+    else:
+        assert base_router.calls[0]["filters"] == {"tenant": "tenant-1", "case": "case-1"}
+
+
 def test_retrieve_requires_tenant_id(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: None)
     with pytest.raises(ValueError, match="tenant_id required"):

@@ -189,6 +189,12 @@ Der Python-Test-Runner installiert die benötigten Abhängigkeiten on-the-fly in
 
 ### Load-Testing Setup (k6 & Locust)
 
+Ingestion läuft jetzt via `/ai/rag/ingestion/run/` → triggert Worker-Tasks, Queue ingestion.
+Stelle sicher, dass ein Celery-Worker die Queue konsumiert, z. B. via `celery -A config worker -Q ingestion,celery -l INFO`.
+Für performante RAG-Abfragen lohnt sich der optionale GIN-/B-Tree-Index aus [`docs/rag/schema.sql`](docs/rag/schema.sql), wenn
+du häufig nach Metadaten (z. B. `case`) filterst. Der GIN-Index verwendet dabei `jsonb_path_ops`, um Gleichheitsfilter auf `metadata` effizient abzudecken.
+Setze dabei auch den eindeutigen Index auf `(tenant_id, external_id)` und führe alle Statements schema-qualifiziert oder mit passendem `search_path` aus, wenn mehrere RAG-Schemata im Einsatz sind.
+
 - **Skripte:**
   - `npm run load:k6` bzw. `make load:k6` startet das Spike+Soak-Szenario aus `load/k6/script.js`. Setze dafür die Staging-Parameter (`STAGING_WEB_URL`, `STAGING_TENANT_SCHEMA`, `STAGING_TENANT_ID`, `STAGING_CASE_ID`, optional `STAGING_BEARER_TOKEN`, `STAGING_KEY_ALIAS`). Zusätzliche Parameter wie `SCOPE_SOAK_DURATION` können via ENV angepasst werden.
   - `npm run load:locust` bzw. `make load:locust` lädt die User-Klassen aus `load/locust/locustfile.py`. Übergib weitere Flags nach `--`, z. B. `npm run load:locust -- --headless -u 30 -r 10 --run-time 5m`.
@@ -213,10 +219,15 @@ Benötigte Variablen (siehe `.env.example` oder `.env.dev.sample`):
   Stelle sicher, dass [`docs/rag/schema.sql`](docs/rag/schema.sql) angewendet wurde und die `vector`-Extension aktiv ist.
   Mandanten-IDs müssen UUIDs sein; vorhandene Legacy-IDs werden deterministisch gemappt, sollten aber per Migration bereinigt
   werden, bevor produktive Daten geladen werden.
-- RAG_STATEMENT_TIMEOUT_MS (optional, default `15000`): maximale Laufzeit für SQL-Statements des pgvector-Clients. Höhere Werte
-  erhöhen das Timeout, niedrigere brechen Abfragen früher ab.
-- RAG_RETRY_ATTEMPTS (optional, default `3`): Anzahl der Wiederholungsversuche für fehlgeschlagene pgvector-Operationen.
-- RAG_RETRY_BASE_DELAY_MS (optional, default `50`): Basiswartezeit zwischen Wiederholungen; skaliert linear mit dem Versuch.
+- RAG_STATEMENT_TIMEOUT_MS (optional, default `15000`): maximale Laufzeit für SQL-Statements des pgvector-Clients (Upsert, Suche,
+  Health-Checks). Höhere Werte erhöhen das Timeout, niedrigere brechen Abfragen früher ab.
+- RAG_RETRY_ATTEMPTS (optional, default `3`): Anzahl der Wiederholungsversuche für fehlgeschlagene pgvector-Operationen. Jeder
+  Versuch wird protokolliert und nutzt dieselbe Verbindung.
+- RAG_RETRY_BASE_DELAY_MS (optional, default `50`): Basiswartezeit zwischen Wiederholungen (linearer Backoff pro Versuch in
+  Millisekunden).
+
+Hinweis für RAG-Workloads: Lege die optionalen Indizes aus [`docs/rag/schema.sql`](docs/rag/schema.sql) an, wenn Metadatenfilter
+häufig verwendet werden (GIN-Index auf `metadata` sowie B-Tree auf `metadata->>'case'`).
 
 > ⚠️ **Vector-Backend Auswahl:** `RAG_VECTOR_STORES` unterstützt aktuell nur
 > `pgvector`. Abweichende `backend`-Werte führen beim Start zu einem
