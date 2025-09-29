@@ -1,3 +1,4 @@
+import hashlib
 import uuid
 
 import pytest
@@ -18,7 +19,7 @@ class TestPgVectorClient:
         client = vector_client.get_default_client()
         chunk = Chunk(
             content="text",
-            meta={"hash": "h"},
+            meta={"hash": "h", "external_id": "ext-1"},
             embedding=[0.0] * vector_client.EMBEDDING_DIM,
         )
         with pytest.raises(ValueError):
@@ -28,7 +29,7 @@ class TestPgVectorClient:
         client = vector_client.get_default_client()
         chunk = Chunk(
             content="text",
-            meta={"tenant": str(uuid.uuid4())},
+            meta={"tenant": str(uuid.uuid4()), "external_id": "ext-1"},
             embedding=[0.0] * vector_client.EMBEDDING_DIM,
         )
         with pytest.raises(ValueError):
@@ -53,16 +54,35 @@ class TestPgVectorClient:
         histogram = _Histogram()
         monkeypatch.setattr(metrics, "RAG_UPSERT_CHUNKS", counter)
         monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+        inserted_counter = _Counter()
+        replaced_counter = _Counter()
+        skipped_counter = _Counter()
+        chunks_counter = _Counter()
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_INSERTED", inserted_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_REPLACED", replaced_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_SKIPPED", skipped_counter)
+        monkeypatch.setattr(metrics, "INGESTION_CHUNKS_WRITTEN", chunks_counter)
 
         client = vector_client.get_default_client()
+        doc_hash = hashlib.sha256(b"legacy").hexdigest()
         chunk = Chunk(
             content="legacy",
-            meta={"tenant": "tenant-1", "hash": "h", "case": "c", "source": "s"},
+            meta={
+                "tenant": "tenant-1",
+                "hash": doc_hash,
+                "case": "c",
+                "source": "s",
+                "external_id": "legacy-doc",
+            },
             embedding=[0.1] * vector_client.EMBEDDING_DIM,
         )
         written = client.upsert_chunks([chunk])
         assert written == 1
         assert counter.value == 1
+        assert inserted_counter.value == 1
+        assert replaced_counter.value == 0
+        assert skipped_counter.value == 0
+        assert chunks_counter.value == 1
 
         results = client.search(
             "legacy",
@@ -75,22 +95,97 @@ class TestPgVectorClient:
         assert uuid.UUID(results[0].meta["tenant"])  # tenant ids are normalised
         assert 0.0 <= results[0].meta["score"] <= 1.0
         assert results[0].meta.get("hash") == chunk.meta["hash"]
+        assert results[0].meta.get("external_id") == "legacy-doc"
 
-    def test_upsert_replaces_existing_chunks_in_batches(self):
+    def test_upsert_skips_when_hash_unchanged(self, monkeypatch):
+        class _Counter:
+            def __init__(self) -> None:
+                self.value = 0
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        inserted_counter = _Counter()
+        replaced_counter = _Counter()
+        skipped_counter = _Counter()
+        chunks_counter = _Counter()
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_INSERTED", inserted_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_REPLACED", replaced_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_SKIPPED", skipped_counter)
+        monkeypatch.setattr(metrics, "INGESTION_CHUNKS_WRITTEN", chunks_counter)
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
-        doc_hash = "batched"
+        external_id = "doc-1"
+        doc_hash = hashlib.sha256(b"version-1").hexdigest()
 
-        def _make_chunk(content: str) -> Chunk:
+        chunk = Chunk(
+            content="chunk-1",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "source": "s",
+                "external_id": external_id,
+            },
+            embedding=[0.2] * vector_client.EMBEDDING_DIM,
+        )
+        written = client.upsert_chunks([chunk])
+        assert written == 1
+        assert inserted_counter.value == 1
+        assert skipped_counter.value == 0
+
+        # Re-ingest with identical hash should be skipped
+        written_again = client.upsert_chunks([chunk])
+        assert written_again == 0
+        assert skipped_counter.value == 1
+        assert replaced_counter.value == 0
+        assert chunks_counter.value == 1
+
+        with client._connection() as conn:  # type: ignore[attr-defined]
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM chunks")
+                assert cur.fetchone()[0] == 1
+
+    def test_upsert_replaces_existing_chunks_in_batches(self, monkeypatch):
+        class _Counter:
+            def __init__(self) -> None:
+                self.value = 0
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        inserted_counter = _Counter()
+        replaced_counter = _Counter()
+        skipped_counter = _Counter()
+        chunks_counter = _Counter()
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_INSERTED", inserted_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_REPLACED", replaced_counter)
+        monkeypatch.setattr(metrics, "INGESTION_DOCS_SKIPPED", skipped_counter)
+        monkeypatch.setattr(metrics, "INGESTION_CHUNKS_WRITTEN", chunks_counter)
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        external_id = "doc-2"
+        doc_hash_v1 = hashlib.sha256(b"version-a").hexdigest()
+        doc_hash_v2 = hashlib.sha256(b"version-b").hexdigest()
+
+        def _make_chunk(content: str, doc_hash: str) -> Chunk:
             return Chunk(
                 content=content,
-                meta={"tenant": tenant, "hash": doc_hash, "source": "s"},
+                meta={
+                    "tenant": tenant,
+                    "hash": doc_hash,
+                    "source": "s",
+                    "external_id": external_id,
+                },
                 embedding=[0.01] * vector_client.EMBEDDING_DIM,
             )
 
-        initial_chunks = [_make_chunk(f"chunk-{idx}") for idx in range(3)]
+        initial_chunks = [_make_chunk(f"chunk-{idx}", doc_hash_v1) for idx in range(3)]
         written = client.upsert_chunks(initial_chunks)
         assert written == 3
+        assert inserted_counter.value == 1
+        assert replaced_counter.value == 0
+        assert skipped_counter.value == 0
+        assert chunks_counter.value == 3
 
         with client._connection() as conn:  # type: ignore[attr-defined]
             with conn.cursor() as cur:
@@ -104,9 +199,14 @@ class TestPgVectorClient:
                 cur.execute("SELECT COUNT(*) FROM documents")
                 assert cur.fetchone()[0] == 1
 
-        replacement_chunks = [_make_chunk(f"replacement-{idx}") for idx in range(2)]
+        replacement_chunks = [
+            _make_chunk(f"replacement-{idx}", doc_hash_v2) for idx in range(2)
+        ]
         written = client.upsert_chunks(replacement_chunks)
         assert written == 2
+        assert replaced_counter.value == 1
+        assert skipped_counter.value == 0
+        assert chunks_counter.value == 5
 
         with client._connection() as conn:  # type: ignore[attr-defined]
             with conn.cursor() as cur:
@@ -118,15 +218,89 @@ class TestPgVectorClient:
                 cur.execute("SELECT COUNT(*) FROM embeddings")
                 assert cur.fetchone()[0] == 2
 
+    def test_vector_client_deduplication_skip_and_replace(self):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        external_id = "doc-dedupe"
+
+        def _make_chunk(content: str) -> Chunk:
+            doc_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            return Chunk(
+                content=content,
+                meta={
+                    "tenant": tenant,
+                    "external_id": external_id,
+                    "hash": doc_hash,
+                    "source": "unit",
+                },
+                embedding=[0.2] * vector_client.EMBEDDING_DIM,
+            )
+
+        initial_chunk = _make_chunk("original content")
+        written = client.upsert_chunks([initial_chunk])
+        assert written == 1
+
+        initial_results = client.search(
+            "original",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=3,
+        )
+        assert len(initial_results) == 1
+        assert initial_results[0].content == "original content"
+
+        # Re-ingest with identical content: should be skipped
+        duplicate_chunk = _make_chunk("original content")
+        written_again = client.upsert_chunks([duplicate_chunk])
+        assert written_again == 0
+
+        duplicate_results = client.search(
+            "original",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=3,
+        )
+        assert len(duplicate_results) == 1
+        assert duplicate_results[0].content == "original content"
+
+        # Change content with the same external_id: should replace previous chunks
+        replacement_chunk = _make_chunk("updated content")
+        written_replacement = client.upsert_chunks([replacement_chunk])
+        assert written_replacement == 1
+
+        updated_results = client.search(
+            "updated",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=3,
+        )
+        assert len(updated_results) == 1
+        assert updated_results[0].content == "updated content"
+        assert updated_results[0].meta.get("hash") == hashlib.sha256(
+            b"updated content"
+        ).hexdigest()
+
+        with client._connection() as conn:  # type: ignore[attr-defined]
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM chunks")
+                assert cur.fetchone()[0] == 1
+                cur.execute("SELECT COUNT(*) FROM embeddings")
+                assert cur.fetchone()[0] == 1
+
     def test_search_caps_top_k(self):
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
-        chunk_hash = "limit"
+        chunk_hash = hashlib.sha256(b"limit").hexdigest()
 
         chunks = [
             Chunk(
                 content="Result",
-                meta={"tenant": tenant, "hash": chunk_hash, "source": "src"},
+                meta={
+                    "tenant": tenant,
+                    "hash": chunk_hash,
+                    "source": "src",
+                    "external_id": f"doc-{index}",
+                },
                 embedding=[0.02] * vector_client.EMBEDDING_DIM,
             )
             for index in range(12)
@@ -146,9 +320,10 @@ class TestPgVectorClient:
                 content="Filtered",
                 meta={
                     "tenant": tenant,
-                    "hash": "doc-a",
+                    "hash": hashlib.sha256(b"doc-a").hexdigest(),
                     "source": "alpha",
                     "doctype": "contract",
+                    "external_id": "doc-a",
                 },
                 embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
             ),
@@ -156,9 +331,10 @@ class TestPgVectorClient:
                 content="Filtered",
                 meta={
                     "tenant": tenant,
-                    "hash": "doc-b",
+                    "hash": hashlib.sha256(b"doc-b").hexdigest(),
                     "source": "beta",
                     "doctype": "contract",
+                    "external_id": "doc-b",
                 },
                 embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
             ),
@@ -172,8 +348,10 @@ class TestPgVectorClient:
             filters={"source": "alpha"},
             top_k=5,
         )
-        assert [chunk.meta.get("hash") for chunk in results] == ["doc-a"]
+        expected_hash = hashlib.sha256(b"doc-a").hexdigest()
+        assert [chunk.meta.get("hash") for chunk in results] == [expected_hash]
         assert all(chunk.meta.get("source") == "alpha" for chunk in results)
+        assert all(chunk.meta.get("external_id") == "doc-a" for chunk in results)
 
         empty = client.search(
             "Filtered",
@@ -190,9 +368,10 @@ class TestPgVectorClient:
             content="Boolean",
             meta={
                 "tenant": tenant,
-                "hash": "doc-bool",
+                "hash": hashlib.sha256(b"doc-bool").hexdigest(),
                 "source": "gamma",
                 "published": True,
+                "external_id": "doc-bool",
             },
             embedding=[0.04] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
         )
@@ -204,7 +383,8 @@ class TestPgVectorClient:
             filters={"published": True},
             top_k=5,
         )
-        assert [c.meta.get("hash") for c in positive] == ["doc-bool"]
+        expected_hash = hashlib.sha256(b"doc-bool").hexdigest()
+        assert [c.meta.get("hash") for c in positive] == [expected_hash]
 
         negative = client.search(
             "Boolean",

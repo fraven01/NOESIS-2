@@ -49,18 +49,34 @@ SUPPORTED_METADATA_FILTERS = {
     "published": "chunk_meta",
     "hash": "document_hash",
     "id": "document_id",
+    "external_id": "document_external_id",
 }
 
 
-DEFAULT_STATEMENT_TIMEOUT_MS = int(os.getenv("RAG_STATEMENT_TIMEOUT_MS", "15000"))
-DEFAULT_RETRY_ATTEMPTS = int(os.getenv("RAG_RETRY_ATTEMPTS", "3"))
-DEFAULT_RETRY_BASE_DELAY_MS = int(os.getenv("RAG_RETRY_BASE_DELAY_MS", "50"))
+FALLBACK_STATEMENT_TIMEOUT_MS = 15000
+FALLBACK_RETRY_ATTEMPTS = 3
+FALLBACK_RETRY_BASE_DELAY_MS = 50
 EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
 
 
 DocumentKey = Tuple[str, str]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
+
+
+class UpsertResult(int):
+    """Integer-compatible return type carrying per-document ingestion metadata."""
+
+    def __new__(
+        cls, written: int, documents: List[Dict[str, object]]
+    ) -> "UpsertResult":
+        obj = int.__new__(cls, written)
+        obj._documents = documents
+        return obj
+
+    @property
+    def documents(self) -> List[Dict[str, object]]:
+        return list(self._documents)
 
 
 class PgVectorClient:
@@ -73,19 +89,31 @@ class PgVectorClient:
         schema: str = "rag",
         minconn: int = 1,
         maxconn: int = 5,
-        statement_timeout_ms: int = DEFAULT_STATEMENT_TIMEOUT_MS,
-        retries: int = DEFAULT_RETRY_ATTEMPTS,
-        retry_base_delay_ms: int = DEFAULT_RETRY_BASE_DELAY_MS,
+        statement_timeout_ms: Optional[int] = None,
+        retries: Optional[int] = None,
+        retry_base_delay_ms: Optional[int] = None,
     ) -> None:
         if minconn < 1 or maxconn < minconn:
             raise ValueError("Invalid connection pool configuration")
         self._schema = schema
-        self._statement_timeout_ms = statement_timeout_ms
+        env_timeout = int(
+            os.getenv("RAG_STATEMENT_TIMEOUT_MS", str(FALLBACK_STATEMENT_TIMEOUT_MS))
+        )
+        env_retries = int(os.getenv("RAG_RETRY_ATTEMPTS", str(FALLBACK_RETRY_ATTEMPTS)))
+        env_retry_delay = int(
+            os.getenv("RAG_RETRY_BASE_DELAY_MS", str(FALLBACK_RETRY_BASE_DELAY_MS))
+        )
+        timeout_value = statement_timeout_ms if statement_timeout_ms is not None else env_timeout
+        retries_value = retries if retries is not None else env_retries
+        retry_delay_value = (
+            retry_base_delay_ms if retry_base_delay_ms is not None else env_retry_delay
+        )
+        self._statement_timeout_ms = timeout_value
         self._pool = SimpleConnectionPool(minconn, maxconn, dsn)
         self._prepare_lock = threading.Lock()
         self._indexes_ready = False
-        self._retries = max(1, retries)
-        self._retry_base_delay = max(0, retry_base_delay_ms) / 1000.0
+        self._retries = max(1, retries_value)
+        self._retry_base_delay = max(0, retry_delay_value) / 1000.0
 
     @classmethod
     def from_env(
@@ -153,9 +181,13 @@ class PgVectorClient:
 
         grouped = self._group_by_document(chunk_list)
         tenants = sorted({key[0] for key in grouped})
+        inserted_chunks = 0
+        doc_actions: Dict[DocumentKey, str] = {}
+        per_doc_timings: Dict[DocumentKey, Dict[str, float]] = {}
 
         def _operation() -> float:
             started = time.perf_counter()
+            nonlocal inserted_chunks, doc_actions, per_doc_timings
             with self._connection() as conn:
                 try:
                     with conn.cursor() as cur:
@@ -163,8 +195,12 @@ class PgVectorClient:
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
-                        document_ids = self._ensure_documents(cur, grouped)
-                        self._replace_chunks(cur, grouped, document_ids)
+                        document_ids, doc_actions = self._ensure_documents(
+                            cur, grouped
+                        )
+                        inserted_chunks, per_doc_timings = self._replace_chunks(
+                            cur, grouped, document_ids, doc_actions
+                        )
                     conn.commit()
                 except Exception:
                     conn.rollback()
@@ -173,15 +209,48 @@ class PgVectorClient:
 
         duration_ms = self._run_with_retries(_operation, op_name="upsert_chunks")
 
-        metrics.RAG_UPSERT_CHUNKS.inc(len(chunk_list))
+        skipped_documents = sum(1 for action in doc_actions.values() if action == "skipped")
+        metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
+        documents_info: List[Dict[str, object]] = []
+        for key, doc in grouped.items():
+            tenant_id, external_id = key
+            action = doc_actions.get(key, "inserted")
+            stats = per_doc_timings.get(
+                key,
+                {
+                    "chunk_count": len(doc.get("chunks", [])),
+                    "duration_ms": 0.0,
+                },
+            )
+            chunk_count = int(stats.get("chunk_count", 0))
+            duration = float(stats.get("duration_ms", 0.0))
+            doc_payload = {
+                "tenant": tenant_id,
+                "external_id": external_id,
+                "content_hash": doc.get("hash"),
+                "action": action,
+                "chunk_count": chunk_count,
+                "duration_ms": duration,
+            }
+            documents_info.append(doc_payload)
+            logger.info("ingestion.doc.result", extra=doc_payload)
+            if action == "inserted":
+                metrics.INGESTION_DOCS_INSERTED.inc()
+            elif action == "replaced":
+                metrics.INGESTION_DOCS_REPLACED.inc()
+            else:
+                metrics.INGESTION_DOCS_SKIPPED.inc()
+            if action in {"inserted", "replaced"} and chunk_count:
+                metrics.INGESTION_CHUNKS_WRITTEN.inc(float(chunk_count))
         logger.info(
-            "RAG upsert completed: chunks=%d documents=%d tenants=%s duration_ms=%.2f",
-            len(chunk_list),
+            "RAG upsert completed: chunks=%d documents=%d tenants=%s skipped=%d duration_ms=%.2f",
+            inserted_chunks,
             len(grouped),
             tenants,
+            skipped_documents,
             duration_ms,
         )
-        return len(chunk_list)
+        return UpsertResult(inserted_chunks, documents_info)
 
     def search(
         self,
@@ -261,6 +330,9 @@ class PgVectorClient:
                         elif kind == "document_id":
                             where_clauses.append("d.id::text = %s")
                             where_params.append(normalised)
+                        elif kind == "document_external_id":
+                            where_clauses.append("d.external_id = %s")
+                            where_params.append(normalised)
                     where_sql = "\n          AND ".join(where_clauses)
                     query_sql = f"""
                         SELECT
@@ -322,17 +394,22 @@ class PgVectorClient:
             tenant_value = chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
+            external_id = chunk.meta.get("external_id")
             if tenant_value in {None, "", "None"}:
                 raise ValueError("Chunk metadata must include tenant")
             if not doc_hash or doc_hash == "None":
                 raise ValueError("Chunk metadata must include hash")
+            if external_id in {None, "", "None"}:
+                raise ValueError("Chunk metadata must include external_id")
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
             tenant = str(tenant_uuid)
-            key = (tenant, doc_hash)
+            external_id_str = str(external_id)
+            key = (tenant, external_id_str)
             if key not in grouped:
                 grouped[key] = {
                     "id": uuid.uuid4(),
                     "tenant_id": tenant,
+                    "external_id": external_id_str,
                     "hash": doc_hash,
                     "source": source,
                     "metadata": {
@@ -344,6 +421,7 @@ class PgVectorClient:
                 }
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant"] = tenant
+            chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(
                 Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)
             )
@@ -353,29 +431,69 @@ class PgVectorClient:
         self,
         cur,
         grouped: GroupedDocuments,
-    ) -> Dict[DocumentKey, uuid.UUID]:  # type: ignore[no-untyped-def]
+    ) -> Tuple[Dict[DocumentKey, uuid.UUID], Dict[DocumentKey, str]]:  # type: ignore[no-untyped-def]
         document_ids: Dict[DocumentKey, uuid.UUID] = {}
+        actions: Dict[DocumentKey, str] = {}
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
             metadata = Json(doc["metadata"])
+            external_id = doc["external_id"]
             cur.execute(
                 """
-                INSERT INTO documents (id, tenant_id, source, hash, metadata)
-                VALUES (%s, %s, %s, %s, %s)
-                ON CONFLICT (tenant_id, hash)
-                DO UPDATE SET
-                    source = EXCLUDED.source,
-                    metadata = EXCLUDED.metadata,
-                    deleted_at = NULL
-                RETURNING id
+                SELECT id, hash
+                FROM documents
+                WHERE tenant_id = %s AND external_id = %s
+                FOR UPDATE
                 """,
-                (doc["id"], str(tenant_uuid), doc["source"], doc["hash"], metadata),
+                (str(tenant_uuid), external_id),
             )
-            returned = cur.fetchone()
-            if returned is None:
-                raise RuntimeError("Failed to upsert document")
-            document_ids[key] = returned[0]
-        return document_ids
+            existing = cur.fetchone()
+            if existing:
+                document_id, stored_hash = existing
+                if stored_hash == doc["hash"]:
+                    document_ids[key] = document_id
+                    actions[key] = "skipped"
+                    logger.info(
+                        "Skipping unchanged document during upsert",
+                        extra={
+                            "tenant": doc["tenant_id"],
+                            "external_id": external_id,
+                        },
+                    )
+                    continue
+                cur.execute(
+                    """
+                    UPDATE documents
+                    SET hash = %s,
+                        source = %s,
+                        metadata = %s,
+                        deleted_at = NULL
+                    WHERE id = %s
+                    """,
+                    (doc["hash"], doc["source"], metadata, document_id),
+                )
+                document_ids[key] = document_id
+                actions[key] = "replaced"
+                continue
+
+            document_id = doc["id"]
+            cur.execute(
+                """
+                INSERT INTO documents (id, tenant_id, external_id, source, hash, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    document_id,
+                    str(tenant_uuid),
+                    external_id,
+                    doc["source"],
+                    doc["hash"],
+                    metadata,
+                ),
+            )
+            document_ids[key] = document_id
+            actions[key] = "inserted"
+        return document_ids, actions
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
         try:
@@ -395,7 +513,8 @@ class PgVectorClient:
         cur,
         grouped: GroupedDocuments,
         document_ids: Dict[DocumentKey, uuid.UUID],
-    ) -> None:  # type: ignore[no-untyped-def]
+        doc_actions: Dict[DocumentKey, str],
+    ) -> Tuple[int, Dict[DocumentKey, Dict[str, float]]]:  # type: ignore[no-untyped-def]
         chunk_insert_sql = """
             INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
             VALUES (%s, %s, %s, %s, %s, %s)
@@ -406,12 +525,24 @@ class PgVectorClient:
             ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding
         """
 
+        inserted = 0
+        per_doc_stats: Dict[DocumentKey, Dict[str, float]] = {}
         for key, doc in grouped.items():
+            action = doc_actions.get(key, "inserted")
+            if action == "skipped":
+                per_doc_stats[key] = {"chunk_count": 0, "duration_ms": 0.0}
+                continue
             document_id = document_ids[key]
+            started = time.perf_counter()
+            cur.execute(
+                "DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
+                (document_id,),
+            )
             cur.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
 
             chunk_rows = []
             embedding_rows = []
+            chunk_count = 0
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 tokens = self._estimate_tokens(chunk.content)
@@ -425,6 +556,7 @@ class PgVectorClient:
                         Json(dict(chunk.meta)),
                     )
                 )
+                chunk_count += 1
                 if chunk.embedding is not None:
                     vector_value = self._format_vector(chunk.embedding)
                     embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
@@ -433,6 +565,12 @@ class PgVectorClient:
                 cur.executemany(chunk_insert_sql, chunk_rows)
             if embedding_rows:
                 cur.executemany(embedding_insert_sql, embedding_rows)
+            inserted += chunk_count
+            per_doc_stats[key] = {
+                "chunk_count": float(chunk_count),
+                "duration_ms": (time.perf_counter() - started) * 1000,
+            }
+        return inserted, per_doc_stats
 
     def _estimate_tokens(self, content: str) -> int:
         return max(1, len(content.split()))

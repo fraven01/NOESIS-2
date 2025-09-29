@@ -24,6 +24,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_hash_idx
 CREATE INDEX IF NOT EXISTS documents_metadata_gin_idx
     ON documents USING GIN (metadata);
 
+ALTER TABLE rag.documents ADD COLUMN IF NOT EXISTS external_id TEXT;
+
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_external_id_uk
+    ON rag.documents (tenant_id, external_id);
+
+CREATE INDEX IF NOT EXISTS documents_hash_idx
+    ON rag.documents (hash);
+
 CREATE TABLE IF NOT EXISTS chunks (
     id UUID PRIMARY KEY,
     document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -37,7 +45,7 @@ CREATE INDEX IF NOT EXISTS chunks_document_ord_idx
     ON chunks (document_id, ord);
 
 CREATE INDEX IF NOT EXISTS chunks_metadata_gin_idx
-    ON chunks USING GIN (metadata);
+    ON chunks USING GIN ((metadata) jsonb_path_ops);
 
 -- Targeted index to accelerate equality filters on common metadata keys
 CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
@@ -69,3 +77,4 @@ ANALYZE rag.embeddings;
 -- TODO (später):
 -- * Auswahl IVFFLAT vs. HNSW abhängig von Datenvolumen und Latenz.
 -- * Entscheidung folgt nach Messung.
+

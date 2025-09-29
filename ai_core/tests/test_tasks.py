@@ -16,7 +16,7 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     tenant = str(uuid.uuid4())
     case = str(uuid.uuid4())
-    meta = {"tenant": tenant, "case": case}
+    meta = {"tenant": tenant, "case": case, "external_id": "doc-1"}
     vector_client.reset_default_client()
 
     raw = tasks.ingest_raw(meta, "doc.txt", b"User 123")
@@ -33,6 +33,7 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
     assert len(results) == 1
     assert results[0].content == "User XXX"
     assert results[0].meta.get("hash")
+    assert results[0].meta.get("external_id") == "doc-1"
     assert 0.0 <= results[0].meta.get("score", 0.0) <= 1.0
 
     vector_client.reset_default_client()
@@ -80,6 +81,7 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path):
                 "case": "case-456",
                 "trace_id": "trace-7890",
                 "key_alias": "alias-1234",
+                "external_id": "doc-logging",
             },
             "doc.txt",
             b"payload",
@@ -99,7 +101,7 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path):
 
 def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    meta = {"tenant": "Tenant Name", "case": "Case*ID"}
+    meta = {"tenant": "Tenant Name", "case": "Case*ID", "external_id": "doc-1"}
 
     result = tasks.ingest_raw(meta, "doc.txt", b"payload")
 
@@ -113,7 +115,7 @@ def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
 
 def test_ingest_raw_rejects_unsafe_meta(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    meta = {"tenant": "tenant/../", "case": "case"}
+    meta = {"tenant": "tenant/../", "case": "case", "external_id": "doc-unsafe"}
 
     original_request = getattr(tasks.ingest_raw, "request", None)
     tasks.ingest_raw.request = SimpleNamespace(headers=None, kwargs=None)

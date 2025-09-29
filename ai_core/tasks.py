@@ -7,8 +7,10 @@ from typing import Dict, List, Optional
 from celery import shared_task
 from common.celery import ScopedTask
 from common.logging import get_logger
-from .infra import object_store, pii
 from django.utils import timezone
+
+from .infra import object_store, pii
+from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.vector_client import EMBEDDING_DIM
 from .rag.vector_store import get_default_router
@@ -22,12 +24,73 @@ def _build_path(meta: Dict[str, str], *parts: str) -> str:
     return "/".join([tenant, case, *parts])
 
 
+def log_ingestion_run_start(
+    *,
+    tenant: str,
+    case: str,
+    run_id: str,
+    doc_count: int,
+    trace_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    extra = {
+        "tenant": tenant,
+        "case": case,
+        "run_id": run_id,
+        "doc_count": doc_count,
+    }
+    if trace_id:
+        extra["trace_id"] = trace_id
+    if idempotency_key:
+        extra["idempotency_key"] = idempotency_key
+    logger.info("ingestion.start", extra=extra)
+
+
+def log_ingestion_run_end(
+    *,
+    tenant: str,
+    case: str,
+    run_id: str,
+    doc_count: int,
+    inserted: int,
+    replaced: int,
+    skipped: int,
+    total_chunks: int,
+    duration_ms: float,
+    trace_id: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
+) -> None:
+    extra = {
+        "tenant": tenant,
+        "case": case,
+        "run_id": run_id,
+        "doc_count": doc_count,
+        "inserted": inserted,
+        "replaced": replaced,
+        "skipped": skipped,
+        "total_chunks": total_chunks,
+        "duration_ms": duration_ms,
+    }
+    if trace_id:
+        extra["trace_id"] = trace_id
+    if idempotency_key:
+        extra["idempotency_key"] = idempotency_key
+    logger.info("ingestion.end", extra=extra)
+    metrics.INGESTION_RUN_MS.observe(float(duration_ms))
+
+
 @shared_task(base=ScopedTask)
 def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     """Persist raw document bytes."""
+    external_id = meta.get("external_id")
+    if not external_id:
+        raise ValueError("external_id required for ingest_raw")
+
     path = _build_path(meta, "raw", name)
     object_store.put_bytes(path, data)
-    return {"path": path}
+    content_hash = hashlib.sha256(data).hexdigest()
+    meta["content_hash"] = content_hash
+    return {"path": path, "content_hash": content_hash}
 
 
 @shared_task(base=ScopedTask)
@@ -56,7 +119,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Split text into chunks; stubbed as a single chunk."""
     full = object_store.BASE_PATH / text_path
     text = full.read_text(encoding="utf-8")
-    hash_val = hashlib.sha1(text.encode("utf-8")).hexdigest()
+    content_hash = meta.get("content_hash")
+    if not content_hash:
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        meta["content_hash"] = content_hash
+    external_id = meta.get("external_id")
+    if not external_id:
+        raise ValueError("external_id required for chunk")
     chunks: List[Dict[str, object]] = [
         {
             "content": text,
@@ -64,7 +133,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 "tenant": meta["tenant"],
                 "case": meta["case"],
                 "source": text_path,
-                "hash": hash_val,
+                "hash": content_hash,
+                "external_id": external_id,
+                "content_hash": content_hash,
             },
         }
     ]

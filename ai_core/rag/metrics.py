@@ -60,8 +60,28 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration
         "rag_upsert_chunks",
         "Number of chunks written into the pgvector store.",
     )
+    INGESTION_DOCS_INSERTED = _PromCounter(
+        "rag_ingestion_docs_inserted_total",
+        "Number of documents inserted during ingestion runs.",
+    )
+    INGESTION_DOCS_REPLACED = _PromCounter(
+        "rag_ingestion_docs_replaced_total",
+        "Number of documents replaced during ingestion runs.",
+    )
+    INGESTION_DOCS_SKIPPED = _PromCounter(
+        "rag_ingestion_docs_skipped_total",
+        "Number of documents skipped during ingestion runs due to unchanged content.",
+    )
+    INGESTION_CHUNKS_WRITTEN = _PromCounter(
+        "rag_ingestion_chunks_written_total",
+        "Number of chunks written during ingestion runs.",
+    )
 else:  # pragma: no cover - covered via direct value inspection in tests
     RAG_UPSERT_CHUNKS = _FallbackCounter()
+    INGESTION_DOCS_INSERTED = _FallbackCounter()
+    INGESTION_DOCS_REPLACED = _FallbackCounter()
+    INGESTION_DOCS_SKIPPED = _FallbackCounter()
+    INGESTION_CHUNKS_WRITTEN = _FallbackCounter()
 
 
 if _PromHistogram is not None:  # pragma: no cover - exercised in integration
@@ -69,8 +89,13 @@ if _PromHistogram is not None:  # pragma: no cover - exercised in integration
         "rag_search_ms",
         "Latency of pgvector similarity search in milliseconds.",
     )
+    INGESTION_RUN_MS = _PromHistogram(
+        "rag_ingestion_run_ms",
+        "Wall-clock duration of ingestion runs in milliseconds.",
+    )
 else:  # pragma: no cover - covered via direct value inspection in tests
     RAG_SEARCH_MS = _FallbackHistogram()
+    INGESTION_RUN_MS = _FallbackHistogram()
 
 
 if _PromCounter is not None:  # pragma: no cover - exercised in integration
@@ -94,4 +119,9 @@ __all__ = [
     "RAG_SEARCH_MS",
     "RAG_RETRY_ATTEMPTS",
     "RAG_HEALTH_CHECKS",
+    "INGESTION_DOCS_INSERTED",
+    "INGESTION_DOCS_REPLACED",
+    "INGESTION_DOCS_SKIPPED",
+    "INGESTION_CHUNKS_WRITTEN",
+    "INGESTION_RUN_MS",
 ]

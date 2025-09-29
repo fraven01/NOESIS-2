@@ -76,7 +76,8 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from .infra import object_store, rate_limit
-from .tasks import ingestion_run
+from .ingestion import partition_document_ids, run_ingestion
+from .ingestion_utils import make_fallback_external_id
 from .infra.resp import apply_std_headers
 
 
@@ -834,8 +835,6 @@ class LegacySysDescView(_GraphView):
     @default_extend_schema(**_legacy_schema_kwargs(SYSDESC_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
-
-
 class RagUploadView(APIView):
     """Handle multipart document uploads for ingestion pipelines."""
 
@@ -863,7 +862,7 @@ class RagUploadView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        metadata_obj = None
+        metadata_obj: dict[str, object] | None = None
         metadata_raw = request.data.get("metadata")
         if metadata_raw not in (None, ""):
             if isinstance(metadata_raw, (bytes, bytearray)):
@@ -888,6 +887,16 @@ class RagUploadView(APIView):
                         "invalid_metadata",
                         status.HTTP_400_BAD_REQUEST,
                     )
+
+        if metadata_obj is not None and not isinstance(metadata_obj, dict):
+            return _error_response(
+                "Metadata must be a JSON object when provided.",
+                "invalid_metadata",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        if metadata_obj is None:
+            metadata_obj = {}
 
         original_name = getattr(upload, "name", "") or "upload.bin"
         try:
@@ -914,10 +923,27 @@ class RagUploadView(APIView):
             file_bytes = bytes(file_bytes)
 
         object_store.write_bytes(object_path, file_bytes)
-        if metadata_obj is not None:
-            object_store.write_json(
-                f"{storage_prefix}/{document_id}.meta.json", metadata_obj
+
+        supplied_external = metadata_obj.get("external_id")
+        if isinstance(supplied_external, str):
+            supplied_external = supplied_external.strip()
+        else:
+            supplied_external = None
+
+        if supplied_external:
+            external_id = supplied_external
+        else:
+            external_id = make_fallback_external_id(
+                original_name,
+                getattr(upload, "size", None) or len(file_bytes),
+                file_bytes,
             )
+
+        metadata_obj["external_id"] = external_id
+
+        object_store.write_json(
+            f"{storage_prefix}/{document_id}.meta.json", metadata_obj
+        )
 
         idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
         response_payload = {
@@ -925,6 +951,7 @@ class RagUploadView(APIView):
             "document_id": document_id,
             "trace_id": meta["trace_id"],
             "idempotent": idempotent,
+            "external_id": external_id,
         }
 
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
@@ -976,13 +1003,19 @@ class RagIngestionRunView(APIView):
         # import instead of a local alias to ensure the override is observed.
         queued_at = timezone.now().isoformat()
 
-        ingestion_run.delay(
-            meta["tenant"],
-            meta["case"],
-            normalized_document_ids,
-            priority,
-            meta["trace_id"],
+        valid_document_ids, invalid_document_ids = partition_document_ids(
+            meta["tenant"], meta["case"], normalized_document_ids
         )
+
+        if valid_document_ids:
+            run_ingestion.delay(
+                meta["tenant"],
+                meta["case"],
+                valid_document_ids,
+                run_id=ingestion_run_id,
+                trace_id=meta["trace_id"],
+                idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
+            )
 
         idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
         response_payload = {
@@ -992,6 +1025,11 @@ class RagIngestionRunView(APIView):
             "trace_id": meta["trace_id"],
             "idempotent": idempotent,
         }
+
+        if invalid_document_ids:
+            response_payload["invalid_ids"] = invalid_document_ids
+        else:
+            response_payload["invalid_ids"] = []
 
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)

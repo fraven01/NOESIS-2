@@ -1,10 +1,10 @@
 from datetime import datetime, timezone as dt_timezone
+from types import SimpleNamespace
 
 import pytest
 from django.utils import timezone
 
 from ai_core.infra import rate_limit
-from ai_core.views import ingestion_run as ingestion_task
 from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
@@ -18,18 +18,27 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
 
     captured = {}
 
-    def fake_delay(tenant_id, case_id, document_ids, priority, trace_id):
+    def fake_delay(
+        tenant_id,
+        case_id,
+        document_ids,
+        *,
+        run_id,
+        trace_id=None,
+        idempotency_key=None,
+    ):
         captured.update(
             {
                 "tenant_id": tenant_id,
                 "case_id": case_id,
                 "document_ids": document_ids,
-                "priority": priority,
+                "run_id": run_id,
                 "trace_id": trace_id,
+                "idempotency_key": idempotency_key,
             }
         )
 
-    monkeypatch.setattr(ingestion_task, "delay", fake_delay)
+    monkeypatch.setattr("ai_core.views.run_ingestion", SimpleNamespace(delay=fake_delay))
 
     fixed_now = datetime(2024, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
     monkeypatch.setattr(timezone, "now", lambda: fixed_now)
@@ -57,8 +66,9 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
         "tenant_id": test_tenant_schema_name,
         "case_id": "case-123",
         "document_ids": ["abc123"],
-        "priority": "high",
         "trace_id": body["trace_id"],
+        "run_id": body["ingestion_run_id"],
+        "idempotency_key": None,
     }
 
 
