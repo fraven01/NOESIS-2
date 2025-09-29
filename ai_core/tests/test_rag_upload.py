@@ -55,7 +55,11 @@ def test_rag_upload_persists_file_and_metadata(
 
     metadata_path = uploads_dir / f"{document_id}.meta.json"
     assert metadata_path.exists()
-    assert json.loads(metadata_path.read_text()) == metadata
+    stored_metadata = json.loads(metadata_path.read_text())
+    assert stored_metadata["source"] == "unit-test"
+    assert isinstance(stored_metadata.get("external_id"), str)
+    assert stored_metadata["external_id"]
+    assert set(stored_metadata) == {"source", "external_id"}
 
 
 @pytest.mark.django_db
