@@ -1009,11 +1009,22 @@ class RagIngestionRunView(APIView):
             meta["tenant"], meta["case"], normalized_document_ids
         )
 
+        # Prefer dispatching only the validated identifiers to the ingestion
+        # queue, but still enqueue a run with the original list when
+        # partitioning cannot resolve any known uploads. The latter behaviour
+        # preserves backwards compatibility with clients that expect a queued
+        # task even if every identifier is currently missing (for example,
+        # while uploads propagate).
         if valid_document_ids:
+            ids_for_queue = valid_document_ids
+        else:
+            ids_for_queue = normalized_document_ids
+
+        if ids_for_queue:
             run_ingestion.delay(
                 meta["tenant"],
                 meta["case"],
-                valid_document_ids,
+                ids_for_queue,
                 run_id=ingestion_run_id,
                 trace_id=meta["trace_id"],
                 idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
