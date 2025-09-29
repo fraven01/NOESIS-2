@@ -25,6 +25,17 @@ def _upload_dir(tenant: str, case: str) -> Path:
     )
 
 
+def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
+    return "/".join(
+        (
+            object_store.sanitize_identifier(tenant),
+            object_store.sanitize_identifier(case),
+            "uploads",
+            f"{document_id}.meta.json",
+        )
+    )
+
+
 def _resolve_upload(tenant: str, case: str, document_id: str) -> tuple[Path, Dict[str, object]]:
     updir = _upload_dir(tenant, case)
 
@@ -53,11 +64,14 @@ def _resolve_upload(tenant: str, case: str, document_id: str) -> tuple[Path, Dic
             raise
         fallback = make_fallback_external_id(file_path.name, stat.st_size, prefix)
         metadata["external_id"] = fallback
-        object_store.write_json(
-            f"{object_store.sanitize_identifier(tenant)}/"
-            f"{object_store.sanitize_identifier(case)}/uploads/{document_id}.meta.json",
-            metadata,
-        )
+        sanitized_metadata = dict(metadata)
+        sanitized_metadata.pop("tenant", None)
+        sanitized_metadata.pop("case", None)
+        object_store.write_json(_meta_store_path(tenant, case, document_id), sanitized_metadata)
+        metadata = sanitized_metadata
+
+    metadata.pop("tenant", None)
+    metadata.pop("case", None)
 
     return file_path, metadata
 
@@ -94,13 +108,12 @@ def process_document(tenant: str, case: str, document_id: str) -> Dict[str, obje
             file_bytes,
         )
         meta_json["external_id"] = external_id
-        object_store.write_json(
-            f"{object_store.sanitize_identifier(tenant)}/"
-            f"{object_store.sanitize_identifier(case)}/uploads/{document_id}.meta.json",
-            meta_json,
-        )
+        object_store.write_json(_meta_store_path(tenant, case, document_id), meta_json)
 
-    meta = {"tenant": tenant, "case": case, **meta_json}
+    sanitized_meta_json = dict(meta_json)
+    sanitized_meta_json.pop("tenant", None)
+    sanitized_meta_json.pop("case", None)
+    meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
 
     raw = pipe.ingest_raw(meta, fpath.name, file_bytes)
     text = pipe.extract_text(meta, raw["path"])
