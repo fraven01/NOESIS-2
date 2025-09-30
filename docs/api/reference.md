@@ -244,6 +244,9 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 | `RAG_CHUNK_TARGET_TOKENS` | `450` | Zielgröße pro Chunk in Tokens für die Vorverarbeitung. |
 | `RAG_CHUNK_OVERLAP_TOKENS` | `80` | Token-Overlap zwischen aufeinanderfolgenden Chunks. |
 
+Bei fehlenden `%`-Treffern wird automatisch auf eine reine Similarity-Sortierung
+zurückgefallen.
+
 ## Agenten (Queue `agents`)
 
 ### POST `/ai/scope/`

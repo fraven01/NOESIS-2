@@ -356,23 +356,26 @@ class PgVectorClient:
         vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
         lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
         query_norm = normalise_text(query)
-        query_vec_raw = self._embed_query(query_norm)
-        query_vec: Optional[str]
-        query_embedding_empty = _is_effectively_zero_vector(query_vec_raw)
+        raw_vec = self._embed_query(query_norm)
+        is_zero_vec = True
+        if raw_vec is not None:
+            for value in raw_vec:
+                try:
+                    if abs(float(value)) > 1e-12:
+                        is_zero_vec = False
+                        break
+                except (TypeError, ValueError):
+                    continue
+        query_vec: Optional[str] = None
+        if raw_vec is not None and not is_zero_vec:
+            query_vec = self._format_vector(raw_vec)
+        query_embedding_empty = bool(is_zero_vec)
         if query_embedding_empty:
-            query_vec = None
             metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant=tenant).inc()
             logger.info(
-                "query.embedding.empty_fallback",
-                extra={
-                    "tenant": tenant,
-                    "case": case_value,
-                    "top_k": top_k,
-                    "normalized_query_length": len(query_norm),
-                },
+                "rag.hybrid.null_embedding",
+                extra={"alpha": alpha_value, "tenant": tenant, "case": case_value},
             )
-        else:
-            query_vec = self._format_vector(query_vec_raw)
         index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
         ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
         probes = int(_get_setting("RAG_IVF_PROBES", 64))
@@ -464,6 +467,26 @@ class PgVectorClient:
                             (query_norm, *where_params, query_norm, lex_limit_value),
                         )
                         lexical_rows = cur.fetchall()
+                        if not lexical_rows:
+                            fallback_lexical_sql = f"""
+                                SELECT
+                                    c.id,
+                                    c.text,
+                                    c.metadata,
+                                    d.hash,
+                                    d.id,
+                                    similarity(c.text_norm, %s) AS lscore
+                                FROM chunks c
+                                JOIN documents d ON c.document_id = d.id
+                                WHERE {where_sql}
+                                ORDER BY lscore DESC
+                                LIMIT %s
+                            """
+                            cur.execute(
+                                fallback_lexical_sql,
+                                (query_norm, *where_params, lex_limit_value),
+                            )
+                            lexical_rows = cur.fetchall()
                     else:
                         lexical_rows = []
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
@@ -473,13 +496,32 @@ class PgVectorClient:
         )
 
         candidates: Dict[str, Dict[str, object]] = {}
-        for chunk_id, text_value, metadata, doc_hash, doc_id, distance in vector_rows:
+        for row in vector_rows:
+            if len(row) < 6:
+                logger.warning(
+                    "rag.hybrid.row_shape_mismatch",
+                    extra={"kind": "vector", "row_len": len(row)},
+                )
+                padded = tuple(list(row) + [None] * (6 - len(row)))
+            else:
+                padded = row
+            (
+                chunk_id,
+                text_value,
+                metadata,
+                doc_hash,
+                doc_id,
+                distance,
+            ) = padded[:6]
+            if text_value is None:
+                text_value = ""
             key = str(chunk_id)
+            metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
                 key,
                 {
                     "content": text_value,
-                    "metadata": dict(metadata or {}),
+                    "metadata": metadata_dict,
                     "doc_hash": doc_hash,
                     "doc_id": doc_id,
                     "vscore": 0.0,
@@ -491,15 +533,34 @@ class PgVectorClient:
             except (TypeError, ValueError):
                 distance_value = 1.0
             vscore = max(0.0, 1.0 - distance_value)
-            entry["vscore"] = max(float(entry["vscore"]), vscore)
+            entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
-        for chunk_id, text_value, metadata, doc_hash, doc_id, lscore in lexical_rows:
+        for row in lexical_rows:
+            if len(row) < 6:
+                logger.warning(
+                    "rag.hybrid.row_shape_mismatch",
+                    extra={"kind": "lexical", "row_len": len(row)},
+                )
+                padded = tuple(list(row) + [None] * (6 - len(row)))
+            else:
+                padded = row
+            (
+                chunk_id,
+                text_value,
+                metadata,
+                doc_hash,
+                doc_id,
+                lscore,
+            ) = padded[:6]
+            if text_value is None:
+                text_value = ""
             key = str(chunk_id)
+            metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
                 key,
                 {
                     "content": text_value,
-                    "metadata": dict(metadata or {}),
+                    "metadata": metadata_dict,
                     "doc_hash": doc_hash,
                     "doc_id": doc_id,
                     "vscore": 0.0,
@@ -510,10 +571,11 @@ class PgVectorClient:
                 lscore_value = float(lscore)
             except (TypeError, ValueError):
                 lscore_value = 0.0
-            entry["lscore"] = max(float(entry["lscore"]), max(0.0, lscore_value))
+            entry["lscore"] = max(float(entry.get("lscore", 0.0)), max(0.0, lscore_value))
 
         fused_candidates = len(candidates)
         results: List[Chunk] = []
+        has_vector_rows = bool(vector_rows)
         for entry in candidates.values():
             meta = dict(entry["metadata"])
             doc_hash = entry.get("doc_hash")
@@ -524,8 +586,8 @@ class PgVectorClient:
                 meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
                 continue
-            vscore = float(entry.get("vscore", 0.0))
-            lscore = float(entry.get("lscore", 0.0))
+            vscore = float(entry.get("vscore", 0.0)) if has_vector_rows else 0.0
+            lscore = max(0.0, float(entry.get("lscore", 0.0)))
             fused = max(
                 0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore)
             )
