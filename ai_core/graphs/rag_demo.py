@@ -174,8 +174,27 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     search_input = normalized_query or query.strip()
 
     index_kind = str(getattr(settings, "RAG_INDEX_KIND", "HNSW")).upper()
-    alpha = float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
-    min_sim = float(getattr(settings, "RAG_MIN_SIM", 0.15))
+    alpha_default = float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
+    min_sim_default = float(getattr(settings, "RAG_MIN_SIM", 0.15))
+
+    def _coerce_float(value: object, default: float) -> float:
+        try:
+            return float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return default
+
+    alpha = _coerce_float(state.get("alpha"), alpha_default)
+    min_sim = _coerce_float(state.get("min_sim"), min_sim_default)
+
+    trgm_key = "trgm_limit" if "trgm_limit" in state else None
+    if trgm_key is None and "trgm_threshold" in state:
+        trgm_key = "trgm_threshold"
+    trgm_requested: float | None = None
+    if trgm_key is not None:
+        try:
+            trgm_requested = float(state.get(trgm_key))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            trgm_requested = None
     ef_search = int(getattr(settings, "RAG_HNSW_EF_SEARCH", 80))
     probes = int(getattr(settings, "RAG_IVF_PROBES", 64))
 
@@ -210,37 +229,43 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                 hybrid_callable = getattr(scoped_router, "hybrid_search", None)
                 router_hybrid = getattr(router, "hybrid_search", None)
                 if callable(hybrid_callable):
+                    hybrid_kwargs = {
+                        "case_id": case_id,
+                        "top_k": top_k,
+                        "filters": filters,
+                        "alpha": alpha,
+                        "min_sim": min_sim,
+                    }
+                    if trgm_requested is not None:
+                        hybrid_kwargs["trgm_limit"] = trgm_requested
                     try:
                         hybrid_result = hybrid_callable(
                             search_input,
                             tenant_id=str(tenant_id),
-                            case_id=case_id,
-                            top_k=top_k,
-                            filters=filters,
-                            alpha=alpha,
-                            min_sim=min_sim,
+                            **hybrid_kwargs,
                         )
                     except TypeError:
                         hybrid_result = hybrid_callable(
                             search_input,
-                            case_id=case_id,
-                            top_k=top_k,
-                            filters=filters,
-                            alpha=alpha,
-                            min_sim=min_sim,
+                            **hybrid_kwargs,
                         )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 elif callable(router_hybrid):
                     scope_name = getattr(scoped_router, "_scope", None)
+                    router_kwargs = {
+                        "tenant_id": str(tenant_id),
+                        "case_id": case_id,
+                        "top_k": top_k,
+                        "filters": filters,
+                        "scope": scope_name or router.default_scope,
+                        "alpha": alpha,
+                        "min_sim": min_sim,
+                    }
+                    if trgm_requested is not None:
+                        router_kwargs["trgm_limit"] = trgm_requested
                     hybrid_result = router_hybrid(
                         search_input,
-                        tenant_id=str(tenant_id),
-                        case_id=case_id,
-                        top_k=top_k,
-                        filters=filters,
-                        scope=scope_name or router.default_scope,
-                        alpha=alpha,
-                        min_sim=min_sim,
+                        **router_kwargs,
                     )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 else:
@@ -378,6 +403,8 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
         "min_sim": min_sim,
         "latency_ms": latency_ms,
     }
+    if trgm_requested is not None:
+        response_meta["trgm_limit_requested"] = trgm_requested
     if hybrid_result is not None:
         response_meta["db_latency_ms"] = float(hybrid_result.duration_ms)
         response_meta["vector_candidates"] = getattr(
