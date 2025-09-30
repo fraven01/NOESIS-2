@@ -240,28 +240,29 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                             trgm_threshold = float(trgm_threshold)
                         except (TypeError, ValueError):
                             trgm_threshold = None
+                    hybrid_kwargs: Dict[str, Any] = {
+                        "tenant_id": str(tenant_id),
+                        "case_id": case_id,
+                        "top_k": top_k,
+                        "filters": filters,
+                        "alpha": alpha,
+                        "min_sim": min_sim,
+                    }
+                    if trgm_limit is not None:
+                        hybrid_kwargs["trgm_limit"] = trgm_limit
+                    if trgm_threshold is not None:
+                        hybrid_kwargs["trgm_threshold"] = trgm_threshold
                     try:
                         hybrid_result = hybrid_callable(
                             search_input,
-                            tenant_id=str(tenant_id),
-                            case_id=case_id,
-                            top_k=top_k,
-                            filters=filters,
-                            alpha=alpha,
-                            min_sim=min_sim,
-                            trgm_limit=trgm_limit,
-                            trgm_threshold=trgm_threshold,
+                            **hybrid_kwargs,
                         )
                     except TypeError:
+                        fallback_kwargs = dict(hybrid_kwargs)
+                        fallback_kwargs.pop("tenant_id", None)
                         hybrid_result = hybrid_callable(
                             search_input,
-                            case_id=case_id,
-                            top_k=top_k,
-                            filters=filters,
-                            alpha=alpha,
-                            min_sim=min_sim,
-                            trgm_limit=trgm_limit,
-                            trgm_threshold=trgm_threshold,
+                            **fallback_kwargs,
                         )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 elif callable(router_hybrid):
