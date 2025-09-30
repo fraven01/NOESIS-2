@@ -18,3 +18,17 @@ htmlcov
 dist
 build
 
+# Reduce context size further
+docs
+e2e
+playwright
+# keep unit/integration tests in context for Dockerized pytest
+# (bind mounts also work, but including tests enables image-only runs)
+logs
+.ruff_cache
+.ai_core_store
+documents
+staticfiles
+k8s
+.storybook
+workflows

@@ -8,9 +8,9 @@ FROM node:20 AS css-builder
 WORKDIR /app
 
 COPY package*.json ./
-# Install with devDependencies, since build tools (@tailwindcss/postcss, autoprefixer, postcss)
-# are needed only during this stage. Final image does not include node_modules.
-RUN npm ci
+# Install with devDependencies using cache mount to speed rebuilds.
+# Build tools (@tailwindcss/postcss, autoprefixer, postcss) are only needed in this stage.
+RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY postcss.config.js tailwind.config.js ./
 COPY theme ./theme
@@ -30,15 +30,20 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Ensure system trust store and TLS tooling are present for pip downloads
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl openssl \
     && rm -rf /var/lib/apt/lists/* \
     && update-ca-certificates
 
 # Copy dependency manifests and install Python deps
 COPY requirements*.txt ./
-RUN python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --no-cache-dir --retries 5 -r requirements.txt
+# Use BuildKit cache for pip wheels to accelerate rebuilds
+RUN --mount=type=cache,target=/root/.cache/pip \
+    PIP_NO_CACHE_DIR=0 \
+    python -m pip install --upgrade pip setuptools wheel \
+    && python -m pip install --retries 5 -r requirements.txt
 
 # Smoke test TLS path to PyPI to surface trust store issues early
 RUN python - <<'PY'
@@ -81,7 +86,9 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Install procps for pgrep used by k8s probes
-RUN apt-get update \
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends procps \
     && rm -rf /var/lib/apt/lists/*
 

@@ -571,7 +571,9 @@ class PgVectorClient:
                 lscore_value = float(lscore)
             except (TypeError, ValueError):
                 lscore_value = 0.0
-            entry["lscore"] = max(float(entry.get("lscore", 0.0)), max(0.0, lscore_value))
+            entry["lscore"] = max(
+                float(entry.get("lscore", 0.0)), max(0.0, lscore_value)
+            )
 
         fused_candidates = len(candidates)
         results: List[Chunk] = []

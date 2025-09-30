@@ -518,8 +518,12 @@ class TestPgVectorClient:
         top_chunk = result.chunks[0]
         assert top_chunk.meta["vscore"] == 0.0
         assert top_chunk.meta["score"] == pytest.approx(top_chunk.meta["lscore"])
-        assert [entry["event"] for entry in logs].count("rag.hybrid.null_embedding") == 1
-        logged = [entry for entry in logs if entry["event"] == "rag.hybrid.null_embedding"][0]
+        assert [entry["event"] for entry in logs].count(
+            "rag.hybrid.null_embedding"
+        ) == 1
+        logged = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.null_embedding"
+        ][0]
         assert logged["alpha"] == 0.0
         assert logged["tenant"] == tenant
 

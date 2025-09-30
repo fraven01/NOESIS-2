@@ -62,7 +62,9 @@ class HybridEnabledStore(VectorStore):
         self.search_calls: list[Mapping[str, object]] = []
         self.upsert_calls: list[list[Chunk]] = []
 
-    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:  # pragma: no cover - unused
+    def upsert_chunks(
+        self, chunks: Iterable[Chunk]
+    ) -> int:  # pragma: no cover - unused
         chunk_list = list(chunks)
         self.upsert_calls.append(chunk_list)
         return len(chunk_list)
