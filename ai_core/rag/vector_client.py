@@ -411,10 +411,32 @@ class PgVectorClient:
                         "SET LOCAL statement_timeout = %s",
                         (str(self._statement_timeout_ms),),
                     )
-                    cur.execute(
-                        "SET LOCAL pg_trgm.similarity_threshold = %s",
-                        (str(trgm_limit_value),),
-                    )
+                    try:
+                        # Prefer pg_trgm set_limit/show_limit for visibility in logs
+                        cur.execute("SELECT set_limit(%s)", (trgm_limit,))
+                        cur.execute("SELECT show_limit()")
+                        current_limit = cur.fetchone()[0]
+                        logger.info(
+                            "rag.pgtrgm.limit",
+                            extra={
+                                "requested": trgm_limit,
+                                "effective": float(current_limit),
+                            },
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "rag.pgtrgm.set_limit_failed",
+                            extra={"limit": trgm_limit, "error": str(exc)},
+                        )
+                        # Fallback to setting GUC directly if available
+                        try:
+                            cur.execute(
+                                "SET LOCAL pg_trgm.similarity_threshold = %s",
+                                (str(trgm_limit),),
+                            )
+                        except Exception:
+                            pass
+
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
                     for key, value in metadata_filters:

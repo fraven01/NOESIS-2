@@ -27,8 +27,16 @@ playwright
 logs
 .ruff_cache
 .ai_core_store
-documents
+## Do NOT exclude Django apps from build context
+# The `documents` and `workflows` packages are Django apps used at build time
+# (e.g., during `manage.py collectstatic`). Excluding them breaks imports.
+
+## previously excluded (re-enable):
+# documents
+# workflows
+
+## If you need to shrink context, prefer excluding only large data subfolders
+## inside these apps, not the packages themselves.
 staticfiles
 k8s
 .storybook
-workflows
