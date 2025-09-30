@@ -123,8 +123,12 @@ def _split_sentences(text: str) -> List[str]:
 
     pattern = re.compile(r"[^.!?]+(?:[.!?]+|\Z)")
     sentences = [segment.strip() for segment in pattern.findall(text)]
+    sentences = [s for s in sentences if s]
     if sentences:
-        return [s for s in sentences if s]
+        if len(sentences) == 1 and not re.search(r"[.!?]", text):
+            sentences = []
+        else:
+            return sentences
     # Fallback: use paragraphs or lines if no sentence boundary detected
     parts = [part.strip() for part in text.splitlines() if part.strip()]
     return parts or [text.strip()]
