@@ -347,8 +347,12 @@ class PgVectorClient:
                 if value is not None and key in SUPPORTED_METADATA_FILTERS
                 else None
             )
-        alpha_value = float(alpha if alpha is not None else _get_setting("RAG_HYBRID_ALPHA", 0.7))
-        min_sim_value = float(min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15))
+        alpha_value = float(
+            alpha if alpha is not None else _get_setting("RAG_HYBRID_ALPHA", 0.7)
+        )
+        min_sim_value = float(
+            min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15)
+        )
         vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
         lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
         query_norm = normalise_text(query)
@@ -522,14 +526,18 @@ class PgVectorClient:
                 continue
             vscore = float(entry.get("vscore", 0.0))
             lscore = float(entry.get("lscore", 0.0))
-            fused = max(0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore))
+            fused = max(
+                0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore)
+            )
             meta["vscore"] = vscore
             meta["lscore"] = lscore
             meta["fused"] = fused
             meta["score"] = fused
             results.append(Chunk(content=str(entry.get("content", "")), meta=meta))
 
-        results.sort(key=lambda chunk: float(chunk.meta.get("fused", 0.0)), reverse=True)
+        results.sort(
+            key=lambda chunk: float(chunk.meta.get("fused", 0.0)), reverse=True
+        )
         below_cutoff = 0
         filtered_results = results
         if min_sim_value > 0.0:
@@ -746,7 +754,9 @@ class PgVectorClient:
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 embedding_values = chunk.embedding
-                if embedding_values is None or _is_effectively_zero_vector(embedding_values):
+                if embedding_values is None or _is_effectively_zero_vector(
+                    embedding_values
+                ):
                     metrics.RAG_EMBEDDINGS_EMPTY_TOTAL.inc()
                     logger.warning(
                         "embedding.empty",

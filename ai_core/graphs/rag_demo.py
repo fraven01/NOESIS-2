@@ -258,7 +258,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     )
                     hybrid_result = None
                 if hybrid_result is None:
-                    from ai_core.rag.vector_client import HybridSearchResult as _HybridSearchResult
+                    from ai_core.rag.vector_client import (
+                        HybridSearchResult as _HybridSearchResult,
+                    )
 
                     hybrid_result = _HybridSearchResult(
                         chunks=retrieved_chunks,

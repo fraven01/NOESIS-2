@@ -1013,7 +1013,9 @@ class RagIngestionRunView(APIView):
         # dispatch those; otherwise pass through the original list and let the
         # task perform validation/no-op. This satisfies both observability and
         # test expectations in empty/non-empty setups.
-        to_dispatch = valid_document_ids if valid_document_ids else normalized_document_ids
+        to_dispatch = (
+            valid_document_ids if valid_document_ids else normalized_document_ids
+        )
         run_ingestion.delay(
             meta["tenant"],
             meta["case"],

@@ -260,7 +260,9 @@ class VectorStoreRouter:
             top_k=capped_top_k,
             filters=normalised_filters,
         )
-        from .vector_client import HybridSearchResult as _HybridSearchResult  # noqa: WPS433
+        from .vector_client import (
+            HybridSearchResult as _HybridSearchResult,
+        )  # noqa: WPS433
 
         effective_vec = int(vec_limit if vec_limit is not None else capped_top_k)
         effective_lex = int(lex_limit if lex_limit is not None else capped_top_k)

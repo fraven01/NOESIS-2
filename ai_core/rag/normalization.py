@@ -42,4 +42,3 @@ def normalise_text(value: str | None) -> str:
         return ""
     tokens = text.split(" ")
     return " ".join(_apply_plural_heuristic(tokens))
-
