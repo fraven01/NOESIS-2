@@ -353,6 +353,7 @@ class PgVectorClient:
         min_sim_value = float(
             min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15)
         )
+        trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.1))
         vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
         lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
         query_norm = normalise_text(query)
@@ -396,6 +397,10 @@ class PgVectorClient:
                     cur.execute(
                         "SET LOCAL statement_timeout = %s",
                         (str(self._statement_timeout_ms),),
+                    )
+                    cur.execute(
+                        "SET LOCAL pg_trgm.similarity_threshold = %s",
+                        (str(trgm_limit),),
                     )
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
@@ -496,15 +501,16 @@ class PgVectorClient:
         )
 
         logger.info(
-            "rag.hybrid.debug.sql_counts",
+            "rag.hybrid.sql_counts",
             extra={
                 "tenant": tenant,
                 "case": case_value,
                 "vec_rows": len(vector_rows),
                 "lex_rows": len(lexical_rows),
-                "duration_ms": duration_ms,
                 "alpha": alpha_value,
                 "min_sim": min_sim_value,
+                "trgm_limit": trgm_limit,
+                "duration_ms": duration_ms,
             },
         )
 
