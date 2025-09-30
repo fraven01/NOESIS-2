@@ -9,7 +9,9 @@ pytestmark = pytest.mark.usefixtures("rag_database")
 
 
 class _FakeCursor:
-    def __init__(self, show_limit_value: float = 0.0, vector_rows=None, lexical_rows=None):
+    def __init__(
+        self, show_limit_value: float = 0.0, vector_rows=None, lexical_rows=None
+    ):
         self._limit = float(show_limit_value)
         self._vector_rows = list(vector_rows or [])
         self._lexical_rows = list(lexical_rows or [])
@@ -123,7 +125,8 @@ def test_row_shape_mismatch_does_not_crash(monkeypatch):
     mismatch_logs = [
         entry
         for entry in logs
-        if entry["event"] == "rag.hybrid.row_shape_mismatch" and entry.get("kind") == "vector"
+        if entry["event"] == "rag.hybrid.row_shape_mismatch"
+        and entry.get("kind") == "vector"
     ]
     assert mismatch_logs, "expected row_shape_mismatch warning for vector rows"
     assert int(mismatch_logs[0].get("row_len", 0)) == 5
@@ -134,7 +137,9 @@ def test_lexical_only_scoring(monkeypatch):
     tenant = str(uuid.uuid4())
 
     # Force null/zero embedding so vector path is ignored
-    monkeypatch.setattr(client, "_embed_query", lambda _q: [0.0] * vector_client.EMBEDDING_DIM)
+    monkeypatch.setattr(
+        client, "_embed_query", lambda _q: [0.0] * vector_client.EMBEDDING_DIM
+    )
 
     lexical_row = (
         "chunk-lex",

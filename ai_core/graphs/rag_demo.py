@@ -176,11 +176,19 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     index_kind = str(getattr(settings, "RAG_INDEX_KIND", "HNSW")).upper()
     # Allow per-request overrides while keeping sensible defaults from settings
     try:
-        alpha = float(state.get("alpha")) if state.get("alpha") is not None else float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
+        alpha = (
+            float(state.get("alpha"))
+            if state.get("alpha") is not None
+            else float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
+        )
     except (TypeError, ValueError):
         alpha = float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
     try:
-        min_sim = float(state.get("min_sim")) if state.get("min_sim") is not None else float(getattr(settings, "RAG_MIN_SIM", 0.15))
+        min_sim = (
+            float(state.get("min_sim"))
+            if state.get("min_sim") is not None
+            else float(getattr(settings, "RAG_MIN_SIM", 0.15))
+        )
     except (TypeError, ValueError):
         min_sim = float(getattr(settings, "RAG_MIN_SIM", 0.15))
     ef_search = int(getattr(settings, "RAG_HNSW_EF_SEARCH", 80))
@@ -219,7 +227,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                 if callable(hybrid_callable):
                     # Optional trigram tuning
                     trgm_limit = state.get("trgm_limit")
-                    trgm_threshold = state.get("trgm_threshold") if trgm_limit is None else None
+                    trgm_threshold = (
+                        state.get("trgm_threshold") if trgm_limit is None else None
+                    )
                     if trgm_limit is not None:
                         try:
                             trgm_limit = float(trgm_limit)
@@ -256,7 +266,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 elif callable(router_hybrid):
                     trgm_limit = state.get("trgm_limit")
-                    trgm_threshold = state.get("trgm_threshold") if trgm_limit is None else None
+                    trgm_threshold = (
+                        state.get("trgm_threshold") if trgm_limit is None else None
+                    )
                     if trgm_limit is not None:
                         try:
                             trgm_limit = float(trgm_limit)

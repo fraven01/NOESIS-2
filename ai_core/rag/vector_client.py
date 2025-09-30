@@ -371,7 +371,9 @@ class PgVectorClient:
         else:
             requested_trgm_limit = None
         effective_trgm_limit = (
-            requested_trgm_limit if requested_trgm_limit is not None else default_trgm_limit
+            requested_trgm_limit
+            if requested_trgm_limit is not None
+            else default_trgm_limit
         )
         trgm_limit_value = max(0.0, float(effective_trgm_limit))
         distance_score_mode = str(
@@ -500,7 +502,9 @@ class PgVectorClient:
                                 "rag.debug.rows.vector",
                                 extra={
                                     "count": len(vector_rows),
-                                    "first_len": (len(vector_rows[0]) if vector_rows else 0),
+                                    "first_len": (
+                                        len(vector_rows[0]) if vector_rows else 0
+                                    ),
                                 },
                             )
                         except Exception:
@@ -531,7 +535,9 @@ class PgVectorClient:
                                 "rag.debug.rows.lexical",
                                 extra={
                                     "count": len(lexical_rows),
-                                    "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
+                                    "first_len": (
+                                        len(lexical_rows[0]) if lexical_rows else 0
+                                    ),
                                 },
                             )
                         except Exception:
@@ -570,7 +576,9 @@ class PgVectorClient:
                                     "rag.debug.rows.lexical",
                                     extra={
                                         "count": len(lexical_rows),
-                                        "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
+                                        "first_len": (
+                                            len(lexical_rows[0]) if lexical_rows else 0
+                                        ),
                                     },
                                 )
                             except Exception:
@@ -686,7 +694,11 @@ class PgVectorClient:
             },
         )
         results: List[Chunk] = []
-        has_vector_signal = bool(vector_rows) and (query_vec is not None) and (not query_embedding_empty)
+        has_vector_signal = (
+            bool(vector_rows)
+            and (query_vec is not None)
+            and (not query_embedding_empty)
+        )
         for entry in candidates.values():
             meta = dict(entry["metadata"])
             doc_hash = entry.get("doc_hash")
