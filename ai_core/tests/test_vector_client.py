@@ -5,6 +5,7 @@ import pytest
 
 from ai_core.rag import metrics, vector_client
 from ai_core.rag.schemas import Chunk
+from structlog.testing import capture_logs
 
 
 @pytest.mark.usefixtures("rag_database")
@@ -498,8 +499,6 @@ class TestPgVectorClient:
             lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
         )
 
-        from structlog.testing import capture_logs
-
         with capture_logs() as logs:
             result = client.hybrid_search(
                 "Lexical fallback example",
@@ -592,19 +591,25 @@ class TestPgVectorClient:
         )
         client.upsert_chunks([chunk])
 
-        result = client.hybrid_search(
-            "zzzzzzzz",
-            tenant_id=tenant,
-            filters={"case": None},
-            top_k=1,
-            alpha=0.0,
-        )
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "zzzzzzzz",
+                tenant_id=tenant,
+                filters={"case": None},
+                top_k=1,
+                alpha=0.0,
+            )
 
         assert result.lexical_candidates >= 1
         assert result.chunks
         top_chunk = result.chunks[0]
         assert top_chunk.meta["hash"] == doc_hash
         assert top_chunk.meta["score"] == pytest.approx(top_chunk.meta["lscore"])
+        fallback_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_no_match"
+        ]
+        assert fallback_logs
+        assert fallback_logs[0]["fallback"] is True
 
     def test_hybrid_search_handles_row_shape_mismatch(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
@@ -645,8 +650,6 @@ class TestPgVectorClient:
         histogram = _Histogram()
         monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
 
-        from structlog.testing import capture_logs
-
         with capture_logs() as logs:
             result = client.hybrid_search(
                 "shape mismatch",
@@ -660,6 +663,7 @@ class TestPgVectorClient:
         ]
         assert len(warnings) == 2
         assert {entry["kind"] for entry in warnings} == {"vector", "lexical"}
+        assert {entry["row_len"] for entry in warnings} == {5}
         assert result.chunks
         meta = result.chunks[0].meta
         assert meta["vscore"] == 0.0
@@ -726,3 +730,371 @@ class TestPgVectorClient:
         assert result.chunks == []
         assert cutoff_counter.calls == [{"tenant": tenant}]
         assert cutoff_counter.value == 1.0
+
+    def test_run_with_retries_logs_exception_context(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        client._retries = 1  # type: ignore[attr-defined]
+
+        class _RetryCounter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_RetryCounter":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        counter = _RetryCounter()
+        monkeypatch.setattr(metrics, "RAG_RETRY_ATTEMPTS", counter)
+
+        def _always_fail() -> None:
+            raise RuntimeError("boom")
+
+        with capture_logs() as logs:
+            with pytest.raises(RuntimeError, match="boom"):
+                client._run_with_retries(_always_fail, op_name="search")
+
+        failure_logs = [
+            entry for entry in logs if entry["event"] == "pgvector operation failed, retrying"
+        ]
+        assert failure_logs
+        assert failure_logs[0]["exc_type"] == "RuntimeError"
+        assert failure_logs[0]["exc_message"] == "boom"
+
+    def test_hybrid_search_logs_strict_reject_reason(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-strict",
+                        "Strict candidate",
+                        {"tenant": tenant},
+                        "hash-strict",
+                        "doc-1",
+                        0.3,
+                    )
+                ],
+                [],
+                1.5,
+            )
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "Strict candidate",
+                tenant_id=tenant,
+                case_id="case-required",
+                top_k=2,
+            )
+
+        rejects = [entry for entry in logs if entry["event"] == "rag.strict.reject"]
+        assert rejects
+        reject = rejects[0]
+        assert reject["reasons"] == ["case_missing"]
+        assert reject["candidate_case"] is None
+        assert reject["candidate_tenant"] == tenant
+        assert result.chunks == []
+        assert result.vector_candidates == 1
+
+    def test_hybrid_search_respects_request_trgm_limit(self) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"trgm-limit").hexdigest()
+        chunk = Chunk(
+            content="Trigram limit example",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "case": "case-a",
+                "source": "example",
+            },
+            embedding=[0.12] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "Trigram limit example",
+                tenant_id=tenant,
+                filters={"case": None},
+                trgm_limit=0.42,
+                top_k=3,
+            )
+
+        assert result.chunks
+        sql_logs = [entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"]
+        assert sql_logs
+        assert sql_logs[0]["trgm_limit"] == pytest.approx(0.42)
+        assert sql_logs[0]["distance_score_mode"] == "inverse"
+
+    def test_hybrid_search_pg_trgm_fallback_records_counts(self) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"fallback").hexdigest()
+        chunk = Chunk(
+            content="Lexical fallback candidate",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "case": "case-b",
+                "source": "example",
+            },
+            embedding=[0.4] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "Completely different query",
+                tenant_id=tenant,
+                filters={"case": None},
+                alpha=0.0,
+                trgm_limit=1.0,
+                top_k=2,
+            )
+
+        assert result.lexical_candidates > 0
+        assert result.chunks
+        sql_logs = [entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"]
+        assert sql_logs
+        assert sql_logs[0]["lex_rows"] > 0
+
+    def test_hybrid_search_score_fusion_alpha_one_cutoff(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-1",
+                        "Vector strong",
+                        {"tenant": tenant, "case": "case-1"},
+                        "hash-1",
+                        "doc-1",
+                        0.25,
+                    ),
+                    (
+                        "chunk-2",
+                        "Vector weak",
+                        {"tenant": tenant, "case": "case-1"},
+                        "hash-2",
+                        "doc-2",
+                        0.9,
+                    ),
+                ],
+                [
+                    (
+                        "chunk-1",
+                        "Vector strong",
+                        {"tenant": tenant, "case": "case-1"},
+                        "hash-1",
+                        "doc-1",
+                        0.8,
+                    ),
+                    (
+                        "chunk-2",
+                        "Vector weak",
+                        {"tenant": tenant, "case": "case-1"},
+                        "hash-2",
+                        "doc-2",
+                        0.3,
+                    ),
+                ],
+                2.5,
+            )
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+
+        class _Counter:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_Counter":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        cutoff_counter = _Counter()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+        monkeypatch.setattr(metrics, "RAG_QUERY_BELOW_CUTOFF_TOTAL", cutoff_counter)
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        result = client.hybrid_search(
+            "Vector strong",
+            tenant_id=tenant,
+            case_id="case-1",
+            alpha=1.0,
+            min_sim=0.7,
+            top_k=2,
+            vec_limit=2,
+            lex_limit=2,
+        )
+
+        assert len(result.chunks) == 1
+        top_meta = result.chunks[0].meta
+        assert top_meta["vscore"] == pytest.approx(1.0 / (1.0 + 0.25))
+        assert top_meta["score"] == pytest.approx(top_meta["vscore"])
+        assert result.below_cutoff == 1
+        assert result.returned_after_cutoff == 1
+        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.value == 1.0
+
+    def test_hybrid_search_score_fusion_alpha_zero_returned_after_cutoff(
+        self, monkeypatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-1",
+                        "Lexical strong",
+                        {"tenant": tenant, "case": "case-2"},
+                        "hash-1",
+                        "doc-1",
+                        0.4,
+                    ),
+                    (
+                        "chunk-2",
+                        "Lexical medium",
+                        {"tenant": tenant, "case": "case-2"},
+                        "hash-2",
+                        "doc-2",
+                        0.5,
+                    ),
+                ],
+                [
+                    (
+                        "chunk-1",
+                        "Lexical strong",
+                        {"tenant": tenant, "case": "case-2"},
+                        "hash-1",
+                        "doc-1",
+                        0.9,
+                    ),
+                    (
+                        "chunk-2",
+                        "Lexical medium",
+                        {"tenant": tenant, "case": "case-2"},
+                        "hash-2",
+                        "doc-2",
+                        0.5,
+                    ),
+                ],
+                3.2,
+            )
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        result = client.hybrid_search(
+            "Lexical strong",
+            tenant_id=tenant,
+            case_id="case-2",
+            alpha=0.0,
+            min_sim=0.4,
+            top_k=1,
+            vec_limit=2,
+            lex_limit=2,
+        )
+
+        assert len(result.chunks) == 1
+        top_meta = result.chunks[0].meta
+        assert top_meta["score"] == pytest.approx(top_meta["lscore"])
+        assert top_meta["lscore"] == pytest.approx(0.9)
+        assert result.below_cutoff == 0
+        assert result.returned_after_cutoff == 2
+
+    def test_hybrid_search_distance_score_mode_linear(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-linear",
+                        "Linear score",
+                        {"tenant": tenant},
+                        "hash-linear",
+                        "doc-linear",
+                        0.25,
+                    )
+                ],
+                [],
+                1.8,
+            )
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+        monkeypatch.setenv("RAG_DISTANCE_SCORE_MODE", "linear")
+
+        result = client.hybrid_search(
+            "Linear score",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=1,
+            alpha=1.0,
+        )
+
+        assert result.chunks
+        meta = result.chunks[0].meta
+        assert meta["vscore"] == pytest.approx(0.75)
+        assert meta["score"] == pytest.approx(0.75)
+
+    def test_format_vector_raises_on_dimension_mismatch(self) -> None:
+        client = vector_client.get_default_client()
+        with pytest.raises(ValueError, match="Embedding dimension mismatch"):
+            client._format_vector([0.0, 0.1])
+
+    def test_embed_query_returns_non_zero_vector(self) -> None:
+        client = vector_client.get_default_client()
+        values = client._embed_query("hello world")
+        assert len(values) == vector_client.EMBEDDING_DIM
+        assert values[0] > 0.0
+        assert all(v == 0.0 for v in values[1:])

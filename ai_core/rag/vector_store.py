@@ -49,6 +49,7 @@ class VectorStore(Protocol):
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid semantic/lexical search."""
 
@@ -87,6 +88,7 @@ class TenantScopedVectorStore(Protocol):
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid search within the tenant scope."""
 
@@ -202,7 +204,8 @@ class VectorStoreRouter:
                 top_k=capped_top_k,
                 filters=normalised_filters,
             )
-            return list(getattr(result, "chunks", result))
+            if result is not None:
+                return list(getattr(result, "chunks", result))
         return store.search(
             query,
             tenant_id,
@@ -224,6 +227,7 @@ class VectorStoreRouter:
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> "HybridSearchResult":
         if not tenant_id:
             raise ValueError("tenant_id is required for vector store access")
@@ -241,7 +245,7 @@ class VectorStoreRouter:
         store = self._get_store(scope)
         hybrid = getattr(store, "hybrid_search", None)
         if callable(hybrid):
-            return hybrid(
+            result = hybrid(
                 query,
                 tenant_id,
                 case_id=case_id,
@@ -251,6 +255,17 @@ class VectorStoreRouter:
                 min_sim=min_sim,
                 vec_limit=vec_limit,
                 lex_limit=lex_limit,
+                trgm_limit=trgm_limit,
+            )
+            if result is not None:
+                return result
+            logger.warning(
+                "rag.hybrid.router.no_result",
+                extra={
+                    "scope": scope,
+                    "tenant": tenant_id,
+                    "store": getattr(store, "name", scope),
+                },
             )
 
         fallback_chunks = store.search(
@@ -381,6 +396,7 @@ class _TenantScopedClient:
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> "HybridSearchResult":
         return self._router.hybrid_search(
             query,
@@ -393,6 +409,7 @@ class _TenantScopedClient:
             min_sim=min_sim,
             vec_limit=vec_limit,
             lex_limit=lex_limit,
+            trgm_limit=trgm_limit,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:

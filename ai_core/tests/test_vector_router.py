@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Iterable, Mapping
 
 import pytest
@@ -101,6 +102,7 @@ class HybridEnabledStore(VectorStore):
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> HybridSearchResult:
         self.hybrid_calls.append(
             {
@@ -113,6 +115,7 @@ class HybridEnabledStore(VectorStore):
                 "min_sim": min_sim,
                 "vec_limit": vec_limit,
                 "lex_limit": lex_limit,
+                "trgm_limit": trgm_limit,
             }
         )
         return self._result
@@ -289,6 +292,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     call = silo_store.hybrid_calls[-1]
     assert call["top_k"] == 10  # capped
     assert call["filters"] == {"case": None}
+    assert call["trgm_limit"] is None
     assert global_store.hybrid_calls == []
 
     fallback = router.hybrid_search("frage", tenant_id=tenant, scope="missing")
@@ -310,3 +314,33 @@ def test_router_hybrid_search_falls_back_when_not_supported() -> None:
     assert result.lexical_candidates == 0
     assert result.fused_candidates == len(fallback_chunks)
     assert store.search_calls[-1]["top_k"] == 3
+
+
+def test_router_logs_warning_when_hybrid_returns_none(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    tenant = "tenant-88"
+
+    class _NullHybridStore(FakeStore):
+        def hybrid_search(self, *args, **kwargs):  # type: ignore[override]
+            super().hybrid_search(*args, **kwargs)
+            return None
+
+    store = _NullHybridStore(
+        "global",
+        search_result=[Chunk(content="fallback", meta={"tenant": tenant})],
+    )
+    router = VectorStoreRouter({"global": store})
+
+    with caplog.at_level(logging.WARNING):
+        result = router.hybrid_search("frage", tenant_id=tenant, top_k=2)
+
+    assert isinstance(result, HybridSearchResult)
+    assert result.chunks
+    warning_logs = [
+        record
+        for record in caplog.records
+        if record.getMessage() == "rag.hybrid.router.no_result"
+    ]
+    assert warning_logs
+    assert warning_logs[0].scope == "global"
