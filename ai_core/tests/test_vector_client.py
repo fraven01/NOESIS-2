@@ -459,3 +459,107 @@ class TestPgVectorClient:
     def test_health_check_runs_simple_query(self):
         client = vector_client.get_default_client()
         assert client.health_check() is True
+
+    def test_hybrid_search_falls_back_on_empty_query_embedding(
+        self, monkeypatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"lexical").hexdigest()
+        chunk = Chunk(
+            content="Lexical fallback example",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "source": "lexical",
+                "external_id": "doc-lex",
+            },
+            embedding=[0.3] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        class _CounterVec:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_CounterVec":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        counter = _CounterVec()
+        monkeypatch.setattr(metrics, "RAG_QUERY_EMPTY_VEC_TOTAL", counter)
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        from structlog.testing import capture_logs
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "Lexical fallback example",
+                tenant_id=tenant,
+                filters={"case": None},
+                top_k=3,
+            )
+
+        assert result.vector_candidates == 0
+        assert result.lexical_candidates >= 1
+        assert result.query_embedding_empty is True
+        assert counter.value == 1.0
+        assert counter.calls == [{"tenant": tenant}]
+        assert result.chunks
+        events = [entry["event"] for entry in logs]
+        assert "query.embedding.empty_fallback" in events
+
+    def test_hybrid_search_reports_cutoff_statistics(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"cutoff").hexdigest()
+        chunk = Chunk(
+            content="Cutoff candidate example",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "source": "cutoff",
+                "external_id": "doc-cutoff",
+            },
+            embedding=[0.25] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        class _CounterVec:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_CounterVec":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        cutoff_counter = _CounterVec()
+        monkeypatch.setattr(metrics, "RAG_QUERY_BELOW_CUTOFF_TOTAL", cutoff_counter)
+
+        result = client.hybrid_search(
+            "candidate cutoff",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=3,
+            alpha=0.8,
+            min_sim=0.95,
+        )
+
+        assert result.fused_candidates >= 1
+        assert result.below_cutoff >= 1
+        assert result.returned_after_cutoff == 0
+        assert result.chunks == []
+        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.value == float(result.below_cutoff)

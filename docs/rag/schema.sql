@@ -7,6 +7,7 @@ CREATE SCHEMA IF NOT EXISTS rag;
 SET search_path TO rag, public;
 
 CREATE EXTENSION IF NOT EXISTS vector;
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY,
@@ -41,6 +42,10 @@ CREATE TABLE IF NOT EXISTS chunks (
     metadata JSONB NOT NULL DEFAULT '{}'
 );
 
+ALTER TABLE rag.chunks
+    ADD COLUMN IF NOT EXISTS text_norm TEXT
+        GENERATED ALWAYS AS (lower(regexp_replace(text, '\s+', ' ', 'g'))) STORED;
+
 CREATE INDEX IF NOT EXISTS chunks_document_ord_idx
     ON chunks (document_id, ord);
 
@@ -51,6 +56,9 @@ CREATE INDEX IF NOT EXISTS chunks_metadata_gin_idx
 CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
     ON chunks ((metadata->>'case'));
 
+CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
+    ON chunks USING GIN (text_norm gin_trgm_ops);
+
 CREATE TABLE IF NOT EXISTS embeddings (
     id UUID PRIMARY KEY,
     chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
@@ -60,8 +68,10 @@ CREATE TABLE IF NOT EXISTS embeddings (
 CREATE UNIQUE INDEX IF NOT EXISTS embeddings_chunk_idx
     ON embeddings (chunk_id);
 
+DROP INDEX IF EXISTS embeddings_embedding_hnsw;
 CREATE INDEX IF NOT EXISTS embeddings_embedding_hnsw
-    ON embeddings USING hnsw (embedding vector_l2_ops);
+    ON embeddings USING hnsw (embedding vector_cosine_ops)
+    WITH (m = 32, ef_construction = 200);
 
 COMMIT;
 
@@ -73,8 +83,4 @@ ANALYZE rag.embeddings;
 -- * Führe Index-Updates mit `CREATE INDEX CONCURRENTLY` in Prod aus, falls Downtime vermieden werden muss.
 -- * Nach großen Löschläufen: `VACUUM (VERBOSE, ANALYZE) rag.embeddings;`
 -- * Bei Schemaänderungen stets `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS` nutzen, damit Wiederholungen idempotent bleiben.
-
--- TODO (später):
--- * Auswahl IVFFLAT vs. HNSW abhängig von Datenvolumen und Latenz.
--- * Entscheidung folgt nach Messung.
 

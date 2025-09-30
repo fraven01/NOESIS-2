@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import atexit
 import logging
-from typing import Dict, Iterable, Mapping, Protocol
+from typing import Dict, Iterable, Mapping, Protocol, TYPE_CHECKING
 
 from ai_core.rag.schemas import Chunk
 from . import metrics
+
+if TYPE_CHECKING:
+    from ai_core.rag.vector_client import HybridSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +37,21 @@ class VectorStore(Protocol):
     ) -> list[Chunk]:
         """Return the most relevant chunks for a query."""
 
+    def hybrid_search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> "HybridSearchResult":
+        """Execute a hybrid semantic/lexical search."""
+
     def close(self) -> None:
         """Release underlying resources if applicable."""
 
@@ -57,6 +75,20 @@ class TenantScopedVectorStore(Protocol):
 
     def close(self) -> None:
         """Release underlying resources if applicable."""
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> "HybridSearchResult":
+        """Execute a hybrid search within the tenant scope."""
 
 
 class VectorStoreRouter:
@@ -161,12 +193,87 @@ class VectorStoreRouter:
         )
 
         store = self._get_store(scope)
+        hybrid = getattr(store, "hybrid_search", None)
+        if callable(hybrid):
+            result = hybrid(
+                query,
+                tenant_id,
+                case_id=case_id,
+                top_k=capped_top_k,
+                filters=normalised_filters,
+            )
+            return list(getattr(result, "chunks", result))
         return store.search(
             query,
             tenant_id,
             case_id=case_id,
             top_k=capped_top_k,
             filters=normalised_filters,
+        )
+
+    def hybrid_search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        scope: str = "global",
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> "HybridSearchResult":
+        if not tenant_id:
+            raise ValueError("tenant_id is required for vector store access")
+
+        capped_top_k = max(1, min(top_k, 10))
+        normalised_filters = None
+        if filters is not None:
+            normalised_filters = {}
+            for key, value in filters.items():
+                if isinstance(value, str):
+                    normalised_filters[key] = value or None
+                else:
+                    normalised_filters[key] = value
+
+        store = self._get_store(scope)
+        hybrid = getattr(store, "hybrid_search", None)
+        if callable(hybrid):
+            return hybrid(
+                query,
+                tenant_id,
+                case_id=case_id,
+                top_k=capped_top_k,
+                filters=normalised_filters,
+                alpha=alpha,
+                min_sim=min_sim,
+                vec_limit=vec_limit,
+                lex_limit=lex_limit,
+            )
+
+        fallback_chunks = store.search(
+            query,
+            tenant_id,
+            case_id=case_id,
+            top_k=capped_top_k,
+            filters=normalised_filters,
+        )
+        from .vector_client import HybridSearchResult as _HybridSearchResult  # noqa: WPS433
+
+        effective_vec = int(vec_limit if vec_limit is not None else capped_top_k)
+        effective_lex = int(lex_limit if lex_limit is not None else capped_top_k)
+        return _HybridSearchResult(
+            chunks=list(fallback_chunks),
+            vector_candidates=len(fallback_chunks),
+            lexical_candidates=0,
+            fused_candidates=len(fallback_chunks),
+            duration_ms=0.0,
+            alpha=float(alpha if alpha is not None else 1.0),
+            min_sim=float(min_sim if min_sim is not None else 0.0),
+            vec_limit=effective_vec,
+            lex_limit=effective_lex,
         )
 
     def upsert_chunks(
@@ -259,6 +366,31 @@ class _TenantScopedClient:
             top_k=top_k,
             filters=filters,
             scope=self._scope or self._router.default_scope,
+        )
+
+    def hybrid_search(
+        self,
+        query: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> "HybridSearchResult":
+        return self._router.hybrid_search(
+            query,
+            tenant_id=self._tenant_id,
+            case_id=case_id,
+            top_k=top_k,
+            filters=filters,
+            scope=self._scope or self._router.default_scope,
+            alpha=alpha,
+            min_sim=min_sim,
+            vec_limit=vec_limit,
+            lex_limit=lex_limit,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
