@@ -8,6 +8,7 @@ import pytest
 
 from ai_core.rag import metrics
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.rag.vector_store import VectorStore, VectorStoreRouter
 
 
@@ -51,6 +52,68 @@ class FakeStore(VectorStore):
     def health_check(self) -> bool:
         self.health_checks += 1
         return True
+
+
+class HybridEnabledStore(VectorStore):
+    def __init__(self, name: str, result: HybridSearchResult) -> None:
+        self.name = name
+        self._result = result
+        self.hybrid_calls: list[Mapping[str, object]] = []
+        self.search_calls: list[Mapping[str, object]] = []
+        self.upsert_calls: list[list[Chunk]] = []
+
+    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:  # pragma: no cover - unused
+        chunk_list = list(chunks)
+        self.upsert_calls.append(chunk_list)
+        return len(chunk_list)
+
+    def search(  # pragma: no cover - fallback path exercise separate fake
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+    ) -> list[Chunk]:
+        self.search_calls.append(
+            {
+                "query": query,
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "top_k": top_k,
+                "filters": filters,
+            }
+        )
+        return list(self._result.chunks)
+
+    def hybrid_search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+    ) -> HybridSearchResult:
+        self.hybrid_calls.append(
+            {
+                "query": query,
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "top_k": top_k,
+                "filters": filters,
+                "alpha": alpha,
+                "min_sim": min_sim,
+                "vec_limit": vec_limit,
+                "lex_limit": lex_limit,
+            }
+        )
+        return self._result
 
 
 @pytest.fixture
@@ -175,3 +238,73 @@ def test_router_health_check_records_metrics(
 
     assert {"scope": "global", "status": "success"} in counter.calls
     assert {"scope": "silo", "status": "success"} in counter.calls
+
+
+def test_router_hybrid_search_uses_scoped_store() -> None:
+    tenant = "tenant-42"
+    global_result = HybridSearchResult(
+        chunks=[Chunk(content="global", meta={"tenant": tenant})],
+        vector_candidates=2,
+        lexical_candidates=1,
+        fused_candidates=2,
+        duration_ms=1.2,
+        alpha=0.7,
+        min_sim=0.3,
+        vec_limit=5,
+        lex_limit=5,
+    )
+    silo_result = HybridSearchResult(
+        chunks=[Chunk(content="silo", meta={"tenant": tenant})],
+        vector_candidates=1,
+        lexical_candidates=1,
+        fused_candidates=1,
+        duration_ms=0.5,
+        alpha=0.6,
+        min_sim=0.2,
+        vec_limit=4,
+        lex_limit=4,
+    )
+    global_store = HybridEnabledStore("global", global_result)
+    silo_store = HybridEnabledStore("silo", silo_result)
+    router = VectorStoreRouter(
+        {"global": global_store, "silo": silo_store},
+        tenant_scopes={tenant: "silo"},
+    )
+
+    result = router.hybrid_search(
+        "frage",
+        tenant_id=tenant,
+        scope="silo",
+        top_k=25,
+        filters={"case": ""},
+        alpha=0.5,
+        min_sim=0.1,
+        vec_limit=8,
+        lex_limit=3,
+    )
+
+    assert result is silo_result
+    call = silo_store.hybrid_calls[-1]
+    assert call["top_k"] == 10  # capped
+    assert call["filters"] == {"case": None}
+    assert global_store.hybrid_calls == []
+
+    fallback = router.hybrid_search("frage", tenant_id=tenant, scope="missing")
+    assert fallback is global_result
+    assert global_store.hybrid_calls[-1]["top_k"] == 5
+
+
+def test_router_hybrid_search_falls_back_when_not_supported() -> None:
+    tenant = "tenant-99"
+    fallback_chunks = [Chunk(content="fallback", meta={"tenant": tenant})]
+    store = FakeStore("global", search_result=fallback_chunks)
+    router = VectorStoreRouter({"global": store})
+
+    result = router.hybrid_search("fallback", tenant_id=tenant, top_k=3)
+
+    assert isinstance(result, HybridSearchResult)
+    assert result.chunks == fallback_chunks
+    assert result.vector_candidates == len(fallback_chunks)
+    assert result.lexical_candidates == 0
+    assert result.fused_candidates == len(fallback_chunks)
+    assert store.search_calls[-1]["top_k"] == 3

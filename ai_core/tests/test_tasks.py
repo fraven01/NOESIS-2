@@ -11,6 +11,78 @@ from common import logging as common_logging
 from common.celery import ContextTask
 
 
+def test_split_sentences_prefers_sentence_boundaries() -> None:
+    text = "Hallo Welt! Wie geht es dir? Gut."
+
+    result = tasks._split_sentences(text)
+
+    assert result == [
+        "Hallo Welt!",
+        "Wie geht es dir?",
+        "Gut.",
+    ]
+
+
+def test_split_sentences_falls_back_to_paragraphs() -> None:
+    text = "Abschnitt eins\n\nAbschnitt zwei\nAbschnitt drei"
+
+    result = tasks._split_sentences(text)
+
+    assert result == ["Abschnitt eins", "Abschnitt zwei", "Abschnitt drei"]
+
+
+def test_chunkify_applies_overlap_and_limits() -> None:
+    sentences = [
+        "eins zwei drei",
+        "vier fünf sechs",
+        "sieben acht neun",
+    ]
+
+    chunks = tasks._chunkify(
+        sentences,
+        target_tokens=6,
+        overlap_tokens=2,
+        hard_limit=6,
+    )
+
+    assert chunks == [
+        "eins zwei drei vier fünf sechs",
+        "vier fünf sechs sieben acht neun",
+        "sieben acht neun",
+    ]
+
+
+def test_chunkify_enforces_hard_limit_and_long_sentences() -> None:
+    long_sentence = " ".join(f"wort{i}" for i in range(12))
+    sentences = ["kurz eins", long_sentence]
+
+    chunks = tasks._chunkify(
+        sentences,
+        target_tokens=10,
+        overlap_tokens=0,
+        hard_limit=4,
+    )
+
+    expected_long_chunks = [
+        " ".join(f"wort{i}" for i in range(start, min(start + 4, 12)))
+        for start in range(0, 12, 4)
+    ]
+
+    assert chunks[0] == "kurz eins"
+    assert chunks[1:] == expected_long_chunks
+
+
+def test_build_chunk_prefix_combines_breadcrumbs_and_title() -> None:
+    meta = {
+        "breadcrumbs": ["Handbuch", " Abschnitt A ", "Teil 1"],
+        "title": "Einführung",
+    }
+
+    prefix = tasks._build_chunk_prefix(meta)
+
+    assert prefix == "Handbuch / Abschnitt A / Teil 1 — Einführung"
+
+
 @pytest.mark.usefixtures("rag_database")
 def test_upsert_persists_chunks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

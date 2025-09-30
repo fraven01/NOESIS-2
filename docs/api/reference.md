@@ -210,11 +210,13 @@ Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit
 > Felder downstream weiterverarbeiten. Beide Varianten enthalten Hash und
 > Dokument-ID zur nachträglichen Deduplication sowie den Similarity-Score.
 
-> 📈 **Score-Interpretation:** Die Ähnlichkeitswerte basieren auf
-> `1 / (1 + distance)` aus der pgvector-Metrik. Höhere Werte bedeuten größere
-> Nähe zum Query-Embedding, die Skala ist aber nicht linear normalisiert.
-> Deklarieren Sie Scores im UI daher als „Similarity Score“ statt als Prozent-
-> oder Qualitätswert.
+> 📈 **Score-Interpretation:** Der im Graph zurückgegebene `score` ist der
+> fusionierte Wert `α·semantisch + (1–α)·lexikalisch`, den die Hybrid-Suche des
+> Routers liefert. Beide Komponenten werden auf einen Wertebereich von 0 bis 1
+> normalisiert; höhere Werte sind relevanter. Die semantische Seite nutzt den
+> Cosine-Vergleich über `vector_cosine_ops`, während die lexikalische Seite BM25
+> beisteuert. Deklarieren Sie Scores im UI daher als „Similarity Score“ und
+> vermeiden Sie Prozentangaben.
 
 **cURL Beispiel**
 ```bash
