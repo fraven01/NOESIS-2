@@ -143,6 +143,57 @@ services:
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
       APP_LOG_DIR: /app/logs
 
+  rag-schema:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noesis2_rag_schema
+    command: >
+      sh -c "
+        psql
+          -h db
+          -U ${DB_USER:-noesis2}
+          -d ${DB_NAME:-noesis2}
+          -v ON_ERROR_STOP=1
+          -f /app/docs/rag/schema.sql
+      "
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+      - .env.docker
+    environment:
+      PGPASSWORD: ${DB_PASSWORD:-noesis2}
+    depends_on:
+      db:
+        condition: service_started
+    restart: "no"
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noesis2_ingestion_worker
+    command: celery -A noesis2 worker -l info -Q ingestion
+    volumes:
+      - .:/app
+      - ${APP_LOG_PATH:-./logs/app}:/app/logs
+    env_file:
+      - .env
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_started
+      toxiproxy:
+        condition: service_started
+      litellm:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      APP_LOG_DIR: /app/logs
+
   rag:
     image: postgres:16-alpine
     container_name: noesis2_rag_migrate

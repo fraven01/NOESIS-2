@@ -233,3 +233,4 @@ documents/doc*.*
 docs/api/openapi.yaml
 clients/
 hello.txt
+hello_changed.txt
