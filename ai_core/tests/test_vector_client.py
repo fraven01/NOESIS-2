@@ -506,6 +506,7 @@ class TestPgVectorClient:
                 tenant_id=tenant,
                 filters={"case": None},
                 top_k=3,
+                alpha=0.0,
             )
 
         assert result.vector_candidates == 0
@@ -514,8 +515,13 @@ class TestPgVectorClient:
         assert counter.value == 1.0
         assert counter.calls == [{"tenant": tenant}]
         assert result.chunks
-        events = [entry["event"] for entry in logs]
-        assert "query.embedding.empty_fallback" in events
+        top_chunk = result.chunks[0]
+        assert top_chunk.meta["vscore"] == 0.0
+        assert top_chunk.meta["score"] == pytest.approx(top_chunk.meta["lscore"])
+        assert [entry["event"] for entry in logs].count("rag.hybrid.null_embedding") == 1
+        logged = [entry for entry in logs if entry["event"] == "rag.hybrid.null_embedding"][0]
+        assert logged["alpha"] == 0.0
+        assert logged["tenant"] == tenant
 
     def test_hybrid_search_reports_cutoff_statistics(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
@@ -563,3 +569,156 @@ class TestPgVectorClient:
         assert result.chunks == []
         assert cutoff_counter.calls == [{"tenant": tenant}]
         assert cutoff_counter.value == float(result.below_cutoff)
+
+    def test_hybrid_search_uses_similarity_fallback_when_trigram_has_no_match(
+        self,
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"fallback-trigram").hexdigest()
+        chunk = Chunk(
+            content="Dies ist ein völlig anderer Inhalt",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "source": "lexical",
+                "external_id": "doc-trigram",
+            },
+            embedding=[0.12] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+        client.upsert_chunks([chunk])
+
+        result = client.hybrid_search(
+            "zzzzzzzz",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=1,
+            alpha=0.0,
+        )
+
+        assert result.lexical_candidates >= 1
+        assert result.chunks
+        top_chunk = result.chunks[0]
+        assert top_chunk.meta["hash"] == doc_hash
+        assert top_chunk.meta["score"] == pytest.approx(top_chunk.meta["lscore"])
+
+    def test_hybrid_search_handles_row_shape_mismatch(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-1",
+                        "Vector mismatch",
+                        {"tenant": tenant},
+                        "hash-1",
+                        "doc-1",
+                    )
+                ],
+                [
+                    (
+                        "chunk-1",
+                        "Vector mismatch",
+                        {"tenant": tenant},
+                        "hash-1",
+                        "doc-1",
+                    )
+                ],
+                2.0,
+            )
+
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+
+        from structlog.testing import capture_logs
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "shape mismatch",
+                tenant_id=tenant,
+                filters={"case": None},
+                top_k=3,
+            )
+
+        warnings = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.row_shape_mismatch"
+        ]
+        assert len(warnings) == 2
+        assert {entry["kind"] for entry in warnings} == {"vector", "lexical"}
+        assert result.chunks
+        meta = result.chunks[0].meta
+        assert meta["vscore"] == 0.0
+        assert meta["lscore"] == 0.0
+
+    def test_hybrid_search_counts_candidates_below_min_sim_cutoff(
+        self, monkeypatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-cutoff",
+                        "Too weak",
+                        {"tenant": tenant},
+                        "hash-cutoff",
+                        "doc-cutoff",
+                        0.95,
+                    )
+                ],
+                [],
+                3.5,
+            )
+
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        class _CounterVec:
+            def __init__(self) -> None:
+                self.calls: list[dict[str, str]] = []
+                self.value = 0.0
+
+            def labels(self, **labels: str) -> "_CounterVec":
+                self.calls.append(labels)
+                return self
+
+            def inc(self, amount: float = 1.0) -> None:
+                self.value += amount
+
+        cutoff_counter = _CounterVec()
+        monkeypatch.setattr(metrics, "RAG_QUERY_BELOW_CUTOFF_TOTAL", cutoff_counter)
+
+        class _Histogram:
+            def __init__(self) -> None:
+                self.samples: list[float] = []
+
+            def observe(self, amount: float) -> None:
+                self.samples.append(amount)
+
+        histogram = _Histogram()
+        monkeypatch.setattr(metrics, "RAG_SEARCH_MS", histogram)
+
+        result = client.hybrid_search(
+            "min sim cutoff",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=1,
+            min_sim=0.8,
+        )
+
+        assert result.below_cutoff == 1
+        assert result.chunks == []
+        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.value == 1.0

@@ -116,7 +116,7 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration
     )
     RAG_QUERY_EMPTY_VEC_TOTAL = _PromCounter(
         "rag_query_empty_vec_total",
-        "Number of queries falling back to lexical retrieval due to empty embeddings.",
+        "Number of queries with effectively zero embedding (dev/dummy).",
         ["tenant"],
     )
     RAG_QUERY_NO_HIT = _PromCounter(
@@ -126,7 +126,7 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration
     )
     RAG_QUERY_BELOW_CUTOFF_TOTAL = _PromCounter(
         "rag_query_below_cutoff_total",
-        "Number of candidate chunks filtered below the configured similarity threshold.",
+        "Number of candidates filtered by min_sim cutoff.",
         ["tenant"],
     )
 else:  # pragma: no cover - covered via direct value inspection in tests
