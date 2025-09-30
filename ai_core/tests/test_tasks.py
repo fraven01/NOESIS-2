@@ -129,7 +129,8 @@ def test_upsert_no_chunks_is_noop(monkeypatch):
     vector_client.reset_default_client()
 
 
-def test_task_logging_context_includes_metadata(monkeypatch, tmp_path):
+def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings):
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = False
     monkeypatch.setattr(tasks.object_store, "BASE_PATH", tmp_path)
     original_put_bytes = tasks.object_store.put_bytes
 
