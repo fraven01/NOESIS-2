@@ -308,6 +308,7 @@ class PgVectorClient:
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
     ) -> HybridSearchResult:
         top_k = min(max(1, top_k), 10)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
@@ -354,14 +355,25 @@ class PgVectorClient:
         min_sim_value = float(
             min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15)
         )
-        default_trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.1))
-        try:
-            trgm_limit_value = (
-                float(trgm_limit) if trgm_limit is not None else default_trgm_limit
-            )
-        except (TypeError, ValueError):
-            trgm_limit_value = default_trgm_limit
-        trgm_limit_value = max(0.0, trgm_limit_value)
+        # Determine requested/effective trigram similarity limit
+        default_trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.30))
+        requested_trgm_limit: float | None
+        if trgm_limit is not None:
+            try:
+                requested_trgm_limit = float(trgm_limit)
+            except (TypeError, ValueError):
+                requested_trgm_limit = None
+        elif trgm_threshold is not None:
+            try:
+                requested_trgm_limit = float(trgm_threshold)
+            except (TypeError, ValueError):
+                requested_trgm_limit = None
+        else:
+            requested_trgm_limit = None
+        effective_trgm_limit = (
+            requested_trgm_limit if requested_trgm_limit is not None else default_trgm_limit
+        )
+        trgm_limit_value = max(0.0, float(effective_trgm_limit))
         distance_score_mode = str(
             _get_setting("RAG_DISTANCE_SCORE_MODE", "inverse")
         ).lower()
@@ -411,31 +423,28 @@ class PgVectorClient:
                         "SET LOCAL statement_timeout = %s",
                         (str(self._statement_timeout_ms),),
                     )
+                    # Set request-scoped pg_trgm limit on this session and log
                     try:
-                        # Prefer pg_trgm set_limit/show_limit for visibility in logs
-                        cur.execute("SELECT set_limit(%s)", (trgm_limit,))
+                        cur.execute(
+                            "SELECT set_limit(%s::real)", (float(trgm_limit_value),)
+                        )
                         cur.execute("SELECT show_limit()")
-                        current_limit = cur.fetchone()[0]
+                        current = cur.fetchone()
                         logger.info(
                             "rag.pgtrgm.limit",
                             extra={
-                                "requested": trgm_limit,
-                                "effective": float(current_limit),
+                                "requested": requested_trgm_limit,
+                                "effective": float(current[0]) if current else None,
                             },
                         )
-                    except Exception as exc:
+                    except Exception as e:  # pragma: no cover - defensive
                         logger.warning(
-                            "rag.pgtrgm.set_limit_failed",
-                            extra={"limit": trgm_limit, "error": str(exc)},
+                            "rag.pgtrgm.limit.set_failed",
+                            extra={
+                                "requested": requested_trgm_limit,
+                                "error": str(e),
+                            },
                         )
-                        # Fallback to setting GUC directly if available
-                        try:
-                            cur.execute(
-                                "SET LOCAL pg_trgm.similarity_threshold = %s",
-                                (str(trgm_limit),),
-                            )
-                        except Exception:
-                            pass
 
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
@@ -486,6 +495,16 @@ class PgVectorClient:
                             vector_sql, (query_vec, *where_params, vec_limit_value)
                         )
                         vector_rows = cur.fetchall()
+                        try:
+                            logger.warning(
+                                "rag.debug.rows.vector",
+                                extra={
+                                    "count": len(vector_rows),
+                                    "first_len": (len(vector_rows[0]) if vector_rows else 0),
+                                },
+                            )
+                        except Exception:
+                            pass
                     lexical_sql = f"""
                         SELECT
                             c.id,
@@ -507,6 +526,16 @@ class PgVectorClient:
                             (query_norm, *where_params, query_norm, lex_limit_value),
                         )
                         lexical_rows = cur.fetchall()
+                        try:
+                            logger.warning(
+                                "rag.debug.rows.lexical",
+                                extra={
+                                    "count": len(lexical_rows),
+                                    "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
+                                },
+                            )
+                        except Exception:
+                            pass
                         if not lexical_rows:
                             logger.info(
                                 "rag.hybrid.trgm_no_match",
@@ -536,6 +565,16 @@ class PgVectorClient:
                                 (query_norm, *where_params, lex_limit_value),
                             )
                             lexical_rows = cur.fetchall()
+                            try:
+                                logger.warning(
+                                    "rag.debug.rows.lexical",
+                                    extra={
+                                        "count": len(lexical_rows),
+                                        "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
+                                    },
+                                )
+                            except Exception:
+                                pass
                     else:
                         lexical_rows = []
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
@@ -566,19 +605,13 @@ class PgVectorClient:
                     "rag.hybrid.row_shape_mismatch",
                     extra={"kind": "vector", "row_len": len(row)},
                 )
-                padded = tuple(list(row) + [None] * (6 - len(row)))
-            else:
-                padded = row
-            (
-                chunk_id,
-                text_value,
-                metadata,
-                doc_hash,
-                doc_id,
-                distance,
-            ) = padded[:6]
-            if text_value is None:
-                text_value = ""
+                row = tuple(list(row) + [None] * (6 - len(row)))
+            chunk_id = row[0]
+            text_value = row[1] or ""
+            metadata = row[2] or {}
+            doc_hash = row[3]
+            doc_id = row[4]
+            score_raw = row[5]
             key = str(chunk_id)
             metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
@@ -595,10 +628,12 @@ class PgVectorClient:
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             try:
-                distance_value = float(distance)
+                distance_value = float(score_raw)
             except (TypeError, ValueError):
-                distance_value = None
-            vscore = self._score_from_distance(distance_value, distance_score_mode)
+                distance_value = 1.0
+            if math.isnan(distance_value) or math.isinf(distance_value):
+                distance_value = 1.0
+            vscore = max(0.0, 1.0 - float(distance_value))
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
         for row in lexical_rows:
@@ -607,19 +642,13 @@ class PgVectorClient:
                     "rag.hybrid.row_shape_mismatch",
                     extra={"kind": "lexical", "row_len": len(row)},
                 )
-                padded = tuple(list(row) + [None] * (6 - len(row)))
-            else:
-                padded = row
-            (
-                chunk_id,
-                text_value,
-                metadata,
-                doc_hash,
-                doc_id,
-                lscore,
-            ) = padded[:6]
-            if text_value is None:
-                text_value = ""
+                row = tuple(list(row) + [None] * (6 - len(row)))
+            chunk_id = row[0]
+            text_value = row[1] or ""
+            metadata = row[2] or {}
+            doc_hash = row[3]
+            doc_id = row[4]
+            score_raw = row[5]
             key = str(chunk_id)
             metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
@@ -636,8 +665,10 @@ class PgVectorClient:
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             try:
-                lscore_value = float(lscore)
+                lscore_value = float(score_raw)
             except (TypeError, ValueError):
+                lscore_value = 0.0
+            if math.isnan(lscore_value) or math.isinf(lscore_value):
                 lscore_value = 0.0
             entry["lscore"] = max(
                 float(entry.get("lscore", 0.0)), max(0.0, lscore_value)
@@ -655,7 +686,7 @@ class PgVectorClient:
             },
         )
         results: List[Chunk] = []
-        has_vector_rows = bool(vector_rows)
+        has_vector_signal = bool(vector_rows) and (query_vec is not None) and (not query_embedding_empty)
         for entry in candidates.values():
             meta = dict(entry["metadata"])
             doc_hash = entry.get("doc_hash")
@@ -692,8 +723,17 @@ class PgVectorClient:
                     },
                 )
                 continue
-            vscore = float(entry.get("vscore", 0.0)) if has_vector_rows else 0.0
-            lscore = max(0.0, float(entry.get("lscore", 0.0)))
+            try:
+                vscore = float(entry.get("vscore", 0.0))
+            except (TypeError, ValueError):
+                vscore = 0.0
+            if not has_vector_signal:
+                vscore = 0.0
+            try:
+                lscore = float(entry.get("lscore", 0.0))
+            except (TypeError, ValueError):
+                lscore = 0.0
+            lscore = max(0.0, lscore)
             fused = max(
                 0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore)
             )

@@ -758,7 +758,9 @@ class TestPgVectorClient:
                 client._run_with_retries(_always_fail, op_name="search")
 
         failure_logs = [
-            entry for entry in logs if entry["event"] == "pgvector operation failed, retrying"
+            entry
+            for entry in logs
+            if entry["event"] == "pgvector operation failed, retrying"
         ]
         assert failure_logs
         assert failure_logs[0]["exc_type"] == "RuntimeError"
@@ -838,7 +840,9 @@ class TestPgVectorClient:
             )
 
         assert result.chunks
-        sql_logs = [entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"]
+        sql_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"
+        ]
         assert sql_logs
         assert sql_logs[0]["trgm_limit"] == pytest.approx(0.42)
         assert sql_logs[0]["distance_score_mode"] == "inverse"
@@ -871,7 +875,9 @@ class TestPgVectorClient:
 
         assert result.lexical_candidates > 0
         assert result.chunks
-        sql_logs = [entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"]
+        sql_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.sql_counts"
+        ]
         assert sql_logs
         assert sql_logs[0]["lex_rows"] > 0
 

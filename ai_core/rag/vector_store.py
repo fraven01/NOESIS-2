@@ -50,6 +50,7 @@ class VectorStore(Protocol):
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid semantic/lexical search."""
 
@@ -89,6 +90,7 @@ class TenantScopedVectorStore(Protocol):
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid search within the tenant scope."""
 
@@ -228,6 +230,7 @@ class VectorStoreRouter:
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
     ) -> "HybridSearchResult":
         if not tenant_id:
             raise ValueError("tenant_id is required for vector store access")
@@ -256,6 +259,7 @@ class VectorStoreRouter:
                 vec_limit=vec_limit,
                 lex_limit=lex_limit,
                 trgm_limit=trgm_limit,
+                trgm_threshold=trgm_threshold,
             )
             if result is not None:
                 return result
@@ -397,6 +401,7 @@ class _TenantScopedClient:
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
     ) -> "HybridSearchResult":
         return self._router.hybrid_search(
             query,
@@ -410,6 +415,7 @@ class _TenantScopedClient:
             vec_limit=vec_limit,
             lex_limit=lex_limit,
             trgm_limit=trgm_limit,
+            trgm_threshold=trgm_threshold,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
