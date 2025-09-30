@@ -4,6 +4,11 @@ from pathlib import Path
 import pytest
 
 
+pytest_plugins = [
+    "ai_core.tests.conftest",
+]
+
+
 @pytest.fixture(autouse=True, scope="session")
 def ensure_default_pii_secret():
     """Guarantee tests start with hardened PII defaults.
