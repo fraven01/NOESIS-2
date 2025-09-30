@@ -380,8 +380,12 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     }
     if hybrid_result is not None:
         response_meta["db_latency_ms"] = float(hybrid_result.duration_ms)
-        response_meta["vector_candidates"] = getattr(hybrid_result, "vector_candidates", None)
-        response_meta["lexical_candidates"] = getattr(hybrid_result, "lexical_candidates", None)
+        response_meta["vector_candidates"] = getattr(
+            hybrid_result, "vector_candidates", None
+        )
+        response_meta["lexical_candidates"] = getattr(
+            hybrid_result, "lexical_candidates", None
+        )
         response_meta["below_cutoff"] = below_cutoff
         response_meta["returned_after_cutoff"] = returned_after_cutoff
         response_meta["query_embedding_empty"] = query_embedding_empty
