@@ -155,8 +155,14 @@ def mask_value(value: str | None) -> str:
 
 def _masking_enabled() -> bool:
     from django.conf import settings  # imported lazily to avoid circular import
+    from django.core.exceptions import ImproperlyConfigured
 
-    return not getattr(settings, "LOGGING_ALLOW_UNMASKED_CONTEXT", False)
+    try:
+        allow_unmasked = getattr(settings, "LOGGING_ALLOW_UNMASKED_CONTEXT", False)
+    except ImproperlyConfigured:
+        return True
+
+    return not bool(allow_unmasked)
 
 
 def _context_processor(
