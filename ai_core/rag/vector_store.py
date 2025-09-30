@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import atexit
+import inspect
 import logging
 from typing import Dict, Iterable, Mapping, Protocol, TYPE_CHECKING
 
@@ -248,18 +249,42 @@ class VectorStoreRouter:
         store = self._get_store(scope)
         hybrid = getattr(store, "hybrid_search", None)
         if callable(hybrid):
+            hybrid_kwargs = {
+                "case_id": case_id,
+                "top_k": capped_top_k,
+                "filters": normalised_filters,
+                "alpha": alpha,
+                "min_sim": min_sim,
+                "vec_limit": vec_limit,
+                "lex_limit": lex_limit,
+                "trgm_limit": trgm_limit,
+                "trgm_threshold": trgm_threshold,
+            }
+            try:
+                signature = inspect.signature(hybrid)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None:
+                accepts_var_kwargs = any(
+                    parameter.kind is inspect.Parameter.VAR_KEYWORD
+                    for parameter in signature.parameters.values()
+                )
+                if not accepts_var_kwargs:
+                    allowed_keywords = {
+                        name
+                        for name, parameter in signature.parameters.items()
+                        if parameter.kind
+                        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                    }
+                    hybrid_kwargs = {
+                        key: value
+                        for key, value in hybrid_kwargs.items()
+                        if key in allowed_keywords
+                    }
             result = hybrid(
                 query,
                 tenant_id,
-                case_id=case_id,
-                top_k=capped_top_k,
-                filters=normalised_filters,
-                alpha=alpha,
-                min_sim=min_sim,
-                vec_limit=vec_limit,
-                lex_limit=lex_limit,
-                trgm_limit=trgm_limit,
-                trgm_threshold=trgm_threshold,
+                **hybrid_kwargs,
             )
             if result is not None:
                 return result
