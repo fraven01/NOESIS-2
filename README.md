@@ -77,6 +77,11 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 > - Der `web`-Container führt `collectstatic` automatisch aus (Storage: `CompressedManifestStaticFilesStorage`).
 > - Volumes bleiben bei `up -d` erhalten. Für einen vollständigen Reset siehe `npm run dev:reset`.
 > - Container lesen `.env.docker`. Host-Tools nutzen weiterhin `.env`.
+> - Build-Hinweis: Der Dockerfile nutzt BuildKit-Cache-Mounts (`npm`/`pip`/`apt`) für schnellere Rebuilds. Docker Desktop aktiviert BuildKit standardmäßig; andernfalls `DOCKER_BUILDKIT=1` setzen.
+
+#### Build-Kontext & Tests
+- `.dockerignore` reduziert den Build-Kontext (z. B. `docs/`, `e2e/`, `playwright/`, `logs/`).
+- Unit-/Integrations-Tests bleiben enthalten, damit `pytest` im Container/Image ohne Bind-Mount ausführbar ist.
 
 ### Häufige Docker-Kommandos
 
@@ -100,6 +105,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run dev:restart` | Neustart von Web- und Worker-Containern |
 | `npm run dev:rebuild` | Rebuild von Web-/Worker-Images (`-- --with-frontend` für Tailwind) |
 | `npm run dev:reset` | Komplettreset (down -v → build --no-cache → up -d → init → check) |
+| `npm run dev:prune` | Räumt dangling Images und Build-Cache auf (Windows: `win:dev:prune`) |
 | `npm run dev:manage <cmd>` | Führt `python manage.py <cmd>` im `web`-Container aus |
 | `npm run jobs:migrate` | Compose-Job `migrate` für `migrate_schemas` |
 | `npm run jobs:bootstrap` | Compose-Job `bootstrap_public_tenant` |
@@ -107,6 +113,10 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run jobs:rag:health` | Prüft pgvector/RAG-Schema |
 
 Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:stack`, `win:dev:rebuild`).
+
+Hinweise:
+- `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
+- `npm run dev:prune -- --all` löscht zusätzlich unbenutzte Netzwerke/Volumes (destruktiv).
 
 ### API-Schema & SDKs
 

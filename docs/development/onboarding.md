@@ -41,6 +41,8 @@ cd NOESIS-2
    - `npm run dev:down` stoppt und entfernt alle Container samt Volumes.
    - `npm run dev:rebuild` baut Web- und Worker-Images neu, um Python-/Node-Abhängigkeiten aufzufrischen, ohne Daten-Volumes zu
      löschen. Optional `npm run dev:rebuild -- --with-frontend`, falls auch das Frontend-Image aktualisiert werden soll.
+   - `npm run dev:restart -- [services…]` startet gezielt Dienste neu (Default: `web worker`). Fällt bei Bedarf auf `up -d --no-deps --no-build` zurück.
+   - `npm run dev:prune` räumt dangling Images und Build-Cache auf; mit `-- --all` zusätzlich Netzwerke/Volumes (destruktiv).
 
 ### 3.1 ELK-Smoke-Test nach dem Start
 - Übernimm die Standard-Credentials aus [`../../.env.dev-elk`](../../.env.dev-elk) in deine `.env`, falls noch nicht geschehen (`elastic`/`changeme`).
@@ -83,6 +85,8 @@ Nach erfolgreichem Bootstrap ist der Django-Server unter `http://localhost:8000/
 - Linting (ruff + black): `npm run lint`
 - Auto-Fixes anwenden: `npm run lint:fix`
 - Tailwind/PostCSS-Build: `npm run build:css`
+
+> Hinweis Build-Kontext: `.dockerignore` schließt große Ordner (z. B. `docs/`, `e2e/`, `playwright/`, `logs/`) aus. Unit-/Integrations-Tests bleiben im Kontext, damit `pytest` im Container/Image läuft.
 
 ## 6. Optionale Jobs & RAG-Checks
 - RAG-Schema anwenden: `npm run jobs:rag`
