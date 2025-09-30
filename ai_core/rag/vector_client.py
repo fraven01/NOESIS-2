@@ -307,6 +307,7 @@ class PgVectorClient:
         min_sim: float | None = None,
         vec_limit: int | None = None,
         lex_limit: int | None = None,
+        trgm_limit: float | None = None,
     ) -> HybridSearchResult:
         top_k = min(max(1, top_k), 10)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
@@ -353,7 +354,19 @@ class PgVectorClient:
         min_sim_value = float(
             min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15)
         )
-        trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.1))
+        default_trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.1))
+        try:
+            trgm_limit_value = (
+                float(trgm_limit) if trgm_limit is not None else default_trgm_limit
+            )
+        except (TypeError, ValueError):
+            trgm_limit_value = default_trgm_limit
+        trgm_limit_value = max(0.0, trgm_limit_value)
+        distance_score_mode = str(
+            _get_setting("RAG_DISTANCE_SCORE_MODE", "inverse")
+        ).lower()
+        if distance_score_mode not in {"inverse", "linear"}:
+            distance_score_mode = "inverse"
         vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
         lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
         query_norm = normalise_text(query)
@@ -400,7 +413,7 @@ class PgVectorClient:
                     )
                     cur.execute(
                         "SET LOCAL pg_trgm.similarity_threshold = %s",
-                        (str(trgm_limit),),
+                        (str(trgm_limit_value),),
                     )
                     where_clauses = ["d.tenant_id::text = %s"]
                     where_params: List[object] = [tenant]
@@ -473,6 +486,15 @@ class PgVectorClient:
                         )
                         lexical_rows = cur.fetchall()
                         if not lexical_rows:
+                            logger.info(
+                                "rag.hybrid.trgm_no_match",
+                                extra={
+                                    "tenant": tenant,
+                                    "case": case_value,
+                                    "trgm_limit": trgm_limit_value,
+                                    "fallback": True,
+                                },
+                            )
                             fallback_lexical_sql = f"""
                                 SELECT
                                     c.id,
@@ -509,7 +531,8 @@ class PgVectorClient:
                 "lex_rows": len(lexical_rows),
                 "alpha": alpha_value,
                 "min_sim": min_sim_value,
-                "trgm_limit": trgm_limit,
+                "trgm_limit": trgm_limit_value,
+                "distance_score_mode": distance_score_mode,
                 "duration_ms": duration_ms,
             },
         )
@@ -539,6 +562,7 @@ class PgVectorClient:
             entry = candidates.setdefault(
                 key,
                 {
+                    "chunk_id": key,
                     "content": text_value,
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
@@ -547,11 +571,12 @@ class PgVectorClient:
                     "lscore": 0.0,
                 },
             )
+            entry["chunk_id"] = chunk_id if chunk_id is not None else key
             try:
                 distance_value = float(distance)
             except (TypeError, ValueError):
-                distance_value = 1.0
-            vscore = max(0.0, 1.0 - distance_value)
+                distance_value = None
+            vscore = self._score_from_distance(distance_value, distance_score_mode)
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
         for row in lexical_rows:
@@ -578,6 +603,7 @@ class PgVectorClient:
             entry = candidates.setdefault(
                 key,
                 {
+                    "chunk_id": key,
                     "content": text_value,
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
@@ -586,6 +612,7 @@ class PgVectorClient:
                     "lscore": 0.0,
                 },
             )
+            entry["chunk_id"] = chunk_id if chunk_id is not None else key
             try:
                 lscore_value = float(lscore)
             except (TypeError, ValueError):
@@ -616,6 +643,32 @@ class PgVectorClient:
             if doc_id is not None and "id" not in meta:
                 meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
+                candidate_tenant = meta.get("tenant")
+                candidate_case = meta.get("case")
+                reasons: List[str] = []
+                if tenant is not None:
+                    if candidate_tenant is None:
+                        reasons.append("tenant_missing")
+                    elif candidate_tenant != tenant:
+                        reasons.append("tenant_mismatch")
+                if case_value is not None:
+                    if candidate_case is None:
+                        reasons.append("case_missing")
+                    elif candidate_case != case_value:
+                        reasons.append("case_mismatch")
+                logger.info(
+                    "rag.strict.reject",
+                    extra={
+                        "tenant": tenant,
+                        "case": case_value,
+                        "candidate_tenant": candidate_tenant,
+                        "candidate_case": candidate_case,
+                        "doc_hash": doc_hash,
+                        "doc_id": doc_id,
+                        "chunk_id": entry["chunk_id"],
+                        "reasons": reasons or ["unknown"],
+                    },
+                )
                 continue
             vscore = float(entry.get("vscore", 0.0)) if has_vector_rows else 0.0
             lscore = max(0.0, float(entry.get("lscore", 0.0)))
@@ -680,6 +733,7 @@ class PgVectorClient:
                 "top_lscore": top_l,
                 "min_sim": min_sim_value,
                 "alpha": alpha_value,
+                "distance_score_mode": distance_score_mode,
             },
         )
 
@@ -945,6 +999,23 @@ class PgVectorClient:
             value = 0.0
         return 1.0 / (1.0 + value)
 
+    def _score_from_distance(
+        self, distance: float | None, mode: str = "inverse"
+    ) -> float:
+        if distance is None:
+            return 0.0
+        if mode == "linear":
+            try:
+                value = float(distance)
+            except (TypeError, ValueError):
+                return 0.0
+            if math.isnan(value) or math.isinf(value):
+                return 0.0
+            if value < 0:
+                value = 0.0
+            return max(0.0, min(1.0, 1.0 - value))
+        return self._distance_to_score(distance)
+
     def _normalise_filter_value(self, value: object) -> str:
         if isinstance(value, bool):
             return "true" if value else "false"
@@ -972,7 +1043,12 @@ class PgVectorClient:
                 last_exc = exc
                 logger.warning(
                     "pgvector operation failed, retrying",
-                    extra={"operation": op_name, "attempt": attempt},
+                    extra={
+                        "operation": op_name,
+                        "attempt": attempt,
+                        "exc_type": exc.__class__.__name__,
+                        "exc_message": str(exc),
+                    },
                 )
                 metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
                 if attempt == self._retries:
