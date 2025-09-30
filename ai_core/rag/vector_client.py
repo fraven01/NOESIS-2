@@ -495,6 +495,19 @@ class PgVectorClient:
             _operation, op_name="search"
         )
 
+        logger.info(
+            "rag.hybrid.debug.sql_counts",
+            extra={
+                "tenant": tenant,
+                "case": case_value,
+                "vec_rows": len(vector_rows),
+                "lex_rows": len(lexical_rows),
+                "duration_ms": duration_ms,
+                "alpha": alpha_value,
+                "min_sim": min_sim_value,
+            },
+        )
+
         candidates: Dict[str, Dict[str, object]] = {}
         for row in vector_rows:
             if len(row) < 6:
@@ -576,6 +589,16 @@ class PgVectorClient:
             )
 
         fused_candidates = len(candidates)
+        logger.info(
+            "rag.hybrid.debug.fusion",
+            extra={
+                "tenant": tenant,
+                "case": case_value,
+                "candidates": fused_candidates,
+                "has_vec": bool(vector_rows),
+                "has_lex": bool(lexical_rows),
+            },
+        )
         results: List[Chunk] = []
         has_vector_rows = bool(vector_rows)
         for entry in candidates.values():
@@ -620,6 +643,39 @@ class PgVectorClient:
                 if float(chunk.meta.get("fused", 0.0)) >= min_sim_value
             ]
         limited_results = filtered_results[:top_k]
+
+        try:
+            top_fused = (
+                float(limited_results[0].meta.get("fused", 0.0))
+                if limited_results
+                else 0.0
+            )
+            top_v = (
+                float(limited_results[0].meta.get("vscore", 0.0))
+                if limited_results
+                else 0.0
+            )
+            top_l = (
+                float(limited_results[0].meta.get("lscore", 0.0))
+                if limited_results
+                else 0.0
+            )
+        except Exception:
+            top_fused = top_v = top_l = 0.0
+
+        logger.info(
+            "rag.hybrid.debug.after_cutoff",
+            extra={
+                "tenant": tenant,
+                "case": case_value,
+                "returned": len(limited_results),
+                "top_fused": top_fused,
+                "top_vscore": top_v,
+                "top_lscore": top_l,
+                "min_sim": min_sim_value,
+                "alpha": alpha_value,
+            },
+        )
 
         metrics.RAG_SEARCH_MS.observe(duration_ms)
         logger.info(
