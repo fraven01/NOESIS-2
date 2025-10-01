@@ -1127,7 +1127,11 @@ class PgVectorClient:
             if not doc_hash or doc_hash == "None":
                 raise ValueError("Chunk metadata must include hash")
             if external_id in {None, "", "None"}:
-                raise ValueError("Chunk metadata must include external_id")
+                logger.warning(
+                    "Chunk without external_id encountered; falling back to hash",
+                    extra={"tenant": tenant_value, "hash": doc_hash},
+                )
+                external_id = doc_hash
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
             tenant = str(tenant_uuid)
             external_id_str = str(external_id)
