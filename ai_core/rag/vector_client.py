@@ -646,8 +646,10 @@ class PgVectorClient:
                                 pass
                             if (
                                 not lexical_rows_local
-                                and applied_trgm_limit is not None
-                                and applied_trgm_limit > 0.1
+                                and (
+                                    applied_trgm_limit is None
+                                    or applied_trgm_limit > 0.1
+                                )
                             ):
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
@@ -658,6 +660,11 @@ class PgVectorClient:
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
                                     },
+                                )
+                                fallback_limit = (
+                                    applied_trgm_limit
+                                    if applied_trgm_limit is not None
+                                    else trgm_limit_value
                                 )
                                 fallback_lexical_sql = f"""
                                     SELECT
@@ -670,6 +677,7 @@ class PgVectorClient:
                                     FROM chunks c
                                     JOIN documents d ON c.document_id = d.id
                                     WHERE {where_sql}
+                                      AND similarity(c.text_norm, %s) >= %s
                                     ORDER BY lscore DESC
                                     LIMIT %s
                                 """
@@ -678,6 +686,8 @@ class PgVectorClient:
                                     (
                                         query_db_norm,
                                         *where_params,
+                                        query_db_norm,
+                                        fallback_limit,
                                         lex_limit_value,
                                     ),
                                 )
