@@ -2,7 +2,7 @@ import re
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from psycopg2 import errors
+from psycopg2 import errors, sql
 
 from ai_core.rag import vector_client
 
@@ -20,6 +20,14 @@ class Command(BaseCommand):
         ivf_lists = int(getattr(settings, "RAG_IVF_LISTS", 2048))
 
         client = vector_client.get_default_client()
+        schema_name = str(getattr(client, "_schema", "rag"))
+        table_identifier = sql.Identifier(schema_name, "embeddings")
+        hnsw_index_identifier = sql.Identifier(
+            schema_name, "embeddings_embedding_hnsw"
+        )
+        ivf_index_identifier = sql.Identifier(
+            schema_name, "embeddings_embedding_ivfflat"
+        )
         expected_index = (
             "embeddings_embedding_hnsw"
             if index_kind == "HNSW"
@@ -29,36 +37,50 @@ class Command(BaseCommand):
         with client._connection() as conn:  # type: ignore[attr-defined]
             try:
                 with conn.cursor() as cur:
-                    cur.execute("DROP INDEX IF EXISTS embeddings_embedding_hnsw")
-                    cur.execute("DROP INDEX IF EXISTS embeddings_embedding_ivfflat")
+                    cur.execute(
+                        sql.SQL("DROP INDEX IF EXISTS {index}").format(
+                            index=hnsw_index_identifier
+                        )
+                    )
+                    cur.execute(
+                        sql.SQL("DROP INDEX IF EXISTS {index}").format(
+                            index=ivf_index_identifier
+                        )
+                    )
                     if index_kind == "HNSW":
                         cur.execute(
-                            """
-                            CREATE INDEX embeddings_embedding_hnsw
-                            ON embeddings USING hnsw (embedding vector_cosine_ops)
-                            WITH (m = %s, ef_construction = %s)
-                            """,
+                            sql.SQL(
+                                """
+                                CREATE INDEX {index}
+                                ON {table} USING hnsw (embedding vector_cosine_ops)
+                                WITH (m = %s, ef_construction = %s)
+                                """
+                            ).format(index=hnsw_index_identifier, table=table_identifier),
                             (hnsw_m, hnsw_ef),
                         )
                     else:
                         cur.execute(
-                            """
-                            CREATE INDEX embeddings_embedding_ivfflat
-                            ON embeddings USING ivfflat (embedding vector_cosine_ops)
-                            WITH (lists = %s)
-                            """,
+                            sql.SQL(
+                                """
+                                CREATE INDEX {index}
+                                ON {table} USING ivfflat (embedding vector_cosine_ops)
+                                WITH (lists = %s)
+                                """
+                            ).format(index=ivf_index_identifier, table=table_identifier),
                             (ivf_lists,),
                         )
-                    cur.execute("ANALYZE embeddings")
+                    cur.execute(
+                        sql.SQL("ANALYZE {table}").format(table=table_identifier)
+                    )
                     cur.execute(
                         """
                         SELECT indexdef
                         FROM pg_indexes
-                        WHERE schemaname = current_schema()
-                          AND tablename = 'embeddings'
+                        WHERE schemaname = %s
+                          AND tablename = %s
                           AND indexname = %s
                         """,
-                        (expected_index,),
+                        (schema_name, "embeddings", expected_index),
                     )
                     row = cur.fetchone()
                 conn.commit()
@@ -86,6 +108,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                f"Rebuilt embeddings index using {index_kind} (scope: rag.embeddings, {details})"
+                f"Rebuilt embeddings index using {index_kind} (scope: {schema_name}.embeddings, {details})"
             )
         )
