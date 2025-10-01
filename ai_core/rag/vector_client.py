@@ -797,9 +797,14 @@ class PgVectorClient:
                                         limit_value = float(limit)
                                     except (TypeError, ValueError):
                                         continue
-                                    limit_value = max(0.03, limit_value)
+                                    if limit_value <= 0.0:
+                                        limit_value = 0.0
+                                    elif limit_value < 0.03:
+                                        limit_value = 0.03
                                     if limit_value not in fallback_limits:
                                         fallback_limits.append(limit_value)
+                                if 0.0 not in fallback_limits:
+                                    fallback_limits.append(0.0)
                                 picked_limit: float | None = None
                                 last_attempt_rows: List[tuple] = []
                                 for limit_value in fallback_limits:
