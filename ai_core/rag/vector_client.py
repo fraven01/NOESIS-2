@@ -644,12 +644,8 @@ class PgVectorClient:
                                 )
                             except Exception:
                                 pass
-                            if (
-                                not lexical_rows_local
-                                and (
-                                    applied_trgm_limit is None
-                                    or applied_trgm_limit > 0.1
-                                )
+                            if not lexical_rows_local and (
+                                applied_trgm_limit is None or applied_trgm_limit > 0.1
                             ):
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
