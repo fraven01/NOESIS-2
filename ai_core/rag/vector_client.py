@@ -1356,9 +1356,7 @@ class PgVectorClient:
         if existing:
             existing_external_id = existing[0]
             if existing_external_id and str(existing_external_id) != external_id:
-                suffix = uuid.uuid5(
-                    uuid.NAMESPACE_URL, f"external:{external_id}"
-                )
+                suffix = uuid.uuid5(uuid.NAMESPACE_URL, f"external:{external_id}")
                 return f"{content_hash}:{suffix}"
         return content_hash
 
