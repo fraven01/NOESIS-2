@@ -144,6 +144,34 @@ class TestPgVectorClient:
         with pytest.raises(ValueError):
             client.upsert_chunks([chunk])
 
+    def test_missing_external_id_falls_back_to_hash(self) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"missing-external").hexdigest()
+        chunk = Chunk(
+            content="missing external id",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "case": "case-fallback",
+                "source": "example",
+            },
+            embedding=[0.25] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+
+        written = client.upsert_chunks([chunk])
+        assert written == 1
+
+        results = client.search(
+            "missing external id",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=1,
+        )
+
+        assert results
+        assert results[0].meta["external_id"] == doc_hash
+
     def test_upsert_records_metrics_and_handles_legacy_tenant(self, monkeypatch):
         class _Counter:
             def __init__(self) -> None:
