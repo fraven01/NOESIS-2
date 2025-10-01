@@ -839,13 +839,11 @@ class PgVectorClient:
                                 fallback_limit_used_value = picked_limit
                                 logger.info(
                                     "rag.hybrid.trgm_fallback_applied",
-                                    extra={
-                                        "tenant": tenant,
-                                        "case": case_value,
-                                        "tried_limits": list(fallback_tried_limits),
-                                        "picked_limit": picked_limit,
-                                        "count": len(lexical_rows_local),
-                                    },
+                                    tenant=tenant,
+                                    case=case_value,
+                                    tried_limits=list(fallback_tried_limits),
+                                    picked_limit=picked_limit,
+                                    count=len(lexical_rows_local),
                                 )
                         # Ensure the locally fetched lexical rows are propagated
                         # to the outer scope so they are counted/fused later.
