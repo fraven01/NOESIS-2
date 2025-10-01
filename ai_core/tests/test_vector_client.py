@@ -525,6 +525,8 @@ class TestPgVectorClient:
         ][0]
         assert logged["alpha"] == 0.0
         assert logged["tenant"] == tenant
+        assert "case" in logged
+        assert logged["case"] is None
 
     def test_hybrid_search_lexical_matches_database_normalisation(
         self, monkeypatch
