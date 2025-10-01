@@ -99,9 +99,7 @@ class _FakeCursor:
                         score = float(row[-1])
                 except Exception:
                     score = None
-                if limit is None or (
-                    score is not None and score >= limit - 1e-9
-                ):
+                if limit is None or (score is not None and score >= limit - 1e-9):
                     rows.append(row)
             return rows
         return []

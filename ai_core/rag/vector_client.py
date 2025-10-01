@@ -1587,18 +1587,13 @@ def _resolve_vector_schema() -> str:
         configured = getattr(settings, "RAG_VECTOR_STORES", None)
         if isinstance(configured, Mapping):
             stores_config = configured
-        configured_default_scope = getattr(
-            settings, "RAG_VECTOR_DEFAULT_SCOPE", None
-        )
+        configured_default_scope = getattr(settings, "RAG_VECTOR_DEFAULT_SCOPE", None)
     except Exception:
         stores_config = None
 
     if stores_config:
         target_scope: str | None = None
-        if (
-            configured_default_scope
-            and configured_default_scope in stores_config
-        ):
+        if configured_default_scope and configured_default_scope in stores_config:
             target_scope = configured_default_scope
         else:
             for scope_name, config in stores_config.items():
@@ -1625,9 +1620,7 @@ def _resolve_vector_schema() -> str:
 def get_default_client() -> PgVectorClient:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
-        _DEFAULT_CLIENT = PgVectorClient.from_env(
-            schema=_resolve_vector_schema()
-        )
+        _DEFAULT_CLIENT = PgVectorClient.from_env(schema=_resolve_vector_schema())
     return cast(PgVectorClient, _DEFAULT_CLIENT)
 
 
