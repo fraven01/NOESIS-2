@@ -10,7 +10,7 @@ import logging.config
 import os
 import re
 import sys
-from typing import Any, Dict, Iterator, MutableMapping, Sequence, TextIO
+from typing import Any, Dict, Iterator, MutableMapping, Sequence, TextIO, Mapping
 
 import structlog
 from opentelemetry import trace
@@ -434,6 +434,10 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
     ) -> tuple[Sequence[Any], MutableMapping[str, object]]:
         event_dict: Any = self._context.copy()
         event_dict.update(**event_kw)
+
+        extra_payload = event_dict.pop("extra", None)
+        if isinstance(extra_payload, Mapping):
+            event_dict.update(extra_payload)
 
         context = get_log_context()
         if context:
