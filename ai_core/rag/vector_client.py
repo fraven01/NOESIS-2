@@ -1344,8 +1344,9 @@ class PgVectorClient:
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 embedding_values = chunk.embedding
-                is_empty_embedding = embedding_values is None or _is_effectively_zero_vector(
-                    embedding_values
+                is_empty_embedding = (
+                    embedding_values is None
+                    or _is_effectively_zero_vector(embedding_values)
                 )
                 if is_empty_embedding:
                     metrics.RAG_EMBEDDINGS_EMPTY_TOTAL.inc()
