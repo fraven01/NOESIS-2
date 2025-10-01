@@ -361,6 +361,12 @@ class PgVectorClient:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
     ) -> HybridSearchResult:
+        """Execute hybrid vector/lexical retrieval for ``query``.
+
+        The pg_trgm similarity threshold is applied per-connection via
+        ``SELECT set_limit`` immediately before running the trigram ``%``
+        operator to ensure consistent lexical matching behaviour.
+        """
         top_k = min(max(1, top_k), 10)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
@@ -562,28 +568,40 @@ class PgVectorClient:
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
+                        logger.info(
+                            "rag.pgtrgm.limit",
+                            extra={
+                                "requested": requested_trgm_limit,
+                                "effective": trgm_limit_value,
+                            },
+                        )
+                        applied_trgm_limit: float | None = None
                         try:
                             cur.execute(
-                                "SELECT set_limit(%s::real)",
+                                "SELECT set_limit(%s::float4)",
                                 (float(trgm_limit_value),),
                             )
                             cur.execute("SELECT show_limit()")
                             current = cur.fetchone()
+                            if current is not None and current[0] is not None:
+                                applied_trgm_limit = float(current[0])
                             logger.info(
-                                "rag.pgtrgm.limit",
+                                "rag.pgtrgm.limit.applied",
                                 extra={
                                     "requested": requested_trgm_limit,
-                                    "effective": float(current[0]) if current else None,
+                                    "applied": applied_trgm_limit,
                                 },
                             )
-                        except Exception as e:  # pragma: no cover - defensive
+                        except Exception as exc:  # pragma: no cover - defensive
                             logger.warning(
-                                "rag.pgtrgm.limit.set_failed",
+                                "rag.pgtrgm.limit.error",
                                 extra={
                                     "requested": requested_trgm_limit,
-                                    "error": str(e),
+                                    "exc_type": exc.__class__.__name__,
+                                    "error": str(exc),
                                 },
                             )
+                            applied_trgm_limit = None
 
                         lexical_rows_local: List[tuple] = []
                         lexical_sql = f"""
@@ -626,13 +644,18 @@ class PgVectorClient:
                                 )
                             except Exception:
                                 pass
-                            if not lexical_rows_local:
+                            if (
+                                not lexical_rows_local
+                                and applied_trgm_limit is not None
+                                and applied_trgm_limit > 0.1
+                            ):
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
                                     extra={
                                         "tenant": tenant,
                                         "case": case_value,
                                         "trgm_limit": trgm_limit_value,
+                                        "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
                                     },
                                 )
