@@ -1067,12 +1067,6 @@ class PgVectorClient:
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
-            if (
-                not entry.get("_allow_below_cutoff")
-                and fallback_limit_used_value is not None
-                and fallback_limit_used_value + 1e-9 < min_sim_value
-            ):
-                entry["_allow_below_cutoff"] = True
             if lexical_score_missing:
                 entry["_allow_below_cutoff"] = True
 
@@ -1166,8 +1160,8 @@ class PgVectorClient:
         if min_sim_value > 0.0:
             below_cutoff = sum(
                 1
-                for chunk, allow in results
-                if (not allow) and float(chunk.meta.get("fused", 0.0)) < min_sim_value
+                for chunk, _ in results
+                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
