@@ -746,9 +746,13 @@ class PgVectorClient:
             except (TypeError, ValueError):
                 lscore = 0.0
             lscore = max(0.0, lscore)
-            fused = max(
-                0.0, min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore)
-            )
+            if has_vector_signal:
+                fused = max(
+                    0.0,
+                    min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore),
+                )
+            else:
+                fused = max(0.0, min(1.0, lscore))
             meta["vscore"] = vscore
             meta["lscore"] = lscore
             meta["fused"] = fused
