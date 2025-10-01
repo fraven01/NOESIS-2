@@ -167,9 +167,7 @@ def test_applies_set_limit_and_logs_applied_value(monkeypatch):
         )
 
     set_limit_calls = [
-        (sql, params)
-        for sql, params in cursor.executed
-        if "set_limit" in sql.lower()
+        (sql, params) for sql, params in cursor.executed if "set_limit" in sql.lower()
     ]
     assert set_limit_calls, "expected SELECT set_limit call"
     assert float(set_limit_calls[0][1][0]) == pytest.approx(0.05)
