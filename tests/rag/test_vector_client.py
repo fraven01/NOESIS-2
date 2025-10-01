@@ -30,6 +30,7 @@ class _FakeCursor:
         )
         self._respect_set_limit = bool(respect_set_limit)
         self._requested_limit: float | None = None
+        self._fallback_threshold: float | None = None
         self.executed: list[tuple[str, object | None]] = []
 
     def __enter__(self):
@@ -59,6 +60,14 @@ class _FakeCursor:
             # which adds a similarity threshold predicate (">= %s").
             if ">= %s" in text:
                 self._fetch_stage = "lexical_fallback"
+                try:
+                    # ``params`` structure mirrors the fallback SQL where the
+                    # penultimate value corresponds to the similarity threshold
+                    # ("... similarity(c.text_norm, %s) >= %s ...").
+                    if params is not None:
+                        self._fallback_threshold = float(params[-2])
+                except Exception:
+                    self._fallback_threshold = None
             else:
                 self._fetch_stage = "lexical"
         else:
@@ -80,8 +89,19 @@ class _FakeCursor:
                 return list(self._lexical_rows)
             return []
         if self._fetch_stage == "lexical_fallback":
-            # Fallback returns rows irrespective of the server limit threshold.
-            return list(self._lexical_rows)
+            # Respect the requested fallback similarity threshold so the
+            # hybrid client can observe whether progressively lower limits
+            # are required to surface rows.
+            threshold = self._fallback_threshold
+            rows = []
+            for row in self._lexical_rows:
+                try:
+                    score = float(row[-1])
+                except (TypeError, ValueError, IndexError):
+                    score = None
+                if threshold is None or (score is not None and score >= threshold):
+                    rows.append(row)
+            return rows
         return []
 
 
