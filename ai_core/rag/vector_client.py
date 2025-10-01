@@ -1092,7 +1092,11 @@ class PgVectorClient:
             filtered_results = [chunk for chunk, _ in results]
         limited_results = filtered_results[:top_k]
         if not limited_results and results and min_sim_value > 0.0:
-            limited_results = [chunk for chunk, _ in results[:top_k]]
+            fallback_results = [
+                chunk for chunk, allow in results[:top_k] if allow
+            ]
+            if fallback_results:
+                limited_results = fallback_results
             try:
                 logger.info(
                     "rag.hybrid.cutoff_fallback",
