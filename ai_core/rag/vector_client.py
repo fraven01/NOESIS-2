@@ -937,7 +937,11 @@ class PgVectorClient:
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             distance_value = float(score_raw)
-            vscore = max(0.0, 1.0 - float(distance_value))
+            if distance_score_mode == "inverse":
+                distance_value = max(0.0, distance_value)
+                vscore = 1.0 / (1.0 + distance_value)
+            else:
+                vscore = max(0.0, 1.0 - float(distance_value))
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
