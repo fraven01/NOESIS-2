@@ -251,6 +251,34 @@ class PgVectorClient:
                 return
             self._indexes_ready = True
 
+    def _restore_session_after_rollback(self, cur) -> None:  # type: ignore[no-untyped-def]
+        """Re-apply session level settings after a transaction rollback."""
+
+        try:
+            cur.execute(
+                sql.SQL("SET search_path TO {}, public").format(
+                    sql.Identifier(self._schema)
+                )
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "rag.hybrid.search_path_restore_failed",
+                extra={"schema": self._schema, "error": str(exc)},
+            )
+        try:
+            cur.execute(
+                "SET LOCAL statement_timeout = %s",
+                (str(self._statement_timeout_ms),),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "rag.hybrid.statement_timeout_restore_failed",
+                extra={
+                    "timeout_ms": self._statement_timeout_ms,
+                    "error": str(exc),
+                },
+            )
+
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
         chunk_list = list(chunks)
         if not chunk_list:
@@ -692,17 +720,19 @@ class PgVectorClient:
                                     or applied_trgm_limit > 0.1
                                 ):
                                     should_run_fallback = True
-                            if should_run_fallback:
-                                if fallback_requires_rollback:
-                                    try:
-                                        conn.rollback()
-                                    except Exception:  # pragma: no cover - defensive
-                                        pass
-                                logger.info(
-                                    "rag.hybrid.trgm_no_match",
-                                    extra={
-                                        "tenant": tenant,
-                                        "case": case_value,
+                                if should_run_fallback:
+                                    if fallback_requires_rollback:
+                                        try:
+                                            conn.rollback()
+                                        except Exception:  # pragma: no cover - defensive
+                                            pass
+                                        else:
+                                            self._restore_session_after_rollback(cur)
+                                    logger.info(
+                                        "rag.hybrid.trgm_no_match",
+                                        extra={
+                                            "tenant": tenant,
+                                            "case": case_value,
                                         "trgm_limit": trgm_limit_value,
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,

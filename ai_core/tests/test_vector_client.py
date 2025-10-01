@@ -911,6 +911,143 @@ class TestPgVectorClient:
         assert fallback_logs
         assert fallback_logs[0]["picked_limit"] == pytest.approx(0.05)
 
+    def test_fallback_reapplies_search_path_after_rollback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"fallback-search-path").hexdigest()
+        doc_id = uuid.uuid4()
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        class _Cursor:
+            def __init__(self, owner) -> None:
+                self._owner = owner
+                self._next_fetchall: str | None = None
+                self._fetchone_result: tuple | None = None
+                self._fallback_limit: float | None = None
+
+            def __enter__(self) -> "_Cursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
+                text = str(sql)
+                if "SET search_path" in text:
+                    self._owner.mark_search_path()
+                    return
+                if "SET LOCAL statement_timeout" in text:
+                    return
+                if "SELECT set_limit" in text:
+                    self._owner.last_limit = float(params[0]) if params else None
+                    return
+                if "SELECT show_limit()" in text:
+                    if self._owner.last_limit is None:
+                        self._fetchone_result = None
+                    else:
+                        self._fetchone_result = (self._owner.last_limit,)
+                    return
+                if "FROM embeddings" in text:
+                    self._next_fetchall = "vector"
+                    return
+                if "c.text_norm % %s" in text:
+                    self._next_fetchall = "primary"
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in text:
+                    self._next_fetchall = "fallback"
+                    self._fallback_limit = float(params[-2]) if params else None
+                    return
+                self._next_fetchall = None
+
+            def fetchall(self) -> list[tuple]:
+                mode = self._next_fetchall
+                self._next_fetchall = None
+                if mode == "vector":
+                    return []
+                if mode == "primary":
+                    raise IndexError("simulated lexical failure")
+                if mode == "fallback":
+                    if not self._owner.search_path_set:
+                        raise RuntimeError("search path missing")
+                    return [
+                        (
+                            "chunk-fallback",
+                            "Lexical fallback",
+                            {
+                                "tenant": tenant,
+                                "hash": doc_hash,
+                                "external_id": "fallback-doc",
+                            },
+                            doc_hash,
+                            doc_id,
+                            0.38,
+                        )
+                    ]
+                return []
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def __init__(self) -> None:
+                self.search_path_set = True
+                self.search_path_calls = 0
+                self.last_limit: float | None = None
+
+            def mark_search_path(self) -> None:
+                self.search_path_set = True
+                self.search_path_calls += 1
+
+            def cursor(self) -> _Cursor:
+                return _Cursor(self)
+
+            def rollback(self) -> None:
+                self.search_path_set = False
+
+        connections: list[_FakeConnection] = []
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+            connections.append(fake)
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        result = client.hybrid_search(
+            "trigger fallback",
+            tenant_id=tenant,
+            filters={},
+            top_k=1,
+            alpha=0.0,
+            trgm_limit=0.09,
+        )
+
+        assert result.lexical_candidates == 1
+        assert result.chunks
+        assert connections
+        fake = connections[0]
+        assert fake.search_path_calls >= 1
+        assert fake.search_path_set is True
+
     def test_fallback_skips_when_limit_low_enough(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
