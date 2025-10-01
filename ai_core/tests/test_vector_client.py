@@ -16,6 +16,114 @@ class TestPgVectorClient:
     def teardown_method(self) -> None:
         vector_client.reset_default_client()
 
+    def _run_adaptive_fallback(
+        self,
+        client: vector_client.PgVectorClient,
+        monkeypatch: pytest.MonkeyPatch,
+        tenant: str,
+        doc_hash: str,
+        *,
+        success_limit: float,
+        applied_limit: float,
+    ) -> tuple[vector_client.HybridSearchResult, list[dict[str, object]]]:
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        doc_id = uuid.uuid4()
+
+        class _FallbackCursor:
+            def __init__(self) -> None:
+                self._fetchall_result: list[tuple] = []
+                self._fetchone_result: tuple | None = None
+
+            def __enter__(self) -> "_FallbackCursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql: str, params=None) -> None:
+                if "SET LOCAL statement_timeout" in sql:
+                    return
+                if "SELECT set_limit" in sql:
+                    self._fetchone_result = None
+                    return
+                if "SELECT show_limit()" in sql:
+                    self._fetchone_result = (applied_limit,)
+                    return
+                if "c.text_norm % %s" in sql:
+                    self._fetchall_result = []
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in sql:
+                    limit_value = float(params[-2])
+                    if limit_value <= success_limit + 1e-9:
+                        self._fetchall_result = [
+                            (
+                                "chunk-adaptive",
+                                "Lexical adaptive",
+                                {
+                                    "tenant": tenant,
+                                    "hash": doc_hash,
+                                    "external_id": "adaptive-doc",
+                                },
+                                doc_hash,
+                                doc_id,
+                                0.7,
+                            )
+                        ]
+                    else:
+                        self._fetchall_result = []
+                    return
+                self._fetchall_result = []
+
+            def fetchall(self) -> list[tuple]:
+                result = list(self._fetchall_result)
+                self._fetchall_result = []
+                return result
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def cursor(self) -> _FallbackCursor:
+                return _FallbackCursor()
+
+            def rollback(self) -> None:
+                return None
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "adaptive fallback",
+                tenant_id=tenant,
+                filters={},
+                top_k=1,
+                alpha=0.0,
+                trgm_limit=applied_limit,
+            )
+
+        return result, logs
+
     def test_missing_tenant_raises(self):
         client = vector_client.get_default_client()
         chunk = Chunk(
@@ -650,6 +758,174 @@ class TestPgVectorClient:
         ]
         assert fallback_logs
         assert fallback_logs[0]["fallback"] is True
+
+    def test_fallback_relaxes_trgm_limit_until_match(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"adaptive-trgm").hexdigest()
+
+        result, logs = self._run_adaptive_fallback(
+            client,
+            monkeypatch,
+            tenant,
+            doc_hash,
+            success_limit=0.05,
+            applied_limit=0.09,
+        )
+
+        assert result.lexical_candidates == 1
+        assert result.fallback_limit_used == pytest.approx(0.05)
+        assert result.applied_trgm_limit == pytest.approx(0.09)
+        fallback_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+        ]
+        assert fallback_logs
+        log_entry = fallback_logs[0]
+        assert log_entry["picked_limit"] == pytest.approx(0.05)
+        assert log_entry["count"] == 1
+        assert log_entry["tried_limits"][0] == pytest.approx(0.09)
+
+    def test_fallback_skips_when_limit_low_enough(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"trgm-direct").hexdigest()
+        doc_id = uuid.uuid4()
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        class _Cursor:
+            def __init__(self, owner) -> None:
+                self._owner = owner
+                self._fetchall_result: list[tuple] = []
+                self._fetchone_result: tuple | None = None
+
+            def __enter__(self) -> "_Cursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql: str, params=None) -> None:
+                if "SET LOCAL statement_timeout" in sql:
+                    return
+                if "SELECT set_limit" in sql:
+                    self._fetchone_result = None
+                    return
+                if "SELECT show_limit()" in sql:
+                    self._fetchone_result = (0.05,)
+                    return
+                if "c.text_norm % %s" in sql:
+                    self._fetchall_result = [
+                        (
+                            "chunk-direct",
+                            "Direct lexical",
+                            {
+                                "tenant": tenant,
+                                "hash": doc_hash,
+                                "external_id": "direct-doc",
+                            },
+                            doc_hash,
+                            doc_id,
+                            0.9,
+                        )
+                    ]
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in sql:
+                    self._owner.similarity_limits.append(float(params[-2]))
+                    self._fetchall_result = []
+                    return
+                self._fetchall_result = []
+
+            def fetchall(self) -> list[tuple]:
+                result = list(self._fetchall_result)
+                self._fetchall_result = []
+                return result
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def __init__(self) -> None:
+                self.similarity_limits: list[float] = []
+
+            def cursor(self) -> _Cursor:
+                return _Cursor(self)
+
+            def rollback(self) -> None:
+                return None
+
+        holder: dict[str, _FakeConnection] = {}
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+            holder["conn"] = fake
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "direct lexical",
+                tenant_id=tenant,
+                filters={},
+                top_k=1,
+                alpha=0.0,
+                trgm_limit=0.05,
+            )
+
+        assert result.lexical_candidates == 1
+        assert result.fallback_limit_used is None
+        assert result.applied_trgm_limit == pytest.approx(0.05)
+        assert holder["conn"].similarity_limits == []
+        fallback_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+        ]
+        assert fallback_logs == []
+
+    def test_meta_includes_fallback_limit_used(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"fallback-meta").hexdigest()
+
+        result, logs = self._run_adaptive_fallback(
+            client,
+            monkeypatch,
+            tenant,
+            doc_hash,
+            success_limit=0.04,
+            applied_limit=0.09,
+        )
+
+        assert result.lexical_candidates == 1
+        assert result.applied_trgm_limit == pytest.approx(0.09)
+        assert result.fallback_limit_used == pytest.approx(0.04)
+        fallback_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+        ]
+        assert fallback_logs
+        assert fallback_logs[0]["picked_limit"] == pytest.approx(0.04)
 
     def test_row_shape_mismatch_does_not_crash(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
