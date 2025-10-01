@@ -871,10 +871,8 @@ class PgVectorClient:
             try:
                 logger.warning(
                     "rag.debug.rows.lexical.final",
-                    extra={
-                        "count": len(lexical_rows),
-                        "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
-                    },
+                    count=len(lexical_rows),
+                    first_len=(len(lexical_rows[0]) if lexical_rows else 0),
                 )
             except Exception:
                 pass
