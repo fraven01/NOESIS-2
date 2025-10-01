@@ -720,19 +720,19 @@ class PgVectorClient:
                                     or applied_trgm_limit > 0.1
                                 ):
                                     should_run_fallback = True
-                                if should_run_fallback:
-                                    if fallback_requires_rollback:
-                                        try:
-                                            conn.rollback()
-                                        except Exception:  # pragma: no cover - defensive
-                                            pass
-                                        else:
-                                            self._restore_session_after_rollback(cur)
-                                    logger.info(
-                                        "rag.hybrid.trgm_no_match",
-                                        extra={
-                                            "tenant": tenant,
-                                            "case": case_value,
+                            if should_run_fallback:
+                                if fallback_requires_rollback:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:  # pragma: no cover - defensive
+                                        pass
+                                    else:
+                                        self._restore_session_after_rollback(cur)
+                                logger.info(
+                                    "rag.hybrid.trgm_no_match",
+                                    extra={
+                                        "tenant": tenant,
+                                        "case": case_value,
                                         "trgm_limit": trgm_limit_value,
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
