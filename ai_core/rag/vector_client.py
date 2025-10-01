@@ -623,6 +623,7 @@ class PgVectorClient:
                         applied_trgm_limit_value = applied_trgm_limit
 
                         lexical_rows_local: List[tuple] = []
+                        fallback_requires_rollback = False
                         lexical_sql = f"""
                             SELECT
                                 c.id,
@@ -671,6 +672,7 @@ class PgVectorClient:
                                     exc, (IndexError, ValueError, PsycopgError)
                                 ):
                                     should_run_fallback = True
+                                    fallback_requires_rollback = True
                                     lexical_rows_local = []
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
@@ -691,6 +693,11 @@ class PgVectorClient:
                                 ):
                                     should_run_fallback = True
                             if should_run_fallback:
+                                if fallback_requires_rollback:
+                                    try:
+                                        conn.rollback()
+                                    except Exception:  # pragma: no cover - defensive
+                                        pass
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
                                     extra={
