@@ -980,16 +980,14 @@ class PgVectorClient:
                         reasons.append("case_mismatch")
                 logger.info(
                     "rag.strict.reject",
-                    extra={
-                        "tenant": tenant,
-                        "case": case_value,
-                        "candidate_tenant": candidate_tenant,
-                        "candidate_case": candidate_case,
-                        "doc_hash": doc_hash,
-                        "doc_id": doc_id,
-                        "chunk_id": entry["chunk_id"],
-                        "reasons": reasons or ["unknown"],
-                    },
+                    tenant=tenant,
+                    case=case_value,
+                    candidate_tenant=candidate_tenant,
+                    candidate_case=candidate_case,
+                    doc_hash=doc_hash,
+                    doc_id=doc_id,
+                    chunk_id=entry["chunk_id"],
+                    reasons=reasons or ["unknown"],
                 )
                 continue
             try:
