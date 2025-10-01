@@ -215,7 +215,12 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
     )
 
     lexical_row = (
-        "chunk-lex", "lexical match", {"tenant": tenant}, "hash-lex", "doc-lex", 0.2
+        "chunk-lex",
+        "lexical match",
+        {"tenant": tenant},
+        "hash-lex",
+        "doc-lex",
+        0.2,
     )
 
     def _fake_run(_fn, *, op_name: str):

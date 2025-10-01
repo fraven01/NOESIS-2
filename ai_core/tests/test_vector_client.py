@@ -816,6 +816,7 @@ class TestPgVectorClient:
 
         def _fake_connection(self):  # type: ignore[no-untyped-def]
             fake = _FakeConnection(lexical_rows)
+
             class _Ctx:
                 def __enter__(self_inner):
                     return fake
@@ -825,7 +826,9 @@ class TestPgVectorClient:
 
             return _Ctx()
 
-        monkeypatch.setattr(client, "_connection", _fake_connection.__get__(client, type(client)))
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
 
         result = client.hybrid_search(
             "lexical only",

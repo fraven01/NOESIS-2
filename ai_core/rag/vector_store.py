@@ -274,7 +274,10 @@ class VectorStoreRouter:
                         name
                         for name, parameter in signature.parameters.items()
                         if parameter.kind
-                        in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+                        in (
+                            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                            inspect.Parameter.KEYWORD_ONLY,
+                        )
                     }
                     hybrid_kwargs = {
                         key: value
