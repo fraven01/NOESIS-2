@@ -180,7 +180,9 @@ def test_rag_demo_run_handles_for_tenant_with_schema(
     assert router.calls == [("dev", "public")]
 
 
-def test_rag_demo_hybrid_search_uses_trimmed_query(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_rag_demo_hybrid_search_uses_trimmed_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     class Router:
         def __init__(self) -> None:
             self.received_query: str | None = None

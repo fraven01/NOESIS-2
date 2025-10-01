@@ -300,15 +300,11 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     _vec_limit = state.get("vec_limit")
                     _lex_limit = state.get("lex_limit")
                     try:
-                        _vec_limit = (
-                            int(_vec_limit) if _vec_limit is not None else None
-                        )
+                        _vec_limit = int(_vec_limit) if _vec_limit is not None else None
                     except (TypeError, ValueError):
                         _vec_limit = None
                     try:
-                        _lex_limit = (
-                            int(_lex_limit) if _lex_limit is not None else None
-                        )
+                        _lex_limit = int(_lex_limit) if _lex_limit is not None else None
                     except (TypeError, ValueError):
                         _lex_limit = None
                     hybrid_result = router_hybrid(
