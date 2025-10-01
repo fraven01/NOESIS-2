@@ -1166,8 +1166,8 @@ class PgVectorClient:
         if min_sim_value > 0.0:
             below_cutoff = sum(
                 1
-                for chunk, allow in results
-                if (not allow) and float(chunk.meta.get("fused", 0.0)) < min_sim_value
+                for chunk, _ in results
+                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
