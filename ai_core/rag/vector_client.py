@@ -885,19 +885,17 @@ class PgVectorClient:
 
         logger.info(
             "rag.hybrid.sql_counts",
-            extra={
-                "tenant": tenant,
-                "case": case_value,
-                "vec_rows": len(vector_rows),
-                "lex_rows": len(lexical_rows),
-                "alpha": alpha_value,
-                "min_sim": min_sim_value,
-                "trgm_limit": trgm_limit_value,
-                "applied_trgm_limit": applied_trgm_limit_value,
-                "fallback_limit_used": fallback_limit_used_value,
-                "distance_score_mode": distance_score_mode,
-                "duration_ms": duration_ms,
-            },
+            tenant=tenant,
+            case=case_value,
+            vec_rows=len(vector_rows),
+            lex_rows=len(lexical_rows),
+            alpha=alpha_value,
+            min_sim=min_sim_value,
+            trgm_limit=trgm_limit_value,
+            applied_trgm_limit=applied_trgm_limit_value,
+            fallback_limit_used=fallback_limit_used_value,
+            distance_score_mode=distance_score_mode,
+            duration_ms=duration_ms,
         )
 
         candidates: Dict[str, Dict[str, object]] = {}
