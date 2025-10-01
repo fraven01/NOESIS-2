@@ -38,7 +38,7 @@ def _build_record() -> logging.LogRecord:
 
 
 def test_filter_masks_values_when_masking_enabled(settings):
-    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = False
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = "False"
     filt = common_logging.RequestTaskContextFilter()
 
     with common_logging.log_context(
@@ -59,7 +59,7 @@ def test_filter_masks_values_when_masking_enabled(settings):
 
 
 def test_filter_allows_unmasked_values_when_opted_in(settings):
-    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = True
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = "true"
     filt = common_logging.RequestTaskContextFilter()
 
     with common_logging.log_context(
@@ -90,7 +90,8 @@ def test_filter_sets_placeholders_when_context_missing(settings):
     assert record.key_alias == "-"
 
 
-def test_structlog_logger_includes_context_and_service(monkeypatch):
+def test_structlog_logger_includes_context_and_service(settings, monkeypatch):
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = "False"
     monkeypatch.setitem(common_logging._SERVICE_CONTEXT, "service.name", "svc-test")
     monkeypatch.setitem(
         common_logging._SERVICE_CONTEXT, "deployment.environment", "pytest"
@@ -113,6 +114,22 @@ def test_structlog_logger_includes_context_and_service(monkeypatch):
     assert "***" in event["trace_id"]
     assert event["case_id"].startswith("ca")
     assert event["tenant"].startswith("te")
+
+
+def test_structlog_logger_respects_string_opt_in(settings):
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = "true"
+
+    with capture_logs() as logs:
+        with common_logging.log_context(
+            trace_id="trace-xyz123", case_id="case-789", tenant="tenant-42"
+        ):
+            common_logging.get_logger("common.tests").info("hello", extra_field="value")
+
+    assert logs, "expected log entry"
+    event = logs[0]
+    assert event["trace_id"] == "trace-xyz123"
+    assert event["case_id"] == "case-789"
+    assert event["tenant"] == "tenant-42"
 
 
 def test_request_log_context_middleware_binds_and_clears():
