@@ -937,7 +937,9 @@ class PgVectorClient:
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             distance_value = float(score_raw)
-            if distance_score_mode == "inverse":
+            if vector_score_missing:
+                vscore = 0.0
+            elif distance_score_mode == "inverse":
                 distance_value = max(0.0, distance_value)
                 vscore = 1.0 / (1.0 + distance_value)
             else:
