@@ -649,7 +649,7 @@ class TestPgVectorClient:
         assert fallback_logs
         assert fallback_logs[0]["fallback"] is True
 
-    def test_hybrid_search_handles_row_shape_mismatch(self, monkeypatch) -> None:
+    def test_row_shape_mismatch_does_not_crash(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
 
@@ -664,19 +664,16 @@ class TestPgVectorClient:
                         "doc-1",
                     )
                 ],
-                [
-                    (
-                        "chunk-1",
-                        "Vector mismatch",
-                        {"tenant": tenant},
-                        "hash-1",
-                        "doc-1",
-                    )
-                ],
+                [],
                 2.0,
             )
 
         monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_ROW_SHAPE_WARNINGS",
+            set(),
+        )
 
         class _Histogram:
             def __init__(self) -> None:
@@ -699,13 +696,148 @@ class TestPgVectorClient:
         warnings = [
             entry for entry in logs if entry["event"] == "rag.hybrid.row_shape_mismatch"
         ]
-        assert len(warnings) == 2
-        assert {entry["kind"] for entry in warnings} == {"vector", "lexical"}
-        assert {entry["row_len"] for entry in warnings} == {5}
+        assert len(warnings) == 1
+        assert warnings[0]["kind"] == "vector"
+        assert warnings[0]["row_len"] == 5
         assert result.chunks
         meta = result.chunks[0].meta
         assert meta["vscore"] == 0.0
         assert meta["lscore"] == 0.0
+
+    def test_truncated_vector_row_populates_metadata(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        def _fake_run(_fn, *, op_name: str):
+            return (
+                [
+                    (
+                        "chunk-meta",
+                        "Vector metadata",
+                        {"tenant": tenant},
+                        "hash-meta",
+                        "doc-meta",
+                    )
+                ],
+                [],
+                1.0,
+            )
+
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_ROW_SHAPE_WARNINGS",
+            set(),
+        )
+
+        result = client.hybrid_search(
+            "vector meta",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=1,
+        )
+
+        assert result.chunks
+        meta = result.chunks[0].meta
+        assert meta["hash"] == "hash-meta"
+        assert meta["id"] == "doc-meta"
+
+    def test_hybrid_returns_lexical_when_vector_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.1] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+        )
+
+        class _FakeCursor:
+            def __init__(self, lexical_rows: list[tuple]) -> None:
+                self._lexical_rows = lexical_rows
+                self._last_sql = ""
+                self._fetchall_result: list[tuple] = []
+                self._fetchone_result: tuple | None = None
+
+            def __enter__(self) -> "_FakeCursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql: str, params=None) -> None:
+                self._last_sql = sql
+                if "embedding <=>" in sql:
+                    raise RuntimeError("vector query failed")
+                if "SELECT show_limit()" in sql:
+                    self._fetchone_result = (0.3,)
+                elif "similarity(c.text_norm" in sql:
+                    self._fetchall_result = list(self._lexical_rows)
+                else:
+                    self._fetchall_result = []
+
+            def fetchall(self) -> list[tuple]:
+                result = list(self._fetchall_result)
+                self._fetchall_result = []
+                return result
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def __init__(self, lexical_rows: list[tuple]) -> None:
+                self._lexical_rows = lexical_rows
+                self.rolled_back = False
+
+            def cursor(self):
+                return _FakeCursor(self._lexical_rows)
+
+            def rollback(self) -> None:
+                self.rolled_back = True
+
+        lexical_rows = [
+            (
+                "lex-chunk",
+                "Lexical fallback",
+                {"tenant": tenant},
+                "lex-hash",
+                "lex-doc",
+                0.9,
+            )
+        ]
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection(lexical_rows)
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(client, "_connection", _fake_connection.__get__(client, type(client)))
+
+        result = client.hybrid_search(
+            "lexical only",
+            tenant_id=tenant,
+            filters={"case": None},
+            top_k=2,
+        )
+
+        assert result.lexical_candidates == 1
+        assert result.vector_candidates == 0
+        assert result.chunks
+        top_meta = result.chunks[0].meta
+        assert top_meta["hash"] == "lex-hash"
+        assert top_meta["lscore"] == pytest.approx(0.9)
 
     def test_hybrid_search_counts_candidates_below_min_sim_cutoff(
         self, monkeypatch

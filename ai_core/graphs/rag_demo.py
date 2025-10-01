@@ -420,8 +420,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     if no_hit_due_to_cutoff:
         warnings.append("no_hit_above_threshold")
     if not matches and not no_hit_due_to_cutoff:
-        matches = _demo_matches(query, str(tenant_id), top_k=top_k)
-        warnings.append("no_vector_matches_demo_fallback")
+        if not router_error:
+            matches = _demo_matches(query, str(tenant_id), top_k=top_k)
+            warnings.append("no_vector_matches_demo_fallback")
 
     response_meta: Dict[str, Any] = {
         "index_kind": index_kind,
