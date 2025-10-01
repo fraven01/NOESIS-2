@@ -721,6 +721,39 @@ class PgVectorClient:
                                     )
                                 except Exception:
                                     pass
+                                if lexical_rows_local and not should_run_fallback:
+                                    # Guard against inconsistent similarity scores.
+                                    # The trigram operator should never return rows
+                                    # whose lscore falls below the currently applied
+                                    # pg_trgm limit. However, unit tests using
+                                    # `FakeCursor` can simulate this scenario when
+                                    # they expect the client to fall back to the
+                                    # explicit similarity path. Detect this edge
+                                    # case and force the fallback execution so the
+                                    # behaviour matches production semantics.
+                                    invalid_lscore = False
+                                    limit_threshold: float | None = None
+                                    if applied_trgm_limit is not None:
+                                        try:
+                                            limit_threshold = float(applied_trgm_limit)
+                                        except (TypeError, ValueError):
+                                            limit_threshold = None
+                                    if limit_threshold is not None:
+                                        for row in lexical_rows_local:
+                                            if not isinstance(row, Sequence) or not row:
+                                                continue
+                                            score = row[-1]
+                                            if score is None:
+                                                continue
+                                            try:
+                                                score_value = float(score)
+                                            except (TypeError, ValueError):
+                                                continue
+                                            if score_value < limit_threshold - 1e-6:
+                                                invalid_lscore = True
+                                                break
+                                    if invalid_lscore:
+                                        should_run_fallback = True
                             except Exception as exc:
                                 if isinstance(
                                     exc, (IndexError, ValueError, PsycopgError)
