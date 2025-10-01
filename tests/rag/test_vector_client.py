@@ -132,6 +132,39 @@ def test_row_shape_mismatch_does_not_crash(monkeypatch):
     assert int(mismatch_logs[0].get("row_len", 0)) == 5
 
 
+def test_truncated_vector_row_populates_metadata(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    truncated_row = (
+        "chunk-short",
+        "truncated text",
+        {"tenant": tenant},
+        "hash-short",
+        "doc-short",
+    )
+
+    def _fake_run(_fn, *, op_name: str):
+        return ([truncated_row], [], 0.7)
+
+    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+    result = client.hybrid_search(
+        "truncate me",
+        tenant_id=tenant,
+        filters={"case": None},
+        top_k=1,
+    )
+
+    assert len(result.chunks) == 1
+    meta = result.chunks[0].meta
+    assert meta.get("tenant") == tenant
+    assert meta.get("hash") == "hash-short"
+    assert meta.get("id") == "doc-short"
+    assert meta.get("vscore") == pytest.approx(0.0)
+    assert meta.get("lscore") == pytest.approx(0.0)
+
+
 def test_lexical_only_scoring(monkeypatch):
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())

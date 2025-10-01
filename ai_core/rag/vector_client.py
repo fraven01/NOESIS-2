@@ -175,6 +175,22 @@ class PgVectorClient:
 
         self._pool.closeall()
 
+    @staticmethod
+    def _normalise_result_row(
+        row: Sequence[object], *, kind: str
+    ) -> Tuple[object, object, object, object, object, object]:
+        row_tuple = tuple(row)
+        if len(row_tuple) != 6:
+            logger.warning(
+                "rag.hybrid.row_shape_mismatch",
+                extra={"kind": kind, "row_len": len(row_tuple)},
+            )
+        padded = (row_tuple + (None,) * 6)[:6]
+        return cast(
+            Tuple[object, object, object, object, object, object],
+            padded,
+        )
+
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
         conn = self._pool.getconn()
@@ -614,18 +630,16 @@ class PgVectorClient:
 
         candidates: Dict[str, Dict[str, object]] = {}
         for row in vector_rows:
-            if len(row) < 6:
-                logger.warning(
-                    "rag.hybrid.row_shape_mismatch",
-                    extra={"kind": "vector", "row_len": len(row)},
-                )
-                row = tuple(list(row) + [None] * (6 - len(row)))
-            chunk_id = row[0]
-            text_value = row[1] or ""
-            metadata = row[2] or {}
-            doc_hash = row[3]
-            doc_id = row[4]
-            score_raw = row[5]
+            (
+                chunk_id,
+                text_value,
+                metadata,
+                doc_hash,
+                doc_id,
+                score_raw,
+            ) = self._normalise_result_row(row, kind="vector")
+            text_value = text_value or ""
+            metadata = metadata or {}
             key = str(chunk_id)
             metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
@@ -651,18 +665,16 @@ class PgVectorClient:
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
         for row in lexical_rows:
-            if len(row) < 6:
-                logger.warning(
-                    "rag.hybrid.row_shape_mismatch",
-                    extra={"kind": "lexical", "row_len": len(row)},
-                )
-                row = tuple(list(row) + [None] * (6 - len(row)))
-            chunk_id = row[0]
-            text_value = row[1] or ""
-            metadata = row[2] or {}
-            doc_hash = row[3]
-            doc_id = row[4]
-            score_raw = row[5]
+            (
+                chunk_id,
+                text_value,
+                metadata,
+                doc_hash,
+                doc_id,
+                score_raw,
+            ) = self._normalise_result_row(row, kind="lexical")
+            text_value = text_value or ""
+            metadata = metadata or {}
             key = str(chunk_id)
             metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
             entry = candidates.setdefault(
