@@ -790,6 +790,9 @@ class PgVectorClient:
                                         0.05,
                                         0.04,
                                         0.03,
+                                        0.02,
+                                        0.01,
+                                        0.0,
                                     ]
                                 )
                                 fallback_limits: List[float] = []
@@ -798,7 +801,7 @@ class PgVectorClient:
                                         limit_value = float(limit)
                                     except (TypeError, ValueError):
                                         continue
-                                    limit_value = max(0.03, limit_value)
+                                    limit_value = max(0.0, limit_value)
                                     if limit_value not in fallback_limits:
                                         fallback_limits.append(limit_value)
                                 picked_limit: float | None = None
