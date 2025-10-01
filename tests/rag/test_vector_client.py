@@ -10,13 +10,26 @@ pytestmark = pytest.mark.usefixtures("rag_database")
 
 class _FakeCursor:
     def __init__(
-        self, show_limit_value: float = 0.0, vector_rows=None, lexical_rows=None
+        self,
+        show_limit_value: float = 0.0,
+        vector_rows=None,
+        lexical_rows=None,
+        *,
+        lexical_required_limit: float | None = None,
+        set_limit_error: Exception | None = None,
     ):
         self._limit = float(show_limit_value)
         self._vector_rows = list(vector_rows or [])
         self._lexical_rows = list(lexical_rows or [])
         self._last_sql = ""
         self._fetch_stage = None
+        self._required_limit = (
+            float(lexical_required_limit)
+            if lexical_required_limit is not None
+            else None
+        )
+        self._set_limit_error = set_limit_error
+        self.executed: list[tuple[str, object | None]] = []
 
     def __enter__(self):
         return self
@@ -26,8 +39,11 @@ class _FakeCursor:
 
     def execute(self, sql, params=None):  # noqa: WPS110 - sql name
         self._last_sql = str(sql)
+        self.executed.append((self._last_sql, params))
         text = self._last_sql.lower()
         if "set_limit(" in text:
+            if self._set_limit_error is not None:
+                raise self._set_limit_error
             try:
                 # params may be a tuple like (0.05,)
                 self._limit = float((params or (None,))[0])
@@ -38,7 +54,10 @@ class _FakeCursor:
         elif "from embeddings" in text:
             self._fetch_stage = "vector"
         elif "similarity(" in text:
-            self._fetch_stage = "lexical"
+            if " % " in text:
+                self._fetch_stage = "lexical"
+            else:
+                self._fetch_stage = "lexical_fallback"
         else:
             self._fetch_stage = None
 
@@ -51,6 +70,10 @@ class _FakeCursor:
         if self._fetch_stage == "vector":
             return list(self._vector_rows)
         if self._fetch_stage == "lexical":
+            if self._required_limit is None or self._limit <= self._required_limit:
+                return list(self._lexical_rows)
+            return []
+        if self._fetch_stage == "lexical_fallback":
             return list(self._lexical_rows)
         return []
 
@@ -73,12 +96,121 @@ def _fake_connection_ctx(fake_conn):
     return _ctx
 
 
-def test_trgm_limit_is_applied_per_request(monkeypatch):
+def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
+    monkeypatch.setenv("RAG_TRGM_LIMIT", "0.05")
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
 
-    # Fake DB that reflects set_limit back via show_limit
-    cursor = _FakeCursor(show_limit_value=0.30)
+    lexical_row = (
+        "chunk-lex",
+        "lexical match",
+        {"tenant": tenant},
+        "hash-lex",
+        "doc-lex",
+        0.134,
+    )
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=[lexical_row],
+        lexical_required_limit=0.05,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "zebragurke",
+            tenant_id=tenant,
+            filters={"case": None},
+            alpha=0.0,
+            min_sim=0.01,
+            top_k=3,
+        )
+
+    assert result.lexical_candidates >= 1
+    assert result.vector_candidates == 0
+    chunk = result.chunks[0]
+    lscore = float(chunk.meta.get("lscore", 0.0))
+    assert lscore > 0.0
+    assert float(chunk.meta.get("vscore", 0.0)) == pytest.approx(0.0)
+    assert float(chunk.meta.get("fused", 0.0)) == pytest.approx(lscore)
+
+    applied_logs = [
+        entry for entry in logs if entry["event"] == "rag.pgtrgm.limit.applied"
+    ]
+    assert applied_logs, "expected rag.pgtrgm.limit.applied log entry"
+    applied = applied_logs[0].get("applied")
+    assert float(applied) == pytest.approx(0.05)
+
+
+def test_lexical_fallback_runs_when_trgm_limit_unknown(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_row = (
+        "chunk-lex",
+        "lexical match",
+        {"tenant": tenant},
+        "hash-lex",
+        "doc-lex",
+        0.134,
+    )
+
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=[lexical_row],
+        lexical_required_limit=0.05,
+        set_limit_error=RuntimeError("pg_trgm missing"),
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "zebragurke",
+            tenant_id=tenant,
+            filters={"case": None},
+            trgm_limit=0.05,
+            alpha=0.0,
+            min_sim=0.01,
+            top_k=3,
+        )
+
+    assert result.lexical_candidates >= 1
+    assert result.vector_candidates == 0
+    chunk = result.chunks[0]
+    lscore = float(chunk.meta.get("lscore", 0.0))
+    assert lscore > 0.0
+
+    error_logs = [entry for entry in logs if entry["event"] == "rag.pgtrgm.limit.error"]
+    assert error_logs, "expected rag.pgtrgm.limit.error log entry"
+
+    fallback_logs = [
+        entry
+        for entry in logs
+        if entry["event"] == "rag.hybrid.trgm_no_match" and entry.get("fallback")
+    ]
+    assert fallback_logs, "expected fallback lexical search to execute"
+
+
+def test_applies_set_limit_and_logs_applied_value(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_row = (
+        "chunk-lex",
+        "lexical match",
+        {"tenant": tenant},
+        "hash-lex",
+        "doc-lex",
+        0.134,
+    )
+
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=[lexical_row],
+        lexical_required_limit=0.05,
+    )
     fake_conn = _FakeConn(cursor)
     monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
 
@@ -90,13 +222,22 @@ def test_trgm_limit_is_applied_per_request(monkeypatch):
             trgm_limit=0.05,
             alpha=0.0,
             min_sim=0.0,
-            top_k=5,
+            top_k=3,
         )
 
-    pg_logs = [entry for entry in logs if entry["event"] == "rag.pgtrgm.limit"]
-    assert pg_logs, "expected rag.pgtrgm.limit log entry"
-    effective = float(pg_logs[0].get("effective"))
-    assert effective == pytest.approx(0.05)
+    set_limit_calls = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if "set_limit" in sql.lower()
+    ]
+    assert set_limit_calls, "expected SELECT set_limit call"
+    assert float(set_limit_calls[0][1][0]) == pytest.approx(0.05)
+
+    applied_logs = [
+        entry for entry in logs if entry["event"] == "rag.pgtrgm.limit.applied"
+    ]
+    assert applied_logs, "expected rag.pgtrgm.limit.applied log entry"
+    assert float(applied_logs[0].get("applied")) == pytest.approx(0.05)
 
 
 def test_row_shape_mismatch_does_not_crash(monkeypatch):
