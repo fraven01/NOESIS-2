@@ -590,7 +590,7 @@ class PgVectorClient:
                             """
                             cur.execute(
                                 fallback_lexical_sql,
-                                (query_norm, *where_params, lex_limit_value),
+                                (query_db_norm, *where_params, lex_limit_value),
                             )
                             lexical_rows = cur.fetchall()
                             try:
@@ -764,7 +764,9 @@ class PgVectorClient:
             except (TypeError, ValueError):
                 lscore = 0.0
             lscore = max(0.0, lscore)
-            if has_vector_signal:
+            if query_embedding_empty:
+                fused = max(0.0, min(1.0, lscore))
+            elif has_vector_signal:
                 fused = max(
                     0.0,
                     min(1.0, alpha_value * vscore + (1.0 - alpha_value) * lscore),
