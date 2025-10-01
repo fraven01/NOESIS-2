@@ -1343,9 +1343,10 @@ class PgVectorClient:
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 embedding_values = chunk.embedding
-                if embedding_values is None or _is_effectively_zero_vector(
+                is_empty_embedding = embedding_values is None or _is_effectively_zero_vector(
                     embedding_values
-                ):
+                )
+                if is_empty_embedding:
                     metrics.RAG_EMBEDDINGS_EMPTY_TOTAL.inc()
                     logger.warning(
                         "embedding.empty",
@@ -1356,7 +1357,6 @@ class PgVectorClient:
                             "source": doc.get("source"),
                         },
                     )
-                    continue
                 tokens = self._estimate_tokens(chunk.content)
                 chunk_rows.append(
                     (
@@ -1369,8 +1369,9 @@ class PgVectorClient:
                     )
                 )
                 chunk_count += 1
-                vector_value = self._format_vector(embedding_values)
-                embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
+                if not is_empty_embedding:
+                    vector_value = self._format_vector(embedding_values)
+                    embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
 
             if chunk_rows:
                 cur.executemany(chunk_insert_sql, chunk_rows)
