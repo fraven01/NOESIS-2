@@ -170,3 +170,37 @@ def test_lexical_only_scoring(monkeypatch):
     assert meta.get("vscore") == 0.0
     assert meta.get("lscore", 0.0) > 0.0
     assert meta.get("fused") == meta.get("lscore")
+
+
+def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    # Force null/zero embedding so vector path is ignored
+    monkeypatch.setattr(
+        client, "_embed_query", lambda _q: [0.0] * vector_client.EMBEDDING_DIM
+    )
+
+    lexical_row = (
+        "chunk-lex", "lexical match", {"tenant": tenant}, "hash-lex", "doc-lex", 0.2
+    )
+
+    def _fake_run(_fn, *, op_name: str):
+        return ([], [lexical_row], 1.5)
+
+    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+    result = client.hybrid_search(
+        "only lexical",
+        tenant_id=tenant,
+        filters={"case": None},
+        top_k=1,
+        alpha=0.7,
+        min_sim=0.15,
+    )
+
+    assert len(result.chunks) == 1
+    meta = result.chunks[0].meta
+    assert meta.get("vscore") == 0.0
+    assert meta.get("lscore") == pytest.approx(0.2)
+    assert meta.get("fused") == pytest.approx(0.2)
