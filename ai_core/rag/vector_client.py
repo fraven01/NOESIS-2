@@ -1073,8 +1073,7 @@ class PgVectorClient:
             below_cutoff = sum(
                 1
                 for chunk, allow in results
-                if (not allow)
-                and float(chunk.meta.get("fused", 0.0)) < min_sim_value
+                if (not allow) and float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
@@ -1083,17 +1082,12 @@ class PgVectorClient:
             filtered_results = [
                 chunk
                 for chunk, allow in results
-                if allow
-                or float(chunk.meta.get("fused", 0.0)) >= min_sim_value
+                if allow or float(chunk.meta.get("fused", 0.0)) >= min_sim_value
             ]
         else:
             filtered_results = [chunk for chunk, _ in results]
         limited_results = filtered_results[:top_k]
-        if (
-            not limited_results
-            and results
-            and min_sim_value > 0.0
-        ):
+        if not limited_results and results and min_sim_value > 0.0:
             limited_results = results[:top_k]
             try:
                 logger.info(
