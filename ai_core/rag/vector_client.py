@@ -640,13 +640,12 @@ class PgVectorClient:
                             requested=requested_trgm_limit,
                             effective=trgm_limit_value,
                         )
-                        applied_trgm_limit: float | None = None
-                        try:
-                            cur.execute(
-                                "SELECT set_limit(%s::float4)",
-                                (float(trgm_limit_value),),
-                            )
-                            cur.execute("SELECT show_limit()")
+
+                        def _fetch_show_limit_value() -> float | None:
+                            try:
+                                cur.execute("SELECT show_limit()")
+                            except Exception:
+                                return None
                             current = cur.fetchone()
                             if (
                                 current
@@ -654,14 +653,19 @@ class PgVectorClient:
                                 and len(current) > 0
                                 and current[0] is not None
                             ):
-                                applied_trgm_limit = float(current[0])
-                            else:
-                                applied_trgm_limit = None
-                            logger.info(
-                                "rag.pgtrgm.limit.applied",
-                                requested=requested_trgm_limit,
-                                applied=applied_trgm_limit,
+                                try:
+                                    return float(current[0])
+                                except (TypeError, ValueError):
+                                    return None
+                            return None
+
+                        applied_trgm_limit: float | None = None
+                        try:
+                            cur.execute(
+                                "SELECT set_limit(%s::float4)",
+                                (float(trgm_limit_value),),
                             )
+                            applied_trgm_limit = _fetch_show_limit_value()
                         except Exception as exc:  # pragma: no cover - defensive
                             logger.warning(
                                 "rag.pgtrgm.limit.error",
@@ -843,6 +847,24 @@ class PgVectorClient:
                                 else:
                                     lexical_rows_local = last_attempt_rows
                                 fallback_limit_used_value = picked_limit
+                                if (
+                                    picked_limit is not None
+                                    and requested_trgm_limit is None
+                                    and (
+                                        applied_trgm_limit is None
+                                        or picked_limit < applied_trgm_limit - 1e-9
+                                    )
+                                ):
+                                    try:
+                                        cur.execute(
+                                            "SELECT set_limit(%s::float4)",
+                                            (float(picked_limit),),
+                                        )
+                                        reapplied_limit = _fetch_show_limit_value()
+                                    except Exception:
+                                        reapplied_limit = None
+                                    if reapplied_limit is not None:
+                                        applied_trgm_limit = reapplied_limit
                                 logger.info(
                                     "rag.hybrid.trgm_fallback_applied",
                                     tenant=tenant,
@@ -854,6 +876,12 @@ class PgVectorClient:
                         # Ensure the locally fetched lexical rows are propagated
                         # to the outer scope so they are counted/fused later.
                         lexical_rows = lexical_rows_local
+                        logger.info(
+                            "rag.pgtrgm.limit.applied",
+                            requested=requested_trgm_limit,
+                            applied=applied_trgm_limit,
+                        )
+                        applied_trgm_limit_value = applied_trgm_limit
                 except Exception as exc:
                     lexical_rows = []
                     try:
