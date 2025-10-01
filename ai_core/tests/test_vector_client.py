@@ -787,6 +787,126 @@ class TestPgVectorClient:
         assert log_entry["count"] == 1
         assert log_entry["tried_limits"][0] == pytest.approx(0.09)
 
+    def test_fallback_runs_when_show_limit_empty_and_primary_errors(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"fallback-show-limit").hexdigest()
+        doc_id = uuid.uuid4()
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        class _Cursor:
+            def __init__(self) -> None:
+                self._fetchone_result: tuple | None = None
+                self._next_fetchall: str | None = None
+                self._fallback_limit: float | None = None
+
+            def __enter__(self) -> "_Cursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql: str, params=None) -> None:
+                if "SET LOCAL statement_timeout" in sql:
+                    return
+                if "SELECT set_limit" in sql:
+                    self._fetchone_result = None
+                    return
+                if "SELECT show_limit()" in sql:
+                    self._fetchone_result = ()
+                    return
+                if "FROM embeddings" in sql:
+                    self._next_fetchall = "vector"
+                    return
+                if "c.text_norm % %s" in sql:
+                    self._next_fetchall = "primary"
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in sql:
+                    self._fallback_limit = float(params[-2])
+                    self._next_fetchall = "fallback"
+                    return
+                self._next_fetchall = None
+
+            def fetchall(self) -> list[tuple]:
+                if self._next_fetchall == "primary":
+                    self._next_fetchall = None
+                    raise IndexError("simulated primary lexical failure")
+                if self._next_fetchall == "fallback":
+                    limit = self._fallback_limit or 0.0
+                    self._next_fetchall = None
+                    if limit <= 0.05:
+                        return [
+                            (
+                                "chunk-fallback",
+                                "Fallback lexical",
+                                {
+                                    "tenant": tenant,
+                                    "hash": doc_hash,
+                                    "external_id": "fallback-doc",
+                                },
+                                doc_hash,
+                                doc_id,
+                                0.42,
+                            )
+                        ]
+                    return []
+                self._next_fetchall = None
+                return []
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def cursor(self) -> _Cursor:
+                return _Cursor()
+
+            def rollback(self) -> None:
+                return None
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "trigger fallback",
+                tenant_id=tenant,
+                filters={},
+                top_k=1,
+                alpha=0.0,
+                trgm_limit=0.09,
+            )
+
+        assert result.lexical_candidates == 1
+        assert result.applied_trgm_limit is None
+        assert result.fallback_limit_used == pytest.approx(0.05)
+        fallback_logs = [
+            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+        ]
+        assert fallback_logs
+        assert fallback_logs[0]["picked_limit"] == pytest.approx(0.05)
+
     def test_fallback_skips_when_limit_low_enough(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -23,7 +23,7 @@ from typing import (
     cast,
 )
 
-from psycopg2 import sql
+from psycopg2 import Error as PsycopgError, sql
 from psycopg2.extras import Json, register_default_jsonb
 from psycopg2.pool import SimpleConnectionPool
 
@@ -594,8 +594,15 @@ class PgVectorClient:
                             )
                             cur.execute("SELECT show_limit()")
                             current = cur.fetchone()
-                            if current is not None and current[0] is not None:
+                            if (
+                                current
+                                and isinstance(current, Sequence)
+                                and len(current) > 0
+                                and current[0] is not None
+                            ):
                                 applied_trgm_limit = float(current[0])
+                            else:
+                                applied_trgm_limit = None
                             logger.info(
                                 "rag.pgtrgm.limit.applied",
                                 extra={
@@ -631,34 +638,49 @@ class PgVectorClient:
                             ORDER BY lscore DESC
                             LIMIT %s
                         """
+                        fallback_requested = requested_trgm_limit is not None
+                        should_run_fallback = False
                         if query_db_norm.strip():
-                            cur.execute(
-                                lexical_sql,
-                                (
-                                    query_db_norm,
-                                    *where_params,
-                                    query_db_norm,
-                                    lex_limit_value,
-                                ),
-                            )
-                            lexical_rows_local = cur.fetchall()
                             try:
-                                logger.warning(
-                                    "rag.debug.rows.lexical",
-                                    extra={
-                                        "count": len(lexical_rows_local),
-                                        "first_len": (
-                                            len(lexical_rows_local[0])
-                                            if lexical_rows_local
-                                            else 0
-                                        ),
-                                    },
+                                cur.execute(
+                                    lexical_sql,
+                                    (
+                                        query_db_norm,
+                                        *where_params,
+                                        query_db_norm,
+                                        lex_limit_value,
+                                    ),
                                 )
-                            except Exception:
-                                pass
-                            fallback_requested = requested_trgm_limit is not None
-                            should_run_fallback = False
-                            if not lexical_rows_local:
+                                lexical_rows_local = cur.fetchall()
+                                try:
+                                    logger.warning(
+                                        "rag.debug.rows.lexical",
+                                        extra={
+                                            "count": len(lexical_rows_local),
+                                            "first_len": (
+                                                len(lexical_rows_local[0])
+                                                if lexical_rows_local
+                                                else 0
+                                            ),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                            except Exception as exc:
+                                if isinstance(exc, (IndexError, ValueError, PsycopgError)):
+                                    should_run_fallback = True
+                                    lexical_rows_local = []
+                                    logger.warning(
+                                        "rag.hybrid.lexical_primary_failed",
+                                        extra={
+                                            "tenant": tenant,
+                                            "case": case_value,
+                                            "error": str(exc),
+                                        },
+                                    )
+                                else:
+                                    raise
+                            if not lexical_rows_local and not should_run_fallback:
                                 if fallback_requested:
                                     should_run_fallback = True
                                 elif (
