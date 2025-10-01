@@ -1544,10 +1544,68 @@ class PgVectorClient:
 _DEFAULT_CLIENT: Optional[VectorStore] = None
 
 
+def _resolve_vector_schema() -> str:
+    """Return the schema configured for the default vector store.
+
+    The management commands rely on :func:`get_default_client` to run SQL
+    statements such as index rebuilds. In multi-store setups we determine the
+    schema according to the active default scope, honouring the ``default``
+    flag used by :class:`~ai_core.rag.vector_store.VectorStoreRouter`.
+    """
+
+    schema_env = os.getenv("RAG_VECTOR_SCHEMA")
+    if schema_env:
+        return schema_env
+
+    stores_config: Mapping[str, Mapping[str, object]] | None = None
+    configured_default_scope: str | None = None
+    try:  # pragma: no cover - requires Django settings
+        from django.conf import settings  # type: ignore
+
+        configured = getattr(settings, "RAG_VECTOR_STORES", None)
+        if isinstance(configured, Mapping):
+            stores_config = configured
+        configured_default_scope = getattr(
+            settings, "RAG_VECTOR_DEFAULT_SCOPE", None
+        )
+    except Exception:
+        stores_config = None
+
+    if stores_config:
+        target_scope: str | None = None
+        if (
+            configured_default_scope
+            and configured_default_scope in stores_config
+        ):
+            target_scope = configured_default_scope
+        else:
+            for scope_name, config in stores_config.items():
+                if isinstance(config, Mapping) and config.get("default"):
+                    target_scope = scope_name
+                    break
+        if target_scope is None:
+            if "global" in stores_config:
+                target_scope = "global"
+            else:
+                try:
+                    target_scope = next(iter(stores_config))
+                except StopIteration:  # pragma: no cover - defensive
+                    target_scope = None
+        if target_scope and target_scope in stores_config:
+            config = stores_config[target_scope]
+            schema_value = config.get("schema") if isinstance(config, Mapping) else None
+            if schema_value:
+                return str(schema_value)
+
+    return "rag"
+
+
 def get_default_client() -> PgVectorClient:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
-        _DEFAULT_CLIENT = PgVectorClient.from_env()
+        _DEFAULT_CLIENT = PgVectorClient.from_env(
+            schema=_resolve_vector_schema()
+        )
     return cast(PgVectorClient, _DEFAULT_CLIENT)
 
 

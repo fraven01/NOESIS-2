@@ -7,6 +7,9 @@ import pytest
 from django.core.management import call_command
 from django.db import connection
 
+from ai_core.rag import vector_client
+from tests.plugins.rag_db import SCHEMA_SQL
+
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("rag_database")
@@ -63,3 +66,47 @@ def test_rebuild_rag_index_creates_expected_index(
     for param, value in expected_params.items():
         pattern = rf"{param}\s*=\s*'?{value}'?(?:::\w+)?"
         assert re.search(pattern, indexdef), f"missing {param}={value} in {indexdef!r}"
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("rag_database")
+def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
+    settings.RAG_VECTOR_STORES = {
+        "global": {"backend": "pgvector", "schema": "rag"},
+        "enterprise": {
+            "backend": "pgvector",
+            "schema": "rag_enterprise",
+            "default": True,
+        },
+    }
+    if hasattr(settings, "RAG_VECTOR_DEFAULT_SCOPE"):
+        delattr(settings, "RAG_VECTOR_DEFAULT_SCOPE")
+
+    vector_client.reset_default_client()
+
+    with connection.cursor() as cur:
+        cur.execute("DROP SCHEMA IF EXISTS rag_enterprise CASCADE")
+        cur.execute("CREATE SCHEMA rag_enterprise")
+        cur.execute("SET search_path TO rag_enterprise, public")
+        cur.execute(SCHEMA_SQL)
+
+    try:
+        stdout = io.StringIO()
+        call_command("rebuild_rag_index", stdout=stdout)
+
+        with connection.cursor() as cur:
+            cur.execute("SET search_path TO rag_enterprise, public")
+            cur.execute(
+                """
+                SELECT indexdef
+                FROM pg_indexes
+                WHERE schemaname = current_schema()
+                  AND tablename = 'embeddings'
+                  AND indexname = 'embeddings_embedding_hnsw'
+                """
+            )
+            row = cur.fetchone()
+        assert row is not None, "expected HNSW index in rag_enterprise schema"
+    finally:
+        with connection.cursor() as cur:
+            cur.execute("DROP SCHEMA IF EXISTS rag_enterprise CASCADE")
