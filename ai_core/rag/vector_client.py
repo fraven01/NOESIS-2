@@ -1067,6 +1067,12 @@ class PgVectorClient:
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
+            if (
+                not entry.get("_allow_below_cutoff")
+                and fallback_limit_used_value is not None
+                and fallback_limit_used_value + 1e-9 < min_sim_value
+            ):
+                entry["_allow_below_cutoff"] = True
             if lexical_score_missing:
                 entry["_allow_below_cutoff"] = True
 
