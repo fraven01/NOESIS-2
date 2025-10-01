@@ -810,8 +810,21 @@ class PgVectorClient:
                                     limit_value = max(0.0, limit_value)
                                     if limit_value not in fallback_limits:
                                         fallback_limits.append(limit_value)
+                                fallback_floor = min(trgm_limit_value, 0.05)
+                                if (
+                                    fallback_requested
+                                    and requested_trgm_limit is not None
+                                ):
+                                    try:
+                                        fallback_floor = max(
+                                            0.0, float(requested_trgm_limit)
+                                        )
+                                    except (TypeError, ValueError):
+                                        fallback_floor = fallback_floor
                                 picked_limit: float | None = None
                                 last_attempt_rows: List[tuple] = []
+                                best_rows: List[tuple] = []
+                                best_limit: float | None = None
                                 for limit_value in fallback_limits:
                                     fallback_tried_limits.append(limit_value)
                                     cur.execute(
@@ -842,10 +855,19 @@ class PgVectorClient:
                                         pass
                                     if attempt_rows:
                                         lexical_rows_local = attempt_rows
-                                        picked_limit = limit_value
-                                        break
+                                        best_rows = attempt_rows
+                                        best_limit = limit_value
+                                        if limit_value <= fallback_floor + 1e-9:
+                                            picked_limit = limit_value
+                                            break
                                 else:
-                                    lexical_rows_local = last_attempt_rows
+                                    if best_rows:
+                                        lexical_rows_local = best_rows
+                                        picked_limit = best_limit
+                                    else:
+                                        lexical_rows_local = last_attempt_rows
+                                if picked_limit is None and best_limit is not None:
+                                    picked_limit = best_limit
                                 fallback_limit_used_value = picked_limit
                                 if (
                                     picked_limit is not None
