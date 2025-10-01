@@ -516,7 +516,9 @@ class PgVectorClient:
             metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant=tenant).inc()
             logger.info(
                 "rag.hybrid.null_embedding",
-                extra={"alpha": alpha_value, "tenant": tenant, "case": case_value},
+                alpha=alpha_value,
+                tenant=tenant,
+                case=case_value,
             )
         index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
         ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
