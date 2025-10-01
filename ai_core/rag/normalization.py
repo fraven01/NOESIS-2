@@ -6,7 +6,7 @@ import re
 import unicodedata
 from typing import Iterable
 
-__all__ = ["normalise_text"]
+__all__ = ["normalise_text", "normalise_text_db"]
 
 _WHITESPACE_RE = re.compile(r"\s+", re.UNICODE)
 _WORD_RE = re.compile(r"[\wäöüÄÖÜß]+", re.UNICODE)
@@ -28,6 +28,16 @@ def _strip_german_plural(token: str) -> str:
 
 def _apply_plural_heuristic(tokens: Iterable[str]) -> list[str]:
     return [_strip_german_plural(token) for token in tokens]
+
+
+def normalise_text_db(value: str | None) -> str:
+    """Replicate the text normalisation performed in PostgreSQL."""
+
+    if not value:
+        return ""
+    text = unicodedata.normalize("NFC", value)
+    text = text.lower()
+    return _WHITESPACE_RE.sub(" ", text)
 
 
 def normalise_text(value: str | None) -> str:
