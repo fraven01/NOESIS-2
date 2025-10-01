@@ -101,6 +101,8 @@ class HybridSearchResult:
     below_cutoff: int = 0
     returned_after_cutoff: int = 0
     query_embedding_empty: bool = False
+    applied_trgm_limit: float | None = None
+    fallback_limit_used: float | None = None
 
 
 class UpsertResult(int):
@@ -494,10 +496,19 @@ class PgVectorClient:
                 where_params.append(normalised)
         where_sql = "\n          AND ".join(where_clauses)
 
+        applied_trgm_limit_value: Optional[float] = None
+        fallback_limit_used_value: Optional[float] = None
+        fallback_tried_limits: List[float] = []
+
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
+            nonlocal applied_trgm_limit_value
+            nonlocal fallback_limit_used_value
+            nonlocal fallback_tried_limits
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
+            fallback_tried_limits = []
+            fallback_limit_used_value = None
             with self._connection() as conn:
                 if query_vec is not None:
                     try:
@@ -602,6 +613,7 @@ class PgVectorClient:
                                 },
                             )
                             applied_trgm_limit = None
+                        applied_trgm_limit_value = applied_trgm_limit
 
                         lexical_rows_local: List[tuple] = []
                         lexical_sql = f"""
@@ -680,31 +692,70 @@ class PgVectorClient:
                                     ORDER BY lscore DESC
                                     LIMIT %s
                                 """
-                                cur.execute(
-                                    fallback_lexical_sql,
-                                    (
-                                        query_db_norm,
-                                        *where_params,
-                                        query_db_norm,
-                                        trgm_limit_value,
-                                        lex_limit_value,
-                                    ),
+                                base_limits: List[float] = []
+                                if applied_trgm_limit is not None:
+                                    base_limits.append(float(applied_trgm_limit))
+                                else:
+                                    base_limits.append(min(trgm_limit_value, 0.10))
+                                base_limits.extend(
+                                    [min(trgm_limit_value, 0.10), 0.08, 0.06, 0.05, 0.04, 0.03]
                                 )
-                                lexical_rows_local = cur.fetchall()
-                                try:
-                                    logger.warning(
-                                        "rag.debug.rows.lexical",
-                                        extra={
-                                            "count": len(lexical_rows_local),
-                                            "first_len": (
-                                                len(lexical_rows_local[0])
-                                                if lexical_rows_local
-                                                else 0
-                                            ),
-                                        },
+                                fallback_limits: List[float] = []
+                                for limit in base_limits:
+                                    try:
+                                        limit_value = float(limit)
+                                    except (TypeError, ValueError):
+                                        continue
+                                    limit_value = max(0.03, limit_value)
+                                    if limit_value not in fallback_limits:
+                                        fallback_limits.append(limit_value)
+                                picked_limit: float | None = None
+                                last_attempt_rows: List[tuple] = []
+                                for limit_value in fallback_limits:
+                                    fallback_tried_limits.append(limit_value)
+                                    cur.execute(
+                                        fallback_lexical_sql,
+                                        (
+                                            query_db_norm,
+                                            *where_params,
+                                            query_db_norm,
+                                            limit_value,
+                                            lex_limit_value,
+                                        ),
                                     )
-                                except Exception:
-                                    pass
+                                    attempt_rows = cur.fetchall()
+                                    last_attempt_rows = list(attempt_rows)
+                                    try:
+                                        logger.warning(
+                                            "rag.debug.rows.lexical",
+                                            extra={
+                                                "count": len(attempt_rows),
+                                                "first_len": (
+                                                    len(attempt_rows[0])
+                                                    if attempt_rows
+                                                    else 0
+                                                ),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
+                                    if attempt_rows:
+                                        lexical_rows_local = attempt_rows
+                                        picked_limit = limit_value
+                                        break
+                                else:
+                                    lexical_rows_local = last_attempt_rows
+                                fallback_limit_used_value = picked_limit
+                                logger.info(
+                                    "rag.hybrid.trgm_fallback_applied",
+                                    extra={
+                                        "tenant": tenant,
+                                        "case": case_value,
+                                        "tried_limits": list(fallback_tried_limits),
+                                        "picked_limit": picked_limit,
+                                        "count": len(lexical_rows_local),
+                                    },
+                                )
                         # Ensure the locally fetched lexical rows are propagated
                         # to the outer scope so they are counted/fused later.
                         lexical_rows = lexical_rows_local
@@ -751,6 +802,8 @@ class PgVectorClient:
                 "alpha": alpha_value,
                 "min_sim": min_sim_value,
                 "trgm_limit": trgm_limit_value,
+                "applied_trgm_limit": applied_trgm_limit_value,
+                "fallback_limit_used": fallback_limit_used_value,
                 "distance_score_mode": distance_score_mode,
                 "duration_ms": duration_ms,
             },
@@ -974,6 +1027,8 @@ class PgVectorClient:
             below_cutoff=below_cutoff,
             returned_after_cutoff=len(filtered_results),
             query_embedding_empty=query_embedding_empty,
+            applied_trgm_limit=applied_trgm_limit_value,
+            fallback_limit_used=fallback_limit_used_value,
         )
 
     def health_check(self) -> bool:
