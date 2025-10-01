@@ -171,7 +171,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     latency_ms = 0.0
 
     normalized_query = normalise_text(query)
-    search_input = normalized_query or query.strip()
+    search_input = query.strip()
 
     index_kind = str(getattr(settings, "RAG_INDEX_KIND", "HNSW")).upper()
     # Allow per-request overrides while keeping sensible defaults from settings
@@ -410,7 +410,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                 "case_id": meta.get("case_id") or meta.get("case"),
                 "project_id": project_id,
                 "query_length": len(query),
-                "normalized_query_length": len(search_input),
+                "normalized_query_length": len(normalized_query),
                 "query_norm_len": len(normalized_query),
                 "cutoff": min_sim if no_hit_due_to_cutoff else None,
             },
@@ -420,8 +420,8 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     if no_hit_due_to_cutoff:
         warnings.append("no_hit_above_threshold")
     if not matches and not no_hit_due_to_cutoff:
+        matches = _demo_matches(query, str(tenant_id), top_k=top_k)
         if not router_error:
-            matches = _demo_matches(query, str(tenant_id), top_k=top_k)
             warnings.append("no_vector_matches_demo_fallback")
 
     response_meta: Dict[str, Any] = {

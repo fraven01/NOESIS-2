@@ -180,6 +180,70 @@ def test_rag_demo_run_handles_for_tenant_with_schema(
     assert router.calls == [("dev", "public")]
 
 
+def test_rag_demo_hybrid_search_uses_trimmed_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Router:
+        def __init__(self) -> None:
+            self.received_query: str | None = None
+
+        def for_tenant(self, tenant_id: str) -> Router:
+            assert tenant_id == "dev"
+            return self
+
+        def hybrid_search(
+            self,
+            query: str,
+            *,
+            tenant_id: str,
+            case_id: str | None = None,
+            top_k: int,
+            filters: dict[str, object] | None,
+            alpha: float,
+            min_sim: float,
+            trgm_limit: float | None = None,
+            trgm_threshold: float | None = None,
+        ) -> HybridSearchResult:
+            assert filters is not None
+            assert filters.get("tenant_id") == tenant_id
+            assert trgm_limit == 3.0
+            self.received_query = query
+            chunk = Chunk(
+                content="lexical match",
+                meta={
+                    "id": "lex-1",
+                    "tenant_id": tenant_id,
+                    "vscore": 0.05,
+                    "lscore": 0.42,
+                    "fused": 0.21,
+                    "score": 0.21,
+                },
+            )
+            return HybridSearchResult(
+                chunks=[chunk],
+                vector_candidates=1,
+                lexical_candidates=1,
+                fused_candidates=1,
+                duration_ms=1.5,
+                alpha=alpha,
+                min_sim=min_sim,
+                vec_limit=top_k,
+                lex_limit=top_k,
+            )
+
+    router = Router()
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: router)
+
+    state = {"query": "  zebragurke  ", "trgm_limit": 3, "top_k": 1}
+    meta = {"tenant_id": "dev"}
+
+    _, result = rag_demo.run(state, meta)
+
+    assert router.received_query == "zebragurke"
+    assert result["matches"], "expected at least one match"
+    match = result["matches"][0]
+    assert match["lscore"] > 0
+    assert result["meta"]["lexical_candidates"] == 1
+
+
 def test_rag_demo_response_contains_scores_and_meta() -> None:
     state = {"query": "Alpha", "top_k": 1}
     meta = {"tenant_id": "dev"}
