@@ -234,3 +234,4 @@ docs/api/openapi.yaml
 clients/
 hello.txt
 hello_changed.txt
+.ai_core_store/demo/local/state.json

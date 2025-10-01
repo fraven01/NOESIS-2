@@ -702,6 +702,8 @@ class PgVectorClient:
                                     )
                                 except Exception:
                                     pass
+                        # Ensure the locally fetched lexical rows are propagated
+                        # to the outer scope so they are counted/fused later.
                         lexical_rows = lexical_rows_local
                 except Exception as exc:
                     lexical_rows = []
@@ -719,6 +721,17 @@ class PgVectorClient:
                     )
                     if not vector_rows:
                         raise
+            # Debug: final lexical rows right before returning to retry wrapper
+            try:
+                logger.warning(
+                    "rag.debug.rows.lexical.final",
+                    extra={
+                        "count": len(lexical_rows),
+                        "first_len": (len(lexical_rows[0]) if lexical_rows else 0),
+                    },
+                )
+            except Exception:
+                pass
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
 
         vector_rows, lexical_rows, duration_ms = self._run_with_retries(

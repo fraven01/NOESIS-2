@@ -1,4 +1,4 @@
-import uuid
+﻿import uuid
 
 import pytest
 from structlog.testing import capture_logs
@@ -50,7 +50,12 @@ class _FakeCursor:
         elif "from embeddings" in text:
             self._fetch_stage = "vector"
         elif "similarity(" in text:
-            self._fetch_stage = "lexical"
+            # Distinguish initial trigram-based lexical query from fallback
+            # which adds a similarity threshold predicate (">= %s").
+            if ">= %s" in text:
+                self._fetch_stage = "lexical_fallback"
+            else:
+                self._fetch_stage = "lexical"
         else:
             self._fetch_stage = None
 
@@ -63,9 +68,15 @@ class _FakeCursor:
         if self._fetch_stage == "vector":
             return list(self._vector_rows)
         if self._fetch_stage == "lexical":
+            # Simulate trigram operator path. Respect required limit, so when
+            # the applied server limit is too high, we return no rows and
+            # force the client to attempt the explicit similarity fallback.
             if self._required_limit is None or self._limit <= self._required_limit:
                 return list(self._lexical_rows)
             return []
+        if self._fetch_stage == "lexical_fallback":
+            # Fallback returns rows irrespective of the server limit threshold.
+            return list(self._lexical_rows)
         return []
 
 
@@ -108,7 +119,7 @@ def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
     fake_conn = _FakeConn(cursor)
     monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
 
-    with capture_logs() as logs:
+    with capture_logs():
         result = client.hybrid_search(
             "zebragurke",
             tenant_id=tenant,
@@ -125,6 +136,54 @@ def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
     assert lscore > 0.0
     assert float(chunk.meta.get("vscore", 0.0)) == pytest.approx(0.0)
     assert float(chunk.meta.get("fused", 0.0)) == pytest.approx(lscore)
+
+
+def test_lexical_fallback_populates_rows(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    # One lexical row that should only appear via the fallback path
+    lexical_row = (
+        "chunk-fallback",
+        "ZEBRAGURKEN",
+        {"tenant": tenant},
+        "hash-fallback",
+        "doc-fallback",
+        0.096,
+    )
+
+    # Start with a relatively high pg_trgm limit (0.30), so the first
+    # trigram operator path produces zero rows for our FakeCursor when
+    # coupled with a stricter required limit (0.10). The client should then
+    # execute the explicit similarity fallback which returns the row.
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        vector_rows=[],
+        lexical_rows=[lexical_row],
+        lexical_required_limit=0.10,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "zebragurke",
+            tenant_id=tenant,
+            filters={"case": None},
+            alpha=0.0,
+            min_sim=0.0,
+            top_k=3,
+        )
+
+    assert result.vector_candidates == 0
+    assert result.lexical_candidates == 1
+    lscore = float(result.chunks[0].meta.get("lscore", 0.0))
+    assert lscore == pytest.approx(0.096, rel=1e-3, abs=1e-6)
+    # With alpha=0.0, fusion equals lscore
+    assert float(result.chunks[0].meta.get("fused", 0.0)) == pytest.approx(lscore)
+    # Ensure our final handoff log recorded the lexical count
+    final_logs = [e for e in logs if e.get("event") == "rag.debug.rows.lexical.final"]
+    assert final_logs and int(final_logs[-1].get("count", 0)) >= 1
 
     applied_logs = [
         entry for entry in logs if entry["event"] == "rag.pgtrgm.limit.applied"

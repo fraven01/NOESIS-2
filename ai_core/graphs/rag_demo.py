@@ -248,6 +248,21 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         "alpha": alpha,
                         "min_sim": min_sim,
                     }
+                    # Optional per-request limits for vector/lexical candidates
+                    vec_limit = state.get("vec_limit")
+                    lex_limit = state.get("lex_limit")
+                    try:
+                        vec_limit = int(vec_limit) if vec_limit is not None else None
+                    except (TypeError, ValueError):
+                        vec_limit = None
+                    try:
+                        lex_limit = int(lex_limit) if lex_limit is not None else None
+                    except (TypeError, ValueError):
+                        lex_limit = None
+                    if vec_limit is not None:
+                        hybrid_kwargs["vec_limit"] = vec_limit
+                    if lex_limit is not None:
+                        hybrid_kwargs["lex_limit"] = lex_limit
                     if trgm_limit is not None:
                         hybrid_kwargs["trgm_limit"] = trgm_limit
                     if trgm_threshold is not None:
@@ -281,6 +296,21 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         except (TypeError, ValueError):
                             trgm_threshold = None
                     scope_name = getattr(scoped_router, "_scope", None)
+                    # Optional per-request limits for vector/lexical candidates
+                    _vec_limit = state.get("vec_limit")
+                    _lex_limit = state.get("lex_limit")
+                    try:
+                        _vec_limit = (
+                            int(_vec_limit) if _vec_limit is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        _vec_limit = None
+                    try:
+                        _lex_limit = (
+                            int(_lex_limit) if _lex_limit is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        _lex_limit = None
                     hybrid_result = router_hybrid(
                         search_input,
                         tenant_id=str(tenant_id),
@@ -292,6 +322,9 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         min_sim=min_sim,
                         trgm_limit=trgm_limit,
                         trgm_threshold=trgm_threshold,
+                        # Forward optional per-request limits
+                        vec_limit=_vec_limit,
+                        lex_limit=_lex_limit,
                     )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 else:
