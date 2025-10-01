@@ -1071,7 +1071,9 @@ class PgVectorClient:
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
+
             if lexical_score_missing or allow_trgm_fallback_below_cutoff:
+
                 entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
