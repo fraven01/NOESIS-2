@@ -216,7 +216,8 @@ class PgVectorClient:
             if key not in PgVectorClient._ROW_SHAPE_WARNINGS:
                 logger.warning(
                     "rag.hybrid.row_shape_mismatch",
-                    extra={"kind": kind, "row_len": length},
+                    kind=kind,
+                    row_len=length,
                 )
                 PgVectorClient._ROW_SHAPE_WARNINGS.add(key)
         padded_list: List[object] = list((row_tuple + (None,) * 6)[:6])
