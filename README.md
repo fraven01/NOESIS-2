@@ -102,7 +102,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`) |
 | `npm run dev:stack` / `npm run win:dev:stack` | Startet App + ELK, Migrationen, Bootstrap, Demo- & Heavy-Seeding |
 | `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
-| `npm run dev:restart` | Neustart von Web- und Worker-Containern |
+| `npm run dev:restart` | Neustart von Web-, Worker- und Ingestion-Containern |
 | `npm run dev:rebuild` | Rebuild von Web-/Worker-Images (`-- --with-frontend` für Tailwind) |
 | `npm run dev:reset` | Komplettreset (down -v → build --no-cache → up -d → init → check) |
 | `npm run dev:prune` | Räumt dangling Images und Build-Cache auf (Windows: `win:dev:prune`) |
@@ -115,7 +115,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:stack`, `win:dev:rebuild`).
 
 Hinweise:
-- `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
+- `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker ingestion-worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
 - `npm run dev:prune -- --all` löscht zusätzlich unbenutzte Netzwerke/Volumes (destruktiv).
 
 ### API-Schema & SDKs
