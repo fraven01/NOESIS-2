@@ -609,10 +609,8 @@ class PgVectorClient:
                         )
                         logger.info(
                             "rag.pgtrgm.limit",
-                            extra={
-                                "requested": requested_trgm_limit,
-                                "effective": trgm_limit_value,
-                            },
+                            requested=requested_trgm_limit,
+                            effective=trgm_limit_value,
                         )
                         applied_trgm_limit: float | None = None
                         try:
@@ -633,19 +631,15 @@ class PgVectorClient:
                                 applied_trgm_limit = None
                             logger.info(
                                 "rag.pgtrgm.limit.applied",
-                                extra={
-                                    "requested": requested_trgm_limit,
-                                    "applied": applied_trgm_limit,
-                                },
+                                requested=requested_trgm_limit,
+                                applied=applied_trgm_limit,
                             )
                         except Exception as exc:  # pragma: no cover - defensive
                             logger.warning(
                                 "rag.pgtrgm.limit.error",
-                                extra={
-                                    "requested": requested_trgm_limit,
-                                    "exc_type": exc.__class__.__name__,
-                                    "error": str(exc),
-                                },
+                                requested=requested_trgm_limit,
+                                exc_type=exc.__class__.__name__,
+                                error=str(exc),
                             )
                             applied_trgm_limit = None
                         applied_trgm_limit_value = applied_trgm_limit
@@ -1039,6 +1033,25 @@ class PgVectorClient:
                 if float(chunk.meta.get("fused", 0.0)) >= min_sim_value
             ]
         limited_results = filtered_results[:top_k]
+        if (
+            not limited_results
+            and results
+            and min_sim_value > 0.0
+        ):
+            limited_results = results[:top_k]
+            try:
+                logger.info(
+                    "rag.hybrid.cutoff_fallback",
+                    extra={
+                        "tenant": tenant,
+                        "case": case_value,
+                        "requested_min_sim": min_sim_value,
+                        "returned": len(limited_results),
+                        "below_cutoff": below_cutoff,
+                    },
+                )
+            except Exception:
+                pass
 
         try:
             top_fused = (

@@ -311,6 +311,7 @@ def test_row_shape_mismatch_does_not_crash(monkeypatch):
         )
 
     monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+    monkeypatch.setattr(vector_client.PgVectorClient, "_ROW_SHAPE_WARNINGS", set())
 
     with capture_logs() as logs:
         result = client.hybrid_search(
