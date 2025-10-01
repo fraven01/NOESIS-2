@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
     Callable,
+    ClassVar,
     Dict,
     Iterable,
     List,
@@ -120,6 +121,8 @@ class UpsertResult(int):
 class PgVectorClient:
     """pgvector-backed client for chunk storage and retrieval."""
 
+    _ROW_SHAPE_WARNINGS: ClassVar[set[Tuple[str, int]]] = set()
+
     def __init__(
         self,
         dsn: str,
@@ -178,17 +181,49 @@ class PgVectorClient:
     @staticmethod
     def _normalise_result_row(
         row: Sequence[object], *, kind: str
-    ) -> Tuple[object, object, object, object, object, object]:
+    ) -> Tuple[object, object, Mapping[str, object], object, object, float]:
         row_tuple = tuple(row)
-        if len(row_tuple) != 6:
-            logger.warning(
-                "rag.hybrid.row_shape_mismatch",
-                extra={"kind": kind, "row_len": len(row_tuple)},
-            )
-        padded = (row_tuple + (None,) * 6)[:6]
+        length = len(row_tuple)
+        if length != 6:
+            key = (kind, length)
+            if key not in PgVectorClient._ROW_SHAPE_WARNINGS:
+                logger.warning(
+                    "rag.hybrid.row_shape_mismatch",
+                    extra={"kind": kind, "row_len": length},
+                )
+                PgVectorClient._ROW_SHAPE_WARNINGS.add(key)
+        padded_list: List[object] = list((row_tuple + (None,) * 6)[:6])
+
+        metadata_value = padded_list[2]
+        metadata_dict: Dict[str, object]
+        if isinstance(metadata_value, Mapping):
+            metadata_dict = dict(metadata_value)
+        elif isinstance(metadata_value, Sequence) and not isinstance(
+            metadata_value, (str, bytes)
+        ):
+            try:
+                metadata_dict = dict(metadata_value)  # type: ignore[arg-type]
+            except Exception:
+                metadata_dict = {}
+        elif metadata_value is None:
+            metadata_dict = {}
+        else:
+            metadata_dict = {}
+        padded_list[2] = metadata_dict
+
+        score_value = padded_list[5]
+        fallback = 1.0 if kind == "vector" else 0.0
+        try:
+            score_float = float(score_value) if score_value is not None else fallback
+        except (TypeError, ValueError):
+            score_float = fallback
+        if math.isnan(score_float) or math.isinf(score_float):
+            score_float = fallback
+        padded_list[5] = score_float
+
         return cast(
-            Tuple[object, object, object, object, object, object],
-            padded,
+            Tuple[object, object, Mapping[str, object], object, object, float],
+            tuple(padded_list),
         )
 
     @contextmanager
@@ -434,179 +469,223 @@ class PgVectorClient:
             filter_debug,
         )
 
+        where_clauses = ["d.tenant_id::text = %s"]
+        where_params: List[object] = [tenant]
+        for key, value in metadata_filters:
+            kind = SUPPORTED_METADATA_FILTERS[key]
+            normalised = self._normalise_filter_value(value)
+            if kind == "chunk_meta":
+                where_clauses.append("c.metadata ->> %s = %s")
+                where_params.extend([key, normalised])
+            elif kind == "document_hash":
+                where_clauses.append("d.hash = %s")
+                where_params.append(normalised)
+            elif kind == "document_id":
+                where_clauses.append("d.id::text = %s")
+                where_params.append(normalised)
+            elif kind == "document_external_id":
+                where_clauses.append("d.external_id = %s")
+                where_params.append(normalised)
+        where_sql = "\n          AND ".join(where_clauses)
+
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             started = time.perf_counter()
+            vector_rows: List[tuple] = []
+            lexical_rows: List[tuple] = []
             with self._connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        "SET LOCAL statement_timeout = %s",
-                        (str(self._statement_timeout_ms),),
-                    )
-                    # Set request-scoped pg_trgm limit on this session and log
+                if query_vec is not None:
                     try:
-                        cur.execute(
-                            "SELECT set_limit(%s::real)", (float(trgm_limit_value),)
-                        )
-                        cur.execute("SELECT show_limit()")
-                        current = cur.fetchone()
-                        logger.info(
-                            "rag.pgtrgm.limit",
-                            extra={
-                                "requested": requested_trgm_limit,
-                                "effective": float(current[0]) if current else None,
-                            },
-                        )
-                    except Exception as e:  # pragma: no cover - defensive
-                        logger.warning(
-                            "rag.pgtrgm.limit.set_failed",
-                            extra={
-                                "requested": requested_trgm_limit,
-                                "error": str(e),
-                            },
-                        )
-
-                    where_clauses = ["d.tenant_id::text = %s"]
-                    where_params: List[object] = [tenant]
-                    for key, value in metadata_filters:
-                        kind = SUPPORTED_METADATA_FILTERS[key]
-                        normalised = self._normalise_filter_value(value)
-                        if kind == "chunk_meta":
-                            where_clauses.append("c.metadata ->> %s = %s")
-                            where_params.extend([key, normalised])
-                        elif kind == "document_hash":
-                            where_clauses.append("d.hash = %s")
-                            where_params.append(normalised)
-                        elif kind == "document_id":
-                            where_clauses.append("d.id::text = %s")
-                            where_params.append(normalised)
-                        elif kind == "document_external_id":
-                            where_clauses.append("d.external_id = %s")
-                            where_params.append(normalised)
-                    where_sql = "\n          AND ".join(where_clauses)
-                    vector_rows: List[tuple] = []
-                    if query_vec is not None:
-                        if index_kind == "HNSW":
+                        with conn.cursor() as cur:
                             cur.execute(
-                                "SET LOCAL hnsw.ef_search = %s",
-                                (str(ef_search),),
+                                "SET LOCAL statement_timeout = %s",
+                                (str(self._statement_timeout_ms),),
                             )
-                        elif index_kind == "IVFFLAT":
-                            cur.execute(
-                                "SET LOCAL ivfflat.probes = %s",
-                                (str(probes),),
-                            )
-                        vector_sql = f"""
-                            SELECT
-                                c.id,
-                                c.text,
-                                c.metadata,
-                                d.hash,
-                                d.id,
-                                e.embedding <=> %s::vector AS distance
-                            FROM embeddings e
-                            JOIN chunks c ON e.chunk_id = c.id
-                            JOIN documents d ON c.document_id = d.id
-                            WHERE {where_sql}
-                            ORDER BY distance
-                            LIMIT %s
-                        """
-                        cur.execute(
-                            vector_sql, (query_vec, *where_params, vec_limit_value)
-                        )
-                        vector_rows = cur.fetchall()
-                        try:
-                            logger.warning(
-                                "rag.debug.rows.vector",
-                                extra={
-                                    "count": len(vector_rows),
-                                    "first_len": (
-                                        len(vector_rows[0]) if vector_rows else 0
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                    lexical_sql = f"""
-                        SELECT
-                            c.id,
-                            c.text,
-                            c.metadata,
-                            d.hash,
-                            d.id,
-                            similarity(c.text_norm, %s) AS lscore
-                        FROM chunks c
-                        JOIN documents d ON c.document_id = d.id
-                        WHERE {where_sql}
-                          AND c.text_norm % %s
-                        ORDER BY lscore DESC
-                        LIMIT %s
-                    """
-                    if query_db_norm.strip():
-                        cur.execute(
-                            lexical_sql,
-                            (
-                                query_db_norm,
-                                *where_params,
-                                query_db_norm,
-                                lex_limit_value,
-                            ),
-                        )
-                        lexical_rows = cur.fetchall()
-                        try:
-                            logger.warning(
-                                "rag.debug.rows.lexical",
-                                extra={
-                                    "count": len(lexical_rows),
-                                    "first_len": (
-                                        len(lexical_rows[0]) if lexical_rows else 0
-                                    ),
-                                },
-                            )
-                        except Exception:
-                            pass
-                        if not lexical_rows:
-                            logger.info(
-                                "rag.hybrid.trgm_no_match",
-                                extra={
-                                    "tenant": tenant,
-                                    "case": case_value,
-                                    "trgm_limit": trgm_limit_value,
-                                    "fallback": True,
-                                },
-                            )
-                            fallback_lexical_sql = f"""
+                            if index_kind == "HNSW":
+                                cur.execute(
+                                    "SET LOCAL hnsw.ef_search = %s",
+                                    (str(ef_search),),
+                                )
+                            elif index_kind == "IVFFLAT":
+                                cur.execute(
+                                    "SET LOCAL ivfflat.probes = %s",
+                                    (str(probes),),
+                                )
+                            vector_sql = f"""
                                 SELECT
                                     c.id,
                                     c.text,
                                     c.metadata,
                                     d.hash,
                                     d.id,
-                                    similarity(c.text_norm, %s) AS lscore
-                                FROM chunks c
+                                    e.embedding <=> %s::vector AS distance
+                                FROM embeddings e
+                                JOIN chunks c ON e.chunk_id = c.id
                                 JOIN documents d ON c.document_id = d.id
                                 WHERE {where_sql}
-                                ORDER BY lscore DESC
+                                ORDER BY distance
                                 LIMIT %s
                             """
                             cur.execute(
-                                fallback_lexical_sql,
-                                (query_norm, *where_params, lex_limit_value),
+                                vector_sql, (query_vec, *where_params, vec_limit_value)
                             )
-                            lexical_rows = cur.fetchall()
+                            vector_rows = cur.fetchall()
                             try:
                                 logger.warning(
-                                    "rag.debug.rows.lexical",
+                                    "rag.debug.rows.vector",
                                     extra={
-                                        "count": len(lexical_rows),
+                                        "count": len(vector_rows),
                                         "first_len": (
-                                            len(lexical_rows[0]) if lexical_rows else 0
+                                            len(vector_rows[0]) if vector_rows else 0
                                         ),
                                     },
                                 )
                             except Exception:
                                 pass
-                    else:
-                        lexical_rows = []
+                    except Exception as exc:
+                        vector_rows = []
+                        try:
+                            conn.rollback()
+                        except Exception:  # pragma: no cover - defensive
+                            pass
+                        logger.warning(
+                            "rag.hybrid.vector_query_failed",
+                            extra={
+                                "tenant": tenant,
+                                "case": case_value,
+                                "error": str(exc),
+                            },
+                        )
+
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SET LOCAL statement_timeout = %s",
+                            (str(self._statement_timeout_ms),),
+                        )
+                        try:
+                            cur.execute(
+                                "SELECT set_limit(%s::real)",
+                                (float(trgm_limit_value),),
+                            )
+                            cur.execute("SELECT show_limit()")
+                            current = cur.fetchone()
+                            logger.info(
+                                "rag.pgtrgm.limit",
+                                extra={
+                                    "requested": requested_trgm_limit,
+                                    "effective": float(current[0]) if current else None,
+                                },
+                            )
+                        except Exception as e:  # pragma: no cover - defensive
+                            logger.warning(
+                                "rag.pgtrgm.limit.set_failed",
+                                extra={
+                                    "requested": requested_trgm_limit,
+                                    "error": str(e),
+                                },
+                            )
+
+                        lexical_rows_local: List[tuple] = []
+                        lexical_sql = f"""
+                            SELECT
+                                c.id,
+                                c.text,
+                                c.metadata,
+                                d.hash,
+                                d.id,
+                                similarity(c.text_norm, %s) AS lscore
+                            FROM chunks c
+                            JOIN documents d ON c.document_id = d.id
+                            WHERE {where_sql}
+                              AND c.text_norm % %s
+                            ORDER BY lscore DESC
+                            LIMIT %s
+                        """
+                        if query_db_norm.strip():
+                            cur.execute(
+                                lexical_sql,
+                                (
+                                    query_db_norm,
+                                    *where_params,
+                                    query_db_norm,
+                                    lex_limit_value,
+                                ),
+                            )
+                            lexical_rows_local = cur.fetchall()
+                            try:
+                                logger.warning(
+                                    "rag.debug.rows.lexical",
+                                    extra={
+                                        "count": len(lexical_rows_local),
+                                        "first_len": (
+                                            len(lexical_rows_local[0])
+                                            if lexical_rows_local
+                                            else 0
+                                        ),
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            if not lexical_rows_local:
+                                logger.info(
+                                    "rag.hybrid.trgm_no_match",
+                                    extra={
+                                        "tenant": tenant,
+                                        "case": case_value,
+                                        "trgm_limit": trgm_limit_value,
+                                        "fallback": True,
+                                    },
+                                )
+                                fallback_lexical_sql = f"""
+                                    SELECT
+                                        c.id,
+                                        c.text,
+                                        c.metadata,
+                                        d.hash,
+                                        d.id,
+                                        similarity(c.text_norm, %s) AS lscore
+                                    FROM chunks c
+                                    JOIN documents d ON c.document_id = d.id
+                                    WHERE {where_sql}
+                                    ORDER BY lscore DESC
+                                    LIMIT %s
+                                """
+                                cur.execute(
+                                    fallback_lexical_sql,
+                                    (query_norm, *where_params, lex_limit_value),
+                                )
+                                lexical_rows_local = cur.fetchall()
+                                try:
+                                    logger.warning(
+                                        "rag.debug.rows.lexical",
+                                        extra={
+                                            "count": len(lexical_rows_local),
+                                            "first_len": (
+                                                len(lexical_rows_local[0])
+                                                if lexical_rows_local
+                                                else 0
+                                            ),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                        lexical_rows = lexical_rows_local
+                except Exception as exc:
+                    lexical_rows = []
+                    try:
+                        conn.rollback()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    logger.warning(
+                        "rag.hybrid.lexical_query_failed",
+                        extra={
+                            "tenant": tenant,
+                            "case": case_value,
+                            "error": str(exc),
+                        },
+                    )
+                    if not vector_rows:
+                        raise
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
 
         vector_rows, lexical_rows, duration_ms = self._run_with_retries(
@@ -639,9 +718,8 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
             text_value = text_value or ""
-            metadata = metadata or {}
             key = str(chunk_id)
-            metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
+            metadata_dict = dict(metadata)
             entry = candidates.setdefault(
                 key,
                 {
@@ -655,12 +733,7 @@ class PgVectorClient:
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
-            try:
-                distance_value = float(score_raw)
-            except (TypeError, ValueError):
-                distance_value = 1.0
-            if math.isnan(distance_value) or math.isinf(distance_value):
-                distance_value = 1.0
+            distance_value = float(score_raw)
             vscore = max(0.0, 1.0 - float(distance_value))
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
@@ -674,9 +747,8 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
             text_value = text_value or ""
-            metadata = metadata or {}
             key = str(chunk_id)
-            metadata_dict = dict(metadata) if isinstance(metadata, Mapping) else {}
+            metadata_dict = dict(metadata)
             entry = candidates.setdefault(
                 key,
                 {
@@ -690,15 +762,8 @@ class PgVectorClient:
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
-            try:
-                lscore_value = float(score_raw)
-            except (TypeError, ValueError):
-                lscore_value = 0.0
-            if math.isnan(lscore_value) or math.isinf(lscore_value):
-                lscore_value = 0.0
-            entry["lscore"] = max(
-                float(entry.get("lscore", 0.0)), max(0.0, lscore_value)
-            )
+            lscore_value = max(0.0, float(score_raw))
+            entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
         fused_candidates = len(candidates)
         logger.info(
