@@ -754,6 +754,10 @@ class PgVectorClient:
                                     LIMIT %s
                                 """
                                 base_limits: List[float] = []
+                                if fallback_requested and (
+                                    requested_trgm_limit is not None
+                                ):
+                                    base_limits.append(float(requested_trgm_limit))
                                 if applied_trgm_limit is not None:
                                     base_limits.append(float(applied_trgm_limit))
                                 else:
