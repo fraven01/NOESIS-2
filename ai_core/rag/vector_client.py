@@ -644,9 +644,17 @@ class PgVectorClient:
                                 )
                             except Exception:
                                 pass
-                            if not lexical_rows_local and (
-                                applied_trgm_limit is None or applied_trgm_limit > 0.1
-                            ):
+                            fallback_requested = requested_trgm_limit is not None
+                            should_run_fallback = False
+                            if not lexical_rows_local:
+                                if fallback_requested:
+                                    should_run_fallback = True
+                                elif (
+                                    applied_trgm_limit is None
+                                    or applied_trgm_limit > 0.1
+                                ):
+                                    should_run_fallback = True
+                            if should_run_fallback:
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
                                     extra={
@@ -656,11 +664,6 @@ class PgVectorClient:
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
                                     },
-                                )
-                                fallback_limit = (
-                                    applied_trgm_limit
-                                    if applied_trgm_limit is not None
-                                    else trgm_limit_value
                                 )
                                 fallback_lexical_sql = f"""
                                     SELECT
@@ -683,7 +686,7 @@ class PgVectorClient:
                                         query_db_norm,
                                         *where_params,
                                         query_db_norm,
-                                        fallback_limit,
+                                        trgm_limit_value,
                                         lex_limit_value,
                                     ),
                                 )
