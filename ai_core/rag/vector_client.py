@@ -1409,12 +1409,10 @@ class PgVectorClient:
                 last_exc = exc
                 logger.warning(
                     "pgvector operation failed, retrying",
-                    extra={
-                        "operation": op_name,
-                        "attempt": attempt,
-                        "exc_type": exc.__class__.__name__,
-                        "exc_message": str(exc),
-                    },
+                    operation=op_name,
+                    attempt=attempt,
+                    exc_type=exc.__class__.__name__,
+                    exc_message=str(exc),
                 )
                 metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
                 if attempt == self._retries:
