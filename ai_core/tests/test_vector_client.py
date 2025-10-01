@@ -526,6 +526,44 @@ class TestPgVectorClient:
         assert logged["alpha"] == 0.0
         assert logged["tenant"] == tenant
 
+    def test_hybrid_search_lexical_matches_database_normalisation(
+        self, monkeypatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"zebra-gurke").hexdigest()
+        chunk = Chunk(
+            content="ZEBRAGURKE",
+            meta={
+                "tenant": tenant,
+                "hash": doc_hash,
+                "case": "lexical-case",
+                "source": "lexical",
+                "external_id": "lex-1",
+            },
+            embedding=[0.0] * vector_client.EMBEDDING_DIM,
+        )
+        client.upsert_chunks([chunk])
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+        )
+
+        result = client.hybrid_search(
+            "ZEBRAGURKE",
+            tenant_id=tenant,
+            filters={"case": "lexical-case"},
+            alpha=0.0,
+            top_k=1,
+        )
+
+        assert result.lexical_candidates >= 1
+        assert result.chunks
+        top_chunk = result.chunks[0]
+        assert top_chunk.meta["hash"] == doc_hash
+        assert top_chunk.meta["lscore"] == pytest.approx(1.0)
+
     def test_hybrid_search_reports_cutoff_statistics(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())

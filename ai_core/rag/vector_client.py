@@ -28,7 +28,7 @@ from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_logger
 from ai_core.rag.vector_store import VectorStore
-from .normalization import normalise_text
+from .normalization import normalise_text, normalise_text_db
 
 from . import metrics
 from .filters import strict_match
@@ -384,6 +384,7 @@ class PgVectorClient:
         vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
         lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
         query_norm = normalise_text(query)
+        query_db_norm = normalise_text_db(query)
         raw_vec = self._embed_query(query_norm)
         is_zero_vec = True
         if raw_vec is not None:
@@ -524,10 +525,15 @@ class PgVectorClient:
                         ORDER BY lscore DESC
                         LIMIT %s
                     """
-                    if query_norm:
+                    if query_db_norm.strip():
                         cur.execute(
                             lexical_sql,
-                            (query_norm, *where_params, query_norm, lex_limit_value),
+                            (
+                                query_db_norm,
+                                *where_params,
+                                query_db_norm,
+                                lex_limit_value,
+                            ),
                         )
                         lexical_rows = cur.fetchall()
                         try:
