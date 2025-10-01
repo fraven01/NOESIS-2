@@ -1030,6 +1030,10 @@ class PgVectorClient:
                     vscore = max(0.0, 1.0 - float(distance_value))
                 entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
+        allow_trgm_fallback_below_cutoff = (
+            fallback_limit_used_value is not None and alpha_value <= 0.0
+        )
+
         for row in lexical_rows:
             lexical_score_missing = len(row) < 6
             if not lexical_score_missing:
@@ -1067,7 +1071,9 @@ class PgVectorClient:
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
-            if lexical_score_missing:
+
+            if lexical_score_missing or allow_trgm_fallback_below_cutoff:
+
                 entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
