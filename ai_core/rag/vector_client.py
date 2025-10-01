@@ -359,7 +359,7 @@ class PgVectorClient:
             doc_payload = {
                 "tenant": tenant_id,
                 "external_id": external_id,
-                "content_hash": doc.get("hash"),
+                "content_hash": doc.get("content_hash"),
                 "action": action,
                 "chunk_count": chunk_count,
                 "duration_ms": duration,
@@ -542,8 +542,8 @@ class PgVectorClient:
                 where_clauses.append("c.metadata ->> %s = %s")
                 where_params.extend([key, normalised])
             elif kind == "document_hash":
-                where_clauses.append("d.hash = %s")
-                where_params.append(normalised)
+                where_clauses.append("(d.hash = %s OR d.metadata ->> 'hash' = %s)")
+                where_params.extend([normalised, normalised])
             elif kind == "document_id":
                 where_clauses.append("d.id::text = %s")
                 where_params.append(normalised)
@@ -1209,6 +1209,7 @@ class PgVectorClient:
                     "tenant_id": tenant,
                     "external_id": external_id_str,
                     "hash": doc_hash,
+                    "content_hash": doc_hash,
                     "source": source,
                     "metadata": {
                         k: v
@@ -1234,8 +1235,19 @@ class PgVectorClient:
         actions: Dict[DocumentKey, str] = {}
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
-            metadata = Json(doc["metadata"])
-            external_id = doc["external_id"]
+            external_id = str(doc["external_id"])
+            content_hash = str(doc.get("content_hash", doc.get("hash", "")))
+            storage_hash = self._compute_storage_hash(
+                cur,
+                tenant_uuid,
+                content_hash,
+                external_id,
+            )
+            doc["hash"] = storage_hash
+            doc["content_hash"] = content_hash
+            metadata_dict = dict(doc.get("metadata", {}))
+            metadata_dict.setdefault("hash", content_hash)
+            metadata = Json(metadata_dict)
             cur.execute(
                 """
                 SELECT id, hash
@@ -1248,7 +1260,7 @@ class PgVectorClient:
             existing = cur.fetchone()
             if existing:
                 document_id, stored_hash = existing
-                if stored_hash == doc["hash"]:
+                if stored_hash == storage_hash:
                     document_ids[key] = document_id
                     actions[key] = "skipped"
                     logger.info(
@@ -1268,7 +1280,7 @@ class PgVectorClient:
                         deleted_at = NULL
                     WHERE id = %s
                     """,
-                    (doc["hash"], doc["source"], metadata, document_id),
+                    (storage_hash, doc["source"], metadata, document_id),
                 )
                 document_ids[key] = document_id
                 actions[key] = "replaced"
@@ -1285,13 +1297,42 @@ class PgVectorClient:
                     str(tenant_uuid),
                     external_id,
                     doc["source"],
-                    doc["hash"],
+                    storage_hash,
                     metadata,
                 ),
             )
             document_ids[key] = document_id
             actions[key] = "inserted"
         return document_ids, actions
+
+    def _compute_storage_hash(
+        self,
+        cur,
+        tenant_uuid: uuid.UUID,
+        content_hash: str,
+        external_id: str,
+    ) -> str:
+        if not content_hash:
+            return content_hash
+        tenant_value = str(tenant_uuid)
+        cur.execute(
+            """
+            SELECT external_id
+            FROM documents
+            WHERE tenant_id = %s AND hash = %s
+            LIMIT 1
+            """,
+            (tenant_value, content_hash),
+        )
+        existing = cur.fetchone()
+        if existing:
+            existing_external_id = existing[0]
+            if existing_external_id and str(existing_external_id) != external_id:
+                suffix = uuid.uuid5(
+                    uuid.NAMESPACE_URL, f"external:{external_id}"
+                )
+                return f"{content_hash}:{suffix}"
+        return content_hash
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
         try:
