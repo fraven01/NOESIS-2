@@ -73,7 +73,32 @@ def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
     return norm_sq <= _ZERO_EPSILON
 
 
+def _coerce_env_value(
+    value: str,
+    default: float | int | str,
+) -> tuple[bool, float | int | str]:
+    """Coerce ``value`` from environment to the type of ``default``."""
+
+    try:
+        if isinstance(default, bool):  # pragma: no cover - defensive
+            return True, type(default)(value)  # type: ignore[call-arg]
+        if isinstance(default, int) and not isinstance(default, bool):
+            return True, int(value)
+        if isinstance(default, float):
+            return True, float(value)
+        if isinstance(default, str):
+            return True, value
+    except (TypeError, ValueError):
+        return False, default
+    return False, default
+
+
 def _get_setting(name: str, default: float | int | str) -> float | int | str:
+    env_value = os.getenv(name)
+    if env_value is not None:
+        success, coerced = _coerce_env_value(env_value, default)
+        if success:
+            return coerced
     try:  # pragma: no cover - requires Django settings
         from django.conf import settings  # type: ignore
 
