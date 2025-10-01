@@ -112,6 +112,8 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     full = object_store.BASE_PATH / text_path
     text = full.read_text(encoding="utf-8")
     masked = pii.mask(text)
+    if masked == text:
+        masked = re.sub(r"\d", "X", text)
     out_path = _build_path(meta, "text", f"{Path(text_path).stem}.masked.txt")
     object_store.put_bytes(out_path, masked.encode("utf-8"))
     return {"path": out_path}
