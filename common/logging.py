@@ -162,7 +162,19 @@ def _masking_enabled() -> bool:
     except ImproperlyConfigured:
         return True
 
-    return not bool(allow_unmasked)
+    normalized: bool
+    if isinstance(allow_unmasked, str):
+        coerced = allow_unmasked.strip().lower()
+        if coerced in {"1", "true", "yes", "y", "on"}:
+            normalized = True
+        elif coerced in {"0", "false", "no", "n", "off", ""}:
+            normalized = False
+        else:
+            normalized = bool(coerced)
+    else:
+        normalized = bool(allow_unmasked)
+
+    return not normalized
 
 
 def _context_processor(
