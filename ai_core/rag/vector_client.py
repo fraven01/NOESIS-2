@@ -883,6 +883,15 @@ class PgVectorClient:
 
         candidates: Dict[str, Dict[str, object]] = {}
         for row in vector_rows:
+            vector_score_missing = len(row) < 6
+            if not vector_score_missing:
+                try:
+                    raw_value = float(row[5])
+                except (TypeError, ValueError):
+                    vector_score_missing = True
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        vector_score_missing = True
             (
                 chunk_id,
                 text_value,
@@ -904,14 +913,26 @@ class PgVectorClient:
                     "doc_id": doc_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
+                    "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             distance_value = float(score_raw)
             vscore = max(0.0, 1.0 - float(distance_value))
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
+            if vector_score_missing:
+                entry["_allow_below_cutoff"] = True
 
         for row in lexical_rows:
+            lexical_score_missing = len(row) < 6
+            if not lexical_score_missing:
+                try:
+                    raw_value = float(row[5])
+                except (TypeError, ValueError):
+                    lexical_score_missing = True
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        lexical_score_missing = True
             (
                 chunk_id,
                 text_value,
@@ -933,11 +954,14 @@ class PgVectorClient:
                     "doc_id": doc_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
+                    "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
+            if lexical_score_missing:
+                entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
         logger.info(
@@ -950,13 +974,14 @@ class PgVectorClient:
                 "has_lex": bool(lexical_rows),
             },
         )
-        results: List[Chunk] = []
+        results: List[Tuple[Chunk, bool]] = []
         has_vector_signal = (
             bool(vector_rows)
             and (query_vec is not None)
             and (not query_embedding_empty)
         )
         for entry in candidates.values():
+            allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             meta = dict(entry["metadata"])
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
@@ -1016,18 +1041,23 @@ class PgVectorClient:
             meta["lscore"] = lscore
             meta["fused"] = fused
             meta["score"] = fused
-            results.append(Chunk(content=str(entry.get("content", "")), meta=meta))
+            results.append(
+                (
+                    Chunk(content=str(entry.get("content", "")), meta=meta),
+                    allow_below_cutoff,
+                )
+            )
 
         results.sort(
-            key=lambda chunk: float(chunk.meta.get("fused", 0.0)), reverse=True
+            key=lambda item: float(item[0].meta.get("fused", 0.0)), reverse=True
         )
         below_cutoff = 0
-        filtered_results = results
         if min_sim_value > 0.0:
             below_cutoff = sum(
                 1
-                for chunk in filtered_results
-                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
+                for chunk, allow in results
+                if (not allow)
+                and float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
@@ -1035,9 +1065,12 @@ class PgVectorClient:
                 )
             filtered_results = [
                 chunk
-                for chunk in filtered_results
-                if float(chunk.meta.get("fused", 0.0)) >= min_sim_value
+                for chunk, allow in results
+                if allow
+                or float(chunk.meta.get("fused", 0.0)) >= min_sim_value
             ]
+        else:
+            filtered_results = [chunk for chunk, _ in results]
         limited_results = filtered_results[:top_k]
 
         try:
