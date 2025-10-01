@@ -1014,6 +1014,11 @@ class PgVectorClient:
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
             if lexical_score_missing:
                 entry["_allow_below_cutoff"] = True
+            elif (
+                fallback_limit_used_value is not None
+                and fallback_limit_used_value < min_sim_value
+            ):
+                entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
         logger.info(
