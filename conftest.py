@@ -5,7 +5,7 @@ import pytest
 
 
 pytest_plugins = [
-    "ai_core.tests.conftest",
+    "tests.plugins.rag_db",
 ]
 
 
