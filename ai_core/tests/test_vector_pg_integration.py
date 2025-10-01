@@ -24,6 +24,7 @@ def _make_chunk(tenant_id: str, ordinal: int, *, hash_id: str) -> Chunk:
             "tenant": tenant_id,
             "hash": hash_id,
             "source": "integration-test",
+            "external_id": f"{hash_id}-external",
         },
         embedding=[base_value] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
     )
