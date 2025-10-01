@@ -73,7 +73,32 @@ def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
     return norm_sq <= _ZERO_EPSILON
 
 
+def _coerce_env_value(
+    value: str,
+    default: float | int | str,
+) -> tuple[bool, float | int | str]:
+    """Coerce ``value`` from environment to the type of ``default``."""
+
+    try:
+        if isinstance(default, bool):  # pragma: no cover - defensive
+            return True, type(default)(value)  # type: ignore[call-arg]
+        if isinstance(default, int) and not isinstance(default, bool):
+            return True, int(value)
+        if isinstance(default, float):
+            return True, float(value)
+        if isinstance(default, str):
+            return True, value
+    except (TypeError, ValueError):
+        return False, default
+    return False, default
+
+
 def _get_setting(name: str, default: float | int | str) -> float | int | str:
+    env_value = os.getenv(name)
+    if env_value is not None:
+        success, coerced = _coerce_env_value(env_value, default)
+        if success:
+            return coerced
     try:  # pragma: no cover - requires Django settings
         from django.conf import settings  # type: ignore
 
@@ -877,6 +902,15 @@ class PgVectorClient:
 
         candidates: Dict[str, Dict[str, object]] = {}
         for row in vector_rows:
+            vector_score_missing = len(row) < 6
+            if not vector_score_missing:
+                try:
+                    raw_value = float(row[5])
+                except (TypeError, ValueError):
+                    vector_score_missing = True
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        vector_score_missing = True
             (
                 chunk_id,
                 text_value,
@@ -898,14 +932,26 @@ class PgVectorClient:
                     "doc_id": doc_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
+                    "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             distance_value = float(score_raw)
             vscore = max(0.0, 1.0 - float(distance_value))
             entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
+            if vector_score_missing:
+                entry["_allow_below_cutoff"] = True
 
         for row in lexical_rows:
+            lexical_score_missing = len(row) < 6
+            if not lexical_score_missing:
+                try:
+                    raw_value = float(row[5])
+                except (TypeError, ValueError):
+                    lexical_score_missing = True
+                else:
+                    if math.isnan(raw_value) or math.isinf(raw_value):
+                        lexical_score_missing = True
             (
                 chunk_id,
                 text_value,
@@ -927,11 +973,14 @@ class PgVectorClient:
                     "doc_id": doc_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
+                    "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_id if chunk_id is not None else key
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
+            if lexical_score_missing:
+                entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
         logger.info(
@@ -944,13 +993,14 @@ class PgVectorClient:
                 "has_lex": bool(lexical_rows),
             },
         )
-        results: List[Chunk] = []
+        results: List[Tuple[Chunk, bool]] = []
         has_vector_signal = (
             bool(vector_rows)
             and (query_vec is not None)
             and (not query_embedding_empty)
         )
         for entry in candidates.values():
+            allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             meta = dict(entry["metadata"])
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
@@ -974,16 +1024,14 @@ class PgVectorClient:
                         reasons.append("case_mismatch")
                 logger.info(
                     "rag.strict.reject",
-                    extra={
-                        "tenant": tenant,
-                        "case": case_value,
-                        "candidate_tenant": candidate_tenant,
-                        "candidate_case": candidate_case,
-                        "doc_hash": doc_hash,
-                        "doc_id": doc_id,
-                        "chunk_id": entry["chunk_id"],
-                        "reasons": reasons or ["unknown"],
-                    },
+                    tenant=tenant,
+                    case=case_value,
+                    candidate_tenant=candidate_tenant,
+                    candidate_case=candidate_case,
+                    doc_hash=doc_hash,
+                    doc_id=doc_id,
+                    chunk_id=entry["chunk_id"],
+                    reasons=reasons or ["unknown"],
                 )
                 continue
             try:
@@ -1010,18 +1058,23 @@ class PgVectorClient:
             meta["lscore"] = lscore
             meta["fused"] = fused
             meta["score"] = fused
-            results.append(Chunk(content=str(entry.get("content", "")), meta=meta))
+            results.append(
+                (
+                    Chunk(content=str(entry.get("content", "")), meta=meta),
+                    allow_below_cutoff,
+                )
+            )
 
         results.sort(
-            key=lambda chunk: float(chunk.meta.get("fused", 0.0)), reverse=True
+            key=lambda item: float(item[0].meta.get("fused", 0.0)), reverse=True
         )
         below_cutoff = 0
-        filtered_results = results
         if min_sim_value > 0.0:
             below_cutoff = sum(
                 1
-                for chunk in filtered_results
-                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
+                for chunk, allow in results
+                if (not allow)
+                and float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
@@ -1029,9 +1082,12 @@ class PgVectorClient:
                 )
             filtered_results = [
                 chunk
-                for chunk in filtered_results
-                if float(chunk.meta.get("fused", 0.0)) >= min_sim_value
+                for chunk, allow in results
+                if allow
+                or float(chunk.meta.get("fused", 0.0)) >= min_sim_value
             ]
+        else:
+            filtered_results = [chunk for chunk, _ in results]
         limited_results = filtered_results[:top_k]
         if (
             not limited_results
@@ -1140,7 +1196,11 @@ class PgVectorClient:
             if not doc_hash or doc_hash == "None":
                 raise ValueError("Chunk metadata must include hash")
             if external_id in {None, "", "None"}:
-                raise ValueError("Chunk metadata must include external_id")
+                logger.warning(
+                    "Chunk without external_id encountered; falling back to hash",
+                    extra={"tenant": tenant_value, "hash": doc_hash},
+                )
+                external_id = doc_hash
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
             tenant = str(tenant_uuid)
             external_id_str = str(external_id)
@@ -1395,12 +1455,10 @@ class PgVectorClient:
                 last_exc = exc
                 logger.warning(
                     "pgvector operation failed, retrying",
-                    extra={
-                        "operation": op_name,
-                        "attempt": attempt,
-                        "exc_type": exc.__class__.__name__,
-                        "exc_message": str(exc),
-                    },
+                    operation=op_name,
+                    attempt=attempt,
+                    exc_type=exc.__class__.__name__,
+                    exc_message=str(exc),
                 )
                 metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
                 if attempt == self._retries:
