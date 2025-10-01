@@ -118,6 +118,11 @@ Hinweise:
 - `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker ingestion-worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
 - `npm run dev:prune -- --all` löscht zusätzlich unbenutzte Netzwerke/Volumes (destruktiv).
 
+### Tests im Docker-Container
+
+- `npm run dev:test` führt die Python-Tests im `web`-Container aus und setzt `AI_CORE_TEST_DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2`, sodass RAG-Tests gegen den Compose-Postgres (pgvector) laufen. Die Dev-Dependencies werden on-the-fly installiert und `pytest -q -rs` ausgeführt (Kurz-Ausgabe inkl. Skip-Gründen).
+- Windows-Variante: `npm run win:dev:test` (identisches Verhalten mit PowerShell-geeigneter Shell-Kette).
+
 ### API-Schema & SDKs
 
 | Kommando | Ergebnis |

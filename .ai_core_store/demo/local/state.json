@@ -1,1 +1,1 @@
-{"query": "zebragurke", "top_k": 3, "rag_demo": {"query": "zebragurke", "top_k": 3, "retrieved_count": 1}, "min_sim": 0.0, "alpha": 0.0, "trgm_limit": 0.3, "trgm_threshold": 0.05, "vec_limit": 0, "lex_limit": 50}
+{"query": "zebragurke", "top_k": 3, "rag_demo": {"query": "zebragurke", "top_k": 3, "retrieved_count": 1}, "min_sim": 0.01, "alpha": 0.5, "trgm_limit": 0.05, "trgm_threshold": 0.05, "vec_limit": 0, "lex_limit": 50}
