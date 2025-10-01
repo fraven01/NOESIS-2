@@ -1087,8 +1087,14 @@ class PgVectorClient:
         else:
             filtered_results = [chunk for chunk, _ in results]
         limited_results = filtered_results[:top_k]
+        fallback_results: List[Chunk] = []
         if not limited_results and results and min_sim_value > 0.0:
-            limited_results = results[:top_k]
+            fallback_results = [
+                chunk
+                for chunk, allow in results
+                if allow and float(chunk.meta.get("fused", 0.0)) < min_sim_value
+            ][:top_k]
+            limited_results = fallback_results
             try:
                 logger.info(
                     "rag.hybrid.cutoff_fallback",
@@ -1160,7 +1166,7 @@ class PgVectorClient:
             vec_limit=vec_limit_value,
             lex_limit=lex_limit_value,
             below_cutoff=below_cutoff,
-            returned_after_cutoff=len(filtered_results),
+            returned_after_cutoff=len(fallback_results),
             query_embedding_empty=query_embedding_empty,
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
