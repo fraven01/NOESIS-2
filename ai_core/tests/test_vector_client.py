@@ -779,7 +779,9 @@ class TestPgVectorClient:
         assert result.fallback_limit_used == pytest.approx(0.05)
         assert result.applied_trgm_limit == pytest.approx(0.09)
         fallback_logs = [
-            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+            entry
+            for entry in logs
+            if entry["event"] == "rag.hybrid.trgm_fallback_applied"
         ]
         assert fallback_logs
         log_entry = fallback_logs[0]
@@ -902,7 +904,9 @@ class TestPgVectorClient:
         assert result.applied_trgm_limit is None
         assert result.fallback_limit_used == pytest.approx(0.05)
         fallback_logs = [
-            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+            entry
+            for entry in logs
+            if entry["event"] == "rag.hybrid.trgm_fallback_applied"
         ]
         assert fallback_logs
         assert fallback_logs[0]["picked_limit"] == pytest.approx(0.05)
@@ -1018,7 +1022,9 @@ class TestPgVectorClient:
         assert result.applied_trgm_limit == pytest.approx(0.05)
         assert holder["conn"].similarity_limits == []
         fallback_logs = [
-            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+            entry
+            for entry in logs
+            if entry["event"] == "rag.hybrid.trgm_fallback_applied"
         ]
         assert fallback_logs == []
 
@@ -1042,7 +1048,9 @@ class TestPgVectorClient:
         assert result.applied_trgm_limit == pytest.approx(0.09)
         assert result.fallback_limit_used == pytest.approx(0.04)
         fallback_logs = [
-            entry for entry in logs if entry["event"] == "rag.hybrid.trgm_fallback_applied"
+            entry
+            for entry in logs
+            if entry["event"] == "rag.hybrid.trgm_fallback_applied"
         ]
         assert fallback_logs
         assert fallback_logs[0]["picked_limit"] == pytest.approx(0.04)

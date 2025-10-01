@@ -239,9 +239,7 @@ def test_explicit_trgm_limit_fallback_uses_requested_threshold(monkeypatch):
     # The fallback query should have been executed with the explicitly
     # requested threshold despite the server reporting a higher limit.
     fallback_calls = [
-        params
-        for sql, params in cursor.executed
-        if sql and ">= %s" in sql
+        params for sql, params in cursor.executed if sql and ">= %s" in sql
     ]
     assert fallback_calls, "expected fallback lexical query to run"
     fallback_params = fallback_calls[-1]

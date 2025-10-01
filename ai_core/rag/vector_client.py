@@ -667,7 +667,9 @@ class PgVectorClient:
                                 except Exception:
                                     pass
                             except Exception as exc:
-                                if isinstance(exc, (IndexError, ValueError, PsycopgError)):
+                                if isinstance(
+                                    exc, (IndexError, ValueError, PsycopgError)
+                                ):
                                     should_run_fallback = True
                                     lexical_rows_local = []
                                     logger.warning(
@@ -720,7 +722,14 @@ class PgVectorClient:
                                 else:
                                     base_limits.append(min(trgm_limit_value, 0.10))
                                 base_limits.extend(
-                                    [min(trgm_limit_value, 0.10), 0.08, 0.06, 0.05, 0.04, 0.03]
+                                    [
+                                        min(trgm_limit_value, 0.10),
+                                        0.08,
+                                        0.06,
+                                        0.05,
+                                        0.04,
+                                        0.03,
+                                    ]
                                 )
                                 fallback_limits: List[float] = []
                                 for limit in base_limits:
