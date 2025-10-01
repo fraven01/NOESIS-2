@@ -18,6 +18,7 @@ from typing import (
     Mapping,
     Optional,
     Sequence,
+    Set,
     Tuple,
     TypeVar,
     cast,
@@ -555,11 +556,13 @@ class PgVectorClient:
         applied_trgm_limit_value: Optional[float] = None
         fallback_limit_used_value: Optional[float] = None
         fallback_tried_limits: List[float] = []
+        fallback_chunk_ids: Set[str] = set()
 
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             nonlocal applied_trgm_limit_value
             nonlocal fallback_limit_used_value
             nonlocal fallback_tried_limits
+            nonlocal fallback_chunk_ids
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
@@ -678,6 +681,7 @@ class PgVectorClient:
 
                         lexical_rows_local: List[tuple] = []
                         fallback_requires_rollback = False
+                        fallback_chunk_ids_local: Set[str] = set()
                         lexical_sql = f"""
                             SELECT
                                 c.id,
@@ -842,6 +846,11 @@ class PgVectorClient:
                                         pass
                                     if attempt_rows:
                                         lexical_rows_local = attempt_rows
+                                        fallback_chunk_ids_local = {
+                                            str(row[0])
+                                            for row in attempt_rows
+                                            if row and row[0] is not None
+                                        }
                                         picked_limit = limit_value
                                         break
                                 else:
@@ -873,6 +882,7 @@ class PgVectorClient:
                                     picked_limit=picked_limit,
                                     count=len(lexical_rows_local),
                                 )
+                        fallback_chunk_ids = fallback_chunk_ids_local
                         # Ensure the locally fetched lexical rows are propagated
                         # to the outer scope so they are counted/fused later.
                         lexical_rows = lexical_rows_local
@@ -1013,6 +1023,8 @@ class PgVectorClient:
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
             if lexical_score_missing:
+                entry["_allow_below_cutoff"] = True
+            elif key in fallback_chunk_ids:
                 entry["_allow_below_cutoff"] = True
 
         fused_candidates = len(candidates)
