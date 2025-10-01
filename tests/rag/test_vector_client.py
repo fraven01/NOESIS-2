@@ -16,6 +16,7 @@ class _FakeCursor:
         lexical_rows=None,
         *,
         lexical_required_limit: float | None = None,
+        respect_set_limit: bool = True,
     ):
         self._limit = float(show_limit_value)
         self._vector_rows = list(vector_rows or [])
@@ -27,6 +28,8 @@ class _FakeCursor:
             if lexical_required_limit is not None
             else None
         )
+        self._respect_set_limit = bool(respect_set_limit)
+        self._requested_limit: float | None = None
         self.executed: list[tuple[str, object | None]] = []
 
     def __enter__(self):
@@ -42,7 +45,9 @@ class _FakeCursor:
         if "set_limit(" in text:
             try:
                 # params may be a tuple like (0.05,)
-                self._limit = float((params or (None,))[0])
+                self._requested_limit = float((params or (None,))[0])
+                if self._respect_set_limit:
+                    self._limit = self._requested_limit
             except Exception:
                 pass
         elif "show_limit()" in text:
@@ -191,6 +196,63 @@ def test_lexical_fallback_populates_rows(monkeypatch):
     assert applied_logs, "expected rag.pgtrgm.limit.applied log entry"
     applied = applied_logs[0].get("applied")
     assert float(applied) == pytest.approx(0.05)
+
+
+def test_explicit_trgm_limit_fallback_uses_requested_threshold(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_row = (
+        "chunk-fallback",  # noqa: S105 - test data
+        "lexical match",
+        {"tenant": tenant},
+        "hash-fallback",
+        "doc-fallback",
+        0.111,
+    )
+
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=[lexical_row],
+        lexical_required_limit=0.05,
+        respect_set_limit=False,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "zebragurke",
+            tenant_id=tenant,
+            filters={"case": None},
+            trgm_limit=0.05,
+            alpha=0.0,
+            min_sim=0.0,
+            top_k=3,
+        )
+
+    assert result.vector_candidates == 0
+    assert result.lexical_candidates == 1
+    meta = result.chunks[0].meta
+    assert float(meta.get("lscore", 0.0)) == pytest.approx(0.111)
+
+    # The fallback query should have been executed with the explicitly
+    # requested threshold despite the server reporting a higher limit.
+    fallback_calls = [
+        params
+        for sql, params in cursor.executed
+        if sql and ">= %s" in sql
+    ]
+    assert fallback_calls, "expected fallback lexical query to run"
+    fallback_params = fallback_calls[-1]
+    assert float(fallback_params[-2]) == pytest.approx(0.05)
+
+    # Logs should still reflect the server-reported limit value from show_limit().
+    applied_logs = [
+        entry for entry in logs if entry["event"] == "rag.pgtrgm.limit.applied"
+    ]
+    assert applied_logs, "expected rag.pgtrgm.limit.applied log entry"
+    assert float(applied_logs[0].get("applied")) == pytest.approx(0.30)
 
 
 def test_applies_set_limit_and_logs_applied_value(monkeypatch):
