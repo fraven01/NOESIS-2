@@ -105,8 +105,8 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
                 self.inner = inner
                 self.tenants = []
 
-            def for_tenant(self, tenant_id):
-                self.tenants.append(tenant_id)
+            def for_tenant(self, tenant_id, tenant_schema=None):
+                self.tenants.append((tenant_id, tenant_schema))
                 return self.inner
 
         router = _ScopedRouter(base_router)
@@ -131,7 +131,7 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
     }
 
     if scoped_router:
-        assert router.tenants == ["tenant-1"]
+        assert router.tenants == [("tenant-1", None)]
         assert base_router.calls[0]["filters"] == {"case": "case-1"}
     else:
         assert base_router.calls[0]["filters"] == {
@@ -144,6 +144,44 @@ def test_retrieve_requires_tenant_id(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: None)
     with pytest.raises(ValueError, match="tenant_id required"):
         retrieve.run({"query": "Hello"}, {"case": "c1"})
+
+
+def test_retrieve_passes_tenant_schema_to_router(monkeypatch):
+    retrieve._reset_router_for_tests()
+
+    class _TenantClient:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, query, *, case_id=None, top_k=5, filters=None):
+            self.calls.append(
+                {
+                    "query": query,
+                    "case_id": case_id,
+                    "top_k": top_k,
+                    "filters": filters,
+                }
+            )
+            return []
+
+    class _Router:
+        def __init__(self):
+            self.client = _TenantClient()
+            self.calls = []
+
+        def for_tenant(self, tenant_id, tenant_schema=None):
+            self.calls.append((tenant_id, tenant_schema))
+            return self.client
+
+    router = _Router()
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    retrieve.run({"query": "hello"}, {"tenant": "tenant-a", "tenant_schema": "schema-a"})
+
+    assert router.calls == [("tenant-a", "schema-a")]
+    assert router.client.calls == [
+        {"query": "hello", "case_id": None, "top_k": 5, "filters": None}
+    ]
 
 
 def _mock_call(called):

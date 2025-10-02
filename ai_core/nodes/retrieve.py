@@ -52,12 +52,13 @@ def run(
     if not tenant_id:
         raise ValueError("tenant_id required")
     case_id = meta.get("case") or meta.get("case_id")
+    tenant_schema = meta.get("tenant_schema") or meta.get("schema")
     router = _get_router()
     tenant_client = router
     filters: Dict[str, Optional[str]] | None = None
     for_tenant = getattr(router, "for_tenant", None)
     if callable(for_tenant):
-        tenant_client = for_tenant(tenant_id)
+        tenant_client = for_tenant(tenant_id, tenant_schema)
         # Tenant-scoped clients already enforce the tenant context, so we only
         # inject the optional case filter here to avoid redundant constraints.
         filters = {"case": case_id} if case_id else None
