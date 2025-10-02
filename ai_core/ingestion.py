@@ -92,9 +92,7 @@ def _status_store_path(tenant: str, case: str, document_id: str) -> str:
     )
 
 
-def _load_pipeline_state(
-    tenant: str, case: str, document_id: str
-) -> Dict[str, object]:
+def _load_pipeline_state(tenant: str, case: str, document_id: str) -> Dict[str, object]:
     status_path = _status_store_path(tenant, case, document_id)
     try:
         raw_state = object_store.read_json(status_path)
