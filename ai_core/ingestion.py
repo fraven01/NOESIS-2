@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from celery import group, shared_task
 from celery.exceptions import TimeoutError as CeleryTimeoutError
@@ -81,6 +81,148 @@ def _resolve_upload(
     return file_path, metadata
 
 
+def _status_store_path(tenant: str, case: str, document_id: str) -> str:
+    return "/".join(
+        (
+            object_store.sanitize_identifier(tenant),
+            object_store.sanitize_identifier(case),
+            "uploads",
+            f"{document_id}.status.json",
+        )
+    )
+
+
+def _load_pipeline_state(
+    tenant: str, case: str, document_id: str
+) -> Dict[str, object]:
+    status_path = _status_store_path(tenant, case, document_id)
+    try:
+        raw_state = object_store.read_json(status_path)
+    except FileNotFoundError:
+        return {
+            "steps": {},
+            "attempts": 0,
+        }
+    if not isinstance(raw_state, dict):
+        return {"steps": {}, "attempts": 0}
+    raw_state.setdefault("steps", {})
+    if not isinstance(raw_state["steps"], dict):
+        raw_state["steps"] = {}
+    return raw_state
+
+
+def _write_pipeline_state(
+    tenant: str, case: str, document_id: str, state: Dict[str, object]
+) -> None:
+    status_path = _status_store_path(tenant, case, document_id)
+    serialized: Dict[str, object] = {}
+    for key, value in state.items():
+        if key == "steps" and isinstance(value, dict):
+            normalized_steps: Dict[str, object] = {}
+            for step_name, step_data in value.items():
+                if not isinstance(step_data, dict):
+                    continue
+                normalized: Dict[str, object] = {}
+                for field, field_value in step_data.items():
+                    if field == "path" and field_value:
+                        normalized[field] = str(field_value)
+                    elif isinstance(field_value, Path):
+                        normalized[field] = str(field_value)
+                    else:
+                        normalized[field] = field_value
+                normalized_steps[step_name] = normalized
+            serialized[key] = normalized_steps
+        else:
+            serialized[key] = value
+    object_store.write_json(status_path, serialized)
+
+
+def _normalize_step_result(result: Dict[str, object]) -> Dict[str, object]:
+    normalized: Dict[str, object] = {}
+    for key, value in result.items():
+        if isinstance(value, Path):
+            normalized[key] = str(value)
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def _ensure_step(
+    tenant: str,
+    case: str,
+    document_id: str,
+    state: Dict[str, object],
+    step_name: str,
+    run_step: Callable[[], Dict[str, object]],
+) -> tuple[Dict[str, object], bool]:
+    steps = state.setdefault("steps", {})
+    cached = steps.get(step_name)
+    if isinstance(cached, dict):
+        cached_path = cached.get("path")
+        if cached_path:
+            if (object_store.BASE_PATH / str(cached_path)).exists():
+                cached_result = {
+                    key: cached[key]
+                    for key in cached
+                    if key not in {"completed_at", "cleaned"}
+                }
+                return cached_result, True
+        elif "path" not in cached:
+            cached_result = {
+                key: cached[key]
+                for key in cached
+                if key not in {"completed_at", "cleaned"}
+            }
+            return cached_result, True
+
+    result = _normalize_step_result(run_step())
+    steps[step_name] = {
+        **result,
+        "completed_at": time.time(),
+        "cleaned": False,
+    }
+    _write_pipeline_state(tenant, case, document_id, state)
+    return result, False
+
+
+def _cleanup_artifacts(paths: Iterable[Optional[str]]) -> List[str]:
+    removed: List[str] = []
+    seen = set()
+    for path in paths:
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        target = object_store.BASE_PATH / path
+        try:
+            if target.exists():
+                target.unlink()
+                removed.append(path)
+        except Exception:
+            log.exception("Failed to cleanup artifact", extra={"path": path})
+    return removed
+
+
+def _mark_cleaned(
+    tenant: str,
+    case: str,
+    document_id: str,
+    state: Dict[str, object],
+    removed_paths: Iterable[str],
+) -> None:
+    removed_set = {str(path) for path in removed_paths}
+    steps = state.setdefault("steps", {})
+    updated = False
+    for step_name, step_data in list(steps.items()):
+        if not isinstance(step_data, dict):
+            continue
+        if step_data.get("path") in removed_set:
+            step_data["path"] = None
+            step_data["cleaned"] = True
+            updated = True
+    if updated:
+        _write_pipeline_state(tenant, case, document_id, state)
+
+
 def partition_document_ids(
     tenant: str, case: str, document_ids: Iterable[str]
 ) -> Tuple[List[str], List[str]]:
@@ -105,6 +247,12 @@ def process_document(
     self, tenant: str, case: str, document_id: str
 ) -> Dict[str, object]:
     started = time.perf_counter()
+    state = _load_pipeline_state(tenant, case, document_id)
+    state["attempts"] = int(state.get("attempts", 0)) + 1
+    state["last_attempt_started_at"] = time.time()
+    _write_pipeline_state(tenant, case, document_id, state)
+    current_step: Optional[str] = None
+    created_artifacts: List[Tuple[str, str]] = []
     try:
         fpath, meta_json = _resolve_upload(tenant, case, document_id)
         file_bytes = fpath.read_bytes()
@@ -124,16 +272,101 @@ def process_document(
         sanitized_meta_json.pop("tenant", None)
         sanitized_meta_json.pop("case", None)
         meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
+        state["meta"] = {
+            "external_id": meta.get("external_id"),
+            "file": fpath.name,
+        }
+        _write_pipeline_state(tenant, case, document_id, state)
 
-        raw = pipe.ingest_raw(meta, fpath.name, file_bytes)
-        text = pipe.extract_text(meta, raw["path"])
-        masked = pipe.pii_mask(meta, text["path"])
-        chunks = pipe.chunk(meta, masked["path"])
-        emb = pipe.embed(meta, chunks["path"])
+        current_step = "ingest_raw"
+        raw, reused = _ensure_step(
+            tenant,
+            case,
+            document_id,
+            state,
+            current_step,
+            lambda: pipe.ingest_raw(meta, fpath.name, file_bytes),
+        )
+        if not reused and raw.get("path"):
+            created_artifacts.append((current_step, str(raw["path"])))
+        if "content_hash" in raw:
+            meta["content_hash"] = raw["content_hash"]
+            state.setdefault("meta", {})["content_hash"] = raw["content_hash"]
+            _write_pipeline_state(tenant, case, document_id, state)
+
+        current_step = "extract_text"
+        text, reused = _ensure_step(
+            tenant,
+            case,
+            document_id,
+            state,
+            current_step,
+            lambda: pipe.extract_text(meta, raw["path"]),
+        )
+        if not reused and text.get("path"):
+            created_artifacts.append((current_step, str(text["path"])))
+
+        current_step = "pii_mask"
+        masked, reused = _ensure_step(
+            tenant,
+            case,
+            document_id,
+            state,
+            current_step,
+            lambda: pipe.pii_mask(meta, text["path"]),
+        )
+        if not reused and masked.get("path"):
+            created_artifacts.append((current_step, str(masked["path"])))
+
+        current_step = "chunk"
+        chunks, reused = _ensure_step(
+            tenant,
+            case,
+            document_id,
+            state,
+            current_step,
+            lambda: pipe.chunk(meta, masked["path"]),
+        )
+        if not reused and chunks.get("path"):
+            created_artifacts.append((current_step, str(chunks["path"])))
+
+        current_step = "embed"
+        emb, reused = _ensure_step(
+            tenant,
+            case,
+            document_id,
+            state,
+            current_step,
+            lambda: pipe.embed(meta, chunks["path"]),
+        )
+        if not reused and emb.get("path"):
+            created_artifacts.append((current_step, str(emb["path"])))
+
+        current_step = "upsert"
         upsert_result = pipe.upsert(meta, emb["path"])
+        state.setdefault("steps", {})["upsert"] = {
+            "completed_at": time.time(),
+            "cleaned": True,
+        }
+        state["last_error"] = None
+        state["completed_at"] = time.time()
+        _write_pipeline_state(tenant, case, document_id, state)
     except Exception as exc:  # pragma: no cover - defensive retry path
         retries = getattr(self.request, "retries", 0)
         countdown = min(300, 5 * (2**retries or 1))
+        state["last_error"] = {
+            "step": current_step,
+            "message": str(exc),
+            "retry": retries,
+            "failed_at": time.time(),
+        }
+        _write_pipeline_state(tenant, case, document_id, state)
+        cleanup_targets = [
+            path for step, path in created_artifacts if step == current_step
+        ]
+        removed = _cleanup_artifacts(cleanup_targets)
+        if removed:
+            _mark_cleaned(tenant, case, document_id, state, removed)
         log.warning(
             "Retrying ingestion document task after failure",
             extra={
@@ -144,6 +377,16 @@ def process_document(
             },
         )
         raise self.retry(exc=exc, countdown=countdown)
+
+    all_paths: List[str] = []
+    for step_data in state.get("steps", {}).values():
+        if isinstance(step_data, dict) and step_data.get("path"):
+            all_paths.append(str(step_data["path"]))
+    removed_after_success = _cleanup_artifacts(
+        [path for _, path in created_artifacts] + all_paths
+    )
+    if removed_after_success:
+        _mark_cleaned(tenant, case, document_id, state, removed_after_success)
 
     written = int(upsert_result)
     documents = getattr(upsert_result, "documents", [])
