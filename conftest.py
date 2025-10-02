@@ -3,6 +3,35 @@ from pathlib import Path
 
 import pytest
 
+from ai_core.rag.embeddings import EmbeddingBatchResult
+
+
+@pytest.fixture(autouse=True)
+def stub_embedding_client(monkeypatch):
+    from ai_core.rag import embeddings as embeddings_module
+
+    class _DummyEmbeddingClient:
+        def __init__(self) -> None:
+            self._dim = 8
+            self.batch_size = 64
+
+        def embed(self, texts):
+            vectors = []
+            for text in texts:
+                normalized = (text or "").strip()
+                magnitude = float(len(normalized.split()) or 1)
+                tail = max(0, self._dim - 1)
+                vectors.append([magnitude] + [0.0] * tail)
+            return EmbeddingBatchResult(vectors=vectors, model="dummy-embed")
+
+        def dim(self) -> int:
+            return self._dim
+
+    dummy = _DummyEmbeddingClient()
+    monkeypatch.setattr(embeddings_module, "get_embedding_client", lambda: dummy)
+    monkeypatch.setattr(embeddings_module, "_default_client", dummy, raising=False)
+    yield
+
 
 pytest_plugins = [
     "tests.plugins.rag_db",

@@ -29,6 +29,7 @@ from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_logger
 from ai_core.rag.vector_store import VectorStore
+from .embeddings import get_embedding_client
 from .normalization import normalise_text, normalise_text_db
 
 from . import metrics
@@ -59,8 +60,13 @@ SUPPORTED_METADATA_FILTERS = {
 FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
-EMBEDDING_DIM = int(os.getenv("RAG_EMBEDDING_DIM", "1536"))
 _ZERO_EPSILON = 1e-12
+
+
+def get_embedding_dim() -> int:
+    """Return the embedding dimensionality reported by the provider."""
+
+    return get_embedding_client().dim()
 
 
 def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
@@ -1537,15 +1543,20 @@ class PgVectorClient:
         return max(1, len(content.split()))
 
     def _format_vector(self, values: Sequence[float]) -> str:
-        if len(values) != EMBEDDING_DIM:
+        expected_dim = get_embedding_dim()
+        if len(values) != expected_dim:
             raise ValueError(
-                f"Embedding dimension mismatch: expected {EMBEDDING_DIM}, got {len(values)}"
+                f"Embedding dimension mismatch: expected {expected_dim}, got {len(values)}"
             )
         return "[" + ",".join(f"{float(v):.6f}" for v in values) + "]"
 
     def _embed_query(self, query: str) -> List[float]:
         base = float(len(query.strip()) or 1)
-        return [base] + [0.0] * (EMBEDDING_DIM - 1)
+        dim = get_embedding_dim()
+        if dim <= 0:
+            raise ValueError("Embedding dimension must be positive")
+        tail = dim - 1
+        return [base] + [0.0] * tail
 
     def _distance_to_score(self, distance: float) -> float:
         try:

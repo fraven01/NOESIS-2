@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -20,7 +21,11 @@ from .infra import object_store, pii
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
-from .rag.vector_client import EMBEDDING_DIM
+from .rag.embeddings import (
+    EmbeddingBatchResult,
+    EmbeddingClientError,
+    get_embedding_client,
+)
 from .rag.vector_store import get_default_router
 
 logger = get_logger(__name__)
@@ -355,16 +360,77 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
 @shared_task(base=ScopedTask)
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
-    """Attach dummy embedding vectors to chunks."""
+    """Generate embedding vectors for chunks via LiteLLM."""
 
     chunks = object_store.read_json(chunks_path)
-    embeddings = []
+    client = get_embedding_client()
+    batch_size = max(1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size)))
+
+    prepared: List[Dict[str, object]] = []
     for ch in chunks:
         normalised = ch.get("normalized") or normalise_text(ch.get("content", ""))
-        magnitude = float(len((normalised or "").split()) or 1)
-        embedding = [0.0] * EMBEDDING_DIM
-        embedding[0] = magnitude
-        embeddings.append({**ch, "embedding": embedding, "normalized": normalised})
+        prepared.append({**ch, "normalized": normalised or ""})
+
+    total_chunks = len(prepared)
+    embeddings: List[Dict[str, object]] = []
+    expected_dim: Optional[int] = None
+    batches = 0
+
+    for start in range(0, total_chunks, batch_size):
+        batch = prepared[start : start + batch_size]
+        if not batch:
+            continue
+        batches += 1
+        inputs = [str(entry.get("normalized", "")) for entry in batch]
+        batch_started = time.perf_counter()
+        result: EmbeddingBatchResult = client.embed(inputs)
+        duration_ms = (time.perf_counter() - batch_started) * 1000
+        logger.info(
+            "ingestion.embed.batch",
+            extra={
+                "batch": batches,
+                "chunks": len(batch),
+                "duration_ms": duration_ms,
+                "model": result.model,
+            },
+        )
+        batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
+        current_dim = batch_dim
+        try:
+            current_dim = client.dim()
+        except EmbeddingClientError:
+            current_dim = batch_dim
+        if current_dim is not None:
+            if expected_dim is None:
+                expected_dim = current_dim
+            elif expected_dim != current_dim:
+                logger.info(
+                    "ingestion.embed.dimension_changed",
+                    extra={
+                        "previous": expected_dim,
+                        "current": current_dim,
+                        "model": result.model,
+                    },
+                )
+                expected_dim = current_dim
+        if len(result.vectors) != len(batch):
+            raise ValueError("Embedding batch size mismatch")
+
+        for entry, vector in zip(batch, result.vectors):
+            if expected_dim is not None and len(vector) != expected_dim:
+                raise ValueError("Embedding dimension mismatch")
+            embeddings.append(
+                {
+                    **entry,
+                    "embedding": list(vector),
+                    "vector_dim": len(vector),
+                }
+            )
+
+    logger.info(
+        "ingestion.embed.summary",
+        extra={"chunks": total_chunks, "batches": batches},
+    )
     out_path = _build_path(meta, "embeddings", "vectors.json")
     object_store.write_json(out_path, embeddings)
     return {"path": out_path}

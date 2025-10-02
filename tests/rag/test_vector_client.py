@@ -391,7 +391,7 @@ def test_lexical_only_scoring(monkeypatch):
 
     # Force null/zero embedding so vector path is ignored
     monkeypatch.setattr(
-        client, "_embed_query", lambda _q: [0.0] * vector_client.EMBEDDING_DIM
+        client, "_embed_query", lambda _q: [0.0] * vector_client.get_embedding_dim()
     )
 
     lexical_row = (
@@ -431,7 +431,7 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
 
     # Force null/zero embedding so vector path is ignored
     monkeypatch.setattr(
-        client, "_embed_query", lambda _q: [0.0] * vector_client.EMBEDDING_DIM
+        client, "_embed_query", lambda _q: [0.0] * vector_client.get_embedding_dim()
     )
 
     lexical_row = (

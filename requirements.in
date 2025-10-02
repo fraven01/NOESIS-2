@@ -9,6 +9,7 @@ python-json-logger==3.3.0
 pyyaml
 redis
 requests
+litellm
 gunicorn
 structlog>=24.1.0
 opentelemetry-api
