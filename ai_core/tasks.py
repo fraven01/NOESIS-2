@@ -180,6 +180,32 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
             parts.append(_TOKEN_ENCODING.decode(chunk_ids))
         return parts
 
+    whitespace_chunks = list(re.finditer(r"\S+\s*", text))
+    if len(whitespace_chunks) > 1:
+        parts: List[str] = []
+        current_segments: List[str] = []
+        current_tokens = 0
+
+        for match in whitespace_chunks:
+            segment = match.group(0)
+            stripped = segment.strip()
+
+            if not stripped:
+                continue
+
+            if current_tokens + 1 > hard_limit and current_segments:
+                parts.append("".join(current_segments).rstrip())
+                current_segments = []
+                current_tokens = 0
+
+            current_segments.append(segment)
+            current_tokens += 1
+
+        if current_segments:
+            parts.append("".join(current_segments).rstrip())
+
+        return [part for part in parts if part]
+
     return [text[i : i + hard_limit] for i in range(0, len(text), hard_limit)]
 
 
