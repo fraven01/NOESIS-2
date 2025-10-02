@@ -170,6 +170,22 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     hybrid_result = None
     latency_ms = 0.0
 
+    max_candidates_setting = getattr(settings, "RAG_MAX_CANDIDATES", 200)
+    try:
+        max_candidates = int(max_candidates_setting)
+    except (TypeError, ValueError):
+        max_candidates = 200
+    max_candidates = max(1, max_candidates)
+
+    def _clamp_limit(limit: int | None) -> int | None:
+        if limit is None:
+            return None
+        try:
+            limit_value = int(limit)
+        except (TypeError, ValueError):
+            return None
+        return min(max_candidates, max(top_k, limit_value))
+
     normalized_query = normalise_text(query)
     search_input = query.strip()
 
@@ -251,14 +267,8 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     # Optional per-request limits for vector/lexical candidates
                     vec_limit = state.get("vec_limit")
                     lex_limit = state.get("lex_limit")
-                    try:
-                        vec_limit = int(vec_limit) if vec_limit is not None else None
-                    except (TypeError, ValueError):
-                        vec_limit = None
-                    try:
-                        lex_limit = int(lex_limit) if lex_limit is not None else None
-                    except (TypeError, ValueError):
-                        lex_limit = None
+                    vec_limit = _clamp_limit(vec_limit)
+                    lex_limit = _clamp_limit(lex_limit)
                     if vec_limit is not None:
                         hybrid_kwargs["vec_limit"] = vec_limit
                     if lex_limit is not None:
@@ -299,14 +309,8 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                     # Optional per-request limits for vector/lexical candidates
                     _vec_limit = state.get("vec_limit")
                     _lex_limit = state.get("lex_limit")
-                    try:
-                        _vec_limit = int(_vec_limit) if _vec_limit is not None else None
-                    except (TypeError, ValueError):
-                        _vec_limit = None
-                    try:
-                        _lex_limit = int(_lex_limit) if _lex_limit is not None else None
-                    except (TypeError, ValueError):
-                        _lex_limit = None
+                    _vec_limit = _clamp_limit(_vec_limit)
+                    _lex_limit = _clamp_limit(_lex_limit)
                     hybrid_result = router_hybrid(
                         search_input,
                         tenant_id=str(tenant_id),

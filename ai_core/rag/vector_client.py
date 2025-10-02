@@ -494,8 +494,16 @@ class PgVectorClient:
         ).lower()
         if distance_score_mode not in {"inverse", "linear"}:
             distance_score_mode = "inverse"
-        vec_limit_value = max(top_k, int(vec_limit if vec_limit is not None else 50))
-        lex_limit_value = max(top_k, int(lex_limit if lex_limit is not None else 50))
+        max_candidates_setting = _get_setting("RAG_MAX_CANDIDATES", 200)
+        try:
+            max_candidates = int(max_candidates_setting)
+        except (TypeError, ValueError):
+            max_candidates = 200
+        max_candidates = max(1, max_candidates)
+        vec_limit_requested = int(vec_limit) if vec_limit is not None else 50
+        lex_limit_requested = int(lex_limit) if lex_limit is not None else 50
+        vec_limit_value = min(max_candidates, max(top_k, vec_limit_requested))
+        lex_limit_value = min(max_candidates, max(top_k, lex_limit_requested))
         query_norm = normalise_text(query)
         query_db_norm = normalise_text_db(query)
         raw_vec = self._embed_query(query_norm)
