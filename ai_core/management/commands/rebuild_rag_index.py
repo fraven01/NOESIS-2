@@ -22,11 +22,9 @@ class Command(BaseCommand):
         client = vector_client.get_default_client()
         schema_name = getattr(client, "_schema", "rag")
         scope = f"{schema_name}.embeddings"
-        expected_index = (
-            "embeddings_embedding_hnsw"
-            if index_kind == "HNSW"
-            else "embeddings_embedding_ivfflat"
-        )
+        hnsw_index_name = "embeddings_embedding_hnsw"
+        ivfflat_index_name = "embeddings_embedding_ivfflat"
+        expected_index = hnsw_index_name if index_kind == "HNSW" else ivfflat_index_name
         row = None
         with client._connection() as conn:  # type: ignore[attr-defined]
             try:
@@ -36,16 +34,12 @@ class Command(BaseCommand):
                             sql.Identifier(schema_name)
                         )
                     )
-                    cur.execute(
-                        sql.SQL("DROP INDEX IF EXISTS {}").format(
-                            sql.Identifier("embeddings_embedding_hnsw")
+                    for index_name in (hnsw_index_name, ivfflat_index_name):
+                        cur.execute(
+                            sql.SQL("DROP INDEX IF EXISTS {}").format(
+                                sql.Identifier(index_name)
+                            )
                         )
-                    )
-                    cur.execute(
-                        sql.SQL("DROP INDEX IF EXISTS {}").format(
-                            sql.Identifier("embeddings_embedding_ivfflat")
-                        )
-                    )
                     if index_kind == "HNSW":
                         cur.execute(
                             sql.SQL(
@@ -54,7 +48,7 @@ class Command(BaseCommand):
                                 WITH (m = %s, ef_construction = %s)
                                 """
                             ).format(
-                                sql.Identifier("embeddings_embedding_hnsw"),
+                                sql.Identifier(hnsw_index_name),
                                 sql.Identifier(schema_name, "embeddings"),
                             ),
                             (hnsw_m, hnsw_ef),
@@ -67,7 +61,7 @@ class Command(BaseCommand):
                                 WITH (lists = %s)
                                 """
                             ).format(
-                                sql.Identifier("embeddings_embedding_ivfflat"),
+                                sql.Identifier(ivfflat_index_name),
                                 sql.Identifier(schema_name, "embeddings"),
                             ),
                             (ivf_lists,),
