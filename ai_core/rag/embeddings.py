@@ -1,7 +1,6 @@
 """LiteLLM-backed embedding utilities."""
 
 from __future__ import annotations
-
 from dataclasses import dataclass
 from typing import List, Sequence, Tuple
 
@@ -33,6 +32,9 @@ class EmbeddingBatchResult:
 
     vectors: List[List[float]]
     model: str
+    model_used: str
+    attempts: int
+    timeout_s: float | None
 
 
 class EmbeddingClient:
@@ -85,29 +87,39 @@ class EmbeddingClient:
             raise TypeError("texts must be a sequence")
         inputs: List[str] = [text if isinstance(text, str) else str(text) for text in texts]
         if not inputs:
-            return EmbeddingBatchResult(vectors=[], model=self._primary_model)
+            return EmbeddingBatchResult(
+                vectors=[],
+                model=self._primary_model,
+                model_used="primary",
+                attempts=1,
+                timeout_s=None,
+            )
 
         last_error: Exception | None = None
-        if self._fallback_model and self._fallback_model != self._primary_model:
-            model_candidates: Tuple[str, ...] = (
-                self._primary_model,
-                self._fallback_model,
-            )
-        else:
-            model_candidates = (self._primary_model,)
+        model_candidates = self._candidate_models()
+        cfg = get_config()
+        timeout = cfg.timeouts.get("embeddings")
+        timeout_s = self._normalise_timeout(timeout)
 
-        for model in model_candidates:
+        for attempt, model in enumerate(model_candidates, start=1):
             try:
-                vectors = self._invoke_provider(model, inputs)
+                vectors = self._invoke_provider(model, inputs, cfg, timeout)
             except Exception as exc:  # pragma: no cover - requires network failure
                 last_error = exc
+                should_retry = attempt < len(model_candidates) and self._should_use_fallback(exc)
+                status_code = self._extract_status_code(exc)
                 logger.warning(
                     "embeddings.batch_failed",
                     model=model,
                     exc_type=exc.__class__.__name__,
                     exc_message=str(exc),
+                    status_code=status_code,
+                    attempt=attempt,
+                    retry=should_retry,
                 )
-                continue
+                if should_retry:
+                    continue
+                break
 
             if vectors:
                 current_dim = len(vectors[0])
@@ -121,20 +133,36 @@ class EmbeddingClient:
                         current_dim=current_dim,
                     )
                     self._dim = current_dim
-            return EmbeddingBatchResult(vectors=vectors, model=model)
+            model_used = "fallback" if attempt > 1 else "primary"
+            return EmbeddingBatchResult(
+                vectors=vectors,
+                model=model,
+                model_used=model_used,
+                attempts=attempt,
+                timeout_s=timeout_s,
+            )
 
         message = "Embedding request failed"
         if last_error is not None:
             message = f"{message}: {last_error}"
         raise EmbeddingClientError(message)
 
-    def _invoke_provider(self, model: str, inputs: Sequence[str]) -> List[List[float]]:
+    def _candidate_models(self) -> Tuple[str, ...]:
+        if self._fallback_model and self._fallback_model != self._primary_model:
+            return (self._primary_model, self._fallback_model)
+        return (self._primary_model,)
+
+    def _invoke_provider(
+        self,
+        model: str,
+        inputs: Sequence[str],
+        cfg,
+        timeout,
+    ) -> List[List[float]]:
         if litellm_embedding is None:
             raise EmbeddingProviderUnavailable("litellm package is not installed")
 
-        cfg = get_config()
         api_base = cfg.litellm_base_url.rstrip("/") + "/v1"
-        timeout = cfg.timeouts.get("embeddings")
         kwargs = {
             "model": model,
             "input": list(inputs),
@@ -172,6 +200,56 @@ class EmbeddingClient:
                 if len(vector) != expected_len:
                     raise EmbeddingClientError("Embedding dimensions mismatch in batch")
         return vectors
+
+    @staticmethod
+    def _normalise_timeout(timeout: object | None) -> float | None:
+        if timeout is None:
+            return None
+        if isinstance(timeout, (int, float)):
+            return float(timeout)
+        text = str(timeout)
+        try:
+            return float(text)
+        except (TypeError, ValueError):
+            if hasattr(timeout, "total"):  # httpx.Timeout like
+                total = getattr(timeout, "total")
+                if isinstance(total, (int, float)):
+                    return float(total)
+            return None
+
+    @staticmethod
+    def _extract_status_code(exc: Exception) -> int | None:
+        for attr in ("status_code", "status", "code"):
+            value = getattr(exc, attr, None)
+            if isinstance(value, int):
+                return value
+            try:
+                if value is not None and str(value).isdigit():
+                    return int(value)
+            except Exception:
+                continue
+        response = getattr(exc, "response", None)
+        if response is not None:
+            for attr in ("status_code", "status"):
+                value = getattr(response, attr, None)
+                if isinstance(value, int):
+                    return value
+        return None
+
+    def _should_use_fallback(self, exc: Exception) -> bool:
+        status_code = self._extract_status_code(exc)
+        if status_code is not None:
+            if status_code == 429 or 500 <= status_code < 600:
+                return True
+        exc_name = exc.__class__.__name__.lower()
+        if "timeout" in exc_name:
+            return True
+        if isinstance(exc, TimeoutError):
+            return True
+        message = str(exc)
+        if message and "timeout" in message.lower():
+            return True
+        return False
 
 
 _default_client: EmbeddingClient | None = None
