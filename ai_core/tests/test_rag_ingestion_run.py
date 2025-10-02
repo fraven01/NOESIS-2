@@ -26,6 +26,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
         run_id,
         trace_id=None,
         idempotency_key=None,
+        tenant_schema=None,
     ):
         captured.update(
             {
@@ -35,6 +36,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
                 "run_id": run_id,
                 "trace_id": trace_id,
                 "idempotency_key": idempotency_key,
+                "tenant_schema": tenant_schema,
             }
         )
 
@@ -71,6 +73,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
         "trace_id": body["trace_id"],
         "run_id": body["ingestion_run_id"],
         "idempotency_key": None,
+        "tenant_schema": test_tenant_schema_name,
     }
 
 
