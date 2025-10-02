@@ -6,6 +6,11 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
 from ai_core.views import make_fallback_external_id
+from common.constants import (
+    META_CASE_ID_KEY,
+    META_TENANT_ID_KEY,
+    META_TENANT_SCHEMA_KEY,
+)
 
 
 @pytest.mark.django_db
@@ -35,9 +40,9 @@ def test_upload_ingest_query_end2end(
         "/ai/rag/documents/upload/",
         data=payload,
         **{
-            "X-Tenant-Schema": tenant,
-            "X-Tenant-Id": tenant,
-            "X-Case-Id": case,
+            META_TENANT_SCHEMA_KEY: tenant,
+            META_TENANT_ID_KEY: tenant,
+            META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 202
@@ -55,9 +60,9 @@ def test_upload_ingest_query_end2end(
         data=json.dumps({"query": "zebragurke", "top_k": 3}),
         content_type="application/json",
         **{
-            "X-Tenant-Schema": tenant,
-            "X-Tenant-Id": tenant,
-            "X-Case-Id": case,
+            META_TENANT_SCHEMA_KEY: tenant,
+            META_TENANT_ID_KEY: tenant,
+            META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 200
@@ -99,9 +104,9 @@ def test_ingestion_run_reports_missing_documents(
         "/ai/rag/documents/upload/",
         data=payload,
         **{
-            "X-Tenant-Schema": tenant,
-            "X-Tenant-Id": tenant,
-            "X-Case-Id": case,
+            META_TENANT_SCHEMA_KEY: tenant,
+            META_TENANT_ID_KEY: tenant,
+            META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 202
@@ -125,9 +130,9 @@ def test_ingestion_run_reports_missing_documents(
         data=json.dumps(run_payload),
         content_type="application/json",
         **{
-            "X-Tenant-Schema": tenant,
-            "X-Tenant-Id": tenant,
-            "X-Case-Id": case,
+            META_TENANT_SCHEMA_KEY: tenant,
+            META_TENANT_ID_KEY: tenant,
+            META_CASE_ID_KEY: case,
         },
     )
 
