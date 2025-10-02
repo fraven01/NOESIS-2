@@ -5,6 +5,11 @@ import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+try:
+    import tiktoken  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    tiktoken = None  # type: ignore
+
 from celery import shared_task
 from common.celery import ScopedTask
 from common.logging import get_logger
@@ -136,8 +141,46 @@ def _split_sentences(text: str) -> List[str]:
     return parts or [text.strip()]
 
 
+if tiktoken:
+    try:
+        _TOKEN_ENCODING = tiktoken.get_encoding("cl100k_base")
+    except Exception:  # pragma: no cover - defensive fallback
+        _TOKEN_ENCODING = None
+else:
+    _TOKEN_ENCODING = None
+
+
 def _token_count(text: str) -> int:
-    return max(1, len(text.split()))
+    stripped = text.strip()
+    if not stripped:
+        return 0
+
+    if _TOKEN_ENCODING is not None:
+        # `disallowed_special=()` ensures consistent behaviour across tiktoken versions.
+        return max(1, len(_TOKEN_ENCODING.encode(stripped, disallowed_special=())))
+
+    whitespace_tokens = [segment for segment in stripped.split() if segment]
+    if len(whitespace_tokens) > 1:
+        return len(whitespace_tokens)
+
+    return max(1, len(stripped))
+
+
+def _split_by_limit(text: str, hard_limit: int) -> List[str]:
+    if not text:
+        return []
+
+    if _TOKEN_ENCODING is not None:
+        token_ids = _TOKEN_ENCODING.encode(text, disallowed_special=())
+        if not token_ids:
+            return []
+        parts: List[str] = []
+        for start in range(0, len(token_ids), hard_limit):
+            chunk_ids = token_ids[start : start + hard_limit]
+            parts.append(_TOKEN_ENCODING.decode(chunk_ids))
+        return parts
+
+    return [text[i : i + hard_limit] for i in range(0, len(text), hard_limit)]
 
 
 def _chunkify(
@@ -175,16 +218,17 @@ def _chunkify(
     for sentence in sentences:
         tokens = _token_count(sentence)
         if tokens > hard_limit:
-            words = sentence.split()
-            start = 0
-            while start < len(words):
-                end = min(start + hard_limit, len(words))
-                sub_sentence = " ".join(words[start:end])
-                start = end
-                if current_tokens + _token_count(sub_sentence) > hard_limit:
+            sub_sentences = _split_by_limit(sentence, hard_limit)
+            for sub_sentence in sub_sentences:
+                sub_tokens = _token_count(sub_sentence)
+                if sub_tokens > hard_limit:
+                    # Guard against pathological tokenizer fallbacks by forcing a hard trim.
+                    sub_sentence = sub_sentence[:hard_limit]
+                    sub_tokens = _token_count(sub_sentence)
+                if current_tokens + sub_tokens > hard_limit:
                     flush()
-                current.append((sub_sentence, _token_count(sub_sentence)))
-                current_tokens += _token_count(sub_sentence)
+                current.append((sub_sentence, sub_tokens))
+                current_tokens += sub_tokens
                 if current_tokens >= target_tokens:
                     flush()
             continue
