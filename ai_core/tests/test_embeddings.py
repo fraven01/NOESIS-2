@@ -26,9 +26,7 @@ class _DummyLogger:
 
 
 @pytest.mark.django_db
-def test_embed_timeout_enforces_limit_and_logs_key_alias(
-    monkeypatch, settings
-) -> None:
+def test_embed_timeout_enforces_limit_and_logs_key_alias(monkeypatch, settings) -> None:
     embeddings.reset_embedding_client()
     settings.EMBEDDINGS_MODEL_PRIMARY = "primary"
     settings.EMBEDDINGS_MODEL_FALLBACK = "fallback"
@@ -81,9 +79,7 @@ def test_embed_timeout_enforces_limit_and_logs_key_alias(
     assert warning_events
     assert warning_events[0]["key_alias"] == "alias-test"
 
-    final_events = [
-        event for level, event, _ in dummy_logger.calls if level == "error"
-    ]
+    final_events = [event for level, event, _ in dummy_logger.calls if level == "error"]
     assert "embeddings.batch_failed_final" not in final_events
 
     embeddings.reset_embedding_client()

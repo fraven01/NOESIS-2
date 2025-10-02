@@ -64,9 +64,7 @@ EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
 EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large")
 EMBEDDINGS_MODEL_FALLBACK = env("EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small")
 EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
-EMBEDDINGS_TIMEOUT_SECONDS = env.float(
-    "EMBEDDINGS_TIMEOUT_SECONDS", default=20.0
-)
+EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
 
 
 def _load_common_headers_table() -> str:

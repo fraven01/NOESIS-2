@@ -239,9 +239,7 @@ class EmbeddingClient:
                     raise EmbeddingClientError("Embedding dimensions mismatch in batch")
         return vectors
 
-    def _execute_with_timeout(
-        self, fn: Callable[[], T], timeout_s: float | None
-    ) -> T:
+    def _execute_with_timeout(self, fn: Callable[[], T], timeout_s: float | None) -> T:
         if timeout_s is None or timeout_s <= 0:
             return fn()
         executor = ThreadPoolExecutor(max_workers=1)
