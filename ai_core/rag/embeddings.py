@@ -244,15 +244,18 @@ class EmbeddingClient:
     ) -> T:
         if timeout_s is None or timeout_s <= 0:
             return fn()
-        with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(fn)
-            try:
-                return future.result(timeout=timeout_s)
-            except FuturesTimeoutError as exc:
-                future.cancel()
-                raise EmbeddingTimeoutError(
-                    f"Embedding call exceeded {timeout_s} seconds"
-                ) from exc
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fn)
+        try:
+            result = future.result(timeout=timeout_s)
+        except FuturesTimeoutError as exc:
+            future.cancel()
+            raise EmbeddingTimeoutError(
+                f"Embedding call exceeded {timeout_s} seconds"
+            ) from exc
+        finally:
+            executor.shutdown(wait=future.done(), cancel_futures=True)
+        return result
 
     @staticmethod
     def _normalise_timeout(timeout: object | None) -> float | None:
