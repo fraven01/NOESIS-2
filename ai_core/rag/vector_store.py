@@ -326,16 +326,26 @@ class VectorStoreRouter:
         )
 
     def upsert_chunks(
-        self, chunks: Iterable[Chunk], *, scope: str | None = None
+        self,
+        chunks: Iterable[Chunk],
+        *,
+        scope: str | None = None,
+        tenant_id: str | None = None,
     ) -> int:
         """Delegate writes to the configured scope (default if omitted)."""
 
         target_scope = scope or self._default_scope
         chunk_list = list(chunks)
+        expected_tenant = str(tenant_id).strip() if tenant_id is not None else None
         for chunk in chunk_list:
             tenant_meta = str(chunk.meta.get("tenant") or "").strip()
             if not tenant_meta:
                 raise ValueError("chunk metadata must include tenant")
+            if expected_tenant is not None and tenant_meta != expected_tenant:
+                raise ValueError(
+                    "Chunk tenant '%s' does not match expected tenant '%s'"
+                    % (tenant_meta, expected_tenant)
+                )
         logger.debug("Upserting chunks", extra={"scope": target_scope})
         return self._get_store(target_scope).upsert_chunks(chunk_list)
 
@@ -407,10 +417,13 @@ class _TenantScopedClient:
         top_k: int = 5,
         filters: Mapping[str, object | None] | None = None,
     ) -> list[Chunk]:
-        effective_tenant = tenant_id or self._tenant_id
+        if tenant_id is not None:
+            assert tenant_id == self._tenant_id, (
+                "Tenant scoped client cannot search as different tenant"
+            )
         return self._router.search(
             query,
-            tenant_id=effective_tenant,
+            tenant_id=self._tenant_id,
             case_id=case_id,
             top_k=top_k,
             filters=filters,
@@ -451,16 +464,22 @@ class _TenantScopedClient:
         coerced: list[Chunk] = []
         for chunk in chunk_list:
             meta = dict(chunk.meta)
-            if not meta.get("tenant"):
-                meta["tenant"] = self._tenant_id
-                coerced.append(
-                    Chunk(content=chunk.content, meta=meta, embedding=chunk.embedding)
+            tenant_meta_raw = meta.get("tenant")
+            tenant_meta = str(tenant_meta_raw).strip() if tenant_meta_raw else ""
+            if tenant_meta and tenant_meta != self._tenant_id:
+                msg = (
+                    "Chunk tenant '%s' does not match scoped tenant '%s'"
+                    % (tenant_meta, self._tenant_id)
                 )
-            else:
-                coerced.append(chunk)
+                raise ValueError(msg)
+            meta["tenant"] = self._tenant_id
+            coerced.append(
+                Chunk(content=chunk.content, meta=meta, embedding=chunk.embedding)
+            )
         return self._router.upsert_chunks(
             coerced,
             scope=self._scope,
+            tenant_id=self._tenant_id,
         )
 
     def health_check(self) -> dict[str, bool]:

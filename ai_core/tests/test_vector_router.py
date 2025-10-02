@@ -210,6 +210,17 @@ def test_router_upsert_requires_tenant_metadata(
         router.upsert_chunks([chunk])
 
 
+def test_router_upsert_respects_expected_tenant(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+    chunk = Chunk(content="foo", meta={"tenant": "t"})
+    router.upsert_chunks([chunk], tenant_id="t")
+    assert len(global_store.upsert_calls) == 1
+    with pytest.raises(ValueError):
+        router.upsert_chunks([chunk], tenant_id="other")
+
+
 def test_router_health_check_aggregates_scope_results(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
@@ -218,6 +229,45 @@ def test_router_health_check_aggregates_scope_results(
     assert results == {"global": True, "silo": True}
     assert global_store.health_checks == 1
     assert silo_store.health_checks == 1
+
+
+def test_tenant_client_rejects_foreign_search_tenant(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, _, _ = router_and_stores
+    tenant_client = router.for_tenant("tenant-123")
+    with pytest.raises(AssertionError):
+        tenant_client.search("query", tenant_id="other-tenant")
+
+
+def test_tenant_client_search_uses_bound_tenant(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+    tenant_client = router.for_tenant("tenant-bound")
+    tenant_client.search("query")
+    assert global_store.search_calls[-1]["tenant_id"] == "tenant-bound"
+
+
+def test_tenant_client_enforces_tenant_on_upsert(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+    tenant_client = router.for_tenant("tenant-456")
+    chunk = Chunk(content="foo", meta={})
+    tenant_client.upsert_chunks([chunk])
+    stored = global_store.upsert_calls[-1][0]
+    assert stored.meta["tenant"] == "tenant-456"
+
+
+def test_tenant_client_upsert_rejects_foreign_tenant(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, _, _ = router_and_stores
+    tenant_client = router.for_tenant("tenant-789")
+    chunk = Chunk(content="foo", meta={"tenant": "other"})
+    with pytest.raises(ValueError):
+        tenant_client.upsert_chunks([chunk])
 
 
 def test_router_health_check_records_metrics(
