@@ -462,3 +462,56 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
     assert meta.get("vscore") == 0.0
     assert meta.get("lscore") == pytest.approx(0.2)
     assert meta.get("fused") == pytest.approx(0.2)
+
+
+def test_hybrid_search_clamps_candidate_limits(monkeypatch):
+    vector_client.reset_default_client()
+    monkeypatch.setenv("RAG_MAX_CANDIDATES", "100")
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_row = (
+        "chunk-clamped",
+        "lexical match",
+        {"tenant": tenant},
+        "hash-clamped",
+        "doc-clamped",
+        0.5,
+    )
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        vector_rows=[],
+        lexical_rows=[lexical_row],
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    result = client.hybrid_search(
+        "clamp me",
+        tenant_id=tenant,
+        filters={"case": None},
+        alpha=0.0,
+        min_sim=0.0,
+        top_k=10,
+        vec_limit=5000,
+        lex_limit=8000,
+    )
+
+    assert result.vec_limit == 100
+    assert result.lex_limit == 100
+
+    vector_limits = [
+        params[-1]
+        for sql, params in cursor.executed
+        if "from embeddings" in sql.lower()
+    ]
+    assert vector_limits and all(limit == 100 for limit in vector_limits)
+
+    lexical_limits = [
+        params[-1]
+        for sql, params in cursor.executed
+        if "similarity(c.text_norm" in sql.lower() and "limit %s" in sql.lower()
+    ]
+    assert lexical_limits and all(limit == 100 for limit in lexical_limits)
+
+    vector_client.reset_default_client()
