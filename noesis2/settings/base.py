@@ -59,6 +59,15 @@ RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
 RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
 
+EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
+EMBEDDINGS_MODEL_PRIMARY = env(
+    "EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large"
+)
+EMBEDDINGS_MODEL_FALLBACK = env(
+    "EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small"
+)
+EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
+
 
 def _load_common_headers_table() -> str:
     """Return the reference markdown table describing shared API headers."""

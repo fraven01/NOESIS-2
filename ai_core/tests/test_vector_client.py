@@ -29,7 +29,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         doc_id = uuid.uuid4()
@@ -129,7 +129,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="text",
             meta={"hash": "h", "external_id": "ext-1"},
-            embedding=[0.0] * vector_client.EMBEDDING_DIM,
+            embedding=[0.0] * vector_client.get_embedding_dim(),
         )
         with pytest.raises(ValueError):
             client.upsert_chunks([chunk])
@@ -139,7 +139,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="text",
             meta={"tenant": str(uuid.uuid4()), "external_id": "ext-1"},
-            embedding=[0.0] * vector_client.EMBEDDING_DIM,
+            embedding=[0.0] * vector_client.get_embedding_dim(),
         )
         with pytest.raises(ValueError):
             client.upsert_chunks([chunk])
@@ -156,7 +156,7 @@ class TestPgVectorClient:
                 "case": "case-fallback",
                 "source": "example",
             },
-            embedding=[0.25] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.25] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
 
         written = client.upsert_chunks([chunk])
@@ -211,7 +211,7 @@ class TestPgVectorClient:
                 "source": "s",
                 "external_id": "legacy-doc",
             },
-            embedding=[0.1] * vector_client.EMBEDDING_DIM,
+            embedding=[0.1] * vector_client.get_embedding_dim(),
         )
         written = client.upsert_chunks([chunk])
         assert written == 1
@@ -263,7 +263,7 @@ class TestPgVectorClient:
                 "source": "s",
                 "external_id": external_id,
             },
-            embedding=[0.2] * vector_client.EMBEDDING_DIM,
+            embedding=[0.2] * vector_client.get_embedding_dim(),
         )
         written = client.upsert_chunks([chunk])
         assert written == 1
@@ -313,7 +313,7 @@ class TestPgVectorClient:
                     "source": "s",
                     "external_id": external_id,
                 },
-                embedding=[0.01] * vector_client.EMBEDDING_DIM,
+                embedding=[0.01] * vector_client.get_embedding_dim(),
             )
 
         initial_chunks = [_make_chunk(f"chunk-{idx}", doc_hash_v1) for idx in range(3)]
@@ -370,7 +370,7 @@ class TestPgVectorClient:
                     "hash": doc_hash,
                     "source": "unit",
                 },
-                embedding=[0.2] * vector_client.EMBEDDING_DIM,
+                embedding=[0.2] * vector_client.get_embedding_dim(),
             )
 
         initial_chunk = _make_chunk("original content")
@@ -439,7 +439,7 @@ class TestPgVectorClient:
                     "source": "src",
                     "external_id": f"doc-{index}",
                 },
-                embedding=[0.02] * vector_client.EMBEDDING_DIM,
+                embedding=[0.02] * vector_client.get_embedding_dim(),
             )
             for index in range(12)
         ]
@@ -463,7 +463,7 @@ class TestPgVectorClient:
                     "doctype": "contract",
                     "external_id": "doc-a",
                 },
-                embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+                embedding=[0.03] + [0.0] * (vector_client.get_embedding_dim() - 1),
             ),
             Chunk(
                 content="Filtered",
@@ -474,7 +474,7 @@ class TestPgVectorClient:
                     "doctype": "contract",
                     "external_id": "doc-b",
                 },
-                embedding=[0.03] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+                embedding=[0.03] + [0.0] * (vector_client.get_embedding_dim() - 1),
             ),
         ]
         written = client.upsert_chunks(chunks)
@@ -511,7 +511,7 @@ class TestPgVectorClient:
                 "published": True,
                 "external_id": "doc-bool",
             },
-            embedding=[0.04] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.04] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -542,7 +542,7 @@ class TestPgVectorClient:
                 "hash": "doc-filter-tolerant",
                 "source": "alpha",
             },
-            embedding=[0.05] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.05] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -611,7 +611,7 @@ class TestPgVectorClient:
                 "source": "lexical",
                 "external_id": "doc-lex",
             },
-            embedding=[0.3] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.3] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -632,7 +632,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         with capture_logs() as logs:
@@ -679,13 +679,13 @@ class TestPgVectorClient:
                 "source": "lexical",
                 "external_id": "lex-1",
             },
-            embedding=[0.0] * vector_client.EMBEDDING_DIM,
+            embedding=[0.0] * vector_client.get_embedding_dim(),
         )
         client.upsert_chunks([chunk])
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         result = client.hybrid_search(
@@ -714,7 +714,7 @@ class TestPgVectorClient:
                 "source": "cutoff",
                 "external_id": "doc-cutoff",
             },
-            embedding=[0.25] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.25] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -763,7 +763,7 @@ class TestPgVectorClient:
                 "source": "lexical",
                 "external_id": "doc-trigram",
             },
-            embedding=[0.12] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.12] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -828,7 +828,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         class _Cursor:
@@ -950,7 +950,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         class _Cursor:
@@ -1087,7 +1087,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.0] * vector_client.EMBEDDING_DIM,
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
         class _Cursor:
@@ -1324,7 +1324,7 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.1] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            lambda self, _query: [0.1] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
 
         class _FakeCursor:
@@ -1570,7 +1570,7 @@ class TestPgVectorClient:
                 "case": "case-a",
                 "source": "example",
             },
-            embedding=[0.12] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.12] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -1603,7 +1603,7 @@ class TestPgVectorClient:
                 "case": "case-b",
                 "source": "example",
             },
-            embedding=[0.4] + [0.0] * (vector_client.EMBEDDING_DIM - 1),
+            embedding=[0.4] + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
         client.upsert_chunks([chunk])
 
@@ -1845,6 +1845,6 @@ class TestPgVectorClient:
     def test_embed_query_returns_non_zero_vector(self) -> None:
         client = vector_client.get_default_client()
         values = client._embed_query("hello world")
-        assert len(values) == vector_client.EMBEDDING_DIM
+        assert len(values) == vector_client.get_embedding_dim()
         assert values[0] > 0.0
         assert all(v == 0.0 for v in values[1:])

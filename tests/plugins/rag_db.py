@@ -11,8 +11,6 @@ from ai_core.rag import vector_client as rag_vector_client
 from ai_core.rag.vector_store import reset_default_router
 from common import logging as common_logging
 
-os.environ.setdefault("RAG_EMBEDDING_DIM", "1536")
-
 pytest.importorskip(
     "pytest_django",
     reason="pytest-django is required for ai_core tests",
