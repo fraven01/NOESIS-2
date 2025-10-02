@@ -155,6 +155,45 @@ def test_retrieve_requires_tenant_id(monkeypatch):
         retrieve.run({"query": "Hello"}, {"case": "c1"})
 
 
+def test_retrieve_passes_tenant_schema_to_scoped_router(monkeypatch):
+    retrieve._reset_router_for_tests()
+
+    class _TenantClient:
+        def __init__(self):
+            self.search_calls = []
+
+        def search(self, query, *, case_id=None, top_k=5, filters=None):
+            self.search_calls.append(
+                {
+                    "query": query,
+                    "case_id": case_id,
+                    "top_k": top_k,
+                    "filters": filters,
+                }
+            )
+            return []
+
+    class _ScopedRouter:
+        def __init__(self):
+            self.calls = []
+            self.client = _TenantClient()
+
+        def for_tenant(self, tenant_id, tenant_schema=None):
+            self.calls.append((tenant_id, tenant_schema))
+            return self.client
+
+    router = _ScopedRouter()
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    meta = {"tenant": "tenant-42", "tenant_schema": "tenant-42-schema"}
+    retrieve.run({"query": "hi"}, meta)
+
+    assert router.calls == [("tenant-42", "tenant-42-schema")]
+    assert router.client.search_calls == [
+        {"query": "hi", "case_id": None, "top_k": 5, "filters": None}
+    ]
+
+
 def _mock_call(called):
     def inner(label, prompt, metadata, **kwargs):
         called["label"] = label
