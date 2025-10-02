@@ -1,13 +1,14 @@
 """LiteLLM-backed embedding utilities."""
 
 from __future__ import annotations
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import Callable, List, Sequence, Tuple, TypeVar
 
 from django.conf import settings
 
 from ai_core.infra.config import get_config
-from common.logging import get_logger
+from common.logging import get_log_context, get_logger
 
 try:  # pragma: no cover - optional dependency for tests
     from litellm import embedding as litellm_embedding  # type: ignore
@@ -16,6 +17,7 @@ except Exception:  # pragma: no cover - handled at runtime
 
 
 logger = get_logger(__name__)
+T = TypeVar("T")
 
 
 class EmbeddingClientError(RuntimeError):
@@ -24,6 +26,10 @@ class EmbeddingClientError(RuntimeError):
 
 class EmbeddingProviderUnavailable(EmbeddingClientError):
     """Raised when LiteLLM dependency is unavailable."""
+
+
+class EmbeddingTimeoutError(EmbeddingClientError, TimeoutError):
+    """Raised when an embedding call exceeds the configured timeout."""
 
 
 @dataclass(slots=True)
@@ -105,12 +111,16 @@ class EmbeddingClient:
         last_error: Exception | None = None
         model_candidates = self._candidate_models()
         cfg = get_config()
-        timeout = cfg.timeouts.get("embeddings")
-        timeout_s = self._normalise_timeout(timeout)
+        timeout_setting = cfg.timeouts.get("embeddings")
+        if timeout_setting is None:
+            timeout_setting = getattr(settings, "EMBEDDINGS_TIMEOUT_SECONDS", None)
+        timeout_s = self._normalise_timeout(timeout_setting)
+        log_context = get_log_context()
+        key_alias = log_context.get("key_alias")
 
         for attempt, model in enumerate(model_candidates, start=1):
             try:
-                vectors = self._invoke_provider(model, inputs, cfg, timeout)
+                vectors = self._invoke_provider(model, inputs, cfg, timeout_s)
             except Exception as exc:  # pragma: no cover - requires network failure
                 last_error = exc
                 should_retry = attempt < len(
@@ -125,6 +135,7 @@ class EmbeddingClient:
                     status_code=status_code,
                     attempt=attempt,
                     retry=should_retry,
+                    key_alias=key_alias,
                 )
                 if should_retry:
                     continue
@@ -144,6 +155,15 @@ class EmbeddingClient:
         message = "Embedding request failed"
         if last_error is not None:
             message = f"{message}: {last_error}"
+        error_context = {
+            "attempts": len(model_candidates),
+            "key_alias": key_alias,
+            "models": model_candidates,
+        }
+        if last_error is not None:
+            error_context["exc_type"] = last_error.__class__.__name__
+            error_context["exc_message"] = str(last_error)
+        logger.error("embeddings.batch_failed_final", **error_context)
         raise EmbeddingClientError(message)
 
     def _candidate_models(self) -> Tuple[str, ...]:
@@ -173,7 +193,7 @@ class EmbeddingClient:
         model: str,
         inputs: Sequence[str],
         cfg,
-        timeout,
+        timeout_s: float | None,
     ) -> List[List[float]]:
         if litellm_embedding is None:
             raise EmbeddingProviderUnavailable("litellm package is not installed")
@@ -185,10 +205,12 @@ class EmbeddingClient:
             "api_base": api_base,
             "api_key": cfg.litellm_api_key,
         }
-        if timeout:
-            kwargs["timeout"] = timeout
+        if timeout_s is not None and timeout_s > 0:
+            kwargs["timeout"] = timeout_s
 
-        response = litellm_embedding(**kwargs)
+        response = self._execute_with_timeout(
+            lambda: litellm_embedding(**kwargs), timeout_s
+        )
         data = getattr(response, "data", None)
         if not isinstance(data, Sequence):
             raise EmbeddingClientError("Unexpected embedding response structure")
@@ -216,6 +238,21 @@ class EmbeddingClient:
                 if len(vector) != expected_len:
                     raise EmbeddingClientError("Embedding dimensions mismatch in batch")
         return vectors
+
+    def _execute_with_timeout(
+        self, fn: Callable[[], T], timeout_s: float | None
+    ) -> T:
+        if timeout_s is None or timeout_s <= 0:
+            return fn()
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(fn)
+            try:
+                return future.result(timeout=timeout_s)
+            except FuturesTimeoutError as exc:
+                future.cancel()
+                raise EmbeddingTimeoutError(
+                    f"Embedding call exceeded {timeout_s} seconds"
+                ) from exc
 
     @staticmethod
     def _normalise_timeout(timeout: object | None) -> float | None:
