@@ -49,6 +49,7 @@ def run(
     """
     query = state.get("query", "")
     tenant_id = meta.get("tenant") or meta.get("tenant_id")
+    tenant_schema = meta.get("tenant_schema")
     if not tenant_id:
         raise ValueError("tenant_id required")
     case_id = meta.get("case") or meta.get("case_id")
@@ -57,7 +58,10 @@ def run(
     filters: Dict[str, Optional[str]] | None = None
     for_tenant = getattr(router, "for_tenant", None)
     if callable(for_tenant):
-        tenant_client = for_tenant(tenant_id)
+        try:
+            tenant_client = for_tenant(tenant_id, tenant_schema)
+        except TypeError:
+            tenant_client = for_tenant(tenant_id)
         # Tenant-scoped clients already enforce the tenant context, so we only
         # inject the optional case filter here to avoid redundant constraints.
         filters = {"case": case_id} if case_id else None

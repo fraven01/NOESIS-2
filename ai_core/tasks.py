@@ -371,7 +371,11 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 
 
 @shared_task(base=ScopedTask)
-def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
+def upsert(
+    meta: Dict[str, str],
+    embeddings_path: str,
+    tenant_schema: Optional[str] = None,
+) -> int:
     """Upsert embedded chunks into the vector client."""
     data = object_store.read_json(embeddings_path)
     chunk_objs = []
@@ -400,11 +404,16 @@ def upsert(meta: Dict[str, str], embeddings_path: str) -> int:
         if chunk_tenant and str(chunk_tenant) != tenant_id:
             raise ValueError("chunk tenant mismatch")
 
+    schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
+
     router = get_default_router()
     tenant_client = router
     for_tenant = getattr(router, "for_tenant", None)
     if callable(for_tenant):
-        tenant_client = for_tenant(tenant_id)
+        try:
+            tenant_client = for_tenant(tenant_id, schema)
+        except TypeError:
+            tenant_client = for_tenant(tenant_id)
     written = tenant_client.upsert_chunks(chunk_objs)
     return written
 

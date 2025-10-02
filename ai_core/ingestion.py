@@ -242,7 +242,11 @@ def partition_document_ids(
 
 @shared_task(base=ScopedTask, queue="ingestion", bind=True, max_retries=3)
 def process_document(
-    self, tenant: str, case: str, document_id: str
+    self,
+    tenant: str,
+    case: str,
+    document_id: str,
+    tenant_schema: Optional[str] = None,
 ) -> Dict[str, object]:
     started = time.perf_counter()
     state = _load_pipeline_state(tenant, case, document_id)
@@ -270,6 +274,8 @@ def process_document(
         sanitized_meta_json.pop("tenant", None)
         sanitized_meta_json.pop("case", None)
         meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
+        if tenant_schema:
+            meta["tenant_schema"] = tenant_schema
         state["meta"] = {
             "external_id": meta.get("external_id"),
             "file": fpath.name,
@@ -341,7 +347,7 @@ def process_document(
             created_artifacts.append((current_step, str(emb["path"])))
 
         current_step = "upsert"
-        upsert_result = pipe.upsert(meta, emb["path"])
+        upsert_result = pipe.upsert(meta, emb["path"], tenant_schema=tenant_schema)
         state.setdefault("steps", {})["upsert"] = {
             "completed_at": time.time(),
             "cleaned": True,
@@ -451,6 +457,7 @@ def run_ingestion(
     run_id: str,
     trace_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    tenant_schema: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
     dead_letter_queue: Optional[str] = None,
 ) -> Dict[str, object]:
@@ -476,7 +483,8 @@ def run_ingestion(
     try:
         if valid_ids:
             job_group = group(
-                process_document.s(tenant, case, doc_id) for doc_id in valid_ids
+                process_document.s(tenant, case, doc_id, tenant_schema)
+                for doc_id in valid_ids
             )
             try:
                 async_result = job_group.apply_async()

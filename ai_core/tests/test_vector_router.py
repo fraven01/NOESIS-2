@@ -198,7 +198,26 @@ def test_router_for_tenant_returns_scoped_client(
     tenant_client = scoped_router.for_tenant("tenant-123")
     tenant_client.search("q", tenant_id="tenant-123", top_k=1)
     assert len(silo_store.search_calls) == 1
+
+
+def test_router_schema_scope_overrides_tenant_scope(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    _, global_store, silo_store = router_and_stores
+    scoped_router = VectorStoreRouter(
+        {"global": global_store, "silo": silo_store},
+        tenant_scopes={"tenant-123": "global"},
+        schema_scopes={"tenant-123-schema": "silo"},
+    )
+
+    schema_client = scoped_router.for_tenant("tenant-123", "tenant-123-schema")
+    schema_client.search("q")
+    assert len(silo_store.search_calls) == 1
     assert len(global_store.search_calls) == 0
+
+    tenant_client = scoped_router.for_tenant("tenant-123")
+    tenant_client.search("q")
+    assert len(global_store.search_calls) == 1
 
 
 def test_router_upsert_requires_tenant_metadata(

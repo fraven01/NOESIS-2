@@ -111,6 +111,42 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
     vector_client.reset_default_client()
 
 
+def test_upsert_forwards_tenant_schema(monkeypatch):
+    meta = {
+        "tenant": "tenant-42",
+        "tenant_schema": "schema-tenant-42",
+    }
+
+    embeddings = [
+        {
+            "content": "payload",
+            "embedding": [0.0],
+            "meta": {"tenant": "tenant-42"},
+        }
+    ]
+
+    monkeypatch.setattr(tasks.object_store, "read_json", lambda path: embeddings)
+
+    class _Router:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+
+        def for_tenant(self, tenant_id: str, tenant_schema: str | None = None):
+            self.calls.append((tenant_id, tenant_schema))
+            return self
+
+        def upsert_chunks(self, chunks):
+            return len(list(chunks))
+
+    router = _Router()
+    monkeypatch.setattr(tasks, "get_default_router", lambda: router)
+
+    written = tasks.upsert(meta, "embeddings.json")
+
+    assert written == 1
+    assert router.calls == [("tenant-42", "schema-tenant-42")]
+
+
 @pytest.mark.usefixtures("rag_database")
 def test_upsert_no_chunks_is_noop(monkeypatch):
     class _Counter:
