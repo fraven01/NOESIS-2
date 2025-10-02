@@ -228,74 +228,114 @@ def run_ingestion(
     async_result = None
     failure: Optional[BaseException] = None
     results: List[Dict[str, object]] = []
-    if valid_ids:
-        job_group = group(
-            process_document.s(tenant, case, doc_id) for doc_id in valid_ids
-        )
-        async_result = job_group.apply_async()
-        try:
-            results = async_result.get(
-                timeout=timeout_seconds, disable_sync_subtasks=False
+    failed_ids: List[str] = []
+    duration_ms = 0.0
+    inserted = replaced = skipped = total_chunks = 0
+
+    try:
+        if valid_ids:
+            job_group = group(
+                process_document.s(tenant, case, doc_id) for doc_id in valid_ids
             )
-        except CeleryTimeoutError as exc:
+            try:
+                async_result = job_group.apply_async()
+            except Exception as exc:  # pragma: no cover - defensive path
+                failure = exc
+                log.exception(
+                    "Failed to dispatch ingestion group",
+                    extra={
+                        "tenant": tenant,
+                        "case": case,
+                        "run_id": run_id,
+                        "trace_id": trace_id,
+                    },
+                )
+            else:
+                try:
+                    results = async_result.get(
+                        timeout=timeout_seconds, disable_sync_subtasks=False
+                    )
+                except CeleryTimeoutError as exc:
+                    failure = exc
+                    log.error(
+                        "Timed out waiting for ingestion group",
+                        extra={
+                            "tenant": tenant,
+                            "case": case,
+                            "run_id": run_id,
+                            "trace_id": trace_id,
+                            "timeout_seconds": timeout_seconds,
+                        },
+                    )
+                except Exception as exc:  # pragma: no cover - defensive path
+                    failure = exc
+                    log.exception(
+                        "Ingestion group failed",
+                        extra={
+                            "tenant": tenant,
+                            "case": case,
+                            "run_id": run_id,
+                            "trace_id": trace_id,
+                        },
+                    )
+
+        if failure is not None:
+            if async_result:
+                results = _collect_partial_results(async_result)
+                failed_ids = _determine_failed_documents(valid_ids, results)
+                _revoke_pending(async_result)
+            elif valid_ids:
+                failed_ids = list(valid_ids)
+            _safe_dispatch_dead_letters(
+                dead_letter_queue,
+                tenant,
+                case,
+                run_id,
+                trace_id,
+                failed_ids,
+                failure,
+            )
+
+    except BaseException as exc:
+        if failure is None:
             failure = exc
-            log.error(
-                "Timed out waiting for ingestion group",
-                extra={
-                    "tenant": tenant,
-                    "case": case,
-                    "run_id": run_id,
-                    "trace_id": trace_id,
-                    "timeout_seconds": timeout_seconds,
-                },
+        if async_result and not failed_ids:
+            results = _collect_partial_results(async_result)
+            failed_ids = _determine_failed_documents(valid_ids, results)
+            _revoke_pending(async_result)
+            _safe_dispatch_dead_letters(
+                dead_letter_queue,
+                tenant,
+                case,
+                run_id,
+                trace_id,
+                failed_ids,
+                failure,
             )
-        except Exception as exc:  # pragma: no cover - defensive path
-            failure = exc
-            log.exception(
-                "Ingestion group failed",
-                extra={
-                    "tenant": tenant,
-                    "case": case,
-                    "run_id": run_id,
-                    "trace_id": trace_id,
-                },
-            )
-
-    if async_result and failure is not None:
-        results = _collect_partial_results(async_result)
-        _revoke_pending(async_result)
-        failed_ids = _determine_failed_documents(valid_ids, results)
-        _dispatch_dead_letters(
-            dead_letter_queue,
-            tenant,
-            case,
-            run_id,
-            trace_id,
-            failed_ids,
-            failure,
+        raise
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        inserted = sum(int(result.get("inserted", 0)) for result in results)
+        replaced = sum(int(result.get("replaced", 0)) for result in results)
+        skipped = sum(int(result.get("skipped", 0)) for result in results)
+        total_chunks = sum(
+            int(result.get("chunk_count", result.get("written", 0)))
+            for result in results
         )
 
-    duration_ms = (time.perf_counter() - started) * 1000
-    inserted = sum(int(result.get("inserted", 0)) for result in results)
-    replaced = sum(int(result.get("replaced", 0)) for result in results)
-    skipped = sum(int(result.get("skipped", 0)) for result in results)
-    total_chunks = sum(
-        int(result.get("chunk_count", result.get("written", 0))) for result in results
-    )
-
-    pipe.log_ingestion_run_end(
-        tenant=tenant,
-        case=case,
-        run_id=run_id,
-        doc_count=doc_count,
-        inserted=inserted,
-        replaced=replaced,
-        skipped=skipped,
-        total_chunks=total_chunks,
-        duration_ms=duration_ms,
-        trace_id=trace_id,
-        idempotency_key=idempotency_key,
-    )
+        pipe.log_ingestion_run_end(
+            tenant=tenant,
+            case=case,
+            run_id=run_id,
+            doc_count=doc_count,
+            inserted=inserted,
+            replaced=replaced,
+            skipped=skipped,
+            total_chunks=total_chunks,
+            duration_ms=duration_ms,
+            trace_id=trace_id,
+            idempotency_key=idempotency_key,
+        )
 
     log.info(
         "Dispatched ingestion group",
@@ -305,7 +345,9 @@ def run_ingestion(
             "trace_id": trace_id,
             "count": doc_count,
             "invalid_ids": invalid_ids,
-            "failed_ids": _determine_failed_documents(valid_ids, results)
+            "failed_ids": failed_ids
+            if failed_ids
+            else _determine_failed_documents(valid_ids, results)
             if valid_ids
             else [],
         },
@@ -385,6 +427,38 @@ def _dispatch_dead_letters(
         record_dead_letter.apply_async(
             args=[message],
             queue=dead_letter_queue if dead_letter_queue else "ingestion_dead_letter",
+        )
+
+
+def _safe_dispatch_dead_letters(
+    dead_letter_queue: Optional[str],
+    tenant: str,
+    case: str,
+    run_id: str,
+    trace_id: Optional[str],
+    failed_ids: Iterable[str],
+    failure: BaseException,
+) -> None:
+    try:
+        _dispatch_dead_letters(
+            dead_letter_queue,
+            tenant,
+            case,
+            run_id,
+            trace_id,
+            failed_ids,
+            failure,
+        )
+    except Exception:  # pragma: no cover - defensive logging
+        log.exception(
+            "Failed to dispatch ingestion dead letters",
+            extra={
+                "tenant": tenant,
+                "case": case,
+                "run_id": run_id,
+                "trace_id": trace_id,
+                "failed_ids": list(failed_ids),
+            },
         )
 
 
