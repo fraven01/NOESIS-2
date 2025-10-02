@@ -21,7 +21,11 @@ from .infra import object_store, pii
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
-from .rag.embeddings import EmbeddingBatchResult, get_embedding_client
+from .rag.embeddings import (
+    EmbeddingBatchResult,
+    EmbeddingClientError,
+    get_embedding_client,
+)
 from .rag.vector_store import get_default_router
 
 logger = get_logger(__name__)
@@ -390,8 +394,25 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                 "model": result.model,
             },
         )
-        if expected_dim is None:
-            expected_dim = client.dim()
+        batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
+        current_dim = batch_dim
+        try:
+            current_dim = client.dim()
+        except EmbeddingClientError:
+            current_dim = batch_dim
+        if current_dim is not None:
+            if expected_dim is None:
+                expected_dim = current_dim
+            elif expected_dim != current_dim:
+                logger.info(
+                    "ingestion.embed.dimension_changed",
+                    extra={
+                        "previous": expected_dim,
+                        "current": current_dim,
+                        "model": result.model,
+                    },
+                )
+                expected_dim = current_dim
         if len(result.vectors) != len(batch):
             raise ValueError("Embedding batch size mismatch")
 

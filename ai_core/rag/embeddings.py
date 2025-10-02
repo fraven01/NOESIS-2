@@ -109,8 +109,18 @@ class EmbeddingClient:
                 )
                 continue
 
-            if vectors and self._dim is None:
-                self._dim = len(vectors[0])
+            if vectors:
+                current_dim = len(vectors[0])
+                if self._dim is None:
+                    self._dim = current_dim
+                elif self._dim != current_dim:
+                    logger.info(
+                        "embeddings.dimension_changed",
+                        model=model,
+                        previous_dim=self._dim,
+                        current_dim=current_dim,
+                    )
+                    self._dim = current_dim
             return EmbeddingBatchResult(vectors=vectors, model=model)
 
         message = "Embedding request failed"
