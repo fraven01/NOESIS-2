@@ -38,12 +38,12 @@ class Command(BaseCommand):
                     )
                     cur.execute(
                         sql.SQL("DROP INDEX IF EXISTS {}").format(
-                            sql.Identifier(schema_name, "embeddings_embedding_hnsw")
+                            sql.Identifier("embeddings_embedding_hnsw")
                         )
                     )
                     cur.execute(
                         sql.SQL("DROP INDEX IF EXISTS {}").format(
-                            sql.Identifier(schema_name, "embeddings_embedding_ivfflat")
+                            sql.Identifier("embeddings_embedding_ivfflat")
                         )
                     )
                     if index_kind == "HNSW":
