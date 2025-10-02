@@ -53,6 +53,7 @@ class EmbeddingClient:
         self._fallback_model = fallback_model
         self._batch_size = max(1, int(batch_size))
         self._dim: int | None = None
+        self._dim_model: str | None = None
 
     @classmethod
     def from_settings(cls) -> "EmbeddingClient":
@@ -79,7 +80,11 @@ class EmbeddingClient:
         result = self.embed([" "])
         if not result.vectors:
             raise EmbeddingClientError("Empty embedding response")
-        self._dim = len(result.vectors[0])
+        # ``embed`` call above updates ``self._dim`` via ``_record_dimension``.
+        if self._dim is None:
+            # Defensive fallback when the provider returned vectors but the
+            # recording logic did not run (e.g. future refactors).
+            self._record_dimension(result.model, len(result.vectors[0]))
         return self._dim
 
     def embed(self, texts: Sequence[str]) -> EmbeddingBatchResult:
@@ -122,17 +127,7 @@ class EmbeddingClient:
                 break
 
             if vectors:
-                current_dim = len(vectors[0])
-                if self._dim is None:
-                    self._dim = current_dim
-                elif self._dim != current_dim:
-                    logger.info(
-                        "embeddings.dimension_changed",
-                        model=model,
-                        previous_dim=self._dim,
-                        current_dim=current_dim,
-                    )
-                    self._dim = current_dim
+                self._record_dimension(model, len(vectors[0]))
             model_used = "fallback" if attempt > 1 else "primary"
             return EmbeddingBatchResult(
                 vectors=vectors,
@@ -151,6 +146,23 @@ class EmbeddingClient:
         if self._fallback_model and self._fallback_model != self._primary_model:
             return (self._primary_model, self._fallback_model)
         return (self._primary_model,)
+
+    def _record_dimension(self, model: str, current_dim: int) -> None:
+        """Persist the latest embedding dimensionality for ``model``."""
+
+        previous_dim = self._dim
+        previous_model = self._dim_model
+        if previous_dim is None or previous_dim != current_dim:
+            if previous_dim is not None and previous_dim != current_dim:
+                logger.info(
+                    "embeddings.dimension_changed",
+                    model=model,
+                    previous_dim=previous_dim,
+                    current_dim=current_dim,
+                    previous_model=previous_model,
+                )
+            self._dim = current_dim
+        self._dim_model = model
 
     def _invoke_provider(
         self,
