@@ -533,8 +533,8 @@ class PgVectorClient:
             filter_debug,
         )
 
-        where_clauses = ["d.tenant_id::text = %s"]
-        where_params: List[object] = [tenant]
+        where_clauses = ["d.tenant_id = %s"]
+        where_params: List[object] = [tenant_uuid]
         for key, value in metadata_filters:
             kind = SUPPORTED_METADATA_FILTERS[key]
             normalised = self._normalise_filter_value(value)
