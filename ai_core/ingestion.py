@@ -345,11 +345,13 @@ def run_ingestion(
             "trace_id": trace_id,
             "count": doc_count,
             "invalid_ids": invalid_ids,
-            "failed_ids": failed_ids
-            if failed_ids
-            else _determine_failed_documents(valid_ids, results)
-            if valid_ids
-            else [],
+            "failed_ids": (
+                failed_ids
+                if failed_ids
+                else (
+                    _determine_failed_documents(valid_ids, results) if valid_ids else []
+                )
+            ),
         },
     )
     response: Dict[str, object] = {

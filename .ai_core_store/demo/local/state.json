@@ -1,1 +1,1 @@
-{"query": "zebragurke", "top_k": 3, "rag_demo": {"query": "zebragurke", "top_k": 3, "retrieved_count": 1}, "min_sim": 0.01, "alpha": 0.5, "trgm_limit": 0.05, "trgm_threshold": 0.05, "vec_limit": 0, "lex_limit": 50}
+{"query": "faeiafje\u00f6oahgahgo\u00f6eafg", "top_k": 5, "rag_demo": {"query": "faeiafje\u00f6oahgahgo\u00f6eafg", "top_k": 5, "retrieved_count": 1}, "min_sim": 0.15, "alpha": 0.6, "trgm_limit": 0.3, "trgm_threshold": 0.05, "vec_limit": 20, "lex_limit": 30}

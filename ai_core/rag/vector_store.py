@@ -418,9 +418,9 @@ class _TenantScopedClient:
         filters: Mapping[str, object | None] | None = None,
     ) -> list[Chunk]:
         if tenant_id is not None:
-            assert tenant_id == self._tenant_id, (
-                "Tenant scoped client cannot search as different tenant"
-            )
+            assert (
+                tenant_id == self._tenant_id
+            ), "Tenant scoped client cannot search as different tenant"
         return self._router.search(
             query,
             tenant_id=self._tenant_id,
@@ -467,9 +467,9 @@ class _TenantScopedClient:
             tenant_meta_raw = meta.get("tenant")
             tenant_meta = str(tenant_meta_raw).strip() if tenant_meta_raw else ""
             if tenant_meta and tenant_meta != self._tenant_id:
-                msg = (
-                    "Chunk tenant '%s' does not match scoped tenant '%s'"
-                    % (tenant_meta, self._tenant_id)
+                msg = "Chunk tenant '%s' does not match scoped tenant '%s'" % (
+                    tenant_meta,
+                    self._tenant_id,
                 )
                 raise ValueError(msg)
             meta["tenant"] = self._tenant_id
