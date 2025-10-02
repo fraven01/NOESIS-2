@@ -8,6 +8,12 @@ import logging
 from typing import Dict, Iterable, Mapping, Protocol, TYPE_CHECKING
 
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.limits import (
+    clamp_fraction,
+    get_limit_setting,
+    normalize_max_candidates,
+    normalize_top_k,
+)
 from . import metrics
 
 if TYPE_CHECKING:
@@ -178,7 +184,7 @@ class VectorStoreRouter:
         if not tenant_id:
             raise ValueError("tenant_id is required for vector store access")
 
-        capped_top_k = max(1, min(top_k, 10))
+        capped_top_k = normalize_top_k(top_k, default=5, minimum=1, maximum=10)
         normalised_filters = None
         if filters is not None:
             normalised_filters = {}
@@ -239,7 +245,9 @@ class VectorStoreRouter:
         if not tenant_id:
             raise ValueError("tenant_id is required for vector store access")
 
-        capped_top_k = max(1, min(top_k, 10))
+        normalized_top_k, top_k_source = normalize_top_k(
+            top_k, default=5, minimum=1, maximum=10, return_source=True
+        )
         normalised_filters = None
         if filters is not None:
             normalised_filters = {}
@@ -249,20 +257,62 @@ class VectorStoreRouter:
                 else:
                     normalised_filters[key] = value
 
+        alpha_default = float(get_limit_setting("RAG_HYBRID_ALPHA", 0.7))
+        min_sim_default = float(get_limit_setting("RAG_MIN_SIM", 0.15))
+        trgm_default = float(get_limit_setting("RAG_TRGM_LIMIT", 0.30))
+        max_candidates_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
+
+        alpha_value, alpha_source = clamp_fraction(
+            alpha, default=alpha_default, return_source=True
+        )
+        min_sim_value, min_sim_source = clamp_fraction(
+            min_sim, default=min_sim_default, return_source=True
+        )
+
+        trgm_requested = trgm_limit if trgm_limit is not None else trgm_threshold
+        trgm_value, trgm_source = clamp_fraction(
+            trgm_requested, default=trgm_default, return_source=True
+        )
+
+        max_candidates_value, max_candidates_source = normalize_max_candidates(
+            normalized_top_k,
+            max_candidates,
+            max_candidates_cap,
+            return_source=True,
+        )
+
+        logger.debug(
+            "rag.hybrid.params",
+            extra={
+                "tenant": tenant_id,
+                "scope": scope,
+                "case_id": case_id,
+                "top_k": normalized_top_k,
+                "top_k_source": top_k_source,
+                "alpha": alpha_value,
+                "alpha_source": alpha_source,
+                "min_sim": min_sim_value,
+                "min_sim_source": min_sim_source,
+                "trgm_limit": trgm_value,
+                "trgm_limit_source": trgm_source,
+                "max_candidates": max_candidates_value,
+                "max_candidates_source": max_candidates_source,
+            },
+        )
+
         store = self._get_store(scope)
         hybrid = getattr(store, "hybrid_search", None)
         if callable(hybrid):
             hybrid_kwargs = {
                 "case_id": case_id,
-                "top_k": capped_top_k,
+                "top_k": normalized_top_k,
                 "filters": normalised_filters,
-                "alpha": alpha,
-                "min_sim": min_sim,
+                "alpha": alpha_value,
+                "min_sim": min_sim_value,
                 "vec_limit": vec_limit,
                 "lex_limit": lex_limit,
-                "trgm_limit": trgm_limit,
-                "trgm_threshold": trgm_threshold,
-                "max_candidates": max_candidates,
+                "trgm_limit": trgm_value,
+                "max_candidates": max_candidates_value,
             }
             try:
                 signature = inspect.signature(hybrid)
@@ -308,30 +358,26 @@ class VectorStoreRouter:
             query,
             tenant_id,
             case_id=case_id,
-            top_k=capped_top_k,
+            top_k=normalized_top_k,
             filters=normalised_filters,
         )
         from .vector_client import (
             HybridSearchResult as _HybridSearchResult,
         )  # noqa: WPS433
 
-        try:
-            fallback_max = int(max_candidates) if max_candidates is not None else None
-        except (TypeError, ValueError):
-            fallback_max = None
-        fallback_max = max(capped_top_k, fallback_max) if fallback_max else capped_top_k
-        effective_vec = int(vec_limit if vec_limit is not None else capped_top_k)
-        effective_lex = int(lex_limit if lex_limit is not None else capped_top_k)
-        effective_vec = min(fallback_max, max(capped_top_k, effective_vec))
-        effective_lex = min(fallback_max, max(capped_top_k, effective_lex))
+        fallback_max = max_candidates_value
+        effective_vec = int(vec_limit if vec_limit is not None else normalized_top_k)
+        effective_lex = int(lex_limit if lex_limit is not None else normalized_top_k)
+        effective_vec = min(fallback_max, max(normalized_top_k, effective_vec))
+        effective_lex = min(fallback_max, max(normalized_top_k, effective_lex))
         return _HybridSearchResult(
             chunks=list(fallback_chunks),
             vector_candidates=len(fallback_chunks),
             lexical_candidates=0,
             fused_candidates=len(fallback_chunks),
             duration_ms=0.0,
-            alpha=float(alpha if alpha is not None else 1.0),
-            min_sim=float(min_sim if min_sim is not None else 0.0),
+            alpha=float(alpha_value),
+            min_sim=float(min_sim_value),
             vec_limit=effective_vec,
             lex_limit=effective_lex,
         )

@@ -9,6 +9,7 @@ import pytest
 
 from ai_core.rag import metrics
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.limits import get_limit_setting, normalize_max_candidates
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.rag.vector_store import VectorStore, VectorStoreRouter
 
@@ -396,8 +397,11 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     call = silo_store.hybrid_calls[-1]
     assert call["top_k"] == 10  # capped
     assert call["filters"] == {"case": None}
-    assert call["trgm_limit"] is None
-    assert call["max_candidates"] is None
+    expected_trgm = float(get_limit_setting("RAG_TRGM_LIMIT", 0.30))
+    expected_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
+    expected_max_candidates = normalize_max_candidates(10, None, expected_cap)
+    assert call["trgm_limit"] == pytest.approx(expected_trgm)
+    assert call["max_candidates"] == expected_max_candidates
     assert global_store.hybrid_calls == []
 
     fallback = router.hybrid_search("frage", tenant_id=tenant, scope="missing")
