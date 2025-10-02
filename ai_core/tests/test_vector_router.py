@@ -103,6 +103,7 @@ class HybridEnabledStore(VectorStore):
         vec_limit: int | None = None,
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
+        max_candidates: int | None = None,
     ) -> HybridSearchResult:
         self.hybrid_calls.append(
             {
@@ -116,6 +117,7 @@ class HybridEnabledStore(VectorStore):
                 "vec_limit": vec_limit,
                 "lex_limit": lex_limit,
                 "trgm_limit": trgm_limit,
+                "max_candidates": max_candidates,
             }
         )
         return self._result
@@ -395,6 +397,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     assert call["top_k"] == 10  # capped
     assert call["filters"] == {"case": None}
     assert call["trgm_limit"] is None
+    assert call["max_candidates"] is None
     assert global_store.hybrid_calls == []
 
     fallback = router.hybrid_search("frage", tenant_id=tenant, scope="missing")

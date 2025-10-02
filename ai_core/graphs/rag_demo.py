@@ -49,6 +49,28 @@ def _coerce_top_k(state: QueryState, default: int = 5) -> int:
     return max(1, top_k)
 
 
+def _resolve_fraction(value: Any, default: float) -> float:
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return default
+    return min(1.0, max(0.0, numeric))
+
+
+def _resolve_max_candidates(state: QueryState, top_k: int) -> int:
+    default_setting = getattr(settings, "RAG_MAX_CANDIDATES", 200)
+    try:
+        default_value = int(default_setting)
+    except (TypeError, ValueError):
+        default_value = 200
+    override = state.get("max_candidates", default_value)
+    try:
+        resolved = int(override)
+    except (TypeError, ValueError):
+        resolved = default_value
+    return max(top_k, max(1, resolved))
+
+
 def _truncate(text: str, limit: int = 500) -> str:
     if len(text) <= limit:
         return text
@@ -170,12 +192,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     hybrid_result = None
     latency_ms = 0.0
 
-    max_candidates_setting = getattr(settings, "RAG_MAX_CANDIDATES", 200)
-    try:
-        max_candidates = int(max_candidates_setting)
-    except (TypeError, ValueError):
-        max_candidates = 200
-    max_candidates = max(1, max_candidates)
+    max_candidates = _resolve_max_candidates(state, top_k)
 
     def _clamp_limit(limit: int | None) -> int | None:
         if limit is None:
@@ -190,23 +207,24 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     search_input = query.strip()
 
     index_kind = str(getattr(settings, "RAG_INDEX_KIND", "HNSW")).upper()
-    # Allow per-request overrides while keeping sensible defaults from settings
-    try:
-        alpha = (
-            float(state.get("alpha"))
-            if state.get("alpha") is not None
-            else float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
-        )
-    except (TypeError, ValueError):
-        alpha = float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
-    try:
-        min_sim = (
-            float(state.get("min_sim"))
-            if state.get("min_sim") is not None
-            else float(getattr(settings, "RAG_MIN_SIM", 0.15))
-        )
-    except (TypeError, ValueError):
-        min_sim = float(getattr(settings, "RAG_MIN_SIM", 0.15))
+    alpha_default = float(getattr(settings, "RAG_HYBRID_ALPHA", 0.7))
+    alpha = _resolve_fraction(state.get("alpha", alpha_default), alpha_default)
+    min_sim_default = float(getattr(settings, "RAG_MIN_SIM", 0.15))
+    min_sim = _resolve_fraction(state.get("min_sim", min_sim_default), min_sim_default)
+    trgm_default = float(getattr(settings, "RAG_TRGM_LIMIT", 0.1))
+    raw_trgm = state.get("trgm_limit")
+    use_threshold = False
+    if raw_trgm is None:
+        raw_trgm = state.get("trgm_threshold")
+        use_threshold = raw_trgm is not None
+    resolved_trgm = _resolve_fraction(
+        raw_trgm if raw_trgm is not None else trgm_default,
+        trgm_default,
+    )
+    trgm_limit_value = None if use_threshold else resolved_trgm
+    trgm_threshold_value = resolved_trgm if use_threshold else None
+    if trgm_limit_value is None and trgm_threshold_value is None:
+        trgm_limit_value = resolved_trgm
     ef_search = int(getattr(settings, "RAG_HNSW_EF_SEARCH", 80))
     probes = int(getattr(settings, "RAG_IVF_PROBES", 64))
 
@@ -241,21 +259,6 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                 hybrid_callable = getattr(scoped_router, "hybrid_search", None)
                 router_hybrid = getattr(router, "hybrid_search", None)
                 if callable(hybrid_callable):
-                    # Optional trigram tuning
-                    trgm_limit = state.get("trgm_limit")
-                    trgm_threshold = (
-                        state.get("trgm_threshold") if trgm_limit is None else None
-                    )
-                    if trgm_limit is not None:
-                        try:
-                            trgm_limit = float(trgm_limit)
-                        except (TypeError, ValueError):
-                            trgm_limit = None
-                    if trgm_threshold is not None:
-                        try:
-                            trgm_threshold = float(trgm_threshold)
-                        except (TypeError, ValueError):
-                            trgm_threshold = None
                     hybrid_kwargs: Dict[str, Any] = {
                         "tenant_id": str(tenant_id),
                         "case_id": case_id,
@@ -263,6 +266,7 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         "filters": filters,
                         "alpha": alpha,
                         "min_sim": min_sim,
+                        "max_candidates": max_candidates,
                     }
                     # Optional per-request limits for vector/lexical candidates
                     vec_limit = state.get("vec_limit")
@@ -273,10 +277,10 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         hybrid_kwargs["vec_limit"] = vec_limit
                     if lex_limit is not None:
                         hybrid_kwargs["lex_limit"] = lex_limit
-                    if trgm_limit is not None:
-                        hybrid_kwargs["trgm_limit"] = trgm_limit
-                    if trgm_threshold is not None:
-                        hybrid_kwargs["trgm_threshold"] = trgm_threshold
+                    if trgm_limit_value is not None:
+                        hybrid_kwargs["trgm_limit"] = trgm_limit_value
+                    if trgm_threshold_value is not None:
+                        hybrid_kwargs["trgm_threshold"] = trgm_threshold_value
                     try:
                         hybrid_result = hybrid_callable(
                             search_input,
@@ -291,20 +295,6 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 elif callable(router_hybrid):
-                    trgm_limit = state.get("trgm_limit")
-                    trgm_threshold = (
-                        state.get("trgm_threshold") if trgm_limit is None else None
-                    )
-                    if trgm_limit is not None:
-                        try:
-                            trgm_limit = float(trgm_limit)
-                        except (TypeError, ValueError):
-                            trgm_limit = None
-                    if trgm_threshold is not None:
-                        try:
-                            trgm_threshold = float(trgm_threshold)
-                        except (TypeError, ValueError):
-                            trgm_threshold = None
                     scope_name = getattr(scoped_router, "_scope", None)
                     # Optional per-request limits for vector/lexical candidates
                     _vec_limit = state.get("vec_limit")
@@ -320,11 +310,12 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                         scope=scope_name or router.default_scope,
                         alpha=alpha,
                         min_sim=min_sim,
-                        trgm_limit=trgm_limit,
-                        trgm_threshold=trgm_threshold,
+                        trgm_limit=trgm_limit_value,
+                        trgm_threshold=trgm_threshold_value,
                         # Forward optional per-request limits
                         vec_limit=_vec_limit,
                         lex_limit=_lex_limit,
+                        max_candidates=max_candidates,
                     )
                     retrieved_chunks = list(getattr(hybrid_result, "chunks", []))
                 else:
