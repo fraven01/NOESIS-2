@@ -45,7 +45,7 @@ class Command(BaseCommand):
             conn.rollback()
             raise
         else:
-            if not conn.get_autocommit():
+            if not conn.get_autocommit() and not conn.in_atomic_block:
                 conn.commit()
 
         try:
