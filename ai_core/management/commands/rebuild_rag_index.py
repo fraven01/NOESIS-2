@@ -54,9 +54,7 @@ class Command(BaseCommand):
                                 WITH (m = %s, ef_construction = %s)
                                 """
                             ).format(
-                                sql.Identifier(
-                                    schema_name, "embeddings_embedding_hnsw"
-                                ),
+                                sql.Identifier("embeddings_embedding_hnsw"),
                                 sql.Identifier(schema_name, "embeddings"),
                             ),
                             (hnsw_m, hnsw_ef),
@@ -69,9 +67,7 @@ class Command(BaseCommand):
                                 WITH (lists = %s)
                                 """
                             ).format(
-                                sql.Identifier(
-                                    schema_name, "embeddings_embedding_ivfflat"
-                                ),
+                                sql.Identifier("embeddings_embedding_ivfflat"),
                                 sql.Identifier(schema_name, "embeddings"),
                             ),
                             (ivf_lists,),
