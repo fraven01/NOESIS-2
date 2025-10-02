@@ -2,6 +2,7 @@ import re
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import connection, transaction
 from psycopg2 import errors, sql
 
 from ai_core.rag import vector_client
@@ -26,11 +27,32 @@ class Command(BaseCommand):
         ivfflat_index_name = "embeddings_embedding_ivfflat"
         expected_index = hnsw_index_name if index_kind == "HNSW" else ivfflat_index_name
         row = None
-        with client._connection() as conn:  # type: ignore[attr-defined]
-            try:
+        conn = connection
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                        sql.Identifier(schema_name)
+                    )
+                )
+                cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        except errors.UndefinedFile as exc:
+            conn.rollback()
+            raise CommandError(
+                "pgvector extension is not available; ensure it is installed in the database"
+            ) from exc
+        except Exception:
+            conn.rollback()
+            raise
+        else:
+            if not conn.get_autocommit():
+                conn.commit()
+
+        try:
+            with transaction.atomic():
                 with conn.cursor() as cur:
                     cur.execute(
-                        sql.SQL("SET search_path TO {}, public").format(
+                        sql.SQL("SET LOCAL search_path TO {}, public").format(
                             sql.Identifier(schema_name)
                         )
                     )
@@ -82,15 +104,10 @@ class Command(BaseCommand):
                         (schema_name, expected_index),
                     )
                     row = cur.fetchone()
-                conn.commit()
-            except errors.UndefinedTable as exc:
-                conn.rollback()
-                raise CommandError(
-                    "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
-                ) from exc
-            except Exception:
-                conn.rollback()
-                raise
+        except errors.UndefinedTable as exc:
+            raise CommandError(
+                "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
+            ) from exc
 
         if not row:
             raise CommandError(
