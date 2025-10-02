@@ -85,7 +85,9 @@ class EmbeddingClient:
     def embed(self, texts: Sequence[str]) -> EmbeddingBatchResult:
         if not isinstance(texts, Sequence):
             raise TypeError("texts must be a sequence")
-        inputs: List[str] = [text if isinstance(text, str) else str(text) for text in texts]
+        inputs: List[str] = [
+            text if isinstance(text, str) else str(text) for text in texts
+        ]
         if not inputs:
             return EmbeddingBatchResult(
                 vectors=[],
@@ -106,7 +108,9 @@ class EmbeddingClient:
                 vectors = self._invoke_provider(model, inputs, cfg, timeout)
             except Exception as exc:  # pragma: no cover - requires network failure
                 last_error = exc
-                should_retry = attempt < len(model_candidates) and self._should_use_fallback(exc)
+                should_retry = attempt < len(
+                    model_candidates
+                ) and self._should_use_fallback(exc)
                 status_code = self._extract_status_code(exc)
                 logger.warning(
                     "embeddings.batch_failed",

@@ -1324,7 +1324,8 @@ class TestPgVectorClient:
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
-            lambda self, _query: [0.1] + [0.0] * (vector_client.get_embedding_dim() - 1),
+            lambda self, _query: [0.1]
+            + [0.0] * (vector_client.get_embedding_dim() - 1),
         )
 
         class _FakeCursor:

@@ -364,7 +364,9 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 
     chunks = object_store.read_json(chunks_path)
     client = get_embedding_client()
-    batch_size = max(1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size)))
+    batch_size = max(
+        1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size))
+    )
 
     prepared: List[Dict[str, object]] = []
     for ch in chunks:
