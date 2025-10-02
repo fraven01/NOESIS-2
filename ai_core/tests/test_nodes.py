@@ -14,7 +14,12 @@ from ai_core.nodes import (
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
 
-META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
+META = {
+    "tenant": "t1",
+    "case": "c1",
+    "trace_id": "tr",
+    "tenant_schema": "tenant-schema-1",
+}
 
 
 def test_retrieve_returns_snippets(monkeypatch):
@@ -105,8 +110,8 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
                 self.inner = inner
                 self.tenants = []
 
-            def for_tenant(self, tenant_id):
-                self.tenants.append(tenant_id)
+            def for_tenant(self, tenant_id, tenant_schema=None):
+                self.tenants.append((tenant_id, tenant_schema))
                 return self.inner
 
         router = _ScopedRouter(base_router)
@@ -116,7 +121,11 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
     state = {"query": "hello"}
-    meta = {"tenant": "tenant-1", "case": "case-1"}
+    meta = {
+        "tenant": "tenant-1",
+        "case": "case-1",
+        "tenant_schema": "tenant-1-schema",
+    }
     _, result = retrieve.run(state, meta, top_k=2)
 
     assert result["snippets"], "expected snippets in result"
@@ -131,7 +140,7 @@ def test_retrieve_snippets_shape(monkeypatch, scoped_router):
     }
 
     if scoped_router:
-        assert router.tenants == ["tenant-1"]
+        assert router.tenants == [("tenant-1", "tenant-1-schema")]
         assert base_router.calls[0]["filters"] == {"case": "case-1"}
     else:
         assert base_router.calls[0]["filters"] == {

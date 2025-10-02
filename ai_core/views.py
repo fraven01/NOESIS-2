@@ -1020,6 +1020,7 @@ class RagIngestionRunView(APIView):
             meta["tenant"],
             meta["case"],
             to_dispatch,
+            tenant_schema=meta["tenant_schema"],
             run_id=ingestion_run_id,
             trace_id=meta["trace_id"],
             idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),

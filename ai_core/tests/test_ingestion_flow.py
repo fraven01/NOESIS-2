@@ -51,7 +51,7 @@ def test_upload_ingest_query_end2end(
     doc_id = body["document_id"]
 
     # Ingestion (direkt Task ausführen; alternativ run_ingestion.delay(...) und warten)
-    result = process_document(tenant, case, doc_id)
+    result = process_document(tenant, case, doc_id, tenant_schema=tenant)
     assert result["written"] >= 1
 
     # Query
@@ -143,6 +143,7 @@ def test_ingestion_run_reports_missing_documents(
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert list(args[2]) == [doc_id]
+    assert kwargs["tenant_schema"] == tenant
 
 
 def test_fallback_external_id_consistency():
