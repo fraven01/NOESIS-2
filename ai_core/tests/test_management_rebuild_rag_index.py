@@ -5,6 +5,7 @@ import re
 
 import pytest
 from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.db import connection
 
 from ai_core.rag import vector_client
@@ -110,3 +111,19 @@ def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
     finally:
         with connection.cursor() as cur:
             cur.execute("DROP SCHEMA IF EXISTS rag_enterprise CASCADE")
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("rag_database")
+def test_rebuild_rag_index_missing_embeddings_table() -> None:
+    with connection.cursor() as cur:
+        cur.execute("SET search_path TO rag, public")
+        cur.execute("DROP TABLE IF EXISTS embeddings CASCADE")
+
+    with pytest.raises(CommandError) as excinfo:
+        call_command("rebuild_rag_index")
+
+    assert (
+        "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
+        == str(excinfo.value)
+    )

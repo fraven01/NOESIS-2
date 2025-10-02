@@ -2,6 +2,7 @@ import re
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
+from django.db import DatabaseError, ProgrammingError
 from psycopg2 import errors, sql
 from psycopg2.extensions import STATUS_IN_TRANSACTION
 
@@ -111,6 +112,14 @@ class Command(BaseCommand):
                     raise CommandError(
                         "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
                     ) from exc
+                except (DatabaseError, ProgrammingError) as exc:
+                    conn.rollback()
+                    cause = getattr(exc, "__cause__", None)
+                    if isinstance(cause, errors.UndefinedTable):
+                        raise CommandError(
+                            "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
+                        ) from cause
+                    raise
                 except Exception:
                     conn.rollback()
                     raise
