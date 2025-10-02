@@ -203,10 +203,13 @@ def test_rag_demo_hybrid_search_uses_trimmed_query(
             min_sim: float,
             trgm_limit: float | None = None,
             trgm_threshold: float | None = None,
+            max_candidates: int | None = None,
         ) -> HybridSearchResult:
             assert filters is not None
             assert filters.get("tenant_id") == tenant_id
-            assert trgm_limit == 3.0
+            assert trgm_limit == 1.0
+            assert max_candidates is not None
+            assert max_candidates >= top_k
             self.received_query = query
             chunk = Chunk(
                 content="lexical match",
@@ -338,8 +341,22 @@ def test_rag_demo_no_hit_above_threshold_warning(
             filters: dict[str, object] | None = None,
             alpha: float | None = None,
             min_sim: float | None = None,
+            trgm_limit: float | None = None,
+            trgm_threshold: float | None = None,
+            max_candidates: int | None = None,
         ) -> HybridSearchResult:
-            del query, tenant_id, case_id, top_k, filters, alpha, min_sim
+            del (
+                query,
+                tenant_id,
+                case_id,
+                top_k,
+                filters,
+                alpha,
+                min_sim,
+                trgm_limit,
+                trgm_threshold,
+                max_candidates,
+            )
             return HybridSearchResult(
                 chunks=[],
                 vector_candidates=2,

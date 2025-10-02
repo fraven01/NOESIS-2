@@ -416,6 +416,7 @@ class PgVectorClient:
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
     ) -> HybridSearchResult:
         """Execute hybrid vector/lexical retrieval for ``query``.
 
@@ -465,9 +466,11 @@ class PgVectorClient:
         alpha_value = float(
             alpha if alpha is not None else _get_setting("RAG_HYBRID_ALPHA", 0.7)
         )
+        alpha_value = min(1.0, max(0.0, alpha_value))
         min_sim_value = float(
             min_sim if min_sim is not None else _get_setting("RAG_MIN_SIM", 0.15)
         )
+        min_sim_value = min(1.0, max(0.0, min_sim_value))
         # Determine requested/effective trigram similarity limit
         default_trgm_limit = float(_get_setting("RAG_TRGM_LIMIT", 0.30))
         requested_trgm_limit: float | None
@@ -488,22 +491,30 @@ class PgVectorClient:
             if requested_trgm_limit is not None
             else default_trgm_limit
         )
-        trgm_limit_value = max(0.0, float(effective_trgm_limit))
+        trgm_limit_value = min(1.0, max(0.0, float(effective_trgm_limit)))
         distance_score_mode = str(
             _get_setting("RAG_DISTANCE_SCORE_MODE", "inverse")
         ).lower()
         if distance_score_mode not in {"inverse", "linear"}:
             distance_score_mode = "inverse"
-        max_candidates_setting = _get_setting("RAG_MAX_CANDIDATES", 200)
+        max_candidates_setting = (
+            max_candidates
+            if max_candidates is not None
+            else _get_setting("RAG_MAX_CANDIDATES", 200)
+        )
         try:
-            max_candidates = int(max_candidates_setting)
+            max_candidates_value = int(max_candidates_setting)
         except (TypeError, ValueError):
-            max_candidates = 200
-        max_candidates = max(1, max_candidates)
+            max_candidates_value = 200
+        max_candidates_value = max(top_k, max(1, max_candidates_value))
         vec_limit_requested = int(vec_limit) if vec_limit is not None else 50
         lex_limit_requested = int(lex_limit) if lex_limit is not None else 50
-        vec_limit_value = min(max_candidates, max(top_k, vec_limit_requested))
-        lex_limit_value = min(max_candidates, max(top_k, lex_limit_requested))
+        vec_limit_value = min(
+            max_candidates_value, max(top_k, vec_limit_requested)
+        )
+        lex_limit_value = min(
+            max_candidates_value, max(top_k, lex_limit_requested)
+        )
         query_norm = normalise_text(query)
         query_db_norm = normalise_text_db(query)
         raw_vec = self._embed_query(query_norm)

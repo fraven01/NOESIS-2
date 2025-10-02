@@ -52,6 +52,7 @@ class VectorStore(Protocol):
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid semantic/lexical search."""
 
@@ -92,6 +93,7 @@ class TenantScopedVectorStore(Protocol):
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid search within the tenant scope."""
 
@@ -232,6 +234,7 @@ class VectorStoreRouter:
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
     ) -> "HybridSearchResult":
         if not tenant_id:
             raise ValueError("tenant_id is required for vector store access")
@@ -259,6 +262,7 @@ class VectorStoreRouter:
                 "lex_limit": lex_limit,
                 "trgm_limit": trgm_limit,
                 "trgm_threshold": trgm_threshold,
+                "max_candidates": max_candidates,
             }
             try:
                 signature = inspect.signature(hybrid)
@@ -311,8 +315,15 @@ class VectorStoreRouter:
             HybridSearchResult as _HybridSearchResult,
         )  # noqa: WPS433
 
+        try:
+            fallback_max = int(max_candidates) if max_candidates is not None else None
+        except (TypeError, ValueError):
+            fallback_max = None
+        fallback_max = max(capped_top_k, fallback_max) if fallback_max else capped_top_k
         effective_vec = int(vec_limit if vec_limit is not None else capped_top_k)
         effective_lex = int(lex_limit if lex_limit is not None else capped_top_k)
+        effective_vec = min(fallback_max, max(capped_top_k, effective_vec))
+        effective_lex = min(fallback_max, max(capped_top_k, effective_lex))
         return _HybridSearchResult(
             chunks=list(fallback_chunks),
             vector_candidates=len(fallback_chunks),
@@ -443,6 +454,7 @@ class _TenantScopedClient:
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
     ) -> "HybridSearchResult":
         return self._router.hybrid_search(
             query,
@@ -457,6 +469,7 @@ class _TenantScopedClient:
             lex_limit=lex_limit,
             trgm_limit=trgm_limit,
             trgm_threshold=trgm_threshold,
+            max_candidates=max_candidates,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:

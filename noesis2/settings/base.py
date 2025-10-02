@@ -56,6 +56,7 @@ RAG_IVF_PROBES = env.int("RAG_IVF_PROBES", default=64)
 RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
 RAG_TRGM_LIMIT = env.float("RAG_TRGM_LIMIT", default=0.1)
 RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
+RAG_MAX_CANDIDATES = env.int("RAG_MAX_CANDIDATES", default=200)
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
 RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
 
