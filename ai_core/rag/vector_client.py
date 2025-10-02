@@ -269,6 +269,13 @@ class PgVectorClient:
         finally:
             self._pool.putconn(conn)
 
+    @contextmanager
+    def connection(self):  # type: ignore[no-untyped-def]
+        """Yield a prepared connection from the pool."""
+
+        with self._connection() as conn:
+            yield conn
+
     def _prepare_connection(self, conn) -> None:  # type: ignore[no-untyped-def]
         with conn.cursor() as cur:
             cur.execute(
