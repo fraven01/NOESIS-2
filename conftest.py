@@ -22,7 +22,13 @@ def stub_embedding_client(monkeypatch):
                 magnitude = float(len(normalized.split()) or 1)
                 tail = max(0, self._dim - 1)
                 vectors.append([magnitude] + [0.0] * tail)
-            return EmbeddingBatchResult(vectors=vectors, model="dummy-embed")
+            return EmbeddingBatchResult(
+                vectors=vectors,
+                model="dummy-embed",
+                model_used="primary",
+                attempts=1,
+                timeout_s=None,
+            )
 
         def dim(self) -> int:
             return self._dim

@@ -27,9 +27,9 @@ from psycopg2 import Error as PsycopgError, sql
 from psycopg2.extras import Json, register_default_jsonb
 from psycopg2.pool import SimpleConnectionPool
 
-from common.logging import get_logger
+from common.logging import get_log_context, get_logger
 from ai_core.rag.vector_store import VectorStore
-from .embeddings import get_embedding_client
+from .embeddings import EmbeddingClientError, get_embedding_client
 from .normalization import normalise_text, normalise_text_db
 
 from . import metrics
@@ -1551,12 +1551,49 @@ class PgVectorClient:
         return "[" + ",".join(f"{float(v):.6f}" for v in values) + "]"
 
     def _embed_query(self, query: str) -> List[float]:
-        base = float(len(query.strip()) or 1)
-        dim = get_embedding_dim()
-        if dim <= 0:
-            raise ValueError("Embedding dimension must be positive")
-        tail = dim - 1
-        return [base] + [0.0] * tail
+        client = get_embedding_client()
+        normalised = normalise_text(query)
+        text = normalised or ""
+        started = time.perf_counter()
+        result = client.embed([text])
+        duration_ms = (time.perf_counter() - started) * 1000
+
+        if not result.vectors:
+            raise EmbeddingClientError("Embedding provider returned no vectors")
+        vector = result.vectors[0]
+        if not isinstance(vector, list):
+            vector = list(vector)
+        try:
+            vector = [float(value) for value in vector]
+        except (TypeError, ValueError) as exc:
+            raise EmbeddingClientError("Embedding vector contains non-numeric values") from exc
+        try:
+            expected_dim = client.dim()
+        except EmbeddingClientError:
+            expected_dim = len(vector)
+        if len(vector) != expected_dim:
+            raise EmbeddingClientError(
+                "Embedding dimension mismatch between query and provider"
+            )
+
+        context = get_log_context()
+        tenant_id = context.get("tenant")
+        extra: Dict[str, object] = {
+            "tenant_id": tenant_id or "-",
+            "len_text": len(text),
+            "model_name": result.model,
+            "model_used": result.model_used,
+            "duration_ms": duration_ms,
+            "attempts": result.attempts,
+        }
+        timeout_s = result.timeout_s
+        if timeout_s is not None:
+            extra["timeout_s"] = timeout_s
+        key_alias = context.get("key_alias")
+        if key_alias:
+            extra["key_alias"] = key_alias
+        logger.info("rag.query.embed", extra=extra)
+        return vector
 
     def _distance_to_score(self, distance: float) -> float:
         try:

@@ -385,15 +385,21 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         batch_started = time.perf_counter()
         result: EmbeddingBatchResult = client.embed(inputs)
         duration_ms = (time.perf_counter() - batch_started) * 1000
-        logger.info(
-            "ingestion.embed.batch",
-            extra={
-                "batch": batches,
-                "chunks": len(batch),
-                "duration_ms": duration_ms,
-                "model": result.model,
-            },
-        )
+        extra = {
+            "batch": batches,
+            "chunks": len(batch),
+            "duration_ms": duration_ms,
+            "model": result.model,
+            "model_name": result.model,
+            "model_used": result.model_used,
+            "attempts": result.attempts,
+        }
+        if result.timeout_s is not None:
+            extra["timeout_s"] = result.timeout_s
+        key_alias = meta.get("key_alias")
+        if key_alias:
+            extra["key_alias"] = key_alias
+        logger.info("ingestion.embed.batch", extra=extra)
         batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
         current_dim = batch_dim
         try:
