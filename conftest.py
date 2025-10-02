@@ -12,7 +12,10 @@ def stub_embedding_client(monkeypatch):
 
     class _DummyEmbeddingClient:
         def __init__(self) -> None:
-            self._dim = 8
+            try:
+                self._dim = int(os.getenv("TEST_EMBEDDING_DIM", "1536"))
+            except (TypeError, ValueError):
+                self._dim = 1536
             self.batch_size = 64
 
         def embed(self, texts):
