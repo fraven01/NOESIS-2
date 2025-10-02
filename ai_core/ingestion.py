@@ -252,7 +252,7 @@ def process_document(
     state["last_attempt_started_at"] = time.time()
     _write_pipeline_state(tenant, case, document_id, state)
     current_step: Optional[str] = None
-    created_artifacts: List[str] = []
+    created_artifacts: List[Tuple[str, str]] = []
     try:
         fpath, meta_json = _resolve_upload(tenant, case, document_id)
         file_bytes = fpath.read_bytes()
@@ -288,7 +288,7 @@ def process_document(
             lambda: pipe.ingest_raw(meta, fpath.name, file_bytes),
         )
         if not reused and raw.get("path"):
-            created_artifacts.append(str(raw["path"]))
+            created_artifacts.append((current_step, str(raw["path"])))
         if "content_hash" in raw:
             meta["content_hash"] = raw["content_hash"]
             state.setdefault("meta", {})["content_hash"] = raw["content_hash"]
@@ -304,7 +304,7 @@ def process_document(
             lambda: pipe.extract_text(meta, raw["path"]),
         )
         if not reused and text.get("path"):
-            created_artifacts.append(str(text["path"]))
+            created_artifacts.append((current_step, str(text["path"])))
 
         current_step = "pii_mask"
         masked, reused = _ensure_step(
@@ -316,7 +316,7 @@ def process_document(
             lambda: pipe.pii_mask(meta, text["path"]),
         )
         if not reused and masked.get("path"):
-            created_artifacts.append(str(masked["path"]))
+            created_artifacts.append((current_step, str(masked["path"])))
 
         current_step = "chunk"
         chunks, reused = _ensure_step(
@@ -328,7 +328,7 @@ def process_document(
             lambda: pipe.chunk(meta, masked["path"]),
         )
         if not reused and chunks.get("path"):
-            created_artifacts.append(str(chunks["path"]))
+            created_artifacts.append((current_step, str(chunks["path"])))
 
         current_step = "embed"
         emb, reused = _ensure_step(
@@ -340,7 +340,7 @@ def process_document(
             lambda: pipe.embed(meta, chunks["path"]),
         )
         if not reused and emb.get("path"):
-            created_artifacts.append(str(emb["path"]))
+            created_artifacts.append((current_step, str(emb["path"])))
 
         current_step = "upsert"
         upsert_result = pipe.upsert(meta, emb["path"])
@@ -361,7 +361,10 @@ def process_document(
             "failed_at": time.time(),
         }
         _write_pipeline_state(tenant, case, document_id, state)
-        removed = _cleanup_artifacts(created_artifacts)
+        cleanup_targets = [
+            path for step, path in created_artifacts if step == current_step
+        ]
+        removed = _cleanup_artifacts(cleanup_targets)
         if removed:
             _mark_cleaned(tenant, case, document_id, state, removed)
         log.warning(
@@ -379,7 +382,9 @@ def process_document(
     for step_data in state.get("steps", {}).values():
         if isinstance(step_data, dict) and step_data.get("path"):
             all_paths.append(str(step_data["path"]))
-    removed_after_success = _cleanup_artifacts(all_paths)
+    removed_after_success = _cleanup_artifacts(
+        [path for _, path in created_artifacts] + all_paths
+    )
     if removed_after_success:
         _mark_cleaned(tenant, case, document_id, state, removed_after_success)
 
