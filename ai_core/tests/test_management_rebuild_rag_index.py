@@ -16,7 +16,7 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from ai_core.ingestion import process_document
 from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
-from tests.plugins.rag_db import SCHEMA_SQL
+from tests.plugins.rag_db import drop_schema, reset_vector_schema
 from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
@@ -137,17 +137,18 @@ def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
     vector_client.reset_default_client()
 
     with connection.cursor() as cur:
-        cur.execute("DROP SCHEMA IF EXISTS rag_enterprise CASCADE")
-        cur.execute("CREATE SCHEMA rag_enterprise")
-        cur.execute("SET search_path TO rag_enterprise, public")
-        cur.execute(SCHEMA_SQL)
+        reset_vector_schema(cur, "rag_enterprise")
 
     try:
         stdout = io.StringIO()
         call_command("rebuild_rag_index", stdout=stdout)
 
         with connection.cursor() as cur:
-            cur.execute("SET search_path TO rag_enterprise, public")
+            cur.execute(
+                sql.SQL("SET search_path TO {}, public").format(
+                    sql.Identifier("rag_enterprise")
+                )
+            )
             cur.execute(
                 """
                 SELECT indexdef
@@ -161,7 +162,7 @@ def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
         assert row is not None, "expected HNSW index in rag_enterprise schema"
     finally:
         with connection.cursor() as cur:
-            cur.execute("DROP SCHEMA IF EXISTS rag_enterprise CASCADE")
+            drop_schema(cur, "rag_enterprise")
 
 
 @pytest.mark.django_db
