@@ -1343,7 +1343,13 @@ class TestPgVectorClient:
 
             def execute(self, sql: str, params=None) -> None:
                 self._last_sql = sql
-                if "embedding <=>" in sql:
+                if "FROM pg_catalog.pg_opclass" in sql:
+                    if params and params[0] == "vector_cosine_ops":
+                        self._fetchone_result = (1,)
+                    else:
+                        self._fetchone_result = None
+                    return
+                if "embedding <" in sql:
                     raise RuntimeError("vector query failed")
                 if "SELECT show_limit()" in sql:
                     self._fetchone_result = (0.3,)
