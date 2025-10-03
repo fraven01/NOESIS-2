@@ -199,9 +199,7 @@ def test_rebuild_rag_index_health_check(
 
     with connection.cursor() as cur:
         cur.execute(
-            sql.SQL("SET search_path TO {}, public").format(
-                sql.Identifier(schema_name)
-            )
+            sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
         )
         cur.execute(
             """
