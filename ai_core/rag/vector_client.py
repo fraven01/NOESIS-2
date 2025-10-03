@@ -58,6 +58,13 @@ SUPPORTED_METADATA_FILTERS = {
 }
 
 
+_VECTOR_OPERATOR_PRIORITY: tuple[tuple[str, str], ...] = (
+    ("vector_cosine_ops", "<=>"),
+    ("vector_l2_ops", "<->"),
+    ("vector_ip_ops", "<#>"),
+)
+
+
 FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
@@ -189,6 +196,8 @@ class PgVectorClient:
         self._pool = SimpleConnectionPool(minconn, maxconn, dsn)
         self._prepare_lock = threading.Lock()
         self._indexes_ready = False
+        self._vector_operator_lock = threading.Lock()
+        self._vector_operators: Dict[str, str] = {}
         self._retries = max(1, retries_value)
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
 
@@ -323,6 +332,54 @@ class PgVectorClient:
                     "error": str(exc),
                 },
             )
+
+    def _get_vector_operator(self, index_kind: str, conn=None) -> str:  # type: ignore[no-untyped-def]
+        normalized_kind = index_kind.upper()
+        with self._vector_operator_lock:
+            cached = self._vector_operators.get(normalized_kind)
+        if cached:
+            return cached
+
+        operator = self._resolve_vector_operator(normalized_kind, conn)
+        with self._vector_operator_lock:
+            self._vector_operators[normalized_kind] = operator
+        return operator
+
+    def _resolve_vector_operator(self, index_kind: str, conn=None) -> str:  # type: ignore[no-untyped-def]
+        if conn is None:
+            with self._connection() as tmp_conn:
+                return self._resolve_vector_operator(index_kind, tmp_conn)
+
+        access_method = "hnsw" if index_kind == "HNSW" else "ivfflat"
+
+        with conn.cursor() as cur:
+            for operator_class, operator in _VECTOR_OPERATOR_PRIORITY:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM pg_catalog.pg_opclass opc
+                    JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod
+                    WHERE opc.opcname = %s AND am.amname = %s
+                    """,
+                    (operator_class, access_method),
+                )
+                if cur.fetchone() is not None:
+                    if operator_class != "vector_cosine_ops":
+                        logger.warning(
+                            "rag.vector.operator_fallback",
+                            extra={
+                                "index_kind": index_kind,
+                                "operator_class": operator_class,
+                                "operator": operator,
+                                "access_method": access_method,
+                            },
+                        )
+                    return operator
+
+        raise RuntimeError(
+            "No compatible vector operator found for pgvector queries. "
+            "Ensure the pgvector extension supports cosine, L2, or inner product distance."
+        )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
         chunk_list = list(chunks)
@@ -617,6 +674,9 @@ class PgVectorClient:
                                     "SET LOCAL ivfflat.probes = %s",
                                     (str(probes),),
                                 )
+                            vector_operator = self._get_vector_operator(
+                                index_kind, conn
+                            )
                             vector_sql = f"""
                                 SELECT
                                     c.id,
@@ -624,7 +684,7 @@ class PgVectorClient:
                                     c.metadata,
                                     d.hash,
                                     d.id,
-                                    e.embedding <=> %s::vector AS distance
+                                    e.embedding {vector_operator} %s::vector AS distance
                                 FROM embeddings e
                                 JOIN chunks c ON e.chunk_id = c.id
                                 JOIN documents d ON c.document_id = d.id
