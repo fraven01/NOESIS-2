@@ -1854,6 +1854,12 @@ def _resolve_vector_schema() -> str:
     return "rag"
 
 
+def get_default_schema() -> str:
+    """Return the schema configured for the default :class:`PgVectorClient`."""
+
+    return _resolve_vector_schema()
+
+
 def get_default_client() -> PgVectorClient:
     global _DEFAULT_CLIENT
     if _DEFAULT_CLIENT is None:
