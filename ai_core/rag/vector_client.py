@@ -1764,17 +1764,37 @@ def _resolve_django_dsn_if_available(*, dsn: str) -> str | None:
 
     env_params = _parse_dsn_parameters(dsn)
     env_dbname = env_params.get("dbname") or env_params.get("database")
-    default_name = default_config.get("NAME")
+
+    connection = connections[DEFAULT_DB_ALIAS]
+    connection_settings = getattr(connection, "settings_dict", None)
+    if not isinstance(connection_settings, Mapping):
+        return None
+
+    default_name = connection_settings.get("NAME") or default_config.get("NAME")
     if not default_name or not env_dbname:
         return None
 
     if str(env_dbname) != str(default_name):
         return None
 
-    connection = connections[DEFAULT_DB_ALIAS]
-    connection_settings = getattr(connection, "settings_dict", None)
-    if not isinstance(connection_settings, Mapping):
-        return None
+    def _norm(value: object) -> str | None:
+        if value in (None, ""):
+            return None
+        return str(value)
+
+    comparison_keys = (
+        ("host", "HOST"),
+        ("port", "PORT"),
+        ("user", "USER"),
+        ("password", "PASSWORD"),
+    )
+    for dsn_key, settings_key in comparison_keys:
+        env_value = _norm(env_params.get(dsn_key))
+        if env_value is None:
+            continue
+        settings_value = _norm(connection_settings.get(settings_key))
+        if settings_value is None or env_value != settings_value:
+            return None
 
     rebuilt = _build_dsn_from_settings_dict(connection_settings)
     return rebuilt
