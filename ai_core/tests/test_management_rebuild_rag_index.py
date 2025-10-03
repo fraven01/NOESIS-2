@@ -49,14 +49,14 @@ def _assert_env_matches_default_database(settings) -> tuple[str, str]:
 
     default_config = settings.DATABASES["default"]
     default_name = str(default_config.get("NAME"))
-    assert env_dbname == default_name, (
-        "Environment DSN should target Django's default database configuration"
-    )
+    assert (
+        env_dbname == default_name
+    ), "Environment DSN should target Django's default database configuration"
 
     active_name = str(connection.settings_dict.get("NAME"))
-    assert active_name != env_dbname, (
-        "Django connection should point to the test database clone during pytest"
-    )
+    assert (
+        active_name != env_dbname
+    ), "Django connection should point to the test database clone during pytest"
     return env_dbname, active_name
 
 
