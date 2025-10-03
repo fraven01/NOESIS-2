@@ -58,6 +58,18 @@ SUPPORTED_METADATA_FILTERS = {
 }
 
 
+_OPERATOR_CLASS_PREFERENCE: tuple[str, ...] = (
+    "vector_cosine_ops",
+    "vector_l2_ops",
+    "vector_ip_ops",
+)
+_OPERATOR_FOR_CLASS: dict[str, str] = {
+    "vector_cosine_ops": "<=>",
+    "vector_l2_ops": "<->",
+    "vector_ip_ops": "<#>",
+}
+
+
 FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
@@ -68,6 +80,41 @@ def get_embedding_dim() -> int:
     """Return the embedding dimensionality reported by the provider."""
 
     return get_embedding_client().dim()
+
+
+def operator_class_exists(cur, operator_class: str, access_method: str) -> bool:
+    """Return whether *operator_class* is available for *access_method*."""
+
+    cur.execute(
+        """
+        SELECT 1
+        FROM pg_catalog.pg_opclass opc
+        JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod
+        WHERE opc.opcname = %s AND am.amname = %s
+        """,
+        (operator_class, access_method),
+    )
+    return cur.fetchone() is not None
+
+
+def resolve_operator_class(cur, index_kind: str) -> str | None:
+    """Determine the operator class for the configured vector index."""
+
+    kind = index_kind.upper()
+    access_method = "hnsw" if kind == "HNSW" else "ivfflat"
+    for candidate in _OPERATOR_CLASS_PREFERENCE:
+        if operator_class_exists(cur, candidate, access_method):
+            return candidate
+    return None
+
+
+def resolve_distance_operator(cur, index_kind: str) -> str | None:
+    """Return the distance operator matching the active operator class."""
+
+    operator_class = resolve_operator_class(cur, index_kind)
+    if operator_class is None:
+        return None
+    return _OPERATOR_FOR_CLASS.get(operator_class)
 
 
 def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
@@ -191,6 +238,7 @@ class PgVectorClient:
         self._indexes_ready = False
         self._retries = max(1, retries_value)
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
+        self._distance_operator_cache: Dict[str, str] = {}
 
     @classmethod
     def from_env(
@@ -295,6 +343,21 @@ class PgVectorClient:
             if self._indexes_ready:
                 return
             self._indexes_ready = True
+
+    def _get_distance_operator(self, conn, index_kind: str) -> str:
+        key = index_kind.upper()
+        cached = self._distance_operator_cache.get(key)
+        if cached:
+            return cached
+        with conn.cursor() as cur:
+            operator = resolve_distance_operator(cur, key)
+        if operator is None:
+            raise RuntimeError(
+                "No compatible pgvector operator class available for queries. "
+                "Ensure the vector index has been created with a supported operator class."
+            )
+        self._distance_operator_cache[key] = operator
+        return operator
 
     def _restore_session_after_rollback(self, cur) -> None:  # type: ignore[no-untyped-def]
         """Re-apply session level settings after a transaction rollback."""
@@ -617,6 +680,9 @@ class PgVectorClient:
                                     "SET LOCAL ivfflat.probes = %s",
                                     (str(probes),),
                                 )
+                            distance_operator = self._get_distance_operator(
+                                conn, index_kind
+                            )
                             vector_sql = f"""
                                 SELECT
                                     c.id,
@@ -624,7 +690,7 @@ class PgVectorClient:
                                     c.metadata,
                                     d.hash,
                                     d.id,
-                                    e.embedding <=> %s::vector AS distance
+                                    e.embedding {distance_operator} %s::vector AS distance
                                 FROM embeddings e
                                 JOIN chunks c ON e.chunk_id = c.id
                                 JOIN documents d ON c.document_id = d.id
