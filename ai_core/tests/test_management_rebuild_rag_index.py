@@ -9,7 +9,6 @@ import pytest
 from psycopg2 import sql
 from psycopg2.extensions import make_dsn, parse_dsn
 from django.core.management import call_command
-from django.core.management.base import CommandError
 from django.db import connection
 from django.core.files.uploadedfile import SimpleUploadedFile
 
@@ -175,13 +174,20 @@ def test_rebuild_rag_index_missing_embeddings_table(settings) -> None:
         cur.execute("SET search_path TO rag, public")
         cur.execute("DROP TABLE IF EXISTS embeddings CASCADE")
 
-    with pytest.raises(CommandError) as excinfo:
-        call_command("rebuild_rag_index")
+    call_command("rebuild_rag_index")
 
-    assert (
-        "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
-        == str(excinfo.value)
-    )
+    with connection.cursor() as cur:
+        cur.execute("SET search_path TO rag, public")
+        cur.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'embeddings'
+              AND indexname IN ('embeddings_embedding_hnsw', 'embeddings_embedding_ivfflat')
+            """
+        )
+        assert cur.fetchone() is not None, "expected embeddings indexes to be recreated"
 
 
 @pytest.mark.django_db
