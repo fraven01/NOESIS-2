@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
 
 import pytest
 from psycopg2 import sql
+from psycopg2.extensions import make_dsn, parse_dsn
 from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.db import connection
@@ -20,6 +22,42 @@ from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
+
+
+def _parse_dbname(dsn: str) -> str | None:
+    try:
+        parsed = parse_dsn(dsn)
+    except Exception:
+        try:
+            canonical = make_dsn(dsn)
+        except Exception:
+            return None
+        try:
+            parsed = parse_dsn(canonical)
+        except Exception:
+            return None
+    name = parsed.get("dbname") or parsed.get("database")
+    return str(name) if name else None
+
+
+def _assert_env_matches_default_database(settings) -> tuple[str, str]:
+    env_dsn = os.environ.get("RAG_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    assert env_dsn, "Expected RAG_DATABASE_URL or DATABASE_URL to be set"
+
+    env_dbname = _parse_dbname(env_dsn)
+    assert env_dbname, "Unable to parse database name from environment DSN"
+
+    default_config = settings.DATABASES["default"]
+    default_name = str(default_config.get("NAME"))
+    assert env_dbname == default_name, (
+        "Environment DSN should target Django's default database configuration"
+    )
+
+    active_name = str(connection.settings_dict.get("NAME"))
+    assert active_name != env_dbname, (
+        "Django connection should point to the test database clone during pytest"
+    )
+    return env_dbname, active_name
 
 
 @pytest.mark.django_db
@@ -48,6 +86,9 @@ def test_rebuild_rag_index_creates_expected_index(
     expected_index: str,
     expected_params: dict[str, int],
 ) -> None:
+    _assert_env_matches_default_database(settings)
+    vector_client.reset_default_client()
+
     settings.RAG_INDEX_KIND = index_kind
     for key, value in settings_overrides.items():
         setattr(settings, key, value)
@@ -125,7 +166,10 @@ def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("rag_database")
-def test_rebuild_rag_index_missing_embeddings_table() -> None:
+def test_rebuild_rag_index_missing_embeddings_table(settings) -> None:
+    _assert_env_matches_default_database(settings)
+    vector_client.reset_default_client()
+
     with connection.cursor() as cur:
         cur.execute("SET search_path TO rag, public")
         cur.execute("DROP TABLE IF EXISTS embeddings CASCADE")
