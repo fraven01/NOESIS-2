@@ -1770,15 +1770,11 @@ def _resolve_django_dsn_if_available(*, dsn: str) -> str | None:
     if not isinstance(connection_settings, Mapping):
         return None
 
-    configured_name = default_config.get("NAME") if isinstance(default_config, Mapping) else None
-    connection_name = connection_settings.get("NAME")
-    default_name = connection_name or configured_name
+    default_name = connection_settings.get("NAME") or default_config.get("NAME")
     if not default_name or not env_dbname:
         return None
 
-    env_name = str(env_dbname)
-    match_candidates = [str(value) for value in (configured_name, connection_name) if value]
-    if match_candidates and env_name not in match_candidates:
+    if str(env_dbname) != str(default_name):
         return None
 
     def _norm(value: object) -> str | None:
