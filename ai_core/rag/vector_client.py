@@ -25,6 +25,7 @@ from typing import (
 
 from psycopg2 import Error as PsycopgError, sql
 from psycopg2.extras import Json, register_default_jsonb
+from psycopg2.extensions import make_dsn, parse_dsn
 from psycopg2.pool import SimpleConnectionPool
 
 from common.logging import get_log_context, get_logger
@@ -199,11 +200,16 @@ class PgVectorClient:
         fallback_env_var: str = "DATABASE_URL",
         **kwargs: object,
     ) -> "PgVectorClient":
-        dsn = os.getenv(env_var) or os.getenv(fallback_env_var)
+        dsn_env_value = os.getenv(env_var)
+        dsn = dsn_env_value or os.getenv(fallback_env_var)
         if not dsn:
             raise RuntimeError(
                 f"Neither {env_var} nor {fallback_env_var} is set; cannot initialise PgVectorClient"
             )
+
+        django_dsn = _resolve_django_dsn_if_available(dsn=dsn)
+        if django_dsn:
+            dsn = django_dsn
         return cls(dsn, **kwargs)
 
     def close(self) -> None:
@@ -1667,6 +1673,111 @@ class PgVectorClient:
         if last_exc is not None:  # pragma: no cover - defensive
             raise last_exc
         raise RuntimeError("retry loop exited without result")
+
+
+def _parse_dsn_parameters(value: str) -> Dict[str, str]:
+    """Return a mapping of DSN parameters parsed from ``value``.
+
+    Uses :func:`psycopg2.extensions.parse_dsn` and falls back to building a
+    canonical DSN via :func:`psycopg2.extensions.make_dsn` so URI-style strings
+    (``postgresql://user:pass@host/db``) are also supported.
+    """
+
+    try:
+        parsed = parse_dsn(value)
+    except Exception:
+        try:
+            canonical = make_dsn(value)
+        except Exception:
+            canonical = None
+        if not canonical:
+            return {}
+        try:
+            parsed = parse_dsn(canonical)
+        except Exception:
+            return {}
+
+    params: Dict[str, str] = {}
+    for key, parsed_value in parsed.items():
+        if parsed_value is None:
+            continue
+        params[str(key)] = str(parsed_value)
+    return params
+
+
+def _build_dsn_from_settings_dict(settings_dict: Mapping[str, object]) -> str | None:
+    """Construct a DSN string from a Django ``settings_dict`` mapping."""
+
+    engine = settings_dict.get("ENGINE")
+    if engine and "postgres" not in str(engine).lower():
+        return None
+
+    key_mapping = {
+        "NAME": "dbname",
+        "USER": "user",
+        "PASSWORD": "password",
+        "HOST": "host",
+        "PORT": "port",
+    }
+    params: Dict[str, str] = {}
+    for settings_key, dsn_key in key_mapping.items():
+        value = settings_dict.get(settings_key)
+        if value in (None, ""):
+            continue
+        params[dsn_key] = str(value)
+
+    options = settings_dict.get("OPTIONS")
+    if isinstance(options, Mapping):
+        for option_key, option_value in options.items():
+            if option_value in (None, ""):
+                continue
+            params[str(option_key)] = str(option_value)
+
+    if not params:
+        return None
+
+    try:
+        return make_dsn(**params)
+    except Exception:
+        return None
+
+
+def _resolve_django_dsn_if_available(*, dsn: str) -> str | None:
+    """Return a Django-aware DSN when running inside a configured project."""
+
+    try:  # pragma: no cover - guarded import
+        from django.conf import settings  # type: ignore
+        from django.db import DEFAULT_DB_ALIAS, connections  # type: ignore
+    except Exception:  # pragma: no cover - Django not available
+        return None
+
+    if not getattr(settings, "configured", False):
+        return None
+
+    databases = getattr(settings, "DATABASES", None)
+    if not isinstance(databases, Mapping):
+        return None
+
+    default_config = databases.get(DEFAULT_DB_ALIAS)
+    if not isinstance(default_config, Mapping):
+        return None
+
+    env_params = _parse_dsn_parameters(dsn)
+    env_dbname = env_params.get("dbname") or env_params.get("database")
+    default_name = default_config.get("NAME")
+    if not default_name or not env_dbname:
+        return None
+
+    if str(env_dbname) != str(default_name):
+        return None
+
+    connection = connections[DEFAULT_DB_ALIAS]
+    connection_settings = getattr(connection, "settings_dict", None)
+    if not isinstance(connection_settings, Mapping):
+        return None
+
+    rebuilt = _build_dsn_from_settings_dict(connection_settings)
+    return rebuilt
 
 
 _DEFAULT_CLIENT: Optional[VectorStore] = None
