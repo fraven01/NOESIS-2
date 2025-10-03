@@ -9,6 +9,32 @@ SET search_path TO rag, public;
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
+-- Ensure pgvector is recent enough for HNSW + vector_cosine_ops
+DO $$
+DECLARE
+    v_raw text;
+    v text;
+    maj int;
+    min int;
+    pat int;
+    ver_num int;
+BEGIN
+    SELECT extversion INTO v_raw FROM pg_extension WHERE extname = 'vector';
+    IF v_raw IS NULL THEN
+        RAISE EXCEPTION 'pgvector extension is not installed';
+    END IF;
+    -- Strip any packaging suffix (e.g. 0.6.0+cloudsql)
+    v := regexp_replace(v_raw, '[^0-9\.]?.*$', '');
+    maj := COALESCE(NULLIF(split_part(v, '.', 1), ''), '0')::int;
+    min := COALESCE(NULLIF(split_part(v, '.', 2), ''), '0')::int;
+    pat := COALESCE(NULLIF(split_part(v, '.', 3), ''), '0')::int;
+    ver_num := maj * 10000 + min * 100 + pat;
+    -- Require >= 0.5.0 (HNSW introduced; cosine operator classes supported)
+    IF ver_num < 500 THEN
+        RAISE EXCEPTION 'pgvector version % is too old. Require >= 0.5.0 for HNSW and vector_cosine_ops', v_raw;
+    END IF;
+END $$;
+
 CREATE TABLE IF NOT EXISTS documents (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -83,4 +109,3 @@ ANALYZE rag.embeddings;
 -- * Führe Index-Updates mit `CREATE INDEX CONCURRENTLY` in Prod aus, falls Downtime vermieden werden muss.
 -- * Nach großen Löschläufen: `VACUUM (VERBOSE, ANALYZE) rag.embeddings;`
 -- * Bei Schemaänderungen stets `IF NOT EXISTS`/`ADD COLUMN IF NOT EXISTS` nutzen, damit Wiederholungen idempotent bleiben.
-

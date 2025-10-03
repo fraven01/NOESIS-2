@@ -35,6 +35,7 @@ Die Produktionsumgebung schützt Kundendaten und stellt Verfügbarkeit sicher. D
 - Verwende IVFFLAT-Indizes (`lists` nach Datensatzanzahl skalieren) für Standard-Suche; für hochwertige Re-ranking-Pfade optional HNSW mit `ef_search=64`.
 - Plane Wartungsjobs: `REINDEX CONCURRENTLY` und `ANALYZE` monatlich, `VACUUM` nach größeren Löschläufen laut [RAG-Übersicht](../rag/overview.md).
 - Alle schemaändernden Migrationen laufen getrennt in der Pipeline-Stufe „Vector-Schema-Migrations“. Rollbacks nutzen PITR oder Index-Drop + Rebuild (siehe [Migrations-Runbook](../runbooks/migrations.md)).
+- Mindestversion: pgvector >= `0.5.0` (HNSW). Nach Instanz-Updates `ALTER EXTENSION vector UPDATE;` ausführen, damit `vector_cosine_ops` für HNSW überall verfügbar ist.
 
 ## Tenancy-Modell
 - Option 1: Schema pro Mandant (`tenant_<slug>`), getrennte `rag`-Schemas spiegeln diese Struktur. Vorteil: natürliche Isolation, Nachteil: mehr Verwaltungsaufwand.

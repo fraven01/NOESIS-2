@@ -120,7 +120,9 @@ def rag_database(rag_test_dsn: str, monkeypatch, settings) -> Iterator[str]:
     if env_dbname:
         new_config = dict(original_default_config, NAME=env_dbname)
         django_settings.DATABASES["default"] = new_config
-        settings.DATABASES["default"] = dict(settings.DATABASES["default"], NAME=env_dbname)
+        settings.DATABASES["default"] = dict(
+            settings.DATABASES["default"], NAME=env_dbname
+        )
         if original_active_name:
             connection.settings_dict["NAME"] = original_active_name
 
@@ -145,6 +147,8 @@ def rag_database(rag_test_dsn: str, monkeypatch, settings) -> Iterator[str]:
         reset_default_router()
         if env_dbname is not None:
             django_settings.DATABASES["default"] = original_default_config
-            settings.DATABASES["default"] = dict(settings.DATABASES["default"], NAME=original_default_name)
+            settings.DATABASES["default"] = dict(
+                settings.DATABASES["default"], NAME=original_default_name
+            )
             if original_active_name:
                 connection.settings_dict["NAME"] = original_active_name

@@ -32,6 +32,7 @@ Die Staging-Umgebung bildet die Produktionsarchitektur nach, erlaubt aber schnel
 - Aktiviere die Extension nach Provisionierung: `CREATE EXTENSION IF NOT EXISTS vector;` im Schema `rag`.
 - Optionale Flags für Performance: `work_mem=128MB` und `effective_io_concurrency=200`. Änderungen erfolgen über das Cloud SQL Flag-Set.
 - Halte Tabellen `documents`, `chunks`, `embeddings` konsistent zum [RAG-Schema](../rag/schema.sql); Migrationen laufen über die Stufe „Vector-Schema-Migrations“ in der [Pipeline](../cicd/pipeline.md).
+- Mindestversion: pgvector >= `0.5.0` (HNSW-Unterstützung). Führe nach Provisionierung `ALTER EXTENSION vector UPDATE;` aus, um die in Cloud SQL verfügbare Version zu aktivieren und `vector_cosine_ops` für HNSW sicherzustellen.
 
 ## Service-Konten
 - CI-Service-Konto benötigt `roles/cloudsql.client`, `roles/run.developer` und `roles/iam.serviceAccountUser` für Deployments.
