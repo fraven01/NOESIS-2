@@ -100,16 +100,21 @@ class Command(BaseCommand):
                     )
                 )
 
+            operator_class = self._resolve_operator_class(cur, index_kind)
+            table_identifier = sql.Identifier(schema_name, "embeddings")
+
             if index_kind == "HNSW":
                 cur.execute(
                     sql.SQL(
                         """
-                        CREATE INDEX {} ON {} USING hnsw (embedding vector_cosine_ops)
+                        CREATE INDEX {index_name} ON {table}
+                        USING hnsw (embedding {operator_class})
                         WITH (m = %s, ef_construction = %s)
                         """
                     ).format(
-                        sql.Identifier(hnsw_index_name),
-                        sql.Identifier(schema_name, "embeddings"),
+                        index_name=sql.Identifier(hnsw_index_name),
+                        table=table_identifier,
+                        operator_class=sql.Identifier(operator_class),
                     ),
                     (hnsw_m, hnsw_ef),
                 )
@@ -117,12 +122,14 @@ class Command(BaseCommand):
                 cur.execute(
                     sql.SQL(
                         """
-                        CREATE INDEX {} ON {} USING ivfflat (embedding vector_cosine_ops)
+                        CREATE INDEX {index_name} ON {table}
+                        USING ivfflat (embedding {operator_class})
                         WITH (lists = %s)
                         """
                     ).format(
-                        sql.Identifier(ivfflat_index_name),
-                        sql.Identifier(schema_name, "embeddings"),
+                        index_name=sql.Identifier(ivfflat_index_name),
+                        table=table_identifier,
+                        operator_class=sql.Identifier(operator_class),
                     ),
                     (ivf_lists,),
                 )
@@ -143,6 +150,35 @@ class Command(BaseCommand):
                 (schema_name, expected_index),
             )
             return cur.fetchone()
+
+    def _resolve_operator_class(self, cur, index_kind: str) -> str:
+        access_method = "hnsw" if index_kind == "HNSW" else "ivfflat"
+        preferred = "vector_cosine_ops"
+        if self._operator_class_exists(cur, preferred, access_method):
+            return preferred
+
+        for fallback in ("vector_l2_ops", "vector_ip_ops"):
+            if self._operator_class_exists(cur, fallback, access_method):
+                return fallback
+
+        raise CommandError(
+            "No compatible operator class found for pgvector index creation. "
+            "Ensure the pgvector extension is installed with cosine or L2 support."
+        )
+
+    def _operator_class_exists(
+        self, cur, operator_class: str, access_method: str
+    ) -> bool:
+        cur.execute(
+            """
+            SELECT 1
+            FROM pg_catalog.pg_opclass opc
+            JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod
+            WHERE opc.opcname = %s AND am.amname = %s
+            """,
+            (operator_class, access_method),
+        )
+        return cur.fetchone() is not None
 
     def _ensure_schema(self, cur, schema_name: str) -> None:
         cur.execute(

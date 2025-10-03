@@ -13,6 +13,7 @@ from django.db import connection
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from ai_core.ingestion import process_document
+from ai_core.management.commands.rebuild_rag_index import Command
 from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
 from tests.plugins.rag_db import drop_schema, reset_vector_schema
@@ -162,6 +163,48 @@ def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
     finally:
         with connection.cursor() as cur:
             drop_schema(cur, "rag_enterprise")
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("rag_database")
+def test_rebuild_rag_index_falls_back_when_cosine_ops_missing(
+    monkeypatch, settings
+) -> None:
+    _assert_env_matches_default_database(settings)
+    vector_client.reset_default_client()
+
+    settings.RAG_INDEX_KIND = "HNSW"
+
+    def fake_operator_class_exists(self, cur, operator_class: str, access_method: str) -> bool:
+        if operator_class == "vector_cosine_ops":
+            return False
+        return operator_class == "vector_l2_ops"
+
+    monkeypatch.setattr(
+        Command,
+        "_operator_class_exists",
+        fake_operator_class_exists,
+        raising=True,
+    )
+
+    stdout = io.StringIO()
+    call_command("rebuild_rag_index", stdout=stdout)
+
+    with connection.cursor() as cur:
+        cur.execute("SET search_path TO rag, public")
+        cur.execute(
+            """
+            SELECT indexdef
+            FROM pg_indexes
+            WHERE schemaname = current_schema()
+              AND tablename = 'embeddings'
+              AND indexname = 'embeddings_embedding_hnsw'
+            """
+        )
+        row = cur.fetchone()
+
+    assert row is not None
+    assert "vector_l2_ops" in row[0]
 
 
 @pytest.mark.django_db
