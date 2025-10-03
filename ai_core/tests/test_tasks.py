@@ -38,12 +38,13 @@ def test_chunkify_applies_overlap_and_limits() -> None:
         "sieben acht neun",
     ]
 
-    chunks = tasks._chunkify(
-        sentences,
-        target_tokens=6,
-        overlap_tokens=2,
-        hard_limit=6,
-    )
+    with tasks.force_whitespace_tokenizer():
+        chunks = tasks._chunkify(
+            sentences,
+            target_tokens=6,
+            overlap_tokens=2,
+            hard_limit=6,
+        )
 
     assert chunks == [
         "eins zwei drei vier fünf sechs",
@@ -56,12 +57,13 @@ def test_chunkify_enforces_hard_limit_and_long_sentences() -> None:
     long_sentence = " ".join(f"wort{i}" for i in range(12))
     sentences = ["kurz eins", long_sentence]
 
-    chunks = tasks._chunkify(
-        sentences,
-        target_tokens=10,
-        overlap_tokens=0,
-        hard_limit=4,
-    )
+    with tasks.force_whitespace_tokenizer():
+        chunks = tasks._chunkify(
+            sentences,
+            target_tokens=10,
+            overlap_tokens=0,
+            hard_limit=4,
+        )
 
     expected_long_chunks = [
         " ".join(f"wort{i}" for i in range(start, min(start + 4, 12)))

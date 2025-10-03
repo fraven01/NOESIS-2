@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import time
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 try:
     import tiktoken  # type: ignore
@@ -155,12 +157,40 @@ else:
     _TOKEN_ENCODING = None
 
 
+_FORCE_WHITESPACE_TOKENIZER = os.getenv("AI_CORE_FORCE_WHITESPACE_TOKENIZER", "").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+
+
+def _should_use_tiktoken() -> bool:
+    return _TOKEN_ENCODING is not None and not _FORCE_WHITESPACE_TOKENIZER
+
+
+def set_tokenizer_override(force_whitespace: bool) -> None:
+    global _FORCE_WHITESPACE_TOKENIZER
+    _FORCE_WHITESPACE_TOKENIZER = force_whitespace
+
+
+@contextmanager
+def force_whitespace_tokenizer() -> Iterator[None]:
+    """Temporarily force the whitespace-based tokenizer fallback."""
+
+    previous = _FORCE_WHITESPACE_TOKENIZER
+    set_tokenizer_override(True)
+    try:
+        yield
+    finally:
+        set_tokenizer_override(previous)
+
+
 def _token_count(text: str) -> int:
     stripped = text.strip()
     if not stripped:
         return 0
 
-    if _TOKEN_ENCODING is not None:
+    if _should_use_tiktoken():
         # `disallowed_special=()` ensures consistent behaviour across tiktoken versions.
         return max(1, len(_TOKEN_ENCODING.encode(stripped, disallowed_special=())))
 
@@ -175,7 +205,7 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
     if not text:
         return []
 
-    if _TOKEN_ENCODING is not None:
+    if _should_use_tiktoken():
         token_ids = _TOKEN_ENCODING.encode(text, disallowed_special=())
         if not token_ids:
             return []
