@@ -1,3 +1,6 @@
+markupsafe==3.0.3 # Override conflict with requirements.in
+typing-inspection==0.4.2 # Override conflict with requirements.in (NEW FIX)
+
 pytest
 pytest-xdist
 pytest-django
