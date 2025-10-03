@@ -140,9 +140,7 @@ class Command(BaseCommand):
                 )
 
             cur.execute(
-                sql.SQL("ANALYZE {}").format(
-                    sql.Identifier(schema_name, "embeddings")
-                )
+                sql.SQL("ANALYZE {}").format(sql.Identifier(schema_name, "embeddings"))
             )
             cur.execute(
                 """

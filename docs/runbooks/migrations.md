@@ -45,6 +45,52 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
   - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
 - Dienste nach Schemaänderungen neu starten: `npm run dev:restart` (Windows: `npm run win:dev:restart`).
 
+### Pgvector-Versionen vereinheitlichen (HNSW + Cosine)
+Ziel: `vector_cosine_ops` ist für HNSW-Indizes in allen Umgebungen verfügbar, damit Reindex-Läufe ohne Fallback (L2/IP) funktionieren.
+
+1) Vorab-Prüfungen (alle Umgebungen)
+- Version ermitteln: `SELECT extversion FROM pg_extension WHERE extname = 'vector';`
+- Operator-Klasse vorhanden: `SELECT 1 FROM pg_catalog.pg_opclass opc JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod WHERE opc.opcname = 'vector_cosine_ops' AND am.amname = 'hnsw';`
+- Erwartung: pgvector >= `0.5.0` (HNSW-Unterstützung) und `vector_cosine_ops` für `hnsw` verfügbar.
+
+2) Deployment-Plan
+- Dev/Local
+  - Stelle sicher, dass dein Postgres die Extension enthält. Bei Docker bevorzugt ein Image mit vorinstalliertem pgvector (z. B. `pgvector/pgvector:pg16`).
+  - Schema anwenden: `docs/rag/schema.sql` (enthält Version-Guard und HNSW-Index mit `vector_cosine_ops`).
+  - Reindex nach Bedarf: `python manage.py rebuild_rag_index` (nutzt HNSW und bevorzugt `vector_cosine_ops`).
+- Staging
+  - Cloud SQL: `CREATE EXTENSION IF NOT EXISTS vector;` einmalig, danach `ALTER EXTENSION vector UPDATE;` (bringt die aktuell in Cloud SQL verfügbare Version).
+  - Pipeline-Stufe „Vector-Schema-Migrations“ ausführen (führt `docs/rag/schema.sql` aus; bricht ab, wenn Version < 0.5.0).
+  - Reindex-Job ausführen: `python manage.py rebuild_rag_index` mit `RAG_INDEX_KIND=HNSW` (Defaults: `m=32`, `ef_construction=200`).
+- Prod
+  - Approval-gesteuert über die CI/CD-Pipeline. Reihenfolge: Datenbank-Backup/PITR prüfen → „Vector-Schema-Migrations“ → Reindex-Job.
+  - Hinweis: Aktueller Reindex ist nicht „CONCURRENTLY“. Zeitfenster bei niedriger Last wählen oder vorheriges IVFFLAT temporär bestehen lassen und HNSW im Wartungsfenster umschalten.
+
+3) Validierung (nach Deployment)
+- Version ok: `SELECT extversion FROM pg_extension WHERE extname='vector';` (>= 0.5.0 erwartet; in Cloud SQL kann höher sein, z. B. 0.6.x)
+- Operator-Klasse vorhanden (HNSW/Cosine):
+  ```sql
+  SELECT opc.opcname, am.amname
+  FROM pg_catalog.pg_opclass opc
+  JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod
+  WHERE opc.opcname = 'vector_cosine_ops' AND am.amname = 'hnsw';
+  ```
+- Index-Definition prüfbar über:
+  ```sql
+  SELECT indexdef
+  FROM pg_indexes
+  WHERE schemaname = 'rag'
+    AND tablename = 'embeddings'
+    AND indexname = 'embeddings_embedding_hnsw';
+  -- Erwartet: "USING hnsw (embedding vector_cosine_ops)"
+  ```
+- Management-Command Feedback (sollte HNSW nennen, kein Fallback):
+  - `python manage.py rebuild_rag_index` → Ausgabe enthält „using HNSW (scope: rag.embeddings, m=.. ef_construction=..)”
+
+4) Rollback-Strategie
+- Falls `vector_cosine_ops` unerwartet fehlt, Extension-Upgrade nachholen (`ALTER EXTENSION vector UPDATE;`) und Reindex erneut ausführen.
+- Temporärer Fallback (nur wenn nötig): IVFFLAT neu erstellen (`RAG_INDEX_KIND=IVFFLAT`), später auf HNSW/Cosine zurückschalten.
+
 ## Fehlerbilder & Hinweise
 - Container restarten ständig → Logs prüfen:
   - `docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -n 120 web` (z. B. CRLF im `entrypoint.sh`)
