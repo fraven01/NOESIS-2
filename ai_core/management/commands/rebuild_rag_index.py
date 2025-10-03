@@ -30,8 +30,17 @@ class Command(BaseCommand):
         row = None
 
         with client.connection() as conn:
+            if (
+                not conn.closed
+                and conn.get_transaction_status() == STATUS_IN_TRANSACTION
+            ):
+                conn.rollback()
+
             original_autocommit = conn.autocommit
-            conn.autocommit = False
+            autocommit_changed = False
+            if original_autocommit:
+                conn.autocommit = False
+                autocommit_changed = True
             try:
                 try:
                     with conn.cursor() as cur:
@@ -131,7 +140,8 @@ class Command(BaseCommand):
                     ):
                         conn.rollback()
                 finally:
-                    conn.autocommit = original_autocommit
+                    if autocommit_changed:
+                        conn.autocommit = original_autocommit
 
         if not row:
             raise CommandError(
