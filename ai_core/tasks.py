@@ -157,7 +157,9 @@ else:
     _TOKEN_ENCODING = None
 
 
-_FORCE_WHITESPACE_TOKENIZER = os.getenv("AI_CORE_FORCE_WHITESPACE_TOKENIZER", "").lower() in (
+_FORCE_WHITESPACE_TOKENIZER = os.getenv(
+    "AI_CORE_FORCE_WHITESPACE_TOKENIZER", ""
+).lower() in (
     "1",
     "true",
     "yes",
