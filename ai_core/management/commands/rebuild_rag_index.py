@@ -2,7 +2,6 @@ import re
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DatabaseError, ProgrammingError
 from psycopg2 import errors, sql
 from psycopg2.extensions import STATUS_IN_TRANSACTION
 
@@ -31,8 +30,7 @@ class Command(BaseCommand):
 
         with client.connection() as conn:
             if (
-                not conn.closed
-                and conn.get_transaction_status() == STATUS_IN_TRANSACTION
+                not conn.closed and conn.get_transaction_status() == STATUS_IN_TRANSACTION
             ):
                 conn.rollback()
 
@@ -62,15 +60,11 @@ class Command(BaseCommand):
 
                 try:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            sql.SQL("SET LOCAL search_path TO {}, public").format(
-                                sql.Identifier(schema_name)
-                            )
-                        )
                         for index_name in (hnsw_index_name, ivfflat_index_name):
                             cur.execute(
-                                sql.SQL("DROP INDEX IF EXISTS {}").format(
-                                    sql.Identifier(index_name)
+                                sql.SQL("DROP INDEX IF EXISTS {}.{}").format(
+                                    sql.Identifier(schema_name),
+                                    sql.Identifier(index_name),
                                 )
                             )
                         if index_kind == "HNSW":
@@ -121,14 +115,6 @@ class Command(BaseCommand):
                     raise CommandError(
                         "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
                     ) from exc
-                except (DatabaseError, ProgrammingError) as exc:
-                    conn.rollback()
-                    cause = getattr(exc, "__cause__", None)
-                    if isinstance(cause, errors.UndefinedTable):
-                        raise CommandError(
-                            "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
-                        ) from cause
-                    raise
                 except Exception:
                     conn.rollback()
                     raise
