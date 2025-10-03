@@ -6,7 +6,7 @@ from typing import Iterator
 import psycopg2
 import pytest
 from psycopg2 import OperationalError, errors, sql
-from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
+from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT, make_dsn, parse_dsn
 
 from ai_core.rag import vector_client as rag_vector_client
 from ai_core.rag.vector_store import reset_default_router
@@ -61,6 +61,21 @@ def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
 SCHEMA_SQL = render_schema_sql()
 
 
+def _extract_dbname(dsn: str) -> str | None:
+    if not dsn:
+        return None
+    try:
+        canonical = make_dsn(dsn=dsn)
+    except Exception:
+        canonical = dsn
+    try:
+        parsed = parse_dsn(canonical)
+    except Exception:
+        return None
+    name = parsed.get("dbname") or parsed.get("database")
+    return str(name) if name else None
+
+
 @pytest.fixture(scope="session")
 def rag_test_dsn() -> Iterator[str]:
     dsn = os.environ.get(
@@ -94,7 +109,21 @@ def rag_test_dsn() -> Iterator[str]:
 
 
 @pytest.fixture
-def rag_database(rag_test_dsn: str, monkeypatch) -> Iterator[str]:
+def rag_database(rag_test_dsn: str, monkeypatch, settings) -> Iterator[str]:
+    from django.conf import settings as django_settings
+    from django.db import connection
+
+    original_default_config = django_settings.DATABASES["default"].copy()
+    original_default_name = original_default_config.get("NAME")
+    original_active_name = connection.settings_dict.get("NAME")
+    env_dbname = _extract_dbname(rag_test_dsn)
+    if env_dbname:
+        new_config = dict(original_default_config, NAME=env_dbname)
+        django_settings.DATABASES["default"] = new_config
+        settings.DATABASES["default"] = dict(settings.DATABASES["default"], NAME=env_dbname)
+        if original_active_name:
+            connection.settings_dict["NAME"] = original_active_name
+
     conn = psycopg2.connect(rag_test_dsn)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     with conn.cursor() as cur:
@@ -114,3 +143,8 @@ def rag_database(rag_test_dsn: str, monkeypatch) -> Iterator[str]:
     finally:
         rag_vector_client.reset_default_client()
         reset_default_router()
+        if env_dbname is not None:
+            django_settings.DATABASES["default"] = original_default_config
+            settings.DATABASES["default"] = dict(settings.DATABASES["default"], NAME=original_default_name)
+            if original_active_name:
+                connection.settings_dict["NAME"] = original_active_name
