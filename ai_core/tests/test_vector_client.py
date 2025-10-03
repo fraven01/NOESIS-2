@@ -46,6 +46,9 @@ class TestPgVectorClient:
                 return None
 
             def execute(self, sql: str, params=None) -> None:
+                if "pg_catalog.pg_opclass" in sql:
+                    self._fetchone_result = (1,)
+                    return
                 if "SET LOCAL statement_timeout" in sql:
                     return
                 if "SELECT set_limit" in sql:
@@ -844,6 +847,9 @@ class TestPgVectorClient:
                 return None
 
             def execute(self, sql: str, params=None) -> None:
+                if "pg_catalog.pg_opclass" in sql:
+                    self._fetchone_result = (1,)
+                    return
                 if "SET LOCAL statement_timeout" in sql:
                     return
                 if "SELECT set_limit" in sql:
@@ -968,6 +974,9 @@ class TestPgVectorClient:
 
             def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
                 text = str(sql)
+                if "pg_catalog.pg_opclass" in text:
+                    self._fetchone_result = (1,)
+                    return
                 if "SET search_path" in text:
                     self._owner.mark_search_path()
                     return
@@ -1103,6 +1112,9 @@ class TestPgVectorClient:
                 return None
 
             def execute(self, sql: str, params=None) -> None:
+                if "pg_catalog.pg_opclass" in sql:
+                    self._fetchone_result = (1,)
+                    return
                 if "SET LOCAL statement_timeout" in sql:
                     return
                 if "SELECT set_limit" in sql:
@@ -1343,7 +1355,10 @@ class TestPgVectorClient:
 
             def execute(self, sql: str, params=None) -> None:
                 self._last_sql = sql
-                if "embedding <=>" in sql:
+                if "pg_catalog.pg_opclass" in sql:
+                    self._fetchone_result = (1,)
+                    return
+                if "embedding" in sql and "::vector" in sql:
                     raise RuntimeError("vector query failed")
                 if "SELECT show_limit()" in sql:
                     self._fetchone_result = (0.3,)
@@ -1413,6 +1428,125 @@ class TestPgVectorClient:
         top_meta = result.chunks[0].meta
         assert top_meta["hash"] == "lex-hash"
         assert top_meta["lscore"] == pytest.approx(0.9)
+
+    def test_hybrid_uses_fallback_distance_operator(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        client._distance_operator_cache.clear()
+
+        monkeypatch.setattr(
+            vector_client,
+            "resolve_distance_operator",
+            lambda _cur, _kind: "<->",
+            raising=True,
+        )
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.2]
+            + [0.0] * (vector_client.get_embedding_dim() - 1),
+        )
+
+        class _FakeCursor:
+            def __init__(self, owner) -> None:
+                self._owner = owner
+                self._fetchall_result: list[tuple] = []
+                self._fetchone_result: tuple | None = None
+
+            def __enter__(self) -> "_FakeCursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql: str, params=None) -> None:
+                text = str(sql)
+                if "SET LOCAL statement_timeout" in text:
+                    return
+                if "SET LOCAL hnsw.ef_search" in text:
+                    return
+                if "SELECT show_limit()" in text:
+                    self._fetchone_result = (0.3,)
+                    return
+                if "SELECT set_limit" in text:
+                    self._fetchone_result = None
+                    return
+                if "embedding" in text and "::vector" in text:
+                    self._owner.vector_sql.append(text)
+                    tenant_id = str(uuid.uuid4())
+                    doc_hash = hashlib.sha256(b"fallback-operator").hexdigest()
+                    doc_id = uuid.uuid4()
+                    self._fetchall_result = [
+                        (
+                            "vector-chunk",
+                            "Vector candidate",
+                            {"tenant": tenant_id},
+                            doc_hash,
+                            doc_id,
+                            0.12,
+                        )
+                    ]
+                    return
+                if "c.text_norm % %s" in text:
+                    self._fetchall_result = []
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in text:
+                    self._fetchall_result = []
+                    return
+                self._fetchall_result = []
+
+            def fetchall(self) -> list[tuple]:
+                result = list(self._fetchall_result)
+                self._fetchall_result = []
+                return result
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def __init__(self) -> None:
+                self.vector_sql: list[str] = []
+
+            def cursor(self) -> _FakeCursor:
+                return _FakeCursor(self)
+
+            def rollback(self) -> None:
+                return None
+
+        holder: dict[str, _FakeConnection] = {}
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+            holder["conn"] = fake
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        result = client.hybrid_search(
+            "fallback distance",
+            tenant_id=str(uuid.uuid4()),
+            filters={},
+            top_k=1,
+        )
+
+        fake_conn = holder["conn"]
+        assert fake_conn.vector_sql
+        assert "<->" in fake_conn.vector_sql[0]
+        assert result.vector_candidates == 1
 
     def test_hybrid_search_counts_candidates_below_min_sim_cutoff(
         self, monkeypatch

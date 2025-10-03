@@ -175,16 +175,16 @@ def test_rebuild_rag_index_falls_back_when_cosine_ops_missing(
 
     settings.RAG_INDEX_KIND = "HNSW"
 
-    def fake_operator_class_exists(
-        self, cur, operator_class: str, access_method: str
-    ) -> bool:
+
+    def fake_operator_class_exists(cur, operator_class: str, access_method: str) -> bool:
+
         if operator_class == "vector_cosine_ops":
             return False
         return operator_class == "vector_l2_ops"
 
     monkeypatch.setattr(
-        Command,
-        "_operator_class_exists",
+        vector_client,
+        "operator_class_exists",
         fake_operator_class_exists,
         raising=True,
     )

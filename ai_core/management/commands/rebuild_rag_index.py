@@ -100,7 +100,12 @@ class Command(BaseCommand):
                     )
                 )
 
-            operator_class = self._resolve_operator_class(cur, index_kind)
+            operator_class = vector_client.resolve_operator_class(cur, index_kind)
+            if operator_class is None:
+                raise CommandError(
+                    "No compatible operator class found for pgvector index creation. "
+                    "Ensure the pgvector extension is installed with cosine or L2 support."
+                )
             table_identifier = sql.Identifier(schema_name, "embeddings")
 
             if index_kind == "HNSW":
@@ -148,35 +153,6 @@ class Command(BaseCommand):
                 (schema_name, expected_index),
             )
             return cur.fetchone()
-
-    def _resolve_operator_class(self, cur, index_kind: str) -> str:
-        access_method = "hnsw" if index_kind == "HNSW" else "ivfflat"
-        preferred = "vector_cosine_ops"
-        if self._operator_class_exists(cur, preferred, access_method):
-            return preferred
-
-        for fallback in ("vector_l2_ops", "vector_ip_ops"):
-            if self._operator_class_exists(cur, fallback, access_method):
-                return fallback
-
-        raise CommandError(
-            "No compatible operator class found for pgvector index creation. "
-            "Ensure the pgvector extension is installed with cosine or L2 support."
-        )
-
-    def _operator_class_exists(
-        self, cur, operator_class: str, access_method: str
-    ) -> bool:
-        cur.execute(
-            """
-            SELECT 1
-            FROM pg_catalog.pg_opclass opc
-            JOIN pg_catalog.pg_am am ON am.oid = opc.opcmethod
-            WHERE opc.opcname = %s AND am.amname = %s
-            """,
-            (operator_class, access_method),
-        )
-        return cur.fetchone() is not None
 
     def _ensure_schema(self, cur, schema_name: str) -> None:
         cur.execute(
