@@ -8,5 +8,6 @@ labels:
   analyze: vertex_ai/gemini-2.5-flash
   reasoning: vertex_ai/gemini-2.5-pro
   draft: vertex_ai/gemini-2.5-pro
-  embedding: vertex_ai/text-embedding-004
+  embedding: openai/oai-embed-large
+  #embedding: vertex_ai/text-embedding-004
 
