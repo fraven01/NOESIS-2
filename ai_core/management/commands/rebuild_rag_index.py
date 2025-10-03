@@ -2,7 +2,6 @@ import re
 
 from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import DatabaseError, ProgrammingError, connection
 from psycopg2 import errors, sql
 from psycopg2.extensions import STATUS_IN_TRANSACTION
 
@@ -29,118 +28,106 @@ class Command(BaseCommand):
         expected_index = hnsw_index_name if index_kind == "HNSW" else ivfflat_index_name
         row = None
 
-        connection.ensure_connection()
-        conn = connection.connection
-        if conn is None:  # pragma: no cover - defensive
-            raise CommandError("Unable to obtain a database connection")
-
-        if (
-            not conn.closed and conn.get_transaction_status() == STATUS_IN_TRANSACTION
-        ):
-            conn.rollback()
-
-        original_autocommit = conn.autocommit
-        autocommit_changed = False
-        if original_autocommit:
-            conn.autocommit = False
-            autocommit_changed = True
-        try:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
-                            sql.Identifier(schema_name)
-                        )
-                    )
-                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
-                conn.commit()
-            except errors.UndefinedFile as exc:
+        with client.connection() as conn:
+            if (
+                not conn.closed and conn.get_transaction_status() == STATUS_IN_TRANSACTION
+            ):
                 conn.rollback()
-                raise CommandError(
-                    "pgvector extension is not available; ensure it is installed in the database"
-                ) from exc
-            except Exception:
-                conn.rollback()
-                raise
 
+            original_autocommit = conn.autocommit
+            autocommit_changed = False
+            if original_autocommit:
+                conn.autocommit = False
+                autocommit_changed = True
             try:
-                with conn.cursor() as cur:
-                    for index_name in (hnsw_index_name, ivfflat_index_name):
+                try:
+                    with conn.cursor() as cur:
                         cur.execute(
-                            sql.SQL("DROP INDEX IF EXISTS {}.{}").format(
-                                sql.Identifier(schema_name),
-                                sql.Identifier(index_name),
+                            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(
+                                sql.Identifier(schema_name)
                             )
                         )
-                    if index_kind == "HNSW":
+                        cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                    conn.commit()
+                except errors.UndefinedFile as exc:
+                    conn.rollback()
+                    raise CommandError(
+                        "pgvector extension is not available; ensure it is installed in the database"
+                    ) from exc
+                except Exception:
+                    conn.rollback()
+                    raise
+
+                try:
+                    with conn.cursor() as cur:
+                        for index_name in (hnsw_index_name, ivfflat_index_name):
+                            cur.execute(
+                                sql.SQL("DROP INDEX IF EXISTS {}.{}").format(
+                                    sql.Identifier(schema_name),
+                                    sql.Identifier(index_name),
+                                )
+                            )
+                        if index_kind == "HNSW":
+                            cur.execute(
+                                sql.SQL(
+                                    """
+                                    CREATE INDEX {} ON {} USING hnsw (embedding vector_cosine_ops)
+                                    WITH (m = %s, ef_construction = %s)
+                                    """
+                                ).format(
+                                    sql.Identifier(hnsw_index_name),
+                                    sql.Identifier(schema_name, "embeddings"),
+                                ),
+                                (hnsw_m, hnsw_ef),
+                            )
+                        else:
+                            cur.execute(
+                                sql.SQL(
+                                    """
+                                    CREATE INDEX {} ON {} USING ivfflat (embedding vector_cosine_ops)
+                                    WITH (lists = %s)
+                                    """
+                                ).format(
+                                    sql.Identifier(ivfflat_index_name),
+                                    sql.Identifier(schema_name, "embeddings"),
+                                ),
+                                (ivf_lists,),
+                            )
                         cur.execute(
-                            sql.SQL(
-                                """
-                                CREATE INDEX {} ON {} USING hnsw (embedding vector_cosine_ops)
-                                WITH (m = %s, ef_construction = %s)
-                                """
-                            ).format(
-                                sql.Identifier(hnsw_index_name),
-                                sql.Identifier(schema_name, "embeddings"),
-                            ),
-                            (hnsw_m, hnsw_ef),
+                            sql.SQL("ANALYZE {}").format(
+                                sql.Identifier(schema_name, "embeddings")
+                            )
                         )
-                    else:
                         cur.execute(
-                            sql.SQL(
-                                """
-                                CREATE INDEX {} ON {} USING ivfflat (embedding vector_cosine_ops)
-                                WITH (lists = %s)
-                                """
-                            ).format(
-                                sql.Identifier(ivfflat_index_name),
-                                sql.Identifier(schema_name, "embeddings"),
-                            ),
-                            (ivf_lists,),
+                            """
+                            SELECT indexdef
+                            FROM pg_indexes
+                            WHERE schemaname = %s
+                              AND tablename = 'embeddings'
+                              AND indexname = %s
+                            """,
+                            (schema_name, expected_index),
                         )
-                    cur.execute(
-                        sql.SQL("ANALYZE {}").format(
-                            sql.Identifier(schema_name, "embeddings")
-                        )
-                    )
-                    cur.execute(
-                        """
-                        SELECT indexdef
-                        FROM pg_indexes
-                        WHERE schemaname = %s
-                          AND tablename = 'embeddings'
-                          AND indexname = %s
-                        """,
-                        (schema_name, expected_index),
-                    )
-                    row = cur.fetchone()
-                conn.commit()
-            except errors.UndefinedTable as exc:
-                conn.rollback()
-                raise CommandError(
-                    "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
-                ) from exc
-            except (DatabaseError, ProgrammingError) as exc:
-                conn.rollback()
-                cause = getattr(exc, "__cause__", None)
-                if isinstance(cause, errors.UndefinedTable):
+                        row = cur.fetchone()
+                    conn.commit()
+                except errors.UndefinedTable as exc:
+                    conn.rollback()
                     raise CommandError(
                         "Vector table 'embeddings' not found; ensure the RAG schema is initialised"
-                    ) from cause
-                raise
-            except Exception:
-                conn.rollback()
-                raise
-        finally:
-            try:
-                if (
-                    not conn.closed
-                    and conn.get_transaction_status() == STATUS_IN_TRANSACTION
-                ):
+                    ) from exc
+                except Exception:
                     conn.rollback()
+                    raise
             finally:
-                if autocommit_changed:
-                    conn.autocommit = original_autocommit
+                try:
+                    if (
+                        not conn.closed
+                        and conn.get_transaction_status() == STATUS_IN_TRANSACTION
+                    ):
+                        conn.rollback()
+                finally:
+                    if autocommit_changed:
+                        conn.autocommit = original_autocommit
 
         if not row:
             raise CommandError(
