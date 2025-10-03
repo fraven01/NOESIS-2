@@ -26,7 +26,7 @@ class Command(BaseCommand):
         ivfflat_index_name = "embeddings_embedding_ivfflat"
         expected_index = hnsw_index_name if index_kind == "HNSW" else ivfflat_index_name
         try:
-            with transaction.atomic():
+            if connection.in_atomic_block:
                 row = self._rebuild_index(
                     schema_name,
                     index_kind,
@@ -37,6 +37,18 @@ class Command(BaseCommand):
                     hnsw_index_name,
                     ivfflat_index_name,
                 )
+            else:
+                with transaction.atomic():
+                    row = self._rebuild_index(
+                        schema_name,
+                        index_kind,
+                        hnsw_m,
+                        hnsw_ef,
+                        ivf_lists,
+                        expected_index,
+                        hnsw_index_name,
+                        ivfflat_index_name,
+                    )
         except errors.UndefinedFile as exc:
             raise CommandError(
                 f"Required database extension is not available: {exc}"
