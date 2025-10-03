@@ -130,3 +130,7 @@ Der Router deckelt `top_k` weiterhin auf zehn Ergebnisse. Achte darauf, dass der
 3. Aktiviere Observability für Agenten und Retriever über [Langfuse](../observability/langfuse.md), bevor Nutzer Zugriff erhalten.
 
 > **Skalierung:** Bis zu 50 Tenants gilt die gemeinsame Ablage als ausreichend. Darüber evaluieren wir pro Tenant ein Silo-Schema.
+
+## Offene Aufgaben
+
+- [ ] Pgvector-Versionen vereinheitlichen, damit `vector_cosine_ops` auch für HNSW-Indizes in jeder Umgebung verfügbar ist und Reindex-Läufe ohne Fallback funktionieren. Deployment- und Validierungsplan im [Migrations-Runbook](../runbooks/migrations.md) dokumentieren.
