@@ -1,10 +1,11 @@
 import os
+import re
 from pathlib import Path
 from typing import Iterator
 
 import psycopg2
 import pytest
-from psycopg2 import OperationalError, errors
+from psycopg2 import OperationalError, errors, sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT
 
 from ai_core.rag import vector_client as rag_vector_client
@@ -26,9 +27,38 @@ def clear_structlog_context():
         common_logging.clear_log_context()
 
 
-SCHEMA_SQL = (
+DEFAULT_SCHEMA_NAME = "rag"
+
+SCHEMA_SQL_TEMPLATE = (
     Path(__file__).resolve().parents[2] / "docs" / "rag" / "schema.sql"
 ).read_text()
+
+_SCHEMA_TOKEN_PATTERN = re.compile(rf"\b{re.escape(DEFAULT_SCHEMA_NAME)}\b")
+
+
+def render_schema_sql(schema_name: str = DEFAULT_SCHEMA_NAME) -> str:
+    if not schema_name:
+        raise ValueError("schema_name must be provided")
+    return _SCHEMA_TOKEN_PATTERN.sub(schema_name, SCHEMA_SQL_TEMPLATE)
+
+
+def drop_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
+    if not schema_name:
+        raise ValueError("schema_name must be provided")
+    cur.execute(
+        sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(schema_name))
+    )
+
+
+def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
+    drop_schema(cur, schema_name)
+    cur.execute(render_schema_sql(schema_name))
+    cur.execute(
+        sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
+    )
+
+
+SCHEMA_SQL = render_schema_sql()
 
 
 @pytest.fixture(scope="session")
@@ -48,10 +78,7 @@ def rag_test_dsn() -> Iterator[str]:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
         except errors.UndefinedFile as exc:
             pytest.skip(f"pgvector extension not available: {exc}")
-        cur.execute("DROP SCHEMA IF EXISTS rag CASCADE")
-        cur.execute("CREATE SCHEMA rag")
-        cur.execute("SET search_path TO rag, public")
-        cur.execute(SCHEMA_SQL)
+        reset_vector_schema(cur, DEFAULT_SCHEMA_NAME)
     finally:
         cur.close()
         conn.close()
@@ -60,7 +87,7 @@ def rag_test_dsn() -> Iterator[str]:
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     cur = conn.cursor()
     try:
-        cur.execute("DROP SCHEMA IF EXISTS rag CASCADE")
+        drop_schema(cur, DEFAULT_SCHEMA_NAME)
     finally:
         cur.close()
         conn.close()
@@ -71,7 +98,11 @@ def rag_database(rag_test_dsn: str, monkeypatch) -> Iterator[str]:
     conn = psycopg2.connect(rag_test_dsn)
     conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
     with conn.cursor() as cur:
-        cur.execute("SET search_path TO rag, public")
+        cur.execute(
+            sql.SQL("SET search_path TO {}, public").format(
+                sql.Identifier(DEFAULT_SCHEMA_NAME)
+            )
+        )
         cur.execute("TRUNCATE TABLE embeddings, chunks, documents CASCADE")
     conn.close()
     monkeypatch.setenv("DATABASE_URL", rag_test_dsn)
