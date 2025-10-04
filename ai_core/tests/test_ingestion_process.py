@@ -33,13 +33,16 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     tenant_key = object_store.sanitize_identifier(tenant)
     case_key = object_store.sanitize_identifier(case)
 
-    counts = {step: 0 for step in [
-        "ingest_raw",
-        "extract_text",
-        "pii_mask",
-        "chunk",
-        "embed",
-    ]}
+    counts = {
+        step: 0
+        for step in [
+            "ingest_raw",
+            "extract_text",
+            "pii_mask",
+            "chunk",
+            "embed",
+        ]
+    }
 
     artifact_paths = {
         step: "/".join([tenant_key, case_key, "artifacts", f"{step}.txt"])

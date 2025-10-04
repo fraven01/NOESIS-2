@@ -130,8 +130,8 @@ def _patch_perf_counter(monkeypatch, start: float, end: float) -> None:
 
 
 def test_run_ingestion_success(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = _setup_common_monkeypatches(
-        monkeypatch
+    dummy_process, start_calls, end_calls, apply_async_calls = (
+        _setup_common_monkeypatches(monkeypatch)
     )
     valid_ids = ["doc-1", "doc-2"]
     invalid_ids = ["missing-1"]
@@ -213,8 +213,8 @@ def test_run_ingestion_success(monkeypatch):
 
 
 def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = _setup_common_monkeypatches(
-        monkeypatch
+    dummy_process, start_calls, end_calls, apply_async_calls = (
+        _setup_common_monkeypatches(monkeypatch)
     )
     valid_ids = ["doc-1", "doc-2"]
     _patch_partition(monkeypatch, valid_ids, [])
@@ -239,7 +239,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     async_result = DummyAsyncResult(results=[child_success, child_pending])
     async_result.should_raise = CeleryTimeoutError("timed out")
 
-    captured_signatures = _patch_group(monkeypatch, async_result)
+    _patch_group(monkeypatch, async_result)
     _patch_perf_counter(monkeypatch, 20.0, 20.4)
 
     original_collect = ingestion._collect_partial_results
@@ -292,8 +292,8 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
 
 
 def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = _setup_common_monkeypatches(
-        monkeypatch
+    dummy_process, start_calls, end_calls, apply_async_calls = (
+        _setup_common_monkeypatches(monkeypatch)
     )
     valid_ids = ["doc-1", "doc-2"]
     _patch_partition(monkeypatch, valid_ids, [])
@@ -357,4 +357,3 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert start_calls[0]["doc_count"] == len(valid_ids)
     assert len(end_calls) == 1
     assert end_calls[0]["duration_ms"] == pytest.approx(600.0)
-
