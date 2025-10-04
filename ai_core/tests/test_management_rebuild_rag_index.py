@@ -13,7 +13,6 @@ from django.db import connection
 from django.core.files.uploadedfile import SimpleUploadedFile
 
 from ai_core.ingestion import process_document
-from ai_core.management.commands.rebuild_rag_index import Command
 from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
 from tests.plugins.rag_db import drop_schema, reset_vector_schema
@@ -175,8 +174,9 @@ def test_rebuild_rag_index_falls_back_when_cosine_ops_missing(
 
     settings.RAG_INDEX_KIND = "HNSW"
 
-
-    def fake_operator_class_exists(cur, operator_class: str, access_method: str) -> bool:
+    def fake_operator_class_exists(
+        cur, operator_class: str, access_method: str
+    ) -> bool:
 
         if operator_class == "vector_cosine_ops":
             return False

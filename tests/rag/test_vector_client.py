@@ -54,6 +54,10 @@ class _FakeCursor:
                 pass
         elif "show_limit()" in text:
             self._fetch_stage = "show_limit"
+        elif "from pg_catalog.pg_opclass" in text:
+            # Simulate presence of a compatible pgvector operator class
+            # queried by operator_class_exists/resolve_distance_operator.
+            self._fetch_stage = "opclass_check"
         elif "from embeddings" in text:
             self._fetch_stage = "vector"
         elif "similarity(" in text:
@@ -76,6 +80,9 @@ class _FakeCursor:
     def fetchone(self):
         if self._fetch_stage == "show_limit":
             return (self._limit,)
+        if self._fetch_stage == "opclass_check":
+            # Any non-None row indicates the operator class exists
+            return (1,)
         return None
 
     def fetchall(self):

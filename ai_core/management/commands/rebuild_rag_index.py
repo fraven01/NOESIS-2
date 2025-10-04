@@ -26,7 +26,7 @@ class Command(BaseCommand):
         ivfflat_index_name = "embeddings_embedding_ivfflat"
         expected_index = hnsw_index_name if index_kind == "HNSW" else ivfflat_index_name
         try:
-            if connection.in_atomic_block:
+            with transaction.atomic():
                 row = self._rebuild_index(
                     schema_name,
                     index_kind,
@@ -37,18 +37,6 @@ class Command(BaseCommand):
                     hnsw_index_name,
                     ivfflat_index_name,
                 )
-            else:
-                with transaction.atomic():
-                    row = self._rebuild_index(
-                        schema_name,
-                        index_kind,
-                        hnsw_m,
-                        hnsw_ef,
-                        ivf_lists,
-                        expected_index,
-                        hnsw_index_name,
-                        ivfflat_index_name,
-                    )
         except errors.UndefinedFile as exc:
             raise CommandError(
                 f"Required database extension is not available: {exc}"
@@ -89,6 +77,15 @@ class Command(BaseCommand):
         ivfflat_index_name: str,
     ) -> tuple[str] | None:
         with connection.cursor() as cur:
+            # Ensure operator class lookup resolves against the target schema
+            try:
+                cur.execute(
+                    sql.SQL("SET LOCAL search_path TO {}, public").format(
+                        sql.Identifier(schema_name)
+                    )
+                )
+            except Exception:
+                pass
             self._ensure_schema(cur, schema_name)
             self._ensure_tables(cur, schema_name)
 
@@ -100,43 +97,62 @@ class Command(BaseCommand):
                     )
                 )
 
-            operator_class = vector_client.resolve_operator_class(cur, index_kind)
-            if operator_class is None:
-                raise CommandError(
-                    "No compatible operator class found for pgvector index creation. "
-                    "Ensure the pgvector extension is installed with cosine or L2 support."
-                )
             table_identifier = sql.Identifier(schema_name, "embeddings")
-
-            if index_kind == "HNSW":
-                cur.execute(
-                    sql.SQL(
-                        """
-                        CREATE INDEX {index_name} ON {table}
-                        USING hnsw (embedding {operator_class})
-                        WITH (m = %s, ef_construction = %s)
-                        """
-                    ).format(
-                        index_name=sql.Identifier(hnsw_index_name),
-                        table=table_identifier,
-                        operator_class=sql.Identifier(operator_class),
-                    ),
-                    (hnsw_m, hnsw_ef),
-                )
-            else:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        CREATE INDEX {index_name} ON {table}
-                        USING ivfflat (embedding {operator_class})
-                        WITH (lists = %s)
-                        """
-                    ).format(
-                        index_name=sql.Identifier(ivfflat_index_name),
-                        table=table_identifier,
-                        operator_class=sql.Identifier(operator_class),
-                    ),
-                    (ivf_lists,),
+            access_method = "hnsw" if index_kind == "HNSW" else "ivfflat"
+            candidates = ("vector_cosine_ops", "vector_l2_ops", "vector_ip_ops")
+            created = False
+            last_error: Exception | None = None
+            for operator_class in candidates:
+                # Only try classes that the catalog reports as available for the access method.
+                if not vector_client.operator_class_exists(cur, operator_class, access_method):
+                    continue
+                savepoint_id = transaction.savepoint()
+                try:
+                    if index_kind == "HNSW":
+                        cur.execute(
+                            sql.SQL(
+                                """
+                                CREATE INDEX {index_name} ON {table}
+                                USING hnsw (embedding {operator_class})
+                                WITH (m = %s, ef_construction = %s)
+                                """
+                            ).format(
+                                index_name=sql.Identifier(hnsw_index_name),
+                                table=table_identifier,
+                                operator_class=sql.Identifier(operator_class),
+                            ),
+                            (hnsw_m, hnsw_ef),
+                        )
+                    else:
+                        cur.execute(
+                            sql.SQL(
+                                """
+                                CREATE INDEX {index_name} ON {table}
+                                USING ivfflat (embedding {operator_class})
+                                WITH (lists = %s)
+                                """
+                            ).format(
+                                index_name=sql.Identifier(ivfflat_index_name),
+                                table=table_identifier,
+                                operator_class=sql.Identifier(operator_class),
+                            ),
+                            (ivf_lists,),
+                        )
+                    transaction.savepoint_commit(savepoint_id)
+                except Exception as exc:
+                    last_error = exc
+                    transaction.savepoint_rollback(savepoint_id)
+                    continue
+                created = True
+                break
+            if not created:
+                if last_error is not None:
+                    raise CommandError(
+                        f"No compatible operator class created for {access_method}: "
+                        f"tried {', '.join(candidates)}; last error: {last_error}"
+                    ) from last_error
+                raise CommandError(
+                    f"No compatible operator class found for {access_method}: tried {', '.join(candidates)}"
                 )
 
             cur.execute(

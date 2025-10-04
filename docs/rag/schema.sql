@@ -6,8 +6,24 @@ BEGIN;
 CREATE SCHEMA IF NOT EXISTS rag;
 SET search_path TO rag, public;
 
-CREATE EXTENSION IF NOT EXISTS vector;
-CREATE EXTENSION IF NOT EXISTS pg_trgm;
+-- Ensure extensions live in 'public' schema for global visibility
+CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
+CREATE EXTENSION IF NOT EXISTS pg_trgm WITH SCHEMA public;
+
+DO $$
+DECLARE
+    v_ns oid;
+    t_ns oid;
+BEGIN
+    SELECT extnamespace INTO v_ns FROM pg_extension WHERE extname = 'vector';
+    IF v_ns IS NOT NULL AND v_ns <> 'public'::regnamespace THEN
+        EXECUTE 'ALTER EXTENSION vector SET SCHEMA public';
+    END IF;
+    SELECT extnamespace INTO t_ns FROM pg_extension WHERE extname = 'pg_trgm';
+    IF t_ns IS NOT NULL AND t_ns <> 'public'::regnamespace THEN
+        EXECUTE 'ALTER EXTENSION pg_trgm SET SCHEMA public';
+    END IF;
+END $$;
 
 -- Ensure pgvector is recent enough for HNSW + vector_cosine_ops
 DO $$
@@ -23,8 +39,8 @@ BEGIN
     IF v_raw IS NULL THEN
         RAISE EXCEPTION 'pgvector extension is not installed';
     END IF;
-    -- Strip any packaging suffix (e.g. 0.6.0+cloudsql)
-    v := regexp_replace(v_raw, '[^0-9\.]?.*$', '');
+    -- Extract leading semver (2- or 3-part) without using backreferences
+    v := substring(v_raw from '^[0-9]+(?:\.[0-9]+){1,2}');
     maj := COALESCE(NULLIF(split_part(v, '.', 1), ''), '0')::int;
     min := COALESCE(NULLIF(split_part(v, '.', 2), ''), '0')::int;
     pat := COALESCE(NULLIF(split_part(v, '.', 3), ''), '0')::int;

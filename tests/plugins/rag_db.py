@@ -51,8 +51,53 @@ def drop_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
 
 
 def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
-    drop_schema(cur, schema_name)
-    cur.execute(render_schema_sql(schema_name))
+    """Reset the RAG schema in a transaction-safe way.
+
+    Executes DDL outside of the caller's transaction to avoid breaking
+    pytest-django's transactional test wrappers. Prefer a dedicated
+    autocommit connection; fall back to temporarily enabling autocommit
+    on the caller's connection if we cannot reconstruct a DSN.
+    """
+    if not schema_name:
+        raise ValueError("schema_name must be provided")
+
+    # Prefer using an environment-provided DSN to create an isolated
+    # autocommit connection for DDL; this avoids touching Django's
+    # transactional test wrappers. Fall back to the caller's connection
+    # with a temporary autocommit toggle if needed.
+    dsn = os.environ.get("RAG_DATABASE_URL") or os.environ.get("DATABASE_URL")
+    if dsn:
+        try:
+            ddl_conn = psycopg2.connect(dsn)
+            ddl_conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            try:
+                with ddl_conn.cursor() as ddl_cur:
+                    drop_schema(ddl_cur, schema_name)
+                    ddl_cur.execute(render_schema_sql(schema_name))
+            finally:
+                ddl_conn.close()
+        except Exception:
+            # Last-resort fallback to current connection autocommit path
+            dsn = None
+
+    if not dsn:
+        conn = cur.connection  # type: ignore[attr-defined]
+        try:
+            prev_level = conn.isolation_level
+        except Exception:
+            prev_level = None
+        try:
+            conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+            drop_schema(cur, schema_name)
+            cur.execute(render_schema_sql(schema_name))
+        finally:
+            if prev_level is not None:
+                try:
+                    conn.set_isolation_level(prev_level)
+                except Exception:
+                    pass
+
+    # Apply search_path on the caller's session for subsequent statements
     cur.execute(
         sql.SQL("SET search_path TO {}, public").format(sql.Identifier(schema_name))
     )
@@ -76,6 +121,53 @@ def _extract_dbname(dsn: str) -> str | None:
     return str(name) if name else None
 
 
+@pytest.fixture(autouse=True, scope="session")
+def ensure_vector_extensions_in_django_test_db(django_db_setup, django_db_blocker):
+    """Ensure pgvector/pg_trgm are available in the Django test database.
+
+    Some environments run pytest with a PostgreSQL cluster that does not have
+    the pgvector extension pre-enabled in the template database. Django creates
+    a fresh test database which therefore misses the extension, leading to
+    operator-class errors when HNSW/IVFFLAT indexes are created during tests.
+
+    We defensively enable the extensions in the active Django test database to
+    keep tests self-contained and idempotent.
+    """
+    from django.db import connection
+
+    with django_db_blocker.unblock():
+        try:
+            with connection.cursor() as cur:
+                try:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                    # Prefer the latest available version in the cluster
+                    try:
+                        cur.execute("ALTER EXTENSION vector UPDATE")
+                    except Exception:
+                        pass
+                    # Normalise extension schema for predictable opclass lookup
+                    try:
+                        cur.execute("ALTER EXTENSION vector SET SCHEMA public")
+                    except Exception:
+                        pass
+                except errors.UndefinedFile:
+                    # Extension not installed in the cluster; leave to per-test skips
+                    return
+                # Trigram support for lexical side of hybrid search
+                try:
+                    cur.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+                    try:
+                        cur.execute("ALTER EXTENSION pg_trgm SET SCHEMA public")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+        except Exception:
+            # Do not hard-fail the session on extension issues; individual tests
+            # will raise/skip with clearer messages where relevant.
+            return
+
+
 @pytest.fixture(scope="session")
 def rag_test_dsn() -> Iterator[str]:
     dsn = os.environ.get(
@@ -91,6 +183,16 @@ def rag_test_dsn() -> Iterator[str]:
     try:
         try:
             cur.execute("CREATE EXTENSION IF NOT EXISTS vector")
+            # Ensure latest available pgvector features (HNSW/IVFFLAT opclasses)
+            try:
+                cur.execute("ALTER EXTENSION vector UPDATE")
+            except Exception:
+                pass
+            # Normalise extension schema for predictable opclass resolution
+            try:
+                cur.execute("ALTER EXTENSION vector SET SCHEMA public")
+            except Exception:
+                pass
         except errors.UndefinedFile as exc:
             pytest.skip(f"pgvector extension not available: {exc}")
         reset_vector_schema(cur, DEFAULT_SCHEMA_NAME)

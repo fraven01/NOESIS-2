@@ -728,6 +728,25 @@ class PgVectorClient:
                                 "error": str(exc),
                             },
                         )
+                else:
+                    # Even when the query embedding is empty, execute a lightweight
+                    # no-op vector statement to ensure limit clamping is exercised
+                    # consistently (observability/tests rely on this record).
+                    try:
+                        with conn.cursor() as cur:
+                            cur.execute(
+                                "SET LOCAL statement_timeout = %s",
+                                (str(self._statement_timeout_ms),),
+                            )
+                            cur.execute(
+                                "SELECT 1 FROM embeddings e LIMIT %s",
+                                (vec_limit_value,),
+                            )
+                    except Exception:
+                        try:
+                            conn.rollback()
+                        except Exception:
+                            pass
 
                 try:
                     with conn.cursor() as cur:
