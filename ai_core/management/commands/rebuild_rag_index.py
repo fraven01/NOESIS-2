@@ -104,7 +104,9 @@ class Command(BaseCommand):
             last_error: Exception | None = None
             for operator_class in candidates:
                 # Only try classes that the catalog reports as available for the access method.
-                if not vector_client.operator_class_exists(cur, operator_class, access_method):
+                if not vector_client.operator_class_exists(
+                    cur, operator_class, access_method
+                ):
                     continue
                 savepoint_id = transaction.savepoint()
                 try:
