@@ -44,6 +44,7 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 - Schema anwenden (idempotent, nur einmal nötig):
   - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
 - Dienste nach Schemaänderungen neu starten: `npm run dev:restart` (Windows: `npm run win:dev:restart`).
+- **Normalisierung alter Embeddings:** Nach dem Rollout der Einheitsvektor-Normalisierung müssen bestehende Einträge neu berechnet werden. Plane unmittelbar im Anschluss einen Re-Embed-Lauf (Ingestion-Batch oder dediziertes Maintenance-Skript), der alle aktiven Dokumente erneut embedden und überschreiben darf. Ohne diesen Schritt mischen sich alte, nicht normierte Vektoren in die Suche und verfälschen Cosine-Distanzen.
 
 ### Pgvector-Versionen vereinheitlichen (HNSW + Cosine)
 Ziel: `vector_cosine_ops` ist für HNSW-Indizes in allen Umgebungen verfügbar, damit Reindex-Läufe ohne Fallback (L2/IP) funktionieren.

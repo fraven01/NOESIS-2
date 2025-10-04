@@ -117,14 +117,32 @@ def resolve_distance_operator(cur, index_kind: str) -> str | None:
     return _OPERATOR_FOR_CLASS.get(operator_class)
 
 
-def _is_effectively_zero_vector(values: Sequence[float] | None) -> bool:
+def _normalise_vector(values: Sequence[float] | None) -> list[float] | None:
+    """Scale ``values`` to unit length if possible.
+
+    Returns ``None`` when ``values`` cannot be interpreted as a numeric
+    sequence or if its norm is effectively zero. Callers should treat a
+    ``None`` result as an empty embedding and skip persistence/search to
+    avoid unstable similarity scores.
+    """
+
     if not values:
-        return True
+        return None
     try:
-        norm_sq = math.fsum(float(value) * float(value) for value in values)
+        floats = [float(value) for value in values]
     except (TypeError, ValueError):
-        return True
-    return norm_sq <= _ZERO_EPSILON
+        return None
+
+    norm_sq = math.fsum(value * value for value in floats)
+    if norm_sq <= _ZERO_EPSILON:
+        return None
+
+    norm = math.sqrt(norm_sq)
+    if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
+        return None
+
+    scale = 1.0 / norm
+    return [value * scale for value in floats]
 
 
 def _coerce_env_value(
@@ -1591,10 +1609,12 @@ class PgVectorClient:
             for index, chunk in enumerate(doc["chunks"]):
                 chunk_id = uuid.uuid4()
                 embedding_values = chunk.embedding
-                is_empty_embedding = (
-                    embedding_values is None
-                    or _is_effectively_zero_vector(embedding_values)
+                normalised_embedding = (
+                    _normalise_vector(embedding_values)
+                    if embedding_values is not None
+                    else None
                 )
+                is_empty_embedding = normalised_embedding is None
                 if is_empty_embedding:
                     metrics.RAG_EMBEDDINGS_EMPTY_TOTAL.inc()
                     logger.warning(
@@ -1618,8 +1638,8 @@ class PgVectorClient:
                     )
                 )
                 chunk_count += 1
-                if not is_empty_embedding:
-                    vector_value = self._format_vector(embedding_values)
+                if normalised_embedding is not None:
+                    vector_value = self._format_vector(normalised_embedding)
                     embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
 
             if chunk_rows:
@@ -1671,6 +1691,12 @@ class PgVectorClient:
             raise EmbeddingClientError(
                 "Embedding dimension mismatch between query and provider"
             )
+
+        normalised_vector = _normalise_vector(vector)
+        if normalised_vector is None:
+            vector = [0.0 for _ in vector]
+        else:
+            vector = normalised_vector
 
         context = get_log_context()
         tenant_id = context.get("tenant")

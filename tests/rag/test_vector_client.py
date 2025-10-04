@@ -1,10 +1,13 @@
-﻿import uuid
+import math
+import uuid
 from collections.abc import Sequence
 
 import pytest
 from structlog.testing import capture_logs
 
 from ai_core.rag import vector_client
+from ai_core.rag.embeddings import EmbeddingBatchResult
+from ai_core.rag.schemas import Chunk
 
 pytestmark = pytest.mark.usefixtures("rag_database")
 
@@ -128,6 +131,146 @@ def _fake_connection_ctx(fake_conn):
         yield fake_conn
 
     return _ctx
+
+
+def test_replace_chunks_normalises_embeddings(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    document_id = uuid.uuid4()
+    doc_key = (tenant, "external-1")
+
+    class _RecorderCursor:
+        def __init__(self):
+            self.executed: list[tuple[str, object | None]] = []
+            self.batch_calls: list[tuple[str, list[tuple]]] = []
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            self.executed.append((str(sql), params))
+
+        def executemany(self, sql, seq):  # noqa: WPS110 - sql name
+            self.batch_calls.append((str(sql), list(seq)))
+
+    recorder = _RecorderCursor()
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
+
+    captured: list[list[float]] = []
+    original_format = client._format_vector
+
+    def _capture_format(values: Sequence[float]) -> str:
+        captured.append([float(v) for v in values])
+        return original_format(values)
+
+    monkeypatch.setattr(client, "_format_vector", _capture_format)
+
+    grouped = {
+        doc_key: {
+            "tenant_id": tenant,
+            "external_id": "external-1",
+            "source": "unit-test",
+            "metadata": {},
+            "chunks": [
+                Chunk(
+                    content="hello world",
+                    meta={"tenant": tenant, "hash": "hash-1", "source": "unit-test"},
+                    embedding=[3.0, 4.0],
+                )
+            ],
+        }
+    }
+    document_ids = {doc_key: document_id}
+    doc_actions: dict[tuple[str, str], str] = {}
+
+    client._replace_chunks(recorder, grouped, document_ids, doc_actions)
+
+    assert captured, "expected embedding to be formatted"
+    normalised = captured[0]
+    assert len(normalised) == 2
+    assert math.isclose(math.sqrt(sum(value * value for value in normalised)), 1.0)
+
+
+def test_query_embedding_is_normalised(monkeypatch):
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
+
+    class _FakeEmbeddingClient:
+        def dim(self):  # noqa: D401 - simple interface shim
+            return 2
+
+        def embed(self, texts):
+            return EmbeddingBatchResult(
+                vectors=[[3.0, 4.0]],
+                model="fake",
+                model_used="primary",
+                attempts=1,
+                timeout_s=None,
+            )
+
+    fake_client = _FakeEmbeddingClient()
+    monkeypatch.setattr(vector_client, "get_embedding_client", lambda: fake_client)
+
+    values = client._embed_query("normalise me")
+
+    assert len(values) == 2
+    assert math.isclose(math.sqrt(sum(value * value for value in values)), 1.0)
+
+
+def test_hybrid_search_returns_vector_hits_with_normalised_query(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
+
+    class _FakeEmbeddingClient:
+        def dim(self):  # noqa: D401 - simple interface shim
+            return 2
+
+        def embed(self, texts):
+            return EmbeddingBatchResult(
+                vectors=[[3.0, 4.0]],
+                model="fake",
+                model_used="primary",
+                attempts=1,
+                timeout_s=None,
+            )
+
+    fake_client = _FakeEmbeddingClient()
+    monkeypatch.setattr(vector_client, "get_embedding_client", lambda: fake_client)
+
+    vector_row = (
+        "chunk-vector",
+        "vector candidate",
+        {"tenant": tenant},
+        "hash-vector",
+        "doc-vector",
+        0.12,
+    )
+    cursor = _FakeCursor(vector_rows=[vector_row], lexical_rows=[])
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    captured: list[list[float]] = []
+    original_format = client._format_vector
+
+    def _capture_format(values: Sequence[float]) -> str:
+        captured.append([float(v) for v in values])
+        return original_format(values)
+
+    monkeypatch.setattr(client, "_format_vector", _capture_format)
+
+    result = client.hybrid_search(
+        "vector search",
+        tenant_id=tenant,
+        filters={"case": None},
+        alpha=1.0,
+        min_sim=0.0,
+        top_k=1,
+    )
+
+    assert result.vector_candidates >= 1
+    assert result.chunks
+    assert not result.query_embedding_empty
+    assert captured, "expected query embedding to be formatted"
+    norm = math.sqrt(sum(value * value for value in captured[0]))
+    assert math.isclose(norm, 1.0)
 
 
 def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
