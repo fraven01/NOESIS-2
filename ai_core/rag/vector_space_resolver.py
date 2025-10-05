@@ -118,4 +118,3 @@ __all__ = [
     "resolve_vector_space_full",
     "resolve_vector_space",
 ]
-

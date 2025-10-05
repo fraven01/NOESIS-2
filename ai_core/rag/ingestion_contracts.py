@@ -100,9 +100,7 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
             VectorSpaceResolverErrorCode.PROFILE_UNKNOWN: IngestionContractErrorCode.PROFILE_UNKNOWN,
             VectorSpaceResolverErrorCode.VECTOR_SPACE_UNKNOWN: IngestionContractErrorCode.VECTOR_SPACE_UNKNOWN,
         }
-        mapped_code = mapping.get(
-            exc.code, IngestionContractErrorCode.PROFILE_UNKNOWN
-        )
+        mapped_code = mapping.get(exc.code, IngestionContractErrorCode.PROFILE_UNKNOWN)
         raise IngestionContractError(
             mapped_code,
             exc.message,
@@ -180,4 +178,3 @@ __all__ = [
     "resolve_ingestion_profile",
     "ensure_embedding_dimensions",
 ]
-

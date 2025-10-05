@@ -38,7 +38,10 @@ def test_build_vector_schema_plan_renders_per_space(settings) -> None:
     plan = build_vector_schema_plan()
 
     assert {ddl.space_id for ddl in plan} == {"global", "archive"}
-    assert all(f"SET search_path TO {spaces[ddl.space_id]['schema']}" in ddl.sql for ddl in plan)
+    assert all(
+        f"SET search_path TO {spaces[ddl.space_id]['schema']}" in ddl.sql
+        for ddl in plan
+    )
     assert any("vector(6)" in ddl.sql for ddl in plan)
     assert any("vector(8)" in ddl.sql for ddl in plan)
 

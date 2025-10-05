@@ -260,7 +260,10 @@ def validate_search_inputs(
                     field="max_candidates",
                     context=detail_context,
                 )
-        if max_candidates_cap is not None and effective_max_candidates > max_candidates_cap:
+        if (
+            max_candidates_cap is not None
+            and effective_max_candidates > max_candidates_cap
+        ):
             effective_max_candidates = max_candidates_cap
 
     context["max_candidates_effective"] = effective_max_candidates
@@ -307,7 +310,6 @@ def emit_router_validation_failure(error: RouterInputError) -> None:
         )
 
 
-
 __all__ = [
     "RouterInputError",
     "RouterInputErrorCode",
@@ -316,4 +318,3 @@ __all__ = [
     "map_router_error_to_status",
     "validate_search_inputs",
 ]
-

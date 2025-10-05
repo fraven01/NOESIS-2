@@ -35,7 +35,9 @@ def test_validate_accepts_trimmed_values() -> None:
     assert result.effective_top_k == 7
     assert result.top_k_source == "from_state"
     expected_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
-    assert result.effective_max_candidates == normalize_max_candidates(7, None, expected_cap)
+    assert result.effective_max_candidates == normalize_max_candidates(
+        7, None, expected_cap
+    )
     assert result.max_candidates_source == "from_default"
 
 
@@ -59,7 +61,9 @@ def test_validate_treats_blank_top_k_as_default() -> None:
     assert result.effective_top_k == 5
     assert result.top_k_source == "from_default"
     expected_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
-    assert result.effective_max_candidates == normalize_max_candidates(5, None, expected_cap)
+    assert result.effective_max_candidates == normalize_max_candidates(
+        5, None, expected_cap
+    )
     assert result.max_candidates_source == "from_default"
 
 
@@ -105,9 +109,7 @@ def test_validate_guards_against_conflicting_limits(monkeypatch) -> None:
 def test_validate_conflicting_limits_can_be_normalized(monkeypatch) -> None:
     monkeypatch.setenv("RAG_CANDIDATE_POLICY", "normalize")
 
-    result = validate_search_inputs(
-        tenant_id="tenant", top_k=10, max_candidates=5
-    )
+    result = validate_search_inputs(tenant_id="tenant", top_k=10, max_candidates=5)
 
     assert result.max_candidates == 10
     assert result.context["candidate_policy_action"] == "normalized_to_top_k"

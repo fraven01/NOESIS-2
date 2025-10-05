@@ -126,7 +126,9 @@ def test_rules_are_case_insensitive(tmp_path, settings) -> None:
         ("review", None, "premium"),
     ],
 )
-def test_specificity_precedence(tmp_path, settings, process, doc_class, expected) -> None:
+def test_specificity_precedence(
+    tmp_path, settings, process, doc_class, expected
+) -> None:
     _configure_embeddings(settings)
     settings.RAG_EMBEDDING_PROFILES.update(
         {
@@ -284,8 +286,12 @@ def test_resolve_raises_on_ambiguous_runtime_match() -> None:
     table = RoutingTable(
         default_profile="standard",
         rules=(
-            RoutingRule(profile="legacy", tenant="tenant-a", process=None, doc_class=None),
-            RoutingRule(profile="premium", tenant="tenant-a", process=None, doc_class=None),
+            RoutingRule(
+                profile="legacy", tenant="tenant-a", process=None, doc_class=None
+            ),
+            RoutingRule(
+                profile="premium", tenant="tenant-a", process=None, doc_class=None
+            ),
         ),
     )
 

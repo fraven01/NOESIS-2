@@ -113,9 +113,7 @@ def test_missing_vector_space_is_guarded(settings, monkeypatch) -> None:
     assert "global" in excinfo.value.message
 
 
-def test_vector_space_resolution_emits_trace_metadata(
-    settings, monkeypatch
-) -> None:
+def test_vector_space_resolution_emits_trace_metadata(settings, monkeypatch) -> None:
     _configure_embeddings(settings)
 
     spans: list[dict[str, object]] = []
@@ -138,4 +136,3 @@ def test_vector_space_resolution_emits_trace_metadata(
     metadata = span["metadata"]
     assert metadata["vector_space_id"] == "global"
     assert metadata["embedding_profile"] == "standard"
-

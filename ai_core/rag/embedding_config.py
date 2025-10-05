@@ -79,9 +79,7 @@ def _ensure_mapping(value: object, *, name: str) -> Mapping[str, Any]:
     return cast(Mapping[str, Any], value)
 
 
-def _coerce_dimension(
-    raw: object, *, context: str, error_code: str
-) -> int:
+def _coerce_dimension(raw: object, *, context: str, error_code: str) -> int:
     try:
         dimension = int(raw)  # type: ignore[arg-type]
     except (TypeError, ValueError) as exc:

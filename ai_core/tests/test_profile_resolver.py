@@ -102,15 +102,11 @@ def test_resolves_profile_with_defaults(tmp_path, settings) -> None:
         == "legacy"
     )
     assert (
-        resolve_embedding_profile(
-            tenant_id="tenant-a", process="", doc_class="manual"
-        )
+        resolve_embedding_profile(tenant_id="tenant-a", process="", doc_class="manual")
         == "standard"
     )
     assert (
-        resolve_embedding_profile(
-            tenant_id="tenant-b", process=None, doc_class=None
-        )
+        resolve_embedding_profile(tenant_id="tenant-b", process=None, doc_class=None)
         == "standard"
     )
 
@@ -205,7 +201,9 @@ def test_profile_resolution_emits_trace_metadata(
 
     with log_context(trace_id="trace-profile", tenant="tenant-a"):
         assert (
-            resolve_embedding_profile(tenant_id="tenant-a", process=None, doc_class=None)
+            resolve_embedding_profile(
+                tenant_id="tenant-a", process=None, doc_class=None
+            )
             == "legacy"
         )
 
@@ -216,4 +214,3 @@ def test_profile_resolution_emits_trace_metadata(
     metadata = span["metadata"]
     assert metadata["embedding_profile"] == "legacy"
     assert metadata["tenant"] == "tenant-a"
-

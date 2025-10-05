@@ -73,7 +73,9 @@ def test_resolve_ingestion_profile_missing_space(settings, monkeypatch) -> None:
             "vector space missing",
         )
 
-    monkeypatch.setattr(contracts_module, "resolve_vector_space_full", _raise_missing_space)
+    monkeypatch.setattr(
+        contracts_module, "resolve_vector_space_full", _raise_missing_space
+    )
 
     with pytest.raises(IngestionContractError) as excinfo:
         resolve_ingestion_profile("standard")
@@ -81,9 +83,7 @@ def test_resolve_ingestion_profile_missing_space(settings, monkeypatch) -> None:
 
 
 def test_ensure_embedding_dimensions_allows_matching_vectors() -> None:
-    chunks = [
-        Chunk(content="c", meta={"external_id": "doc-1"}, embedding=[0.1, 0.2])
-    ]
+    chunks = [Chunk(content="c", meta={"external_id": "doc-1"}, embedding=[0.1, 0.2])]
 
     ensure_embedding_dimensions(
         chunks,
@@ -97,9 +97,7 @@ def test_ensure_embedding_dimensions_allows_matching_vectors() -> None:
 
 
 def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
-    chunks = [
-        Chunk(content="c", meta={"external_id": "doc-1"}, embedding=[0.1])
-    ]
+    chunks = [Chunk(content="c", meta={"external_id": "doc-1"}, embedding=[0.1])]
 
     with pytest.raises(IngestionContractError) as excinfo:
         ensure_embedding_dimensions(
@@ -123,4 +121,3 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
     assert error.context["observed_dimension"] == 1
     assert error.context["chunk_index"] == 0
     assert error.context["external_id"] == "doc-1"
-

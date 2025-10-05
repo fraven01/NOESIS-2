@@ -43,9 +43,7 @@ class RoutingErrorCode:
     AMBIGUOUS_MATCH = CONFLICT
 
 
-_ROUTING_DOC_HINT = (
-    "Check config/rag_routing_rules.yaml and README.md (Fehlercodes Abschnitt) for details."
-)
+_ROUTING_DOC_HINT = "Check config/rag_routing_rules.yaml and README.md (Fehlercodes Abschnitt) for details."
 
 
 def _format_error(code: str, message: str) -> str:
@@ -263,7 +261,9 @@ def _ensure_profiles_exist(
 
 def _validate_rule_uniqueness(rules: Sequence[RoutingRule]) -> None:
     seen_selectors: dict[tuple[str | None, str | None, str | None], RoutingRule] = {}
-    duplicate_same_target: dict[tuple[str | None, str | None, str | None], RoutingRule] = {}
+    duplicate_same_target: dict[
+        tuple[str | None, str | None, str | None], RoutingRule
+    ] = {}
     unique_rules: list[RoutingRule] = []
 
     for rule in rules:
@@ -308,7 +308,11 @@ def _validate_rule_uniqueness(rules: Sequence[RoutingRule]) -> None:
 
 
 def _selectors_overlap(left: RoutingRule, right: RoutingRule) -> bool:
-    if left.tenant is not None and right.tenant is not None and left.tenant != right.tenant:
+    if (
+        left.tenant is not None
+        and right.tenant is not None
+        and left.tenant != right.tenant
+    ):
         return False
     if (
         left.process is not None

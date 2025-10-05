@@ -229,9 +229,9 @@ class VectorStoreRouter:
                 "scope": scope,
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
-                "top_k_requested": requested_top_k
-                if requested_top_k is not None
-                else capped_top_k,
+                "top_k_requested": (
+                    requested_top_k if requested_top_k is not None else capped_top_k
+                ),
                 "top_k_effective": capped_top_k,
                 "top_k_source": top_k_source,
                 "case_id": case_id,

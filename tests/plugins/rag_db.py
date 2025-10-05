@@ -29,7 +29,9 @@ def clear_structlog_context():
 DEFAULT_SCHEMA_NAME = "rag"
 
 
-def render_vector_schema(schema_name: str = DEFAULT_SCHEMA_NAME, dimension: int = 1536) -> str:
+def render_vector_schema(
+    schema_name: str = DEFAULT_SCHEMA_NAME, dimension: int = 1536
+) -> str:
     if not schema_name:
         raise ValueError("schema_name must be provided")
     return render_schema_sql(schema_name, dimension)
@@ -43,7 +45,9 @@ def drop_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
     )
 
 
-def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME, *, dimension: int = 1536) -> None:
+def reset_vector_schema(
+    cur, schema_name: str = DEFAULT_SCHEMA_NAME, *, dimension: int = 1536
+) -> None:
     """Reset the RAG schema in a transaction-safe way.
 
     Executes DDL outside of the caller's transaction to avoid breaking

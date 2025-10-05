@@ -105,4 +105,3 @@ __all__ = [
     "ProfileResolverErrorCode",
     "resolve_embedding_profile",
 ]
-
