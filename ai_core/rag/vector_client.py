@@ -689,6 +689,7 @@ class PgVectorClient:
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
+            vector_query_failed = vector_format_error is not None
             fallback_tried_limits = []
             fallback_limit_used_value = None
             with self._connection() as conn:
@@ -758,6 +759,7 @@ class PgVectorClient:
                                 pass
                     except Exception as exc:
                         vector_rows = []
+                        vector_query_failed = True
                         try:
                             conn.rollback()
                         except Exception:  # pragma: no cover - defensive
@@ -1127,6 +1129,10 @@ class PgVectorClient:
                         },
                     )
                     if not vector_rows:
+                        if vector_query_failed:
+                            fatal_exc = PsycopgError(str(exc))
+                            setattr(fatal_exc, "_rag_retry_fatal", True)
+                            raise fatal_exc from exc
                         raise
             # Debug: final lexical rows right before returning to retry wrapper
             try:
@@ -1812,7 +1818,10 @@ class PgVectorClient:
                 return fn()
             except Exception as exc:  # pragma: no cover - requires failure injection
                 last_exc = exc
-                if isinstance(exc, PsycopgError):
+                fatal = isinstance(exc, PsycopgError) or bool(
+                    getattr(exc, "_rag_retry_fatal", False)
+                )
+                if fatal:
                     logger.error(
                         "pgvector operation failed, aborting",
                         operation=op_name,
