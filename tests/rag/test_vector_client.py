@@ -3,6 +3,7 @@ import uuid
 from collections.abc import Sequence
 
 import pytest
+import psycopg2
 from structlog.testing import capture_logs
 
 from ai_core.rag import vector_client
@@ -131,6 +132,28 @@ def _fake_connection_ctx(fake_conn):
         yield fake_conn
 
     return _ctx
+
+
+class _FakeLabeledCounter:
+    def __init__(self):
+        self.calls: list[dict[str, object]] = []
+
+    def labels(self, **labels):  # noqa: D401 - simple metric stub
+        counter = self
+
+        class _Handle:
+            def inc(self, value=1):  # noqa: D401 - simple metric stub
+                counter.calls.append({"labels": dict(labels), "value": value})
+
+        return _Handle()
+
+
+class _FakeCounter:
+    def __init__(self):
+        self.values: list[object] = []
+
+    def inc(self, value=1):  # noqa: D401 - simple metric stub
+        self.values.append(value)
 
 
 def test_replace_chunks_normalises_embeddings(monkeypatch):
@@ -665,3 +688,314 @@ def test_hybrid_search_clamps_candidate_limits(monkeypatch):
     assert lexical_limits and all(limit == 100 for limit in lexical_limits)
 
     vector_client.reset_default_client()
+
+
+def test_upsert_retries_operational_error_once(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    chunk = Chunk(
+        content="retry me",
+        meta={
+            "tenant": tenant,
+            "hash": "hash-retry",
+            "source": "unit-test",
+            "external_id": "doc-retry",
+        },
+    )
+    key = (tenant, "doc-retry")
+    grouped_doc = {
+        key: {
+            "id": uuid.uuid4(),
+            "tenant_id": tenant,
+            "external_id": "doc-retry",
+            "hash": "hash-retry",
+            "content_hash": "hash-retry",
+            "source": "unit-test",
+            "metadata": {},
+            "chunks": [chunk],
+        }
+    }
+
+    retry_metric = _FakeLabeledCounter()
+    monkeypatch.setattr(vector_client.metrics, "RAG_RETRY_ATTEMPTS", retry_metric)
+    monkeypatch.setattr(vector_client.metrics, "RAG_UPSERT_CHUNKS", _FakeCounter())
+    monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_INSERTED", _FakeCounter())
+    monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_REPLACED", _FakeCounter())
+    monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_SKIPPED", _FakeCounter())
+    monkeypatch.setattr(vector_client.metrics, "INGESTION_CHUNKS_WRITTEN", _FakeCounter())
+    monkeypatch.setattr(vector_client.time, "sleep", lambda _s: None)
+
+    monkeypatch.setattr(client, "_group_by_document", lambda chunks: grouped_doc)
+
+    document_id = uuid.uuid4()
+
+    def _fake_ensure_documents(_cur, grouped):
+        assert grouped is grouped_doc
+        return {key: document_id}, {key: "inserted"}
+
+    monkeypatch.setattr(client, "_ensure_documents", _fake_ensure_documents)
+
+    def _fake_replace_chunks(_cur, grouped, document_ids, doc_actions):
+        assert grouped is grouped_doc
+        assert document_ids[key] == document_id
+        assert doc_actions[key] == "inserted"
+        return 1, {key: {"chunk_count": 1, "duration_ms": 0.5}}
+
+    monkeypatch.setattr(client, "_replace_chunks", _fake_replace_chunks)
+
+    state = {
+        "failures": 1,
+        "executed": [],
+        "rollback_calls": 0,
+        "commit_calls": 0,
+    }
+
+    class _FlakyCursor:
+        def __enter__(self):
+            if state["failures"] > 0:
+                state["failures"] -= 1
+                raise psycopg2.OperationalError("transient failure")
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            state["executed"].append((str(sql), params))
+
+    class _FlakyConn:
+        def cursor(self):
+            return _FlakyCursor()
+
+        def rollback(self):
+            state["rollback_calls"] += 1
+
+        def commit(self):
+            state["commit_calls"] += 1
+
+    fake_conn = _FlakyConn()
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    with capture_logs() as logs:
+        result = client.upsert_chunks([chunk])
+
+    assert int(result) == 1
+    assert state["rollback_calls"] == 1
+    assert state["commit_calls"] == 1
+    assert any("SET LOCAL statement_timeout" in sql for sql, _ in state["executed"])
+
+    assert retry_metric.calls == [
+        {"labels": {"operation": "upsert_chunks"}, "value": 1}
+    ]
+
+    retry_logs = [
+        entry
+        for entry in logs
+        if entry.get("event") == "pgvector operation failed, retrying"
+    ]
+    assert len(retry_logs) == 1
+    retry_entry = retry_logs[0]
+    assert retry_entry.get("operation") == "upsert_chunks"
+    assert int(retry_entry.get("attempt", 0)) == 1
+
+
+def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    lexical_row = (
+        "chunk-lex",
+        "lexical",
+        {"tenant": tenant},
+        "hash-lex",
+        "doc-lex",
+        0.42,
+    )
+
+    class _VectorFailCursor(_FakeCursor):
+        def __init__(self, *args, fail_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._fail_state = fail_state
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            super().execute(sql, params)
+            if (
+                self._fetch_stage == "vector"
+                and self._fail_state.get("vector", 0) > 0
+            ):
+                self._fail_state["vector"] -= 1
+                raise psycopg2.Error("vector blew up")
+
+    state = {"vector": 1, "rollback": 0}
+
+    class _Conn:
+        def cursor(self):
+            return _VectorFailCursor(
+                show_limit_value=0.30,
+                vector_rows=[],
+                lexical_rows=[lexical_row],
+                fail_state=state,
+            )
+
+        def rollback(self):
+            state["rollback"] += 1
+
+    fake_conn = _Conn()
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(client, "_embed_query", lambda _q: [0.1, 0.0])
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "vector fails",
+            tenant_id=tenant,
+            filters={"case": None},
+            alpha=0.0,
+            min_sim=0.0,
+            top_k=3,
+        )
+
+    assert result.vector_candidates == 0
+    assert result.lexical_candidates == 1
+    assert len(result.chunks) == 1
+    assert state["rollback"] == 1
+
+    failure_logs = [
+        entry for entry in logs if entry.get("event") == "rag.hybrid.vector_query_failed"
+    ]
+    assert len(failure_logs) == 1
+    assert failure_logs[0].get("tenant") == tenant
+
+
+def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    vector_row = (
+        "chunk-vec",
+        "vector",
+        {"tenant": tenant},
+        "hash-vec",
+        "doc-vec",
+        0.15,
+    )
+
+    class _LexicalFailCursor(_FakeCursor):
+        def __init__(self, *args, fail_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._fail_state = fail_state
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            super().execute(sql, params)
+            if (
+                self._fetch_stage == "lexical"
+                and self._fail_state.get("lexical", 0) > 0
+            ):
+                self._fail_state["lexical"] -= 1
+                raise psycopg2.Error("lexical blew up")
+
+    state = {"lexical": 1, "rollback": 0}
+
+    class _Conn:
+        def cursor(self):
+            return _LexicalFailCursor(
+                show_limit_value=0.30,
+                vector_rows=[vector_row],
+                lexical_rows=[],
+                fail_state=state,
+            )
+
+        def rollback(self):
+            state["rollback"] += 1
+
+    fake_conn = _Conn()
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(client, "_embed_query", lambda _q: [0.2, 0.1])
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "lexical fails",
+            tenant_id=tenant,
+            filters={"case": None},
+            alpha=0.0,
+            min_sim=0.0,
+            top_k=3,
+        )
+
+    assert result.vector_candidates == 1
+    assert result.lexical_candidates == 0
+    assert len(result.chunks) == 1
+    assert state["rollback"] == 1
+
+    failure_logs = [
+        entry
+        for entry in logs
+        if entry.get("event") == "rag.hybrid.lexical_query_failed"
+    ]
+    assert len(failure_logs) == 1
+    assert failure_logs[0].get("tenant") == tenant
+
+
+def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    class _DualFailCursor(_FakeCursor):
+        def __init__(self, *args, fail_state, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._fail_state = fail_state
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            super().execute(sql, params)
+            if (
+                self._fetch_stage == "vector"
+                and self._fail_state.get("vector", 0) > 0
+            ):
+                self._fail_state["vector"] -= 1
+                raise psycopg2.Error("vector blew up")
+            if (
+                self._fetch_stage == "lexical"
+                and self._fail_state.get("lexical", 0) > 0
+            ):
+                self._fail_state["lexical"] -= 1
+                raise psycopg2.Error("lexical blew up")
+
+    state = {"vector": 1, "lexical": 1, "rollback": 0}
+
+    class _Conn:
+        def cursor(self):
+            return _DualFailCursor(
+                show_limit_value=0.30,
+                vector_rows=[],
+                lexical_rows=[],
+                fail_state=state,
+            )
+
+        def rollback(self):
+            state["rollback"] += 1
+
+    fake_conn = _Conn()
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(client, "_embed_query", lambda _q: [0.3, 0.2])
+
+    with capture_logs() as logs, pytest.raises(psycopg2.Error):
+        client.hybrid_search(
+            "both fail",
+            tenant_id=tenant,
+            filters={"case": None},
+            alpha=0.0,
+            min_sim=0.0,
+            top_k=3,
+        )
+
+    assert state["rollback"] >= 2
+    vector_logs = [
+        entry for entry in logs if entry.get("event") == "rag.hybrid.vector_query_failed"
+    ]
+    lexical_logs = [
+        entry
+        for entry in logs
+        if entry.get("event") == "rag.hybrid.lexical_query_failed"
+    ]
+    assert vector_logs and lexical_logs
