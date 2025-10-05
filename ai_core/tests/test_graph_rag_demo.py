@@ -96,6 +96,11 @@ def test_rag_demo_route_returns_matches(client) -> None:
     assert "meta" in data
     assert data["meta"]["index_kind"]
     assert "db_latency_ms" in data["meta"]
+    assert data["meta"]["top_k_requested"] == 5
+    assert data["meta"]["top_k_effective"] == len(data["matches"])
+    assert data["meta"]["pool_size_effective"] >= len(data["matches"])
+    assert data["meta"]["embedding_profile"] == "standard"
+    assert data["meta"]["vector_space_id"] == "global"
     assert all("fused" in match for match in data["matches"])
     assert "warnings" not in data
 
@@ -259,10 +264,31 @@ def test_rag_demo_response_contains_scores_and_meta() -> None:
     assert result["meta"]["index_kind"]
     assert "latency_ms" in result["meta"]
     assert "db_latency_ms" in result["meta"]
+    assert result["meta"]["top_k_requested"] == 1
+    assert result["meta"]["top_k_effective"] == len(result["matches"])
+    assert result["meta"]["pool_size_effective"] >= len(result["matches"])
+    assert result["meta"]["embedding_profile"] == "standard"
+    assert result["meta"]["vector_space_id"] == "global"
+    assert "trgm_candidates" in result["meta"]
     assert result["matches"]
     match = result["matches"][0]
     assert "vscore" in match and "lscore" in match and "fused" in match
     assert match["fused"] == match["score"]
+
+
+def test_demo_meta_fields_present() -> None:
+    state = {"query": "Alpha"}
+    meta = {"tenant_id": "dev"}
+
+    _, result = rag_demo.run(state, meta)
+
+    meta_payload = result["meta"]
+    assert meta_payload["top_k_requested"] == 5
+    assert meta_payload["top_k_effective"] == len(result["matches"])
+    assert meta_payload["pool_size_effective"] >= len(result["matches"])
+    assert meta_payload["embedding_profile"] == "standard"
+    assert meta_payload["vector_space_id"] == "global"
+    assert "trgm_candidates" in meta_payload
 
 
 def test_rag_demo_zero_hits_falls_back_to_demo(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -383,3 +409,66 @@ def test_rag_demo_no_hit_above_threshold_warning(
     assert result["warnings"] == ["no_hit_above_threshold"]
     assert result["meta"]["below_cutoff"] == 2
     assert result["meta"]["returned_after_cutoff"] == 0
+
+
+def test_candidate_policy_note_added(monkeypatch: pytest.MonkeyPatch) -> None:
+    class Router:
+        def hybrid_search(
+            self,
+            query: str,
+            tenant_id: str,
+            *,
+            case_id: str | None = None,
+            top_k: int = 5,
+            filters: dict[str, object] | None = None,
+            alpha: float | None = None,
+            min_sim: float | None = None,
+            trgm_limit: float | None = None,
+            trgm_threshold: float | None = None,
+            max_candidates: int | None = None,
+        ) -> HybridSearchResult:
+            del (
+                query,
+                case_id,
+                filters,
+                alpha,
+                min_sim,
+                trgm_limit,
+                trgm_threshold,
+                max_candidates,
+            )
+            chunk = Chunk(
+                content="candidate",
+                meta={
+                    "id": "hybrid-1",
+                    "tenant_id": tenant_id,
+                    "vscore": 0.1,
+                    "lscore": 0.2,
+                    "fused": 0.3,
+                    "score": 0.3,
+                },
+            )
+            return HybridSearchResult(
+                chunks=[chunk],
+                vector_candidates=1,
+                lexical_candidates=1,
+                fused_candidates=1,
+                duration_ms=2.5,
+                alpha=0.4,
+                min_sim=0.1,
+                vec_limit=1,
+                lex_limit=1,
+            )
+
+    monkeypatch.setattr(rag_demo, "get_default_router", lambda: Router())
+
+    state = {"query": "note please", "top_k": 5}
+    meta = {"tenant_id": "dev"}
+
+    _, result = rag_demo.run(state, meta)
+
+    assert result["meta"]["candidate_policy_note"] == (
+        "pool smaller than top_k; returning available matches"
+    )
+    assert result["meta"]["top_k_requested"] == 5
+    assert result["meta"]["top_k_effective"] == len(result["matches"])
