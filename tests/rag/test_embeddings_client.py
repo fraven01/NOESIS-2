@@ -62,7 +62,9 @@ def test_embed_promotes_fallback_for_retryable_status_codes(
             return httpx.Response(status_code=200, json={"data": response})
 
         transport = httpx.MockTransport(_handler)
-        with httpx.Client(transport=transport, base_url=kwargs["api_base"]) as http_client:
+        with httpx.Client(
+            transport=transport, base_url=kwargs["api_base"]
+        ) as http_client:
             response = http_client.post(
                 "/embeddings",
                 json={"model": model, "input": kwargs["input"]},
@@ -107,7 +109,9 @@ def test_embed_stops_after_unauthorised_error(mock_config, mocker):
             return httpx.Response(status_code=401, json={"error": "unauthorised"})
 
         transport = httpx.MockTransport(_handler)
-        with httpx.Client(transport=transport, base_url=kwargs["api_base"]) as http_client:
+        with httpx.Client(
+            transport=transport, base_url=kwargs["api_base"]
+        ) as http_client:
             response = http_client.post(
                 "/embeddings",
                 json={"model": model, "input": kwargs["input"]},
@@ -115,13 +119,17 @@ def test_embed_stops_after_unauthorised_error(mock_config, mocker):
         response.raise_for_status()
         return SimpleNamespace(data=response.json().get("data", []))
 
-    mocker.patch("ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding)
+    mocker.patch(
+        "ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding
+    )
 
     with capture_logs() as logs, pytest.raises(EmbeddingClientError):
         client.embed(["hello"])
 
     warning_events = [log for log in logs if log["event"] == "embeddings.batch_failed"]
-    error_events = [log for log in logs if log["event"] == "embeddings.batch_failed_final"]
+    error_events = [
+        log for log in logs if log["event"] == "embeddings.batch_failed_final"
+    ]
 
     assert len(warning_events) == 1
     assert warning_events[0]["status_code"] == 401
@@ -145,13 +153,14 @@ def test_timeout_promotes_fallback_and_surfaces_timeout_error(mock_config, mocke
             if model == "text-embedding-primary":
                 raise httpx.ReadTimeout("primary timed out", request=request)
             response = [
-                {"embedding": [1.0 for _ in kwargs["input"]]}
-                for _ in kwargs["input"]
+                {"embedding": [1.0 for _ in kwargs["input"]]} for _ in kwargs["input"]
             ]
             return httpx.Response(status_code=200, json={"data": response})
 
         transport = httpx.MockTransport(_handler)
-        with httpx.Client(transport=transport, base_url=kwargs["api_base"]) as http_client:
+        with httpx.Client(
+            transport=transport, base_url=kwargs["api_base"]
+        ) as http_client:
             response = http_client.post(
                 "/embeddings",
                 json={"model": model, "input": kwargs["input"]},
@@ -159,7 +168,9 @@ def test_timeout_promotes_fallback_and_surfaces_timeout_error(mock_config, mocke
         response.raise_for_status()
         return SimpleNamespace(data=response.json().get("data", []))
 
-    mocker.patch("ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding)
+    mocker.patch(
+        "ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding
+    )
 
     with capture_logs() as logs:
         result = client.embed(["hello"])
@@ -179,9 +190,7 @@ def test_timeout_promotes_fallback_and_surfaces_timeout_error(mock_config, mocke
         [{"not_embedding": []}],
     ],
 )
-def test_empty_or_null_payload_returns_empty_batch(
-    mock_config, mocker, provider_data
-):
+def test_empty_or_null_payload_returns_empty_batch(mock_config, mocker, provider_data):
     client = EmbeddingClient(
         provider="litellm",
         primary_model="text-embedding-primary",
@@ -194,7 +203,9 @@ def test_empty_or_null_payload_returns_empty_batch(
             return httpx.Response(status_code=200, json={"data": provider_data})
 
         transport = httpx.MockTransport(_handler)
-        with httpx.Client(transport=transport, base_url=kwargs["api_base"]) as http_client:
+        with httpx.Client(
+            transport=transport, base_url=kwargs["api_base"]
+        ) as http_client:
             response = http_client.post(
                 "/embeddings",
                 json={"model": kwargs["model"], "input": kwargs["input"]},
@@ -202,7 +213,9 @@ def test_empty_or_null_payload_returns_empty_batch(
         response.raise_for_status()
         return SimpleNamespace(data=response.json().get("data", []))
 
-    mocker.patch("ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding)
+    mocker.patch(
+        "ai_core.rag.embeddings.litellm_embedding", side_effect=_litellm_embedding
+    )
 
     result = client.embed(["hello", "world"])
 

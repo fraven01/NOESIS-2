@@ -70,7 +70,9 @@ def test_normalize_top_k_enforces_bounds(requested, expected) -> None:
         pytest.param(3, 9999, None, 9999, id="uncapped-large-request-preserved"),
     ],
 )
-def test_normalize_max_candidates_obeys_top_k_and_cap(top_k, requested, cap, expected) -> None:
+def test_normalize_max_candidates_obeys_top_k_and_cap(
+    top_k, requested, cap, expected
+) -> None:
     """normalize_max_candidates never returns fewer than top_k or more than the cap."""
 
     assert normalize_max_candidates(top_k, requested, cap) == expected
@@ -81,7 +83,14 @@ def test_normalize_max_candidates_obeys_top_k_and_cap(top_k, requested, cap, exp
     [
         pytest.param("", 1, 50, 1, 1, id="empty-content-reserves-single-token"),
         pytest.param("hello", 1, 50, 1, 1, id="single-word-reserves-single-token"),
-        pytest.param(" ".join(["chunk"] * 2048), 5, 500, 2048, 500, id="oversized-content-respects-cap"),
+        pytest.param(
+            " ".join(["chunk"] * 2048),
+            5,
+            500,
+            2048,
+            500,
+            id="oversized-content-respects-cap",
+        ),
     ],
 )
 def test_estimated_tokens_feed_into_candidate_cap(

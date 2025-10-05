@@ -720,10 +720,16 @@ def test_upsert_retries_operational_error_once(monkeypatch):
     retry_metric = _FakeLabeledCounter()
     monkeypatch.setattr(vector_client.metrics, "RAG_RETRY_ATTEMPTS", retry_metric)
     monkeypatch.setattr(vector_client.metrics, "RAG_UPSERT_CHUNKS", _FakeCounter())
-    monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_INSERTED", _FakeCounter())
-    monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_REPLACED", _FakeCounter())
+    monkeypatch.setattr(
+        vector_client.metrics, "INGESTION_DOCS_INSERTED", _FakeCounter()
+    )
+    monkeypatch.setattr(
+        vector_client.metrics, "INGESTION_DOCS_REPLACED", _FakeCounter()
+    )
     monkeypatch.setattr(vector_client.metrics, "INGESTION_DOCS_SKIPPED", _FakeCounter())
-    monkeypatch.setattr(vector_client.metrics, "INGESTION_CHUNKS_WRITTEN", _FakeCounter())
+    monkeypatch.setattr(
+        vector_client.metrics, "INGESTION_CHUNKS_WRITTEN", _FakeCounter()
+    )
     monkeypatch.setattr(vector_client.time, "sleep", lambda _s: None)
 
     monkeypatch.setattr(client, "_group_by_document", lambda chunks: grouped_doc)
@@ -820,10 +826,7 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
 
         def execute(self, sql, params=None):  # noqa: WPS110 - sql name
             super().execute(sql, params)
-            if (
-                self._fetch_stage == "vector"
-                and self._fail_state.get("vector", 0) > 0
-            ):
+            if self._fetch_stage == "vector" and self._fail_state.get("vector", 0) > 0:
                 self._fail_state["vector"] -= 1
                 raise psycopg2.Error("vector blew up")
 
@@ -861,7 +864,9 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
     assert state["rollback"] == 1
 
     failure_logs = [
-        entry for entry in logs if entry.get("event") == "rag.hybrid.vector_query_failed"
+        entry
+        for entry in logs
+        if entry.get("event") == "rag.hybrid.vector_query_failed"
     ]
     assert len(failure_logs) == 1
     assert failure_logs[0].get("tenant") == tenant
@@ -948,10 +953,7 @@ def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
 
         def execute(self, sql, params=None):  # noqa: WPS110 - sql name
             super().execute(sql, params)
-            if (
-                self._fetch_stage == "vector"
-                and self._fail_state.get("vector", 0) > 0
-            ):
+            if self._fetch_stage == "vector" and self._fail_state.get("vector", 0) > 0:
                 self._fail_state["vector"] -= 1
                 raise psycopg2.Error("vector blew up")
             if (
@@ -991,7 +993,9 @@ def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
 
     assert state["rollback"] >= 2
     vector_logs = [
-        entry for entry in logs if entry.get("event") == "rag.hybrid.vector_query_failed"
+        entry
+        for entry in logs
+        if entry.get("event") == "rag.hybrid.vector_query_failed"
     ]
     lexical_logs = [
         entry
