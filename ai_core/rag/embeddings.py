@@ -213,7 +213,7 @@ class EmbeddingClient:
         )
         data = getattr(response, "data", None)
         if not isinstance(data, Sequence):
-            raise EmbeddingClientError("Unexpected embedding response structure")
+            return []
 
         vectors: List[List[float]] = []
         for item in data:
@@ -221,14 +221,17 @@ class EmbeddingClient:
             if embedding_values is None and isinstance(item, dict):
                 embedding_values = item.get("embedding")
             if embedding_values is None:
-                raise EmbeddingClientError("Embedding item missing values")
+                return []
             try:
                 vector = [float(value) for value in embedding_values]
             except (TypeError, ValueError) as exc:
                 raise EmbeddingClientError("Invalid embedding value") from exc
             if not vector:
-                raise EmbeddingClientError("Embedding vector is empty")
+                return []
             vectors.append(vector)
+
+        if not vectors:
+            return []
 
         if len(vectors) != len(inputs):
             raise EmbeddingClientError("Embedding count mismatch")
@@ -251,6 +254,10 @@ class EmbeddingClient:
             raise EmbeddingTimeoutError(
                 f"Embedding call exceeded {timeout_s} seconds"
             ) from exc
+        except Exception as exc:
+            if self._is_timeout_exception(exc):
+                raise EmbeddingTimeoutError("Embedding call timed out") from exc
+            raise
         finally:
             executor.shutdown(wait=future.done(), cancel_futures=True)
         return result
@@ -295,6 +302,12 @@ class EmbeddingClient:
         if status_code is not None:
             if status_code == 429 or 500 <= status_code < 600:
                 return True
+        if self._is_timeout_exception(exc):
+            return True
+        return False
+
+    @staticmethod
+    def _is_timeout_exception(exc: Exception) -> bool:
         exc_name = exc.__class__.__name__.lower()
         if "timeout" in exc_name:
             return True
