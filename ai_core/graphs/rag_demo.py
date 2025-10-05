@@ -9,6 +9,14 @@ from django.conf import settings
 
 from ai_core.rag import metrics
 from ai_core.rag.normalization import normalise_text
+from ai_core.rag.profile_resolver import (
+    ProfileResolverError,
+    resolve_embedding_profile,
+)
+from ai_core.rag.vector_space_resolver import (
+    VectorSpaceResolverError,
+    resolve_vector_space_full,
+)
 from common.logging import get_logger
 
 try:
@@ -69,6 +77,13 @@ def _resolve_max_candidates(state: QueryState, top_k: int) -> int:
     except (TypeError, ValueError):
         resolved = default_value
     return max(top_k, max(1, resolved))
+
+
+def _normalise_optional_state(value: Any) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
 
 
 def _truncate(text: str, limit: int = 500) -> str:
@@ -191,6 +206,36 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
     retrieved_chunks: List[Any] = []
     hybrid_result = None
     latency_ms = 0.0
+    profile_candidate = state.get("embedding_profile")
+    profile_id: str | None = None
+    vector_space_id: str | None = None
+    if isinstance(profile_candidate, str):
+        profile_candidate = profile_candidate.strip() or None
+    process_value = _normalise_optional_state(state.get("process"))
+    doc_class_value = _normalise_optional_state(state.get("doc_class"))
+    if not profile_candidate:
+        try:
+            profile_candidate = resolve_embedding_profile(
+                tenant_id=str(tenant_id),
+                process=process_value,
+                doc_class=doc_class_value,
+            )
+        except ProfileResolverError:
+            profile_candidate = None
+    if profile_candidate:
+        try:
+            resolution = resolve_vector_space_full(profile_candidate)
+        except VectorSpaceResolverError:
+            profile_id = str(profile_candidate)
+        else:
+            profile_id = resolution.profile.id
+            vector_space_id = resolution.vector_space.id
+    else:
+        profile_id = profile_candidate
+    if vector_space_id is None:
+        fallback_space = state.get("vector_space_id")
+        if isinstance(fallback_space, str):
+            vector_space_id = fallback_space.strip() or None
 
     max_candidates = _resolve_max_candidates(state, top_k)
 
@@ -448,11 +493,45 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
         if not router_error:
             warnings.append("no_vector_matches_demo_fallback")
 
+    final_match_count = len(matches)
+    fused_pool_size: int | None = None
+    trgm_candidates = 0
+    vec_limit_value: int | None = None
+    lex_limit_value: int | None = None
+    if hybrid_result is not None:
+        fused_pool_size_raw = getattr(hybrid_result, "fused_candidates", None)
+        if fused_pool_size_raw is not None:
+            try:
+                fused_pool_size = int(fused_pool_size_raw)
+            except (TypeError, ValueError):
+                fused_pool_size = None
+        trgm_candidates = int(
+            getattr(hybrid_result, "lexical_candidates", 0) or 0
+        )
+        vec_limit_attr = getattr(hybrid_result, "vec_limit", None)
+        lex_limit_attr = getattr(hybrid_result, "lex_limit", None)
+        try:
+            vec_limit_value = int(vec_limit_attr) if vec_limit_attr is not None else None
+        except (TypeError, ValueError):
+            vec_limit_value = None
+        try:
+            lex_limit_value = int(lex_limit_attr) if lex_limit_attr is not None else None
+        except (TypeError, ValueError):
+            lex_limit_value = None
+    if fused_pool_size is None:
+        fused_pool_size = len(retrieved_chunks) if retrieved_chunks else final_match_count
+
     response_meta: Dict[str, Any] = {
         "index_kind": index_kind,
         "alpha": alpha,
         "min_sim": min_sim,
         "latency_ms": latency_ms,
+        "pool_size_effective": fused_pool_size,
+        "top_k_requested": top_k,
+        "top_k_effective": final_match_count,
+        "vector_space_id": vector_space_id,
+        "embedding_profile": profile_id,
+        "trgm_candidates": trgm_candidates,
     }
     if hybrid_result is not None:
         response_meta["db_latency_ms"] = float(hybrid_result.duration_ms)
@@ -465,6 +544,14 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
         response_meta["below_cutoff"] = below_cutoff
         response_meta["returned_after_cutoff"] = returned_after_cutoff
         response_meta["query_embedding_empty"] = query_embedding_empty
+        if (
+            vec_limit_value is not None
+            and lex_limit_value is not None
+            and (vec_limit_value + lex_limit_value) < top_k
+        ):
+            response_meta["candidate_policy_note"] = (
+                "pool smaller than top_k; returning available matches"
+            )
 
     new_state = dict(state)
     new_state["rag_demo"] = {
