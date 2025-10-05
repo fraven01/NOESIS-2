@@ -916,9 +916,7 @@ class PgVectorClient:
                                     if invalid_lscore:
                                         should_run_fallback = True
                             except Exception as exc:
-                                if isinstance(
-                                    exc, (IndexError, ValueError, PsycopgError)
-                                ):
+                                if isinstance(exc, (IndexError, ValueError)):
                                     should_run_fallback = True
                                     fallback_requires_rollback = True
                                     lexical_rows_local = []
@@ -930,6 +928,11 @@ class PgVectorClient:
                                             "error": str(exc),
                                         },
                                     )
+                                elif isinstance(exc, PsycopgError):
+                                    # Always propagate DB errors from the primary lexical query;
+                                    # the outer handler will roll back, log, and decide whether
+                                    # to continue (if vector results exist) or raise.
+                                    raise
                                 else:
                                     raise
                             if not lexical_rows_local and not should_run_fallback:
