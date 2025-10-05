@@ -1798,6 +1798,16 @@ class PgVectorClient:
                 return fn()
             except Exception as exc:  # pragma: no cover - requires failure injection
                 last_exc = exc
+                if isinstance(exc, PsycopgError):
+                    logger.error(
+                        "pgvector operation failed, aborting",
+                        operation=op_name,
+                        attempt=attempt,
+                        exc_type=exc.__class__.__name__,
+                        exc_message=str(exc),
+                    )
+                    raise
+
                 logger.warning(
                     "pgvector operation failed, retrying",
                     operation=op_name,
@@ -1805,9 +1815,11 @@ class PgVectorClient:
                     exc_type=exc.__class__.__name__,
                     exc_message=str(exc),
                 )
-                metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
+
                 if attempt == self._retries:
                     raise
+
+                metrics.RAG_RETRY_ATTEMPTS.labels(operation=op_name).inc()
                 time.sleep(self._retry_base_delay * attempt)
         if last_exc is not None:  # pragma: no cover - defensive
             raise last_exc
