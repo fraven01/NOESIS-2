@@ -289,8 +289,6 @@ class VectorStoreRouter:
             _raise_router_error(exc)
 
         tenant = validation.tenant_id
-        sanitized_top_k = validation.top_k
-        sanitized_max = validation.max_candidates
         validation_context = validation.context
 
         normalized_top_k = validation.effective_top_k
