@@ -1512,49 +1512,21 @@ class PgVectorClient:
             metadata_dict = dict(doc.get("metadata", {}))
             metadata_dict.setdefault("hash", content_hash)
             metadata = Json(metadata_dict)
-            cur.execute(
-                """
-                SELECT id, hash
-                FROM documents
-                WHERE tenant_id = %s AND external_id = %s
-                FOR UPDATE
-                """,
-                (str(tenant_uuid), external_id),
-            )
-            existing = cur.fetchone()
-            if existing:
-                document_id, stored_hash = existing
-                if stored_hash == storage_hash:
-                    document_ids[key] = document_id
-                    actions[key] = "skipped"
-                    logger.info(
-                        "Skipping unchanged document during upsert",
-                        extra={
-                            "tenant": doc["tenant_id"],
-                            "external_id": external_id,
-                        },
-                    )
-                    continue
-                cur.execute(
-                    """
-                    UPDATE documents
-                    SET hash = %s,
-                        source = %s,
-                        metadata = %s,
-                        deleted_at = NULL
-                    WHERE id = %s
-                    """,
-                    (storage_hash, doc["source"], metadata, document_id),
-                )
-                document_ids[key] = document_id
-                actions[key] = "replaced"
-                continue
-
             document_id = doc["id"]
             cur.execute(
                 """
                 INSERT INTO documents (id, tenant_id, external_id, source, hash, metadata)
                 VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (tenant_id, external_id) DO UPDATE
+                SET source = EXCLUDED.source,
+                    hash = EXCLUDED.hash,
+                    metadata = EXCLUDED.metadata,
+                    deleted_at = NULL
+                WHERE documents.hash IS DISTINCT FROM EXCLUDED.hash
+                    OR documents.source IS DISTINCT FROM EXCLUDED.source
+                    OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
+                    OR documents.deleted_at IS NOT NULL
+                RETURNING id, hash
                 """,
                 (
                     document_id,
@@ -1565,8 +1537,41 @@ class PgVectorClient:
                     metadata,
                 ),
             )
-            document_ids[key] = document_id
-            actions[key] = "inserted"
+            upsert_result = cur.fetchone()
+            if upsert_result:
+                returned_id, _ = upsert_result
+                document_ids[key] = returned_id
+                if returned_id == document_id:
+                    actions[key] = "inserted"
+                else:
+                    actions[key] = "replaced"
+                continue
+
+            # Conflict occurred but existing row already matched the payload. Re-read to
+            # ensure we have the persisted identifiers for downstream actions.
+            cur.execute(
+                """
+                SELECT id, hash
+                FROM documents
+                WHERE tenant_id = %s AND external_id = %s
+                """,
+                (str(tenant_uuid), external_id),
+            )
+            existing = cur.fetchone()
+            if not existing:
+                raise RuntimeError(
+                    "Document upsert yielded no result but record is missing"
+                )
+            existing_id, _ = existing
+            document_ids[key] = existing_id
+            actions[key] = "skipped"
+            logger.info(
+                "Skipping unchanged document during upsert",
+                extra={
+                    "tenant": doc["tenant_id"],
+                    "external_id": external_id,
+                },
+            )
         return document_ids, actions
 
     def _compute_storage_hash(
