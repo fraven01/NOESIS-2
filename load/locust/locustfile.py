@@ -142,6 +142,9 @@ class IngestionRunUser(TenantHttpUser):
         {
             "document_ids": document_ids,
             "priority": os.getenv("LOCUST_INGESTION_PRIORITY", "normal"),
+            "embedding_profile": os.getenv(
+                "LOCUST_INGESTION_PROFILE", "standard"
+            ),
         },
     )
 

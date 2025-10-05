@@ -10,8 +10,13 @@ import pytest
 from ai_core.rag import metrics
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.limits import get_limit_setting, normalize_max_candidates
+from ai_core.rag.router_validation import (
+    RouterInputError,
+    RouterInputErrorCode,
+)
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.rag.vector_store import VectorStore, VectorStoreRouter
+from common.logging import log_context
 
 
 class FakeStore(VectorStore):
@@ -142,8 +147,26 @@ def test_router_requires_tenant_id(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
     router, _, _ = router_and_stores
-    with pytest.raises(ValueError, match="tenant_id is required"):
-        router.search("query", tenant_id="")
+    spans: list[dict[str, object]] = []
+    from ai_core.rag import router_validation as router_validation_module
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        router_validation_module.tracing,
+        "emit_span",
+        lambda **kwargs: spans.append(kwargs),
+    )
+
+    with log_context(trace_id="trace-router-test"):
+        with pytest.raises(RouterInputError) as excinfo:
+            router.search("query", tenant_id="")
+
+    monkeypatch.undo()
+
+    assert excinfo.value.code == RouterInputErrorCode.TENANT_REQUIRED
+    assert spans, "expected router validation failure to emit span"
+    metadata = spans[0]["metadata"]
+    assert metadata["error_code"] == RouterInputErrorCode.TENANT_REQUIRED
 
 
 def test_router_caps_top_k_to_10(
@@ -152,6 +175,20 @@ def test_router_caps_top_k_to_10(
     router, global_store, _ = router_and_stores
     router.search("query", tenant_id="tenant", top_k=25)
     assert global_store.search_calls[-1]["top_k"] == 10
+
+
+def test_router_accepts_process_and_doc_class(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+    router.search(
+        "query",
+        tenant_id="tenant",
+        process="draft",
+        doc_class="legal",
+    )
+
+    assert global_store.search_calls[-1]["tenant_id"] == "tenant"
 
 
 def test_router_normalizes_empty_filters(
@@ -423,6 +460,72 @@ def test_router_hybrid_search_falls_back_when_not_supported() -> None:
     assert result.lexical_candidates == 0
     assert result.fused_candidates == len(fallback_chunks)
     assert store.search_calls[-1]["top_k"] == 3
+
+
+def test_router_hybrid_search_rejects_small_candidate_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = "tenant-10"
+    store = FakeStore(
+        "global", search_result=[Chunk(content="x", meta={"tenant": tenant})]
+    )
+    router = VectorStoreRouter({"global": store})
+
+    from ai_core.rag import vector_store as vector_store_module
+
+    emitted: list[RouterInputError] = []
+
+    monkeypatch.setenv("RAG_CANDIDATE_POLICY", "error")
+    monkeypatch.setattr(
+        vector_store_module,
+        "emit_router_validation_failure",
+        lambda error: emitted.append(error),
+    )
+
+    with pytest.raises(RouterInputError) as excinfo:
+        router.hybrid_search(
+            "frage",
+            tenant_id=tenant,
+            top_k=7,
+            max_candidates=3,
+        )
+
+    assert excinfo.value.code == RouterInputErrorCode.MAX_CANDIDATES_LT_TOP_K
+    assert emitted
+    assert emitted[0].code == RouterInputErrorCode.MAX_CANDIDATES_LT_TOP_K
+
+
+def test_router_hybrid_search_normalizes_small_candidate_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tenant = "tenant-11"
+    hybrid_result = HybridSearchResult(
+        chunks=[Chunk(content="normalized", meta={"tenant": tenant})],
+        vector_candidates=1,
+        lexical_candidates=1,
+        fused_candidates=1,
+        duration_ms=0.2,
+        alpha=0.6,
+        min_sim=0.3,
+        vec_limit=5,
+        lex_limit=4,
+    )
+    store = HybridEnabledStore("global", hybrid_result)
+    router = VectorStoreRouter({"global": store})
+
+    monkeypatch.setenv("RAG_CANDIDATE_POLICY", "normalize")
+
+    result = router.hybrid_search(
+        "frage",
+        tenant_id=tenant,
+        top_k=7,
+        max_candidates=3,
+    )
+
+    assert result is hybrid_result
+    call = store.hybrid_calls[-1]
+    assert call["max_candidates"] == 7
+    assert call["top_k"] == 7
 
 
 def test_router_logs_warning_when_hybrid_returns_none(

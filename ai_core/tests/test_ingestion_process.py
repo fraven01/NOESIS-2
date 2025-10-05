@@ -44,6 +44,8 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
         ]
     }
 
+    profile_id = "standard"
+
     artifact_paths = {
         step: "/".join([tenant_key, case_key, "artifacts", f"{step}.txt"])
         for step in counts
@@ -53,6 +55,7 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
 
     def make_step_stub(step_name):
         def _stub(meta, *args, **kwargs):
+            assert meta["embedding_profile"] == profile_id
             counts[step_name] += 1
             relative_path = artifact_paths[step_name]
             object_store.write_bytes(
@@ -81,7 +84,13 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     process_document.request = SimpleNamespace(retries=0)
 
     with pytest.raises(DummyRetryError):
-        process_document(tenant, case, document_id, tenant_schema=tenant_schema)
+        process_document(
+            tenant,
+            case,
+            document_id,
+            profile_id,
+            tenant_schema=tenant_schema,
+        )
 
     assert all(counts[step] == 1 for step in counts)
 
@@ -103,6 +112,7 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     assert "external_id" in meta_state and meta_state["external_id"]
     assert "tenant" not in meta_state
     assert "case" not in meta_state
+    assert meta_state["embedding_profile"] == profile_id
 
     prior_counts = counts.copy()
 
@@ -119,13 +129,21 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     monkeypatch.setattr(ingestion.pipe, "upsert", successful_upsert)
     process_document.request.retries = 1
 
-    result = process_document(tenant, case, document_id, tenant_schema=tenant_schema)
+    result = process_document(
+        tenant,
+        case,
+        document_id,
+        profile_id,
+        tenant_schema=tenant_schema,
+    )
 
     assert counts == prior_counts
     assert result["inserted"] == 1
     assert result["skipped"] == 0
     assert result["content_hash"] == content_hash_value
     assert result["external_id"] == meta_state["external_id"]
+    assert result["embedding_profile"] == profile_id
+    assert result["vector_space_id"] == "global"
 
     for path in artifact_paths.values():
         assert not (object_store.BASE_PATH / path).exists()

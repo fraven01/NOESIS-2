@@ -19,10 +19,11 @@ from common.logging import get_logger
 from django.conf import settings
 from django.utils import timezone
 
-from .infra import object_store, pii
+from .infra import object_store, pii, tracing
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
+from .rag.ingestion_contracts import ensure_embedding_dimensions
 from .rag.embeddings import (
     EmbeddingBatchResult,
     EmbeddingClientError,
@@ -47,6 +48,8 @@ def log_ingestion_run_start(
     doc_count: int,
     trace_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    embedding_profile: Optional[str] = None,
+    vector_space_id: Optional[str] = None,
 ) -> None:
     extra = {
         "tenant": tenant,
@@ -58,7 +61,17 @@ def log_ingestion_run_start(
         extra["trace_id"] = trace_id
     if idempotency_key:
         extra["idempotency_key"] = idempotency_key
+    if embedding_profile:
+        extra["embedding_profile"] = embedding_profile
+    if vector_space_id:
+        extra["vector_space_id"] = vector_space_id
     logger.info("ingestion.start", extra=extra)
+    if trace_id:
+        tracing.emit_span(
+            trace_id=trace_id,
+            node_name="rag.ingestion.run.start",
+            metadata={**extra},
+        )
 
 
 def log_ingestion_run_end(
@@ -74,6 +87,8 @@ def log_ingestion_run_end(
     duration_ms: float,
     trace_id: Optional[str] = None,
     idempotency_key: Optional[str] = None,
+    embedding_profile: Optional[str] = None,
+    vector_space_id: Optional[str] = None,
 ) -> None:
     extra = {
         "tenant": tenant,
@@ -90,8 +105,18 @@ def log_ingestion_run_end(
         extra["trace_id"] = trace_id
     if idempotency_key:
         extra["idempotency_key"] = idempotency_key
+    if embedding_profile:
+        extra["embedding_profile"] = embedding_profile
+    if vector_space_id:
+        extra["vector_space_id"] = vector_space_id
     logger.info("ingestion.end", extra=extra)
     metrics.INGESTION_RUN_MS.observe(float(duration_ms))
+    if trace_id:
+        tracing.emit_span(
+            trace_id=trace_id,
+            node_name="rag.ingestion.run.end",
+            metadata={**extra},
+        )
 
 
 @shared_task(base=ScopedTask)
@@ -353,35 +378,53 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         if prefix:
             chunk_text = f"{prefix}\n\n{body}" if body else prefix
         normalised = normalise_text(chunk_text)
+        chunk_meta = {
+            "tenant": meta["tenant"],
+            "case": meta.get("case"),
+            "source": text_path,
+            "hash": content_hash,
+            "external_id": external_id,
+            "content_hash": content_hash,
+        }
+        if meta.get("embedding_profile"):
+            chunk_meta["embedding_profile"] = meta["embedding_profile"]
+        if meta.get("vector_space_id"):
+            chunk_meta["vector_space_id"] = meta["vector_space_id"]
+        if meta.get("process"):
+            chunk_meta["process"] = meta["process"]
+        if meta.get("doc_class"):
+            chunk_meta["doc_class"] = meta["doc_class"]
         chunks.append(
             {
                 "content": chunk_text,
                 "normalized": normalised,
-                "meta": {
-                    "tenant": meta["tenant"],
-                    "case": meta.get("case"),
-                    "source": text_path,
-                    "hash": content_hash,
-                    "external_id": external_id,
-                    "content_hash": content_hash,
-                },
+                "meta": chunk_meta,
             }
         )
 
     if not chunks:
         normalised = normalise_text(text)
+        chunk_meta = {
+            "tenant": meta["tenant"],
+            "case": meta.get("case"),
+            "source": text_path,
+            "hash": content_hash,
+            "external_id": external_id,
+            "content_hash": content_hash,
+        }
+        if meta.get("embedding_profile"):
+            chunk_meta["embedding_profile"] = meta["embedding_profile"]
+        if meta.get("vector_space_id"):
+            chunk_meta["vector_space_id"] = meta["vector_space_id"]
+        if meta.get("process"):
+            chunk_meta["process"] = meta["process"]
+        if meta.get("doc_class"):
+            chunk_meta["doc_class"] = meta["doc_class"]
         chunks.append(
             {
                 "content": text,
                 "normalized": normalised,
-                "meta": {
-                    "tenant": meta["tenant"],
-                    "case": meta.get("case"),
-                    "source": text_path,
-                    "hash": content_hash,
-                    "external_id": external_id,
-                    "content_hash": content_hash,
-                },
+                "meta": chunk_meta,
             }
         )
 
@@ -509,6 +552,24 @@ def upsert(
         chunk_tenant = chunk.meta.get("tenant") if chunk.meta else None
         if chunk_tenant and str(chunk_tenant) != tenant_id:
             raise ValueError("chunk tenant mismatch")
+
+    expected_dimension_value = meta.get("vector_space_dimension") if meta else None
+    expected_dimension: Optional[int] = None
+    if expected_dimension_value is not None:
+        try:
+            expected_dimension = int(expected_dimension_value)
+        except (TypeError, ValueError):
+            expected_dimension = None
+
+    ensure_embedding_dimensions(
+        chunk_objs,
+        expected_dimension,
+        tenant_id=tenant_id,
+        process=meta.get("process") if meta else None,
+        doc_class=meta.get("doc_class") if meta else None,
+        embedding_profile=meta.get("embedding_profile") if meta else None,
+        vector_space_id=meta.get("vector_space_id") if meta else None,
+    )
 
     schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
 

@@ -22,6 +22,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
         tenant_id,
         case_id,
         document_ids,
+        embedding_profile,
         *,
         run_id,
         trace_id=None,
@@ -33,6 +34,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
                 "tenant_id": tenant_id,
                 "case_id": case_id,
                 "document_ids": document_ids,
+                "embedding_profile": embedding_profile,
                 "run_id": run_id,
                 "trace_id": trace_id,
                 "idempotency_key": idempotency_key,
@@ -49,7 +51,11 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
 
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data={"document_ids": ["abc123"], "priority": "high"},
+        data={
+            "document_ids": ["abc123"],
+            "priority": "high",
+            "embedding_profile": "standard",
+        },
         content_type="application/json",
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
@@ -70,6 +76,7 @@ def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_n
         "tenant_id": test_tenant_schema_name,
         "case_id": "case-123",
         "document_ids": ["abc123"],
+        "embedding_profile": "standard",
         "trace_id": body["trace_id"],
         "run_id": body["ingestion_run_id"],
         "idempotency_key": None,
@@ -85,7 +92,7 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
 
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data={"document_ids": []},
+        data={"document_ids": [], "embedding_profile": "standard"},
         content_type="application/json",
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
@@ -98,3 +105,25 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
     body = response.json()
     assert body["detail"] == "document_ids must be a non-empty list."
     assert body["code"] == "invalid_document_ids"
+
+
+@pytest.mark.django_db
+def test_rag_ingestion_run_without_profile_returns_400(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data={"document_ids": ["abc123"]},
+        content_type="application/json",
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-123",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "INGEST_PROFILE_REQUIRED"

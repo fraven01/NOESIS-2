@@ -29,6 +29,8 @@ if "RAG_VECTOR_STORES" not in globals():
     RAG_VECTOR_STORES = {
         "global": {
             "backend": "pgvector",
+            "schema": "rag",
+            "dimension": 1536,
             # "dsn_env": "RAG_DATABASE_URL",
         }
     }
@@ -57,8 +59,23 @@ RAG_MIN_SIM = env.float("RAG_MIN_SIM", default=0.15)
 RAG_TRGM_LIMIT = env.float("RAG_TRGM_LIMIT", default=0.1)
 RAG_HYBRID_ALPHA = env.float("RAG_HYBRID_ALPHA", default=0.7)
 RAG_MAX_CANDIDATES = env.int("RAG_MAX_CANDIDATES", default=200)
+RAG_CANDIDATE_POLICY = env("RAG_CANDIDATE_POLICY", default="error")
 RAG_CHUNK_TARGET_TOKENS = env.int("RAG_CHUNK_TARGET_TOKENS", default=450)
 RAG_CHUNK_OVERLAP_TOKENS = env.int("RAG_CHUNK_OVERLAP_TOKENS", default=80)
+
+if "RAG_EMBEDDING_PROFILES" not in globals():
+    RAG_EMBEDDING_PROFILES = {
+        "standard": {
+            "model": env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large"),
+            "dimension": 1536,
+            "vector_space": "global",
+        }
+    }
+
+_default_routing_rules_path = BASE_DIR / "config" / "rag_routing_rules.yaml"
+RAG_ROUTING_RULES_PATH = Path(
+    env("RAG_ROUTING_RULES_PATH", default=str(_default_routing_rules_path))
+)
 
 EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
 EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large")

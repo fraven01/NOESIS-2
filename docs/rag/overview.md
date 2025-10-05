@@ -47,10 +47,12 @@ Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
    }
    ```
    Jeder Vector Space verweist auf ein dediziertes Schema oder Backend mit passender `vector(n)`-Spalte.
+   Startzeit-Gate: `ai_core.rag.embedding_config.validate_embedding_configuration()` prüft Dimensionen und referenzierte Spaces.
 
 2. **Routing pro Dimension:** Ergänze den `VectorStoreRouter` um Regeln, die aus Tenant-Metadaten, Prozessschritt und Dokumentklasse ein Profil ermitteln. Tenants buchen Upgrades, indem sie im Admin-Backend einem anderen Profil zugeordnet werden; Prozessschritte und Dokumentklassen werden als Ingestion-Parameter übergeben und entscheiden, in welchen Vector Space geschrieben/gelesen wird.
+   Konsistenz-Gate: `ai_core.rag.routing_rules.validate_routing_rules()` lädt das YAML und verhindert Mehrdeutigkeiten.
 
-3. **Pipelines anreichern:** Der Ingestion-Task erhält einen verpflichtenden `embedding_profile`-Parameter. Vor dem Schreiben prüft er die Dimension (`ChunkEmbedding.dim()`), erzwingt Konsistenz mit dem Zielprofil und führt bei Abweichungen einen Hard-Fail aus. Retrieval-Aufrufe (LangGraph, Reports) müssen denselben Profilschlüssel an den Router durchreichen, damit Query und Speicherung auf denselben Vector Space zeigen. Verstöße (z. B. fehlendes Profil oder Dimensionsabweichung) werden als Dead-Letter markiert und gemäß [Ingestion-Runbook](ingestion.md#fehlertoleranz-und-deduplizierung) abgearbeitet.
+3. **Pipelines anreichern:** Der Ingestion-Task erhält einen verpflichtenden `embedding_profile`-Parameter. Vor dem Schreiben prüft er die Dimension (`ChunkEmbedding.dim()`), erzwingt Konsistenz mit dem Zielprofil und führt bei Abweichungen einen Hard-Fail aus. Retrieval-Aufrufe (LangGraph, Reports) müssen denselben Profilschlüssel an den Router durchreichen, damit Query und Speicherung auf denselben Vector Space zeigen. Die Runtime bindet Profile über `ai_core.rag.resolve_ingestion_profile()`, wodurch `embedding_profile` und `vector_space_id` in Statusdateien, Chunk-Metadaten und Langfuse-Traces auftauchen. Verstöße (z. B. fehlendes Profil oder Dimensionsabweichung) werden als Dead-Letter markiert und gemäß [Ingestion-Runbook](ingestion.md#fehlertoleranz-und-deduplizierung) abgearbeitet.
 
 4. **Fallback-Politik:** Fallback ist ausschließlich zu Anbietern oder Endpunkten mit identischer Ausgabelänge zulässig; Dimensionswechsel bedeuten Migration. Die Admin-GUI dokumentiert dieses „Do & Don’t“, damit Betriebs-Teams nicht spontan auf Modelle anderer Dimension umschalten.
 
@@ -117,7 +119,9 @@ results = router.search(
 )
 ```
 
-Der Router deckelt `top_k` weiterhin auf zehn Ergebnisse. Achte darauf, dass der konfigurierbare Kandidatenpool (`max_candidates`, `normalize_max_candidates`) nie kleiner als `top_k` ist; andernfalls muss der Router frühzeitig einen Fehler werfen, um Recall-Regressionen zu vermeiden.
+Der Router deckelt `top_k` weiterhin auf zehn Ergebnisse. Die Policy `RAG_CANDIDATE_POLICY` legt fest, wie Konflikte mit dem konfigurierbaren Kandidatenpool (`max_candidates`, `normalize_max_candidates`) behandelt werden: `error` (Default) bricht mit `ROUTER_MAX_CANDIDATES_LT_TOP_K` ab, `normalize` hebt den Pool deterministisch auf mindestens `top_k` an. Die Eingangsvalidierung schreibt den angehobenen Wert zurück und erzeugt genau eine `rag.hybrid.candidate_pool.normalized`-Warnung für die redundante Konfiguration.
+
+Selektoren für Routing-Regeln (`tenant`, `process`, `doc_class`) werden beim Laden und zur Laufzeit getrimmt und in Kleinschreibung überführt. Die Spezifität bestimmt sich über die Anzahl gesetzter Felder; die Auflösung folgt „höchste Spezifität gewinnt, Gleichstand ⇒ Fehler“.
 
 ## Löschkonzept
 - Dokumente erhalten Hashes (siehe [Schema](schema.sql)) und `metadata` mit Herkunft.

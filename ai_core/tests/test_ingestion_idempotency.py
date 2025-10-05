@@ -52,7 +52,13 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         return body["document_id"]
 
     first_doc = upload_document("Hello RAG ingestion!")
-    first_result = process_document(tenant, case, first_doc, tenant_schema=tenant)
+    first_result = process_document(
+        tenant,
+        case,
+        first_doc,
+        "standard",
+        tenant_schema=tenant,
+    )
 
     assert first_result["external_id"] == external_id
     assert first_result["inserted"] == 1
@@ -60,9 +66,16 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     assert first_result["replaced"] == 0
     assert first_result["action"] == "inserted"
     assert first_result["written"] == 1
+    assert first_result["embedding_profile"] == "standard"
 
     second_doc = upload_document("Hello RAG ingestion!")
-    second_result = process_document(tenant, case, second_doc, tenant_schema=tenant)
+    second_result = process_document(
+        tenant,
+        case,
+        second_doc,
+        "standard",
+        tenant_schema=tenant,
+    )
 
     assert second_result["external_id"] == external_id
     assert second_result["inserted"] == 0
@@ -72,7 +85,13 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     assert second_result["written"] == 0
 
     third_doc = upload_document("Hello RAG ingestion version two!")
-    third_result = process_document(tenant, case, third_doc, tenant_schema=tenant)
+    third_result = process_document(
+        tenant,
+        case,
+        third_doc,
+        "standard",
+        tenant_schema=tenant,
+    )
 
     assert third_result["external_id"] == external_id
     assert third_result["skipped"] == 0
@@ -125,10 +144,10 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_a = executor.submit(
-            process_document, tenant, case, doc_a, tenant_schema=tenant
+            process_document, tenant, case, doc_a, "standard", tenant_schema=tenant
         )
         future_b = executor.submit(
-            process_document, tenant, case, doc_b, tenant_schema=tenant
+            process_document, tenant, case, doc_b, "standard", tenant_schema=tenant
         )
         res_a = future_a.result()
         res_b = future_b.result()

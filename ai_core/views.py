@@ -78,6 +78,11 @@ except Exception:  # defensive: don't break module import if graphs change
 from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
+from .rag.ingestion_contracts import (
+    IngestionContractError,
+    map_ingestion_error_to_status,
+    resolve_ingestion_profile,
+)
 from .infra.resp import apply_std_headers
 
 
@@ -556,7 +561,11 @@ RAG_INGESTION_RUN_REQUEST_EXAMPLE = OpenApiExample(
     name="RagIngestionRunRequest",
     summary="Queue ingestion run",
     description="Dispatches the ingestion pipeline for the provided document identifiers.",
-    value={"document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"], "priority": "normal"},
+    value={
+        "document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"],
+        "priority": "normal",
+        "embedding_profile": "standard",
+    },
     request_only=True,
 )
 
@@ -583,7 +592,7 @@ RAG_INGESTION_RUN_CURL = _curl(
             '-H "X-Tenant-Id: acme"',
             '-H "X-Case-Id: crm-7421"',
             '-H "Idempotency-Key: 9c6d9b07-52c8-4fb2-8c49-0a8e3a8a1d2d"',
-            '-d \'{"document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"], "priority": "normal"}\'',
+            '-d \'{"document_ids": ["0f0a6d5e49e14e79bc2d0da52c5b2f4a"], "priority": "normal", "embedding_profile": "standard"}\'',
         ]
     )
 )
@@ -595,6 +604,7 @@ RAG_INGESTION_RUN_REQUEST = inline_serializer(
             child=serializers.CharField(), allow_empty=False
         ),
         "priority": serializers.CharField(required=False),
+        "embedding_profile": serializers.CharField(),
     },
 )
 
@@ -1000,6 +1010,18 @@ class RagIngestionRunView(APIView):
             )
         priority = priority.strip()
 
+        try:
+            profile_binding = resolve_ingestion_profile(
+                payload.get("embedding_profile")
+            )
+        except IngestionContractError as exc:
+            return _error_response(
+                exc.message,
+                exc.code,
+                map_ingestion_error_to_status(exc.code),
+            )
+        resolved_profile_id = profile_binding.profile_id
+
         ingestion_run_id = uuid4().hex
         # Tests monkeypatch django.utils.timezone.now, so keep using the module
         # import instead of a local alias to ensure the override is observed.
@@ -1020,6 +1042,7 @@ class RagIngestionRunView(APIView):
             meta["tenant"],
             meta["case"],
             to_dispatch,
+            resolved_profile_id,
             tenant_schema=meta["tenant_schema"],
             run_id=ingestion_run_id,
             trace_id=meta["trace_id"],

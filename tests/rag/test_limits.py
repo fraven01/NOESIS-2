@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import pytest
 
-from ai_core.rag.limits import clamp_fraction, normalize_max_candidates, normalize_top_k
+from ai_core.rag.limits import (
+    CandidatePoolPolicy,
+    clamp_fraction,
+    normalize_max_candidates,
+    normalize_top_k,
+    resolve_candidate_pool_policy,
+)
 from ai_core.rag.vector_client import PgVectorClient
 
 
@@ -108,3 +114,21 @@ def test_estimated_tokens_feed_into_candidate_cap(
 
     normalized_candidates = normalize_max_candidates(top_k, estimated_tokens, cap)
     assert normalized_candidates == expected_candidates
+
+
+def test_resolve_candidate_pool_policy_defaults_to_error(monkeypatch) -> None:
+    monkeypatch.delenv("RAG_CANDIDATE_POLICY", raising=False)
+
+    assert resolve_candidate_pool_policy() == CandidatePoolPolicy.ERROR
+
+
+def test_resolve_candidate_pool_policy_reads_env(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_CANDIDATE_POLICY", "normalize")
+
+    assert resolve_candidate_pool_policy() == CandidatePoolPolicy.NORMALIZE
+
+
+def test_resolve_candidate_pool_policy_rejects_unknown(monkeypatch) -> None:
+    monkeypatch.setenv("RAG_CANDIDATE_POLICY", "unsupported")
+
+    assert resolve_candidate_pool_policy() == CandidatePoolPolicy.ERROR

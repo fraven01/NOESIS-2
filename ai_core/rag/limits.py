@@ -4,16 +4,26 @@ from __future__ import annotations
 
 import math
 import os
+from enum import Enum
 from typing import Any, TypeVar, cast
 
 Number = TypeVar("Number", int, float)
 
 __all__ = [
+    "CandidatePoolPolicy",
     "clamp_fraction",
     "get_limit_setting",
     "normalize_max_candidates",
     "normalize_top_k",
+    "resolve_candidate_pool_policy",
 ]
+
+
+class CandidatePoolPolicy(str, Enum):
+    """Policy describing how to handle undersized candidate pools."""
+
+    NORMALIZE = "normalize"
+    ERROR = "error"
 
 
 def _coerce_float(value: Any) -> float | None:
@@ -95,6 +105,38 @@ def get_limit_setting(name: str, default: Number) -> Number:
             return cast(Number, int(configured))
         except (TypeError, ValueError):
             return default
+    return default
+
+
+def resolve_candidate_pool_policy(
+    *, default: CandidatePoolPolicy = CandidatePoolPolicy.ERROR
+) -> CandidatePoolPolicy:
+    """Return the configured candidate pool policy.
+
+    The policy can be set via the ``RAG_CANDIDATE_POLICY`` environment variable or
+    Django setting. Accepted values are ``"normalize"`` and ``"error"``; any other
+    value falls back to ``default``.
+    """
+
+    configured: str | None = None
+    env_value = os.getenv("RAG_CANDIDATE_POLICY")
+    if env_value:
+        configured = env_value
+    else:  # pragma: no cover - requires Django settings
+        try:
+            from django.conf import settings  # type: ignore
+
+            configured = getattr(settings, "RAG_CANDIDATE_POLICY", None)
+        except Exception:
+            configured = None
+
+    if configured is None:
+        return default
+
+    normalized = str(configured).strip().lower()
+    for policy in CandidatePoolPolicy:
+        if policy.value == normalized:
+            return policy
     return default
 
 

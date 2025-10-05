@@ -51,8 +51,16 @@ def test_upload_ingest_query_end2end(
     doc_id = body["document_id"]
 
     # Ingestion (direkt Task ausführen; alternativ run_ingestion.delay(...) und warten)
-    result = process_document(tenant, case, doc_id, tenant_schema=tenant)
+    result = process_document(
+        tenant,
+        case,
+        doc_id,
+        "standard",
+        tenant_schema=tenant,
+    )
     assert result["written"] >= 1
+    assert result["embedding_profile"] == "standard"
+    assert result["vector_space_id"] == "global"
 
     # Query
     resp = client.post(
@@ -123,6 +131,7 @@ def test_ingestion_run_reports_missing_documents(
     run_payload = {
         "document_ids": [doc_id, "missing-document"],
         "priority": "normal",
+        "embedding_profile": "standard",
     }
 
     resp = client.post(
@@ -143,6 +152,7 @@ def test_ingestion_run_reports_missing_documents(
     assert len(calls) == 1
     args, kwargs = calls[0]
     assert list(args[2]) == [doc_id]
+    assert args[3] == "standard"
     assert kwargs["tenant_schema"] == tenant
 
 
