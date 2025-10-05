@@ -12,7 +12,6 @@ from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from . import metrics
 from .router_validation import (
     RouterInputError,
-    RouterInputErrorCode,
     emit_router_validation_failure,
     validate_search_inputs,
 )
