@@ -464,6 +464,13 @@ class PgVectorClient:
                 "chunk_count": chunk_count,
                 "duration_ms": duration,
             }
+            metadata = doc.get("metadata", {})
+            embedding_profile = metadata.get("embedding_profile")
+            if embedding_profile:
+                doc_payload["embedding_profile"] = embedding_profile
+            vector_space_id = metadata.get("vector_space_id")
+            if vector_space_id:
+                doc_payload["vector_space_id"] = vector_space_id
             documents_info.append(doc_payload)
             logger.info("ingestion.doc.result", extra=doc_payload)
             if action == "inserted":

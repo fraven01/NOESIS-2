@@ -9,6 +9,7 @@ from psycopg2 import OperationalError, errors, sql
 from psycopg2.extensions import ISOLATION_LEVEL_AUTOCOMMIT, make_dsn, parse_dsn
 
 from ai_core.rag import vector_client as rag_vector_client
+from ai_core.rag.vector_schema import render_schema_sql
 from ai_core.rag.vector_store import reset_default_router
 from common import logging as common_logging
 
@@ -29,17 +30,11 @@ def clear_structlog_context():
 
 DEFAULT_SCHEMA_NAME = "rag"
 
-SCHEMA_SQL_TEMPLATE = (
-    Path(__file__).resolve().parents[2] / "docs" / "rag" / "schema.sql"
-).read_text()
 
-_SCHEMA_TOKEN_PATTERN = re.compile(rf"\b{re.escape(DEFAULT_SCHEMA_NAME)}\b")
-
-
-def render_schema_sql(schema_name: str = DEFAULT_SCHEMA_NAME) -> str:
+def render_vector_schema(schema_name: str = DEFAULT_SCHEMA_NAME, dimension: int = 1536) -> str:
     if not schema_name:
         raise ValueError("schema_name must be provided")
-    return _SCHEMA_TOKEN_PATTERN.sub(schema_name, SCHEMA_SQL_TEMPLATE)
+    return render_schema_sql(schema_name, dimension)
 
 
 def drop_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
@@ -50,7 +45,7 @@ def drop_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
     )
 
 
-def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
+def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME, *, dimension: int = 1536) -> None:
     """Reset the RAG schema in a transaction-safe way.
 
     Executes DDL outside of the caller's transaction to avoid breaking
@@ -73,7 +68,7 @@ def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
             try:
                 with ddl_conn.cursor() as ddl_cur:
                     drop_schema(ddl_cur, schema_name)
-                    ddl_cur.execute(render_schema_sql(schema_name))
+                    ddl_cur.execute(render_vector_schema(schema_name, dimension))
             finally:
                 ddl_conn.close()
         except Exception:
@@ -89,7 +84,7 @@ def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
         try:
             conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
             drop_schema(cur, schema_name)
-            cur.execute(render_schema_sql(schema_name))
+            cur.execute(render_vector_schema(schema_name, dimension))
         finally:
             if prev_level is not None:
                 try:
@@ -103,7 +98,7 @@ def reset_vector_schema(cur, schema_name: str = DEFAULT_SCHEMA_NAME) -> None:
     )
 
 
-SCHEMA_SQL = render_schema_sql()
+SCHEMA_SQL = render_vector_schema()
 
 
 def _extract_dbname(dsn: str) -> str | None:

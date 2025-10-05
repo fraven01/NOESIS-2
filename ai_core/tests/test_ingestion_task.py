@@ -6,6 +6,7 @@ import pytest
 from celery.exceptions import TimeoutError as CeleryTimeoutError
 
 from ai_core import ingestion
+from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 
 
 class DummyProcessTask:
@@ -92,6 +93,18 @@ def _setup_common_monkeypatches(monkeypatch):
     return dummy_process, start_calls, end_calls, apply_async_calls
 
 
+def _expected_ingestion_resolution(profile: str = "standard"):
+    binding = ingestion.resolve_ingestion_profile(profile)
+    space = binding.resolution.vector_space
+    return {
+        "embedding_profile": binding.profile_id,
+        "vector_space_id": space.id,
+        "vector_space_schema": space.schema,
+        "vector_space_backend": space.backend,
+        "vector_space_dimension": space.dimension,
+    }
+
+
 def _patch_partition(monkeypatch, valid: List[str], invalid: List[str]) -> None:
     monkeypatch.setattr(
         ingestion,
@@ -164,6 +177,7 @@ def test_run_ingestion_success(monkeypatch):
         tenant="tenant-a",
         case="case-b",
         document_ids=list(valid_ids),
+        embedding_profile="standard",
         run_id="run-123",
         trace_id="trace-xyz",
         idempotency_key="idem-1",
@@ -180,8 +194,8 @@ def test_run_ingestion_success(monkeypatch):
     assert response["duration_ms"] == pytest.approx(500.0)
 
     assert dummy_process.calls == [
-        ("tenant-a", "case-b", "doc-1", None),
-        ("tenant-a", "case-b", "doc-2", None),
+        ("tenant-a", "case-b", "doc-1", "standard", None),
+        ("tenant-a", "case-b", "doc-2", "standard", None),
     ]
     assert len(captured_signatures) == 1
     assert len(captured_signatures[0]) == len(valid_ids)
@@ -194,6 +208,8 @@ def test_run_ingestion_success(monkeypatch):
             "doc_count": len(valid_ids),
             "trace_id": "trace-xyz",
             "idempotency_key": "idem-1",
+            "embedding_profile": "standard",
+            "vector_space_id": "global",
         }
     ]
     assert len(end_calls) == 1
@@ -209,6 +225,8 @@ def test_run_ingestion_success(monkeypatch):
     assert end_call["duration_ms"] == pytest.approx(500.0)
     assert end_call["trace_id"] == "trace-xyz"
     assert end_call["idempotency_key"] == "idem-1"
+    assert end_call["embedding_profile"] == "standard"
+    assert end_call["vector_space_id"] == "global"
     assert apply_async_calls == []
 
 
@@ -255,6 +273,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
         tenant="tenant-a",
         case="case-b",
         document_ids=list(valid_ids),
+        embedding_profile="standard",
         run_id="run-timeout",
         trace_id="trace-timeout",
         idempotency_key="timeout-id",
@@ -278,6 +297,11 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     assert dead_letter_payload["document_id"] == "doc-2"
     assert dead_letter_payload["run_id"] == "run-timeout"
     assert dead_letter_payload["trace_id"] == "trace-timeout"
+    assert dead_letter_payload["process"] is None
+    assert dead_letter_payload["doc_class"] is None
+    expected_resolution = _expected_ingestion_resolution()
+    for key, value in expected_resolution.items():
+        assert dead_letter_payload[key] == value
 
     assert child_pending.revoked == [{"terminate": True}]
     assert child_success.revoked == []
@@ -337,6 +361,7 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
             tenant="tenant-a",
             case="case-b",
             document_ids=list(valid_ids),
+            embedding_profile="standard",
             run_id="run-exc",
             trace_id="trace-exc",
             idempotency_key="exc-id",
@@ -350,6 +375,11 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert dead_letter_payload["document_id"] == "doc-2"
     assert dead_letter_payload["run_id"] == "run-exc"
     assert dead_letter_payload["trace_id"] == "trace-exc"
+    assert dead_letter_payload["process"] is None
+    assert dead_letter_payload["doc_class"] is None
+    expected_resolution = _expected_ingestion_resolution()
+    for key, value in expected_resolution.items():
+        assert dead_letter_payload[key] == value
 
     assert child_pending.revoked == [{"terminate": True}]
     assert child_success.revoked == []
@@ -357,3 +387,54 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert start_calls[0]["doc_count"] == len(valid_ids)
     assert len(end_calls) == 1
     assert end_calls[0]["duration_ms"] == pytest.approx(600.0)
+
+
+def test_run_ingestion_contract_error_includes_context(monkeypatch):
+    dummy_process, start_calls, end_calls, apply_async_calls = (
+        _setup_common_monkeypatches(monkeypatch)
+    )
+    valid_ids = ["doc-1"]
+    _patch_partition(monkeypatch, valid_ids, [])
+
+    async_result = DummyAsyncResult(results=[])
+    async_result.should_raise = ingestion.IngestionContractError(
+        IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH,
+        "dimension mismatch",
+        context={
+            "process": "review",
+            "doc_class": "legal",
+            "expected_dimension": 2,
+            "observed_dimension": 1,
+            "chunk_index": 0,
+        },
+    )
+
+    _patch_group(monkeypatch, async_result)
+    _patch_perf_counter(monkeypatch, 40.0, 40.4)
+
+    response = ingestion.run_ingestion.run(
+        tenant="tenant-a",
+        case="case-b",
+        document_ids=list(valid_ids),
+        embedding_profile="standard",
+        run_id="run-contract",
+        trace_id="trace-contract",
+        dead_letter_queue="dlq-contract",
+    )
+
+    assert response["status"] == "failed"
+    assert "dimension mismatch" in response["error"]
+    assert len(apply_async_calls) == 1
+    dead_letter_payload = apply_async_calls[0]["kwargs"]["args"][0]
+    assert dead_letter_payload["process"] == "review"
+    assert dead_letter_payload["doc_class"] == "legal"
+    assert dead_letter_payload["expected_dimension"] == 2
+    assert dead_letter_payload["observed_dimension"] == 1
+    assert dead_letter_payload["chunk_index"] == 0
+
+    expected_resolution = _expected_ingestion_resolution()
+    for key, value in expected_resolution.items():
+        assert dead_letter_payload[key] == value
+
+    assert start_calls[0]["doc_count"] == len(valid_ids)
+    assert len(end_calls) == 1

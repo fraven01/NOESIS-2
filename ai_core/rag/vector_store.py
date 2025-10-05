@@ -5,21 +5,37 @@ from __future__ import annotations
 import atexit
 import inspect
 import logging
-from typing import Dict, Iterable, Mapping, Protocol, TYPE_CHECKING
+from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING
 
 from ai_core.rag.schemas import Chunk
-from ai_core.rag.limits import (
-    clamp_fraction,
-    get_limit_setting,
-    normalize_max_candidates,
-    normalize_top_k,
-)
+from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from . import metrics
+from .router_validation import (
+    RouterInputError,
+    RouterInputErrorCode,
+    emit_router_validation_failure,
+    validate_search_inputs,
+)
 
 if TYPE_CHECKING:
     from ai_core.rag.vector_client import HybridSearchResult
 
 logger = logging.getLogger(__name__)
+
+
+def _raise_router_error(error: RouterInputError) -> NoReturn:
+    """Emit tracing/logging metadata before re-raising router errors."""
+
+    emit_router_validation_failure(error)
+    logger.warning(
+        "rag.router.invalid_search_input",
+        extra={
+            "code": error.code,
+            "field": error.field or "-",
+            **{k: v for k, v in error.context.items() if v is not None},
+        },
+    )
+    raise error
 
 
 class VectorStore(Protocol):
@@ -173,6 +189,8 @@ class VectorStoreRouter:
         top_k: int = 5,
         filters: Mapping[str, object | None] | None = None,
         scope: str = "global",
+        process: str | None = None,
+        doc_class: str | None = None,
     ) -> list[Chunk]:
         """Search within the given scope while enforcing tenant and limits.
 
@@ -181,10 +199,21 @@ class VectorStoreRouter:
         them uniformly.
         """
 
-        if not tenant_id:
-            raise ValueError("tenant_id is required for vector store access")
+        try:
+            validation = validate_search_inputs(
+                tenant_id=tenant_id,
+                process=process,
+                doc_class=doc_class,
+                top_k=top_k,
+            )
+        except RouterInputError as exc:
+            _raise_router_error(exc)
 
-        capped_top_k = normalize_top_k(top_k, default=5, minimum=1, maximum=10)
+        tenant = validation.tenant_id
+        validation_context = validation.context
+        requested_top_k = validation.top_k
+        capped_top_k = validation.effective_top_k
+        top_k_source = validation.top_k_source
         normalised_filters = None
         if filters is not None:
             normalised_filters = {}
@@ -197,10 +226,15 @@ class VectorStoreRouter:
         logger.debug(
             "Vector search",
             extra={
-                "tenant_id": tenant_id,
+                "tenant_id": tenant,
                 "scope": scope,
-                "top_k_requested": top_k,
+                "process": validation_context.get("process"),
+                "doc_class": validation_context.get("doc_class"),
+                "top_k_requested": requested_top_k
+                if requested_top_k is not None
+                else capped_top_k,
                 "top_k_effective": capped_top_k,
+                "top_k_source": top_k_source,
                 "case_id": case_id,
             },
         )
@@ -210,7 +244,7 @@ class VectorStoreRouter:
         if callable(hybrid):
             result = hybrid(
                 query,
-                tenant_id,
+                tenant,
                 case_id=case_id,
                 top_k=capped_top_k,
                 filters=normalised_filters,
@@ -219,7 +253,7 @@ class VectorStoreRouter:
                 return list(getattr(result, "chunks", result))
         return store.search(
             query,
-            tenant_id,
+            tenant,
             case_id=case_id,
             top_k=capped_top_k,
             filters=normalised_filters,
@@ -241,13 +275,29 @@ class VectorStoreRouter:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        process: str | None = None,
+        doc_class: str | None = None,
     ) -> "HybridSearchResult":
-        if not tenant_id:
-            raise ValueError("tenant_id is required for vector store access")
+        try:
+            validation = validate_search_inputs(
+                tenant_id=tenant_id,
+                process=process,
+                doc_class=doc_class,
+                top_k=top_k,
+                max_candidates=max_candidates,
+            )
+        except RouterInputError as exc:
+            _raise_router_error(exc)
 
-        normalized_top_k, top_k_source = normalize_top_k(
-            top_k, default=5, minimum=1, maximum=10, return_source=True
-        )
+        tenant = validation.tenant_id
+        sanitized_top_k = validation.top_k
+        sanitized_max = validation.max_candidates
+        validation_context = validation.context
+
+        normalized_top_k = validation.effective_top_k
+        top_k_source = validation.top_k_source
+        max_candidates_value = validation.effective_max_candidates
+        max_candidates_source = validation.max_candidates_source
         normalised_filters = None
         if filters is not None:
             normalised_filters = {}
@@ -260,8 +310,6 @@ class VectorStoreRouter:
         alpha_default = float(get_limit_setting("RAG_HYBRID_ALPHA", 0.7))
         min_sim_default = float(get_limit_setting("RAG_MIN_SIM", 0.15))
         trgm_default = float(get_limit_setting("RAG_TRGM_LIMIT", 0.30))
-        max_candidates_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
-
         alpha_value, alpha_source = clamp_fraction(
             alpha, default=alpha_default, return_source=True
         )
@@ -274,18 +322,13 @@ class VectorStoreRouter:
             trgm_requested, default=trgm_default, return_source=True
         )
 
-        max_candidates_value, max_candidates_source = normalize_max_candidates(
-            normalized_top_k,
-            max_candidates,
-            max_candidates_cap,
-            return_source=True,
-        )
-
         logger.debug(
             "rag.hybrid.params",
             extra={
-                "tenant": tenant_id,
+                "tenant": tenant,
                 "scope": scope,
+                "process": validation_context.get("process"),
+                "doc_class": validation_context.get("doc_class"),
                 "case_id": case_id,
                 "top_k": normalized_top_k,
                 "top_k_source": top_k_source,
@@ -340,7 +383,7 @@ class VectorStoreRouter:
                     }
             result = hybrid(
                 query,
-                tenant_id,
+                tenant,
                 **hybrid_kwargs,
             )
             if result is not None:
@@ -349,14 +392,14 @@ class VectorStoreRouter:
                 "rag.hybrid.router.no_result",
                 extra={
                     "scope": scope,
-                    "tenant": tenant_id,
+                    "tenant": tenant,
                     "store": getattr(store, "name", scope),
                 },
             )
 
         fallback_chunks = store.search(
             query,
-            tenant_id,
+            tenant,
             case_id=case_id,
             top_k=normalized_top_k,
             filters=normalised_filters,
@@ -473,6 +516,8 @@ class _TenantScopedClient:
         case_id: str | None = None,
         top_k: int = 5,
         filters: Mapping[str, object | None] | None = None,
+        process: str | None = None,
+        doc_class: str | None = None,
     ) -> list[Chunk]:
         if tenant_id is not None:
             assert (
@@ -485,6 +530,8 @@ class _TenantScopedClient:
             top_k=top_k,
             filters=filters,
             scope=self._scope or self._router.default_scope,
+            process=process,
+            doc_class=doc_class,
         )
 
     def hybrid_search(
@@ -501,6 +548,8 @@ class _TenantScopedClient:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        process: str | None = None,
+        doc_class: str | None = None,
     ) -> "HybridSearchResult":
         return self._router.hybrid_search(
             query,
@@ -516,6 +565,8 @@ class _TenantScopedClient:
             trgm_limit=trgm_limit,
             trgm_threshold=trgm_threshold,
             max_candidates=max_candidates,
+            process=process,
+            doc_class=doc_class,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:

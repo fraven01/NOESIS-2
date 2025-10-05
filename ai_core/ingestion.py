@@ -13,6 +13,11 @@ from common.logging import get_logger
 from . import tasks as pipe
 from .infra import object_store
 from .ingestion_utils import make_fallback_external_id
+from .rag.ingestion_contracts import (
+    IngestionContractError,
+    resolve_ingestion_profile,
+)
+from .rag.selector_utils import normalise_selector_value
 
 log = get_logger(__name__)
 
@@ -246,6 +251,7 @@ def process_document(
     tenant: str,
     case: str,
     document_id: str,
+    embedding_profile: str,
     tenant_schema: Optional[str] = None,
 ) -> Dict[str, object]:
     started = time.perf_counter()
@@ -255,7 +261,21 @@ def process_document(
     _write_pipeline_state(tenant, case, document_id, state)
     current_step: Optional[str] = None
     created_artifacts: List[Tuple[str, str]] = []
+    resolved_profile_id: Optional[str] = None
+    vector_space_id: Optional[str] = None
+    vector_space_schema: Optional[str] = None
+    vector_space_backend: Optional[str] = None
+    vector_space_dimension: Optional[int] = None
     try:
+        current_step = "resolve_profile"
+        profile_binding = resolve_ingestion_profile(embedding_profile)
+        resolved_profile_id = profile_binding.profile_id
+        vector_space = profile_binding.resolution.vector_space
+        vector_space_id = vector_space.id
+        vector_space_schema = vector_space.schema
+        vector_space_backend = vector_space.backend
+        vector_space_dimension = vector_space.dimension
+
         fpath, meta_json = _resolve_upload(tenant, case, document_id)
         file_bytes = fpath.read_bytes()
         external_id = meta_json.get("external_id")
@@ -270,16 +290,52 @@ def process_document(
                 _meta_store_path(tenant, case, document_id), meta_json
             )
 
+        meta_json["embedding_profile"] = resolved_profile_id
+        if vector_space_id:
+            meta_json["vector_space_id"] = vector_space_id
         sanitized_meta_json = dict(meta_json)
         sanitized_meta_json.pop("tenant", None)
         sanitized_meta_json.pop("case", None)
+        normalized_process = normalise_selector_value(meta_json.get("process"))
+        normalized_doc_class = normalise_selector_value(meta_json.get("doc_class"))
+        if normalized_process is not None:
+            sanitized_meta_json["process"] = normalized_process
+        elif "process" in sanitized_meta_json:
+            sanitized_meta_json.pop("process", None)
+        if normalized_doc_class is not None:
+            sanitized_meta_json["doc_class"] = normalized_doc_class
+        elif "doc_class" in sanitized_meta_json:
+            sanitized_meta_json.pop("doc_class", None)
         meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
+        if resolved_profile_id:
+            meta["embedding_profile"] = resolved_profile_id
+        if vector_space_id:
+            meta["vector_space_id"] = vector_space_id
+        if vector_space_schema:
+            meta["vector_space_schema"] = vector_space_schema
+        if vector_space_backend:
+            meta["vector_space_backend"] = vector_space_backend
+        if vector_space_dimension is not None:
+            meta["vector_space_dimension"] = vector_space_dimension
+        if normalized_process is not None:
+            meta["process"] = normalized_process
+        if normalized_doc_class is not None:
+            meta["doc_class"] = normalized_doc_class
         state["meta"] = {
             "external_id": meta.get("external_id"),
             "file": fpath.name,
+            "embedding_profile": resolved_profile_id,
+            "vector_space_id": vector_space_id,
         }
+        if normalized_process is not None:
+            state["meta"]["process"] = normalized_process
+        if normalized_doc_class is not None:
+            state["meta"]["doc_class"] = normalized_doc_class
+        object_store.write_json(
+            _meta_store_path(tenant, case, document_id), sanitized_meta_json
+        )
         _write_pipeline_state(tenant, case, document_id, state)
 
         current_step = "ingest_raw"
@@ -355,6 +411,15 @@ def process_document(
         state["last_error"] = None
         state["completed_at"] = time.time()
         _write_pipeline_state(tenant, case, document_id, state)
+    except IngestionContractError as exc:
+        state["last_error"] = {
+            "step": current_step,
+            "message": str(exc),
+            "retry": getattr(self.request, "retries", 0),
+            "failed_at": time.time(),
+        }
+        _write_pipeline_state(tenant, case, document_id, state)
+        raise
     except Exception as exc:  # pragma: no cover - defensive retry path
         retries = getattr(self.request, "retries", 0)
         countdown = min(300, 5 * (2**retries or 1))
@@ -432,6 +497,8 @@ def process_document(
             "action": action,
             "chunk_count": chunk_count,
             "duration_ms": duration_ms,
+            "embedding_profile": resolved_profile_id,
+            "vector_space_id": vector_space_id,
         },
     )
     return {
@@ -445,6 +512,8 @@ def process_document(
         "inserted": inserted_count,
         "replaced": replaced_count,
         "skipped": skipped_count,
+        "embedding_profile": resolved_profile_id,
+        "vector_space_id": vector_space_id,
     }
 
 
@@ -453,6 +522,7 @@ def run_ingestion(
     tenant: str,
     case: str,
     document_ids: List[str],
+    embedding_profile: str,
     *,
     run_id: str,
     trace_id: Optional[str] = None,
@@ -463,6 +533,29 @@ def run_ingestion(
 ) -> Dict[str, object]:
     valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
     doc_count = len(valid_ids)
+    try:
+        binding = resolve_ingestion_profile(embedding_profile)
+    except IngestionContractError as exc:
+        log.error(
+            "Failed to resolve ingestion profile",
+            extra={
+                "tenant": tenant,
+                "case": case,
+                "run_id": run_id,
+                "trace_id": trace_id,
+                "embedding_profile": embedding_profile,
+                "error": str(exc),
+            },
+        )
+        raise
+
+    resolved_profile_id = binding.profile_id
+    resolved_space = binding.resolution.vector_space
+    vector_space_id = resolved_space.id
+    vector_space_schema = resolved_space.schema
+    vector_space_backend = resolved_space.backend
+    vector_space_dimension = resolved_space.dimension
+
     pipe.log_ingestion_run_start(
         tenant=tenant,
         case=case,
@@ -470,6 +563,8 @@ def run_ingestion(
         doc_count=doc_count,
         trace_id=trace_id,
         idempotency_key=idempotency_key,
+        embedding_profile=resolved_profile_id,
+        vector_space_id=vector_space_id,
     )
     started = time.perf_counter()
 
@@ -483,7 +578,13 @@ def run_ingestion(
     try:
         if valid_ids:
             job_group = group(
-                process_document.s(tenant, case, doc_id, tenant_schema)
+                process_document.s(
+                    tenant,
+                    case,
+                    doc_id,
+                    resolved_profile_id,
+                    tenant_schema,
+                )
                 for doc_id in valid_ids
             )
             try:
@@ -543,6 +644,11 @@ def run_ingestion(
                 trace_id,
                 failed_ids,
                 failure,
+                embedding_profile=resolved_profile_id,
+                vector_space_id=vector_space_id,
+                vector_space_schema=vector_space_schema,
+                vector_space_backend=vector_space_backend,
+                vector_space_dimension=vector_space_dimension,
             )
 
     except BaseException as exc:
@@ -560,6 +666,11 @@ def run_ingestion(
                 trace_id,
                 failed_ids,
                 failure,
+                embedding_profile=resolved_profile_id,
+                vector_space_id=vector_space_id,
+                vector_space_schema=vector_space_schema,
+                vector_space_backend=vector_space_backend,
+                vector_space_dimension=vector_space_dimension,
             )
         raise
     finally:
@@ -584,6 +695,8 @@ def run_ingestion(
             duration_ms=duration_ms,
             trace_id=trace_id,
             idempotency_key=idempotency_key,
+            embedding_profile=resolved_profile_id,
+            vector_space_id=vector_space_id,
         )
 
     log.info(
@@ -594,6 +707,8 @@ def run_ingestion(
             "trace_id": trace_id,
             "count": doc_count,
             "invalid_ids": invalid_ids,
+            "embedding_profile": resolved_profile_id,
+            "vector_space_id": vector_space_id,
             "failed_ids": (
                 failed_ids
                 if failed_ids
@@ -662,6 +777,12 @@ def _dispatch_dead_letters(
     trace_id: Optional[str],
     failed_ids: Iterable[str],
     failure: BaseException,
+    *,
+    embedding_profile: Optional[str] = None,
+    vector_space_id: Optional[str] = None,
+    vector_space_schema: Optional[str] = None,
+    vector_space_backend: Optional[str] = None,
+    vector_space_dimension: Optional[int] = None,
 ) -> None:
     failed_list = list(failed_ids)
     if not failed_list:
@@ -673,6 +794,26 @@ def _dispatch_dead_letters(
         "trace_id": trace_id,
         "error": str(failure),
     }
+    if embedding_profile:
+        payload["embedding_profile"] = embedding_profile
+    if vector_space_id:
+        payload["vector_space_id"] = vector_space_id
+    if vector_space_schema:
+        payload["vector_space_schema"] = vector_space_schema
+    if vector_space_backend:
+        payload["vector_space_backend"] = vector_space_backend
+    if vector_space_dimension is not None:
+        payload["vector_space_dimension"] = vector_space_dimension
+    context = getattr(failure, "context", None)
+    if isinstance(context, dict):
+        for key, value in context.items():
+            if key in payload and key not in {"process", "doc_class"}:
+                continue
+            if value is not None or key in {"process", "doc_class"}:
+                payload[key] = value
+    payload.setdefault("process", None)
+    payload.setdefault("doc_class", None)
+
     for document_id in failed_list:
         message = {**payload, "document_id": document_id}
         record_dead_letter.apply_async(
@@ -689,6 +830,12 @@ def _safe_dispatch_dead_letters(
     trace_id: Optional[str],
     failed_ids: Iterable[str],
     failure: BaseException,
+    *,
+    embedding_profile: Optional[str] = None,
+    vector_space_id: Optional[str] = None,
+    vector_space_schema: Optional[str] = None,
+    vector_space_backend: Optional[str] = None,
+    vector_space_dimension: Optional[int] = None,
 ) -> None:
     try:
         _dispatch_dead_letters(
@@ -699,6 +846,11 @@ def _safe_dispatch_dead_letters(
             trace_id,
             failed_ids,
             failure,
+            embedding_profile=embedding_profile,
+            vector_space_id=vector_space_id,
+            vector_space_schema=vector_space_schema,
+            vector_space_backend=vector_space_backend,
+            vector_space_dimension=vector_space_dimension,
         )
     except Exception:  # pragma: no cover - defensive logging
         log.exception(
@@ -709,6 +861,8 @@ def _safe_dispatch_dead_letters(
                 "run_id": run_id,
                 "trace_id": trace_id,
                 "failed_ids": list(failed_ids),
+                "embedding_profile": embedding_profile,
+                "vector_space_id": vector_space_id,
             },
         )
 

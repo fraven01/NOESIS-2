@@ -255,11 +255,13 @@ Beispielkonfiguration für getrennte Scopes (z. B. isolierte Großmandanten):
 RAG_VECTOR_STORES = {
     "global": {
         "backend": "pgvector",
+        "dimension": 1536,
         "dsn_env": "RAG_DATABASE_URL",
         "default": True,
     },
     "enterprise": {
         "backend": "pgvector",
+        "dimension": 1536,
         "schema": "rag_enterprise",
         "tenants": ["f1d8f7af-4d4a-4f13-9d5b-a1c46b0d5b61"],
         "schemas": ["acme_prod"],
@@ -269,6 +271,134 @@ RAG_VECTOR_STORES = {
 
 Der Router mappt automatisch alle aufgeführten Tenant-IDs oder Schema-Namen auf
 den jeweiligen Scope und fällt ansonsten auf `global` zurück.
+
+Embedding-Profile verweisen anschließend auf diese Vector-Spaces:
+
+```python
+RAG_EMBEDDING_PROFILES = {
+    "standard": {
+        "model": "oai-embed-large",
+        "dimension": 1536,
+        "vector_space": "global",
+    },
+    "premium": {
+        "model": "vertex_ai/text-embedding-004",
+        "dimension": 3072,
+        "vector_space": "enterprise",
+    },
+}
+```
+
+Beim Start wird die Konfiguration validiert; Dimensionen von Profil und Space
+müssen übereinstimmen, andernfalls bricht die Anwendung mit einem klaren
+Hinweis ab.
+
+**Fehlercodes (Embedding-Konfiguration & Routing)**
+
+| Code | Auslöser | Maßnahmen |
+| --- | --- | --- |
+| `EMB_DIM_MISMATCH` | Profil-Dimension passt nicht zur Ziel-Vector-Space-Dimension. | Konfiguration prüfen, ggf. neues Profil/Speicher-Schema mit korrekter Dimension anlegen. |
+| `EMB_SPACE_DIM_INVALID` | Vector-Space-Dimension fehlt oder besitzt keinen positiven Integer-Wert. | Eintrag in `RAG_VECTOR_STORES` korrigieren, gültige Dimension setzen. |
+| `EMB_PROFILE_DIM_INVALID` | Profil-Dimension ist nicht als positiver Integer angegeben. | Eintrag in `RAG_EMBEDDING_PROFILES` prüfen und Dimension korrigieren. |
+| `EMB_UNKNOWN_SPACE` | Profil verweist auf nicht deklarierte Vector-Space-ID. | Vector-Space-Eintrag nachziehen oder Profil auf gültige ID mappen. |
+| `ROUTE_DUP_SELECTOR` | Mindestens zwei Regeln besitzen identische Selektoren (ggf. mit unterschiedlichem Profil). | Überlappende Regeln konsolidieren oder entfernen. |
+| `ROUTE_DUP_SAME_TARGET` | Selektoren werden mehrfach mit demselben Zielprofil deklariert. | Wird toleriert; Warnung im Log lesen und redundante Regeln aufräumen. |
+| `ROUTE_CONFLICT` | Gleich spezifische Regeln überlappen sich teilweise bzw. matchen denselben Request mit unterschiedlichen Profilen. | Spezifitätsstufen anpassen (z. B. zusätzliche Dimension ergänzen) oder Regeln auflösen. |
+| `ROUTE_NO_MATCH` | Keine Regel und kein Default-Profil vorhanden. | Default-Profil ergänzen oder Routing-Regeln vervollständigen. |
+| `RESOLVE_TENANT_REQUIRED` | Resolver-Aufruf ohne tenant_id. | Request ergänzen; Operation erneut senden. |
+| `RESOLVE_PROFILE_UNKNOWN` | Router liefert ein Profil, das nicht mehr in der Konfiguration existiert (Drift). | Konfiguration prüfen, Startzeit-Checks erneut ausführen und Caches neu laden. |
+| `SPACE_PROFILE_REQUIRED` | Vector-Space-Lookup ohne Profilkennung. | Request oder Aufruf um gültigen Profilschlüssel ergänzen. |
+| `SPACE_PROFILE_UNKNOWN` | Profil ist nicht (mehr) in der Embedding-Konfiguration hinterlegt. | Konfiguration prüfen und Deployment/Cache aktualisieren. |
+| `SPACE_UNDEFINED_FOR_PROFILE` | Profil verweist auf unbekannten Vector-Space. | Vector-Space-Definition ergänzen oder Profil korrigieren. |
+| `SCHEMA_DIM_CONFLICT` | Zwei Vector-Spaces mit unterschiedlicher Dimension teilen sich dasselbe Schema. | Dimensionen entflechten: neues Schema für abweichende Dimension anlegen und Routing/Config aktualisieren. |
+| `SCHEMA_DIM_RENDER_FAILED` | Schema-Template konnte nicht mit der angeforderten Dimension gerendert werden (z. B. fehlender oder nicht-positiver Wert). | Dimension prüfen, Konfiguration korrigieren und Start erneut versuchen. |
+| `SCHEMA_TEMPLATE_MISSING` | DDL-Template `docs/rag/schema.sql` fehlt beim Rendern. | Repository/Deploy-Paket prüfen, Datei wiederherstellen. |
+| `ROUTER_TENANT_REQUIRED` | Retrieval-Request ohne tenant_id. | Client-Request um `tenant_id` erweitern. |
+| `ROUTER_TOP_K_INVALID` | `top_k` ist kein positiver Integer. | Request-Parameter korrigieren. |
+| `ROUTER_MAX_CANDIDATES_INVALID` | `max_candidates` ist kein positiver Integer. | Request-Parameter korrigieren. |
+| `ROUTER_MAX_CANDIDATES_LT_TOP_K` | Kandidatenpool kleiner als `top_k`. | Request anpassen (Pool ≥ `top_k`) oder Server-Policy konsultieren. |
+| `INGEST_PROFILE_REQUIRED` | Ingestion-Request ohne `embedding_profile`. | Request ergänzen; Profilschlüssel explizit mitsenden. |
+| `INGEST_PROFILE_INVALID` | `embedding_profile` ist kein nicht-leerer String. | Request-Parameter korrigieren. |
+| `INGEST_PROFILE_UNKNOWN` | Profil ist nicht (mehr) konfiguriert. | Routing/Embedding-Konfiguration synchronisieren. |
+| `INGEST_VECTOR_SPACE_UNKNOWN` | Profil verweist auf einen unbekannten Vector-Space. | Vector-Space-Eintrag ergänzen oder Profil korrigieren. |
+| `INGEST_VECTOR_DIMENSION_MISMATCH` | Persistenz-Guard meldet abweichende Embedding-Länge zum Ziel-Vector-Space. | Dokument neu einbetten oder Profil/Speicher abstimmen, bevor der Write erneut angestoßen wird. |
+| Weitere Codes | Typisierte Startzeit-Validierungen decken fehlende Felder, falsche Datentypen oder unbekannte Profile ab (`EMB_*`, `ROUTE_*`). | Fehlermeldung lesen und entsprechende Konfiguration korrigieren. |
+
+Die Kandidatenpool-Policy wird zentral über `RAG_CANDIDATE_POLICY` gesteuert. Standard ist `error` (Request wird mit
+`ROUTER_MAX_CANDIDATES_LT_TOP_K` abgelehnt). Mit `normalize` hebt die Eingangsvalidierung `max_candidates`
+deterministisch auf mindestens `top_k` an und protokolliert genau eine `rag.hybrid.candidate_pool.normalized`-Warnung.
+
+#### RAG Health Snapshot
+
+Für lokale Smoke-Tests genügt eine minimale, deterministische Konfiguration. Die folgenden Defaults stellen sicher,
+dass der Router lädt, Kandidatenpools toleriert und der Schema-Smoke durchläuft:
+
+```bash
+export RAG_ROUTING_RULES_PATH="config/rag_routing_rules.yaml"
+export RAG_CANDIDATE_POLICY=normalize  # verhindert Abbrüche bei kleinen Kandidatenpools
+```
+
+Eine schlanke Routing-Datei liefert dabei das Pflicht-Default-Profil und optional eine exemplarische Override-Regel:
+
+```yaml
+# config/rag_routing_rules.yaml
+default_profile: standard
+rules:
+  - tenant: demo-tenant
+    process: review
+    doc_class: manual
+    profile: standard
+```
+
+Die Kombination erlaubt folgenden Health-Check-Flow:
+
+```bash
+python manage.py rag_routing_rules --tenant=demo-tenant --process=review --doc-class=manual
+python manage.py rag_schema_smoke --space=global
+```
+
+Beide Kommandos brechen bei Konfigurationsfehlern mit den oben dokumentierten Fehlercodes ab und protokollieren die
+entscheidenden Selektoren (`tenant`, `process`, `doc_class`) für Observability.
+
+Selektoren (`tenant_id`, `process`, `doc_class`) werden beim Laden der YAML-Regeln und während der Eingangsvalidierung
+whitespace-getrimmt und lowercased. Routing-Regeln sind damit case-insensitive; der Resolver akzeptiert z. B.
+`review`, `Review` oder `REVIEW` gleichermaßen. Die Spezifität errechnet sich aus der Anzahl gesetzter Dimensionen
+(0–3). Die Reihenfolge „mehr gesetzte Felder gewinnt, Gleichstand ⇒ Fehler“ ist im Test
+`ai_core/tests/test_routing_rules.py::test_specificity_precedence` abgebildet.
+
+Programmatic access:
+- `ai_core.rag.resolve_embedding_profile()` und `ai_core.rag.resolve_vector_space()` liefern deterministisch das konfigurierte Profil sowie den Vector-Space (inkl. Backend, Schema, Dimension und `vector_space.id`).
+- `ai_core.rag.resolve_ingestion_profile()` validiert Ingestion-Profile, liefert Vector-Space-Metadaten und wirft deterministische `INGEST_*`-Fehlercodes; `ai_core.rag.map_ingestion_error_to_status()` mappt sie bewusst auf HTTP 400.
+- `ai_core.rag.ensure_embedding_dimensions()` prüft vor dem Upsert, dass Embedding-Vektoren exakt zur konfigurierten Dimension des Vector-Spaces passen und hebt Verstöße mit `INGEST_VECTOR_DIMENSION_MISMATCH` auf.
+- `ai_core.rag.validate_search_inputs()` normalisiert Router-Eingaben (inkl. `process`/`doc_class`) und hebt Konflikte (fehlende `tenant_id`, ungültige Limits) mit obigen Fehlercodes hervor.
+- `ai_core.rag.map_router_error_to_status()` ordnet Router-Validierungsfehler deterministisch HTTP-Status-Codes (bewusst immer 400, Auth wird upstream gehandhabt).
+- `ai_core.rag.emit_router_validation_failure()` setzt verpflichtende Trace-Tags (`tenant`, `process`, `doc_class`, `top_k`, `max_candidates`, `error_code`) für Langfuse-Spans.
+- `ai_core.rag.build_vector_schema_plan()` rendert DDL-Blöcke pro Vector-Space (Schema + Tabellen inkl. Dimension) für Migrations-/Bootstrap-Pipelines.
+- `ai_core.rag.render_schema_sql(schema, dimension)` erlaubt DDL-Smoke-Tests oder dedizierte Migrationen für einzelne Spaces.
+- `python manage.py rag_schema_smoke --space=<space_id>` rendert das DDL-Template für einen Space (optional mit `--show-sql`) und dient als CI-Smoke-Test für Template-Änderungen.
+- `python manage.py rag_routing_rules [--tenant=<id> --process=<label> --doc-class=<label>]` validiert die geladenen Routing-Regeln,
+  listet alle Overrides und erlaubt eine dry-run Profilauflösung für selektierte Kontexte (`--refresh` lädt die YAML erneut von Disk).
+
+Routing-Regeln für Embeddings liegen in `config/rag_routing_rules.yaml`. Die
+Datei definiert ein Pflicht-Default-Profil sowie optionale Overrides für
+Tenant, Prozesskontext und Dokumentklasse. Sie kann per
+`RAG_ROUTING_RULES_PATH` überschrieben werden. Die Startzeit-Validierung stellt
+sicher, dass jede Regel auf ein bekanntes Profil zeigt und dass sich überlappende
+Regeln mit gleicher Spezifität zu einem eindeutigen Ergebnis führen. Identische
+Selektoren mit identischem Profil werden toleriert, erzeugen aber genau eine
+`ROUTE_DUP_SAME_TARGET`-Warnung zur Bereinigung redundant gepflegter Einträge. Case-insensitive Normalisierung verhindert,
+dass Varianten wie `Review`/`review` konkurrierende Selektoren bilden.
+
+Die physischen Tabellen/Schemata werden über `docs/rag/schema.sql` bereitgestellt.
+`build_vector_schema_plan()` rendert daraus pro Vector-Space ein DDL-Skript, das
+das Ziel-Schema erzeugt, Basistabellen (documents/chunks) anlegt und die
+Embeddings-Tabelle mit passender `vector(<dimension>)`-Definition provisioniert.
+Damit sind Dimensionen pro Space strikt getrennt; Einfügeversuche mit falscher
+Länge führen zu einem Postgres-Fehler (`DataException`). Die kommentierten
+IVFFLAT/HNSW-Index-Stubs im Template sollten aktiviert werden, sobald der
+jeweilige Space dauerhaft mehr als einige hunderttausend Chunks umfasst oder
+bei strengen Latenzvorgaben zusätzliche Recall/Speedup-Optimierungen nötig
+werden.
 
 AI Core:
 - LITELLM_BASE_URL: Basis-URL des LiteLLM-Proxys

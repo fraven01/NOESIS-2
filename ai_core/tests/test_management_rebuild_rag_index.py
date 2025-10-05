@@ -123,10 +123,11 @@ def test_rebuild_rag_index_creates_expected_index(
 @pytest.mark.usefixtures("rag_database")
 def test_rebuild_rag_index_uses_scope_with_default_flag(settings) -> None:
     settings.RAG_VECTOR_STORES = {
-        "global": {"backend": "pgvector", "schema": "rag"},
+        "global": {"backend": "pgvector", "schema": "rag", "dimension": 1536},
         "enterprise": {
             "backend": "pgvector",
             "schema": "rag_enterprise",
+            "dimension": 1536,
             "default": True,
         },
     }
@@ -275,8 +276,20 @@ def test_rebuild_rag_index_health_check(
     doc_one = _upload("Vector index smoke check one", "index-health-one")
     doc_two = _upload("Vector index smoke check two", "index-health-two")
 
-    first_result = process_document(tenant, case, doc_one, tenant_schema=tenant)
-    second_result = process_document(tenant, case, doc_two, tenant_schema=tenant)
+    first_result = process_document(
+        tenant,
+        case,
+        doc_one,
+        "standard",
+        tenant_schema=tenant,
+    )
+    second_result = process_document(
+        tenant,
+        case,
+        doc_two,
+        "standard",
+        tenant_schema=tenant,
+    )
 
     assert first_result["inserted"] == 1
     assert second_result["inserted"] == 1

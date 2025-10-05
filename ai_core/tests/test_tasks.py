@@ -7,6 +7,10 @@ from structlog.testing import capture_logs
 from ai_core import tasks
 from ai_core.infra import object_store
 from ai_core.rag import metrics, vector_client
+from ai_core.rag.ingestion_contracts import (
+    IngestionContractError,
+    IngestionContractErrorCode,
+)
 from common import logging as common_logging
 from common.celery import ContextTask
 
@@ -147,6 +151,48 @@ def test_upsert_forwards_tenant_schema(monkeypatch):
 
     assert written == 1
     assert router.calls == [("tenant-42", "schema-tenant-42")]
+
+
+def test_upsert_raises_on_dimension_mismatch(monkeypatch):
+    meta = {
+        "tenant": "tenant-42",
+        "embedding_profile": "standard",
+        "vector_space_id": "global",
+        "vector_space_dimension": 2,
+        "process": "review",
+        "doc_class": "manual",
+    }
+    embeddings = [
+        {
+            "content": "payload",
+            "embedding": [0.0],
+            "meta": {
+                "tenant": "tenant-42",
+                "embedding_profile": "standard",
+                "vector_space_id": "global",
+                "external_id": "doc-1",
+            },
+        }
+    ]
+
+    monkeypatch.setattr(tasks.object_store, "read_json", lambda path: embeddings)
+
+    class _Router:
+        def upsert_chunks(self, chunks):  # pragma: no cover - should not be called
+            raise AssertionError("upsert_chunks should not be invoked on mismatch")
+
+    monkeypatch.setattr(tasks, "get_default_router", lambda: _Router())
+
+    with pytest.raises(IngestionContractError) as excinfo:
+        tasks.upsert(meta, "embeddings.json")
+
+    error = excinfo.value
+    assert error.code == IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH
+    assert error.context["process"] == "review"
+    assert error.context["doc_class"] == "manual"
+    assert error.context["embedding_profile"] == "standard"
+    assert error.context["vector_space_id"] == "global"
+    assert error.context["observed_dimension"] == 1
 
 
 @pytest.mark.usefixtures("rag_database")
