@@ -505,21 +505,25 @@ def run(state: QueryState, meta: Meta) -> Tuple[QueryState, GraphResult]:
                 fused_pool_size = int(fused_pool_size_raw)
             except (TypeError, ValueError):
                 fused_pool_size = None
-        trgm_candidates = int(
-            getattr(hybrid_result, "lexical_candidates", 0) or 0
-        )
+        trgm_candidates = int(getattr(hybrid_result, "lexical_candidates", 0) or 0)
         vec_limit_attr = getattr(hybrid_result, "vec_limit", None)
         lex_limit_attr = getattr(hybrid_result, "lex_limit", None)
         try:
-            vec_limit_value = int(vec_limit_attr) if vec_limit_attr is not None else None
+            vec_limit_value = (
+                int(vec_limit_attr) if vec_limit_attr is not None else None
+            )
         except (TypeError, ValueError):
             vec_limit_value = None
         try:
-            lex_limit_value = int(lex_limit_attr) if lex_limit_attr is not None else None
+            lex_limit_value = (
+                int(lex_limit_attr) if lex_limit_attr is not None else None
+            )
         except (TypeError, ValueError):
             lex_limit_value = None
     if fused_pool_size is None:
-        fused_pool_size = len(retrieved_chunks) if retrieved_chunks else final_match_count
+        fused_pool_size = (
+            len(retrieved_chunks) if retrieved_chunks else final_match_count
+        )
 
     response_meta: Dict[str, Any] = {
         "index_kind": index_kind,
