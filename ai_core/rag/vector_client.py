@@ -929,10 +929,21 @@ class PgVectorClient:
                                         },
                                     )
                                 elif isinstance(exc, PsycopgError):
-                                    # Always propagate DB errors from the primary lexical query;
-                                    # the outer handler will roll back, log, and decide whether
-                                    # to continue (if vector results exist) or raise.
-                                    raise
+                                    # Treat database errors during the primary lexical query as
+                                    # a signal to attempt the explicit similarity fallback.
+                                    # We mark that a rollback is required to restore session
+                                    # settings (e.g. search_path) before running the fallback.
+                                    should_run_fallback = True
+                                    fallback_requires_rollback = True
+                                    lexical_rows_local = []
+                                    logger.warning(
+                                        "rag.hybrid.lexical_primary_failed",
+                                        extra={
+                                            "tenant": tenant,
+                                            "case": case_value,
+                                            "error": str(exc),
+                                        },
+                                    )
                                 else:
                                     raise
                             if not lexical_rows_local and not should_run_fallback:
