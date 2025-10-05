@@ -1684,13 +1684,11 @@ class PgVectorClient:
         return max(1, len(content.split()))
 
     def _format_vector(self, values: Sequence[float]) -> str:
-        # Do not enforce a strict dimension check here.
-        #
-        # Rationale: Callers (and tests) may provide lightweight stub embeddings
-        # for query-time operations where we rely on the database/type system to
-        # validate dimensions. Ingestion paths still surface dimension problems
-        # at the database layer if the stored column uses a fixed vector size.
-        return "[" + ",".join(f"{float(v):.6f}" for v in values) + "]"
+        expected_dim = get_embedding_dim()
+        floats = [float(v) for v in values]
+        if len(floats) != expected_dim:
+            raise ValueError("Embedding dimension mismatch")
+        return "[" + ",".join(f"{value:.6f}" for value in floats) + "]"
 
     def _embed_query(self, query: str) -> List[float]:
         client = get_embedding_client()
