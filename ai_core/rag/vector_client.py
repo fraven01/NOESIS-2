@@ -624,9 +624,13 @@ class PgVectorClient:
                 except (TypeError, ValueError):
                     continue
         query_vec: Optional[str] = None
+        vector_format_error: Optional[Exception] = None
         if raw_vec is not None and not is_zero_vec:
-            query_vec = self._format_vector(raw_vec)
-        query_embedding_empty = bool(is_zero_vec)
+            try:
+                query_vec = self._format_vector(raw_vec)
+            except ValueError as exc:
+                vector_format_error = exc
+        query_embedding_empty = bool(is_zero_vec or vector_format_error is not None)
         if query_embedding_empty:
             metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant=tenant).inc()
             logger.info(
@@ -681,7 +685,20 @@ class PgVectorClient:
             fallback_tried_limits = []
             fallback_limit_used_value = None
             with self._connection() as conn:
-                if query_vec is not None:
+                if vector_format_error is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:  # pragma: no cover - defensive
+                        pass
+                    logger.warning(
+                        "rag.hybrid.vector_query_failed",
+                        extra={
+                            "tenant": tenant,
+                            "case": case_value,
+                            "error": str(vector_format_error),
+                        },
+                    )
+                elif query_vec is not None:
                     try:
                         with conn.cursor() as cur:
                             cur.execute(
