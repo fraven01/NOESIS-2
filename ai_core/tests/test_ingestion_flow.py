@@ -62,7 +62,7 @@ def test_upload_ingest_query_end2end(
     assert result["embedding_profile"] == "standard"
     assert result["vector_space_id"] == "global"
 
-    # Query
+    # Query (Demo-Endpunkt wurde entfernt und meldet HTTP 410)
     resp = client.post(
         "/ai/v1/rag-demo/",
         data=json.dumps({"query": "zebragurke", "top_k": 3}),
@@ -73,16 +73,12 @@ def test_upload_ingest_query_end2end(
             META_CASE_ID_KEY: case,
         },
     )
-    assert resp.status_code == 200
+    assert resp.status_code == 410
     data = resp.json()
-    assert data["ok"] is True
-    # kein Demo-Fallback
-    assert "warnings" not in data
-
-    assert data["matches"], "expected vector matches"
-    assert all(
-        match.get("metadata", {}).get("external_id") == "doc-e2e"
-        for match in data["matches"]
+    assert data["code"] == "rag_demo_removed"
+    assert (
+        data["detail"]
+        == "The RAG demo endpoint is deprecated and no longer available in the MVP build."
     )
 
 
