@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noesis.example.com/schemas/retrieve.hybrid.request.json",
+  "title": "Hybrid Retrieve Request",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["query", "hybrid"],
+  "properties": {
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Natural language query that will be executed via hybrid retrieval."
+    },
+    "filters": {
+      "type": ["object", "null"],
+      "description": "Optional structured filters forwarded to the vector store.",
+      "additionalProperties": true
+    },
+    "process": {
+      "type": "string",
+      "description": "Optional process alias used to resolve the embedding profile."
+    },
+    "doc_class": {
+      "type": "string",
+      "description": "Optional document class that influences routing."
+    },
+    "hybrid": {
+      "type": "object",
+      "description": "Hybrid retrieval parameters with strict validation.",
+      "additionalProperties": false,
+      "properties": {
+        "alpha": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.7,
+          "description": "Fusion weight between dense and lexical scores."
+        },
+        "min_sim": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.15,
+          "description": "Similarity threshold applied after fusion."
+        },
+        "top_k": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10,
+          "default": 5,
+          "description": "Number of final matches returned after deduplication."
+        },
+        "vec_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50,
+          "description": "Maximum dense candidates requested from the vector store."
+        },
+        "lex_limit": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 50,
+          "description": "Maximum lexical candidates requested from the vector store."
+        },
+        "trgm_limit": {
+          "type": ["number", "null"],
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Optional trigram similarity threshold for lexical candidates."
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Upper bound for the combined candidate pool before fusion."
+        }
+      }
+    }
+  }
+}

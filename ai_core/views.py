@@ -682,6 +682,15 @@ SYSDESC_SCHEMA = {
 }
 
 
+RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
+    name="RagDemoDeprecatedResponse",
+    fields={
+        "detail": serializers.CharField(),
+        "code": serializers.CharField(),
+    },
+)
+
+
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
     authentication_classes: list = []
     permission_classes: list = []
@@ -1067,27 +1076,41 @@ class RagIngestionRunView(APIView):
         return apply_std_headers(response, meta)
 
 
-class RagDemoViewV1(_GraphView):
-    """Minimal RAG retrieval demo: returns top-k matches for a query."""
+class RagDemoViewV1(_BaseAgentView):
+    """Deprecated demo endpoint retained only for backwards compatibility."""
 
-    graph_name = "rag_demo"
+    api_deprecated = True
+    api_deprecation_id = "rag-demo-mvp"
 
     @default_extend_schema(
         request=IntakeRequestSerializer,
-        responses={200: IntakeResponseSerializer},
+        responses={410: RAG_DEMO_DEPRECATED_RESPONSE},
         error_statuses=RATE_LIMIT_JSON_ERROR_STATUSES,
         include_trace_header=True,
+        description=(
+            "This demo workflow has been removed from the MVP build. The endpoint "
+            "returns HTTP 410 to signal permanent removal."
+        ),
         examples=[
             OpenApiExample(
-                name="RagDemo",
-                summary="RAG demo",
-                description="Send {'query': 'your question'} to retrieve top-k matches",
-                value={"query": "Wie konfiguriere ich Tenant-Filter?"},
+                name="RagDemoRemoved",
+                summary="Deprecated",
+                description="The demo endpoint has been removed and now returns HTTP 410.",
+                value={"detail": "The RAG demo endpoint has been removed.", "code": "rag_demo_removed"},
             )
         ],
     )
     def post(self, request: Request) -> Response:
-        return super().post(request)
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
+        response = _error_response(
+            "The RAG demo endpoint is deprecated and no longer available in the MVP build.",
+            "rag_demo_removed",
+            status.HTTP_410_GONE,
+        )
+        return apply_std_headers(response, meta)
 
 
 ping_v1 = PingViewV1.as_view()
