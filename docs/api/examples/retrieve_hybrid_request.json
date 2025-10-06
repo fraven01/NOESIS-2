@@ -1,0 +1,12 @@
+{
+  "query": "Wie lautet die aktuelle Rückgaberichtlinie?",
+  "filters": {
+    "project_id": "proj-42"
+  },
+  "process": "customer-support",
+  "hybrid": {
+    "alpha": 0.7,
+    "min_sim": 0.15,
+    "top_k": 5
+  }
+}
