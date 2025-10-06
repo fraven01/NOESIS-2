@@ -23,6 +23,11 @@ flowchart TD
 - Embedder ruft LiteLLM mit `EMBEDDINGS_MODEL`/`EMBEDDINGS_API_BASE` auf und schreibt Ergebnisse in `pgvector`.
 - Upsert nutzt Hashes, um Duplikate zu überspringen und `documents.deleted_at` zu respektieren.
 
+## Upload → Ingest-Trigger
+- **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen.
+- **Trigger-Phase (`POST /api/v1/documents/{document_id}/ingest/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.
+- **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
+
 ## Parameter
 | Parameter | Default | Grenze | Beschreibung |
 | --- | --- | --- | --- |
@@ -46,6 +51,6 @@ flowchart TD
 - Fehler werden in Langfuse als Span `ingestion.error` mit Metadaten protokolliert.
 
 # Schritte
-1. Konfiguriere Loader, Splitter und Embedding-Parameter laut Tabelle und verknüpfe sie mit der Queue `ingestion` (siehe [Docker-Konventionen](../docker/conventions.md)).
-2. Starte Testbatches in Staging über die Pipeline-Stufe „Ingestion-Smoke“ und beobachte Langfuse- sowie Cloud-SQL-Statistiken.
-3. Übernimm dieselben Einstellungen nach Prod, dokumentiere Anpassungen (z.B. `BATCH_SIZE`) und aktiviere Alerts im [Langfuse Guide](../observability/langfuse.md).
+1. Lade das Dokument via `POST /ai/rag/documents/upload/` hoch, dokumentiere die zurückgegebene `document_id` und prüfe Upload-Fehler (z.B. Tenant-Mismatch, Dateigrößenlimit) sofort im Response.
+2. Stoße den Ingest mit `POST /api/v1/documents/{document_id}/ingest/` an; ein 202-Response signalisiert, dass der Task in der `ingestion` Queue liegt. Bei 4xx-Replies Profil-/Statusfehler korrigieren, bei 5xx erneut triggern oder einen Retry-Job anlegen.
+3. Überwache den Worker-Lauf (Langfuse Trace `ingestion.*`, Dead-Letter-Queue, Cloud-SQL-Metriken) und führe bei Backpressure-Peaks ein gestaffeltes Retriggering durch, bevor du in Prod ausrollst. Einstellungen wie `BATCH_SIZE` dokumentieren und Alerts im [Langfuse Guide](../observability/langfuse.md) aktivieren.
