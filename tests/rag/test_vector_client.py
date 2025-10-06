@@ -1,9 +1,11 @@
 import math
 import uuid
 from collections.abc import Sequence
+from datetime import datetime, timezone
 
 import pytest
 import psycopg2
+from psycopg2.extras import Json
 from structlog.testing import capture_logs
 
 from ai_core.rag import vector_client
@@ -1003,3 +1005,92 @@ def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
         if entry.get("event") == "rag.hybrid.lexical_query_failed"
     ]
     assert vector_logs and lexical_logs
+
+
+def test_hybrid_search_filters_soft_deleted_documents():
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    active_doc_id = uuid.uuid4()
+    deleted_doc_id = uuid.uuid4()
+    timestamp = datetime.now(tz=timezone.utc)
+
+    with client.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO documents (id, tenant_id, source, hash, metadata, external_id, deleted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, NULL)
+            """,
+            (
+                active_doc_id,
+                tenant,
+                "unit-test",
+                "hash-active",
+                Json({"hash": "hash-active"}),
+                "doc-active",
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO documents (id, tenant_id, source, hash, metadata, external_id, deleted_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                deleted_doc_id,
+                tenant,
+                "unit-test",
+                "hash-deleted",
+                Json({"hash": "hash-deleted"}),
+                "doc-deleted",
+                timestamp,
+            ),
+        )
+        shared_text = "Shared retrieval test"
+        cur.execute(
+            """
+            INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                uuid.uuid4(),
+                active_doc_id,
+                0,
+                shared_text,
+                3,
+                Json({"tenant": tenant, "case": "alpha"}),
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                uuid.uuid4(),
+                deleted_doc_id,
+                0,
+                shared_text,
+                3,
+                Json(
+                    {
+                        "tenant": tenant,
+                        "case": "alpha",
+                        "deleted_at": timestamp.isoformat(),
+                    }
+                ),
+            ),
+        )
+        conn.commit()
+
+    result = client.hybrid_search(
+        "Shared retrieval test",
+        tenant_id=tenant,
+        filters={"case": "alpha"},
+        alpha=0.0,
+        min_sim=0.0,
+        top_k=5,
+    )
+
+    assert result.vector_candidates == 0
+    assert result.lexical_candidates == 1
+    assert [chunk.meta.get("id") for chunk in result.chunks] == [str(active_doc_id)]

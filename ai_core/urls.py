@@ -14,5 +14,10 @@ urlpatterns = [
     path("sysdesc/", views.sysdesc, name="sysdesc"),
     path("rag/documents/upload/", views.rag_upload, name="rag_upload"),
     path("rag/ingestion/run/", views.rag_ingestion_run, name="rag_ingestion_run"),
+    path(
+        "rag/admin/hard-delete/",
+        views.rag_hard_delete_admin,
+        name="rag_hard_delete_admin",
+    ),
     path("v1/rag-demo/", views.rag_demo, name="rag_demo"),
 ]

@@ -17,6 +17,7 @@ from ai_core.rag.limits import (
     resolve_candidate_pool_policy,
 )
 from ai_core.rag.selector_utils import normalise_selector_value
+from ai_core.rag.visibility import Visibility, normalize_visibility
 
 _ROUTER_DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
 
@@ -50,6 +51,7 @@ class RouterInputErrorCode:
     TOP_K_INVALID = "ROUTER_TOP_K_INVALID"
     MAX_CANDIDATES_INVALID = "ROUTER_MAX_CANDIDATES_INVALID"
     MAX_CANDIDATES_LT_TOP_K = "ROUTER_MAX_CANDIDATES_LT_TOP_K"
+    VISIBILITY_INVALID = "ROUTER_VISIBILITY_INVALID"
 
 
 def map_router_error_to_status(code: str) -> int:
@@ -79,6 +81,8 @@ class SearchValidationResult:
     top_k_source: str
     effective_max_candidates: int
     max_candidates_source: str
+    visibility: Visibility
+    visibility_source: str
     context: dict[str, object | None]
 
 
@@ -153,6 +157,7 @@ def validate_search_inputs(
     doc_class: str | None = None,
     top_k: object | None = None,
     max_candidates: object | None = None,
+    visibility: object | None = None,
 ) -> SearchValidationResult:
     """Validate router inputs and return sanitised values."""
 
@@ -273,6 +278,19 @@ def validate_search_inputs(
         effective_max_candidates if sanitized_max is not None else None
     )
 
+    try:
+        normalized_visibility, visibility_source = normalize_visibility(visibility)
+    except ValueError as exc:
+        raise RouterInputError(
+            RouterInputErrorCode.VISIBILITY_INVALID,
+            "visibility must be one of 'active', 'all' or 'deleted'",
+            field="visibility",
+            context=context,
+        ) from exc
+
+    context["visibility"] = normalized_visibility.value
+    context["visibility_source"] = visibility_source
+
     return SearchValidationResult(
         tenant_id=tenant,
         process=sanitized_process,
@@ -283,6 +301,8 @@ def validate_search_inputs(
         top_k_source=top_k_source,
         effective_max_candidates=effective_max_candidates,
         max_candidates_source=max_candidates_source,
+        visibility=normalized_visibility,
+        visibility_source=visibility_source,
         context=context,
     )
 

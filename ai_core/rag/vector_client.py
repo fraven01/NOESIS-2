@@ -37,6 +37,7 @@ from .normalization import normalise_text, normalise_text_db
 from . import metrics
 from .filters import strict_match
 from .schemas import Chunk
+from .visibility import Visibility
 
 # Ensure jsonb columns are decoded into Python dictionaries
 register_default_jsonb(loads=json.loads, globally=True)
@@ -201,6 +202,8 @@ class HybridSearchResult:
     query_embedding_empty: bool = False
     applied_trgm_limit: float | None = None
     fallback_limit_used: float | None = None
+    visibility: str = Visibility.ACTIVE.value
+    deleted_matches_blocked: int = 0
 
 
 class UpsertResult(int):
@@ -669,7 +672,11 @@ class PgVectorClient:
             filter_debug,
         )
 
-        where_clauses = ["d.tenant_id = %s"]
+        where_clauses = [
+            "d.tenant_id = %s",
+            "d.deleted_at IS NULL",
+            "(c.metadata ->> 'deleted_at') IS NULL",
+        ]
         where_params: List[object] = [tenant_uuid]
         for key, value in metadata_filters:
             kind = SUPPORTED_METADATA_FILTERS[key]

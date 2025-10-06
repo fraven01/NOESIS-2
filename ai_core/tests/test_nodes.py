@@ -95,6 +95,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert router.calls[0]["max_candidates"] == 40
     assert router.calls[0]["process"] == "review"
     assert router.calls[0]["doc_class"] == "invoice"
+    assert router.calls[0]["visibility"] is None
+    assert router.calls[0]["visibility_override_allowed"] is False
 
     match = result["matches"][0]
     assert match["id"] == "doc-1"
@@ -114,6 +116,7 @@ def test_retrieve_hybrid_search(monkeypatch):
         "profile": "standard",
         "vector_space_id": "rag/global",
     }
+    assert meta_payload["visibility_effective"] == "active"
 
 
 def test_retrieve_scoped_router(monkeypatch):
