@@ -123,6 +123,6 @@ API-Referenz und den vorhandenen Dev-Skripten.
 - Optional: `docker compose ... down -v` zum Zurücksetzen.
 
 ## 8. Automatisierung
-Das Skript [`scripts/rag_demo_walkthrough.sh`](../../scripts/rag_demo_walkthrough.sh)
-führt die Schritte 3–6 automatisiert aus (inkl. Polling auf Treffer). Vorher muss
-Schritt 2 abgeschlossen sein und der Worker laufen. Details siehe Skript-Header.
+Das frühere Skript [`scripts/rag_demo_walkthrough.sh`](../../scripts/rag_demo_walkthrough.sh)
+wurde im MVP als veraltet markiert und bricht sofort ab. Die automatisierte Demo
+ist damit deaktiviert; nutze stattdessen die produktiven RAG-Flows.

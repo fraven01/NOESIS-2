@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noesis.example.com/schemas/retrieve.response.json",
+  "title": "Hybrid Retrieve Response",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["matches", "meta"],
+  "properties": {
+    "matches": {
+      "type": "array",
+      "description": "Deduplicated matches sorted by score.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "text", "score", "source"],
+        "properties": {
+          "id": {
+            "type": ["string", "null"],
+            "description": "Stable identifier of the chunk when available."
+          },
+          "text": {
+            "type": "string",
+            "description": "Snippet content extracted from the chunk."
+          },
+          "score": {
+            "type": "number",
+            "minimum": 0.0,
+            "maximum": 1.0,
+            "description": "Normalised hybrid relevance score."
+          },
+          "source": {
+            "type": "string",
+            "description": "Source label or filename of the chunk."
+          },
+          "hash": {
+            "type": ["string", "null"],
+            "description": "Optional content hash for cache validation."
+          },
+          "meta": {
+            "type": "object",
+            "description": "Additional metadata preserved from the chunk.",
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "alpha",
+        "min_sim",
+        "top_k_effective",
+        "max_candidates_effective",
+        "vector_candidates",
+        "lexical_candidates",
+        "routing"
+      ],
+      "properties": {
+        "alpha": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Fusion weight used for the hybrid search."
+        },
+        "min_sim": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "Similarity threshold applied after fusion."
+        },
+        "top_k_effective": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of matches returned after trimming."
+        },
+        "max_candidates_effective": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Combined candidate pool size used for fusion."
+        },
+        "vector_candidates": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total dense candidates considered before deduplication."
+        },
+        "lexical_candidates": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total lexical candidates considered before deduplication."
+        },
+        "routing": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["profile", "vector_space_id"],
+          "properties": {
+            "profile": {
+              "type": "string",
+              "description": "Embedding profile used for the request."
+            },
+            "vector_space_id": {
+              "type": "string",
+              "description": "Vector space identifier backing the profile."
+            }
+          }
+        }
+      }
+    }
+  }
+}

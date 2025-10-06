@@ -13,6 +13,7 @@ from ai_core.nodes import (
 )
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import HybridSearchResult
 
 META = {
     "tenant": "t1",
@@ -20,161 +21,124 @@ META = {
     "trace_id": "tr",
     "tenant_schema": "tenant-schema-1",
 }
+class _DummyProfile:
+    def __init__(self, vector_space: str) -> None:
+        self.vector_space = vector_space
 
 
-def test_retrieve_returns_snippets(monkeypatch):
+class _DummyConfig:
+    def __init__(self, profile: str, vector_space: str) -> None:
+        self.embedding_profiles = {profile: _DummyProfile(vector_space)}
+
+
+def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
+    monkeypatch.setattr(
+        "ai_core.nodes.retrieve.resolve_embedding_profile",
+        lambda *, tenant_id, process=None, doc_class=None: profile,
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes.retrieve.get_embedding_configuration",
+        lambda: _DummyConfig(profile, space),
+    )
+
+
+def test_retrieve_hybrid_search(monkeypatch):
+    _patch_routing(monkeypatch)
+
+    chunk = Chunk(
+        "Hybrid Result",
+        {"id": "doc-1", "source": "src", "hash": "h1", "score": 0.83},
+    )
+    hybrid_result = HybridSearchResult(
+        chunks=[chunk],
+        vector_candidates=37,
+        lexical_candidates=41,
+        fused_candidates=42,
+        duration_ms=1.1,
+        alpha=0.6,
+        min_sim=0.2,
+        vec_limit=40,
+        lex_limit=30,
+    )
+
     class _Router:
-        def __init__(self, chunks):
-            self._chunks = chunks
-            self.last_call = {}
-
-        def search(
-            self,
-            query,
-            tenant_id,
-            *,
-            case_id=None,
-            top_k=5,
-            filters=None,
-        ):
-            self.last_call = {
-                "tenant_id": tenant_id,
-                "case_id": case_id,
-                "top_k": top_k,
-                "filters": filters,
-            }
-            return self._chunks
-
-    chunk = Chunk(
-        "Hello 123",
-        {
-            "tenant": "t1",
-            "case": "c1",
-            "source": "s1",
-            "hash": "h",
-            "id": "doc-1",
-            "score": 0.42,
-            "category": "demo",
-        },
-    )
-    router = _Router([chunk])
-    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
-    state, result = retrieve.run({"query": "Hello"}, META.copy(), top_k=3)
-    snippet = result["snippets"][0]
-    assert snippet == {
-        "text": "Hello 123",
-        "source": "s1",
-        "score": 0.42,
-        "hash": "h",
-        "id": "doc-1",
-        "meta": {"tenant": "t1", "case": "c1", "category": "demo"},
-    }
-    assert state["snippets"] == result["snippets"]
-    assert router.last_call == {
-        "tenant_id": "t1",
-        "case_id": "c1",
-        "top_k": 3,
-        "filters": {"tenant": "t1", "case": "c1"},
-    }
-
-
-@pytest.mark.parametrize("scoped_router", [False, True])
-def test_retrieve_snippets_shape(monkeypatch, scoped_router):
-    retrieve._reset_router_for_tests()
-
-    chunk = Chunk(
-        "Body",
-        {
-            "source": "src",
-            "score": 0.9,
-            "hash": "hash-1",
-            "id": "doc-1",
-            "custom_kv": "value",
-        },
-    )
-
-    class _BaseRouter:
         def __init__(self):
             self.calls = []
 
-        def search(self, query, **kwargs):
+        def hybrid_search(self, query, **kwargs):
             self.calls.append({"query": query, **kwargs})
-            return [chunk]
+            return hybrid_result
 
-    base_router = _BaseRouter()
-
-    if scoped_router:
-
-        class _ScopedRouter:
-            def __init__(self, inner):
-                self.inner = inner
-                self.tenants = []
-
-            def for_tenant(self, tenant_id, tenant_schema=None):
-                self.tenants.append((tenant_id, tenant_schema))
-                return self.inner
-
-        router = _ScopedRouter(base_router)
-    else:
-        router = base_router
-
+    router = _Router()
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
-    state = {"query": "hello"}
-    meta = {
-        "tenant": "tenant-1",
-        "case": "case-1",
-        "tenant_schema": "tenant-1-schema",
+    state = {
+        "query": "Hello",
+        "filters": {"category": "demo"},
+        "process": "review",
+        "doc_class": "invoice",
+        "hybrid": {
+            "alpha": 0.6,
+            "min_sim": 0.2,
+            "top_k": 25,
+            "vec_limit": 40,
+            "lex_limit": 30,
+        },
     }
-    _, result = retrieve.run(state, meta, top_k=2)
+    meta = {"tenant_id": "tenant-1", "case_id": "case-1"}
 
-    assert result["snippets"], "expected snippets in result"
-    snippet = result["snippets"][0]
-    assert snippet == {
-        "text": "Body",
-        "source": "src",
-        "score": 0.9,
-        "hash": "hash-1",
-        "id": "doc-1",
-        "meta": {"custom_kv": "value"},
+    new_state, result = retrieve.run(state, meta)
+
+    assert router.calls[0]["top_k"] == 10  # clamped to TOPK_MAX
+    assert router.calls[0]["max_candidates"] == 40
+    assert router.calls[0]["process"] == "review"
+    assert router.calls[0]["doc_class"] == "invoice"
+
+    match = result["matches"][0]
+    assert match["id"] == "doc-1"
+    assert match["score"] == pytest.approx(0.83)
+    assert match["source"] == "src"
+    assert new_state["matches"] == result["matches"]
+    assert new_state["snippets"] == result["matches"]
+
+    meta_payload = result["meta"]
+    assert meta_payload["alpha"] == pytest.approx(0.6)
+    assert meta_payload["min_sim"] == pytest.approx(0.2)
+    assert meta_payload["top_k_effective"] == len(result["matches"])
+    assert meta_payload["max_candidates_effective"] >= meta_payload["top_k_effective"]
+    assert meta_payload["vector_candidates"] == 37
+    assert meta_payload["lexical_candidates"] == 41
+    assert meta_payload["routing"] == {
+        "profile": "standard",
+        "vector_space_id": "rag/global",
     }
 
-    if scoped_router:
-        assert router.tenants == [("tenant-1", "tenant-1-schema")]
-        assert base_router.calls[0]["filters"] == {"case": "case-1"}
-    else:
-        assert base_router.calls[0]["filters"] == {
-            "tenant": "tenant-1",
-            "case": "case-1",
-        }
 
+def test_retrieve_scoped_router(monkeypatch):
+    _patch_routing(monkeypatch)
 
-def test_retrieve_requires_tenant_id(monkeypatch):
-    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: None)
-    with pytest.raises(ValueError, match="tenant_id required"):
-        retrieve.run({"query": "Hello"}, {"case": "c1"})
-
-
-def test_retrieve_passes_tenant_schema_to_scoped_router(monkeypatch):
-    retrieve._reset_router_for_tests()
+    hybrid_result = HybridSearchResult(
+        chunks=[],
+        vector_candidates=0,
+        lexical_candidates=0,
+        fused_candidates=0,
+        duration_ms=0.0,
+        alpha=0.7,
+        min_sim=0.15,
+        vec_limit=50,
+        lex_limit=50,
+    )
 
     class _TenantClient:
-        def __init__(self):
-            self.search_calls = []
+        def __init__(self) -> None:
+            self.calls = []
 
-        def search(self, query, *, case_id=None, top_k=5, filters=None):
-            self.search_calls.append(
-                {
-                    "query": query,
-                    "case_id": case_id,
-                    "top_k": top_k,
-                    "filters": filters,
-                }
-            )
-            return []
+        def hybrid_search(self, query, **kwargs):
+            self.calls.append({"query": query, **kwargs})
+            return hybrid_result
 
-    class _ScopedRouter:
-        def __init__(self):
+    class _Router:
+        def __init__(self) -> None:
             self.calls = []
             self.client = _TenantClient()
 
@@ -182,16 +146,68 @@ def test_retrieve_passes_tenant_schema_to_scoped_router(monkeypatch):
             self.calls.append((tenant_id, tenant_schema))
             return self.client
 
-    router = _ScopedRouter()
+    router = _Router()
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
-    meta = {"tenant": "tenant-42", "tenant_schema": "tenant-42-schema"}
-    retrieve.run({"query": "hi"}, meta)
+    state = {"query": "hi", "hybrid": {}}
+    meta = {"tenant_id": "tenant-42", "tenant_schema": "schema-42"}
 
-    assert router.calls == [("tenant-42", "tenant-42-schema")]
-    assert router.client.search_calls == [
-        {"query": "hi", "case_id": None, "top_k": 5, "filters": None}
+    retrieve.run(state, meta)
+
+    assert router.calls == [("tenant-42", "schema-42")]
+    assert router.client.calls[0]["top_k"] == 5
+
+
+def test_retrieve_requires_tenant_id():
+    state = {"query": "Hello", "hybrid": {}}
+    with pytest.raises(ValueError, match="tenant_id required"):
+        retrieve.run(state, {"case": "c1"})
+
+
+def test_retrieve_unknown_hybrid_key(monkeypatch):
+    _patch_routing(monkeypatch)
+    state = {"query": "Hello", "hybrid": {"alpha": 0.5, "unknown": 1}}
+    with pytest.raises(ValueError, match=r"Unknown hybrid parameter\(s\): unknown"):
+        retrieve.run(state, {"tenant_id": "tenant-1"})
+
+
+def test_retrieve_deduplicates_matches(monkeypatch):
+    _patch_routing(monkeypatch)
+
+    chunks = [
+        Chunk("First", {"id": "doc-1", "score": 0.4, "source": "a"}),
+        Chunk("Second", {"id": "doc-1", "score": 0.9, "source": "b", "extra": "x"}),
+        Chunk("Third", {"id": "doc-2", "score": 0.5, "source": "c"}),
     ]
+    hybrid_result = HybridSearchResult(
+        chunks=chunks,
+        vector_candidates=3,
+        lexical_candidates=3,
+        fused_candidates=3,
+        duration_ms=0.0,
+        alpha=0.7,
+        min_sim=0.15,
+        vec_limit=50,
+        lex_limit=50,
+    )
+
+    class _Router:
+        def hybrid_search(self, *_args, **_kwargs):
+            return hybrid_result
+
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
+
+    state = {"query": "hello", "hybrid": {"top_k": 5}}
+    meta = {"tenant_id": "tenant-1"}
+
+    _, result = retrieve.run(state, meta)
+
+    assert len(result["matches"]) == 2
+    assert {match["id"] for match in result["matches"]} == {"doc-1", "doc-2"}
+    top_match = result["matches"][0]
+    assert top_match["id"] == "doc-1"
+    assert top_match["source"] == "b"
+    assert top_match["score"] == pytest.approx(0.9)
 
 
 def _mock_call(called):
