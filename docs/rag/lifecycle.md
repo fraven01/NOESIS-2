@@ -6,13 +6,13 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
 
 1. **Upload** – Dateien gelangen über UI, API oder Batch-Import in die Ingestion-Warteschlange. Metadaten enthalten mindestens `tenant_id`, `source`, `hash` und optionale Klassifizierungen (z. B. Prozess, Dokumentklasse).
 2. **Ingestion** – Loader, Chunker und Embedder schreiben Chunks mit Embeddings nach `pgvector`. Konsistenzprüfungen (Hash, Dimension, Tenant-Isolation) sind in [Ingestion](ingestion.md) dokumentiert.
-3. **Retrieval** – Der `VectorStoreRouter` liest nur aktive Dokumente (`deleted_at IS NULL`). Reranker und Agenten sehen dadurch ausschließlich gültige Inhalte pro Tenant.
+3. **Retrieval** – Der `VectorStoreRouter` kennt aktuell keinen Filter auf `deleted_at`. Soft-gelöschte Einträge bleiben für Suchanfragen sichtbar, bis nachgelagerte Komponenten oder Operator:innen sie explizit ausschließen.
 4. **Pflege & Löschpfade** – Routinejobs prüfen Staleness, führen Re-Embeddings durch und setzen Lösch-Flags. Soft- und Hard-Delete unterscheiden Verantwortlichkeiten sowie Audit-Anforderungen.
 
 ## Soft-Delete
 
-- **Flag `deleted_at`**: Soft-Delete setzt einen Zeitstempel auf Dokument- und Chunk-Ebene. Der Datensatz bleibt erhalten, ist aber für Retrieval gesperrt.
-- **Router-Verhalten**: Der `VectorStoreRouter` und alle zugehörigen `search`-Queries filtern auf `deleted_at IS NULL`. Smoke-Tests validieren diese Filter, bevor neue Router-Regeln produktiv gehen.
+- **Flag `deleted_at`**: Soft-Delete setzt einen Zeitstempel auf Dokument- und Chunk-Ebene. Der Datensatz bleibt erhalten und dient als Markierung – ohne zusätzliche Filter erscheint er weiterhin im Retrieval.
+- **Router-Verhalten**: Der `VectorStoreRouter` reicht Soft-Delete-Flags unverändert durch. Wer Soft-Deletes produktiv nutzen will, muss die Filterung in der eigenen Retrieval-Logik ergänzen oder auf Hard-Delete ausweichen.
 - **Empfohlene Nutzung**: Entwickler:innen nutzen Soft-Delete für Korrekturen (z. B. fehlerhafte Ingestion, temporäre Deaktivierung). Wiederherstellungen erfolgen über das Entfernen des Flags oder erneute Ingestion.
 - **Monitoring**: Soft-gelöschte Datensätze erscheinen in Pflege-Dashboards (Langfuse/BI). Cleanup-Schwellenwerte (z. B. >30 Tage) lösen Hard-Delete-Review aus.
 
@@ -25,27 +25,16 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
   - Aktualisiert Audit-Log (z. B. `rag_document_audit`) mit Referenz auf Ticket und verantwortliche Person.
 - **Verantwortung**: Hard-Delete ist auf Administrator:innen bzw. Data-Ops beschränkt. Entwickler:innen lösen Hard-Delete nur nach Freigabe durch das Betriebs-Team aus.
 
-## API-Endpunkt `POST /api/v1/documents/delete/`
+## Operative Durchführung
 
-| Parameter | Typ | Beschreibung |
-| --- | --- | --- |
-| `mode` | `soft_delete` \| `hard_delete` | Steuert, ob `deleted_at` gesetzt oder die Daten physisch entfernt werden. Default: `soft_delete`. |
-| `dry_run` | bool | Standard `true`. Bei `true` werden betroffene Dokumente lediglich aufgelistet und Validierungen ausgeführt, ohne Änderungen zu persistieren. |
-| `document_ids` | Array[UUID] | Pflichtfeld. Enthält die Ziel-Dokumente innerhalb des Tenants. |
-
-### Ablauf
-
-1. Authentifizierte Anfrage mit Tenant-Kontext (`X-Tenant-ID`).
-2. Service prüft Berechtigungen: Soft-Delete erfordert Entwickler:innen- oder höherwertige Rolle; Hard-Delete benötigt Administrator:innenrechte plus Audit-Ticket.
-3. Bei `dry_run=true` liefert die Antwort eine Preview (Dokumente, Chunks, Embeddings, letzte `retrieved_at`).
-4. Bei `dry_run=false` führt der Service je nach `mode` das Setzen von `deleted_at` bzw. die physische Löschung inklusive Audit-Log durch.
+Der beschriebene HTTP-Endpunkt für Löschvorgänge ist noch nicht implementiert. Bis zur Bereitstellung eines Services erfolgt die Durchführung über das [Runbook „RAG-Dokumente löschen & pflegen“](../runbooks/rag_delete.md). Dieses Runbook beschreibt sowohl das Setzen von `deleted_at` per SQL als auch die physischen Löschschritte inkl. Audit-Logging.
 
 ## Workflows & Verantwortlichkeiten
 
 | Rolle | Aufgaben | Tools/Artefakte |
 | --- | --- | --- |
-| Entwickler:innen | Soft-Delete für fehlerhafte Uploads, Re-Upload nach Fix, Dokumentation im Issue-Tracker. | Endpoint mit `mode=soft_delete`, `dry_run=true` → Review → `dry_run=false`. |
-| Administrator:innen/Data-Ops | Freigabe & Durchführung von Hard-Deletes, Pflege von Audit-Logs, Nacharbeiten in Downstream-Systemen. | Endpoint mit `mode=hard_delete`, obligatorisches `dry_run`-Review, Ticket-Verlinkung, Post-Delete-Checks. |
+| Entwickler:innen | Soft-Delete für fehlerhafte Uploads, Re-Upload nach Fix, Dokumentation im Issue-Tracker. | SQL-Skript aus E1 des Runbooks, danach Router-Invalidierung & Smoke-Test. |
+| Administrator:innen/Data-Ops | Freigabe & Durchführung von Hard-Deletes, Pflege von Audit-Logs, Nacharbeiten in Downstream-Systemen. | SQL-Skript aus E2 des Runbooks, Audit-Log-Eintrag, Post-Delete-Checks. |
 | QA/Support | Meldet betroffene Dokumente, initiiert Soft-Delete-Requests, prüft, ob Retrieval wieder korrekt arbeitet. | Support-Playbooks, Monitoring-Dashboards (Langfuse, BI). |
 
 **Best Practices**
