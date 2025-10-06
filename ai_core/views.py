@@ -1096,7 +1096,10 @@ class RagDemoViewV1(_BaseAgentView):
                 name="RagDemoRemoved",
                 summary="Deprecated",
                 description="The demo endpoint has been removed and now returns HTTP 410.",
-                value={"detail": "The RAG demo endpoint has been removed.", "code": "rag_demo_removed"},
+                value={
+                    "detail": "The RAG demo endpoint has been removed.",
+                    "code": "rag_demo_removed",
+                },
             )
         ],
     )

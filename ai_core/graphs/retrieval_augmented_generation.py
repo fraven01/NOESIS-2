@@ -31,13 +31,17 @@ class ComposeNode(Protocol):
         """Execute composition and return the updated state and payload."""
 
 
-def _ensure_mutable_state(state: Mapping[str, Any] | MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+def _ensure_mutable_state(
+    state: Mapping[str, Any] | MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
     if isinstance(state, MutableMapping):
         return state
     return dict(state)
 
 
-def _ensure_mutable_meta(meta: Mapping[str, Any] | MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+def _ensure_mutable_meta(
+    meta: Mapping[str, Any] | MutableMapping[str, Any],
+) -> MutableMapping[str, Any]:
     if isinstance(meta, MutableMapping):
         return meta
     return dict(meta)
@@ -93,4 +97,3 @@ def run(
 
 
 __all__ = ["RetrievalAugmentedGenerationGraph", "GRAPH", "build_graph", "run"]
-

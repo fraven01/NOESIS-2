@@ -21,6 +21,8 @@ META = {
     "trace_id": "tr",
     "tenant_schema": "tenant-schema-1",
 }
+
+
 class _DummyProfile:
     def __init__(self, vector_space: str) -> None:
         self.vector_space = vector_space

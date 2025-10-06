@@ -95,7 +95,11 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             "trgm_limit": trgm_limit,
         },
     }
-    meta = {"tenant_id": "tenant-123", "tenant_schema": "tenant-schema", "case_id": "case-7"}
+    meta = {
+        "tenant_id": "tenant-123",
+        "tenant_schema": "tenant-schema",
+        "case_id": "case-7",
+    }
 
     new_state, payload = retrieve.run(state, meta)
 
@@ -134,4 +138,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload["top_k_effective"] == 3
     assert meta_payload["alpha"] == pytest.approx(0.55)
     assert meta_payload["min_sim"] == pytest.approx(0.35)
-    assert meta_payload["routing"] == {"profile": "standard", "vector_space_id": "rag/global"}
+    assert meta_payload["routing"] == {
+        "profile": "standard",
+        "vector_space_id": "rag/global",
+    }

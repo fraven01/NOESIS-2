@@ -9,7 +9,10 @@ from ai_core.graphs import retrieval_augmented_generation
 
 
 def _fake_retrieve(
-    state: MutableMapping[str, Any], meta: Mapping[str, Any], *, top_k: int | None = None
+    state: MutableMapping[str, Any],
+    meta: Mapping[str, Any],
+    *,
+    top_k: int | None = None,
 ):
     new_state = dict(state)
     new_state.setdefault("snippets", [])
@@ -26,12 +29,19 @@ def _fake_compose(state: MutableMapping[str, Any], meta: MutableMapping[str, Any
 def test_graph_runs_retrieve_then_compose() -> None:
     calls: list[str] = []
 
-    def _recording_retrieve(state: MutableMapping[str, Any], meta: Mapping[str, Any], *, top_k: int | None = None):
+    def _recording_retrieve(
+        state: MutableMapping[str, Any],
+        meta: Mapping[str, Any],
+        *,
+        top_k: int | None = None,
+    ):
         calls.append("retrieve")
         assert meta["tenant_id"] == "tenant-42"
         return _fake_retrieve(state, meta, top_k=top_k)
 
-    def _recording_compose(state: MutableMapping[str, Any], meta: MutableMapping[str, Any]):
+    def _recording_compose(
+        state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
+    ):
         calls.append("compose")
         assert meta["tenant_id"] == "tenant-42"
         return _fake_compose(state, meta)
@@ -52,7 +62,12 @@ def test_graph_runs_retrieve_then_compose() -> None:
 def test_graph_normalises_tenant_alias() -> None:
     captured_meta: dict[str, Any] = {}
 
-    def _recording_retrieve(state: MutableMapping[str, Any], meta: Mapping[str, Any], *, top_k: int | None = None):
+    def _recording_retrieve(
+        state: MutableMapping[str, Any],
+        meta: Mapping[str, Any],
+        *,
+        top_k: int | None = None,
+    ):
         captured_meta["tenant_id"] = meta.get("tenant_id")
         return _fake_retrieve(state, meta, top_k=top_k)
 

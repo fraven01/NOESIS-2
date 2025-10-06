@@ -15,7 +15,9 @@ def test_parse_defaults_and_clamps_values():
     assert params.vec_limit == 50
     assert params.lex_limit == 50
     assert params.trgm_limit is None
-    assert params.max_candidates == max(params.top_k, params.vec_limit, params.lex_limit)
+    assert params.max_candidates == max(
+        params.top_k, params.vec_limit, params.lex_limit
+    )
     assert state["hybrid"] == params.as_dict()
 
 
@@ -98,9 +100,7 @@ def test_parse_rejects_boolean_for_integer_fields():
 
 
 def test_parse_requires_hybrid_block():
-    with pytest.raises(
-        ValueError, match="state must include a 'hybrid' configuration"
-    ):
+    with pytest.raises(ValueError, match="state must include a 'hybrid' configuration"):
         parse_hybrid_parameters({})
 
 

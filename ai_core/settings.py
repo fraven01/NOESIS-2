@@ -19,4 +19,3 @@ class RAG:
 
 
 __all__ = ["RAG"]
-

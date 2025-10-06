@@ -64,7 +64,9 @@ def _coerce_int(value: object, *, field: str) -> int:
     return number
 
 
-def _normalise_fraction(value: float, *, minimum: float = 0.0, maximum: float = 1.0) -> float:
+def _normalise_fraction(
+    value: float, *, minimum: float = 0.0, maximum: float = 1.0
+) -> float:
     return max(minimum, min(maximum, value))
 
 
@@ -114,7 +116,9 @@ def _parse_hybrid_mapping(mapping: Mapping[str, Any]) -> HybridParameters:
         max_candidates_value = _normalise_positive_int(
             _coerce_int(max_candidates_raw, field="max_candidates")
         )
-        max_candidates_value = max(max_candidates_value, vec_limit_value, lex_limit_value)
+        max_candidates_value = max(
+            max_candidates_value, vec_limit_value, lex_limit_value
+        )
 
     max_candidates = max(max_candidates_value, top_k)
 
@@ -137,7 +141,9 @@ def parse_hybrid_parameters(
     if "hybrid" not in state:
         raise ValueError("state must include a 'hybrid' configuration")
 
-    hybrid_raw = _ensure_mapping(state["hybrid"], message="state.hybrid must be a mapping")
+    hybrid_raw = _ensure_mapping(
+        state["hybrid"], message="state.hybrid must be a mapping"
+    )
     params = _parse_hybrid_mapping(hybrid_raw)
 
     if override_top_k is not None:
@@ -166,4 +172,3 @@ __all__ = [
     "TOPK_MAX",
     "parse_hybrid_parameters",
 ]
-
