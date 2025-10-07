@@ -93,6 +93,8 @@ class _VisibilityStore:
             min_sim=0.2,
             visibility=effective,
         )
+        if effective == "active":
+            result.deleted_matches_blocked = 1
         self.hybrid_calls.append(
             {
                 "query": query,
@@ -145,6 +147,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
         alpha=0.55,
         min_sim=0.35,
     )
+    response.deleted_matches_blocked = 2
 
     router = _FakeRouter(response)
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
@@ -205,6 +208,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     meta_payload = payload["meta"]
     assert meta_payload["vector_candidates"] == len(vector_chunks)
     assert meta_payload["lexical_candidates"] == len(lexical_chunks)
+    assert meta_payload["deleted_matches_blocked"] == 2
     assert meta_payload["top_k_effective"] == 3
     assert meta_payload["alpha"] == pytest.approx(0.55)
     assert meta_payload["min_sim"] == pytest.approx(0.35)
@@ -215,21 +219,11 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload["visibility_effective"] == "active"
 
 
-@pytest.mark.parametrize(
-    "requested, override_allowed, expected_ids, expected_visibility",
-    [
-        (None, False, ["doc-active"], "active"),
-        ("all", True, ["doc-active", "doc-deleted"], "all"),
-        ("deleted", True, ["doc-deleted"], "deleted"),
-        ("all", False, ["doc-active"], "active"),
-    ],
-)
-def test_retrieve_visibility_semantics(
-    monkeypatch,
-    requested,
-    override_allowed,
-    expected_ids,
-    expected_visibility,
+def _run_visibility_scenario(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    requested: str | None = None,
+    override_allowed: bool = False,
 ):
     _patch_routing(monkeypatch)
 
@@ -255,10 +249,68 @@ def test_retrieve_visibility_semantics(
     _, payload = retrieve.run(state, meta)
 
     recorded = store.hybrid_calls[-1]
-    assert recorded["effective"] == expected_visibility
-    assert recorded.get("visibility") == expected_visibility
-    assert bool(recorded.get("visibility_override_allowed")) is bool(override_allowed)
+    return recorded, payload
+
+
+def test_retrieve_visibility_defaults_to_active(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded, payload = _run_visibility_scenario(monkeypatch)
+
+    assert recorded["effective"] == "active"
+    assert recorded.get("visibility") == "active"
+    assert not recorded.get("visibility_override_allowed")
 
     matches = payload["matches"]
-    assert [match["id"] for match in matches] == expected_ids
-    assert payload["meta"]["visibility_effective"] == expected_visibility
+    assert [match["id"] for match in matches] == ["doc-active"]
+    meta = payload["meta"]
+    assert meta["visibility_effective"] == "active"
+    assert meta["deleted_matches_blocked"] == 1
+
+
+def test_retrieve_visibility_all_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded, payload = _run_visibility_scenario(
+        monkeypatch, requested="all", override_allowed=True
+    )
+
+    assert recorded["effective"] == "all"
+    assert recorded.get("visibility") == "all"
+    assert recorded.get("visibility_override_allowed") is True
+
+    matches = payload["matches"]
+    assert [match["id"] for match in matches] == ["doc-active", "doc-deleted"]
+    meta = payload["meta"]
+    assert meta["visibility_effective"] == "all"
+    assert meta["deleted_matches_blocked"] == 0
+
+
+def test_retrieve_visibility_deleted_only_for_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorded, payload = _run_visibility_scenario(
+        monkeypatch, requested="deleted", override_allowed=True
+    )
+
+    assert recorded["effective"] == "deleted"
+    assert recorded.get("visibility") == "deleted"
+    assert recorded.get("visibility_override_allowed") is True
+
+    matches = payload["matches"]
+    assert [match["id"] for match in matches] == ["doc-deleted"]
+    meta = payload["meta"]
+    assert meta["visibility_effective"] == "deleted"
+    assert meta["deleted_matches_blocked"] == 0
+
+
+def test_retrieve_visibility_override_denied_without_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorded, payload = _run_visibility_scenario(
+        monkeypatch, requested="all", override_allowed=False
+    )
+
+    assert recorded["effective"] == "active"
+    assert recorded.get("visibility") == "active"
+    assert recorded.get("visibility_override_allowed") is False
+
+    matches = payload["matches"]
+    assert [match["id"] for match in matches] == ["doc-active"]
+    meta = payload["meta"]
+    assert meta["visibility_effective"] == "active"
+    assert meta["deleted_matches_blocked"] == 1

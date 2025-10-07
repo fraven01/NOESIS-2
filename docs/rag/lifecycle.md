@@ -6,7 +6,7 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
 
 1. **Upload** – Dateien gelangen über UI, API oder Batch-Import in die Ingestion-Warteschlange. Metadaten enthalten mindestens `tenant_id`, `source`, `hash` und optionale Klassifizierungen (z. B. Prozess, Dokumentklasse).
 2. **Ingestion** – Loader, Chunker und Embedder schreiben Chunks mit Embeddings nach `pgvector`. Konsistenzprüfungen (Hash, Dimension, Tenant-Isolation) sind in [Ingestion](ingestion.md) dokumentiert.
-3. **Retrieval** – Der `VectorStoreRouter` ruft den Retriever auf, der `deleted_at` auf Dokument- (`documents.deleted_at IS NULL`) und Chunk-Ebene (`chunks.metadata->>'deleted_at' IS NULL`) standardmäßig filtert. Damit ist die in dieser Notiz zuvor dokumentierte Lücke geschlossen: Soft-gelöschte Einträge bleiben ohne Admin-Override unsichtbar, Smoke-Tests können direkt über die Suche validieren, dass Löschungen greifen. Die Sichtbarkeitsregel wird explizit über das Feld `visibility` gesteuert (siehe Abschnitt „Soft-Delete“).
+3. **Retrieval** – Der `VectorStoreRouter` ruft den Retriever auf, der `deleted_at` auf Dokument- (`documents.deleted_at IS NULL`) und Chunk-Ebene (`chunks.metadata->>'deleted_at' IS NULL`) standardmäßig filtert. Soft-gelöschte Datensätze sind dadurch in allen Standard-Retrievalpfaden unsichtbar, bis ein autorisierter Kontext eine andere Sichtbarkeit erzwingt. Smoke-Tests können direkt über die Suche validieren, dass Löschungen greifen. Die Sichtbarkeitsregel wird explizit über das Feld `visibility` gesteuert (siehe Abschnitt „Soft-Delete“).
 4. **Pflege & Löschpfade** – Routinejobs prüfen Staleness, führen Re-Embeddings durch und setzen Lösch-Flags. Soft- und Hard-Delete unterscheiden Verantwortlichkeiten sowie Audit-Anforderungen.
 
 ## Soft-Delete
@@ -24,10 +24,8 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
 ## Hard-Delete
 
 - **Admin-Checks**: Vor Hard-Delete prüft ein*e Administrator:in den Kontext (Tenant-Zuordnung, Audit-Trail, rechtliche Vorgaben). Entscheidung wird im Ticketing-System dokumentiert.
-- **Audit & Nacharbeiten**:
-  - Entfernt Datensätze aus `documents`, `chunks`, `embeddings`, ggf. S3/Blob-Quellen und Trace-Anreicherungen.
-  - Erzwingt Reindexing oder Cache-Invalidierung in Downstream-Systemen (Suche, Reporting).
-  - Aktualisiert Audit-Log (z. B. `rag_document_audit`) mit Referenz auf Ticket und verantwortliche Person. Der Celery-Task `rag.hard_delete` übernimmt diese Schritte inklusive VACUUM/Reindex-Triggern automatisch und protokolliert ein `rag.hard_delete.audit`-Event.
+- **Aktueller Ablauf**: Hard-Delete bleibt vorerst ein manueller Prozess gemäß [Runbook „RAG-Dokumente löschen & pflegen“](../runbooks/rag_delete.md). Administrator:innen nutzen die dort beschriebenen SQL- und Wartungsschritte, inklusive Dokumentation der Audit-Events und anschließender Router-Invalidierung.
+- **Ausblick (TODO)**: In einer späteren Ausbaustufe wird ein eigener Celery-Task die Runbook-Schritte automatisieren: physisches Entfernen der Einträge aus `documents`, `chunks` und `embeddings`, Protokollierung eines Audit-Events, Invalidation des Router-Caches sowie optionale Wartung wie `VACUUM` oder `REINDEX`.
 - **Verantwortung**: Hard-Delete ist auf Administrator:innen bzw. Data-Ops beschränkt. Entwickler:innen lösen Hard-Delete nur nach Freigabe durch das Betriebs-Team aus.
 
 ## Operative Durchführung

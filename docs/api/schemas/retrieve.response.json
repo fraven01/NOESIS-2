@@ -54,6 +54,7 @@
         "max_candidates_effective",
         "vector_candidates",
         "lexical_candidates",
+        "deleted_matches_blocked",
         "routing",
         "visibility_effective"
       ],
@@ -90,6 +91,11 @@
           "minimum": 0,
           "description": "Total lexical candidates considered before deduplication."
         },
+        "deleted_matches_blocked": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Soft-deleted matches suppressed by the effective visibility guard."
+        },
         "routing": {
           "type": "object",
           "additionalProperties": false,
@@ -107,7 +113,7 @@
         },
         "visibility_effective": {
           "type": "string",
-          "description": "Visibility policy effectively applied to this response."
+          "description": "Visibility policy actually applied by the router."
         }
       }
     }

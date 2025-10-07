@@ -213,6 +213,38 @@ def test_router_normalizes_empty_filters(
     }
 
 
+def test_router_search_enforces_visibility_guard(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+
+    router.search(
+        "query",
+        tenant_id="tenant",
+        visibility="deleted",
+        visibility_override_allowed=False,
+    )
+
+    filters = global_store.search_calls[-1]["filters"]
+    assert filters["visibility"] == "active"
+
+
+def test_router_search_allows_authorized_visibility_override(
+    router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
+) -> None:
+    router, global_store, _ = router_and_stores
+
+    router.search(
+        "query",
+        tenant_id="tenant",
+        visibility="all",
+        visibility_override_allowed=True,
+    )
+
+    filters = global_store.search_calls[-1]["filters"]
+    assert filters["visibility"] == "all"
+
+
 def test_router_delegates_to_scope_or_default(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
