@@ -693,13 +693,12 @@ class PgVectorClient:
         )
 
         where_clauses = ["d.tenant_id = %s"]
+        deleted_visibility_clauses = (
+            "d.deleted_at IS NULL",
+            "(c.metadata ->> 'deleted_at') IS NULL",
+        )
         if visibility_mode is Visibility.ACTIVE:
-            where_clauses.extend(
-                [
-                    "d.deleted_at IS NULL",
-                    "(c.metadata ->> 'deleted_at') IS NULL",
-                ]
-            )
+            where_clauses.extend(deleted_visibility_clauses)
         elif visibility_mode is Visibility.DELETED:
             where_clauses.append(
                 "(d.deleted_at IS NOT NULL OR (c.metadata ->> 'deleted_at') IS NOT NULL)"
@@ -721,21 +720,39 @@ class PgVectorClient:
                 where_clauses.append("d.external_id = %s")
                 where_params.append(normalised)
         where_sql = "\n          AND ".join(where_clauses)
+        where_sql_without_deleted: str | None = None
+        count_without_deleted_sql: str | None = None
+        if visibility_mode is Visibility.ACTIVE:
+            filtered_clauses = [
+                clause
+                for clause in where_clauses
+                if clause not in deleted_visibility_clauses
+            ]
+            where_sql_without_deleted = "\n          AND ".join(filtered_clauses)
+            count_without_deleted_sql = f"""
+                SELECT COUNT(DISTINCT c.id)
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE {where_sql_without_deleted}
+            """
 
         applied_trgm_limit_value: Optional[float] = None
         fallback_limit_used_value: Optional[float] = None
         fallback_tried_limits: List[float] = []
+        total_without_filter: Optional[int] = None
 
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             nonlocal applied_trgm_limit_value
             nonlocal fallback_limit_used_value
             nonlocal fallback_tried_limits
+            nonlocal total_without_filter
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
             vector_query_failed = vector_format_error is not None
             fallback_tried_limits = []
             fallback_limit_used_value = None
+            total_without_filter_local: Optional[int] = None
             with self._connection() as conn:
                 if vector_format_error is not None:
                     try:
@@ -1186,6 +1203,31 @@ class PgVectorClient:
                 )
             except Exception:
                 pass
+
+            if count_without_deleted_sql is not None:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SET LOCAL statement_timeout = %s",
+                            (str(self._statement_timeout_ms),),
+                        )
+                        cur.execute(
+                            count_without_deleted_sql,
+                            tuple(where_params),
+                        )
+                        row = cur.fetchone()
+                        if row and row[0] is not None:
+                            total_without_filter_local = int(row[0])
+                except Exception as exc:
+                    logger.warning(
+                        "rag.hybrid.deleted_visibility_count_failed",
+                        tenant=tenant,
+                        case=case_value,
+                        error=str(exc),
+                    )
+                    total_without_filter_local = None
+
+            total_without_filter = total_without_filter_local
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
 
         vector_rows, lexical_rows, duration_ms = self._run_with_retries(
@@ -1455,14 +1497,25 @@ class PgVectorClient:
         )
 
         metrics.RAG_SEARCH_MS.observe(duration_ms)
+        deleted_matches_blocked_value = 0
+        if (
+            visibility_mode is Visibility.ACTIVE
+            and total_without_filter is not None
+        ):
+            deleted_matches_blocked_value = max(
+                0,
+                int(total_without_filter) - (len(vector_rows) + len(lexical_rows)),
+            )
+
         logger.info(
-            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d duration_ms=%.2f",
+            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d deleted_blocked=%d duration_ms=%.2f",
             tenant,
             case_value,
             len(vector_rows),
             len(lexical_rows),
             fused_candidates,
             len(limited_results),
+            deleted_matches_blocked_value,
             duration_ms,
         )
 
@@ -1482,6 +1535,7 @@ class PgVectorClient:
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
             visibility=visibility_mode.value,
+            deleted_matches_blocked=deleted_matches_blocked_value,
         )
 
     def health_check(self) -> bool:
