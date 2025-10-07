@@ -528,7 +528,7 @@ class PgVectorClient:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
-        visibility: Visibility | str | None = None,
+        visibility: str | None = None,
         visibility_override_allowed: bool = False,
     ) -> HybridSearchResult:
         """Execute hybrid vector/lexical retrieval for ``query``.
@@ -538,17 +538,20 @@ class PgVectorClient:
         operator to ensure consistent lexical matching behaviour.
         """
         top_k = min(max(1, top_k), 10)
-        if isinstance(visibility, Visibility):
-            visibility_mode = visibility
-        elif visibility is None:
-            visibility_mode = Visibility.ACTIVE
+        allowed_visibilities = {value.value for value in Visibility}
+        if visibility is None:
+            visibility_value = Visibility.ACTIVE.value
         else:
             try:
-                visibility_mode = Visibility(str(visibility).strip().lower())
-            except ValueError:
-                visibility_mode = Visibility.ACTIVE
-        if visibility_mode is not Visibility.ACTIVE and not visibility_override_allowed:
-            visibility_mode = Visibility.ACTIVE
+                text_value = str(visibility).strip().lower()
+            except Exception:
+                text_value = ""
+            visibility_value = (
+                text_value if text_value in allowed_visibilities else Visibility.ACTIVE.value
+            )
+        if visibility_value != Visibility.ACTIVE.value and not visibility_override_allowed:
+            visibility_value = Visibility.ACTIVE.value
+        visibility_mode = Visibility(visibility_value)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
         normalized_filters: Dict[str, object | None] = {}
@@ -561,8 +564,8 @@ class PgVectorClient:
                     else None
                 )
                 for key, value in filters.items()
+                if key != "visibility"
             }
-        normalized_filters["visibility"] = visibility_mode.value
         case_value: Optional[str]
         if case_id not in {None, ""}:
             case_value = case_id
@@ -584,7 +587,7 @@ class PgVectorClient:
             "visibility": visibility_mode.value,
         }
         for key, value in normalized_filters.items():
-            if key in {"tenant", "visibility"}:
+            if key in {"tenant"}:
                 continue
             filter_debug[key] = (
                 "<set>"
