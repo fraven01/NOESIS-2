@@ -126,22 +126,24 @@ class ScopedTask(ContextTask):
 
     abstract = True
 
+    # Tasks must explicitly opt-in to receiving scope kwargs in ``run``.
+    accepts_scope = False
+
     _SCOPE_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         call_kwargs = dict(kwargs)
-        scope_payload: dict[str, Any] = {}
+        scope_kwargs: dict[str, Any] = {}
         for field in self._SCOPE_FIELDS:
             if field in call_kwargs:
-                scope_payload[field] = call_kwargs.pop(field)
-            else:
-                scope_payload[field] = None
+                scope_kwargs[field] = call_kwargs.pop(field)
 
-        tenant_id = scope_payload.get("tenant_id")
-        case_id = scope_payload.get("case_id")
-        trace_id = scope_payload.get("trace_id")
-        session_salt = scope_payload.get("session_salt")
-        explicit_scope = scope_payload.get("session_scope")
+        explicit_scope = call_kwargs.pop("session_scope", None)
+
+        tenant_id = scope_kwargs.get("tenant_id")
+        case_id = scope_kwargs.get("case_id")
+        trace_id = scope_kwargs.get("trace_id")
+        session_salt = scope_kwargs.get("session_salt")
         scope_override: tuple[str, str, str] | None = None
 
         if isinstance(explicit_scope, (list, tuple)) and len(explicit_scope) == 3:
@@ -161,6 +163,17 @@ class ScopedTask(ContextTask):
                 str(value) for value in (trace_id, case_id, tenant_id) if value
             ]
             session_salt = "||".join(salt_parts) if salt_parts else None
+
+        if session_salt:
+            scope_kwargs["session_salt"] = session_salt
+
+        for field, value in (
+            ("tenant_id", tenant_id),
+            ("case_id", case_id),
+            ("trace_id", trace_id),
+        ):
+            if value is not None:
+                scope_kwargs.setdefault(field, value)
 
         tenant_config = load_tenant_pii_config(tenant_id) if tenant_id else None
 
@@ -199,17 +212,12 @@ class ScopedTask(ContextTask):
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
 
-        # Ensure the task receives scope-related keyword arguments that were
-        # extracted for configuring the session scope so downstream code can
-        # still rely on them being present.
-        if tenant_id is not None:
-            call_kwargs.setdefault("tenant_id", tenant_id)
-        if case_id is not None:
-            call_kwargs.setdefault("case_id", case_id)
-        if trace_id is not None:
-            call_kwargs.setdefault("trace_id", trace_id)
-        if session_salt is not None:
-            call_kwargs.setdefault("session_salt", session_salt)
+        if getattr(self, "accepts_scope", False):
+            for field, value in scope_kwargs.items():
+                if value is not None:
+                    call_kwargs.setdefault(field, value)
+            if explicit_scope is not None:
+                call_kwargs.setdefault("session_scope", explicit_scope)
 
         try:
             return super().__call__(*args, **call_kwargs)

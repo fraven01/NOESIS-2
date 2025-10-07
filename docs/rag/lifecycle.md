@@ -30,7 +30,7 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
 
 ## Operative Durchführung
 
-Hard-Delete-Aufträge werden bevorzugt über den Admin-Endpunkt [`POST /ai/rag/admin/hard-delete/`](../api/reference.md#post-airagadminhard-delete) ausgelöst. Der Endpoint kapselt Autorisierung (Service-Key oder aktive Admin-Session), erzeugt einen Trace (`trace_id`) und reicht den Task `rag.hard_delete` mit Audit-Metadaten an die Worker weiter. Das [Runbook „RAG-Dokumente löschen & pflegen“](../runbooks/rag_delete.md) beschreibt zusätzlich den manuellen Fallback (direkter Task-Aufruf oder SQL), falls der Endpoint temporär nicht verfügbar ist.
+Hard-Delete-Aufträge werden bevorzugt über den Admin-Endpunkt [`POST /ai/rag/admin/hard-delete/`](../api/reference.md#post-airagadminhard-delete) ausgelöst. Der Endpoint kapselt Autorisierung (Service-Key oder aktive Admin-Session), erzeugt einen Trace (`trace_id`) und reicht den Task `rag.hard_delete` mit Audit-Metadaten an die Worker weiter. Die Verarbeitung läuft auf der Celery-Queue `rag_delete`, die von den Standard-Workern konsumiert wird (`celery -A noesis2 worker -l info -Q celery,rag_delete`). Das [Runbook „RAG-Dokumente löschen & pflegen“](../runbooks/rag_delete.md) beschreibt zusätzlich den manuellen Fallback (direkter Task-Aufruf oder SQL), falls der Endpoint temporär nicht verfügbar ist.
 
 ## Workflows & Verantwortlichkeiten
 

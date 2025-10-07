@@ -11,7 +11,7 @@ Saubere Container-Images sind die Grundlage für reproduzierbare Deployments und
 
 ## Startkommandos
 - **Web-Service**: Startet Gunicorn über das `CMD` im Image (`gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3`). Cloud Run `PORT` steuert den Listener.
-- **Worker-Service**: Startbefehl `celery -A noesis2 worker -l info`. In Prod zusätzliche `--concurrency`-Flags gemäß [Scaling-Guide](../operations/scaling.md).
+- **Worker-Service**: Startbefehl `celery -A noesis2 worker -l info -Q celery,rag_delete`. In Prod zusätzliche `--concurrency`-Flags gemäß [Scaling-Guide](../operations/scaling.md).
 - **Ingestion-Worker**: Separate Queue `celery -A noesis2 worker -l info -Q ingestion` für Embedding-Läufe. Deployment siehe [RAG-Ingestion](../rag/ingestion.md).
 - **Agenten-Worker**: Verwenden dieselbe Binary wie Worker, aber Queue-Flag `-Q agents`. Guardrails stehen in der [Agenten-Übersicht](../agents/overview.md).
 - **Beat/Scheduler**: Separater Container mit `celery -A noesis2 beat -l info`; niemals im Worker-Prozess kombinieren.
