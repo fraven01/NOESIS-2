@@ -364,8 +364,4 @@ def hard_delete(  # type: ignore[override]
         "visibility": Visibility.DELETED.value,
     }
 
-
-hard_delete.accepts_scope = True
-
-
 __all__ = ["hard_delete"]
