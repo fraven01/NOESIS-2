@@ -19,7 +19,7 @@ from ai_core.infra import tracing
 from ai_core.rag.vector_store import get_default_router, reset_default_router
 from ai_core.rag import vector_client
 from common.celery import ScopedTask
-from common.logging import get_log_context, get_logger
+from common.logging import get_logger
 from organizations.models import OrgMembership
 from profiles.models import UserProfile
 
