@@ -302,6 +302,7 @@ def hard_delete(  # type: ignore[override]
     *,
     actor: Mapping[str, object] | None = None,
     tenant_schema: str | None = None,
+    case_id: str | None = None,
     trace_id: str | None = None,  # noqa: ARG001
     session_salt: str | None = None,
     session_scope: Sequence[str] | None = None,  # noqa: ARG001
@@ -345,6 +346,9 @@ def hard_delete(  # type: ignore[override]
         "vacuum": vacuum_performed,
         "reindex": reindex_performed,
     }
+
+    if case_id:
+        log_payload["case_id"] = str(case_id)
 
     if session_salt:
         log_payload["session_salt"] = session_salt
