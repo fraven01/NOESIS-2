@@ -1610,6 +1610,71 @@ class TestPgVectorClient:
         assert cutoff_counter.calls == [{"tenant": tenant}]
         assert cutoff_counter.value == 1.0
 
+    def test_hybrid_search_deleted_visibility_count_regression(
+        self, monkeypatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        case = "deleted-count"
+        embedding_dim = vector_client.get_embedding_dim()
+        base_vector = [1.0] + [0.0] * (embedding_dim - 1)
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: list(base_vector),
+        )
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_get_distance_operator",
+            lambda self, conn, index_kind: "<=>",
+        )
+
+        active_hash = hashlib.sha256(b"deleted-count-active").hexdigest()
+        deleted_hash = hashlib.sha256(b"deleted-count-soft").hexdigest()
+
+        active_chunk = Chunk(
+            content="Vector candidate still active",
+            meta={
+                "tenant": tenant,
+                "hash": active_hash,
+                "external_id": "active-doc",
+                "case": case,
+                "source": "example",
+            },
+            embedding=list(base_vector),
+        )
+        deleted_chunk = Chunk(
+            content="Vector candidate soft deleted",
+            meta={
+                "tenant": tenant,
+                "hash": deleted_hash,
+                "external_id": "deleted-doc",
+                "case": case,
+                "source": "example",
+                "deleted_at": "2024-01-01T00:00:00Z",
+            },
+            embedding=list(base_vector),
+        )
+
+        written = client.upsert_chunks([active_chunk, deleted_chunk])
+        assert written == 2
+
+        result = client.hybrid_search(
+            "   ",
+            tenant_id=tenant,
+            filters={"case": case},
+            top_k=5,
+            alpha=1.0,
+            min_sim=0.0,
+        )
+
+        assert len(result.chunks) == 1
+        assert result.chunks[0].meta.get("external_id") == "active-doc"
+        assert result.vector_candidates == 1
+        assert result.lexical_candidates == 0
+        assert result.deleted_matches_blocked == 1
+
     def test_run_with_retries_logs_exception_context(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
         client._retries = 1  # type: ignore[attr-defined]
