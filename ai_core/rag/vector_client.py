@@ -1279,7 +1279,7 @@ class PgVectorClient:
                                 f"SELECT id FROM ({vector_count_sql}) AS vector_candidates"
                             )
                             count_params.extend(
-                                (query_vec, *where_params, vec_limit_value)
+                                (*where_params, query_vec, vec_limit_value)
                             )
 
                         if query_db_norm.strip():
