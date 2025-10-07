@@ -37,6 +37,7 @@ from .normalization import normalise_text, normalise_text_db
 from . import metrics
 from .filters import strict_match
 from .schemas import Chunk
+from .visibility import Visibility
 
 # Ensure jsonb columns are decoded into Python dictionaries
 register_default_jsonb(loads=json.loads, globally=True)
@@ -201,6 +202,8 @@ class HybridSearchResult:
     query_embedding_empty: bool = False
     applied_trgm_limit: float | None = None
     fallback_limit_used: float | None = None
+    visibility: str = Visibility.ACTIVE.value
+    deleted_matches_blocked: int = 0
 
 
 class UpsertResult(int):
@@ -525,6 +528,8 @@ class PgVectorClient:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        visibility: str | None = None,
+        visibility_override_allowed: bool = False,
     ) -> HybridSearchResult:
         """Execute hybrid vector/lexical retrieval for ``query``.
 
@@ -533,6 +538,20 @@ class PgVectorClient:
         operator to ensure consistent lexical matching behaviour.
         """
         top_k = min(max(1, top_k), 10)
+        allowed_visibilities = {value.value for value in Visibility}
+        if visibility is None:
+            visibility_value = Visibility.ACTIVE.value
+        else:
+            try:
+                text_value = str(visibility).strip().lower()
+            except Exception:
+                text_value = ""
+            visibility_value = (
+                text_value if text_value in allowed_visibilities else Visibility.ACTIVE.value
+            )
+        if visibility_value != Visibility.ACTIVE.value and not visibility_override_allowed:
+            visibility_value = Visibility.ACTIVE.value
+        visibility_mode = Visibility(visibility_value)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
         normalized_filters: Dict[str, object | None] = {}
@@ -545,6 +564,7 @@ class PgVectorClient:
                     else None
                 )
                 for key, value in filters.items()
+                if key != "visibility"
             }
         case_value: Optional[str]
         if case_id not in {None, ""}:
@@ -562,9 +582,12 @@ class PgVectorClient:
             and value is not None
             and key in SUPPORTED_METADATA_FILTERS
         ]
-        filter_debug: Dict[str, object | None] = {"tenant": "<set>"}
+        filter_debug: Dict[str, object | None] = {
+            "tenant": "<set>",
+            "visibility": visibility_mode.value,
+        }
         for key, value in normalized_filters.items():
-            if key == "tenant":
+            if key in {"tenant"}:
                 continue
             filter_debug[key] = (
                 "<set>"
@@ -670,6 +693,16 @@ class PgVectorClient:
         )
 
         where_clauses = ["d.tenant_id = %s"]
+        deleted_visibility_clauses = (
+            "d.deleted_at IS NULL",
+            "(c.metadata ->> 'deleted_at') IS NULL",
+        )
+        if visibility_mode is Visibility.ACTIVE:
+            where_clauses.extend(deleted_visibility_clauses)
+        elif visibility_mode is Visibility.DELETED:
+            where_clauses.append(
+                "(d.deleted_at IS NOT NULL OR (c.metadata ->> 'deleted_at') IS NOT NULL)"
+            )
         where_params: List[object] = [tenant_uuid]
         for key, value in metadata_filters:
             kind = SUPPORTED_METADATA_FILTERS[key]
@@ -687,21 +720,80 @@ class PgVectorClient:
                 where_clauses.append("d.external_id = %s")
                 where_params.append(normalised)
         where_sql = "\n          AND ".join(where_clauses)
+        where_sql_without_deleted: str | None = None
+        distance_operator_value: Optional[str] = None
+        lexical_query_variant: str = "none"
+        lexical_fallback_limit_value: Optional[float] = None
+        if visibility_mode is Visibility.ACTIVE:
+            filtered_clauses = [
+                clause
+                for clause in where_clauses
+                if clause not in deleted_visibility_clauses
+            ]
+            where_sql_without_deleted = "\n          AND ".join(filtered_clauses)
 
         applied_trgm_limit_value: Optional[float] = None
         fallback_limit_used_value: Optional[float] = None
         fallback_tried_limits: List[float] = []
+        total_without_filter: Optional[int] = None
 
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             nonlocal applied_trgm_limit_value
             nonlocal fallback_limit_used_value
             nonlocal fallback_tried_limits
+            nonlocal total_without_filter
+            nonlocal distance_operator_value
+            nonlocal lexical_query_variant
+            nonlocal lexical_fallback_limit_value
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
             vector_query_failed = vector_format_error is not None
             fallback_tried_limits = []
             fallback_limit_used_value = None
+            total_without_filter_local: Optional[int] = None
+            distance_operator_value = None
+            lexical_query_variant = "none"
+            lexical_fallback_limit_value = None
+
+            def _build_vector_sql(
+                where_sql_value: str, select_columns: str, order_by_clause: str
+            ) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM embeddings e
+                    JOIN chunks c ON e.chunk_id = c.id
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                    ORDER BY {order_by_clause}
+                    LIMIT %s
+                """
+
+            def _build_lexical_primary_sql(where_sql_value: str, select_columns: str) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                      AND c.text_norm % %s
+                    ORDER BY lscore DESC
+                    LIMIT %s
+                """
+
+            def _build_lexical_fallback_sql(where_sql_value: str, select_columns: str) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                      AND similarity(c.text_norm, %s) >= %s
+                    ORDER BY lscore DESC
+                    LIMIT %s
+                """
+
             with self._connection() as conn:
                 if vector_format_error is not None:
                     try:
@@ -736,21 +828,13 @@ class PgVectorClient:
                             distance_operator = self._get_distance_operator(
                                 conn, index_kind
                             )
-                            vector_sql = f"""
-                                SELECT
-                                    c.id,
-                                    c.text,
-                                    c.metadata,
-                                    d.hash,
-                                    d.id,
-                                    e.embedding {distance_operator} %s::vector AS distance
-                                FROM embeddings e
-                                JOIN chunks c ON e.chunk_id = c.id
-                                JOIN documents d ON c.document_id = d.id
-                                WHERE {where_sql}
-                                ORDER BY distance
-                                LIMIT %s
-                            """
+                            distance_operator_value = distance_operator
+                            vector_sql = _build_vector_sql(
+                                where_sql,
+                                "c.id,\n                                    c.text,\n                                    c.metadata,\n                                    d.hash,\n                                    d.id,\n                                    e.embedding "
+                                + f"{distance_operator} %s::vector AS distance",
+                                "distance",
+                            )
                             cur.execute(
                                 vector_sql, (query_vec, *where_params, vec_limit_value)
                             )
@@ -880,6 +964,7 @@ class PgVectorClient:
                                     ),
                                 )
                                 lexical_rows_local = cur.fetchall()
+                                lexical_query_variant = "primary"
                                 try:
                                     logger.warning(
                                         "rag.debug.rows.lexical",
@@ -1044,6 +1129,7 @@ class PgVectorClient:
                                 last_attempt_rows: List[tuple] = []
                                 best_rows: List[tuple] = []
                                 best_limit: float | None = None
+                                fallback_last_limit_value: float | None = None
                                 for limit_value in fallback_limits:
                                     fallback_tried_limits.append(limit_value)
                                     cur.execute(
@@ -1056,6 +1142,7 @@ class PgVectorClient:
                                             lex_limit_value,
                                         ),
                                     )
+                                    fallback_last_limit_value = float(limit_value)
                                     attempt_rows = cur.fetchall()
                                     last_attempt_rows = list(attempt_rows)
                                     try:
@@ -1087,7 +1174,11 @@ class PgVectorClient:
                                         lexical_rows_local = last_attempt_rows
                                 if picked_limit is None and best_limit is not None:
                                     picked_limit = best_limit
+                                lexical_query_variant = "fallback"
                                 fallback_limit_used_value = picked_limit
+                                if fallback_limit_used_value is None:
+                                    fallback_limit_used_value = fallback_last_limit_value
+                                lexical_fallback_limit_value = fallback_limit_used_value
                                 if (
                                     picked_limit is not None
                                     and requested_trgm_limit is None
@@ -1152,6 +1243,96 @@ class PgVectorClient:
                 )
             except Exception:
                 pass
+
+            if visibility_mode is Visibility.ACTIVE and where_sql_without_deleted:
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SET LOCAL statement_timeout = %s",
+                            (str(self._statement_timeout_ms),),
+                        )
+                        count_selects: List[str] = []
+                        count_params: List[object] = []
+
+                        if (
+                            query_vec is not None
+                            and not vector_query_failed
+                            and distance_operator_value is not None
+                        ):
+                            vector_count_sql = _build_vector_sql(
+                                where_sql_without_deleted,
+                                "c.id",
+                                f"e.embedding {distance_operator_value} %s::vector",
+                            )
+                            count_selects.append(
+                                f"SELECT id FROM ({vector_count_sql}) AS vector_candidates"
+                            )
+                            count_params.extend(
+                                (query_vec, *where_params, vec_limit_value)
+                            )
+
+                        if query_db_norm.strip():
+                            if lexical_query_variant == "primary":
+                                lexical_count_sql = _build_lexical_primary_sql(
+                                    where_sql_without_deleted,
+                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                )
+                                count_selects.append(
+                                    f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
+                                )
+                                count_params.extend(
+                                    (
+                                        query_db_norm,
+                                        *where_params,
+                                        query_db_norm,
+                                        lex_limit_value,
+                                    )
+                                )
+                            elif (
+                                lexical_query_variant == "fallback"
+                                and lexical_fallback_limit_value is not None
+                            ):
+                                lexical_count_sql = _build_lexical_fallback_sql(
+                                    where_sql_without_deleted,
+                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                )
+                                count_selects.append(
+                                    f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
+                                )
+                                count_params.extend(
+                                    (
+                                        query_db_norm,
+                                        *where_params,
+                                        query_db_norm,
+                                        lexical_fallback_limit_value,
+                                        lex_limit_value,
+                                    )
+                                )
+
+                        if count_selects:
+                            union_sql = " UNION ALL ".join(count_selects)
+                            count_without_deleted_sql = (
+                                "SELECT COUNT(DISTINCT id) FROM ("
+                                + union_sql
+                                + ") AS all_candidates"
+                            )
+                            cur.execute(
+                                count_without_deleted_sql,
+                                tuple(count_params),
+                            )
+                            row = cur.fetchone()
+                            if row and row[0] is not None:
+                                total_without_filter_local = int(row[0])
+                except Exception as exc:
+                    logger.warning(
+                        "rag.hybrid.deleted_visibility_count_failed",
+                        tenant=tenant,
+                        case=case_value,
+                        error=str(exc),
+                    )
+                    total_without_filter_local = None
+
+            total_without_filter = total_without_filter_local
             return vector_rows, lexical_rows, (time.perf_counter() - started) * 1000
 
         vector_rows, lexical_rows, duration_ms = self._run_with_retries(
@@ -1421,14 +1602,25 @@ class PgVectorClient:
         )
 
         metrics.RAG_SEARCH_MS.observe(duration_ms)
+        deleted_matches_blocked_value = 0
+        if (
+            visibility_mode is Visibility.ACTIVE
+            and total_without_filter is not None
+        ):
+            deleted_matches_blocked_value = max(
+                0,
+                int(total_without_filter) - (len(vector_rows) + len(lexical_rows)),
+            )
+
         logger.info(
-            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d duration_ms=%.2f",
+            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d deleted_blocked=%d duration_ms=%.2f",
             tenant,
             case_value,
             len(vector_rows),
             len(lexical_rows),
             fused_candidates,
             len(limited_results),
+            deleted_matches_blocked_value,
             duration_ms,
         )
 
@@ -1447,6 +1639,8 @@ class PgVectorClient:
             query_embedding_empty=query_embedding_empty,
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
+            visibility=visibility_mode.value,
+            deleted_matches_blocked=deleted_matches_blocked_value,
         )
 
     def health_check(self) -> bool:

@@ -37,8 +37,12 @@ flowchart LR
 | `operation` | Task- oder Node-Name | `ingestion.embed`, `agent.reason`, `liteLLM.call` |
 | `cost_total` | LiteLLM | Aggregierte Kosten pro Request |
 | `error_type` | Worker/LiteLLM | Klassifiziert Fehlertyp (z.B. `rate_limit`) |
+| `visibility_effective` | VectorStoreRouter | Wirksame Soft-Delete-Sichtbarkeit (`active`, `all`, `deleted`) pro Retrieval-Span |
+| `deleted_matches_blocked` | VectorStoreRouter | Anzahl der durch `visibility=active` weggefilterten Kandidaten |
 
 - Sampling-Richtwerte: Prod 5%, Staging 25%, Dev 100%. Anpassungen erfolgen über `LANGFUSE_SAMPLE_RATE` und werden im [Security-Guide](../security/secrets.md) dokumentiert.
+- Retrieval-Spans laufen als `rag.hybrid.search` ein und tragen `visibility_effective` sowie `deleted_matches_blocked`, damit Guard-Entscheidungen zu Soft-Deletes sichtbar werden.
+- Hard-Delete-Läufe erzeugen einen Span `rag.hard_delete` mit Zählern (`documents_deleted`, `not_found`, `vacuum`, `reindex`, `operator`, `actor_mode`), sodass Audit und Bereinigungsschritte nachvollziehbar bleiben.
 - PII-Redaction: Die Anwendung maskiert PII vor jedem LLM-Aufruf; Langfuse erhält bereits redaktierte Daten. Zusätzliche Langfuse-Regeln sind optional.
 - Dashboards: Standard-Dashboards `Agent Erfolg`, `Ingestion Durchsatz`, `Kosten pro Tenant`. Alerts lösen bei Fehlerquote >5% oder Kosten >80% Budget aus.
 

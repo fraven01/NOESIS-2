@@ -5,10 +5,12 @@ import logging
 import re
 from types import ModuleType
 from importlib import import_module
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.db import connection
+from django.contrib.auth import get_user_model
+from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest
 from django.utils import timezone
 
@@ -46,11 +48,13 @@ from noesis2.api.serializers import (
 # near the view definitions.
 from drf_spectacular.utils import OpenApiExample, inline_serializer
 from rest_framework import serializers, status
+from rest_framework.authentication import SessionAuthentication
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 
+from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
@@ -78,6 +82,7 @@ except Exception:  # defensive: don't break module import if graphs change
 from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
+from .rag.hard_delete import hard_delete
 from .rag.ingestion_contracts import (
     IngestionContractError,
     map_ingestion_error_to_status,
@@ -124,6 +129,101 @@ def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
 
     return Response({"detail": detail, "code": code}, status=status_code)
+
+
+def _extract_internal_key(request: object) -> str | None:
+    """Return the internal service key from *request* when present."""
+
+    if hasattr(request, "headers"):
+        key = request.headers.get("X-Internal-Key")
+        if isinstance(key, str) and key.strip():
+            return key.strip()
+    meta = getattr(request, "META", None)
+    if isinstance(meta, dict):
+        key_meta = meta.get("HTTP_X_INTERNAL_KEY")
+        if isinstance(key_meta, str) and key_meta.strip():
+            return key_meta.strip()
+    return None
+
+
+def _resolve_hard_delete_actor(
+    request: object, operator_label: str | None
+) -> dict[str, object]:
+    """Derive the Celery actor payload for hard delete requests."""
+
+    allowed_keys = getattr(settings, "RAG_INTERNAL_KEYS", ()) or ()
+    candidates: list[object] = []
+    if request is not None:
+        candidates.append(request)
+        django_request = getattr(request, "_request", None)
+        if django_request is not None and django_request is not request:
+            candidates.append(django_request)
+
+    internal_key = None
+    for candidate in candidates:
+        internal_key = _extract_internal_key(candidate)
+        if internal_key:
+            break
+    if internal_key:
+        if internal_key not in allowed_keys:
+            raise PermissionDenied("Service key is not authorised for hard delete")
+        actor: dict[str, object] = {"internal_key": internal_key}
+        if operator_label:
+            actor["label"] = operator_label
+        return actor
+
+    user = None
+    for candidate in candidates:
+        candidate_user = getattr(candidate, "user", None)
+        if candidate_user is not None and getattr(
+            candidate_user, "is_authenticated", False
+        ):
+            user = candidate_user
+            break
+
+    if user is None:
+        for candidate in candidates:
+            session = getattr(candidate, "session", None)
+            session_user_id = None
+            if session is not None:
+                session_user_id = session.get("_auth_user_id")
+            if session_user_id:
+                user_model = get_user_model()
+                try:
+                    user = user_model.objects.get(pk=session_user_id)
+                except user_model.DoesNotExist:  # pragma: no cover - defensive
+                    user = None
+                else:
+                    break
+    if user is None or not getattr(user, "is_authenticated", False):
+        raise PermissionDenied("Hard delete requires a service key or admin session")
+
+    visibility_request = None
+    for candidate in candidates:
+        candidate_user = getattr(candidate, "user", None)
+        if candidate_user is not None and getattr(
+            candidate_user, "is_authenticated", False
+        ):
+            visibility_request = candidate
+            break
+    if visibility_request is None:
+        visibility_request = candidates[-1] if candidates else request
+    if not allow_extended_visibility(visibility_request):
+        raise PermissionDenied("Extended visibility not permitted for this request")
+
+    actor: dict[str, object] = {"user_id": user.pk}
+    label = operator_label
+    if not label:
+        full_name = getattr(user, "get_full_name", None)
+        if callable(full_name):
+            label = (full_name() or "").strip() or None
+    if not label:
+        username = getattr(user, "get_username", None)
+        if callable(username):
+            label = (username() or "").strip() or None
+    if label:
+        actor["label"] = label
+    return actor
 
 
 def _prepare_request(request: Request):
@@ -632,6 +732,81 @@ RAG_INGESTION_RUN_SCHEMA = {
     "extensions": RAG_INGESTION_RUN_CURL,
 }
 
+RAG_HARD_DELETE_ADMIN_REQUEST_EXAMPLE = OpenApiExample(
+    name="RagHardDeleteAdminRequest",
+    summary="Trigger hard delete",
+    description="Queues the hard delete Celery task for the specified documents.",
+    value={
+        "tenant_id": "2f0955c2-21ce-4f38-bfb0-3b690cd57834",
+        "document_ids": [
+            "3fbb07d0-2a5b-4b75-8ad4-5c5e8f3e1d21",
+            "986cf6d5-2d8c-4b6c-98eb-3ac80f8aa84f",
+        ],
+        "reason": "cleanup",
+        "ticket_ref": "TCK-1234",
+    },
+    request_only=True,
+)
+
+RAG_HARD_DELETE_ADMIN_RESPONSE_EXAMPLE = OpenApiExample(
+    name="RagHardDeleteAdminResponse",
+    summary="Hard delete queued",
+    description="Confirms that the hard delete task was scheduled for execution.",
+    value={
+        "status": "queued",
+        "job_id": "0d9f7ac1-0b07-4b7c-98b7-7237f8b9df5b",
+        "trace_id": "c8b7e6c430864d6aa6c66de8f9ad6d47",
+        "documents_requested": 2,
+    },
+    response_only=True,
+)
+
+RAG_HARD_DELETE_ADMIN_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/ai/rag/admin/hard-delete/",
+            '-H "Content-Type: application/json"',
+            '-H "X-Internal-Key: ops-service"',
+            '-d \'{"tenant_id": "2f0955c2-21ce-4f38-bfb0-3b690cd57834", "document_ids": ["3fbb07d0-2a5b-4b75-8ad4-5c5e8f3e1d21"], "reason": "cleanup", "ticket_ref": "TCK-1234"}\'',
+        ]
+    )
+)
+
+RAG_HARD_DELETE_ADMIN_REQUEST = inline_serializer(
+    name="RagHardDeleteAdminRequest",
+    fields={
+        "tenant_id": serializers.CharField(),
+        "document_ids": serializers.ListField(
+            child=serializers.CharField(), allow_empty=False
+        ),
+        "reason": serializers.CharField(),
+        "ticket_ref": serializers.CharField(),
+        "operator_label": serializers.CharField(required=False),
+    },
+)
+
+RAG_HARD_DELETE_ADMIN_RESPONSE = inline_serializer(
+    name="RagHardDeleteAdminResponse",
+    fields={
+        "status": serializers.CharField(),
+        "job_id": serializers.CharField(),
+        "trace_id": serializers.CharField(),
+        "documents_requested": serializers.IntegerField(),
+    },
+)
+
+RAG_HARD_DELETE_ADMIN_SCHEMA = {
+    "request": RAG_HARD_DELETE_ADMIN_REQUEST,
+    "responses": {202: RAG_HARD_DELETE_ADMIN_RESPONSE},
+    "include_trace_header": True,
+    "description": "Internal endpoint that schedules the rag.hard_delete task after an admin or service key authorisation.",
+    "examples": [
+        RAG_HARD_DELETE_ADMIN_REQUEST_EXAMPLE,
+        RAG_HARD_DELETE_ADMIN_RESPONSE_EXAMPLE,
+    ],
+    "extensions": RAG_HARD_DELETE_ADMIN_CURL,
+}
+
 PING_SCHEMA = {
     "responses": {200: PingResponseSerializer},
     "error_statuses": RATE_LIMIT_ERROR_STATUSES,
@@ -1076,6 +1251,110 @@ class RagIngestionRunView(APIView):
         return apply_std_headers(response, meta)
 
 
+class RagHardDeleteAdminView(APIView):
+    """Trigger the asynchronous hard delete task for administrators."""
+
+    authentication_classes = [SessionAuthentication]
+    permission_classes: list = []
+
+    @default_extend_schema(**RAG_HARD_DELETE_ADMIN_SCHEMA)
+    def post(self, request: Request) -> Response:
+        payload = request.data if isinstance(request.data, dict) else {}
+
+        tenant_id_raw = payload.get("tenant_id")
+        if not isinstance(tenant_id_raw, str) or not tenant_id_raw.strip():
+            return _error_response(
+                "tenant_id must be a valid UUID string.",
+                "invalid_tenant_id",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        try:
+            tenant_uuid = UUID(tenant_id_raw.strip())
+        except (TypeError, ValueError):
+            return _error_response(
+                "tenant_id must be a valid UUID string.",
+                "invalid_tenant_id",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        tenant_id = str(tenant_uuid)
+
+        document_ids_raw = payload.get("document_ids")
+        if not isinstance(document_ids_raw, list) or not document_ids_raw:
+            return _error_response(
+                "document_ids must be a non-empty list.",
+                "invalid_document_ids",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        document_ids: list[str] = []
+        for raw in document_ids_raw:
+            if not isinstance(raw, str) or not raw.strip():
+                return _error_response(
+                    "document_ids must contain non-empty UUID strings.",
+                    "invalid_document_ids",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            document_ids.append(raw.strip())
+
+        reason_raw = payload.get("reason")
+        if not isinstance(reason_raw, str) or not reason_raw.strip():
+            return _error_response(
+                "reason must be a non-empty string.",
+                "invalid_reason",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        reason = reason_raw.strip()
+
+        ticket_ref_raw = payload.get("ticket_ref")
+        if not isinstance(ticket_ref_raw, str) or not ticket_ref_raw.strip():
+            return _error_response(
+                "ticket_ref must be a non-empty string.",
+                "invalid_ticket_ref",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        ticket_ref = ticket_ref_raw.strip()
+
+        operator_label = payload.get("operator_label")
+        if isinstance(operator_label, str):
+            operator_label = operator_label.strip() or None
+        else:
+            operator_label = None
+
+        tenant_schema = None
+        header_schema = request.headers.get(X_TENANT_SCHEMA_HEADER)
+        if isinstance(header_schema, str) and header_schema.strip():
+            tenant_schema = header_schema.strip()
+        else:
+            payload_schema = payload.get("tenant_schema")
+            if isinstance(payload_schema, str) and payload_schema.strip():
+                tenant_schema = payload_schema.strip()
+
+        trace_id = uuid4().hex
+        bind_log_context(trace_id=trace_id, tenant=tenant_id)
+
+        actor = _resolve_hard_delete_actor(request, operator_label)
+
+        async_result = hard_delete.delay(
+            tenant_id,
+            document_ids,
+            reason,
+            ticket_ref,
+            actor=actor,
+            tenant_schema=tenant_schema,
+            trace_id=trace_id,
+        )
+
+        response_payload = {
+            "status": "queued",
+            "job_id": getattr(async_result, "id", None),
+            "trace_id": trace_id,
+            "documents_requested": len(document_ids),
+        }
+
+        meta = {"trace_id": trace_id, "tenant": tenant_id}
+        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
+        return apply_std_headers(response, meta)
+
+
 class RagDemoViewV1(_BaseAgentView):
     """Deprecated demo endpoint retained only for backwards compatibility."""
 
@@ -1144,3 +1423,5 @@ rag_upload = rag_upload_v1
 
 rag_ingestion_run_v1 = RagIngestionRunView.as_view()
 rag_ingestion_run = rag_ingestion_run_v1
+
+rag_hard_delete_admin = RagHardDeleteAdminView.as_view()

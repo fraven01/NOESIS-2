@@ -24,6 +24,12 @@
       "type": "string",
       "description": "Optional document class that influences routing."
     },
+    "visibility": {
+      "type": "string",
+      "enum": ["active", "all", "deleted"],
+      "default": "active",
+      "description": "Controls visibility of soft-deleted content."
+    },
     "hybrid": {
       "type": "object",
       "description": "Hybrid retrieval parameters with strict validation.",

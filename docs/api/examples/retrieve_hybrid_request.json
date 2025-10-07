@@ -1,5 +1,6 @@
 {
   "query": "Wie lautet die aktuelle Rückgaberichtlinie?",
+  "visibility": "active",
   "filters": {
     "project_id": "proj-42"
   },
