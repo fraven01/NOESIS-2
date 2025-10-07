@@ -539,21 +539,26 @@ class PgVectorClient:
         """
         top_k = min(max(1, top_k), 10)
         allowed_visibilities = {value.value for value in Visibility}
-        if visibility is None:
+        explicit_visibility_requested = False
+        if isinstance(visibility, Visibility):
+            visibility_value = visibility.value
+            explicit_visibility_requested = True
+        elif visibility is None:
             visibility_value = Visibility.ACTIVE.value
         else:
             try:
                 text_value = str(visibility).strip().lower()
             except Exception:
                 text_value = ""
-            visibility_value = (
-                text_value
-                if text_value in allowed_visibilities
-                else Visibility.ACTIVE.value
-            )
+            if text_value in allowed_visibilities:
+                visibility_value = text_value
+                explicit_visibility_requested = True
+            else:
+                visibility_value = Visibility.ACTIVE.value
         if (
             visibility_value != Visibility.ACTIVE.value
             and not visibility_override_allowed
+            and not explicit_visibility_requested
         ):
             visibility_value = Visibility.ACTIVE.value
         visibility_mode = Visibility(visibility_value)
