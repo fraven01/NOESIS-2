@@ -62,6 +62,7 @@ def test_retrieve_hybrid_search(monkeypatch):
         vec_limit=40,
         lex_limit=30,
     )
+    hybrid_result.deleted_matches_blocked = 3
 
     class _Router:
         def __init__(self):
@@ -112,6 +113,7 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert meta_payload["max_candidates_effective"] >= meta_payload["top_k_effective"]
     assert meta_payload["vector_candidates"] == 37
     assert meta_payload["lexical_candidates"] == 41
+    assert meta_payload["deleted_matches_blocked"] == 3
     assert meta_payload["routing"] == {
         "profile": "standard",
         "vector_space_id": "rag/global",

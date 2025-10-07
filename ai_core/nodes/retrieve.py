@@ -227,6 +227,10 @@ def run(
     lexical_candidates = _coerce_int_value(
         getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
     )
+    deleted_matches_blocked = _coerce_int_value(
+        getattr(hybrid_result, "deleted_matches_blocked", 0) or 0,
+        0,
+    )
     visibility_effective = str(
         getattr(hybrid_result, "visibility", "active") or "active"
     )
@@ -238,6 +242,7 @@ def run(
         "vector_candidates": vector_candidates,
         "lexical_candidates": lexical_candidates,
         "routing": routing_meta,
+        "deleted_matches_blocked": deleted_matches_blocked,
         "visibility_effective": visibility_effective,
     }
 

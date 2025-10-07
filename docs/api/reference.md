@@ -240,6 +240,7 @@ Das Feld `visibility` ist optional; wenn es fehlt oder nicht autorisiert ist, wi
 ```
 
 `meta.visibility_effective` bestätigt die angewendete Sichtbarkeitsregel für Observability und nachgelagerte Auswertungen.
+`meta.deleted_matches_blocked` zeigt an, wie viele Treffer aufgrund der Sichtbarkeitsregeln entfernt wurden (Soft-Deleted Inhalte bei `"active"`).
 
 #### Result-Metadaten
 
@@ -271,17 +272,20 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
   -d '{"query": "Wie konfiguriere ich Tenant-Filter?", "top_k": 3}'
 ```
 
-#### Soft-Delete Sichtbarkeit
+#### Visibility
 
+- **Breaking Default:** Ohne explizite Angabe (oder ohne Admin-Freigabe) wird
+  immer `"active"` erzwungen – Soft-Deleted Inhalte tauchen somit nicht mehr in
+  Standard-Abfragen auf.
 - Requests akzeptieren optional das Feld `visibility` mit den Werten
-  `"active"`, `"all"` oder `"deleted"`. Standard ist `"active"` und blendet
-  Soft-Deletes vollständig aus.
-- `"all"` bzw. `"deleted"` werden nur ausgeführt, wenn der Guard den Request als
-  administrativ bestätigt (aktive Admin-Profile oder erlaubte
-  Service-Keys). Andernfalls wird automatisch auf `"active"` zurückgefallen.
+  `"active"`, `"all"` oder `"deleted"`. Nur autorisierte Admin-Kontexte dürfen
+  `"all"` oder `"deleted"` erzwingen; anderenfalls greift automatisch der
+  Fallback `"active"`.
 - Responses spiegeln die angewendete Policy unter
   `meta.visibility_effective`, damit Clients Debugging und Observability
   vereinheitlichen können.
+- `meta.deleted_matches_blocked` quantifiziert, wie viele Treffer durch die
+  Sichtbarkeitsregeln verworfen wurden (bei `"active"` also Soft-Deletes).
 
 ### RAG Umgebungsvariablen
 

@@ -19,10 +19,11 @@
     "max_candidates_effective": 50,
     "vector_candidates": 37,
     "lexical_candidates": 41,
+    "visibility_effective": "active",
+    "deleted_matches_blocked": 0,
     "routing": {
       "profile": "standard",
       "vector_space_id": "rag/global"
-    },
-    "visibility_effective": "active"
+    }
   }
 }

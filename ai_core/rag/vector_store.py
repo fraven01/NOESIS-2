@@ -15,6 +15,7 @@ from ai_core.infra import tracing
 from . import metrics
 from .router_validation import (
     RouterInputError,
+    SearchValidationResult,
     emit_router_validation_failure,
     validate_search_inputs,
 )
@@ -309,6 +310,38 @@ class VectorStoreRouter:
             return self._tenant_scopes[tenant_id]
         return None
 
+    def _apply_visibility_guard(
+        self,
+        *,
+        validation: SearchValidationResult,
+        tenant: str,
+        scope: str,
+        override_allowed: bool,
+    ) -> Visibility:
+        requested_visibility = validation.visibility
+        context = validation.context
+        context["visibility_requested"] = requested_visibility.value
+        context["visibility_source"] = validation.visibility_source
+        context["visibility_override_allowed"] = override_allowed
+
+        effective_visibility = requested_visibility
+        if (
+            requested_visibility in _EXTENDED_VISIBILITY
+            and not override_allowed
+        ):
+            effective_visibility = DEFAULT_VISIBILITY
+            logger.debug(
+                "rag.visibility.override_denied",
+                extra={
+                    "tenant": tenant,
+                    "requested": requested_visibility.value,
+                    "scope": scope,
+                },
+            )
+
+        context["visibility_effective"] = effective_visibility.value
+        return effective_visibility
+
     def search(
         self,
         query: str,
@@ -342,29 +375,16 @@ class VectorStoreRouter:
             _raise_router_error(exc)
 
         tenant = validation.tenant_id
-        validation_context = validation.context
-        requested_top_k = validation.top_k
-        requested_visibility = validation.visibility
-        validation_context["visibility_requested"] = requested_visibility.value
-        validation_context["visibility_source"] = validation.visibility_source
         override_allowed = bool(visibility_override_allowed)
-        effective_visibility = requested_visibility
-        if (
-            requested_visibility in _EXTENDED_VISIBILITY
-            and not override_allowed
-        ):
-            effective_visibility = DEFAULT_VISIBILITY
-            logger.debug(
-                "rag.visibility.override_denied",
-                extra={
-                    "tenant": tenant,
-                    "requested": requested_visibility.value,
-                    "scope": scope,
-                },
-            )
-        validation_context["visibility_effective"] = effective_visibility.value
-        validation_context["visibility_override_allowed"] = override_allowed
+        effective_visibility = self._apply_visibility_guard(
+            validation=validation,
+            tenant=tenant,
+            scope=scope,
+            override_allowed=override_allowed,
+        )
+        validation_context = validation.context
 
+        requested_top_k = validation.top_k
         requested_top_k = validation.top_k
         capped_top_k = validation.effective_top_k
         top_k_source = validation.top_k_source
@@ -453,26 +473,14 @@ class VectorStoreRouter:
         tenant = validation.tenant_id
         validation_context = validation.context
 
-        requested_visibility = validation.visibility
-        validation_context["visibility_requested"] = requested_visibility.value
-        validation_context["visibility_source"] = validation.visibility_source
         override_allowed = bool(visibility_override_allowed)
-        effective_visibility = requested_visibility
-        if (
-            requested_visibility in _EXTENDED_VISIBILITY
-            and not override_allowed
-        ):
-            effective_visibility = DEFAULT_VISIBILITY
-            logger.debug(
-                "rag.visibility.override_denied",
-                extra={
-                    "tenant": tenant,
-                    "requested": requested_visibility.value,
-                    "scope": scope,
-                },
-            )
+        effective_visibility = self._apply_visibility_guard(
+            validation=validation,
+            tenant=tenant,
+            scope=scope,
+            override_allowed=override_allowed,
+        )
         validation_context["visibility_effective"] = effective_visibility.value
-        validation_context["visibility_override_allowed"] = override_allowed
         validation_context["top_k_requested"] = validation.top_k
 
         normalized_top_k = validation.effective_top_k
@@ -537,6 +545,11 @@ class VectorStoreRouter:
 
         store = self._get_store(scope)
         hybrid = getattr(store, "hybrid_search", None)
+        if callable(hybrid):
+            protocol_hybrid = getattr(VectorStore, "hybrid_search", None)
+            store_hybrid = getattr(type(store), "hybrid_search", None)
+            if store_hybrid is protocol_hybrid:
+                hybrid = None
         if callable(hybrid):
             hybrid_kwargs = {
                 "case_id": case_id,
