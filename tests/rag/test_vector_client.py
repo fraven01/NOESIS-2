@@ -1107,7 +1107,29 @@ def test_hybrid_search_filters_soft_deleted_documents():
     assert [chunk.meta.get("id") for chunk in result.chunks] == [str(active_doc_id)]
 
 
-def test_hybrid_search_returns_deleted_when_visibility_deleted():
+def test_hybrid_search_rejects_visibility_filter_override_without_flag():
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    active_doc_id, _, search_text = _insert_active_and_soft_deleted_documents(
+        client, tenant
+    )
+
+    result = client.hybrid_search(
+        search_text,
+        tenant_id=tenant,
+        filters={"case": "alpha", "visibility": "deleted"},
+        alpha=0.0,
+        min_sim=0.0,
+        top_k=5,
+    )
+
+    assert result.visibility == "active"
+    assert result.deleted_matches_blocked == 1
+    assert [chunk.meta.get("id") for chunk in result.chunks] == [str(active_doc_id)]
+
+
+def test_hybrid_search_returns_deleted_with_default_override():
     vector_client.reset_default_client()
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
@@ -1123,6 +1145,7 @@ def test_hybrid_search_returns_deleted_when_visibility_deleted():
         min_sim=0.0,
         top_k=5,
         visibility="deleted",
+        visibility_override_allowed=False,
     )
 
     assert result.visibility == "deleted"
@@ -1132,7 +1155,7 @@ def test_hybrid_search_returns_deleted_when_visibility_deleted():
     assert [chunk.meta.get("id") for chunk in result.chunks] == [str(deleted_doc_id)]
 
 
-def test_hybrid_search_returns_all_when_visibility_all():
+def test_hybrid_search_returns_all_with_default_override():
     vector_client.reset_default_client()
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
@@ -1148,6 +1171,7 @@ def test_hybrid_search_returns_all_when_visibility_all():
         min_sim=0.0,
         top_k=5,
         visibility="all",
+        visibility_override_allowed=False,
     )
 
     assert result.visibility == "all"
