@@ -245,7 +245,13 @@ def partition_document_ids(
     return existing, missing
 
 
-@shared_task(base=ScopedTask, queue="ingestion", bind=True, max_retries=3)
+@shared_task(
+    base=ScopedTask,
+    queue="ingestion",
+    bind=True,
+    max_retries=3,
+    accepts_scope=True,
+)
 def process_document(
     self,
     tenant: str,
@@ -517,7 +523,7 @@ def process_document(
     }
 
 
-@shared_task(base=ScopedTask, queue="ingestion")
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def run_ingestion(
     tenant: str,
     case: str,
@@ -871,6 +877,7 @@ def _safe_dispatch_dead_letters(
     base=ScopedTask,
     queue="ingestion_dead_letter",
     name="ai_core.ingestion.dead_letter",
+    accepts_scope=True,
 )
 def record_dead_letter(payload: Dict[str, object]) -> None:
     log.error("Ingestion dead letter", extra=payload)
