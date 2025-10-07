@@ -757,6 +757,7 @@ RAG_HARD_DELETE_ADMIN_RESPONSE_EXAMPLE = OpenApiExample(
         "job_id": "0d9f7ac1-0b07-4b7c-98b7-7237f8b9df5b",
         "trace_id": "c8b7e6c430864d6aa6c66de8f9ad6d47",
         "documents_requested": 2,
+        "idempotent": True,
     },
     response_only=True,
 )
@@ -792,12 +793,14 @@ RAG_HARD_DELETE_ADMIN_RESPONSE = inline_serializer(
         "job_id": serializers.CharField(),
         "trace_id": serializers.CharField(),
         "documents_requested": serializers.IntegerField(),
+        "idempotent": serializers.BooleanField(),
     },
 )
 
 RAG_HARD_DELETE_ADMIN_SCHEMA = {
     "request": RAG_HARD_DELETE_ADMIN_REQUEST,
     "responses": {202: RAG_HARD_DELETE_ADMIN_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
     "include_trace_header": True,
     "description": "Internal endpoint that schedules the rag.hard_delete task after an admin or service key authorisation.",
     "examples": [
@@ -1343,11 +1346,13 @@ class RagHardDeleteAdminView(APIView):
             trace_id=trace_id,
         )
 
+        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
         response_payload = {
             "status": "queued",
             "job_id": getattr(async_result, "id", None),
             "trace_id": trace_id,
             "documents_requested": len(document_ids),
+            "idempotent": idempotent,
         }
 
         meta = {"trace_id": trace_id, "tenant": tenant_id}
