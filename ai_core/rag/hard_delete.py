@@ -369,4 +369,5 @@ def hard_delete(  # type: ignore[override]
         "visibility": Visibility.DELETED.value,
     }
 
+
 __all__ = ["hard_delete"]
