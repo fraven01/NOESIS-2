@@ -365,4 +365,7 @@ def hard_delete(  # type: ignore[override]
     }
 
 
+hard_delete.accepts_scope = True
+
+
 __all__ = ["hard_delete"]
