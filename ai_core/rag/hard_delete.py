@@ -303,6 +303,8 @@ def hard_delete(  # type: ignore[override]
     actor: Mapping[str, object] | None = None,
     tenant_schema: str | None = None,
     trace_id: str | None = None,  # noqa: ARG001
+    session_salt: str | None = None,
+    session_scope: Sequence[str] | None = None,  # noqa: ARG001
 ) -> Mapping[str, object]:
     """Physically delete documents and related rows from the vector store."""
 
@@ -343,6 +345,9 @@ def hard_delete(  # type: ignore[override]
         "vacuum": vacuum_performed,
         "reindex": reindex_performed,
     }
+
+    if session_salt:
+        log_payload["session_salt"] = session_salt
 
     logger.info("rag.hard_delete.audit", extra=log_payload)
 

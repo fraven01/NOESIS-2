@@ -99,6 +99,45 @@ def test_hard_delete_service_key(monkeypatch, settings):
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("rag_database")
+def test_hard_delete_service_key_with_scoped_session(monkeypatch, settings):
+    settings.RAG_INTERNAL_KEYS = ["service-key"]
+    tenant_id = str(uuid.uuid4())
+
+    document_id = _insert_document(tenant_id)
+
+    trace_id = "trace-321"
+    case_id = "case-123"
+    session_salt = "||".join((trace_id, case_id, tenant_id))
+
+    spans: list[dict[str, object]] = []
+
+    def _capture_span(
+        trace_id: str, node_name: str, metadata: dict[str, object]
+    ) -> None:
+        spans.append(
+            {"trace_id": trace_id, "node_name": node_name, "metadata": metadata}
+        )
+
+    monkeypatch.setattr("ai_core.rag.hard_delete.tracing.emit_span", _capture_span)
+
+    result = hard_delete(
+        tenant_id,
+        [document_id],
+        "cleanup",
+        "TCK-5",
+        actor={"internal_key": "service-key"},
+        trace_id=trace_id,
+        session_salt=session_salt,
+        session_scope=(tenant_id, case_id, session_salt),
+    )
+
+    assert result["documents_deleted"] == 1
+    assert spans, "expected span emission"
+    assert spans[0]["metadata"].get("session_salt") == session_salt
+
+
+@pytest.mark.django_db
+@pytest.mark.usefixtures("rag_database")
 def test_hard_delete_requires_authorisation(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
