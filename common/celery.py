@@ -134,9 +134,13 @@ class ScopedTask(ContextTask):
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         call_kwargs = dict(kwargs)
         scope_kwargs: dict[str, Any] = {}
+        provided_scope_fields: dict[str, bool] = {}
         for field in self._SCOPE_FIELDS:
             if field in call_kwargs:
+                provided_scope_fields[field] = True
                 scope_kwargs[field] = call_kwargs.pop(field)
+            else:
+                provided_scope_fields[field] = False
 
         explicit_scope = call_kwargs.pop("session_scope", None)
 
@@ -212,24 +216,17 @@ class ScopedTask(ContextTask):
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
 
-        # Ensure the task receives scope-related keyword arguments that were
-        # extracted for configuring the session scope so downstream code can
-        # still rely on them being present. Tasks that previously relied on
-        # ``trace_id`` (e.g. for observability) lost this information when the
-        # forwarding became opt-in via ``accepts_scope``.
-        if tenant_id is not None:
-            call_kwargs.setdefault("tenant_id", tenant_id)
-        if case_id is not None:
-            call_kwargs.setdefault("case_id", case_id)
-        if trace_id is not None:
-            call_kwargs.setdefault("trace_id", trace_id)
-        if session_salt is not None:
-            call_kwargs.setdefault("session_salt", session_salt)
-
-        if getattr(self, "accepts_scope", False):
-            for field, value in scope_kwargs.items():
+        # Forward scope keyword arguments only to tasks that explicitly opted in
+        # via ``accepts_scope``. This keeps the masking/logging context intact
+        # while avoiding unexpected keyword arguments for tasks that do not
+        # handle scope-aware parameters.
+        accepts_scope = bool(getattr(self, "accepts_scope", False))
+        if accepts_scope:
+            for field in self._SCOPE_FIELDS:
+                value = scope_kwargs.get(field)
                 if value is not None:
                     call_kwargs.setdefault(field, value)
+
             if explicit_scope is not None:
                 call_kwargs.setdefault("session_scope", explicit_scope)
 

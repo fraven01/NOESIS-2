@@ -288,7 +288,12 @@ def _emit_span(
     )
 
 
-@shared_task(base=ScopedTask, name="rag.hard_delete", queue="rag_delete")
+@shared_task(
+    base=ScopedTask,
+    name="rag.hard_delete",
+    queue="rag_delete",
+    accepts_scope=True,
+)
 def hard_delete(  # type: ignore[override]
     tenant_id: str,
     document_ids: Sequence[object],

@@ -119,7 +119,7 @@ def log_ingestion_run_end(
         )
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     """Persist raw document bytes."""
     external_id = meta.get("external_id")
@@ -133,7 +133,7 @@ def ingest_raw(meta: Dict[str, str], name: str, data: bytes) -> Dict[str, str]:
     return {"path": path, "content_hash": content_hash}
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     """Decode bytes to text and store."""
     full = object_store.BASE_PATH / raw_path
@@ -143,7 +143,7 @@ def extract_text(meta: Dict[str, str], raw_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Mask PII in text."""
     full = object_store.BASE_PATH / text_path
@@ -156,7 +156,7 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def _split_sentences(text: str) -> List[str]:
     """Best-effort sentence segmentation that retains punctuation."""
 
@@ -433,7 +433,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Generate embedding vectors for chunks via LiteLLM."""
 
@@ -519,7 +519,7 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     return {"path": out_path}
 
 
-@shared_task(base=ScopedTask)
+@shared_task(base=ScopedTask, accepts_scope=True)
 def upsert(
     meta: Dict[str, str],
     embeddings_path: str,
@@ -585,7 +585,7 @@ def upsert(
     return written
 
 
-@shared_task(base=ScopedTask, queue="ingestion")
+@shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def ingestion_run(
     tenant_id: str,
     case_id: str,
