@@ -52,11 +52,11 @@ Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
 2. **Routing pro Dimension:** Ergänze den `VectorStoreRouter` um Regeln, die aus Tenant-Metadaten, Prozessschritt und Dokumentklasse ein Profil ermitteln. Tenants buchen Upgrades, indem sie im Admin-Backend einem anderen Profil zugeordnet werden; Prozessschritte und Dokumentklassen werden als Ingestion-Parameter übergeben und entscheiden, in welchen Vector Space geschrieben/gelesen wird.
    Konsistenz-Gate: `ai_core.rag.routing_rules.validate_routing_rules()` lädt das YAML und verhindert Mehrdeutigkeiten.
 
-3. **Pipelines anreichern:** Der Ingestion-Task erhält einen verpflichtenden `embedding_profile`-Parameter. Vor dem Schreiben prüft er die Dimension (`ChunkEmbedding.dim()`), erzwingt Konsistenz mit dem Zielprofil und führt bei Abweichungen einen Hard-Fail aus. Retrieval-Aufrufe (LangGraph, Reports) müssen denselben Profilschlüssel an den Router durchreichen, damit Query und Speicherung auf denselben Vector Space zeigen. Die Runtime bindet Profile über `ai_core.rag.resolve_ingestion_profile()`, wodurch `embedding_profile` und `vector_space_id` in Statusdateien, Chunk-Metadaten und Langfuse-Traces auftauchen. Verstöße (z. B. fehlendes Profil oder Dimensionsabweichung) werden als Dead-Letter markiert und gemäß [Ingestion-Runbook](ingestion.md#fehlertoleranz-und-deduplizierung) abgearbeitet.
+3. **Pipelines anreichern:** Der Ingestion-Task erhält einen verpflichtenden `embedding_profile`-Parameter. Vor dem Schreiben prüft `ai_core.rag.ensure_embedding_dimensions()` jeden Chunk gegen die konfigurierte Vector-Space-Dimension, erzwingt Konsistenz mit dem Zielprofil und führt bei Abweichungen einen Hard-Fail aus. Retrieval-Aufrufe (LangGraph, Reports) müssen denselben Profilschlüssel an den Router durchreichen, damit Query und Speicherung auf denselben Vector Space zeigen. Die Runtime bindet Profile über `ai_core.rag.resolve_ingestion_profile()`, wodurch `embedding_profile` und `vector_space_id` in Statusdateien, Chunk-Metadaten und Langfuse-Traces auftauchen. Verstöße (z. B. fehlendes Profil oder Dimensionsabweichung) werden als Dead-Letter markiert und gemäß [Ingestion-Runbook](ingestion.md#fehlertoleranz-und-deduplizierung) abgearbeitet.
 
 4. **Fallback-Politik:** Fallback ist ausschließlich zu Anbietern oder Endpunkten mit identischer Ausgabelänge zulässig; Dimensionswechsel bedeuten Migration. Die Admin-GUI dokumentiert dieses „Do & Don’t“, damit Betriebs-Teams nicht spontan auf Modelle anderer Dimension umschalten.
 
-5. **Observability:** Ergänze `embedding_profile` und `vector_space_id` als Pflicht-Tags in Langfuse-Traces (z. B. `retrieval_results`, `embedding_rate_limit`), um Nulltreffer oder Kostenpeaks eindeutig zu einer Pipeline und einem Profil zurückzuführen.
+5. **Observability:** `ai_core.rag.resolve_ingestion_profile()` und `ai_core.rag.resolve_vector_space_full()` emittieren `rag.vector_space.resolve`-Spans mit `embedding_profile`, `vector_space_id`, `vector_space_schema` und `vector_space_dimension`. Retrieval-Spans (`rag.hybrid.search`) liefern ergänzend `top_k_requested`, `top_k_effective`, `max_candidates_effective`, `visibility_*`, Kandidatenzahlen (`vector_candidates`, `lexical_candidates`, `fused_candidates`) sowie `deleted_matches_blocked`, damit Guard-Entscheidungen und Suchparameter transparent bleiben.
 
 6. **Migration planen:** Profile mit abweichender Dimension (z. B. `premium` mit 3072) erfordern dedizierte Tabellen/Schemata sowie ein Re-Embedding der betroffenen Dokumente. Wechsel zwischen Profilen werden als Migration behandelt (Datenexport → Re-Embedding → Import in neues Schema) und nicht durch automatischen Fallback realisiert.
 
@@ -93,26 +93,23 @@ Der VectorStore Router kapselt die Auswahl des Backends und erzwingt, dass jede 
 Standardmäßig injiziert der Router `visibility="active"` in jede Anfrage, sodass Soft-Deletes ohne weitere Flags unsichtbar bleiben. Nur wenn der Guard (`visibility_override_allowed`) dies erlaubt, werden die Modi `all` oder `deleted` weitergegeben. Die effektive Einstellung wird im Retrieval-Ergebnis unter `meta.visibility_effective` gespiegelt und steht damit für Observability und Debugging bereit.
 
 ```python
-from ai_core.rag import get_default_router
+from ai_core.rag import get_default_router, resolve_vector_space_full
 
 router = get_default_router()
-profile = router.resolve_profile(
-    tenant_id="tenant-uuid",
-    process="review",
-    doc_class="legal",
-)
-vector_space = router.resolve_vector_space(profile)
+resolution = resolve_vector_space_full("standard")
+vector_space = resolution.vector_space
+profile = resolution.profile
 embedding = embedder(
     text,
-    model=EMBEDDING_PROFILES[profile]["model"],
+    model=profile.model,
 )
-assert len(embedding) == vector_space["dim"], "dim mismatch"
+assert len(embedding) == vector_space.dimension, "dim mismatch"
 pg.upsert(
-    schema=vector_space["schema"],
+    schema=vector_space.schema,
     embedding=embedding,
     metadata=meta,
 )
-results = router.search(
+results = router.hybrid_search(
     "fallback instructions",
     tenant_id="tenant-uuid",
     process="review",
