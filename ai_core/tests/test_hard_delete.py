@@ -11,7 +11,7 @@ from profiles.models import UserProfile
 from users.models import User
 
 
-def _insert_document(tenant_id: str, embedding_dim: int = 3) -> str:
+def _insert_document(tenant_id: str, embedding_dim: int = 1536) -> str:
     vector_client.reset_default_client()
     chunk = Chunk(
         content="Doc A",
@@ -42,7 +42,6 @@ def test_hard_delete_service_key(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
 
-    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 3)
     document_id = _insert_document(tenant_id)
 
     spans: list[dict[str, object]] = []
@@ -102,7 +101,6 @@ def test_hard_delete_requires_authorisation(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
 
-    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 3)
     document_id = _insert_document(tenant_id)
 
     with pytest.raises(PermissionDenied):
@@ -113,7 +111,6 @@ def test_hard_delete_requires_authorisation(monkeypatch, settings):
 @pytest.mark.usefixtures("rag_database")
 def test_hard_delete_allows_admin_user(monkeypatch, settings):
     tenant_id = str(uuid.uuid4())
-    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 3)
     document_id = _insert_document(tenant_id)
 
     user = User.objects.create_user(username="admin", email="admin@example.com")
@@ -137,7 +134,6 @@ def test_hard_delete_allows_admin_user(monkeypatch, settings):
 @pytest.mark.usefixtures("rag_database")
 def test_hard_delete_allows_org_admin(monkeypatch, settings):
     tenant_id = str(uuid.uuid4())
-    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 3)
     document_id = _insert_document(tenant_id)
 
     user = User.objects.create_user(username="org-admin", email="org@example.com")

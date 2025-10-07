@@ -148,12 +148,15 @@ services:
     container_name: noesis2_rag_schema
     command: >
       sh -c "
-        psql
-          -h db
-          -U ${DB_USER:-noesis2}
-          -d ${DB_NAME:-noesis2}
-          -v ON_ERROR_STOP=1
-          -f /app/docs/rag/schema.sql
+        SCHEMA=${RAG_SCHEMA:-rag}; \
+        DIM=${RAG_VECTOR_DIM:-1536}; \
+        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /app/docs/rag/schema.sql > /tmp/schema.rendered.sql && \
+        psql \
+          -h db \
+          -U ${DB_USER:-noesis2} \
+          -d ${DB_NAME:-noesis2} \
+          -v ON_ERROR_STOP=1 \
+          -f /tmp/schema.rendered.sql
       "
     volumes:
       - .:/app:ro
@@ -162,6 +165,8 @@ services:
       - .env.docker
     environment:
       PGPASSWORD: ${DB_PASSWORD:-noesis2}
+      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
+      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
     depends_on:
       db:
         condition: service_started
@@ -195,7 +200,13 @@ services:
   rag:
     image: postgres:16-alpine
     container_name: noesis2_rag_migrate
-    command: sh -c "PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 -f /schema/schema.sql"
+    command: >
+      sh -c "
+        SCHEMA=${RAG_SCHEMA:-rag}; \
+        DIM=${RAG_VECTOR_DIM:-1536}; \
+        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /schema/schema.sql > /tmp/schema.rendered.sql && \
+        PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 -f /tmp/schema.rendered.sql
+      "
     volumes:
       - ./docs/rag/schema.sql:/schema/schema.sql:ro
     depends_on:
@@ -206,6 +217,8 @@ services:
       DB_USER: ${DB_USER:-noesis2}
       DB_PASSWORD: ${DB_PASSWORD:-noesis2}
       DB_NAME: ${DB_NAME:-noesis2}
+      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
+      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
 
   rag-health:
     image: postgres:16-alpine
@@ -216,9 +229,9 @@ services:
       - |
         PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 \
           -c "SELECT 1 FROM pg_extension WHERE extname='vector';" \
-          -c "SELECT 1 FROM rag.documents LIMIT 0;" \
-          -c "SELECT 1 FROM rag.chunks LIMIT 0;" \
-          -c "SELECT 1 FROM rag.embeddings LIMIT 0;"
+          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.documents LIMIT 0;" \
+          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.chunks LIMIT 0;" \
+          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.embeddings LIMIT 0;"
     depends_on:
       db:
         condition: service_healthy
@@ -227,6 +240,7 @@ services:
       DB_USER: ${DB_USER:-noesis2}
       DB_PASSWORD: ${DB_PASSWORD:-noesis2}
       DB_NAME: ${DB_NAME:-noesis2}
+      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
 
   migrate:
     build:

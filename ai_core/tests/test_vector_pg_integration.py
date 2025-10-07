@@ -30,7 +30,7 @@ def _make_chunk(tenant_id: str, ordinal: int, *, hash_id: str) -> Chunk:
     )
 
 
-def test_router_roundtrip_with_pgvector_backend() -> None:
+def test_router_roundtrip_with_pgvector_backend(monkeypatch) -> None:
     """Ensure the router can write and read chunks with tenant isolation."""
 
     dsn = os.environ.get("RAG_DATABASE_URL") or os.environ.get(
@@ -38,6 +38,8 @@ def test_router_roundtrip_with_pgvector_backend() -> None:
     )
     if not dsn:
         pytest.skip("RAG test database DSN not configured")
+
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 1536)
 
     vector_client.reset_default_client()
     router = get_default_router()

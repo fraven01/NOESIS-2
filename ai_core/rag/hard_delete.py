@@ -297,6 +297,7 @@ def hard_delete(  # type: ignore[override]
     *,
     actor: Mapping[str, object] | None = None,
     tenant_schema: str | None = None,
+    trace_id: str | None = None,  # noqa: ARG001
 ) -> Mapping[str, object]:
     """Physically delete documents and related rows from the vector store."""
 
@@ -340,26 +341,7 @@ def hard_delete(  # type: ignore[override]
 
     logger.info("rag.hard_delete.audit", extra=log_payload)
 
-    context = get_log_context()
-    trace_id = context.get("trace_id")
-    span_metadata: MutableMapping[str, object | None] = {
-        "tenant": str(tenant_uuid),
-        "scope": scope,
-        "schema": schema,
-        "documents_requested": stats.requested,
-        "documents_deleted": stats.documents,
-        "chunks_deleted": stats.chunks,
-        "embeddings_deleted": stats.embeddings,
-        "not_found": stats.not_found,
-        "vacuum": vacuum_performed,
-        "reindex": reindex_performed,
-        "reason": reason,
-        "ticket_ref": ticket_ref,
-        "operator": operator,
-        "actor_mode": actor_mode,
-        "duration_ms": duration_ms,
-    }
-    _emit_span(trace_id, span_metadata)
+    _emit_span(trace_id, log_payload)
 
     return {
         "tenant_id": str(tenant_uuid),

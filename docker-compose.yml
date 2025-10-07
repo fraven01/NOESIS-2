@@ -64,12 +64,15 @@ services:
     # Führe das idempotente Schema-SQL gegen Postgres aus
     command: >
       sh -c "
-        psql
-          -h db
-          -U ${DB_USER:-noesis2}
-          -d ${DB_NAME:-noesis2}
-          -v ON_ERROR_STOP=1
-          -f /app/docs/rag/schema.sql
+        SCHEMA=${RAG_SCHEMA:-rag}; \
+        DIM=${RAG_VECTOR_DIM:-1536}; \
+        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /app/docs/rag/schema.sql > /tmp/schema.rendered.sql && \
+        psql \
+          -h db \
+          -U ${DB_USER:-noesis2} \
+          -d ${DB_NAME:-noesis2} \
+          -v ON_ERROR_STOP=1 \
+          -f /tmp/schema.rendered.sql
       "
     volumes:
       - .:/app:ro
@@ -79,6 +82,8 @@ services:
     environment:
       # psql nutzt dieses Env-Var als Passwort
       PGPASSWORD: ${DB_PASSWORD:-noesis2}
+      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
+      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
     depends_on:
       - db
     restart: "no"
@@ -105,4 +110,3 @@ volumes:
     driver: local
   staticfiles:
     driver: local
-
