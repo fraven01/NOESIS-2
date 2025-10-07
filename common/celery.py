@@ -212,6 +212,20 @@ class ScopedTask(ContextTask):
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
 
+        # Ensure the task receives scope-related keyword arguments that were
+        # extracted for configuring the session scope so downstream code can
+        # still rely on them being present. Tasks that previously relied on
+        # ``trace_id`` (e.g. for observability) lost this information when the
+        # forwarding became opt-in via ``accepts_scope``.
+        if tenant_id is not None:
+            call_kwargs.setdefault("tenant_id", tenant_id)
+        if case_id is not None:
+            call_kwargs.setdefault("case_id", case_id)
+        if trace_id is not None:
+            call_kwargs.setdefault("trace_id", trace_id)
+        if session_salt is not None:
+            call_kwargs.setdefault("session_salt", session_salt)
+
         if getattr(self, "accepts_scope", False):
             for field, value in scope_kwargs.items():
                 if value is not None:
