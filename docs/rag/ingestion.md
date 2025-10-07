@@ -20,7 +20,7 @@ flowchart TD
 
 - Loader nutzen eine generische Schnittstelle und liefern strukturierte Records; Anbindungen an externe Quellen folgen als Erweiterung.
 - Splitter normalisiert Formate (Markdown → Plaintext), Chunker erzeugt überlappende Stücke.
-- Embedder ruft LiteLLM mit `EMBEDDINGS_MODEL`/`EMBEDDINGS_API_BASE` auf und schreibt Ergebnisse in `pgvector`.
+- Embedder ruft LiteLLM über `ai_core.rag.embeddings.EmbeddingClient` auf, nutzt `EMBEDDINGS_MODEL_PRIMARY` (optional `EMBEDDINGS_MODEL_FALLBACK`) sowie `EMBEDDINGS_PROVIDER` und schreibt Ergebnisse in `pgvector`.
 - Upsert nutzt Hashes, um Duplikate zu überspringen und `documents.deleted_at` zu respektieren.
 
 ## Upload → Ingest-Trigger
@@ -29,13 +29,12 @@ flowchart TD
 - **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
 
 ## Parameter
-| Parameter | Default | Grenze | Beschreibung |
+| Setting | Default | Grenze | Beschreibung |
 | --- | --- | --- | --- |
-| `CHUNK_SIZE` | 800 Tokens | 1.200 | Größe eines Textchunks; größer erhöht Kontext, aber auch Embedding-Kosten |
-| `CHUNK_OVERLAP` | 80 Tokens | 200 | Überlappung zwischen Chunks; reduziert Informationsverlust |
-| `BATCH_SIZE` | 128 Chunks | 256 | Anzahl Embeddings pro API-Aufruf; beeinflusst Latenz und Rate-Limit |
-| `MAX_TOKENS` | 3.000 | 4.096 | Sicherheitslimit für Model-Requests |
-| `RETRY_BACKOFF` | 30s → x2 | 5m Max | Exponentielles Backoff bei Fehlern |
+| `RAG_CHUNK_TARGET_TOKENS` | 450 Tokens | Hard-Limit 512 Tokens (per Code) | Zielgröße eines Textchunks; größere Werte erhöhen Kontext, kleinere reduzieren Kosten |
+| `RAG_CHUNK_OVERLAP_TOKENS` | 80 Tokens | Konfigurierbar, keine harte Obergrenze | Überlappung zwischen Chunks; reduziert Informationsverlust |
+| `EMBEDDINGS_BATCH_SIZE` | 64 Chunks | Worker erzwingt nur `>= 1` | Anzahl Embeddings pro LiteLLM-Call; beeinflusst Latenz und Rate-Limit |
+| `RAG_RETRY_BASE_DELAY_MS` | 50 ms | Linear (Versuch * Delay) | Linearer Backoff der pgvector-Operationen; begrenzt von `RAG_RETRY_ATTEMPTS` |
 
 ## API-Contract
 
