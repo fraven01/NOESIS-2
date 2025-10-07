@@ -570,6 +570,12 @@ class VectorStoreRouter:
                             inspect.Parameter.KEYWORD_ONLY,
                         )
                     }
+                    # visibility is handled via dedicated parameters on the client
+                    # even if older implementations haven't been updated yet. keep
+                    # these keys so PgVectorClient.hybrid_search can consume them.
+                    allowed_keywords.update(
+                        {"visibility", "visibility_override_allowed"}
+                    )
                     hybrid_kwargs = {
                         key: value
                         for key, value in hybrid_kwargs.items()
