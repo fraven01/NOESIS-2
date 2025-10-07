@@ -1,13 +1,10 @@
 from types import SimpleNamespace
 import uuid
-from types import SimpleNamespace
-import uuid
 
 import pytest
 from django.contrib.auth import get_user_model
-from rest_framework.test import APIRequestFactory
 
-from ai_core.views import RagHardDeleteAdminView, _resolve_hard_delete_actor
+from ai_core.views import _resolve_hard_delete_actor
 from profiles.models import UserProfile
 
 
@@ -22,9 +19,7 @@ def test_rag_hard_delete_admin_service_key(client, settings, monkeypatch):
         captured["kwargs"] = kwargs
         return SimpleNamespace(id="job-123")
 
-    monkeypatch.setattr(
-        "ai_core.views.hard_delete", SimpleNamespace(delay=fake_delay)
-    )
+    monkeypatch.setattr("ai_core.views.hard_delete", SimpleNamespace(delay=fake_delay))
 
     response = client.post(
         "/ai/rag/admin/hard-delete/",
@@ -83,7 +78,9 @@ def test_rag_hard_delete_admin_requires_authorisation(client, settings):
 def test_rag_hard_delete_admin_rejects_non_admin_user(client):
     user_model = get_user_model()
     user = user_model.objects.create_user("guest", "guest@example.com", "pass")
-    UserProfile.objects.update_or_create(user=user, defaults={"role": UserProfile.Roles.GUEST})
+    UserProfile.objects.update_or_create(
+        user=user, defaults={"role": UserProfile.Roles.GUEST}
+    )
     client.force_login(user)
     client.cookies["csrftoken"] = "test-token"
 
@@ -113,9 +110,7 @@ def test_resolve_hard_delete_actor_allows_admin_user(monkeypatch):
 
     request = SimpleNamespace(headers={}, META={}, user=user, session={})
 
-    monkeypatch.setattr(
-        "ai_core.views.allow_extended_visibility", lambda _: True
-    )
+    monkeypatch.setattr("ai_core.views.allow_extended_visibility", lambda _: True)
 
     actor = _resolve_hard_delete_actor(request, "Alex Admin")
 

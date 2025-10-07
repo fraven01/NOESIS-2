@@ -102,9 +102,7 @@ def _resolve_actor(actor: Mapping[str, object] | None) -> tuple[str, str]:
     if profile.role == UserProfile.Roles.ADMIN:
         return label, "user_admin"
 
-    if OrgMembership.objects.filter(
-        user=user, role=OrgMembership.Role.ADMIN
-    ).exists():
+    if OrgMembership.objects.filter(user=user, role=OrgMembership.Role.ADMIN).exists():
         return label, "org_admin"
 
     raise HardDeleteAuthorisationError(
@@ -386,4 +384,3 @@ def hard_delete(  # type: ignore[override]
 
 
 __all__ = ["hard_delete"]
-

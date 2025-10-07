@@ -1136,8 +1136,8 @@ def test_hybrid_search_returns_all_when_visibility_all():
     vector_client.reset_default_client()
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
-    active_doc_id, deleted_doc_id, search_text = _insert_active_and_soft_deleted_documents(
-        client, tenant
+    active_doc_id, deleted_doc_id, search_text = (
+        _insert_active_and_soft_deleted_documents(client, tenant)
     )
 
     result = client.hybrid_search(

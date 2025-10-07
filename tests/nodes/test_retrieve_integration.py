@@ -252,7 +252,9 @@ def _run_visibility_scenario(
     return recorded, payload
 
 
-def test_retrieve_visibility_defaults_to_active(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retrieve_visibility_defaults_to_active(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded, payload = _run_visibility_scenario(monkeypatch)
 
     assert recorded["effective"] == "active"
@@ -266,7 +268,9 @@ def test_retrieve_visibility_defaults_to_active(monkeypatch: pytest.MonkeyPatch)
     assert meta["deleted_matches_blocked"] == 1
 
 
-def test_retrieve_visibility_all_requires_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retrieve_visibility_all_requires_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded, payload = _run_visibility_scenario(
         monkeypatch, requested="all", override_allowed=True
     )
@@ -282,7 +286,9 @@ def test_retrieve_visibility_all_requires_admin(monkeypatch: pytest.MonkeyPatch)
     assert meta["deleted_matches_blocked"] == 0
 
 
-def test_retrieve_visibility_deleted_only_for_admin(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_retrieve_visibility_deleted_only_for_admin(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     recorded, payload = _run_visibility_scenario(
         monkeypatch, requested="deleted", override_allowed=True
     )

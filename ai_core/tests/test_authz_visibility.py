@@ -32,7 +32,9 @@ def _build_request(factory: RequestFactory, user) -> object:
 
 
 @pytest.mark.django_db
-def test_allow_extended_visibility_denies_anonymous(request_factory: RequestFactory) -> None:
+def test_allow_extended_visibility_denies_anonymous(
+    request_factory: RequestFactory,
+) -> None:
     request = _build_request(request_factory, AnonymousUser())
     assert allow_extended_visibility(request) is False
 

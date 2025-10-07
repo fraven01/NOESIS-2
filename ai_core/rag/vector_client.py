@@ -547,9 +547,14 @@ class PgVectorClient:
             except Exception:
                 text_value = ""
             visibility_value = (
-                text_value if text_value in allowed_visibilities else Visibility.ACTIVE.value
+                text_value
+                if text_value in allowed_visibilities
+                else Visibility.ACTIVE.value
             )
-        if visibility_value != Visibility.ACTIVE.value and not visibility_override_allowed:
+        if (
+            visibility_value != Visibility.ACTIVE.value
+            and not visibility_override_allowed
+        ):
             visibility_value = Visibility.ACTIVE.value
         visibility_mode = Visibility(visibility_value)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
@@ -770,7 +775,9 @@ class PgVectorClient:
                     LIMIT %s
                 """
 
-            def _build_lexical_primary_sql(where_sql_value: str, select_columns: str) -> str:
+            def _build_lexical_primary_sql(
+                where_sql_value: str, select_columns: str
+            ) -> str:
                 return f"""
                     SELECT
                         {select_columns}
@@ -782,7 +789,9 @@ class PgVectorClient:
                     LIMIT %s
                 """
 
-            def _build_lexical_fallback_sql(where_sql_value: str, select_columns: str) -> str:
+            def _build_lexical_fallback_sql(
+                where_sql_value: str, select_columns: str
+            ) -> str:
                 return f"""
                     SELECT
                         {select_columns}
@@ -1177,7 +1186,9 @@ class PgVectorClient:
                                 lexical_query_variant = "fallback"
                                 fallback_limit_used_value = picked_limit
                                 if fallback_limit_used_value is None:
-                                    fallback_limit_used_value = fallback_last_limit_value
+                                    fallback_limit_used_value = (
+                                        fallback_last_limit_value
+                                    )
                                 lexical_fallback_limit_value = fallback_limit_used_value
                                 if (
                                     picked_limit is not None
@@ -1603,10 +1614,7 @@ class PgVectorClient:
 
         metrics.RAG_SEARCH_MS.observe(duration_ms)
         deleted_matches_blocked_value = 0
-        if (
-            visibility_mode is Visibility.ACTIVE
-            and total_without_filter is not None
-        ):
+        if visibility_mode is Visibility.ACTIVE and total_without_filter is not None:
             deleted_matches_blocked_value = max(
                 0,
                 int(total_without_filter) - (len(vector_rows) + len(lexical_rows)),

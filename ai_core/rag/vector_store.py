@@ -67,9 +67,7 @@ def _emit_retrieval_span(
         "visibility_requested": context.get("visibility_requested"),
         "visibility_source": context.get("visibility_source"),
         "visibility_effective": context.get("visibility_effective"),
-        "visibility_override_allowed": bool(
-            context.get("visibility_override_allowed")
-        ),
+        "visibility_override_allowed": bool(context.get("visibility_override_allowed")),
     }
 
     requested_top_k = context.get("top_k_requested")
@@ -125,15 +123,11 @@ def _emit_retrieval_span(
     if below_cutoff is not None:
         metadata["below_cutoff"] = below_cutoff
 
-    returned_after_cutoff = _coerce_int(
-        getattr(result, "returned_after_cutoff", None)
-    )
+    returned_after_cutoff = _coerce_int(getattr(result, "returned_after_cutoff", None))
     if returned_after_cutoff is not None:
         metadata["returned_after_cutoff"] = returned_after_cutoff
 
-    deleted_matches_blocked = _coerce_int(
-        getattr(result, "deleted_matches_blocked", 0)
-    )
+    deleted_matches_blocked = _coerce_int(getattr(result, "deleted_matches_blocked", 0))
     metadata["deleted_matches_blocked"] = (
         deleted_matches_blocked if deleted_matches_blocked is not None else 0
     )
@@ -325,10 +319,7 @@ class VectorStoreRouter:
         context["visibility_override_allowed"] = override_allowed
 
         effective_visibility = requested_visibility
-        if (
-            requested_visibility in _EXTENDED_VISIBILITY
-            and not override_allowed
-        ):
+        if requested_visibility in _EXTENDED_VISIBILITY and not override_allowed:
             effective_visibility = DEFAULT_VISIBILITY
             logger.debug(
                 "rag.visibility.override_denied",
@@ -601,8 +592,8 @@ class VectorStoreRouter:
             )
             if result is not None:
                 setattr(result, "visibility", effective_visibility.value)
-                validation_context["visibility_effective"] = (
-                    getattr(result, "visibility", effective_visibility.value)
+                validation_context["visibility_effective"] = getattr(
+                    result, "visibility", effective_visibility.value
                 )
                 _emit_retrieval_span(
                     tenant=tenant,
