@@ -2,6 +2,7 @@ import pytest
 
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_store import VectorStoreRouter
 
 
 class _DummyProfile:
@@ -23,12 +24,17 @@ class _HybridSearchResult:
         lexical_candidates: int,
         alpha: float,
         min_sim: float,
+        visibility: str = "active",
     ) -> None:
-        self.chunks = chunks
+        self.chunks = list(chunks)
         self.vector_candidates = vector_candidates
         self.lexical_candidates = lexical_candidates
+        self.fused_candidates = len(self.chunks)
+        self.duration_ms = 0.0
         self.alpha = alpha
         self.min_sim = min_sim
+        self.visibility = visibility
+        self.deleted_matches_blocked = 0
 
 
 class _FakeRouter:
@@ -44,6 +50,68 @@ class _FakeRouter:
     def hybrid_search(self, query, **kwargs):
         self.hybrid_calls.append((query, kwargs))
         return self._response
+
+
+class _VisibilityStore:
+    def __init__(self, active_chunk: Chunk, deleted_chunk: Chunk) -> None:
+        self.name = "global"
+        self._active = active_chunk
+        self._deleted = deleted_chunk
+        self.hybrid_calls: list[dict[str, object]] = []
+
+    def hybrid_search(
+        self,
+        query,
+        tenant_id,
+        *,
+        case_id=None,
+        top_k=5,
+        filters=None,
+        alpha=None,
+        min_sim=None,
+        vec_limit=None,
+        lex_limit=None,
+        trgm_limit=None,
+        max_candidates=None,
+        visibility=None,
+        visibility_override_allowed=False,
+        **kwargs,
+    ):
+        effective = visibility or "active"
+        if effective == "deleted":
+            chunks = [self._deleted]
+        elif effective == "all":
+            chunks = [self._active, self._deleted]
+        else:
+            chunks = [self._active]
+
+        result = _HybridSearchResult(
+            chunks,
+            vector_candidates=len(chunks),
+            lexical_candidates=0,
+            alpha=0.45,
+            min_sim=0.2,
+            visibility=effective,
+        )
+        self.hybrid_calls.append(
+            {
+                "query": query,
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "top_k": top_k,
+                "filters": filters,
+                "alpha": alpha,
+                "min_sim": min_sim,
+                "vec_limit": vec_limit,
+                "lex_limit": lex_limit,
+                "trgm_limit": trgm_limit,
+                "max_candidates": max_candidates,
+                "visibility": visibility,
+                "visibility_override_allowed": visibility_override_allowed,
+                "effective": effective,
+            }
+        )
+        return result
 
 
 def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
@@ -121,6 +189,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert params["max_candidates"] >= 3
     assert params["process"] == "review"
     assert params["doc_class"] == "policy"
+    assert params["visibility"] is None
+    assert params["visibility_override_allowed"] is False
 
     matches = payload["matches"]
     assert len(matches) == 3
@@ -142,3 +212,53 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
         "profile": "standard",
         "vector_space_id": "rag/global",
     }
+    assert meta_payload["visibility_effective"] == "active"
+
+
+@pytest.mark.parametrize(
+    "requested, override_allowed, expected_ids, expected_visibility",
+    [
+        (None, False, ["doc-active"], "active"),
+        ("all", True, ["doc-active", "doc-deleted"], "all"),
+        ("deleted", True, ["doc-deleted"], "deleted"),
+        ("all", False, ["doc-active"], "active"),
+    ],
+)
+def test_retrieve_visibility_semantics(
+    monkeypatch,
+    requested,
+    override_allowed,
+    expected_ids,
+    expected_visibility,
+):
+    _patch_routing(monkeypatch)
+
+    active_chunk = Chunk(
+        "Active", {"id": "doc-active", "score": 0.91, "source": "vector"}
+    )
+    deleted_chunk = Chunk(
+        "Deleted", {"id": "doc-deleted", "score": 0.42, "source": "vector"}
+    )
+
+    store = _VisibilityStore(active_chunk, deleted_chunk)
+    router = VectorStoreRouter({"global": store})
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    state = {"query": "check visibility", "hybrid": {}}
+    if requested is not None:
+        state["visibility"] = requested
+
+    meta = {"tenant_id": "tenant-visibility"}
+    if override_allowed:
+        meta["visibility_override_allowed"] = True
+
+    _, payload = retrieve.run(state, meta)
+
+    recorded = store.hybrid_calls[-1]
+    assert recorded["effective"] == expected_visibility
+    assert recorded.get("visibility") == expected_visibility
+    assert bool(recorded.get("visibility_override_allowed")) is bool(override_allowed)
+
+    matches = payload["matches"]
+    assert [match["id"] for match in matches] == expected_ids
+    assert payload["meta"]["visibility_effective"] == expected_visibility

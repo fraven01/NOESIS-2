@@ -163,6 +163,41 @@ Startet einen Ingestion-Workflow für zuvor hochgeladene Dokumente. Der Prozess 
 - `400 Bad Request`: Leere Dokumentliste.
 - `429 Too Many Requests`: Rate-Limit auf Tenant-Level erreicht.
 
+### POST `/ai/rag/admin/hard-delete/`
+Interner Admin-Endpunkt, der den Celery-Task `rag.hard_delete` triggert. Zugriffe erfordern entweder einen erlaubten Service-Key (`X-Internal-Key`) oder eine aktive Admin-Session; alle anderen Requests werden mit `403 Forbidden` abgelehnt.
+
+**Headers**
+- `Content-Type: application/json`
+- `X-Internal-Key` (required für Service-zu-Service-Aufrufe)
+
+**Body Schema**
+```json
+{
+  "tenant_id": "2f0955c2-21ce-4f38-bfb0-3b690cd57834",
+  "document_ids": [
+    "3fbb07d0-2a5b-4b75-8ad4-5c5e8f3e1d21",
+    "986cf6d5-2d8c-4b6c-98eb-3ac80f8aa84f"
+  ],
+  "reason": "cleanup",
+  "ticket_ref": "TCK-1234"
+}
+```
+- Optionales Feld `operator_label` erlaubt die Angabe eines sprechenden Audit-Namens, der in den Task-Logs landet.
+
+**Response 202 Beispiel**
+```json
+{
+  "status": "queued",
+  "job_id": "0d9f7ac1-0b07-4b7c-98b7-7237f8b9df5b",
+  "trace_id": "c8b7e6c430864d6aa6c66de8f9ad6d47",
+  "documents_requested": 2
+}
+```
+
+**Fehler**
+- `400 Bad Request`: Fehlende Pflichtfelder oder ungültige UUIDs in `tenant_id`/`document_ids`.
+- `403 Forbidden`: Weder Service-Key noch berechtigter Admin-User vorhanden.
+
 ### POST `/ai/v1/rag-demo/`
 Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit. Er beantwortet eine Query ohne LLM-Beteiligung, liest die Anfrage aus `{"query": ...}` (bzw. kompatiblen Alias-Feldern) und liefert die Top-K Treffer aus dem mandantenspezifisch gefilterten Vektor-Index. Ohne angebundenen Vektorstore werden deterministische Demo-Matches zurückgegeben.
 
@@ -176,9 +211,12 @@ Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit
 ```json
 {
   "query": "Wie konfiguriere ich Tenant-Filter?",
-  "top_k": 5
+  "top_k": 5,
+  "visibility": "active"
 }
 ```
+
+Das Feld `visibility` ist optional; wenn es fehlt oder nicht autorisiert ist, wird serverseitig auf `"active"` zurückgefallen.
 
 **Response 200 Beispiel**
 ```json
@@ -194,9 +232,14 @@ Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit
         "tenant_id": "acme"
       }
     }
-  ]
+  ],
+  "meta": {
+    "visibility_effective": "active"
+  }
 }
 ```
+
+`meta.visibility_effective` bestätigt die angewendete Sichtbarkeitsregel für Observability und nachgelagerte Auswertungen.
 
 #### Result-Metadaten
 
@@ -227,6 +270,18 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
   -H "Content-Type: application/json" \
   -d '{"query": "Wie konfiguriere ich Tenant-Filter?", "top_k": 3}'
 ```
+
+#### Soft-Delete Sichtbarkeit
+
+- Requests akzeptieren optional das Feld `visibility` mit den Werten
+  `"active"`, `"all"` oder `"deleted"`. Standard ist `"active"` und blendet
+  Soft-Deletes vollständig aus.
+- `"all"` bzw. `"deleted"` werden nur ausgeführt, wenn der Guard den Request als
+  administrativ bestätigt (aktive Admin-Profile oder erlaubte
+  Service-Keys). Andernfalls wird automatisch auf `"active"` zurückgefallen.
+- Responses spiegeln die angewendete Policy unter
+  `meta.visibility_effective`, damit Clients Debugging und Observability
+  vereinheitlichen können.
 
 ### RAG Umgebungsvariablen
 

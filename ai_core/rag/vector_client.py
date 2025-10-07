@@ -37,6 +37,7 @@ from .normalization import normalise_text, normalise_text_db
 from . import metrics
 from .filters import strict_match
 from .schemas import Chunk
+from .visibility import Visibility
 
 # Ensure jsonb columns are decoded into Python dictionaries
 register_default_jsonb(loads=json.loads, globally=True)
@@ -201,6 +202,8 @@ class HybridSearchResult:
     query_embedding_empty: bool = False
     applied_trgm_limit: float | None = None
     fallback_limit_used: float | None = None
+    visibility: str = Visibility.ACTIVE.value
+    deleted_matches_blocked: int = 0
 
 
 class UpsertResult(int):
@@ -525,6 +528,8 @@ class PgVectorClient:
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        visibility: Visibility | str | None = None,
+        visibility_override_allowed: bool = False,
     ) -> HybridSearchResult:
         """Execute hybrid vector/lexical retrieval for ``query``.
 
@@ -533,6 +538,17 @@ class PgVectorClient:
         operator to ensure consistent lexical matching behaviour.
         """
         top_k = min(max(1, top_k), 10)
+        if isinstance(visibility, Visibility):
+            visibility_mode = visibility
+        elif visibility is None:
+            visibility_mode = Visibility.ACTIVE
+        else:
+            try:
+                visibility_mode = Visibility(str(visibility).strip().lower())
+            except ValueError:
+                visibility_mode = Visibility.ACTIVE
+        if visibility_mode is not Visibility.ACTIVE and not visibility_override_allowed:
+            visibility_mode = Visibility.ACTIVE
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
         normalized_filters: Dict[str, object | None] = {}
@@ -546,6 +562,7 @@ class PgVectorClient:
                 )
                 for key, value in filters.items()
             }
+        normalized_filters["visibility"] = visibility_mode.value
         case_value: Optional[str]
         if case_id not in {None, ""}:
             case_value = case_id
@@ -562,9 +579,12 @@ class PgVectorClient:
             and value is not None
             and key in SUPPORTED_METADATA_FILTERS
         ]
-        filter_debug: Dict[str, object | None] = {"tenant": "<set>"}
+        filter_debug: Dict[str, object | None] = {
+            "tenant": "<set>",
+            "visibility": visibility_mode.value,
+        }
         for key, value in normalized_filters.items():
-            if key == "tenant":
+            if key in {"tenant", "visibility"}:
                 continue
             filter_debug[key] = (
                 "<set>"
@@ -670,6 +690,17 @@ class PgVectorClient:
         )
 
         where_clauses = ["d.tenant_id = %s"]
+        if visibility_mode is Visibility.ACTIVE:
+            where_clauses.extend(
+                [
+                    "d.deleted_at IS NULL",
+                    "(c.metadata ->> 'deleted_at') IS NULL",
+                ]
+            )
+        elif visibility_mode is Visibility.DELETED:
+            where_clauses.append(
+                "(d.deleted_at IS NOT NULL OR (c.metadata ->> 'deleted_at') IS NOT NULL)"
+            )
         where_params: List[object] = [tenant_uuid]
         for key, value in metadata_filters:
             kind = SUPPORTED_METADATA_FILTERS[key]
@@ -1447,6 +1478,7 @@ class PgVectorClient:
             query_embedding_empty=query_embedding_empty,
             applied_trgm_limit=applied_trgm_limit_value,
             fallback_limit_used=fallback_limit_used_value,
+            visibility=visibility_mode.value,
         )
 
     def health_check(self) -> bool:

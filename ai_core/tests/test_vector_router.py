@@ -110,6 +110,8 @@ class HybridEnabledStore(VectorStore):
         lex_limit: int | None = None,
         trgm_limit: float | None = None,
         max_candidates: int | None = None,
+        visibility: str | None = None,
+        visibility_override_allowed: bool = False,
     ) -> HybridSearchResult:
         self.hybrid_calls.append(
             {
@@ -124,6 +126,8 @@ class HybridEnabledStore(VectorStore):
                 "lex_limit": lex_limit,
                 "trgm_limit": trgm_limit,
                 "max_candidates": max_candidates,
+                "visibility": visibility,
+                "visibility_override_allowed": visibility_override_allowed,
             }
         )
         return self._result
@@ -201,7 +205,12 @@ def test_router_normalizes_empty_filters(
         filters={"case": "", "source": "doc", "extra": ""},
     )
     filters = global_store.search_calls[-1]["filters"]
-    assert filters == {"case": None, "source": "doc", "extra": None}
+    assert filters == {
+        "case": None,
+        "source": "doc",
+        "extra": None,
+        "visibility": "active",
+    }
 
 
 def test_router_delegates_to_scope_or_default(
@@ -433,7 +442,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     assert result is silo_result
     call = silo_store.hybrid_calls[-1]
     assert call["top_k"] == 10  # capped
-    assert call["filters"] == {"case": None}
+    assert call["filters"] == {"case": None, "visibility": "active"}
     expected_trgm = float(get_limit_setting("RAG_TRGM_LIMIT", 0.30))
     expected_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
     expected_max_candidates = normalize_max_candidates(10, None, expected_cap)
@@ -444,6 +453,126 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     fallback = router.hybrid_search("frage", tenant_id=tenant, scope="missing")
     assert fallback is global_result
     assert global_store.hybrid_calls[-1]["top_k"] == 5
+
+
+def test_router_hybrid_search_defaults_to_active_visibility() -> None:
+    tenant = "tenant-vis"
+    hybrid_result = HybridSearchResult(
+        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        vector_candidates=1,
+        lexical_candidates=1,
+        fused_candidates=1,
+        duration_ms=0.2,
+        alpha=0.6,
+        min_sim=0.3,
+        vec_limit=5,
+        lex_limit=5,
+    )
+    store = HybridEnabledStore("global", hybrid_result)
+    router = VectorStoreRouter({"global": store})
+
+    result = router.hybrid_search("frage", tenant_id=tenant, visibility="all")
+
+    call = store.hybrid_calls[-1]
+    assert call["filters"] == {"visibility": "active"}
+    assert call["visibility"] == "active"
+    assert call["visibility_override_allowed"] is False
+    assert result.visibility == "active"
+
+
+def test_router_hybrid_search_without_visibility_flag_returns_active() -> None:
+    tenant = "tenant-default"
+    hybrid_result = HybridSearchResult(
+        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        vector_candidates=1,
+        lexical_candidates=1,
+        fused_candidates=1,
+        duration_ms=0.1,
+        alpha=0.4,
+        min_sim=0.2,
+        vec_limit=4,
+        lex_limit=4,
+    )
+    store = HybridEnabledStore("global", hybrid_result)
+    router = VectorStoreRouter({"global": store})
+
+    result = router.hybrid_search("frage", tenant_id=tenant)
+
+    call = store.hybrid_calls[-1]
+    assert call["filters"] == {"visibility": "active"}
+    assert call["visibility"] == "active"
+    assert call["visibility_override_allowed"] is False
+    assert result.visibility == "active"
+
+
+def test_router_hybrid_search_allows_authorized_visibility() -> None:
+    tenant = "tenant-auth"
+    hybrid_result = HybridSearchResult(
+        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        vector_candidates=1,
+        lexical_candidates=0,
+        fused_candidates=1,
+        duration_ms=0.1,
+        alpha=0.5,
+        min_sim=0.2,
+        vec_limit=4,
+        lex_limit=4,
+    )
+    store = HybridEnabledStore("global", hybrid_result)
+    router = VectorStoreRouter({"global": store})
+
+    result = router.hybrid_search(
+        "frage",
+        tenant_id=tenant,
+        visibility="deleted",
+        visibility_override_allowed=True,
+    )
+
+    call = store.hybrid_calls[-1]
+    assert call["filters"] == {"visibility": "deleted"}
+    assert call["visibility"] == "deleted"
+    assert call["visibility_override_allowed"] is True
+    assert result.visibility == "deleted"
+
+
+def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
+    tenant = "tenant-span"
+    hybrid_result = HybridSearchResult(
+        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        vector_candidates=2,
+        lexical_candidates=0,
+        fused_candidates=2,
+        duration_ms=0.3,
+        alpha=0.5,
+        min_sim=0.2,
+        vec_limit=4,
+        lex_limit=4,
+    )
+    hybrid_result.deleted_matches_blocked = 5
+    store = HybridEnabledStore("global", hybrid_result)
+    router = VectorStoreRouter({"global": store})
+
+    spans: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "ai_core.rag.vector_store.tracing.emit_span",
+        lambda **kwargs: spans.append(kwargs),
+    )
+
+    with log_context(trace_id="trace-span"):
+        router.hybrid_search(
+            "frage",
+            tenant_id=tenant,
+            visibility="deleted",
+            visibility_override_allowed=True,
+        )
+
+    assert spans, "expected retrieval span to be emitted"
+    span = spans[-1]
+    assert span["trace_id"] == "trace-span"
+    assert span["node_name"] == "rag.hybrid.search"
+    metadata = span["metadata"]
+    assert metadata["visibility_effective"] == "deleted"
+    assert metadata["deleted_matches_blocked"] == 5
 
 
 def test_router_hybrid_search_falls_back_when_not_supported() -> None:
@@ -459,7 +588,9 @@ def test_router_hybrid_search_falls_back_when_not_supported() -> None:
     assert result.vector_candidates == len(fallback_chunks)
     assert result.lexical_candidates == 0
     assert result.fused_candidates == len(fallback_chunks)
+    assert result.visibility == "active"
     assert store.search_calls[-1]["top_k"] == 3
+    assert store.search_calls[-1]["filters"]["visibility"] == "active"
 
 
 def test_router_hybrid_search_rejects_small_candidate_pool(
@@ -534,8 +665,24 @@ def test_router_logs_warning_when_hybrid_returns_none(
     tenant = "tenant-88"
 
     class _NullHybridStore(FakeStore):
-        def hybrid_search(self, *args, **kwargs):  # type: ignore[override]
-            super().hybrid_search(*args, **kwargs)
+        def hybrid_search(
+            self,
+            query: str,
+            tenant_id: str,
+            *,
+            case_id: str | None = None,
+            top_k: int = 5,
+            filters: Mapping[str, object | None] | None = None,
+            alpha: float | None = None,
+            min_sim: float | None = None,
+            vec_limit: int | None = None,
+            lex_limit: int | None = None,
+            trgm_limit: float | None = None,
+            max_candidates: int | None = None,
+            visibility: str | None = None,
+            visibility_override_allowed: bool = False,
+        ) -> HybridSearchResult | None:
+            # Simulate a store that supports hybrid_search but returns no result.
             return None
 
     store = _NullHybridStore(

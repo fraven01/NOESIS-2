@@ -54,7 +54,8 @@
         "max_candidates_effective",
         "vector_candidates",
         "lexical_candidates",
-        "routing"
+        "routing",
+        "visibility_effective"
       ],
       "properties": {
         "alpha": {
@@ -103,6 +104,10 @@
               "description": "Vector space identifier backing the profile."
             }
           }
+        },
+        "visibility_effective": {
+          "type": "string",
+          "description": "Visibility policy effectively applied to this response."
         }
       }
     }

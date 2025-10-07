@@ -8,6 +8,7 @@ from ai_core.rag.router_validation import (
     map_router_error_to_status,
     validate_search_inputs,
 )
+from ai_core.rag.visibility import Visibility
 from common.logging import log_context
 
 
@@ -38,6 +39,8 @@ def test_validate_accepts_trimmed_values() -> None:
     assert result.effective_max_candidates == normalize_max_candidates(
         7, None, expected_cap
     )
+    assert result.visibility is Visibility.ACTIVE
+    assert result.visibility_source == "from_default"
     assert result.max_candidates_source == "from_default"
 
 
@@ -65,6 +68,8 @@ def test_validate_treats_blank_top_k_as_default() -> None:
         5, None, expected_cap
     )
     assert result.max_candidates_source == "from_default"
+    assert result.visibility is Visibility.ACTIVE
+    assert result.visibility_source == "from_default"
 
 
 def test_validate_context_includes_sanitized_limits() -> None:
@@ -72,6 +77,7 @@ def test_validate_context_includes_sanitized_limits() -> None:
         tenant_id="tenant-1",
         top_k="5",
         max_candidates="15",
+        visibility="all",
     )
 
     assert result.top_k == 5
@@ -80,6 +86,10 @@ def test_validate_context_includes_sanitized_limits() -> None:
     assert result.context["max_candidates"] == 15
     assert result.effective_top_k == 5
     assert result.effective_max_candidates == 15
+    assert result.visibility is Visibility.ALL
+    assert result.visibility_source == "from_state"
+    assert result.context["visibility"] == "all"
+    assert result.context["visibility_source"] == "from_state"
 
 
 @pytest.mark.parametrize("value", [0, -1, "not-a-number", 2.5])
@@ -116,6 +126,14 @@ def test_validate_conflicting_limits_can_be_normalized(monkeypatch) -> None:
     assert result.effective_top_k == 10
     assert result.effective_max_candidates == 10
     assert result.max_candidates_source == "from_state"
+    assert result.visibility is Visibility.ACTIVE
+
+
+def test_validate_rejects_invalid_visibility() -> None:
+    with pytest.raises(RouterInputError) as excinfo:
+        validate_search_inputs(tenant_id="tenant", visibility="unknown")
+
+    assert excinfo.value.code == RouterInputErrorCode.VISIBILITY_INVALID
 
 
 def test_map_router_error_to_status_returns_client_error() -> None:

@@ -22,6 +22,7 @@
     "routing": {
       "profile": "standard",
       "vector_space_id": "rag/global"
-    }
+    },
+    "visibility_effective": "active"
   }
 }

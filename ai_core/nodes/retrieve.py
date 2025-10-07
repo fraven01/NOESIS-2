@@ -9,6 +9,7 @@ from ai_core.rag.embedding_config import get_embedding_configuration
 from ai_core.rag.profile_resolver import resolve_embedding_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
+from ai_core.rag.visibility import coerce_bool_flag
 
 
 logger = get_logger(__name__)
@@ -151,6 +152,7 @@ def run(
     filters = _ensure_mapping(state.get("filters"), field="filters")
     process = state.get("process")
     doc_class = state.get("doc_class")
+    requested_visibility = state.get("visibility")
 
     tenant_id = meta.get("tenant_id") or meta.get("tenant")
     if not tenant_id:
@@ -161,6 +163,11 @@ def run(
     case_id = meta.get("case_id") or meta.get("case")
 
     hybrid_config = parse_hybrid_parameters(state, override_top_k=top_k)
+
+    override_flag = meta.get("visibility_override_allowed")
+    if override_flag is None:
+        override_flag = state.get("visibility_override_allowed")
+    visibility_override_allowed = coerce_bool_flag(override_flag)
 
     router = _get_router()
     tenant_client: Any = router
@@ -195,6 +202,8 @@ def run(
         max_candidates=hybrid_config.max_candidates,
         process=process,
         doc_class=doc_class,
+        visibility=requested_visibility,
+        visibility_override_allowed=visibility_override_allowed,
     )
 
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
@@ -218,6 +227,9 @@ def run(
     lexical_candidates = _coerce_int_value(
         getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
     )
+    visibility_effective = str(
+        getattr(hybrid_result, "visibility", "active") or "active"
+    )
     meta_payload = {
         "alpha": alpha_value,
         "min_sim": min_sim_value,
@@ -226,6 +238,7 @@ def run(
         "vector_candidates": vector_candidates,
         "lexical_candidates": lexical_candidates,
         "routing": routing_meta,
+        "visibility_effective": visibility_effective,
     }
 
     state["matches"] = final_matches

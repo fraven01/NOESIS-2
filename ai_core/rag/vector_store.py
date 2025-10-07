@@ -5,10 +5,13 @@ from __future__ import annotations
 import atexit
 import inspect
 import logging
-from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING
+from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING, Any
 
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.limits import clamp_fraction, get_limit_setting
+from ai_core.rag.visibility import DEFAULT_VISIBILITY, Visibility
+from common.logging import get_log_context
+from ai_core.infra import tracing
 from . import metrics
 from .router_validation import (
     RouterInputError,
@@ -20,6 +23,133 @@ if TYPE_CHECKING:
     from ai_core.rag.vector_client import HybridSearchResult
 
 logger = logging.getLogger(__name__)
+
+_EXTENDED_VISIBILITY = {Visibility.ALL, Visibility.DELETED}
+
+
+def _coerce_int(value: object | None) -> int | None:
+    try:
+        if value is None:
+            return None
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_float(value: object | None) -> float | None:
+    try:
+        if value is None:
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _emit_retrieval_span(
+    *,
+    tenant: str,
+    scope: str,
+    case_id: str | None,
+    context: Mapping[str, object | None],
+    result: Any,
+) -> None:
+    trace_id = (get_log_context().get("trace_id") or "").strip()
+    if not trace_id:
+        return
+
+    metadata: dict[str, object | None] = {
+        "tenant": tenant,
+        "scope": scope,
+        "case_id": case_id,
+        "process": context.get("process"),
+        "doc_class": context.get("doc_class"),
+        "visibility_requested": context.get("visibility_requested"),
+        "visibility_source": context.get("visibility_source"),
+        "visibility_effective": context.get("visibility_effective"),
+        "visibility_override_allowed": bool(
+            context.get("visibility_override_allowed")
+        ),
+    }
+
+    requested_top_k = context.get("top_k_requested")
+    if requested_top_k is not None:
+        coerced = _coerce_int(requested_top_k)
+        if coerced is not None:
+            metadata["top_k_requested"] = coerced
+
+    effective_top_k = context.get("top_k_effective")
+    if effective_top_k is not None:
+        coerced = _coerce_int(effective_top_k)
+        if coerced is not None:
+            metadata["top_k_effective"] = coerced
+
+    max_candidates_effective = context.get("max_candidates_effective")
+    if max_candidates_effective is not None:
+        coerced = _coerce_int(max_candidates_effective)
+        if coerced is not None:
+            metadata["max_candidates_effective"] = coerced
+
+    alpha_value = context.get("alpha_effective")
+    coerced_alpha = _coerce_float(alpha_value)
+    if coerced_alpha is not None:
+        metadata["alpha"] = coerced_alpha
+
+    min_sim_value = context.get("min_sim_effective")
+    coerced_min_sim = _coerce_float(min_sim_value)
+    if coerced_min_sim is not None:
+        metadata["min_sim"] = coerced_min_sim
+
+    trgm_value = context.get("trgm_limit_effective")
+    coerced_trgm = _coerce_float(trgm_value)
+    if coerced_trgm is not None:
+        metadata["trgm_limit"] = coerced_trgm
+
+    vector_candidates = _coerce_int(getattr(result, "vector_candidates", None))
+    if vector_candidates is not None:
+        metadata["vector_candidates"] = vector_candidates
+
+    lexical_candidates = _coerce_int(getattr(result, "lexical_candidates", None))
+    if lexical_candidates is not None:
+        metadata["lexical_candidates"] = lexical_candidates
+
+    fused_candidates = _coerce_int(getattr(result, "fused_candidates", None))
+    if fused_candidates is not None:
+        metadata["fused_candidates"] = fused_candidates
+
+    duration_ms = _coerce_float(getattr(result, "duration_ms", None))
+    if duration_ms is not None:
+        metadata["duration_ms"] = duration_ms
+
+    below_cutoff = _coerce_int(getattr(result, "below_cutoff", None))
+    if below_cutoff is not None:
+        metadata["below_cutoff"] = below_cutoff
+
+    returned_after_cutoff = _coerce_int(
+        getattr(result, "returned_after_cutoff", None)
+    )
+    if returned_after_cutoff is not None:
+        metadata["returned_after_cutoff"] = returned_after_cutoff
+
+    deleted_matches_blocked = _coerce_int(
+        getattr(result, "deleted_matches_blocked", 0)
+    )
+    metadata["deleted_matches_blocked"] = (
+        deleted_matches_blocked if deleted_matches_blocked is not None else 0
+    )
+
+    visibility = getattr(result, "visibility", None)
+    if isinstance(visibility, str):
+        metadata["visibility_effective"] = visibility
+
+    query_embedding_empty = getattr(result, "query_embedding_empty", None)
+    if isinstance(query_embedding_empty, bool):
+        metadata["query_embedding_empty"] = query_embedding_empty
+
+    tracing.emit_span(
+        trace_id=trace_id,
+        node_name="rag.hybrid.search",
+        metadata=metadata,
+    )
 
 
 def _raise_router_error(error: RouterInputError) -> NoReturn:
@@ -190,6 +320,8 @@ class VectorStoreRouter:
         scope: str = "global",
         process: str | None = None,
         doc_class: str | None = None,
+        visibility: object | None = None,
+        visibility_override_allowed: bool = False,
     ) -> list[Chunk]:
         """Search within the given scope while enforcing tenant and limits.
 
@@ -204,6 +336,7 @@ class VectorStoreRouter:
                 process=process,
                 doc_class=doc_class,
                 top_k=top_k,
+                visibility=visibility,
             )
         except RouterInputError as exc:
             _raise_router_error(exc)
@@ -211,9 +344,31 @@ class VectorStoreRouter:
         tenant = validation.tenant_id
         validation_context = validation.context
         requested_top_k = validation.top_k
+        requested_visibility = validation.visibility
+        validation_context["visibility_requested"] = requested_visibility.value
+        validation_context["visibility_source"] = validation.visibility_source
+        override_allowed = bool(visibility_override_allowed)
+        effective_visibility = requested_visibility
+        if (
+            requested_visibility in _EXTENDED_VISIBILITY
+            and not override_allowed
+        ):
+            effective_visibility = DEFAULT_VISIBILITY
+            logger.debug(
+                "rag.visibility.override_denied",
+                extra={
+                    "tenant": tenant,
+                    "requested": requested_visibility.value,
+                    "scope": scope,
+                },
+            )
+        validation_context["visibility_effective"] = effective_visibility.value
+        validation_context["visibility_override_allowed"] = override_allowed
+
+        requested_top_k = validation.top_k
         capped_top_k = validation.effective_top_k
         top_k_source = validation.top_k_source
-        normalised_filters = None
+        normalised_filters: dict[str, object | None] | None = None
         if filters is not None:
             normalised_filters = {}
             for key, value in filters.items():
@@ -221,6 +376,9 @@ class VectorStoreRouter:
                     normalised_filters[key] = value or None
                 else:
                     normalised_filters[key] = value
+        if normalised_filters is None:
+            normalised_filters = {}
+        normalised_filters["visibility"] = effective_visibility.value
 
         logger.debug(
             "Vector search",
@@ -249,6 +407,7 @@ class VectorStoreRouter:
                 filters=normalised_filters,
             )
             if result is not None:
+                setattr(result, "visibility", effective_visibility.value)
                 return list(getattr(result, "chunks", result))
         return store.search(
             query,
@@ -276,6 +435,8 @@ class VectorStoreRouter:
         max_candidates: int | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        visibility: object | None = None,
+        visibility_override_allowed: bool = False,
     ) -> "HybridSearchResult":
         try:
             validation = validate_search_inputs(
@@ -284,6 +445,7 @@ class VectorStoreRouter:
                 doc_class=doc_class,
                 top_k=top_k,
                 max_candidates=max_candidates,
+                visibility=visibility,
             )
         except RouterInputError as exc:
             _raise_router_error(exc)
@@ -291,11 +453,37 @@ class VectorStoreRouter:
         tenant = validation.tenant_id
         validation_context = validation.context
 
+        requested_visibility = validation.visibility
+        validation_context["visibility_requested"] = requested_visibility.value
+        validation_context["visibility_source"] = validation.visibility_source
+        override_allowed = bool(visibility_override_allowed)
+        effective_visibility = requested_visibility
+        if (
+            requested_visibility in _EXTENDED_VISIBILITY
+            and not override_allowed
+        ):
+            effective_visibility = DEFAULT_VISIBILITY
+            logger.debug(
+                "rag.visibility.override_denied",
+                extra={
+                    "tenant": tenant,
+                    "requested": requested_visibility.value,
+                    "scope": scope,
+                },
+            )
+        validation_context["visibility_effective"] = effective_visibility.value
+        validation_context["visibility_override_allowed"] = override_allowed
+        validation_context["top_k_requested"] = validation.top_k
+
         normalized_top_k = validation.effective_top_k
         top_k_source = validation.top_k_source
         max_candidates_value = validation.effective_max_candidates
         max_candidates_source = validation.max_candidates_source
-        normalised_filters = None
+        validation_context["top_k_effective"] = normalized_top_k
+        validation_context["top_k_source"] = top_k_source
+        validation_context["max_candidates_effective"] = max_candidates_value
+        validation_context["max_candidates_source"] = max_candidates_source
+        normalised_filters: dict[str, object | None] | None = None
         if filters is not None:
             normalised_filters = {}
             for key, value in filters.items():
@@ -303,6 +491,9 @@ class VectorStoreRouter:
                     normalised_filters[key] = value or None
                 else:
                     normalised_filters[key] = value
+        if normalised_filters is None:
+            normalised_filters = {}
+        normalised_filters["visibility"] = effective_visibility.value
 
         alpha_default = float(get_limit_setting("RAG_HYBRID_ALPHA", 0.7))
         min_sim_default = float(get_limit_setting("RAG_MIN_SIM", 0.15))
@@ -318,6 +509,10 @@ class VectorStoreRouter:
         trgm_value, trgm_source = clamp_fraction(
             trgm_requested, default=trgm_default, return_source=True
         )
+
+        validation_context["alpha_effective"] = alpha_value
+        validation_context["min_sim_effective"] = min_sim_value
+        validation_context["trgm_limit_effective"] = trgm_value
 
         logger.debug(
             "rag.hybrid.params",
@@ -353,6 +548,8 @@ class VectorStoreRouter:
                 "lex_limit": lex_limit,
                 "trgm_limit": trgm_value,
                 "max_candidates": max_candidates_value,
+                "visibility": effective_visibility.value,
+                "visibility_override_allowed": override_allowed,
             }
             try:
                 signature = inspect.signature(hybrid)
@@ -384,6 +581,17 @@ class VectorStoreRouter:
                 **hybrid_kwargs,
             )
             if result is not None:
+                setattr(result, "visibility", effective_visibility.value)
+                validation_context["visibility_effective"] = (
+                    getattr(result, "visibility", effective_visibility.value)
+                )
+                _emit_retrieval_span(
+                    tenant=tenant,
+                    scope=scope,
+                    case_id=case_id,
+                    context=validation_context,
+                    result=result,
+                )
                 return result
             logger.warning(
                 "rag.hybrid.router.no_result",
@@ -410,7 +618,7 @@ class VectorStoreRouter:
         effective_lex = int(lex_limit if lex_limit is not None else normalized_top_k)
         effective_vec = min(fallback_max, max(normalized_top_k, effective_vec))
         effective_lex = min(fallback_max, max(normalized_top_k, effective_lex))
-        return _HybridSearchResult(
+        fallback_result = _HybridSearchResult(
             chunks=list(fallback_chunks),
             vector_candidates=len(fallback_chunks),
             lexical_candidates=0,
@@ -420,7 +628,17 @@ class VectorStoreRouter:
             min_sim=float(min_sim_value),
             vec_limit=effective_vec,
             lex_limit=effective_lex,
+            visibility=effective_visibility.value,
         )
+        validation_context["visibility_effective"] = effective_visibility.value
+        _emit_retrieval_span(
+            tenant=tenant,
+            scope=scope,
+            case_id=case_id,
+            context=validation_context,
+            result=fallback_result,
+        )
+        return fallback_result
 
     def upsert_chunks(
         self,
@@ -515,6 +733,8 @@ class _TenantScopedClient:
         filters: Mapping[str, object | None] | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        visibility: object | None = None,
+        visibility_override_allowed: bool = False,
     ) -> list[Chunk]:
         if tenant_id is not None:
             assert (
@@ -529,6 +749,8 @@ class _TenantScopedClient:
             scope=self._scope or self._router.default_scope,
             process=process,
             doc_class=doc_class,
+            visibility=visibility,
+            visibility_override_allowed=visibility_override_allowed,
         )
 
     def hybrid_search(
@@ -547,6 +769,8 @@ class _TenantScopedClient:
         max_candidates: int | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        visibility: object | None = None,
+        visibility_override_allowed: bool = False,
     ) -> "HybridSearchResult":
         return self._router.hybrid_search(
             query,
@@ -564,6 +788,8 @@ class _TenantScopedClient:
             max_candidates=max_candidates,
             process=process,
             doc_class=doc_class,
+            visibility=visibility,
+            visibility_override_allowed=visibility_override_allowed,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:

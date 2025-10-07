@@ -41,6 +41,12 @@ from .vector_schema import (
     render_schema_sql,
     validate_vector_schemas,
 )
+from .visibility import (
+    DEFAULT_VISIBILITY,
+    Visibility,
+    coerce_bool_flag,
+    normalize_visibility,
+)
 from . import vector_client as vector_client
 
 __all__ = [
@@ -73,4 +79,8 @@ __all__ = [
     "map_router_error_to_status",
     "validate_search_inputs",
     "resolve_candidate_pool_policy",
+    "Visibility",
+    "DEFAULT_VISIBILITY",
+    "normalize_visibility",
+    "coerce_bool_flag",
 ]

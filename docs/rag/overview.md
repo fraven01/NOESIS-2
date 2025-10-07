@@ -20,7 +20,7 @@ flowchart LR
 - Loader ziehen Quelldaten aus Dokumenten, APIs oder Datenbanken.
 - Splitter & Chunker erzeugen überlappende Textblöcke; Parameter stehen in [RAG-Ingestion](ingestion.md).
 - Embeddings landen in `pgvector` (siehe [Schema](schema.sql)), inklusive Metadaten pro Tenant.
-- Retriever filtert per `tenant_id`, optional Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren.
+- Retriever filtert per `tenant_id` und blendet Soft-Deletes (`deleted_at`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)).
 
 ## Mandantenfähigkeit
 Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenant_id` trennt Zugriffe und wird vom Retriever gefiltert. Für wachsende Last kann optional ein Silo/Schemas je Tenant aufgebaut werden.
@@ -89,6 +89,8 @@ Profilwechsel folgen einem festen Ablauf (Runbooks unter [docs/runbooks](../runb
 
 ## VectorStore Router
 Der VectorStore Router kapselt die Auswahl des Backends und erzwingt, dass jede Suche mit einer gültigen `tenant_id` ausgeführt wird. Er normalisiert Filter, deckelt `top_k` hart auf zehn Ergebnisse und schützt damit Agenten vor übermäßigen Resultatmengen. Silos pro Tenant lassen sich später über zusätzliche Router-Scopes konfigurieren, während der Standard weiterhin auf den globalen Store zeigt. Weil der Router immer aktiv ist, entfällt das frühere Feature-Flagging für RAG. Tests können dank Fake-Stores ohne PostgreSQL durchgeführt werden, während optionale Integrationsläufe weiterhin gegen pgvector laufen. Die Delegation sorgt zugleich dafür, dass PII-Redaktionen und Hash-Prüfungen im bestehenden `PgVectorClient` unverändert greifen.
+
+Standardmäßig injiziert der Router `visibility="active"` in jede Anfrage, sodass Soft-Deletes ohne weitere Flags unsichtbar bleiben. Nur wenn der Guard (`visibility_override_allowed`) dies erlaubt, werden die Modi `all` oder `deleted` weitergegeben. Die effektive Einstellung wird im Retrieval-Ergebnis unter `meta.visibility_effective` gespiegelt und steht damit für Observability und Debugging bereit.
 
 ```python
 from ai_core.rag import get_default_router

@@ -4,6 +4,7 @@
     "project_id": "proj-42"
   },
   "process": "customer-support",
+  "visibility": "active",
   "hybrid": {
     "alpha": 0.7,
     "min_sim": 0.15,
