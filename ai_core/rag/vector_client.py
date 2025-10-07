@@ -721,7 +721,9 @@ class PgVectorClient:
                 where_params.append(normalised)
         where_sql = "\n          AND ".join(where_clauses)
         where_sql_without_deleted: str | None = None
-        count_without_deleted_sql: str | None = None
+        distance_operator_value: Optional[str] = None
+        lexical_query_variant: str = "none"
+        lexical_fallback_limit_value: Optional[float] = None
         if visibility_mode is Visibility.ACTIVE:
             filtered_clauses = [
                 clause
@@ -729,12 +731,6 @@ class PgVectorClient:
                 if clause not in deleted_visibility_clauses
             ]
             where_sql_without_deleted = "\n          AND ".join(filtered_clauses)
-            count_without_deleted_sql = f"""
-                SELECT COUNT(DISTINCT c.id)
-                FROM chunks c
-                JOIN documents d ON c.document_id = d.id
-                WHERE {where_sql_without_deleted}
-            """
 
         applied_trgm_limit_value: Optional[float] = None
         fallback_limit_used_value: Optional[float] = None
@@ -746,6 +742,9 @@ class PgVectorClient:
             nonlocal fallback_limit_used_value
             nonlocal fallback_tried_limits
             nonlocal total_without_filter
+            nonlocal distance_operator_value
+            nonlocal lexical_query_variant
+            nonlocal lexical_fallback_limit_value
             started = time.perf_counter()
             vector_rows: List[tuple] = []
             lexical_rows: List[tuple] = []
@@ -753,6 +752,48 @@ class PgVectorClient:
             fallback_tried_limits = []
             fallback_limit_used_value = None
             total_without_filter_local: Optional[int] = None
+            distance_operator_value = None
+            lexical_query_variant = "none"
+            lexical_fallback_limit_value = None
+
+            def _build_vector_sql(
+                where_sql_value: str, select_columns: str, order_by_clause: str
+            ) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM embeddings e
+                    JOIN chunks c ON e.chunk_id = c.id
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                    ORDER BY {order_by_clause}
+                    LIMIT %s
+                """
+
+            def _build_lexical_primary_sql(where_sql_value: str, select_columns: str) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                      AND c.text_norm % %s
+                    ORDER BY lscore DESC
+                    LIMIT %s
+                """
+
+            def _build_lexical_fallback_sql(where_sql_value: str, select_columns: str) -> str:
+                return f"""
+                    SELECT
+                        {select_columns}
+                    FROM chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE {where_sql_value}
+                      AND similarity(c.text_norm, %s) >= %s
+                    ORDER BY lscore DESC
+                    LIMIT %s
+                """
+
             with self._connection() as conn:
                 if vector_format_error is not None:
                     try:
@@ -787,21 +828,13 @@ class PgVectorClient:
                             distance_operator = self._get_distance_operator(
                                 conn, index_kind
                             )
-                            vector_sql = f"""
-                                SELECT
-                                    c.id,
-                                    c.text,
-                                    c.metadata,
-                                    d.hash,
-                                    d.id,
-                                    e.embedding {distance_operator} %s::vector AS distance
-                                FROM embeddings e
-                                JOIN chunks c ON e.chunk_id = c.id
-                                JOIN documents d ON c.document_id = d.id
-                                WHERE {where_sql}
-                                ORDER BY distance
-                                LIMIT %s
-                            """
+                            distance_operator_value = distance_operator
+                            vector_sql = _build_vector_sql(
+                                where_sql,
+                                "c.id,\n                                    c.text,\n                                    c.metadata,\n                                    d.hash,\n                                    d.id,\n                                    e.embedding "
+                                + f"{distance_operator} %s::vector AS distance",
+                                "distance",
+                            )
                             cur.execute(
                                 vector_sql, (query_vec, *where_params, vec_limit_value)
                             )
@@ -931,6 +964,7 @@ class PgVectorClient:
                                     ),
                                 )
                                 lexical_rows_local = cur.fetchall()
+                                lexical_query_variant = "primary"
                                 try:
                                     logger.warning(
                                         "rag.debug.rows.lexical",
@@ -1095,6 +1129,7 @@ class PgVectorClient:
                                 last_attempt_rows: List[tuple] = []
                                 best_rows: List[tuple] = []
                                 best_limit: float | None = None
+                                fallback_last_limit_value: float | None = None
                                 for limit_value in fallback_limits:
                                     fallback_tried_limits.append(limit_value)
                                     cur.execute(
@@ -1107,6 +1142,7 @@ class PgVectorClient:
                                             lex_limit_value,
                                         ),
                                     )
+                                    fallback_last_limit_value = float(limit_value)
                                     attempt_rows = cur.fetchall()
                                     last_attempt_rows = list(attempt_rows)
                                     try:
@@ -1138,7 +1174,11 @@ class PgVectorClient:
                                         lexical_rows_local = last_attempt_rows
                                 if picked_limit is None and best_limit is not None:
                                     picked_limit = best_limit
+                                lexical_query_variant = "fallback"
                                 fallback_limit_used_value = picked_limit
+                                if fallback_limit_used_value is None:
+                                    fallback_limit_used_value = fallback_last_limit_value
+                                lexical_fallback_limit_value = fallback_limit_used_value
                                 if (
                                     picked_limit is not None
                                     and requested_trgm_limit is None
@@ -1204,20 +1244,85 @@ class PgVectorClient:
             except Exception:
                 pass
 
-            if count_without_deleted_sql is not None:
+            if visibility_mode is Visibility.ACTIVE and where_sql_without_deleted:
                 try:
                     with conn.cursor() as cur:
                         cur.execute(
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
-                        cur.execute(
-                            count_without_deleted_sql,
-                            tuple(where_params),
-                        )
-                        row = cur.fetchone()
-                        if row and row[0] is not None:
-                            total_without_filter_local = int(row[0])
+                        count_selects: List[str] = []
+                        count_params: List[object] = []
+
+                        if (
+                            query_vec is not None
+                            and not vector_query_failed
+                            and distance_operator_value is not None
+                        ):
+                            vector_count_sql = _build_vector_sql(
+                                where_sql_without_deleted,
+                                "c.id",
+                                f"e.embedding {distance_operator_value} %s::vector",
+                            )
+                            count_selects.append(
+                                f"SELECT id FROM ({vector_count_sql}) AS vector_candidates"
+                            )
+                            count_params.extend(
+                                (query_vec, *where_params, vec_limit_value)
+                            )
+
+                        if query_db_norm.strip():
+                            if lexical_query_variant == "primary":
+                                lexical_count_sql = _build_lexical_primary_sql(
+                                    where_sql_without_deleted,
+                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                )
+                                count_selects.append(
+                                    f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
+                                )
+                                count_params.extend(
+                                    (
+                                        query_db_norm,
+                                        *where_params,
+                                        query_db_norm,
+                                        lex_limit_value,
+                                    )
+                                )
+                            elif (
+                                lexical_query_variant == "fallback"
+                                and lexical_fallback_limit_value is not None
+                            ):
+                                lexical_count_sql = _build_lexical_fallback_sql(
+                                    where_sql_without_deleted,
+                                    "c.id,\n                                    similarity(c.text_norm, %s) AS lscore",
+                                )
+                                count_selects.append(
+                                    f"SELECT id FROM ({lexical_count_sql}) AS lexical_candidates"
+                                )
+                                count_params.extend(
+                                    (
+                                        query_db_norm,
+                                        *where_params,
+                                        query_db_norm,
+                                        lexical_fallback_limit_value,
+                                        lex_limit_value,
+                                    )
+                                )
+
+                        if count_selects:
+                            union_sql = " UNION ALL ".join(count_selects)
+                            count_without_deleted_sql = (
+                                "SELECT COUNT(DISTINCT id) FROM ("
+                                + union_sql
+                                + ") AS all_candidates"
+                            )
+                            cur.execute(
+                                count_without_deleted_sql,
+                                tuple(count_params),
+                            )
+                            row = cur.fetchone()
+                            if row and row[0] is not None:
+                                total_without_filter_local = int(row[0])
                 except Exception as exc:
                     logger.warning(
                         "rag.hybrid.deleted_visibility_count_failed",
