@@ -130,9 +130,12 @@ class ScopedTask(ContextTask):
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
         call_kwargs = dict(kwargs)
-        scope_payload = {
-            field: call_kwargs.pop(field, None) for field in self._SCOPE_FIELDS
-        }
+        scope_payload: dict[str, Any] = {}
+        for field in self._SCOPE_FIELDS:
+            if field in call_kwargs:
+                scope_payload[field] = call_kwargs.pop(field)
+            else:
+                scope_payload[field] = None
 
         tenant_id = scope_payload.get("tenant_id")
         case_id = scope_payload.get("case_id")
@@ -195,6 +198,18 @@ class ScopedTask(ContextTask):
             else:
                 scoped_config = tenant_config
             set_pii_config(scoped_config)
+
+        # Ensure the task receives scope-related keyword arguments that were
+        # extracted for configuring the session scope so downstream code can
+        # still rely on them being present.
+        if tenant_id is not None:
+            call_kwargs.setdefault("tenant_id", tenant_id)
+        if case_id is not None:
+            call_kwargs.setdefault("case_id", case_id)
+        if trace_id is not None:
+            call_kwargs.setdefault("trace_id", trace_id)
+        if session_salt is not None:
+            call_kwargs.setdefault("session_salt", session_salt)
 
         try:
             return super().__call__(*args, **call_kwargs)

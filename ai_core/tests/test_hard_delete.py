@@ -81,9 +81,11 @@ def test_hard_delete_service_key(monkeypatch, settings):
     assert repeat["documents_deleted"] == 0
     assert repeat["not_found"] == 1
 
-    assert spans, "expected Langfuse span to be emitted"
+    assert len(spans) == 2, "expected Langfuse spans for each invocation"
     assert spans[0]["node_name"] == "rag.hard_delete"
+    assert spans[0]["trace_id"] == "trace-123"
     assert spans[0]["metadata"]["documents_deleted"] == 1
+    assert spans[1]["trace_id"] == "trace-124"
 
     with vector_client.get_default_client().connection() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
