@@ -20,7 +20,7 @@ spec:
           image: REGION-docker.pkg.dev/PROJECT/REPO/noesis2-web:SHA
           imagePullPolicy: IfNotPresent
           command: ["celery"]
-          args: ["-A", "noesis2", "worker", "-l", "info"]
+          args: ["-A", "noesis2", "worker", "-l", "info", "-Q", "celery,rag_delete"]
           env:
             - name: DJANGO_SETTINGS_MODULE
               value: noesis2.settings.production
