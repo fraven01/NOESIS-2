@@ -38,8 +38,8 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
     resp = HttpResponse("ok", status=200)
     meta = {
         "trace_id": "abc123",
-        "case": "case-1",
-        "tenant": "tenant-1",
+        "case_id": "case-1",
+        "tenant_id": "tenant-1",
         "key_alias": "alias-1",
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }
@@ -55,7 +55,7 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
 
 def test_apply_std_headers_skips_missing_optional_headers():
     resp = HttpResponse("ok", status=200)
-    meta = {"trace_id": "abc123", "case": "case-1", "tenant": "tenant-1"}
+    meta = {"trace_id": "abc123", "case_id": "case-1", "tenant_id": "tenant-1"}
 
     result = apply_std_headers(resp, meta)
 
@@ -67,8 +67,8 @@ def test_apply_std_headers_skips_missing_optional_headers():
 def test_apply_std_headers_ignores_non_success_responses():
     meta = {
         "trace_id": "abc123",
-        "case": "case-1",
-        "tenant": "tenant-1",
+        "case_id": "case-1",
+        "tenant_id": "tenant-1",
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }
 

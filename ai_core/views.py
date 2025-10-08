@@ -297,9 +297,9 @@ def _prepare_request(request: Request):
     trace_id = uuid4().hex
     assert_case_active(tenant_id, case_id)
     meta = {
-        "tenant": tenant_id,
+        "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,
-        "case": case_id,
+        "case_id": case_id,
         "trace_id": trace_id,
     }
     if key_alias:
@@ -383,8 +383,6 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
     merged_state = merge_state(state, incoming_state)
 
     runner_meta = dict(normalized_meta)
-    runner_meta["tenant"] = normalized_meta["tenant_id"]
-    runner_meta["case"] = normalized_meta["case_id"]
     if normalized_meta.get("tenant_schema"):
         runner_meta["tenant_schema"] = normalized_meta["tenant_schema"]
     if normalized_meta.get("key_alias"):
@@ -464,8 +462,8 @@ INTAKE_RESPONSE_EXAMPLE = OpenApiExample(
     description="Echoes the tenant metadata after the intake step persisted the workflow.",
     value={
         "received": True,
-        "tenant": "acme",
-        "case": "crm-7421",
+        "tenant_id": "acme",
+        "case_id": "crm-7421",
         "idempotent": False,
     },
     response_only=True,
@@ -1104,8 +1102,8 @@ class RagUploadView(APIView):
             safe_name = object_store.safe_filename("upload.bin")
 
         try:
-            tenant_segment = object_store.sanitize_identifier(meta["tenant"])
-            case_segment = object_store.sanitize_identifier(meta["case"])
+            tenant_segment = object_store.sanitize_identifier(meta["tenant_id"])
+            case_segment = object_store.sanitize_identifier(meta["case_id"])
         except ValueError:
             return _error_response(
                 "Request metadata was invalid.",
@@ -1215,7 +1213,7 @@ class RagIngestionRunView(APIView):
         queued_at = timezone.now().isoformat()
 
         valid_document_ids, invalid_document_ids = partition_document_ids(
-            meta["tenant"], meta["case"], normalized_document_ids
+            meta["tenant_id"], meta["case_id"], normalized_document_ids
         )
 
         # Always enqueue the task. If at least one valid ID is known, only
@@ -1226,8 +1224,8 @@ class RagIngestionRunView(APIView):
             valid_document_ids if valid_document_ids else normalized_document_ids
         )
         run_ingestion.delay(
-            meta["tenant"],
-            meta["case"],
+            meta["tenant_id"],
+            meta["case_id"],
             to_dispatch,
             resolved_profile_id,
             tenant_schema=meta["tenant_schema"],
@@ -1355,7 +1353,7 @@ class RagHardDeleteAdminView(APIView):
             "idempotent": idempotent,
         }
 
-        meta = {"trace_id": trace_id, "tenant": tenant_id}
+        meta = {"trace_id": trace_id, "tenant_id": tenant_id}
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 

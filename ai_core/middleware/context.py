@@ -70,9 +70,9 @@ class RequestContextMiddleware:
         if span_id:
             response_meta["span_id"] = span_id
         if tenant_id:
-            response_meta["tenant"] = tenant_id
+            response_meta["tenant_id"] = tenant_id
         if case_id:
-            response_meta["case"] = case_id
+            response_meta["case_id"] = case_id
         if key_alias:
             response_meta["key_alias"] = key_alias
         if traceparent:

@@ -283,8 +283,8 @@ def test_ai_core_endpoints_expose_serializers():
         "application/json"
     ]["schema"]["$ref"]
     _, intake_response_component = _extract_component(schema, intake_response_ref)
-    assert "tenant" in intake_response_component["properties"]
-    assert intake_response_component["properties"]["tenant"]["type"] == "string"
+    assert "tenant_id" in intake_response_component["properties"]
+    assert intake_response_component["properties"]["tenant_id"]["type"] == "string"
     assert intake_response_component["properties"]["idempotent"]["type"] == "boolean"
     intake_request_examples = intake_operation["requestBody"]["content"][
         "application/json"
@@ -297,7 +297,7 @@ def test_ai_core_endpoints_expose_serializers():
         "application/json"
     ].get("examples", {})
     assert any(
-        example.get("value", {}).get("tenant") == "acme"
+        example.get("value", {}).get("tenant_id") == "acme"
         for example in intake_response_examples.values()
     )
     assert any(

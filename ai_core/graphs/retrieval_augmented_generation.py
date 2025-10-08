@@ -48,7 +48,7 @@ def _ensure_mutable_meta(
 
 
 def _ensure_tenant_id(meta: MutableMapping[str, Any]) -> str:
-    tenant_id = meta.get("tenant_id") or meta.get("tenant")
+    tenant_id = meta.get("tenant_id")
     if tenant_id is None:
         raise ValueError("tenant_id is required for retrieval graphs")
     tenant_id = str(tenant_id)
