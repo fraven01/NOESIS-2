@@ -40,6 +40,58 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 | Langfuse Traces & Kostenmetriken | Langfuse Store (Trace-, Span-, Metric-Records) | Observability Team | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 | Secrets & Konfigurationswerte | `.env`, GitHub Secrets, Secret Manager Versionen | Security & Platform | [docs/security/secrets.md#env-verträge](docs/security/secrets.md#env-verträge) |
 
+## Architektur-Layer & Verantwortlichkeiten
+Wir entwickeln als Modularer Monolith mit klaren Grenzen (Auskopplung später möglich):
+
+1. **Layer 1 – Worker/Services (app/services/***)**  
+   Zustandslose Module: `rag`, `extract`, `docbuild`, `web`, `multimodal`. Keine Graph-Abhängigkeit.  
+   Guardrails: Tenant-Filter, Timeouts, Idempotenz, Trace-Tags.
+
+2. **Layer 2 – Tool-Abstraktion (app/tools/***)**  
+   Pydantic-Contracts + schlanke Adapter, die Services aufrufen. Einheitliche Fehler-Typen.  
+   Schnittstellen sind stabil und versioniert.
+
+3. **Layer 3 – Prozess-Templates (app/process_graphs/***)**  
+   Wiederverwendbare LangGraph-Flows (z. B. „Systembeschreibung“, „Funktionsbeschreibung“, „Auswertung“).  
+   Sie orchestrieren `retrieve()`, `web.search()`, `extract()`, `docbuild()`. Siehe Agenten-Kontrollfluss. 
+
+4. **Layer 4 – Business Logic (app/tenant_logic/***)**  
+   Orchestrator lädt Tenant-Konfig (Vorlagen, Prompt-Versionen, Policies), wählt Graph aus und injiziert State. 
+
+5. **Layer 5 – Frontend (theme/**, docs/frontend-ueberblick.md)**  
+   React/TypeScript-UI mit Tailwind, Storybook, A11y-Checks. Hält sich an Frontend-Guidelines und Master Prompt.
+
+Primärquellen: Agenten-Kontrollfluss & Knoten/Guardrails, Frontend-Überblick & Master Prompt. 
+
+Hinweise:
+- Siehe Frontend Master Prompt: [docs/frontend-master-prompt.md](docs/frontend-master-prompt.md)
+- PII Scope & Maskierung: [docs/pii-scope.md](docs/pii-scope.md)
+
+## Tool-Verträge (Layer 2 – Norm)
+Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.  
+Pflicht-Tags: `tenant_id`, `request_id`, optional `idempotency_key`.  
+Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal`. 
+Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
+
+## Guardrails & Header
+Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Case-ID`, `Idempotency-Key` (POST), automatische PII-Maskierung.  
+LangGraph-Knoten & Timeouts siehe Agenten-Übersicht; Idempotenz & Traces sind verpflichtend. 
+
+## Paketgrenzen (Import-Regeln)
+services → shared (nur nach unten)  
+tools → services, shared  
+process_graphs → tools, shared  
+tenant_logic → process_graphs, tools, shared  
+Frontend ist getrennt (keine Rückimporte).
+
+## Generierung mit Codex (Scaffolding)
+Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
+1) Contracts & Adapter (Layer 2)  
+2) Services-Skeletons (Layer 1)  
+3) Prozess-Graphs (Layer 3)  
+4) Tenant-Orchestrator (Layer 4)  
+5) Frontend-Scaffold + Storybook (Layer 5)
+
 ## Schnittstellen & Contracts
 | Interface | Endpunkt/Topic | Kurzbeschreibung | Primärquelle |
 | --- | --- | --- | --- |
@@ -69,6 +121,16 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 ## Teststrategie
 - Pipeline-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD Pipeline](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
 - Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
+
+## Begriffe & Zwecke
+- `Tenant`: Logische Mandantentrennung (Daten/Policies). Zweck: Isolation, Billing, Rechte.
+- `Case`: Geschäftsvorfall/Arbeitskontext pro Tenant. Zweck: Tracing, Kosten- und Ergebniskapselung.
+- `Request-ID`: Eindeutige ID pro HTTP/Task. Zweck: End-to-End-Trace und Idempotenzbezug.
+- `Idempotency-Key`: Client-gelieferter Schlüssel für POST. Zweck: Deduplikation/Retry-Sicherheit auf Service- und Tool-Ebene.
+- `ToolContext`: Minimale Laufzeit-Metadaten (Tenant, Request, Rollen). Zweck: Konsistente Tags, Guardrails, Metriken.
+- `*Input/*Output`: Pydantic-Contracts pro Tool. Zweck: Validierung, Versionierung, klare Schnittstellen.
+- `ToolError`/Typed Errors: Standardisierte Fehlerklassen. Zweck: Vereinheitlichte Fehlerbehandlung, Retry-Strategien, Observability.
+- `Trace/Span`: Langfuse-Telemetrieobjekte. Zweck: Messbarkeit von Qualität, Kosten, Latenz.
 
 ## Comands
 test: pytest -q
