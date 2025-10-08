@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Mapping, MutableMapping
+import time
+from typing import Any, Dict, Mapping
 
 from common.logging import get_logger
 
@@ -10,6 +11,70 @@ from ai_core.rag.profile_resolver import resolve_embedding_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
 from ai_core.rag.visibility import coerce_bool_flag
+from ai_core.tool_contracts import ContextError, InputError, ToolContext
+from pydantic import BaseModel, ConfigDict
+
+
+class RetrieveInput(BaseModel):
+    """Structured input parameters for the retrieval tool."""
+
+    query: str = ""
+    filters: Mapping[str, Any] | None = None
+    process: str | None = None
+    doc_class: str | None = None
+    visibility: str | None = None
+    visibility_override_allowed: bool | None = None
+    hybrid: Mapping[str, Any] | None = None
+    top_k: int | None = None
+
+    model_config = ConfigDict(arbitrary_types_allowed=True, extra="forbid")
+
+    @classmethod
+    def from_state(
+        cls, state: Mapping[str, Any], *, top_k: int | None = None
+    ) -> "RetrieveInput":
+        """Build a :class:`RetrieveInput` instance from a legacy state mapping."""
+
+        data: Dict[str, Any] = {
+            "query": state.get("query", ""),
+            "filters": state.get("filters"),
+            "process": state.get("process"),
+            "doc_class": state.get("doc_class"),
+            "visibility": state.get("visibility"),
+            "visibility_override_allowed": state.get(
+                "visibility_override_allowed"
+            ),
+            "hybrid": state.get("hybrid"),
+        }
+        if top_k is not None:
+            data["top_k"] = top_k
+        return cls(**data)
+
+
+class RetrieveMeta(BaseModel):
+    """Metadata emitted by the retrieval tool."""
+
+    routing: Dict[str, str | None]
+    took_ms: int
+    alpha: float | None = None
+    min_sim: float | None = None
+    top_k_effective: int | None = None
+    max_candidates_effective: int | None = None
+    vector_candidates: int | None = None
+    lexical_candidates: int | None = None
+    deleted_matches_blocked: int | None = None
+    visibility_effective: str | None = None
+
+    model_config = ConfigDict(extra="allow")
+
+
+class RetrieveOutput(BaseModel):
+    """Structured output payload returned by the retrieval tool."""
+
+    matches: list[Dict[str, Any]]
+    meta: RetrieveMeta
+
+    model_config = ConfigDict(extra="forbid")
 
 
 logger = get_logger(__name__)
@@ -36,7 +101,7 @@ def _ensure_mapping(value: object, *, field: str) -> Mapping[str, Any] | None:
     if isinstance(value, Mapping):
         return value
     msg = f"{field} must be a mapping when provided"
-    raise ValueError(msg)
+    raise InputError(msg, field=field)
 
 
 def _extract_score(meta: Mapping[str, Any]) -> float:
@@ -142,31 +207,42 @@ def _resolve_routing_metadata(
     }
 
 
-def run(
-    state: MutableMapping[str, Any],
-    meta: Mapping[str, Any],
-    *,
-    top_k: int | None = None,
-) -> tuple[MutableMapping[str, Any], Dict[str, Any]]:
-    query = str(state.get("query") or "")
-    filters = _ensure_mapping(state.get("filters"), field="filters")
-    process = state.get("process")
-    doc_class = state.get("doc_class")
-    requested_visibility = state.get("visibility")
+def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
+    """Execute the retrieval tool based on the provided context and parameters."""
 
-    tenant_id = meta.get("tenant_id") or meta.get("tenant")
+    started_at = time.perf_counter()
+
+    tenant_id = str(getattr(context, "tenant_id", "") or "").strip()
     if not tenant_id:
-        raise ValueError("tenant_id required")
-    tenant_id = str(tenant_id)
+        raise ContextError("tenant_id required", field="tenant_id")
 
-    tenant_schema = meta.get("tenant_schema")
-    case_id = meta.get("case_id") or meta.get("case")
+    tenant_schema = (
+        str(context.tenant_schema).strip() if context.tenant_schema is not None else None
+    )
+    case_id = (
+        str(context.case_id).strip() if context.case_id is not None else None
+    )
 
-    hybrid_config = parse_hybrid_parameters(state, override_top_k=top_k)
+    filters = _ensure_mapping(params.filters, field="filters")
+    process = params.process
+    doc_class = params.doc_class
+    requested_visibility = params.visibility
 
-    override_flag = meta.get("visibility_override_allowed")
+    hybrid_mapping = _ensure_mapping(params.hybrid, field="hybrid")
+    if hybrid_mapping is None:
+        raise InputError("hybrid configuration required", field="hybrid")
+
+    hybrid_state: Dict[str, Any] = {"hybrid": dict(hybrid_mapping)}
+    try:
+        hybrid_config = parse_hybrid_parameters(
+            hybrid_state, override_top_k=params.top_k
+        )
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise InputError(str(exc), field="hybrid") from exc
+
+    override_flag = params.visibility_override_allowed
     if override_flag is None:
-        override_flag = state.get("visibility_override_allowed")
+        override_flag = context.visibility_override_allowed
     visibility_override_allowed = coerce_bool_flag(override_flag)
 
     router = _get_router()
@@ -190,7 +266,7 @@ def run(
     )
 
     hybrid_result = tenant_client.hybrid_search(
-        query,
+        params.query,
         case_id=case_id,
         top_k=hybrid_config.top_k,
         filters=filters,
@@ -234,6 +310,11 @@ def run(
     visibility_effective = str(
         getattr(hybrid_result, "visibility", "active") or "active"
     )
+
+    took_ms = int(round((time.perf_counter() - started_at) * 1000))
+    if took_ms < 0:  # pragma: no cover - guard against clock issues
+        took_ms = 0
+
     meta_payload = {
         "alpha": alpha_value,
         "min_sim": min_sim_value,
@@ -244,12 +325,16 @@ def run(
         "routing": routing_meta,
         "deleted_matches_blocked": deleted_matches_blocked,
         "visibility_effective": visibility_effective,
+        "took_ms": took_ms,
     }
 
-    state["matches"] = final_matches
-    state["snippets"] = final_matches
-
-    return state, {"matches": final_matches, "meta": meta_payload}
+    return RetrieveOutput(matches=final_matches, meta=RetrieveMeta(**meta_payload))
 
 
-__all__ = ["run", "_reset_router_for_tests"]
+__all__ = [
+    "RetrieveInput",
+    "RetrieveMeta",
+    "RetrieveOutput",
+    "run",
+    "_reset_router_for_tests",
+]
