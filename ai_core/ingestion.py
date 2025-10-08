@@ -13,10 +13,9 @@ from common.logging import get_logger
 from . import tasks as pipe
 from .infra import object_store
 from .ingestion_utils import make_fallback_external_id
-from .rag.ingestion_contracts import (
-    IngestionContractError,
-    resolve_ingestion_profile,
-)
+from ai_core.tools import InputError
+
+from .rag.ingestion_contracts import resolve_ingestion_profile
 from .rag.selector_utils import normalise_selector_value
 
 log = get_logger(__name__)
@@ -417,7 +416,7 @@ def process_document(
         state["last_error"] = None
         state["completed_at"] = time.time()
         _write_pipeline_state(tenant, case, document_id, state)
-    except IngestionContractError as exc:
+    except InputError as exc:
         state["last_error"] = {
             "step": current_step,
             "message": str(exc),
@@ -541,7 +540,7 @@ def run_ingestion(
     doc_count = len(valid_ids)
     try:
         binding = resolve_ingestion_profile(embedding_profile)
-    except IngestionContractError as exc:
+    except InputError as exc:
         log.error(
             "Failed to resolve ingestion profile",
             extra={

@@ -16,7 +16,6 @@ from .router_validation import (
     validate_search_inputs,
 )
 from .ingestion_contracts import (
-    IngestionContractError,
     IngestionContractErrorCode,
     ensure_embedding_dimensions,
     map_ingestion_error_to_status,
@@ -56,7 +55,6 @@ __all__ = [
     "get_default_router",
     "vector_client",
     "resolve_ingestion_profile",
-    "IngestionContractError",
     "IngestionContractErrorCode",
     "ensure_embedding_dimensions",
     "map_ingestion_error_to_status",

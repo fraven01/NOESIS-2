@@ -84,8 +84,9 @@ from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
+from ai_core.tools import InputError
+
 from .rag.ingestion_contracts import (
-    IngestionContractError,
     map_ingestion_error_to_status,
     resolve_ingestion_profile,
 )
@@ -1216,7 +1217,7 @@ class RagIngestionRunView(APIView):
             profile_binding = resolve_ingestion_profile(
                 payload.get("embedding_profile")
             )
-        except IngestionContractError as exc:
+        except InputError as exc:
             return _error_response(
                 exc.message,
                 exc.code,
