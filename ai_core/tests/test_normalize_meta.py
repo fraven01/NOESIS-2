@@ -53,11 +53,19 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     datetime.fromisoformat(meta["requested_at"])
 
     tool_context = meta["tool_context"]
-    assert isinstance(tool_context, ToolContext)
-    assert tool_context.tenant_id == "tenant-a"
-    assert tool_context.case_id == "case-42"
-    assert tool_context.trace_id == "trace-123"
-    assert tool_context.idempotency_key is None
+    assert isinstance(tool_context, dict)
+    assert tool_context == {
+        "tenant_id": "tenant-a",
+        "case_id": "case-42",
+        "trace_id": "trace-123",
+        "idempotency_key": None,
+    }
+    assert ToolContext(**tool_context) == ToolContext(
+        tenant_id="tenant-a",
+        case_id="case-42",
+        trace_id="trace-123",
+        idempotency_key=None,
+    )
 
 
 def test_normalize_meta_raises_on_missing_required_keys(monkeypatch):
@@ -88,7 +96,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
 
     assert meta["graph_version"] == "v0"
     tool_context = meta["tool_context"]
-    assert tool_context.idempotency_key == "idem-1"
+    assert tool_context["idempotency_key"] == "idem-1"
     assert meta["idempotency_key"] == "idem-1"
 
 
@@ -107,9 +115,17 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     meta = normalize_meta(request)
 
     tool_context = meta["tool_context"]
-    assert isinstance(tool_context, ToolContext)
-    assert tool_context.tenant_id == "tenant-b"
-    assert tool_context.case_id == "case-b"
-    assert tool_context.trace_id == "trace-b"
-    assert tool_context.idempotency_key == "idem-b"
+    assert isinstance(tool_context, dict)
+    assert tool_context == {
+        "tenant_id": "tenant-b",
+        "case_id": "case-b",
+        "trace_id": "trace-b",
+        "idempotency_key": "idem-b",
+    }
+    assert ToolContext(**tool_context) == ToolContext(
+        tenant_id="tenant-b",
+        case_id="case-b",
+        trace_id="trace-b",
+        idempotency_key="idem-b",
+    )
     assert meta["idempotency_key"] == "idem-b"

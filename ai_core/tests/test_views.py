@@ -2,6 +2,7 @@ import json
 from types import ModuleType, SimpleNamespace
 
 import pytest
+from rest_framework.request import Request
 from rest_framework.response import Response
 from django.conf import settings
 from django.test import RequestFactory
@@ -515,6 +516,13 @@ def test_graph_view_propagates_tool_context(
 
     captured_meta: dict[str, object] = {}
     task_calls: list[object] = []
+    captured_request: dict[str, Request] = {}
+
+    original_normalize_meta = views.normalize_meta
+
+    def _capturing_normalize_meta(request: Request):
+        captured_request["request"] = request
+        return original_normalize_meta(request)
 
     class _DummyRunner:
         def run(self, state, meta):
@@ -522,6 +530,7 @@ def test_graph_view_propagates_tool_context(
             task_calls.append(meta["tool_context"])
             return state or {}, {"ok": True}
 
+    monkeypatch.setattr(views, "normalize_meta", _capturing_normalize_meta)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: _DummyRunner())
 
     headers = {
@@ -539,11 +548,20 @@ def test_graph_view_propagates_tool_context(
 
     assert response.status_code == 200
     tool_context = captured_meta["meta"]["tool_context"]
-    assert isinstance(tool_context, ToolContext)
-    assert tool_context.tenant_id == test_tenant_schema_name
-    assert tool_context.case_id == "case-tool"
-    assert tool_context.idempotency_key == "idem-123"
-    assert tool_context is task_calls[0]
+    assert isinstance(tool_context, dict)
+    assert tool_context == {
+        "tenant_id": test_tenant_schema_name,
+        "case_id": "case-tool",
+        "trace_id": captured_meta["meta"]["trace_id"],
+        "idempotency_key": "idem-123",
+    }
+    assert task_calls[0] == tool_context
+
+    request_obj = captured_request["request"]
+    assert isinstance(request_obj.tool_context, ToolContext)
+    assert request_obj.tool_context.tenant_id == test_tenant_schema_name
+    assert request_obj.tool_context.case_id == "case-tool"
+    assert request_obj.tool_context.idempotency_key == "idem-123"
     assert response.headers.get(IDEMPOTENCY_KEY_HEADER) is None
 
 

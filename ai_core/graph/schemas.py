@@ -119,7 +119,7 @@ def normalize_meta(request: Any) -> dict:
         idempotency_key=idempotency_key,
     )
 
-    meta["tool_context"] = tool_context
+    meta["tool_context"] = tool_context.serialize()
     if idempotency_key:
         meta["idempotency_key"] = idempotency_key
 
