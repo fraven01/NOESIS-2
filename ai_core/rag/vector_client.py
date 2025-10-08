@@ -461,7 +461,7 @@ class PgVectorClient:
             chunk_count = int(stats.get("chunk_count", 0))
             duration = float(stats.get("duration_ms", 0.0))
             doc_payload = {
-                "tenant": tenant_id,
+                "tenant_id": tenant_id,
                 "external_id": external_id,
                 "content_hash": doc.get("content_hash"),
                 "action": action,
@@ -682,12 +682,12 @@ class PgVectorClient:
                     vector_format_error = exc
         query_embedding_empty = bool(is_zero_vec or vector_format_error is not None)
         if query_embedding_empty:
-            metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant=tenant).inc()
+            metrics.RAG_QUERY_EMPTY_VEC_TOTAL.labels(tenant_id=tenant).inc()
             logger.info(
                 "rag.hybrid.null_embedding",
                 alpha=alpha_value,
-                tenant=tenant,
-                case=case_value,
+                tenant_id=tenant,
+                case_id=case_value,
             )
         index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
         ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
@@ -817,8 +817,9 @@ class PgVectorClient:
                     logger.warning(
                         "rag.hybrid.vector_query_failed",
                         extra={
+                            "tenant_id": tenant,
                             "tenant": tenant,
-                            "case": case_value,
+                            "case_id": case_value,
                             "error": str(vector_format_error),
                         },
                     )
@@ -875,8 +876,9 @@ class PgVectorClient:
                         logger.warning(
                             "rag.hybrid.vector_query_failed",
                             extra={
+                                "tenant_id": tenant,
                                 "tenant": tenant,
-                                "case": case_value,
+                                "case_id": case_value,
                                 "error": str(exc),
                             },
                         )
@@ -1034,8 +1036,8 @@ class PgVectorClient:
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
                                         extra={
-                                            "tenant": tenant,
-                                            "case": case_value,
+                                            "tenant_id": tenant,
+                                            "case_id": case_value,
                                             "error": str(exc),
                                         },
                                     )
@@ -1075,8 +1077,8 @@ class PgVectorClient:
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
                                     extra={
-                                        "tenant": tenant,
-                                        "case": case_value,
+                                        "tenant_id": tenant,
+                                        "case_id": case_value,
                                         "trgm_limit": trgm_limit_value,
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
@@ -1215,8 +1217,8 @@ class PgVectorClient:
                                         applied_trgm_limit = reapplied_limit
                                 logger.info(
                                     "rag.hybrid.trgm_fallback_applied",
-                                    tenant=tenant,
-                                    case=case_value,
+                                    tenant_id=tenant,
+                                    case_id=case_value,
                                     tried_limits=list(fallback_tried_limits),
                                     picked_limit=picked_limit,
                                     count=len(lexical_rows_local),
@@ -1239,8 +1241,9 @@ class PgVectorClient:
                     logger.warning(
                         "rag.hybrid.lexical_query_failed",
                         extra={
+                            "tenant_id": tenant,
                             "tenant": tenant,
-                            "case": case_value,
+                            "case_id": case_value,
                             "error": str(exc),
                         },
                     )
@@ -1342,8 +1345,8 @@ class PgVectorClient:
                 except Exception as exc:
                     logger.warning(
                         "rag.hybrid.deleted_visibility_count_failed",
-                        tenant=tenant,
-                        case=case_value,
+                        tenant_id=tenant,
+                        case_id=case_value,
                         error=str(exc),
                     )
                     total_without_filter_local = None
@@ -1357,8 +1360,8 @@ class PgVectorClient:
 
         logger.info(
             "rag.hybrid.sql_counts",
-            tenant=tenant,
-            case=case_value,
+            tenant_id=tenant,
+            case_id=case_value,
             vec_rows=len(vector_rows),
             lex_rows=len(lexical_rows),
             alpha=alpha_value,
@@ -1467,8 +1470,8 @@ class PgVectorClient:
         logger.info(
             "rag.hybrid.debug.fusion",
             extra={
-                "tenant": tenant,
-                "case": case_value,
+                "tenant_id": tenant,
+                "case_id": case_value,
                 "candidates": fused_candidates,
                 "has_vec": bool(vector_rows),
                 "has_lex": bool(lexical_rows),
@@ -1483,6 +1486,17 @@ class PgVectorClient:
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             meta = dict(entry["metadata"])
+            # normalise legacy metadata keys if present
+            if "tenant_id" not in meta and "tenant" in meta:
+                try:
+                    meta["tenant_id"] = str(meta["tenant"])  # type: ignore[index]
+                except Exception:
+                    meta["tenant_id"] = meta.get("tenant")
+            if "case_id" not in meta and "case" in meta:
+                try:
+                    meta["case_id"] = str(meta["case"])  # type: ignore[index]
+                except Exception:
+                    meta["case_id"] = meta.get("case")
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
             if doc_hash and not meta.get("hash"):
@@ -1505,8 +1519,8 @@ class PgVectorClient:
                         reasons.append("case_mismatch")
                 logger.info(
                     "rag.strict.reject",
-                    tenant=tenant,
-                    case=case_value,
+                    tenant_id=tenant,
+                    case_id=case_value,
                     candidate_tenant_id=candidate_tenant,
                     candidate_case_id=candidate_case,
                     doc_hash=doc_hash,
@@ -1557,7 +1571,7 @@ class PgVectorClient:
                 if float(chunk.meta.get("fused", 0.0)) < min_sim_value
             )
             if below_cutoff > 0:
-                metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant=tenant).inc(
+                metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant_id=tenant).inc(
                     float(below_cutoff)
                 )
             filtered_results = [
@@ -1573,8 +1587,8 @@ class PgVectorClient:
                 logger.info(
                     "rag.hybrid.cutoff_fallback",
                     extra={
-                        "tenant": tenant,
-                        "case": case_value,
+                        "tenant_id": tenant,
+                        "case_id": case_value,
                         "requested_min_sim": min_sim_value,
                         "returned": len(limited_results),
                         "below_cutoff": below_cutoff,
@@ -1605,8 +1619,8 @@ class PgVectorClient:
         logger.info(
             "rag.hybrid.debug.after_cutoff",
             extra={
-                "tenant": tenant,
-                "case": case_value,
+                "tenant_id": tenant,
+                "case_id": case_value,
                 "returned": len(limited_results),
                 "top_fused": top_fused,
                 "top_vscore": top_v,
@@ -1671,7 +1685,7 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant_id")
+            tenant_value = chunk.meta.get("tenant_id") or chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
@@ -1705,6 +1719,8 @@ class PgVectorClient:
                     "chunks": [],
                 }
             chunk_meta = dict(chunk.meta)
+            # normalise legacy key and ensure tenant_id is the canonical field
+            chunk_meta.pop("tenant", None)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(
@@ -1787,7 +1803,7 @@ class PgVectorClient:
             logger.info(
                 "Skipping unchanged document during upsert",
                 extra={
-                    "tenant": doc["tenant_id"],
+                    "tenant_id": doc["tenant_id"],
                     "external_id": external_id,
                 },
             )
@@ -1829,7 +1845,7 @@ class PgVectorClient:
             derived = uuid.uuid5(uuid.NAMESPACE_URL, f"tenant:{tenant_id}")
             logger.warning(
                 "Mapped legacy tenant identifier to deterministic UUID",
-                extra={"tenant": tenant_id, "derived_tenant_uuid": str(derived)},
+                extra={"tenant_id": tenant_id, "derived_tenant_uuid": str(derived)},
             )
             return derived
 
@@ -1882,7 +1898,7 @@ class PgVectorClient:
                     logger.warning(
                         "embedding.empty",
                         extra={
-                            "tenant": doc["tenant_id"],
+                            "tenant_id": doc["tenant_id"],
                             "doc_id": str(document_id),
                             "chunk_id": str(chunk_id),
                             "source": doc.get("source"),

@@ -871,7 +871,8 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
         if entry.get("event") == "rag.hybrid.vector_query_failed"
     ]
     assert len(failure_logs) == 1
-    assert failure_logs[0].get("tenant") == tenant
+    entry = failure_logs[0]
+    assert (entry.get("tenant_id") or entry.get("tenant")) == tenant
 
 
 def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
@@ -940,7 +941,8 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
         if entry.get("event") == "rag.hybrid.lexical_query_failed"
     ]
     assert len(failure_logs) == 1
-    assert failure_logs[0].get("tenant") == tenant
+    entry = failure_logs[0]
+    assert (entry.get("tenant_id") or entry.get("tenant")) == tenant
 
 
 def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):

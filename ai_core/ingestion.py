@@ -311,7 +311,8 @@ def process_document(
             sanitized_meta_json["doc_class"] = normalized_doc_class
         elif "doc_class" in sanitized_meta_json:
             sanitized_meta_json.pop("doc_class", None)
-        meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
+        # Normalize meta keys to the new contract: tenant_id/case_id
+        meta = {**sanitized_meta_json, "tenant_id": tenant, "case_id": case}
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
         if resolved_profile_id:

@@ -663,9 +663,9 @@ class TestPgVectorClient:
             entry for entry in logs if entry["event"] == "rag.hybrid.null_embedding"
         ][0]
         assert logged["alpha"] == 0.0
-        assert logged["tenant"] == tenant
-        assert "case" in logged
-        assert logged["case"] is None
+        assert logged["tenant_id"] == tenant
+        assert "case_id" in logged
+        assert logged["case_id"] is None
 
     def test_hybrid_search_lexical_matches_database_normalisation(
         self, monkeypatch
@@ -1753,8 +1753,8 @@ class TestPgVectorClient:
         assert rejects
         reject = rejects[0]
         assert reject["reasons"] == ["case_missing"]
-        assert reject["candidate_case"] is None
-        assert reject["candidate_tenant"] == tenant
+        assert reject["candidate_case_id"] is None
+        assert reject["candidate_tenant_id"] == tenant
         assert result.chunks == []
         assert result.vector_candidates == 1
 
