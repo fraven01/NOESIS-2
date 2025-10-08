@@ -9,8 +9,8 @@ def strict_match(
     - When `tenant` is None, do not filter by tenant.
     - When `case` is None, do not filter by case.
     """
-    if tenant is not None and meta.get("tenant") != tenant:
+    if tenant is not None and meta.get("tenant_id") != tenant:
         return False
-    if case is not None and meta.get("case") != case:
+    if case is not None and meta.get("case_id") != case:
         return False
     return True

@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # - "document_hash": Spalte d.hash
 # - "document_id":  Spalte d.id::text
 SUPPORTED_METADATA_FILTERS = {
-    "case": "chunk_meta",
+    "case_id": "chunk_meta",
     "source": "chunk_meta",
     "doctype": "chunk_meta",
     "published": "chunk_meta",
@@ -580,24 +580,24 @@ class PgVectorClient:
         if case_id not in {None, ""}:
             case_value = case_id
         else:
-            case_value = normalized_filters.get("case")
+            case_value = normalized_filters.get("case_id")
         if case_value is not None:
             case_value = str(case_value)
-        normalized_filters["tenant"] = tenant
-        normalized_filters["case"] = case_value
+        normalized_filters["tenant_id"] = tenant
+        normalized_filters["case_id"] = case_value
         metadata_filters = [
             (key, value)
             for key, value in normalized_filters.items()
-            if key not in {"tenant"}
+            if key not in {"tenant_id"}
             and value is not None
             and key in SUPPORTED_METADATA_FILTERS
         ]
         filter_debug: Dict[str, object | None] = {
-            "tenant": "<set>",
+            "tenant_id": "<set>",
             "visibility": visibility_mode.value,
         }
         for key, value in normalized_filters.items():
-            if key in {"tenant"}:
+            if key in {"tenant_id"}:
                 continue
             filter_debug[key] = (
                 "<set>"
@@ -687,7 +687,7 @@ class PgVectorClient:
                 "rag.hybrid.null_embedding",
                 alpha=alpha_value,
                 tenant=tenant,
-                case=case_value,
+                case_id=case_value,
             )
         index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
         ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
@@ -818,7 +818,7 @@ class PgVectorClient:
                         "rag.hybrid.vector_query_failed",
                         extra={
                             "tenant": tenant,
-                            "case": case_value,
+                            "case_id": case_value,
                             "error": str(vector_format_error),
                         },
                     )
@@ -876,7 +876,7 @@ class PgVectorClient:
                             "rag.hybrid.vector_query_failed",
                             extra={
                                 "tenant": tenant,
-                                "case": case_value,
+                                "case_id": case_value,
                                 "error": str(exc),
                             },
                         )
@@ -1035,7 +1035,7 @@ class PgVectorClient:
                                         "rag.hybrid.lexical_primary_failed",
                                         extra={
                                             "tenant": tenant,
-                                            "case": case_value,
+                                            "case_id": case_value,
                                             "error": str(exc),
                                         },
                                     )
@@ -1076,7 +1076,7 @@ class PgVectorClient:
                                     "rag.hybrid.trgm_no_match",
                                     extra={
                                         "tenant": tenant,
-                                        "case": case_value,
+                                        "case_id": case_value,
                                         "trgm_limit": trgm_limit_value,
                                         "applied_trgm_limit": applied_trgm_limit,
                                         "fallback": True,
@@ -1216,7 +1216,7 @@ class PgVectorClient:
                                 logger.info(
                                     "rag.hybrid.trgm_fallback_applied",
                                     tenant=tenant,
-                                    case=case_value,
+                                    case_id=case_value,
                                     tried_limits=list(fallback_tried_limits),
                                     picked_limit=picked_limit,
                                     count=len(lexical_rows_local),
@@ -1240,7 +1240,7 @@ class PgVectorClient:
                         "rag.hybrid.lexical_query_failed",
                         extra={
                             "tenant": tenant,
-                            "case": case_value,
+                            "case_id": case_value,
                             "error": str(exc),
                         },
                     )
@@ -1343,7 +1343,7 @@ class PgVectorClient:
                     logger.warning(
                         "rag.hybrid.deleted_visibility_count_failed",
                         tenant=tenant,
-                        case=case_value,
+                        case_id=case_value,
                         error=str(exc),
                     )
                     total_without_filter_local = None
@@ -1358,7 +1358,7 @@ class PgVectorClient:
         logger.info(
             "rag.hybrid.sql_counts",
             tenant=tenant,
-            case=case_value,
+            case_id=case_value,
             vec_rows=len(vector_rows),
             lex_rows=len(lexical_rows),
             alpha=alpha_value,
@@ -1468,7 +1468,7 @@ class PgVectorClient:
             "rag.hybrid.debug.fusion",
             extra={
                 "tenant": tenant,
-                "case": case_value,
+                "case_id": case_value,
                 "candidates": fused_candidates,
                 "has_vec": bool(vector_rows),
                 "has_lex": bool(lexical_rows),
@@ -1490,8 +1490,8 @@ class PgVectorClient:
             if doc_id is not None and "id" not in meta:
                 meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
-                candidate_tenant = meta.get("tenant")
-                candidate_case = meta.get("case")
+                candidate_tenant = meta.get("tenant_id")
+                candidate_case = meta.get("case_id")
                 reasons: List[str] = []
                 if tenant is not None:
                     if candidate_tenant is None:
@@ -1506,7 +1506,7 @@ class PgVectorClient:
                 logger.info(
                     "rag.strict.reject",
                     tenant=tenant,
-                    case=case_value,
+                    case_id=case_value,
                     candidate_tenant=candidate_tenant,
                     candidate_case=candidate_case,
                     doc_hash=doc_hash,
@@ -1574,7 +1574,7 @@ class PgVectorClient:
                     "rag.hybrid.cutoff_fallback",
                     extra={
                         "tenant": tenant,
-                        "case": case_value,
+                        "case_id": case_value,
                         "requested_min_sim": min_sim_value,
                         "returned": len(limited_results),
                         "below_cutoff": below_cutoff,
@@ -1606,7 +1606,7 @@ class PgVectorClient:
             "rag.hybrid.debug.after_cutoff",
             extra={
                 "tenant": tenant,
-                "case": case_value,
+                "case_id": case_value,
                 "returned": len(limited_results),
                 "top_fused": top_fused,
                 "top_vscore": top_v,
@@ -1626,7 +1626,7 @@ class PgVectorClient:
             )
 
         logger.info(
-            "RAG hybrid search executed: tenant=%s case=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d deleted_blocked=%d duration_ms=%.2f",
+            "RAG hybrid search executed: tenant=%s case_id=%s vector_candidates=%d lexical_candidates=%d fused_candidates=%d returned=%d deleted_blocked=%d duration_ms=%.2f",
             tenant,
             case_value,
             len(vector_rows),
@@ -1671,12 +1671,12 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant")
+            tenant_value = chunk.meta.get("tenant_id")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
             if tenant_value in {None, "", "None"}:
-                raise ValueError("Chunk metadata must include tenant")
+                raise ValueError("Chunk metadata must include tenant_id")
             if not doc_hash or doc_hash == "None":
                 raise ValueError("Chunk metadata must include hash")
             if external_id in {None, "", "None"}:
@@ -1700,12 +1700,12 @@ class PgVectorClient:
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
-                        if k not in {"tenant", "hash", "source"}
+                        if k not in {"tenant_id", "hash", "source"}
                     },
                     "chunks": [],
                 }
             chunk_meta = dict(chunk.meta)
-            chunk_meta["tenant"] = tenant
+            chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(
                 Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)

@@ -154,13 +154,13 @@ def run(
     doc_class = state.get("doc_class")
     requested_visibility = state.get("visibility")
 
-    tenant_id = meta.get("tenant_id") or meta.get("tenant")
+    tenant_id = meta.get("tenant_id")
     if not tenant_id:
         raise ValueError("tenant_id required")
     tenant_id = str(tenant_id)
 
     tenant_schema = meta.get("tenant_schema")
-    case_id = meta.get("case_id") or meta.get("case")
+    case_id = meta.get("case_id")
 
     hybrid_config = parse_hybrid_parameters(state, override_top_k=top_k)
 

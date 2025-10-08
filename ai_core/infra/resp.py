@@ -28,8 +28,8 @@ def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
 
     header_map = {
         X_TRACE_ID_HEADER: meta.get("trace_id"),
-        X_CASE_ID_HEADER: meta.get("case"),
-        X_TENANT_ID_HEADER: meta.get("tenant"),
+        X_CASE_ID_HEADER: meta.get("case_id"),
+        X_TENANT_ID_HEADER: meta.get("tenant_id"),
         X_KEY_ALIAS_HEADER: meta.get("key_alias"),
         "traceparent": meta.get("traceparent"),
     }

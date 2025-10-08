@@ -65,7 +65,7 @@ def test_router_roundtrip_with_pgvector_backend(monkeypatch) -> None:
         )
         assert len(results) == len(tenant_chunks)
         assert len(results) <= 10
-        assert {chunk.meta.get("tenant") for chunk in results} == {tenant_id}
+        assert {chunk.meta.get("tenant_id") for chunk in results} == {tenant_id}
         assert all("hash" in chunk.meta for chunk in results)
         assert all(0.0 <= chunk.meta.get("score", 0.0) <= 1.0 for chunk in results)
 
@@ -75,7 +75,7 @@ def test_router_roundtrip_with_pgvector_backend(monkeypatch) -> None:
             top_k=25,
         )
         assert len(isolated_results) == len(other_chunks)
-        assert {chunk.meta.get("tenant") for chunk in isolated_results} == {
+        assert {chunk.meta.get("tenant_id") for chunk in isolated_results} == {
             other_tenant_id
         }
 

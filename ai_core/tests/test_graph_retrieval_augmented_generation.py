@@ -76,7 +76,7 @@ def test_graph_normalises_tenant_alias() -> None:
         compose_node=_fake_compose,
     )
 
-    meta = {"tenant": "tenant-alias"}
+    meta = {"tenant_id": "tenant-alias"}
     state, result = graph.run({}, meta)
 
     assert meta["tenant_id"] == "tenant-alias"

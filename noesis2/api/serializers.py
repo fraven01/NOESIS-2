@@ -39,8 +39,8 @@ class IntakeResponseSerializer(IdempotentResponseSerializer):
     """Successful response returned by the agent intake endpoint."""
 
     received = serializers.BooleanField()
-    tenant = serializers.CharField()
-    case = serializers.CharField()
+    tenant_id = serializers.CharField()
+    case_id = serializers.CharField()
 
 
 class ScopeResponseSerializer(IdempotentResponseSerializer):
