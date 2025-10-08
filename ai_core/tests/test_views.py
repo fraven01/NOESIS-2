@@ -169,7 +169,7 @@ def test_tenant_schema_header_match_allows_request(
     assert resp.status_code == 200
     assert resp[X_TENANT_ID_HEADER] == "tenant-header"
     assert resp[X_CASE_ID_HEADER] == "c"
-    assert resp.json()["tenant"] == "tenant-header"
+    assert resp.json()["tenant_id"] == "tenant-header"
     assert seen["tenant"] == "tenant-header"
 
 
@@ -239,12 +239,12 @@ def test_intake_persists_state_and_headers(
     assert resp[X_CASE_ID_HEADER] == "case-123"
     assert resp[X_TENANT_ID_HEADER] == tenant_header
     assert X_KEY_ALIAS_HEADER not in resp
-    assert resp.json()["tenant"] == tenant_header
+    assert resp.json()["tenant_id"] == tenant_header
 
     state = object_store.read_json(f"{tenant_header}/case-123/state.json")
-    assert state["meta"]["tenant"] == tenant_header
+    assert state["meta"]["tenant_id"] == tenant_header
     assert state["meta"]["tenant_schema"] == test_tenant_schema_name
-    assert state["meta"]["case"] == "case-123"
+    assert state["meta"]["case_id"] == "case-123"
 
 
 @pytest.mark.django_db
@@ -321,8 +321,8 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
         def run(self, state, meta):
             context = common_logging.get_log_context()
             assert context["trace_id"] == meta["trace_id"]
-            assert context["case_id"] == meta["case"]
-            assert context["tenant"] == meta["tenant"]
+            assert context["case_id"] == meta["case_id"]
+            assert context["tenant"] == meta["tenant_id"]
             assert context.get("key_alias") == meta.get("key_alias")
             logger.info("graph-run")
             return state, {"ok": True}

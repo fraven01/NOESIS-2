@@ -82,7 +82,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt:
         Prompt text which will be PII-masked before sending.
     metadata:
-        Dict containing at least ``tenant``, ``case`` and ``trace_id``.
+        Dict containing at least ``tenant_id``, ``case_id`` and ``trace_id``.
     """
 
     model_id = resolve(label)
@@ -91,8 +91,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     headers = {"Authorization": f"Bearer {cfg.litellm_api_key}"}
     propagated_headers = {
         X_TRACE_ID_HEADER: metadata.get("trace_id"),
-        X_CASE_ID_HEADER: metadata.get("case"),
-        X_TENANT_ID_HEADER: metadata.get("tenant"),
+        X_CASE_ID_HEADER: metadata.get("case_id") or metadata.get("case"),
+        X_TENANT_ID_HEADER: metadata.get("tenant_id") or metadata.get("tenant"),
     }
     key_alias = metadata.get("key_alias")
     if key_alias:
@@ -105,13 +105,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     max_retries = 3
     prompt_version = metadata.get("prompt_version") or "default"
-    case_id = metadata.get("case") or "unknown-case"
+    case_id = metadata.get("case_id") or metadata.get("case") or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
     timeout = cfg.timeouts.get(label, 20)
     log_extra = {
         "trace_id": mask_value(metadata.get("trace_id")),
-        "case_id": mask_value(metadata.get("case")),
-        "tenant": mask_value(metadata.get("tenant")),
+        "case_id": mask_value(metadata.get("case_id") or metadata.get("case")),
+        "tenant_id": mask_value(metadata.get("tenant_id") or metadata.get("tenant")),
         "key_alias": mask_value(metadata.get("key_alias")),
     }
     for attempt in range(max_retries):
@@ -229,8 +229,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     ledger.record(
         {
-            "tenant": metadata.get("tenant"),
-            "case": metadata.get("case"),
+            "tenant_id": metadata.get("tenant_id") or metadata.get("tenant"),
+            "case_id": metadata.get("case_id") or metadata.get("case"),
             "trace_id": metadata.get("trace_id"),
             "label": label,
             "model": model_id,
