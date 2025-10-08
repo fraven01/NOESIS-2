@@ -14,6 +14,7 @@ from ai_core.nodes import (
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
+from ai_core.tool_contracts import ContextError, InputError, ToolContext
 
 META = {
     "tenant": "t1",
@@ -88,9 +89,11 @@ def test_retrieve_hybrid_search(monkeypatch):
             "lex_limit": 30,
         },
     }
-    meta = {"tenant_id": "tenant-1", "case_id": "case-1"}
 
-    new_state, result = retrieve.run(state, meta)
+    params = retrieve.RetrieveInput.from_state(state)
+    context = ToolContext(tenant_id="tenant-1", case_id="case-1")
+
+    result = retrieve.run(context, params)
 
     assert router.calls[0]["top_k"] == 10  # clamped to TOPK_MAX
     assert router.calls[0]["max_candidates"] == 40
@@ -99,26 +102,26 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert router.calls[0]["visibility"] is None
     assert router.calls[0]["visibility_override_allowed"] is False
 
-    match = result["matches"][0]
+    match = result.matches[0]
     assert match["id"] == "doc-1"
     assert match["score"] == pytest.approx(0.83)
     assert match["source"] == "src"
-    assert new_state["matches"] == result["matches"]
-    assert new_state["snippets"] == result["matches"]
+    assert isinstance(result.meta.took_ms, int)
+    assert result.meta.took_ms >= 0
 
-    meta_payload = result["meta"]
-    assert meta_payload["alpha"] == pytest.approx(0.6)
-    assert meta_payload["min_sim"] == pytest.approx(0.2)
-    assert meta_payload["top_k_effective"] == len(result["matches"])
-    assert meta_payload["max_candidates_effective"] >= meta_payload["top_k_effective"]
-    assert meta_payload["vector_candidates"] == 37
-    assert meta_payload["lexical_candidates"] == 41
-    assert meta_payload["deleted_matches_blocked"] == 3
-    assert meta_payload["routing"] == {
+    meta_payload = result.meta
+    assert meta_payload.alpha == pytest.approx(0.6)
+    assert meta_payload.min_sim == pytest.approx(0.2)
+    assert meta_payload.top_k_effective == len(result.matches)
+    assert meta_payload.max_candidates_effective >= meta_payload.top_k_effective
+    assert meta_payload.vector_candidates == 37
+    assert meta_payload.lexical_candidates == 41
+    assert meta_payload.deleted_matches_blocked == 3
+    assert meta_payload.routing == {
         "profile": "standard",
         "vector_space_id": "rag/global",
     }
-    assert meta_payload["visibility_effective"] == "active"
+    assert meta_payload.visibility_effective == "active"
 
 
 def test_retrieve_scoped_router(monkeypatch):
@@ -157,25 +160,30 @@ def test_retrieve_scoped_router(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
     state = {"query": "hi", "hybrid": {}}
-    meta = {"tenant_id": "tenant-42", "tenant_schema": "schema-42"}
+    params = retrieve.RetrieveInput.from_state(state)
+    context = ToolContext(tenant_id="tenant-42", tenant_schema="schema-42")
 
-    retrieve.run(state, meta)
+    retrieve.run(context, params)
 
     assert router.calls == [("tenant-42", "schema-42")]
     assert router.client.calls[0]["top_k"] == 5
 
 
 def test_retrieve_requires_tenant_id():
-    state = {"query": "Hello", "hybrid": {}}
-    with pytest.raises(ValueError, match="tenant_id required"):
-        retrieve.run(state, {"case": "c1"})
+    params = retrieve.RetrieveInput(query="Hello", hybrid={})
+    context = ToolContext(tenant_id="")
+    with pytest.raises(ContextError, match="tenant_id required"):
+        retrieve.run(context, params)
 
 
 def test_retrieve_unknown_hybrid_key(monkeypatch):
     _patch_routing(monkeypatch)
-    state = {"query": "Hello", "hybrid": {"alpha": 0.5, "unknown": 1}}
-    with pytest.raises(ValueError, match=r"Unknown hybrid parameter\(s\): unknown"):
-        retrieve.run(state, {"tenant_id": "tenant-1"})
+    params = retrieve.RetrieveInput(
+        query="Hello", hybrid={"alpha": 0.5, "unknown": 1}
+    )
+    context = ToolContext(tenant_id="tenant-1")
+    with pytest.raises(InputError, match=r"Unknown hybrid parameter\(s\): unknown"):
+        retrieve.run(context, params)
 
 
 def test_retrieve_deduplicates_matches(monkeypatch):
@@ -205,13 +213,14 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
 
     state = {"query": "hello", "hybrid": {"top_k": 5}}
-    meta = {"tenant_id": "tenant-1"}
+    params = retrieve.RetrieveInput.from_state(state)
+    context = ToolContext(tenant_id="tenant-1")
 
-    _, result = retrieve.run(state, meta)
+    result = retrieve.run(context, params)
 
-    assert len(result["matches"]) == 2
-    assert {match["id"] for match in result["matches"]} == {"doc-1", "doc-2"}
-    top_match = result["matches"][0]
+    assert len(result.matches) == 2
+    assert {match["id"] for match in result.matches} == {"doc-1", "doc-2"}
+    top_match = result.matches[0]
     assert top_match["id"] == "doc-1"
     assert top_match["source"] == "b"
     assert top_match["score"] == pytest.approx(0.9)

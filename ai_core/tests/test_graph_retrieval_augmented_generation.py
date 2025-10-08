@@ -1,27 +1,23 @@
-"""Tests for the production retrieval augmented generation graph."""
-
-from __future__ import annotations
-
-from typing import Any, Mapping, MutableMapping
+from typing import Any, MutableMapping
 from unittest.mock import patch
 
 from ai_core.graphs import retrieval_augmented_generation
+from ai_core.nodes import retrieve
+from ai_core.tool_contracts import ToolContext
 
 
-def _fake_retrieve(
-    state: MutableMapping[str, Any],
-    meta: Mapping[str, Any],
-    *,
-    top_k: int | None = None,
-):
-    new_state = dict(state)
-    new_state.setdefault("snippets", [])
-    new_state["snippets"].append({"text": "snippet"})
-    return new_state, {"matches": new_state["snippets"], "meta": {}}
+def _dummy_output() -> retrieve.RetrieveOutput:
+    matches = [{"text": "snippet"}]
+    meta = retrieve.RetrieveMeta(
+        routing={"profile": "default", "vector_space_id": "global"},
+        took_ms=0,
+    )
+    return retrieve.RetrieveOutput(matches=matches, meta=meta)
 
 
 def _fake_compose(state: MutableMapping[str, Any], meta: MutableMapping[str, Any]):
     new_state = dict(state)
+    assert "snippets" in new_state
     new_state["answer"] = "answer"
     return new_state, {"answer": "answer", "prompt_version": "v-test"}
 
@@ -30,14 +26,12 @@ def test_graph_runs_retrieve_then_compose() -> None:
     calls: list[str] = []
 
     def _recording_retrieve(
-        state: MutableMapping[str, Any],
-        meta: Mapping[str, Any],
-        *,
-        top_k: int | None = None,
-    ):
+        context: ToolContext, params: retrieve.RetrieveInput
+    ) -> retrieve.RetrieveOutput:
         calls.append("retrieve")
-        assert meta["tenant_id"] == "tenant-42"
-        return _fake_retrieve(state, meta, top_k=top_k)
+        assert context.tenant_id == "tenant-42"
+        assert isinstance(params, retrieve.RetrieveInput)
+        return _dummy_output()
 
     def _recording_compose(
         state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
@@ -55,21 +49,19 @@ def test_graph_runs_retrieve_then_compose() -> None:
 
     assert calls == ["retrieve", "compose"]
     assert state["answer"] == "answer"
+    assert state["snippets"] == [{"text": "snippet"}]
     assert result["answer"] == "answer"
     assert result["prompt_version"] == "v-test"
 
 
 def test_graph_normalises_tenant_alias() -> None:
-    captured_meta: dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     def _recording_retrieve(
-        state: MutableMapping[str, Any],
-        meta: Mapping[str, Any],
-        *,
-        top_k: int | None = None,
-    ):
-        captured_meta["tenant_id"] = meta.get("tenant_id")
-        return _fake_retrieve(state, meta, top_k=top_k)
+        context: ToolContext, params: retrieve.RetrieveInput
+    ) -> retrieve.RetrieveOutput:
+        captured["tenant_id"] = context.tenant_id
+        return _dummy_output()
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
         retrieve_node=_recording_retrieve,
@@ -80,7 +72,7 @@ def test_graph_normalises_tenant_alias() -> None:
     state, result = graph.run({}, meta)
 
     assert meta["tenant_id"] == "tenant-alias"
-    assert captured_meta["tenant_id"] == "tenant-alias"
+    assert captured["tenant_id"] == "tenant-alias"
     assert state["answer"] == "answer"
     assert result["answer"] == "answer"
 

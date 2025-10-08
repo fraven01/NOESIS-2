@@ -3,6 +3,7 @@ import pytest
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter
+from ai_core.tool_contracts import ToolContext
 
 
 class _DummyProfile:
@@ -166,57 +167,58 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
             "trgm_limit": trgm_limit,
         },
     }
-    meta = {
-        "tenant_id": "tenant-123",
-        "tenant_schema": "tenant-schema",
-        "case_id": "case-7",
-    }
+    params = retrieve.RetrieveInput.from_state(state)
+    context = ToolContext(
+        tenant_id="tenant-123",
+        tenant_schema="tenant-schema",
+        case_id="case-7",
+    )
 
-    new_state, payload = retrieve.run(state, meta)
+    result = retrieve.run(context, params)
 
     assert router.for_tenant_calls == [("tenant-123", "tenant-schema")]
     assert len(router.hybrid_calls) == 1
-    query, params = router.hybrid_calls[0]
+    query, call_params = router.hybrid_calls[0]
     assert query == "find documents"
-    assert params["case_id"] == "case-7"
-    assert params["top_k"] == 3
-    assert params["filters"] == {"project": "demo"}
-    assert params["alpha"] == pytest.approx(0.55)
-    assert params["min_sim"] == pytest.approx(0.35)
-    assert params["vec_limit"] == 10
-    assert params["lex_limit"] == 8
+    assert call_params["case_id"] == "case-7"
+    assert call_params["top_k"] == 3
+    assert call_params["filters"] == {"project": "demo"}
+    assert call_params["alpha"] == pytest.approx(0.55)
+    assert call_params["min_sim"] == pytest.approx(0.35)
+    assert call_params["vec_limit"] == 10
+    assert call_params["lex_limit"] == 8
     if trgm_limit is None:
-        assert params["trgm_limit"] is None
+        assert call_params["trgm_limit"] is None
     else:
-        assert params["trgm_limit"] == pytest.approx(0.4)
-    assert params["max_candidates"] >= 3
-    assert params["process"] == "review"
-    assert params["doc_class"] == "policy"
-    assert params["visibility"] is None
-    assert params["visibility_override_allowed"] is False
+        assert call_params["trgm_limit"] == pytest.approx(0.4)
+    assert call_params["max_candidates"] >= 3
+    assert call_params["process"] == "review"
+    assert call_params["doc_class"] == "policy"
+    assert call_params["visibility"] is None
+    assert call_params["visibility_override_allowed"] is False
 
-    matches = payload["matches"]
+    matches = result.matches
     assert len(matches) == 3
     assert {match["id"] for match in matches} == {"doc-1", "doc-2", "doc-3"}
     assert matches[0]["id"] == "doc-1"
     assert matches[0]["score"] == pytest.approx(0.9)
     assert matches[0]["score"] >= matches[-1]["score"]
     assert all(0.0 <= match["score"] <= 1.0 for match in matches)
-    assert new_state["matches"] == matches
-    assert new_state["snippets"] == matches
 
-    meta_payload = payload["meta"]
-    assert meta_payload["vector_candidates"] == len(vector_chunks)
-    assert meta_payload["lexical_candidates"] == len(lexical_chunks)
-    assert meta_payload["deleted_matches_blocked"] == 2
-    assert meta_payload["top_k_effective"] == 3
-    assert meta_payload["alpha"] == pytest.approx(0.55)
-    assert meta_payload["min_sim"] == pytest.approx(0.35)
-    assert meta_payload["routing"] == {
+    meta_payload = result.meta
+    assert isinstance(meta_payload.took_ms, int)
+    assert meta_payload.took_ms >= 0
+    assert meta_payload.vector_candidates == len(vector_chunks)
+    assert meta_payload.lexical_candidates == len(lexical_chunks)
+    assert meta_payload.deleted_matches_blocked == 2
+    assert meta_payload.top_k_effective == 3
+    assert meta_payload.alpha == pytest.approx(0.55)
+    assert meta_payload.min_sim == pytest.approx(0.35)
+    assert meta_payload.routing == {
         "profile": "standard",
         "vector_space_id": "rag/global",
     }
-    assert meta_payload["visibility_effective"] == "active"
+    assert meta_payload.visibility_effective == "active"
 
 
 def _run_visibility_scenario(
@@ -242,36 +244,38 @@ def _run_visibility_scenario(
     if requested is not None:
         state["visibility"] = requested
 
-    meta = {"tenant_id": "tenant-visibility"}
-    if override_allowed:
-        meta["visibility_override_allowed"] = True
+    params = retrieve.RetrieveInput.from_state(state)
+    context = ToolContext(
+        tenant_id="tenant-visibility",
+        visibility_override_allowed=override_allowed,
+    )
 
-    _, payload = retrieve.run(state, meta)
+    result = retrieve.run(context, params)
 
     recorded = store.hybrid_calls[-1]
-    return recorded, payload
+    return recorded, result
 
 
 def test_retrieve_visibility_defaults_to_active(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded, payload = _run_visibility_scenario(monkeypatch)
+    recorded, result = _run_visibility_scenario(monkeypatch)
 
     assert recorded["effective"] == "active"
     assert recorded.get("visibility") == "active"
     assert not recorded.get("visibility_override_allowed")
 
-    matches = payload["matches"]
+    matches = result.matches
     assert [match["id"] for match in matches] == ["doc-active"]
-    meta = payload["meta"]
-    assert meta["visibility_effective"] == "active"
-    assert meta["deleted_matches_blocked"] == 1
+    meta = result.meta
+    assert meta.visibility_effective == "active"
+    assert meta.deleted_matches_blocked == 1
 
 
 def test_retrieve_visibility_all_requires_admin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded, payload = _run_visibility_scenario(
+    recorded, result = _run_visibility_scenario(
         monkeypatch, requested="all", override_allowed=True
     )
 
@@ -279,17 +283,17 @@ def test_retrieve_visibility_all_requires_admin(
     assert recorded.get("visibility") == "all"
     assert recorded.get("visibility_override_allowed") is True
 
-    matches = payload["matches"]
+    matches = result.matches
     assert [match["id"] for match in matches] == ["doc-active", "doc-deleted"]
-    meta = payload["meta"]
-    assert meta["visibility_effective"] == "all"
-    assert meta["deleted_matches_blocked"] == 0
+    meta = result.meta
+    assert meta.visibility_effective == "all"
+    assert meta.deleted_matches_blocked == 0
 
 
 def test_retrieve_visibility_deleted_only_for_admin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded, payload = _run_visibility_scenario(
+    recorded, result = _run_visibility_scenario(
         monkeypatch, requested="deleted", override_allowed=True
     )
 
@@ -297,17 +301,17 @@ def test_retrieve_visibility_deleted_only_for_admin(
     assert recorded.get("visibility") == "deleted"
     assert recorded.get("visibility_override_allowed") is True
 
-    matches = payload["matches"]
+    matches = result.matches
     assert [match["id"] for match in matches] == ["doc-deleted"]
-    meta = payload["meta"]
-    assert meta["visibility_effective"] == "deleted"
-    assert meta["deleted_matches_blocked"] == 0
+    meta = result.meta
+    assert meta.visibility_effective == "deleted"
+    assert meta.deleted_matches_blocked == 0
 
 
 def test_retrieve_visibility_override_denied_without_guard(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorded, payload = _run_visibility_scenario(
+    recorded, result = _run_visibility_scenario(
         monkeypatch, requested="all", override_allowed=False
     )
 
@@ -315,8 +319,8 @@ def test_retrieve_visibility_override_denied_without_guard(
     assert recorded.get("visibility") == "active"
     assert recorded.get("visibility_override_allowed") is False
 
-    matches = payload["matches"]
+    matches = result.matches
     assert [match["id"] for match in matches] == ["doc-active"]
-    meta = payload["meta"]
-    assert meta["visibility_effective"] == "active"
-    assert meta["deleted_matches_blocked"] == 1
+    meta = result.meta
+    assert meta.visibility_effective == "active"
+    assert meta.deleted_matches_blocked == 1
