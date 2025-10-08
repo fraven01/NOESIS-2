@@ -66,8 +66,12 @@ class ContextTask(Task):
             if not isinstance(request_kwargs, Mapping):
                 request_kwargs = {}
             context.update(self._from_meta(request_kwargs.get("meta")))
+            context.update(
+                self._from_tool_context(request_kwargs.get("tool_context"))
+            )
 
         context.update(self._from_meta(kwargs.get("meta")))
+        context.update(self._from_tool_context(kwargs.get("tool_context")))
 
         if args and not kwargs.get("meta"):
             context.update(self._from_meta(args[0]))
@@ -111,6 +115,45 @@ class ContextTask(Task):
         key_alias = meta.get("key_alias")
         if key_alias:
             context["key_alias"] = self._normalize(key_alias)
+
+        return context
+
+    def _from_tool_context(self, tool_context: Any) -> dict[str, str]:
+        if tool_context is None:
+            return {}
+
+        context_data: dict[str, Any] | None = None
+
+        if isinstance(tool_context, Mapping):
+            context_data = dict(tool_context)
+        else:
+            attributes = {}
+            for field in ("tenant_id", "case_id", "trace_id", "idempotency_key"):
+                if hasattr(tool_context, field):
+                    attributes[field] = getattr(tool_context, field)
+            if attributes:
+                context_data = attributes
+
+        if not context_data:
+            return {}
+
+        context: dict[str, str] = {}
+
+        tenant_id = context_data.get("tenant_id")
+        if tenant_id:
+            context["tenant"] = self._normalize(tenant_id)
+
+        case_id = context_data.get("case_id")
+        if case_id:
+            context["case_id"] = self._normalize(case_id)
+
+        trace_id = context_data.get("trace_id")
+        if trace_id:
+            context["trace_id"] = self._normalize(trace_id)
+
+        idempotency_key = context_data.get("idempotency_key")
+        if idempotency_key:
+            context["idempotency_key"] = self._normalize(idempotency_key)
 
         return context
 

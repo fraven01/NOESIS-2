@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Mapping
 from types import ModuleType
 from importlib import import_module
 from uuid import UUID, uuid4
@@ -58,7 +59,7 @@ from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
-from ai_core.graph.schemas import merge_state, normalize_meta
+from ai_core.graph.schemas import ToolContext, merge_state, normalize_meta
 from ai_core.graphs import (
     info_intake,
     needs_mapping,
@@ -83,8 +84,9 @@ from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
+from ai_core.tools import InputError
+
 from .rag.ingestion_contracts import (
-    IngestionContractError,
     map_ingestion_error_to_status,
     resolve_ingestion_profile,
 )
@@ -334,6 +336,20 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         normalized_meta = normalize_meta(request)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+    tool_context_data = normalized_meta.get("tool_context")
+    tool_context: ToolContext | None = None
+    if isinstance(tool_context_data, ToolContext):
+        tool_context = tool_context_data
+    elif isinstance(tool_context_data, Mapping):
+        try:
+            tool_context = ToolContext(**tool_context_data)
+        except TypeError:
+            tool_context = None
+    if tool_context is not None:
+        setattr(request, "tool_context", tool_context)
+        if hasattr(request, "_request") and request._request is not request:
+            setattr(request._request, "tool_context", tool_context)
 
     context = GraphContext(
         tenant_id=normalized_meta["tenant_id"],
@@ -1201,7 +1217,7 @@ class RagIngestionRunView(APIView):
             profile_binding = resolve_ingestion_profile(
                 payload.get("embedding_profile")
             )
-        except IngestionContractError as exc:
+        except InputError as exc:
             return _error_response(
                 exc.message,
                 exc.code,

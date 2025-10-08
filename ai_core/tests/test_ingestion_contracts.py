@@ -2,11 +2,11 @@ import pytest
 
 from ai_core.rag.embedding_config import reset_embedding_configuration_cache
 from ai_core.rag.ingestion_contracts import (
-    IngestionContractError,
     IngestionContractErrorCode,
     ensure_embedding_dimensions,
     resolve_ingestion_profile,
 )
+from ai_core.tools import InputError
 from ai_core.rag.vector_space_resolver import (
     VectorSpaceResolverError,
     VectorSpaceResolverErrorCode,
@@ -43,21 +43,21 @@ def test_resolve_ingestion_profile_success(settings) -> None:
 
 def test_resolve_ingestion_profile_requires_value(settings) -> None:
     _configure_embeddings(settings)
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         resolve_ingestion_profile(None)
     assert excinfo.value.code == IngestionContractErrorCode.PROFILE_REQUIRED
 
 
 def test_resolve_ingestion_profile_rejects_non_string(settings) -> None:
     _configure_embeddings(settings)
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         resolve_ingestion_profile(123)
     assert excinfo.value.code == IngestionContractErrorCode.PROFILE_INVALID
 
 
 def test_resolve_ingestion_profile_unknown_id(settings) -> None:
     _configure_embeddings(settings)
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         resolve_ingestion_profile("unknown")
     assert excinfo.value.code == IngestionContractErrorCode.PROFILE_UNKNOWN
 
@@ -77,7 +77,7 @@ def test_resolve_ingestion_profile_missing_space(settings, monkeypatch) -> None:
         contracts_module, "resolve_vector_space_full", _raise_missing_space
     )
 
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         resolve_ingestion_profile("standard")
     assert excinfo.value.code == IngestionContractErrorCode.VECTOR_SPACE_UNKNOWN
 
@@ -99,7 +99,7 @@ def test_ensure_embedding_dimensions_allows_matching_vectors() -> None:
 def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
     chunks = [Chunk(content="c", meta={"external_id": "doc-1"}, embedding=[0.1])]
 
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         ensure_embedding_dimensions(
             chunks,
             2,

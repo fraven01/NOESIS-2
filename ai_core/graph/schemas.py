@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping
 
 from common.constants import (
+    IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
+    META_IDEMPOTENCY_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
@@ -21,6 +24,26 @@ from common.constants import (
 from ai_core.infra.rate_limit import get_quota
 
 REQUIRED_KEYS = {"tenant_id", "case_id", "trace_id", "graph_name", "graph_version"}
+
+
+@dataclass(frozen=True)
+class ToolContext:
+    """Immutable context propagated to downstream tools and tasks."""
+
+    tenant_id: str
+    case_id: str
+    trace_id: str
+    idempotency_key: str | None = None
+
+    def serialize(self) -> dict[str, str | None]:
+        """Return a serialisable representation of the context."""
+
+        return {
+            "tenant_id": self.tenant_id,
+            "case_id": self.case_id,
+            "trace_id": self.trace_id,
+            "idempotency_key": self.idempotency_key,
+        }
 
 
 def _coalesce(request: Any, header: str, meta_key: str) -> str | None:
@@ -65,6 +88,7 @@ def normalize_meta(request: Any) -> dict:
     trace_id = _coalesce(request, X_TRACE_ID_HEADER, META_TRACE_ID_KEY)
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")
+    idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
 
     meta = {
         "tenant_id": tenant_id,
@@ -88,6 +112,17 @@ def normalize_meta(request: Any) -> dict:
     if missing:
         raise ValueError(f"missing required meta keys: {', '.join(sorted(missing))}")
 
+    tool_context = ToolContext(
+        tenant_id=meta["tenant_id"],
+        case_id=meta["case_id"],
+        trace_id=meta["trace_id"],
+        idempotency_key=idempotency_key,
+    )
+
+    meta["tool_context"] = tool_context.serialize()
+    if idempotency_key:
+        meta["idempotency_key"] = idempotency_key
+
     return meta
 
 
@@ -102,3 +137,4 @@ def merge_state(
     if incoming:
         merged.update(dict(incoming))
     return merged
+

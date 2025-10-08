@@ -8,6 +8,7 @@ from typing import Iterable
 from common.logging import get_log_context, get_logger
 
 from ai_core.infra import tracing
+from ai_core.tools import InputError
 
 from .schemas import Chunk
 
@@ -18,27 +19,8 @@ from .vector_space_resolver import (
     resolve_vector_space_full,
 )
 
-_DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
-
 
 logger = get_logger(__name__)
-
-
-class IngestionContractError(ValueError):
-    """Raised when ingestion parameters violate the public contract."""
-
-    def __init__(
-        self,
-        code: str,
-        message: str,
-        *,
-        context: dict[str, object | None] | None = None,
-    ) -> None:
-        detail = f"{code}: {message}. {_DOC_HINT}"
-        super().__init__(detail)
-        self.code = code
-        self.message = message
-        self.context = dict(context or {})
 
 
 class IngestionContractErrorCode:
@@ -71,14 +53,14 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
 
     raw_context = {"embedding_profile": profile}
     if profile is None:
-        raise IngestionContractError(
+        raise InputError(
             IngestionContractErrorCode.PROFILE_REQUIRED,
             "embedding_profile is required",
             context=raw_context,
         )
 
     if not isinstance(profile, str):
-        raise IngestionContractError(
+        raise InputError(
             IngestionContractErrorCode.PROFILE_INVALID,
             "embedding_profile must be a non-empty string",
             context=raw_context,
@@ -86,7 +68,7 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
 
     profile_key = profile.strip()
     if not profile_key:
-        raise IngestionContractError(
+        raise InputError(
             IngestionContractErrorCode.PROFILE_REQUIRED,
             "embedding_profile must not be empty",
             context=raw_context,
@@ -101,7 +83,7 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
             VectorSpaceResolverErrorCode.VECTOR_SPACE_UNKNOWN: IngestionContractErrorCode.VECTOR_SPACE_UNKNOWN,
         }
         mapped_code = mapping.get(exc.code, IngestionContractErrorCode.PROFILE_UNKNOWN)
-        raise IngestionContractError(
+        raise InputError(
             mapped_code,
             exc.message,
             context={"embedding_profile": profile_key},
@@ -160,7 +142,7 @@ def ensure_embedding_dimensions(
             external_id = chunk.meta.get("external_id") if chunk.meta else None
             if external_id is not None:
                 context["external_id"] = external_id
-            raise IngestionContractError(
+            raise InputError(
                 IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH,
                 (
                     "embedding dimension mismatch detected before persistence: "
@@ -171,7 +153,6 @@ def ensure_embedding_dimensions(
 
 
 __all__ = [
-    "IngestionContractError",
     "IngestionContractErrorCode",
     "map_ingestion_error_to_status",
     "IngestionProfileResolution",
