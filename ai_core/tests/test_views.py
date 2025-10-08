@@ -9,10 +9,12 @@ from structlog.testing import capture_logs
 
 from ai_core import views
 from ai_core.graph.core import GraphContext
+from ai_core.graph.schemas import ToolContext
 from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
 from common import logging as common_logging
 from common.constants import (
+    IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
@@ -501,6 +503,48 @@ def test_graph_view_missing_runner_returns_server_error(
 
     assert response.status_code == 500
     common_logging.clear_log_context()
+
+
+@pytest.mark.django_db
+def test_graph_view_propagates_tool_context(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr("ai_core.graph.schemas.get_quota", lambda: 1)
+
+    captured_meta: dict[str, object] = {}
+    task_calls: list[object] = []
+
+    class _DummyRunner:
+        def run(self, state, meta):
+            captured_meta["meta"] = meta
+            task_calls.append(meta["tool_context"])
+            return state or {}, {"ok": True}
+
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: _DummyRunner())
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-tool",
+        "HTTP_IDEMPOTENCY_KEY": "idem-123",
+    }
+
+    response = client.post(
+        "/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == 200
+    tool_context = captured_meta["meta"]["tool_context"]
+    assert isinstance(tool_context, ToolContext)
+    assert tool_context.tenant_id == test_tenant_schema_name
+    assert tool_context.case_id == "case-tool"
+    assert tool_context.idempotency_key == "idem-123"
+    assert tool_context is task_calls[0]
+    assert response.headers.get(IDEMPOTENCY_KEY_HEADER) is None
 
 
 @pytest.mark.django_db

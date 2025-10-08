@@ -17,6 +17,7 @@ class RequestContextMiddleware:
     CASE_ID_HEADER = "HTTP_X_CASE_ID"
     TENANT_ID_HEADER = "HTTP_X_TENANT_ID"
     KEY_ALIAS_HEADER = "HTTP_X_KEY_ALIAS"
+    IDEMPOTENCY_KEY_HEADER = "HTTP_IDEMPOTENCY_KEY"
     FORWARDED_FOR_HEADER = "HTTP_X_FORWARDED_FOR"
     REMOTE_ADDR_HEADER = "REMOTE_ADDR"
 
@@ -43,6 +44,9 @@ class RequestContextMiddleware:
         tenant_id = self._normalize_header(headers.get(self.TENANT_ID_HEADER))
         case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
+        idempotency_key = self._normalize_header(
+            headers.get(self.IDEMPOTENCY_KEY_HEADER)
+        )
 
         http_method = request.method.upper() if request.method else ""
         http_route = self._resolve_route(request)
@@ -61,6 +65,8 @@ class RequestContextMiddleware:
             log_context["case.id"] = case_id
         if key_alias:
             log_context["key.alias"] = key_alias
+        if idempotency_key:
+            log_context["idempotency.key"] = idempotency_key
         if client_ip:
             log_context["client.ip"] = client_ip
 
@@ -75,6 +81,8 @@ class RequestContextMiddleware:
             response_meta["case"] = case_id
         if key_alias:
             response_meta["key_alias"] = key_alias
+        if idempotency_key:
+            response_meta["idempotency_key"] = idempotency_key
         if traceparent:
             response_meta["traceparent"] = traceparent
 

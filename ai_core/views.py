@@ -335,6 +335,12 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
+    tool_context = normalized_meta.get("tool_context")
+    if tool_context is not None:
+        setattr(request, "tool_context", tool_context)
+        if hasattr(request, "_request") and request._request is not request:
+            setattr(request._request, "tool_context", tool_context)
+
     context = GraphContext(
         tenant_id=normalized_meta["tenant_id"],
         case_id=normalized_meta["case_id"],

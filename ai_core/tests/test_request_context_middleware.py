@@ -43,6 +43,7 @@ def test_middleware_binds_headers_and_sets_response_metadata():
         HTTP_X_TENANT_ID="tenant-789",
         HTTP_X_KEY_ALIAS="alias-001",
         HTTP_X_FORWARDED_FOR="203.0.113.1, 10.0.0.1",
+        HTTP_IDEMPOTENCY_KEY="idem-789",
     )
     request.resolver_match = SimpleNamespace(route="api:ping")
 
@@ -68,6 +69,7 @@ def test_middleware_binds_headers_and_sets_response_metadata():
     assert captured["tenant.id"] == "tenant-789"
     assert captured["case.id"] == "case-456"
     assert captured["key.alias"] == "alias-001"
+    assert captured["idempotency.key"] == "idem-789"
     assert captured["http.method"] == "GET"
     assert captured["http.route"] == "api:ping"
     assert captured["client.ip"] == "203.0.113.1"
