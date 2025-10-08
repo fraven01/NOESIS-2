@@ -872,7 +872,7 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
     ]
     assert len(failure_logs) == 1
     entry = failure_logs[0]
-    assert (entry.get("tenant_id") or entry.get("tenant")) == tenant
+    assert entry.get("tenant_id") == tenant
 
 
 def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
@@ -942,7 +942,7 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
     ]
     assert len(failure_logs) == 1
     entry = failure_logs[0]
-    assert (entry.get("tenant_id") or entry.get("tenant")) == tenant
+    assert entry.get("tenant_id") == tenant
 
 
 def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):

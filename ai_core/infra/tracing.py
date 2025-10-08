@@ -135,15 +135,14 @@ def trace(node_name: str) -> Callable[[F], F]:
             meta_enriched = trace_meta(meta, meta.get("prompt_version"))
 
             start_ts = time.time()
-            # Support both new (tenant_id/case_id) and legacy (tenant/case) keys
-            tenant_value = meta_enriched.get("tenant") or meta_enriched.get("tenant_id")
-            case_value = meta_enriched.get("case") or meta_enriched.get("case_id")
+            tenant_value = meta_enriched.get("tenant_id")
+            case_value = meta_enriched.get("case_id")
 
             start_payload = {
                 "event": "node.start",
                 "node": node_name,
-                "tenant": tenant_value,
-                "case": case_value,
+                "tenant_id": tenant_value,
+                "case_id": case_value,
                 "trace_id": meta_enriched.get("trace_id"),
                 "prompt_version": meta_enriched.get("prompt_version"),
                 "ts": start_ts,
@@ -157,8 +156,8 @@ def trace(node_name: str) -> Callable[[F], F]:
                 end_payload = {
                     "event": "node.end",
                     "node": node_name,
-                    "tenant": tenant_value,
-                    "case": case_value,
+                    "tenant_id": tenant_value,
+                    "case_id": case_value,
                     "trace_id": meta_enriched.get("trace_id"),
                     "prompt_version": meta_enriched.get("prompt_version"),
                     "ts": end_ts,
@@ -175,8 +174,8 @@ def trace(node_name: str) -> Callable[[F], F]:
                         trace_id=str(trace_id),
                         node_name=node_name,
                         metadata={
-                            "tenant": tenant_value,
-                            "case": case_value,
+                            "tenant_id": tenant_value,
+                            "case_id": case_value,
                             "prompt_version": meta_enriched.get("prompt_version"),
                         },
                     )

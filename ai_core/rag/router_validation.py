@@ -312,7 +312,7 @@ def emit_router_validation_failure(error: RouterInputError) -> None:
 
     context = dict(error.context)
     metadata = {
-        "tenant": context.get("tenant_id"),
+        "tenant_id": context.get("tenant_id"),
         "process": context.get("process"),
         "doc_class": context.get("doc_class"),
         "top_k": context.get("top_k"),
