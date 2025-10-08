@@ -1,4 +1,5 @@
 """Tests for tool contracts and error taxonomy."""
+
 from __future__ import annotations
 
 import pytest
@@ -42,7 +43,9 @@ class TestToolErrorHierarchy:
             InternalToolError,
         ],
     )
-    def test_specialized_errors_inherit_from_tool_error(self, error_cls: type[ToolError]) -> None:
+    def test_specialized_errors_inherit_from_tool_error(
+        self, error_cls: type[ToolError]
+    ) -> None:
         assert issubclass(error_cls, ToolError)
 
     def test_tool_error_inherits_from_exception(self) -> None:

@@ -137,4 +137,3 @@ def merge_state(
     if incoming:
         merged.update(dict(incoming))
     return merged
-

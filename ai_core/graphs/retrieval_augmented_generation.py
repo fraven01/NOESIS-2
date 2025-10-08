@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
-from typing import Any, Mapping, MutableMapping, Protocol, Tuple
+from typing import Any, Protocol, Tuple
 
 from ai_core.nodes import compose, retrieve
 from ai_core.rag.visibility import coerce_bool_flag
@@ -51,7 +51,9 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
     tenant_raw = meta.get("tenant_id") or meta.get("tenant")
     tenant_text = str(tenant_raw or "").strip()
     if not tenant_text:
-        raise ContextError("tenant_id is required for retrieval graphs", field="tenant_id")
+        raise ContextError(
+            "tenant_id is required for retrieval graphs", field="tenant_id"
+        )
 
     meta["tenant_id"] = tenant_text
 

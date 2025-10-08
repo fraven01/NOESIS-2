@@ -1,4 +1,5 @@
 """Contracts and error taxonomy for tool interactions."""
+
 from __future__ import annotations
 
 from pydantic import BaseModel

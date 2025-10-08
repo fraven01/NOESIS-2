@@ -66,9 +66,7 @@ class ContextTask(Task):
             if not isinstance(request_kwargs, Mapping):
                 request_kwargs = {}
             context.update(self._from_meta(request_kwargs.get("meta")))
-            context.update(
-                self._from_tool_context(request_kwargs.get("tool_context"))
-            )
+            context.update(self._from_tool_context(request_kwargs.get("tool_context")))
 
         context.update(self._from_meta(kwargs.get("meta")))
         context.update(self._from_tool_context(kwargs.get("tool_context")))

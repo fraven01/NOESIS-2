@@ -178,9 +178,7 @@ def test_retrieve_requires_tenant_id():
 
 def test_retrieve_unknown_hybrid_key(monkeypatch):
     _patch_routing(monkeypatch)
-    params = retrieve.RetrieveInput(
-        query="Hello", hybrid={"alpha": 0.5, "unknown": 1}
-    )
+    params = retrieve.RetrieveInput(query="Hello", hybrid={"alpha": 0.5, "unknown": 1})
     context = ToolContext(tenant_id="tenant-1")
     with pytest.raises(InputError, match=r"Unknown hybrid parameter\(s\): unknown"):
         retrieve.run(context, params)
