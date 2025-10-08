@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping
 
@@ -22,28 +21,9 @@ from common.constants import (
 )
 
 from ai_core.infra.rate_limit import get_quota
+from ai_core.tool_contracts import ToolContext
 
 REQUIRED_KEYS = {"tenant_id", "case_id", "trace_id", "graph_name", "graph_version"}
-
-
-@dataclass(frozen=True)
-class ToolContext:
-    """Immutable context propagated to downstream tools and tasks."""
-
-    tenant_id: str
-    case_id: str
-    trace_id: str
-    idempotency_key: str | None = None
-
-    def serialize(self) -> dict[str, str | None]:
-        """Return a serialisable representation of the context."""
-
-        return {
-            "tenant_id": self.tenant_id,
-            "case_id": self.case_id,
-            "trace_id": self.trace_id,
-            "idempotency_key": self.idempotency_key,
-        }
 
 
 def _coalesce(request: Any, header: str, meta_key: str) -> str | None:
@@ -117,9 +97,15 @@ def normalize_meta(request: Any) -> dict:
         case_id=meta["case_id"],
         trace_id=meta["trace_id"],
         idempotency_key=idempotency_key,
+        tenant_schema=tenant_schema,
+        metadata={
+            "graph_name": graph_name,
+            "graph_version": graph_version,
+            "requested_at": meta["requested_at"],
+        },
     )
 
-    meta["tool_context"] = tool_context.serialize()
+    meta["tool_context"] = tool_context.model_dump(exclude_none=True)
     if idempotency_key:
         meta["idempotency_key"] = idempotency_key
 

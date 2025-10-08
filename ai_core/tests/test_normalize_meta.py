@@ -54,18 +54,15 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
 
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
-    assert tool_context == {
-        "tenant_id": "tenant-a",
-        "case_id": "case-42",
-        "trace_id": "trace-123",
-        "idempotency_key": None,
-    }
-    assert ToolContext(**tool_context) == ToolContext(
-        tenant_id="tenant-a",
-        case_id="case-42",
-        trace_id="trace-123",
-        idempotency_key=None,
-    )
+    context = ToolContext.model_validate(tool_context)
+    assert context.tenant_id == "tenant-a"
+    assert context.case_id == "case-42"
+    assert context.trace_id == "trace-123"
+    assert context.idempotency_key is None
+    assert context.tenant_schema == "tenant_schema"
+    assert context.metadata["graph_name"] == "info_intake"
+    assert context.metadata["graph_version"] == "v9"
+    assert context.metadata["requested_at"] == meta["requested_at"]
 
 
 def test_normalize_meta_raises_on_missing_required_keys(monkeypatch):
@@ -116,16 +113,12 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
 
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
-    assert tool_context == {
-        "tenant_id": "tenant-b",
-        "case_id": "case-b",
-        "trace_id": "trace-b",
-        "idempotency_key": "idem-b",
-    }
-    assert ToolContext(**tool_context) == ToolContext(
-        tenant_id="tenant-b",
-        case_id="case-b",
-        trace_id="trace-b",
-        idempotency_key="idem-b",
-    )
+    context = ToolContext.model_validate(tool_context)
+    assert context.tenant_id == "tenant-b"
+    assert context.case_id == "case-b"
+    assert context.trace_id == "trace-b"
+    assert context.idempotency_key == "idem-b"
+    assert context.metadata["graph_name"] == "info_intake"
+    assert context.metadata["graph_version"] == "v0"
+    assert context.metadata["requested_at"] == meta["requested_at"]
     assert meta["idempotency_key"] == "idem-b"

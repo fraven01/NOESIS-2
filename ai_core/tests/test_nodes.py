@@ -17,8 +17,8 @@ from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.tool_contracts import ContextError, InputError, ToolContext
 
 META = {
-    "tenant": "t1",
-    "case": "c1",
+    "tenant_id": "t1",
+    "case_id": "c1",
     "trace_id": "tr",
     "tenant_schema": "tenant-schema-1",
 }
@@ -388,5 +388,5 @@ def test_tracing_called(monkeypatch):
     compose.run(state, META.copy())
     assert payloads[0]["event"] == "node.start"
     assert payloads[0]["node"] == "compose"
-    assert payloads[0]["tenant"] == "t1"
+    assert payloads[0]["tenant_id"] == "t1"
     assert payloads[0]["prompt_version"] == "v1"

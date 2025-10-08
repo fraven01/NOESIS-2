@@ -549,13 +549,16 @@ def test_graph_view_propagates_tool_context(
     assert response.status_code == 200
     tool_context = captured_meta["meta"]["tool_context"]
     assert isinstance(tool_context, dict)
-    assert tool_context == {
-        "tenant_id": test_tenant_schema_name,
-        "case_id": "case-tool",
-        "trace_id": captured_meta["meta"]["trace_id"],
-        "idempotency_key": "idem-123",
-    }
-    assert task_calls[0] == tool_context
+    context = ToolContext.model_validate(tool_context)
+    assert context.tenant_id == test_tenant_schema_name
+    assert context.case_id == "case-tool"
+    assert context.idempotency_key == "idem-123"
+    assert context.trace_id == captured_meta["meta"]["trace_id"]
+    assert context.metadata["graph_name"] == captured_meta["meta"]["graph_name"]
+    assert context.metadata["graph_version"] == captured_meta["meta"]["graph_version"]
+    assert context.metadata["requested_at"] == captured_meta["meta"]["requested_at"]
+    assert context.metadata["requested_at"]
+    assert ToolContext.model_validate(task_calls[0]) == context
 
     request_obj = captured_request["request"]
     assert isinstance(request_obj.tool_context, ToolContext)
