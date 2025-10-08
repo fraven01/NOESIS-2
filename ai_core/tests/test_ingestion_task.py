@@ -7,6 +7,7 @@ from celery.exceptions import TimeoutError as CeleryTimeoutError
 
 from ai_core import ingestion
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
+from ai_core.tools import InputError
 
 
 class DummyProcessTask:
@@ -397,7 +398,7 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     _patch_partition(monkeypatch, valid_ids, [])
 
     async_result = DummyAsyncResult(results=[])
-    async_result.should_raise = ingestion.IngestionContractError(
+    async_result.should_raise = InputError(
         IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH,
         "dimension mismatch",
         context={

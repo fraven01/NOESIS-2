@@ -7,10 +7,8 @@ from structlog.testing import capture_logs
 from ai_core import tasks
 from ai_core.infra import object_store
 from ai_core.rag import metrics, vector_client
-from ai_core.rag.ingestion_contracts import (
-    IngestionContractError,
-    IngestionContractErrorCode,
-)
+from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
+from ai_core.tools import InputError
 from common import logging as common_logging
 from common.celery import ContextTask
 
@@ -183,7 +181,7 @@ def test_upsert_raises_on_dimension_mismatch(monkeypatch):
 
     monkeypatch.setattr(tasks, "get_default_router", lambda: _Router())
 
-    with pytest.raises(IngestionContractError) as excinfo:
+    with pytest.raises(InputError) as excinfo:
         tasks.upsert(meta, "embeddings.json")
 
     error = excinfo.value
