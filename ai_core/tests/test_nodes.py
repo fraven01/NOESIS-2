@@ -161,7 +161,9 @@ def test_retrieve_scoped_router(monkeypatch):
 
     state = {"query": "hi", "hybrid": {}}
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(tenant_id="tenant-42", case_id="case-42", tenant_schema="schema-42")
+    context = ToolContext(
+        tenant_id="tenant-42", case_id="case-42", tenant_schema="schema-42"
+    )
 
     retrieve.run(context, params)
 
