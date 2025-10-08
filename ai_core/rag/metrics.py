@@ -112,22 +112,22 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration
     RAG_QUERY_TOTAL = _PromCounter(
         "rag_query_total",
         "Number of hybrid RAG queries executed.",
-        ["tenant", "index_kind", "hybrid"],
+        ["tenant_id", "index_kind", "hybrid"],
     )
     RAG_QUERY_EMPTY_VEC_TOTAL = _PromCounter(
         "rag_query_empty_vec_total",
         "Number of queries with effectively zero embedding (dev/dummy).",
-        ["tenant"],
+        ["tenant_id"],
     )
     RAG_QUERY_NO_HIT = _PromCounter(
         "rag_query_no_hit_total",
         "Number of hybrid RAG queries without results above the similarity threshold.",
-        ["tenant"],
+        ["tenant_id"],
     )
     RAG_QUERY_BELOW_CUTOFF_TOTAL = _PromCounter(
         "rag_query_below_cutoff_total",
         "Number of candidates filtered by min_sim cutoff.",
-        ["tenant"],
+        ["tenant_id"],
     )
 else:  # pragma: no cover - covered via direct value inspection in tests
     RAG_UPSERT_CHUNKS = _FallbackCounter()
@@ -159,13 +159,13 @@ if _PromHistogram is not None:  # pragma: no cover - exercised in integration
     RAG_QUERY_CANDIDATES = _PromHistogram(
         "rag_query_candidates",
         "Number of candidates considered during hybrid RAG queries.",
-        ["tenant", "type"],
+        ["tenant_id", "type"],
         buckets=(1, 5, 10, 20, 50, 100),
     )
     RAG_QUERY_TOP1_SIM = _PromHistogram(
         "rag_query_top1_sim",
         "Fused similarity score of the top retrieval result.",
-        ["tenant"],
+        ["tenant_id"],
         buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0),
     )
 else:  # pragma: no cover - covered via direct value inspection in tests

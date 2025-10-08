@@ -213,4 +213,4 @@ def test_profile_resolution_emits_trace_metadata(
     assert span["node_name"] == "rag.profile.resolve"
     metadata = span["metadata"]
     assert metadata["embedding_profile"] == "legacy"
-    assert metadata["tenant"] == "tenant-a"
+    assert metadata["tenant_id"] == "tenant-a"

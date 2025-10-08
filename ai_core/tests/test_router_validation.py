@@ -179,5 +179,5 @@ def test_emit_router_validation_failure_emits_span(monkeypatch) -> None:
     assert span["node_name"] == "rag.router.validation_failed"
     metadata = span["metadata"]
     assert metadata["error_code"] == RouterInputErrorCode.TOP_K_INVALID
-    assert metadata["tenant"] == "tenant-1"
+    assert metadata["tenant_id"] == "tenant-1"
     assert metadata["process"] == "draft"

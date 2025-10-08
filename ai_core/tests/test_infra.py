@@ -120,7 +120,13 @@ def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):
         return "ok"
 
     sample(
-        {}, {"tenant": "t1", "case": "c1", "trace_id": "tid", "prompt_version": "v1"}
+        {},
+        {
+            "tenant_id": "t1",
+            "case_id": "c1",
+            "trace_id": "tid",
+            "prompt_version": "v1",
+        },
     )
     lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
     assert len(lines) == 2
@@ -147,11 +153,17 @@ def test_trace_sends_to_langfuse(monkeypatch):
         return "ok"
 
     sample(
-        {}, {"tenant": "t1", "case": "c1", "trace_id": "tid", "prompt_version": "v1"}
+        {},
+        {
+            "tenant_id": "t1",
+            "case_id": "c1",
+            "trace_id": "tid",
+            "prompt_version": "v1",
+        },
     )
     assert dispatched[0]["traceId"] == "tid"
     assert dispatched[0]["name"] == "node2"
-    assert dispatched[0]["metadata"]["tenant"] == "t1"
+    assert dispatched[0]["metadata"]["tenant_id"] == "t1"
 
 
 def test_trace_skips_langfuse_without_trace_id(monkeypatch):
@@ -170,7 +182,7 @@ def test_trace_skips_langfuse_without_trace_id(monkeypatch):
     def sample(state, meta):
         return "ok"
 
-    sample({}, {"tenant": "t1", "case": "c1"})
+    sample({}, {"tenant_id": "t1", "case_id": "c1"})
 
     assert dispatched == []
 

@@ -48,7 +48,7 @@ def _coerce_float(value: object | None) -> float | None:
 
 def _emit_retrieval_span(
     *,
-    tenant: str,
+    tenant_id: str,
     scope: str,
     case_id: str | None,
     context: Mapping[str, object | None],
@@ -59,7 +59,7 @@ def _emit_retrieval_span(
         return
 
     metadata: dict[str, object | None] = {
-        "tenant": tenant,
+        "tenant_id": tenant_id,
         "scope": scope,
         "case_id": case_id,
         "process": context.get("process"),
@@ -596,7 +596,7 @@ class VectorStoreRouter:
                     result, "visibility", effective_visibility.value
                 )
                 _emit_retrieval_span(
-                    tenant=tenant,
+                    tenant_id=tenant,
                     scope=scope,
                     case_id=case_id,
                     context=validation_context,
@@ -607,7 +607,7 @@ class VectorStoreRouter:
                 "rag.hybrid.router.no_result",
                 extra={
                     "scope": scope,
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "store": getattr(store, "name", scope),
                 },
             )
@@ -642,7 +642,7 @@ class VectorStoreRouter:
         )
         validation_context["visibility_effective"] = effective_visibility.value
         _emit_retrieval_span(
-            tenant=tenant,
+            tenant_id=tenant,
             scope=scope,
             case_id=case_id,
             context=validation_context,

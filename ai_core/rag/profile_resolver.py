@@ -84,7 +84,7 @@ def _emit_profile_resolution(
     """Emit trace metadata for successful profile resolution."""
 
     metadata = {
-        "tenant": tenant_id,
+        "tenant_id": tenant_id,
         "process": process,
         "doc_class": doc_class,
         "embedding_profile": profile_id,
