@@ -5,13 +5,13 @@ from ai_core.graphs import (
     system_description,
 )
 
-META = {"tenant": "t1", "case": "c1", "trace_id": "tr"}
+META = {"tenant_id": "t1", "case_id": "c1", "trace_id": "tr"}
 
 
 def test_info_intake_adds_meta():
     state, result = info_intake.run({}, META)
     assert state["meta"] == META
-    assert result["tenant"] == META["tenant"]
+    assert result["tenant_id"] == META["tenant_id"]
 
 
 def test_scope_check_never_creates_draft():

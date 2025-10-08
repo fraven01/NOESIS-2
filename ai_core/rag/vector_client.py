@@ -50,7 +50,7 @@ logger = get_logger(__name__)
 # - "document_hash": Spalte d.hash
 # - "document_id":  Spalte d.id::text
 SUPPORTED_METADATA_FILTERS = {
-    "case": "chunk_meta",
+    "case_id": "chunk_meta",
     "source": "chunk_meta",
     "doctype": "chunk_meta",
     "published": "chunk_meta",
@@ -580,24 +580,24 @@ class PgVectorClient:
         if case_id not in {None, ""}:
             case_value = case_id
         else:
-            case_value = normalized_filters.get("case")
+            case_value = normalized_filters.get("case_id")
         if case_value is not None:
             case_value = str(case_value)
-        normalized_filters["tenant"] = tenant
-        normalized_filters["case"] = case_value
+        normalized_filters["tenant_id"] = tenant
+        normalized_filters["case_id"] = case_value
         metadata_filters = [
             (key, value)
             for key, value in normalized_filters.items()
-            if key not in {"tenant"}
+            if key not in {"tenant_id"}
             and value is not None
             and key in SUPPORTED_METADATA_FILTERS
         ]
         filter_debug: Dict[str, object | None] = {
-            "tenant": "<set>",
+            "tenant_id": "<set>",
             "visibility": visibility_mode.value,
         }
         for key, value in normalized_filters.items():
-            if key in {"tenant"}:
+            if key in {"tenant_id"}:
                 continue
             filter_debug[key] = (
                 "<set>"
@@ -1490,8 +1490,8 @@ class PgVectorClient:
             if doc_id is not None and "id" not in meta:
                 meta["id"] = str(doc_id)
             if not strict_match(meta, tenant, case_value):
-                candidate_tenant = meta.get("tenant")
-                candidate_case = meta.get("case")
+                candidate_tenant = meta.get("tenant_id")
+                candidate_case = meta.get("case_id")
                 reasons: List[str] = []
                 if tenant is not None:
                     if candidate_tenant is None:
@@ -1507,8 +1507,8 @@ class PgVectorClient:
                     "rag.strict.reject",
                     tenant=tenant,
                     case=case_value,
-                    candidate_tenant=candidate_tenant,
-                    candidate_case=candidate_case,
+                    candidate_tenant_id=candidate_tenant,
+                    candidate_case_id=candidate_case,
                     doc_hash=doc_hash,
                     doc_id=doc_id,
                     chunk_id=entry["chunk_id"],
@@ -1671,18 +1671,18 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant")
+            tenant_value = chunk.meta.get("tenant_id")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
             if tenant_value in {None, "", "None"}:
-                raise ValueError("Chunk metadata must include tenant")
+                raise ValueError("Chunk metadata must include tenant_id")
             if not doc_hash or doc_hash == "None":
                 raise ValueError("Chunk metadata must include hash")
             if external_id in {None, "", "None"}:
                 logger.warning(
                     "Chunk without external_id encountered; falling back to hash",
-                    extra={"tenant": tenant_value, "hash": doc_hash},
+                    extra={"tenant_id": tenant_value, "hash": doc_hash},
                 )
                 external_id = doc_hash
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
@@ -1700,12 +1700,12 @@ class PgVectorClient:
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
-                        if k not in {"tenant", "hash", "source"}
+                        if k not in {"tenant_id", "hash", "source"}
                     },
                     "chunks": [],
                 }
             chunk_meta = dict(chunk.meta)
-            chunk_meta["tenant"] = tenant
+            chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(
                 Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)

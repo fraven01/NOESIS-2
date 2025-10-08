@@ -663,12 +663,12 @@ class VectorStoreRouter:
         chunk_list = list(chunks)
         expected_tenant = str(tenant_id).strip() if tenant_id is not None else None
         for chunk in chunk_list:
-            tenant_meta = str(chunk.meta.get("tenant") or "").strip()
+            tenant_meta = str(chunk.meta.get("tenant_id") or "").strip()
             if not tenant_meta:
-                raise ValueError("chunk metadata must include tenant")
+                raise ValueError("chunk metadata must include tenant_id")
             if expected_tenant is not None and tenant_meta != expected_tenant:
                 raise ValueError(
-                    "Chunk tenant '%s' does not match expected tenant '%s'"
+                    "Chunk tenant_id '%s' does not match expected tenant '%s'"
                     % (tenant_meta, expected_tenant)
                 )
         logger.debug("Upserting chunks", extra={"scope": target_scope})
@@ -807,15 +807,15 @@ class _TenantScopedClient:
         coerced: list[Chunk] = []
         for chunk in chunk_list:
             meta = dict(chunk.meta)
-            tenant_meta_raw = meta.get("tenant")
+            tenant_meta_raw = meta.get("tenant_id")
             tenant_meta = str(tenant_meta_raw).strip() if tenant_meta_raw else ""
             if tenant_meta and tenant_meta != self._tenant_id:
-                msg = "Chunk tenant '%s' does not match scoped tenant '%s'" % (
+                msg = "Chunk tenant_id '%s' does not match scoped tenant '%s'" % (
                     tenant_meta,
                     self._tenant_id,
                 )
                 raise ValueError(msg)
-            meta["tenant"] = self._tenant_id
+            meta["tenant_id"] = self._tenant_id
             coerced.append(
                 Chunk(content=chunk.content, meta=meta, embedding=chunk.embedding)
             )

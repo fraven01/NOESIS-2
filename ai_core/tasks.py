@@ -35,8 +35,8 @@ logger = get_logger(__name__)
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
-    tenant = object_store.sanitize_identifier(meta["tenant"])
-    case = object_store.sanitize_identifier(meta["case"])
+    tenant = object_store.sanitize_identifier(meta["tenant_id"])
+    case = object_store.sanitize_identifier(meta["case_id"])
     return "/".join([tenant, case, *parts])
 
 
@@ -52,8 +52,8 @@ def log_ingestion_run_start(
     vector_space_id: Optional[str] = None,
 ) -> None:
     extra = {
-        "tenant": tenant,
-        "case": case,
+        "tenant_id": tenant,
+        "case_id": case,
         "run_id": run_id,
         "doc_count": doc_count,
     }
@@ -91,8 +91,8 @@ def log_ingestion_run_end(
     vector_space_id: Optional[str] = None,
 ) -> None:
     extra = {
-        "tenant": tenant,
-        "case": case,
+        "tenant_id": tenant,
+        "case_id": case,
         "run_id": run_id,
         "doc_count": doc_count,
         "inserted": inserted,
@@ -379,8 +379,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             chunk_text = f"{prefix}\n\n{body}" if body else prefix
         normalised = normalise_text(chunk_text)
         chunk_meta = {
-            "tenant": meta["tenant"],
-            "case": meta.get("case"),
+            "tenant_id": meta["tenant_id"],
+            "case_id": meta.get("case_id"),
             "source": text_path,
             "hash": content_hash,
             "external_id": external_id,
@@ -405,8 +405,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     if not chunks:
         normalised = normalise_text(text)
         chunk_meta = {
-            "tenant": meta["tenant"],
-            "case": meta.get("case"),
+            "tenant_id": meta["tenant_id"],
+            "case_id": meta.get("case_id"),
             "source": text_path,
             "hash": content_hash,
             "external_id": external_id,
@@ -535,13 +535,13 @@ def upsert(
             Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding)
         )
 
-    tenant_id: Optional[str] = meta.get("tenant") if meta else None
+    tenant_id: Optional[str] = meta.get("tenant_id") if meta else None
     if not tenant_id:
         tenant_id = next(
             (
-                str(chunk.meta.get("tenant"))
+                str(chunk.meta.get("tenant_id"))
                 for chunk in chunk_objs
-                if chunk.meta and chunk.meta.get("tenant")
+                if chunk.meta and chunk.meta.get("tenant_id")
             ),
             None,
         )
@@ -549,7 +549,7 @@ def upsert(
         raise ValueError("tenant_id required for upsert")
 
     for chunk in chunk_objs:
-        chunk_tenant = chunk.meta.get("tenant") if chunk.meta else None
+        chunk_tenant = chunk.meta.get("tenant_id") if chunk.meta else None
         if chunk_tenant and str(chunk_tenant) != tenant_id:
             raise ValueError("chunk tenant mismatch")
 
@@ -601,7 +601,7 @@ def ingestion_run(
     logger.info(
         "Queued ingestion run",
         extra={
-            "tenant": tenant_id,
+            "tenant_id": tenant_id,
             "case_id": case_id,
             "document_ids": document_ids,
             "priority": priority,

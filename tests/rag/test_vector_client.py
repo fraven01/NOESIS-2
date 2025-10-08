@@ -196,7 +196,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
             "chunks": [
                 Chunk(
                     content="hello world",
-                    meta={"tenant": tenant, "hash": "hash-1", "source": "unit-test"},
+                    meta={"tenant_id": tenant, "hash": "hash-1", "source": "unit-test"},
                     embedding=[3.0, 4.0],
                 )
             ],
@@ -263,7 +263,7 @@ def test_hybrid_search_returns_vector_hits_with_normalised_query(monkeypatch):
     vector_row = (
         "chunk-vector",
         "vector candidate",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-vector",
         "doc-vector",
         0.12,
@@ -284,7 +284,7 @@ def test_hybrid_search_returns_vector_hits_with_normalised_query(monkeypatch):
     result = client.hybrid_search(
         "vector search",
         tenant_id=tenant,
-        filters={"case": None},
+        filters={"case_id": None},
         alpha=1.0,
         min_sim=0.0,
         top_k=1,
@@ -306,7 +306,7 @@ def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
     lexical_row = (
         "chunk-lex",
         "lexical match",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-lex",
         "doc-lex",
         0.134,
@@ -323,7 +323,7 @@ def test_trgm_limit_is_applied_and_yields_lexical_candidates(monkeypatch):
         result = client.hybrid_search(
             "zebragurke",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             alpha=0.0,
             min_sim=0.01,
             top_k=3,
@@ -346,7 +346,7 @@ def test_lexical_fallback_populates_rows(monkeypatch):
     lexical_row = (
         "chunk-fallback",
         "ZEBRAGURKEN",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-fallback",
         "doc-fallback",
         0.096,
@@ -369,7 +369,7 @@ def test_lexical_fallback_populates_rows(monkeypatch):
         result = client.hybrid_search(
             "zebragurke",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             alpha=0.0,
             min_sim=0.0,
             top_k=3,
@@ -400,7 +400,7 @@ def test_explicit_trgm_limit_fallback_uses_requested_threshold(monkeypatch):
     lexical_row = (
         "chunk-fallback",  # noqa: S105 - test data
         "lexical match",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-fallback",
         "doc-fallback",
         0.111,
@@ -419,7 +419,7 @@ def test_explicit_trgm_limit_fallback_uses_requested_threshold(monkeypatch):
         result = client.hybrid_search(
             "zebragurke",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             trgm_limit=0.05,
             alpha=0.0,
             min_sim=0.0,
@@ -455,7 +455,7 @@ def test_applies_set_limit_and_logs_applied_value(monkeypatch):
     lexical_row = (
         "chunk-lex",
         "lexical match",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-lex",
         "doc-lex",
         0.134,
@@ -473,7 +473,7 @@ def test_applies_set_limit_and_logs_applied_value(monkeypatch):
         client.hybrid_search(
             "zebragurke",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             trgm_limit=0.05,
             alpha=0.0,
             min_sim=0.0,
@@ -500,7 +500,7 @@ def test_row_shape_mismatch_does_not_crash(monkeypatch):
     def _fake_run(_fn, *, op_name: str):
         # Return a vector row with only 5 columns to trigger padding
         return (
-            [("chunk-5", "text", {"tenant": tenant}, "hash-5", "doc-5")],
+            [("chunk-5", "text", {"tenant_id": tenant}, "hash-5", "doc-5")],
             [],
             1.2,
         )
@@ -512,7 +512,7 @@ def test_row_shape_mismatch_does_not_crash(monkeypatch):
         result = client.hybrid_search(
             "shape mismatch",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=3,
         )
 
@@ -534,7 +534,7 @@ def test_truncated_vector_row_populates_metadata(monkeypatch):
     truncated_row = (
         "chunk-short",
         "truncated text",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-short",
         "doc-short",
     )
@@ -547,13 +547,13 @@ def test_truncated_vector_row_populates_metadata(monkeypatch):
     result = client.hybrid_search(
         "truncate me",
         tenant_id=tenant,
-        filters={"case": None},
+        filters={"case_id": None},
         top_k=1,
     )
 
     assert len(result.chunks) == 1
     meta = result.chunks[0].meta
-    assert meta.get("tenant") == tenant
+    assert meta.get("tenant_id") == tenant
     assert meta.get("hash") == "hash-short"
     assert meta.get("id") == "doc-short"
     assert meta.get("vscore") == pytest.approx(0.0)
@@ -572,7 +572,7 @@ def test_lexical_only_scoring(monkeypatch):
     lexical_row = (
         "chunk-lex",
         "lexical match",
-        {"tenant": tenant, "case": "c1"},
+        {"tenant_id": tenant, "case_id": "c1"},
         "hash-lex",
         "doc-lex",
         0.13,
@@ -587,7 +587,7 @@ def test_lexical_only_scoring(monkeypatch):
         "only lexical",
         tenant_id=tenant,
         case_id="c1",
-        filters={"case": "c1"},
+        filters={"case_id": "c1"},
         top_k=1,
         alpha=0.0,
         min_sim=0.01,
@@ -612,7 +612,7 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
     lexical_row = (
         "chunk-lex",
         "lexical match",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-lex",
         "doc-lex",
         0.2,
@@ -626,7 +626,7 @@ def test_lexical_only_respects_min_sim_with_alpha(monkeypatch):
     result = client.hybrid_search(
         "only lexical",
         tenant_id=tenant,
-        filters={"case": None},
+        filters={"case_id": None},
         top_k=1,
         alpha=0.7,
         min_sim=0.15,
@@ -648,7 +648,7 @@ def test_hybrid_search_clamps_candidate_limits(monkeypatch):
     lexical_row = (
         "chunk-clamped",
         "lexical match",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-clamped",
         "doc-clamped",
         0.5,
@@ -664,7 +664,7 @@ def test_hybrid_search_clamps_candidate_limits(monkeypatch):
     result = client.hybrid_search(
         "clamp me",
         tenant_id=tenant,
-        filters={"case": None},
+        filters={"case_id": None},
         alpha=0.0,
         min_sim=0.0,
         top_k=10,
@@ -699,7 +699,7 @@ def test_upsert_retries_operational_error_once(monkeypatch):
     chunk = Chunk(
         content="retry me",
         meta={
-            "tenant": tenant,
+            "tenant_id": tenant,
             "hash": "hash-retry",
             "source": "unit-test",
             "external_id": "doc-retry",
@@ -815,7 +815,7 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
     lexical_row = (
         "chunk-lex",
         "lexical",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-lex",
         "doc-lex",
         0.42,
@@ -854,7 +854,7 @@ def test_hybrid_search_recovers_when_vector_query_fails(monkeypatch):
         result = client.hybrid_search(
             "vector fails",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             alpha=0.0,
             min_sim=0.0,
             top_k=3,
@@ -881,7 +881,7 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
     vector_row = (
         "chunk-vec",
         "vector",
-        {"tenant": tenant},
+        {"tenant_id": tenant},
         "hash-vec",
         "doc-vec",
         0.15,
@@ -923,7 +923,7 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
         result = client.hybrid_search(
             "lexical fails",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             alpha=0.0,
             min_sim=0.0,
             top_k=3,
@@ -987,7 +987,7 @@ def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
         client.hybrid_search(
             "both fail",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             alpha=0.0,
             min_sim=0.0,
             top_k=3,
@@ -1056,7 +1056,7 @@ def _insert_active_and_soft_deleted_documents(
                 0,
                 shared_text,
                 3,
-                Json({"tenant": tenant, "case": "alpha"}),
+                Json({"tenant_id": tenant, "case_id": "alpha"}),
             ),
         )
         cur.execute(
@@ -1072,8 +1072,8 @@ def _insert_active_and_soft_deleted_documents(
                 3,
                 Json(
                     {
-                        "tenant": tenant,
-                        "case": "alpha",
+                        "tenant_id": tenant,
+                        "case_id": "alpha",
                         "deleted_at": timestamp.isoformat(),
                     }
                 ),
@@ -1095,7 +1095,7 @@ def test_hybrid_search_filters_soft_deleted_documents():
     result = client.hybrid_search(
         search_text,
         tenant_id=tenant,
-        filters={"case": "alpha"},
+        filters={"case_id": "alpha"},
         alpha=0.0,
         min_sim=0.0,
         top_k=5,
@@ -1118,7 +1118,7 @@ def test_hybrid_search_rejects_visibility_filter_override_without_flag():
     result = client.hybrid_search(
         search_text,
         tenant_id=tenant,
-        filters={"case": "alpha", "visibility": "deleted"},
+        filters={"case_id": "alpha", "visibility": "deleted"},
         alpha=0.0,
         min_sim=0.0,
         top_k=5,
@@ -1140,7 +1140,7 @@ def test_hybrid_search_returns_deleted_with_default_override():
     result = client.hybrid_search(
         search_text,
         tenant_id=tenant,
-        filters={"case": "alpha"},
+        filters={"case_id": "alpha"},
         alpha=0.0,
         min_sim=0.0,
         top_k=5,
@@ -1166,7 +1166,7 @@ def test_hybrid_search_returns_all_with_default_override():
     result = client.hybrid_search(
         search_text,
         tenant_id=tenant,
-        filters={"case": "alpha"},
+        filters={"case_id": "alpha"},
         alpha=0.0,
         min_sim=0.0,
         top_k=5,
