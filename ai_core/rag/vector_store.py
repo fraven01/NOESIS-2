@@ -59,7 +59,7 @@ def _emit_retrieval_span(
         return
 
     metadata: dict[str, object | None] = {
-        "tenant": tenant,
+        "tenant_id": tenant,
         "scope": scope,
         "case_id": case_id,
         "process": context.get("process"),
@@ -324,7 +324,7 @@ class VectorStoreRouter:
             logger.debug(
                 "rag.visibility.override_denied",
                 extra={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "requested": requested_visibility.value,
                     "scope": scope,
                 },
@@ -516,7 +516,7 @@ class VectorStoreRouter:
         logger.debug(
             "rag.hybrid.params",
             extra={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "scope": scope,
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
@@ -607,7 +607,7 @@ class VectorStoreRouter:
                 "rag.hybrid.router.no_result",
                 extra={
                     "scope": scope,
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "store": getattr(store, "name", scope),
                 },
             )
@@ -663,7 +663,7 @@ class VectorStoreRouter:
         chunk_list = list(chunks)
         expected_tenant = str(tenant_id).strip() if tenant_id is not None else None
         for chunk in chunk_list:
-            tenant_meta = str(chunk.meta.get("tenant") or "").strip()
+            tenant_meta = str(chunk.meta.get("tenant_id") or "").strip()
             if not tenant_meta:
                 raise ValueError("chunk metadata must include tenant")
             if expected_tenant is not None and tenant_meta != expected_tenant:
@@ -807,7 +807,7 @@ class _TenantScopedClient:
         coerced: list[Chunk] = []
         for chunk in chunk_list:
             meta = dict(chunk.meta)
-            tenant_meta_raw = meta.get("tenant")
+            tenant_meta_raw = meta.get("tenant_id")
             tenant_meta = str(tenant_meta_raw).strip() if tenant_meta_raw else ""
             if tenant_meta and tenant_meta != self._tenant_id:
                 msg = "Chunk tenant '%s' does not match scoped tenant '%s'" % (
@@ -815,7 +815,7 @@ class _TenantScopedClient:
                     self._tenant_id,
                 )
                 raise ValueError(msg)
-            meta["tenant"] = self._tenant_id
+            meta["tenant_id"] = self._tenant_id
             coerced.append(
                 Chunk(content=chunk.content, meta=meta, embedding=chunk.embedding)
             )

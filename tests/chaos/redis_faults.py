@@ -146,8 +146,8 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
         tracing.emit_event(  # pragma: no cover - defensive success path
             {
                 "event": "agents.queue.scheduled",
-                "tenant": scope.get("tenant_id"),
-                "case": scope.get("case_id"),
+                "tenant_id": scope.get("tenant_id"),
+                "case_id": scope.get("case_id"),
                 "trace_id": scope.get("trace_id"),
             }
         )
@@ -156,8 +156,8 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
         tracing.emit_event(
             {
                 "event": "agents.queue.backoff",
-                "tenant": scope.get("tenant_id"),
-                "case": scope.get("case_id"),
+                "tenant_id": scope.get("tenant_id"),
+                "case_id": scope.get("case_id"),
                 "trace_id": scope.get("trace_id"),
                 "error": str(exc),
             }
@@ -165,8 +165,8 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
         logger.warning(
             "agents.queue.backoff",
             error=str(exc),
-            tenant=scope.get("tenant_id"),
-            case=scope.get("case_id"),
+            tenant_id=scope.get("tenant_id"),
+            case_id=scope.get("case_id"),
         )
         return False
 

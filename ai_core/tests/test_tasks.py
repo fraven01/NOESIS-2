@@ -94,7 +94,7 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     tenant = str(uuid.uuid4())
     case = str(uuid.uuid4())
-    meta = {"tenant": tenant, "case": case, "external_id": "doc-1"}
+    meta = {"tenant_id": tenant, "case_id": case, "external_id": "doc-1"}
     vector_client.reset_default_client()
 
     raw = tasks.ingest_raw(meta, "doc.txt", b"User 123")
@@ -119,7 +119,7 @@ def test_upsert_persists_chunks(tmp_path, monkeypatch):
 
 def test_upsert_forwards_tenant_schema(monkeypatch):
     meta = {
-        "tenant": "tenant-42",
+        "tenant_id": "tenant-42",
         "tenant_schema": "schema-tenant-42",
     }
 
@@ -127,7 +127,7 @@ def test_upsert_forwards_tenant_schema(monkeypatch):
         {
             "content": "payload",
             "embedding": [0.0],
-            "meta": {"tenant": "tenant-42"},
+            "meta": {"tenant_id": "tenant-42"},
         }
     ]
 
@@ -155,7 +155,7 @@ def test_upsert_forwards_tenant_schema(monkeypatch):
 
 def test_upsert_raises_on_dimension_mismatch(monkeypatch):
     meta = {
-        "tenant": "tenant-42",
+        "tenant_id": "tenant-42",
         "embedding_profile": "standard",
         "vector_space_id": "global",
         "vector_space_dimension": 2,
@@ -167,7 +167,7 @@ def test_upsert_raises_on_dimension_mismatch(monkeypatch):
             "content": "payload",
             "embedding": [0.0],
             "meta": {
-                "tenant": "tenant-42",
+                "tenant_id": "tenant-42",
                 "embedding_profile": "standard",
                 "vector_space_id": "global",
                 "external_id": "doc-1",
@@ -234,8 +234,8 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
     with capture_logs() as logs:
         tasks.ingest_raw(
             {
-                "tenant": "tenant-123",
-                "case": "case-456",
+                "tenant_id": "tenant-123",
+                "case_id": "case-456",
                 "trace_id": "trace-7890",
                 "key_alias": "alias-1234",
                 "external_id": "doc-logging",
@@ -258,12 +258,12 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
 
 def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    meta = {"tenant": "Tenant Name", "case": "Case*ID", "external_id": "doc-1"}
+    meta = {"tenant_id": "Tenant Name", "case_id": "Case*ID", "external_id": "doc-1"}
 
     result = tasks.ingest_raw(meta, "doc.txt", b"payload")
 
-    safe_tenant = object_store.sanitize_identifier(meta["tenant"])
-    safe_case = object_store.sanitize_identifier(meta["case"])
+    safe_tenant = object_store.sanitize_identifier(meta["tenant_id"])
+    safe_case = object_store.sanitize_identifier(meta["case_id"])
     assert result["path"] == f"{safe_tenant}/{safe_case}/raw/doc.txt"
 
     stored = tmp_path / ".ai_core_store" / safe_tenant / safe_case / "raw" / "doc.txt"
@@ -272,7 +272,7 @@ def test_ingest_raw_sanitizes_meta(tmp_path, monkeypatch):
 
 def test_ingest_raw_rejects_unsafe_meta(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
-    meta = {"tenant": "tenant/../", "case": "case", "external_id": "doc-unsafe"}
+    meta = {"tenant_id": "tenant/../", "case_id": "case", "external_id": "doc-unsafe"}
 
     original_request = getattr(tasks.ingest_raw, "request", None)
     tasks.ingest_raw.request = SimpleNamespace(headers=None, kwargs=None)

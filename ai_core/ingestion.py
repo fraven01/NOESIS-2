@@ -73,6 +73,8 @@ def _resolve_upload(
         fallback = make_fallback_external_id(file_path.name, stat.st_size, prefix)
         metadata["external_id"] = fallback
         sanitized_metadata = dict(metadata)
+        sanitized_metadata.pop("tenant_id", None)
+        sanitized_metadata.pop("case_id", None)
         sanitized_metadata.pop("tenant", None)
         sanitized_metadata.pop("case", None)
         object_store.write_json(
@@ -80,6 +82,8 @@ def _resolve_upload(
         )
         metadata = sanitized_metadata
 
+    metadata.pop("tenant_id", None)
+    metadata.pop("case_id", None)
     metadata.pop("tenant", None)
     metadata.pop("case", None)
 
@@ -300,6 +304,8 @@ def process_document(
         if vector_space_id:
             meta_json["vector_space_id"] = vector_space_id
         sanitized_meta_json = dict(meta_json)
+        sanitized_meta_json.pop("tenant_id", None)
+        sanitized_meta_json.pop("case_id", None)
         sanitized_meta_json.pop("tenant", None)
         sanitized_meta_json.pop("case", None)
         normalized_process = normalise_selector_value(meta_json.get("process"))
@@ -312,7 +318,11 @@ def process_document(
             sanitized_meta_json["doc_class"] = normalized_doc_class
         elif "doc_class" in sanitized_meta_json:
             sanitized_meta_json.pop("doc_class", None)
-        meta = {**sanitized_meta_json, "tenant": tenant, "case": case}
+        meta = {
+            **sanitized_meta_json,
+            "tenant_id": tenant,
+            "case_id": case,
+        }
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
         if resolved_profile_id:

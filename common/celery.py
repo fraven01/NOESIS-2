@@ -108,7 +108,7 @@ class ContextTask(Task):
         if case:
             context["case_id"] = self._normalize(case)
 
-        tenant = meta.get("tenant")
+        tenant = meta.get("tenant_id") or meta.get("tenant")
         if tenant:
             context["tenant"] = self._normalize(tenant)
 

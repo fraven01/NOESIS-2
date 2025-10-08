@@ -38,8 +38,8 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
     resp = HttpResponse("ok", status=200)
     meta = {
         "trace_id": "abc123",
-        "case": "case-1",
-        "tenant": "tenant-1",
+        "case_id": "case-1",
+        "tenant_id": "tenant-1",
         "key_alias": "alias-1",
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }
@@ -55,7 +55,11 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
 
 def test_apply_std_headers_skips_missing_optional_headers():
     resp = HttpResponse("ok", status=200)
-    meta = {"trace_id": "abc123", "case": "case-1", "tenant": "tenant-1"}
+    meta = {
+        "trace_id": "abc123",
+        "case_id": "case-1",
+        "tenant_id": "tenant-1",
+    }
 
     result = apply_std_headers(resp, meta)
 
@@ -67,8 +71,8 @@ def test_apply_std_headers_skips_missing_optional_headers():
 def test_apply_std_headers_ignores_non_success_responses():
     meta = {
         "trace_id": "abc123",
-        "case": "case-1",
-        "tenant": "tenant-1",
+        "case_id": "case-1",
+        "tenant_id": "tenant-1",
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }
 
@@ -116,7 +120,13 @@ def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):
         return "ok"
 
     sample(
-        {}, {"tenant": "t1", "case": "c1", "trace_id": "tid", "prompt_version": "v1"}
+        {},
+        {
+            "tenant_id": "t1",
+            "case_id": "c1",
+            "trace_id": "tid",
+            "prompt_version": "v1",
+        },
     )
     lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
     assert len(lines) == 2
@@ -143,11 +153,17 @@ def test_trace_sends_to_langfuse(monkeypatch):
         return "ok"
 
     sample(
-        {}, {"tenant": "t1", "case": "c1", "trace_id": "tid", "prompt_version": "v1"}
+        {},
+        {
+            "tenant_id": "t1",
+            "case_id": "c1",
+            "trace_id": "tid",
+            "prompt_version": "v1",
+        },
     )
     assert dispatched[0]["traceId"] == "tid"
     assert dispatched[0]["name"] == "node2"
-    assert dispatched[0]["metadata"]["tenant"] == "t1"
+    assert dispatched[0]["metadata"]["tenant_id"] == "t1"
 
 
 def test_trace_skips_langfuse_without_trace_id(monkeypatch):
@@ -166,7 +182,7 @@ def test_trace_skips_langfuse_without_trace_id(monkeypatch):
     def sample(state, meta):
         return "ok"
 
-    sample({}, {"tenant": "t1", "case": "c1"})
+    sample({}, {"tenant_id": "t1", "case_id": "c1"})
 
     assert dispatched == []
 
