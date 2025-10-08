@@ -327,7 +327,7 @@ def test_rebuild_rag_index_health_check(
         "Vector index smoke check",
         tenant_id=tenant,
         top_k=2,
-        filters={"case": case},
+        filters={"case_id": case},
     )
 
     assert len(results) == 2

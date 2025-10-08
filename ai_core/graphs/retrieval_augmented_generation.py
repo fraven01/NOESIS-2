@@ -48,7 +48,7 @@ def _ensure_mutable_meta(
 
 
 def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
-    tenant_raw = meta.get("tenant_id") or meta.get("tenant")
+    tenant_raw = meta.get("tenant_id")
     tenant_text = str(tenant_raw or "").strip()
     if not tenant_text:
         raise ContextError(
@@ -62,7 +62,7 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
         str(tenant_schema_raw).strip() if tenant_schema_raw is not None else None
     )
 
-    case_raw = meta.get("case_id") or meta.get("case")
+    case_raw = meta.get("case_id")
     case_id = str(case_raw).strip() if case_raw is not None else None
     if not case_id:
         raise ContextError("case_id is required for retrieval graphs", field="case_id")

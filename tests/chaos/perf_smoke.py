@@ -72,7 +72,7 @@ def _execute_scope(case_id: str, tenant: str, tenant_schema: str) -> ScopeRespon
     """Issue a single /ai/scope/ request and record metrics."""
 
     client = Client()
-    payload = {"scope": {"topic": "chaos", "case": case_id}}
+    payload = {"scope": {"topic": "chaos", "case_id": case_id}}
     headers = {
         META_TENANT_ID_KEY: tenant,
         META_TENANT_SCHEMA_KEY: tenant_schema,

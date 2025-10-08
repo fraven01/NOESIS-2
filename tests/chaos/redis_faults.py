@@ -147,7 +147,7 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
             {
                 "event": "agents.queue.scheduled",
                 "tenant": scope.get("tenant_id"),
-                "case": scope.get("case_id"),
+                "case_id": scope.get("case_id"),
                 "trace_id": scope.get("trace_id"),
             }
         )
@@ -157,7 +157,7 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
             {
                 "event": "agents.queue.backoff",
                 "tenant": scope.get("tenant_id"),
-                "case": scope.get("case_id"),
+                "case_id": scope.get("case_id"),
                 "trace_id": scope.get("trace_id"),
                 "error": str(exc),
             }

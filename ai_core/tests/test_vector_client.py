@@ -141,7 +141,7 @@ class TestPgVectorClient:
         client = vector_client.get_default_client()
         chunk = Chunk(
             content="text",
-            meta={"tenant": str(uuid.uuid4()), "external_id": "ext-1"},
+            meta={"tenant_id": str(uuid.uuid4()), "external_id": "ext-1"},
             embedding=[0.0] * vector_client.get_embedding_dim(),
         )
         with pytest.raises(ValueError):
@@ -154,9 +154,9 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="missing external id",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
-                "case": "case-fallback",
+                "case_id": "case-fallback",
                 "source": "example",
             },
             embedding=[0.25] + [0.0] * (vector_client.get_embedding_dim() - 1),
@@ -168,7 +168,7 @@ class TestPgVectorClient:
         results = client.search(
             "missing external id",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=1,
         )
 
@@ -208,9 +208,9 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="legacy",
             meta={
-                "tenant": "tenant-1",
+                "tenant_id": "tenant-1",
                 "hash": doc_hash,
-                "case": "c",
+                "case_id": "c",
                 "source": "s",
                 "external_id": "legacy-doc",
             },
@@ -226,13 +226,13 @@ class TestPgVectorClient:
 
         results = client.search(
             "legacy",
-            tenant_id=chunk.meta["tenant"],
-            filters={"case": None},
+            tenant_id=chunk.meta["tenant_id"],
+            filters={"case_id": None},
             top_k=1,
         )
         assert len(results) == 1
         assert histogram.samples
-        assert uuid.UUID(results[0].meta["tenant"])  # tenant ids are normalised
+        assert uuid.UUID(results[0].meta["tenant_id"])  # tenant ids are normalised
         assert 0.0 <= results[0].meta["score"] <= 1.0
         assert results[0].meta.get("hash") == chunk.meta["hash"]
         assert results[0].meta.get("external_id") == "legacy-doc"
@@ -261,7 +261,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="chunk-1",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
                 "source": "s",
                 "external_id": external_id,
@@ -311,7 +311,7 @@ class TestPgVectorClient:
             return Chunk(
                 content=content,
                 meta={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "hash": doc_hash,
                     "source": "s",
                     "external_id": external_id,
@@ -368,7 +368,7 @@ class TestPgVectorClient:
             return Chunk(
                 content=content,
                 meta={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "external_id": external_id,
                     "hash": doc_hash,
                     "source": "unit",
@@ -383,7 +383,7 @@ class TestPgVectorClient:
         initial_results = client.search(
             "original",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=3,
         )
         assert len(initial_results) == 1
@@ -397,7 +397,7 @@ class TestPgVectorClient:
         duplicate_results = client.search(
             "original",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=3,
         )
         assert len(duplicate_results) == 1
@@ -411,7 +411,7 @@ class TestPgVectorClient:
         updated_results = client.search(
             "updated",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=3,
         )
         assert len(updated_results) == 1
@@ -437,7 +437,7 @@ class TestPgVectorClient:
             Chunk(
                 content="Result",
                 meta={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "hash": chunk_hash,
                     "source": "src",
                     "external_id": f"doc-{index}",
@@ -460,7 +460,7 @@ class TestPgVectorClient:
             Chunk(
                 content="Filtered",
                 meta={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "hash": hashlib.sha256(b"doc-a").hexdigest(),
                     "source": "alpha",
                     "doctype": "contract",
@@ -471,7 +471,7 @@ class TestPgVectorClient:
             Chunk(
                 content="Filtered",
                 meta={
-                    "tenant": tenant,
+                    "tenant_id": tenant,
                     "hash": hashlib.sha256(b"doc-b").hexdigest(),
                     "source": "beta",
                     "doctype": "contract",
@@ -508,7 +508,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Boolean",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": hashlib.sha256(b"doc-bool").hexdigest(),
                 "source": "gamma",
                 "published": True,
@@ -541,7 +541,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Filter tolerant",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": "doc-filter-tolerant",
                 "source": "alpha",
             },
@@ -609,7 +609,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Lexical fallback example",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
                 "source": "lexical",
                 "external_id": "doc-lex",
@@ -642,7 +642,7 @@ class TestPgVectorClient:
             result = client.hybrid_search(
                 "Lexical fallback example",
                 tenant_id=tenant,
-                filters={"case": None},
+                filters={"case_id": None},
                 top_k=3,
                 alpha=0.0,
             )
@@ -651,7 +651,7 @@ class TestPgVectorClient:
         assert result.lexical_candidates >= 1
         assert result.query_embedding_empty is True
         assert counter.value == 1.0
-        assert counter.calls == [{"tenant": tenant}]
+        assert counter.calls == [{"tenant_id": tenant}]
         assert result.chunks
         top_chunk = result.chunks[0]
         assert top_chunk.meta["vscore"] == 0.0
@@ -676,9 +676,9 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="ZEBRAGURKE",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
-                "case": "lexical-case",
+                "case_id": "lexical-case",
                 "source": "lexical",
                 "external_id": "lex-1",
             },
@@ -694,7 +694,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "ZEBRAGURKE",
             tenant_id=tenant,
-            filters={"case": "lexical-case"},
+            filters={"case_id": "lexical-case"},
             alpha=0.0,
             top_k=1,
         )
@@ -712,7 +712,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Cutoff candidate example",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
                 "source": "cutoff",
                 "external_id": "doc-cutoff",
@@ -739,7 +739,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "candidate cutoff",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=3,
             alpha=0.8,
             min_sim=0.95,
@@ -749,7 +749,7 @@ class TestPgVectorClient:
         assert result.below_cutoff >= 1
         assert result.returned_after_cutoff == 0
         assert result.chunks == []
-        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.calls == [{"tenant_id": tenant}]
         assert cutoff_counter.value == float(result.below_cutoff)
 
     def test_hybrid_search_uses_similarity_fallback_when_trigram_has_no_match(
@@ -761,7 +761,7 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Dies ist ein völlig anderer Inhalt",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
                 "source": "lexical",
                 "external_id": "doc-trigram",
@@ -774,7 +774,7 @@ class TestPgVectorClient:
             result = client.hybrid_search(
                 "zzzzzzzz",
                 tenant_id=tenant,
-                filters={"case": None},
+                filters={"case_id": None},
                 top_k=1,
                 alpha=0.0,
             )
@@ -1242,7 +1242,7 @@ class TestPgVectorClient:
                     (
                         "chunk-1",
                         "Vector mismatch",
-                        {"tenant": tenant},
+                        {"tenant_id": tenant},
                         "hash-1",
                         "doc-1",
                     )
@@ -1272,7 +1272,7 @@ class TestPgVectorClient:
             result = client.hybrid_search(
                 "shape mismatch",
                 tenant_id=tenant,
-                filters={"case": None},
+                filters={"case_id": None},
                 top_k=3,
             )
 
@@ -1299,7 +1299,7 @@ class TestPgVectorClient:
                     (
                         "chunk-meta",
                         "Vector metadata",
-                        {"tenant": tenant},
+                        {"tenant_id": tenant},
                         "hash-meta",
                         "doc-meta",
                     )
@@ -1318,7 +1318,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "vector meta",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=1,
         )
 
@@ -1392,7 +1392,7 @@ class TestPgVectorClient:
             (
                 "lex-chunk",
                 "Lexical fallback",
-                {"tenant": tenant},
+                {"tenant_id": tenant},
                 "lex-hash",
                 "lex-doc",
                 0.9,
@@ -1418,7 +1418,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "lexical only",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=2,
         )
 
@@ -1560,7 +1560,7 @@ class TestPgVectorClient:
                     (
                         "chunk-cutoff",
                         "Too weak",
-                        {"tenant": tenant},
+                        {"tenant_id": tenant},
                         "hash-cutoff",
                         "doc-cutoff",
                         0.95,
@@ -1600,14 +1600,14 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "min sim cutoff",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=1,
             min_sim=0.8,
         )
 
         assert result.below_cutoff == 1
         assert result.chunks == []
-        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.calls == [{"tenant_id": tenant}]
         assert cutoff_counter.value == 1.0
 
     def test_hybrid_search_deleted_visibility_count_regression(
@@ -1636,10 +1636,10 @@ class TestPgVectorClient:
         active_chunk = Chunk(
             content="Vector candidate still active",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": active_hash,
                 "external_id": "active-doc",
-                "case": case,
+                "case_id": case,
                 "source": "example",
             },
             embedding=list(base_vector),
@@ -1647,10 +1647,10 @@ class TestPgVectorClient:
         deleted_chunk = Chunk(
             content="Vector candidate soft deleted",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": deleted_hash,
                 "external_id": "deleted-doc",
-                "case": case,
+                "case_id": case,
                 "source": "example",
                 "deleted_at": "2024-01-01T00:00:00Z",
             },
@@ -1663,7 +1663,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "   ",
             tenant_id=tenant,
-            filters={"case": case},
+            filters={"case_id": case},
             top_k=5,
             alpha=1.0,
             min_sim=0.0,
@@ -1720,7 +1720,7 @@ class TestPgVectorClient:
                     (
                         "chunk-strict",
                         "Strict candidate",
-                        {"tenant": tenant},
+                        {"tenant_id": tenant},
                         "hash-strict",
                         "doc-1",
                         0.3,
@@ -1765,9 +1765,9 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Trigram limit example",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
-                "case": "case-a",
+                "case_id": "case-a",
                 "source": "example",
             },
             embedding=[0.12] + [0.0] * (vector_client.get_embedding_dim() - 1),
@@ -1778,7 +1778,7 @@ class TestPgVectorClient:
             result = client.hybrid_search(
                 "Trigram limit example",
                 tenant_id=tenant,
-                filters={"case": None},
+                filters={"case_id": None},
                 trgm_limit=0.42,
                 top_k=3,
             )
@@ -1798,9 +1798,9 @@ class TestPgVectorClient:
         chunk = Chunk(
             content="Lexical fallback candidate",
             meta={
-                "tenant": tenant,
+                "tenant_id": tenant,
                 "hash": doc_hash,
-                "case": "case-b",
+                "case_id": "case-b",
                 "source": "example",
             },
             embedding=[0.4] + [0.0] * (vector_client.get_embedding_dim() - 1),
@@ -1811,7 +1811,7 @@ class TestPgVectorClient:
             result = client.hybrid_search(
                 "Completely different query",
                 tenant_id=tenant,
-                filters={"case": None},
+                filters={"case_id": None},
                 alpha=0.0,
                 trgm_limit=1.0,
                 top_k=2,
@@ -1835,7 +1835,7 @@ class TestPgVectorClient:
                     (
                         "chunk-1",
                         "Vector strong",
-                        {"tenant": tenant, "case": "case-1"},
+                        {"tenant_id": tenant, "case_id": "case-1"},
                         "hash-1",
                         "doc-1",
                         0.25,
@@ -1843,7 +1843,7 @@ class TestPgVectorClient:
                     (
                         "chunk-2",
                         "Vector weak",
-                        {"tenant": tenant, "case": "case-1"},
+                        {"tenant_id": tenant, "case_id": "case-1"},
                         "hash-2",
                         "doc-2",
                         0.9,
@@ -1853,7 +1853,7 @@ class TestPgVectorClient:
                     (
                         "chunk-1",
                         "Vector strong",
-                        {"tenant": tenant, "case": "case-1"},
+                        {"tenant_id": tenant, "case_id": "case-1"},
                         "hash-1",
                         "doc-1",
                         0.8,
@@ -1861,7 +1861,7 @@ class TestPgVectorClient:
                     (
                         "chunk-2",
                         "Vector weak",
-                        {"tenant": tenant, "case": "case-1"},
+                        {"tenant_id": tenant, "case_id": "case-1"},
                         "hash-2",
                         "doc-2",
                         0.3,
@@ -1913,7 +1913,7 @@ class TestPgVectorClient:
         assert top_meta["score"] == pytest.approx(top_meta["vscore"])
         assert result.below_cutoff == 1
         assert result.returned_after_cutoff == 1
-        assert cutoff_counter.calls == [{"tenant": tenant}]
+        assert cutoff_counter.calls == [{"tenant_id": tenant}]
         assert cutoff_counter.value == 1.0
 
     def test_hybrid_search_score_fusion_alpha_zero_returned_after_cutoff(
@@ -1928,7 +1928,7 @@ class TestPgVectorClient:
                     (
                         "chunk-1",
                         "Lexical strong",
-                        {"tenant": tenant, "case": "case-2"},
+                        {"tenant_id": tenant, "case_id": "case-2"},
                         "hash-1",
                         "doc-1",
                         0.4,
@@ -1936,7 +1936,7 @@ class TestPgVectorClient:
                     (
                         "chunk-2",
                         "Lexical medium",
-                        {"tenant": tenant, "case": "case-2"},
+                        {"tenant_id": tenant, "case_id": "case-2"},
                         "hash-2",
                         "doc-2",
                         0.5,
@@ -1946,7 +1946,7 @@ class TestPgVectorClient:
                     (
                         "chunk-1",
                         "Lexical strong",
-                        {"tenant": tenant, "case": "case-2"},
+                        {"tenant_id": tenant, "case_id": "case-2"},
                         "hash-1",
                         "doc-1",
                         0.9,
@@ -1954,7 +1954,7 @@ class TestPgVectorClient:
                     (
                         "chunk-2",
                         "Lexical medium",
-                        {"tenant": tenant, "case": "case-2"},
+                        {"tenant_id": tenant, "case_id": "case-2"},
                         "hash-2",
                         "doc-2",
                         0.5,
@@ -2002,7 +2002,7 @@ class TestPgVectorClient:
                     (
                         "chunk-linear",
                         "Linear score",
-                        {"tenant": tenant},
+                        {"tenant_id": tenant},
                         "hash-linear",
                         "doc-linear",
                         0.25,
@@ -2027,7 +2027,7 @@ class TestPgVectorClient:
         result = client.hybrid_search(
             "Linear score",
             tenant_id=tenant,
-            filters={"case": None},
+            filters={"case_id": None},
             top_k=1,
             alpha=1.0,
         )

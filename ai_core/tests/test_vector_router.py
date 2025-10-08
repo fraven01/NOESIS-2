@@ -137,11 +137,11 @@ class HybridEnabledStore(VectorStore):
 def router_and_stores() -> tuple[VectorStoreRouter, FakeStore, FakeStore]:
     global_store = FakeStore(
         "global",
-        search_result=[Chunk(content="global", meta={"tenant": "t"})],
+        search_result=[Chunk(content="global", meta={"tenant_id": "t"})],
     )
     silo_store = FakeStore(
         "silo",
-        search_result=[Chunk(content="silo", meta={"tenant": "t"})],
+        search_result=[Chunk(content="silo", meta={"tenant_id": "t"})],
     )
     router = VectorStoreRouter({"global": global_store, "silo": silo_store})
     return router, global_store, silo_store
@@ -202,11 +202,11 @@ def test_router_normalizes_empty_filters(
     router.search(
         "query",
         tenant_id="tenant",
-        filters={"case": "", "source": "doc", "extra": ""},
+        filters={"case_id": "", "source": "doc", "extra": ""},
     )
     filters = global_store.search_calls[-1]["filters"]
     assert filters == {
-        "case": None,
+        "case_id": None,
         "source": "doc",
         "extra": None,
         "visibility": "active",
@@ -261,7 +261,7 @@ def test_router_upsert_delegates_global(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
     router, global_store, silo_store = router_and_stores
-    chunk = Chunk(content="foo", meta={"tenant": "t"})
+    chunk = Chunk(content="foo", meta={"tenant_id": "t"})
     router.upsert_chunks([chunk])
     assert len(global_store.upsert_calls) == 1
     assert global_store.upsert_calls[0] == [chunk]
@@ -347,7 +347,7 @@ def test_router_upsert_respects_expected_tenant(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
     router, global_store, _ = router_and_stores
-    chunk = Chunk(content="foo", meta={"tenant": "t"})
+    chunk = Chunk(content="foo", meta={"tenant_id": "t"})
     router.upsert_chunks([chunk], tenant_id="t")
     assert len(global_store.upsert_calls) == 1
     with pytest.raises(ValueError):
@@ -390,7 +390,7 @@ def test_tenant_client_enforces_tenant_on_upsert(
     chunk = Chunk(content="foo", meta={})
     tenant_client.upsert_chunks([chunk])
     stored = global_store.upsert_calls[-1][0]
-    assert stored.meta["tenant"] == "tenant-456"
+    assert stored.meta["tenant_id"] == "tenant-456"
 
 
 def test_tenant_client_upsert_rejects_foreign_tenant(
@@ -398,7 +398,7 @@ def test_tenant_client_upsert_rejects_foreign_tenant(
 ) -> None:
     router, _, _ = router_and_stores
     tenant_client = router.for_tenant("tenant-789")
-    chunk = Chunk(content="foo", meta={"tenant": "other"})
+    chunk = Chunk(content="foo", meta={"tenant_id": "other"})
     with pytest.raises(ValueError):
         tenant_client.upsert_chunks([chunk])
 
@@ -431,7 +431,7 @@ def test_router_health_check_records_metrics(
 def test_router_hybrid_search_uses_scoped_store() -> None:
     tenant = "tenant-42"
     global_result = HybridSearchResult(
-        chunks=[Chunk(content="global", meta={"tenant": tenant})],
+        chunks=[Chunk(content="global", meta={"tenant_id": tenant})],
         vector_candidates=2,
         lexical_candidates=1,
         fused_candidates=2,
@@ -442,7 +442,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
         lex_limit=5,
     )
     silo_result = HybridSearchResult(
-        chunks=[Chunk(content="silo", meta={"tenant": tenant})],
+        chunks=[Chunk(content="silo", meta={"tenant_id": tenant})],
         vector_candidates=1,
         lexical_candidates=1,
         fused_candidates=1,
@@ -464,7 +464,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
         tenant_id=tenant,
         scope="silo",
         top_k=25,
-        filters={"case": ""},
+        filters={"case_id": ""},
         alpha=0.5,
         min_sim=0.1,
         vec_limit=8,
@@ -474,7 +474,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
     assert result is silo_result
     call = silo_store.hybrid_calls[-1]
     assert call["top_k"] == 10  # capped
-    assert call["filters"] == {"case": None, "visibility": "active"}
+    assert call["filters"] == {"case_id": None, "visibility": "active"}
     expected_trgm = float(get_limit_setting("RAG_TRGM_LIMIT", 0.30))
     expected_cap = int(get_limit_setting("RAG_MAX_CANDIDATES", 200))
     expected_max_candidates = normalize_max_candidates(10, None, expected_cap)
@@ -490,7 +490,7 @@ def test_router_hybrid_search_uses_scoped_store() -> None:
 def test_router_hybrid_search_defaults_to_active_visibility() -> None:
     tenant = "tenant-vis"
     hybrid_result = HybridSearchResult(
-        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        chunks=[Chunk(content="doc", meta={"tenant_id": tenant})],
         vector_candidates=1,
         lexical_candidates=1,
         fused_candidates=1,
@@ -515,7 +515,7 @@ def test_router_hybrid_search_defaults_to_active_visibility() -> None:
 def test_router_hybrid_search_without_visibility_flag_returns_active() -> None:
     tenant = "tenant-default"
     hybrid_result = HybridSearchResult(
-        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        chunks=[Chunk(content="doc", meta={"tenant_id": tenant})],
         vector_candidates=1,
         lexical_candidates=1,
         fused_candidates=1,
@@ -540,7 +540,7 @@ def test_router_hybrid_search_without_visibility_flag_returns_active() -> None:
 def test_router_hybrid_search_allows_authorized_visibility() -> None:
     tenant = "tenant-auth"
     hybrid_result = HybridSearchResult(
-        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        chunks=[Chunk(content="doc", meta={"tenant_id": tenant})],
         vector_candidates=1,
         lexical_candidates=0,
         fused_candidates=1,
@@ -570,7 +570,7 @@ def test_router_hybrid_search_allows_authorized_visibility() -> None:
 def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
     tenant = "tenant-span"
     hybrid_result = HybridSearchResult(
-        chunks=[Chunk(content="doc", meta={"tenant": tenant})],
+        chunks=[Chunk(content="doc", meta={"tenant_id": tenant})],
         vector_candidates=2,
         lexical_candidates=0,
         fused_candidates=2,
@@ -609,7 +609,7 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
 
 def test_router_hybrid_search_falls_back_when_not_supported() -> None:
     tenant = "tenant-99"
-    fallback_chunks = [Chunk(content="fallback", meta={"tenant": tenant})]
+    fallback_chunks = [Chunk(content="fallback", meta={"tenant_id": tenant})]
     store = FakeStore("global", search_result=fallback_chunks)
     router = VectorStoreRouter({"global": store})
 
@@ -630,7 +630,7 @@ def test_router_hybrid_search_rejects_small_candidate_pool(
 ) -> None:
     tenant = "tenant-10"
     store = FakeStore(
-        "global", search_result=[Chunk(content="x", meta={"tenant": tenant})]
+        "global", search_result=[Chunk(content="x", meta={"tenant_id": tenant})]
     )
     router = VectorStoreRouter({"global": store})
 
@@ -663,7 +663,7 @@ def test_router_hybrid_search_normalizes_small_candidate_pool(
 ) -> None:
     tenant = "tenant-11"
     hybrid_result = HybridSearchResult(
-        chunks=[Chunk(content="normalized", meta={"tenant": tenant})],
+        chunks=[Chunk(content="normalized", meta={"tenant_id": tenant})],
         vector_candidates=1,
         lexical_candidates=1,
         fused_candidates=1,
@@ -719,7 +719,7 @@ def test_router_logs_warning_when_hybrid_returns_none(
 
     store = _NullHybridStore(
         "global",
-        search_result=[Chunk(content="fallback", meta={"tenant": tenant})],
+        search_result=[Chunk(content="fallback", meta={"tenant_id": tenant})],
     )
     router = VectorStoreRouter({"global": store})
 
