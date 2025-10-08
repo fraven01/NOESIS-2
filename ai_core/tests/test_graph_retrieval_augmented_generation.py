@@ -45,7 +45,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
         compose_node=_recording_compose,
     )
 
-    state, result = graph.run({}, {"tenant_id": "tenant-42"})
+    state, result = graph.run({}, {"tenant_id": "tenant-42", "case_id": "case-1"})
 
     assert calls == ["retrieve", "compose"]
     assert state["answer"] == "answer"
@@ -68,7 +68,7 @@ def test_graph_normalises_tenant_alias() -> None:
         compose_node=_fake_compose,
     )
 
-    meta = {"tenant": "tenant-alias"}
+    meta = {"tenant": "tenant-alias", "case_id": "case-1"}
     state, result = graph.run({}, meta)
 
     assert meta["tenant_id"] == "tenant-alias"

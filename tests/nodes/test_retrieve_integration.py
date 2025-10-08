@@ -247,6 +247,7 @@ def _run_visibility_scenario(
     params = retrieve.RetrieveInput.from_state(state)
     context = ToolContext(
         tenant_id="tenant-visibility",
+        case_id="case-vis",
         visibility_override_allowed=override_allowed,
     )
 
