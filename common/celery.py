@@ -163,7 +163,17 @@ class ContextTask(Task):
 
 
 class ScopedTask(ContextTask):
-    """Celery task base that propagates the PII session scope."""
+    """Celery task base that propagates the PII session scope.
+
+    The scope is a three-part tuple ``(tenant_id, case_id, session_salt)``
+    that drives deterministic masking and logging behaviour for PII-aware
+    helpers. ``session_salt`` acts as the entropy source that keeps masking
+    tokens stable for a single trace/case combination, while ``session_scope``
+    lets producers override the tuple entirely when they already derived a
+    canonical scope upstream. Both parameters are therefore plumbed through to
+    worker tasks so the masking layer can associate emitted tokens with the
+    right tenant/case context.
+    """
 
     abstract = True
 
