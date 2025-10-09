@@ -279,4 +279,9 @@ class RagQueryRequest(_GraphStateBase):
             self.query = question
         elif query and not question:
             self.question = query
+        if self.hybrid is None:
+            raise PydanticCustomError(
+                "missing_hybrid",
+                "hybrid configuration must be provided.",
+            )
         return self

@@ -453,6 +453,8 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
 
     try:
         new_state, result = graph_runner.run(merged_state, runner_meta)
+    except InputError as exc:
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except Exception:

@@ -913,9 +913,10 @@ def test_rag_query_endpoint_populates_query_from_question(
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
     question_text = "Was ist RAG?"
+    hybrid_config = {"alpha": 0.5}
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": question_text},
+        data={"question": question_text, "hybrid": hybrid_config},
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -930,9 +931,11 @@ def test_rag_query_endpoint_populates_query_from_question(
     params = recorded["params"]
     assert isinstance(params, RetrieveInput)
     assert params.query == question_text
+    assert params.hybrid == hybrid_config
 
     state = recorded["state"]
     assert state["question"] == question_text
     assert state["query"] == question_text
+    assert state["hybrid"] == hybrid_config
 
     assert recorded["saved_state"] == state
