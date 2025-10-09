@@ -700,9 +700,7 @@ def test_ingestion_run_rejects_blank_document_ids(
 
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data=json.dumps(
-            {"document_ids": ["  "], "embedding_profile": "standard"}
-        ),
+        data=json.dumps({"document_ids": ["  "], "embedding_profile": "standard"}),
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -725,9 +723,7 @@ def test_ingestion_run_rejects_empty_embedding_profile(
 
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data=json.dumps(
-            {"document_ids": ["doc-1"], "embedding_profile": "   "}
-        ),
+        data=json.dumps({"document_ids": ["doc-1"], "embedding_profile": "   "}),
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
