@@ -129,6 +129,7 @@ def test_rag_ingestion_run_without_profile_returns_400(
     assert body["code"] == "validation_error"
     assert "embedding_profile" in body["detail"]
 
+
 @pytest.mark.django_db
 def test_rag_ingestion_run_with_invalid_priority_returns_400(
     client, monkeypatch, test_tenant_schema_name

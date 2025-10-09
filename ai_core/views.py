@@ -1354,7 +1354,6 @@ class RagHardDeleteAdminView(APIView):
         return apply_std_headers(response, meta)
 
 
-
 class RagDemoViewV1(_BaseAgentView):
     """Deprecated demo endpoint retained only for backwards compatibility."""
 
