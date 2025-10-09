@@ -816,12 +816,10 @@ class PgVectorClient:
                         pass
                     logger.warning(
                         "rag.hybrid.vector_query_failed",
-                        extra={
-                            "tenant_id": tenant,
-                            "tenant": tenant,
-                            "case_id": case_value,
-                            "error": str(vector_format_error),
-                        },
+                        tenant_id=tenant,
+                        tenant=tenant,
+                        case_id=case_value,
+                        error=str(vector_format_error),
                     )
                 elif query_vec is not None:
                     try:
@@ -875,12 +873,10 @@ class PgVectorClient:
                             pass
                         logger.warning(
                             "rag.hybrid.vector_query_failed",
-                            extra={
-                                "tenant_id": tenant,
-                                "tenant": tenant,
-                                "case_id": case_value,
-                                "error": str(exc),
-                            },
+                            tenant_id=tenant,
+                            tenant=tenant,
+                            case_id=case_value,
+                            error=str(exc),
                         )
                 else:
                     # Even when the query embedding is empty, execute a lightweight
@@ -1240,12 +1236,10 @@ class PgVectorClient:
                         pass
                     logger.warning(
                         "rag.hybrid.lexical_query_failed",
-                        extra={
-                            "tenant_id": tenant,
-                            "tenant": tenant,
-                            "case_id": case_value,
-                            "error": str(exc),
-                        },
+                        tenant_id=tenant,
+                        tenant=tenant,
+                        case_id=case_value,
+                        error=str(exc),
                     )
                     if not vector_rows:
                         if vector_query_failed:
