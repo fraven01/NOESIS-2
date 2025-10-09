@@ -2,7 +2,8 @@ from __future__ import annotations
 from typing import Any, Mapping, Literal, Annotated
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import ConfigDict, FieldValidationInfo
 from pydantic import ConfigDict, ValidationInfo
 from pydantic_core import PydanticCustomError
 
@@ -220,3 +221,67 @@ class NeedsMappingRequest(_GraphStateBase):
 
 class SystemDescriptionRequest(_GraphStateBase):
     """Terminal request payload for the system description graph."""
+
+
+class RagQueryRequest(_GraphStateBase):
+    """Request payload accepted by the production retrieval graph."""
+
+    question: str | None = None
+    query: str | None = None
+    filters: dict[str, Any] | None = None
+    process: str | None = None
+    doc_class: str | None = None
+    visibility: str | None = None
+    visibility_override_allowed: bool | None = None
+    hybrid: dict[str, Any] | None = None
+
+    @field_validator(
+        "question", "query", "process", "doc_class", "visibility", mode="before"
+    )
+    @classmethod
+    def _normalise_optional_text(
+        cls, value: object, info: FieldValidationInfo
+    ) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            trimmed = value.strip()
+            return trimmed or None
+        raise PydanticCustomError(
+            f"invalid_{info.field_name}",
+            f"{info.field_name} must be a string when provided.",
+        )
+
+    @field_validator("filters", "hybrid", mode="before")
+    @classmethod
+    def _ensure_mapping(
+        cls, value: object, info: FieldValidationInfo
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        if isinstance(value, Mapping):
+            return dict(value)
+        raise PydanticCustomError(
+            f"invalid_{info.field_name}",
+            f"{info.field_name} must be a JSON object when provided.",
+        )
+
+    @model_validator(mode="after")
+    def _ensure_question_query(self) -> "RagQueryRequest":
+        question = self.question
+        query = self.query
+        if not question and not query:
+            raise PydanticCustomError(
+                "missing_question",
+                "Either question or query must be provided.",
+            )
+        if question and not query:
+            self.query = question
+        elif query and not question:
+            self.question = query
+        if self.hybrid is None:
+            raise PydanticCustomError(
+                "missing_hybrid",
+                "hybrid configuration must be provided.",
+            )
+        return self
