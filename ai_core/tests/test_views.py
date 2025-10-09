@@ -218,6 +218,42 @@ def test_non_json_payload_returns_415(client, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
+def test_intake_rejects_invalid_metadata_type(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    response = client.post(
+        "/ai/intake/",
+        data=json.dumps({"metadata": ["not", "an", "object"]}),
+        content_type="application/json",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "invalid_request"
+    assert "metadata must be a JSON object" in body["detail"]
+
+
+@pytest.mark.django_db
+def test_needs_view_rejects_non_list_needs_input(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    response = client.post(
+        "/ai/needs/",
+        data=json.dumps({"needs_input": "single"}),
+        content_type="application/json",
+        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "invalid_request"
+    assert "needs_input must be provided as a list" in body["detail"]
+
+
+@pytest.mark.django_db
 def test_intake_persists_state_and_headers(
     client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
@@ -652,3 +688,112 @@ def test_corrupted_state_file_returns_400(
     assert response.status_code == 400
     assert response.json()["code"] == "invalid_request"
     common_logging.clear_log_context()
+
+
+@pytest.mark.django_db
+def test_ingestion_run_rejects_blank_document_ids(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data=json.dumps(
+            {"document_ids": ["  "], "embedding_profile": "standard"}
+        ),
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-ingest",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert "document_ids" in body["detail"]
+
+
+@pytest.mark.django_db
+def test_ingestion_run_rejects_empty_embedding_profile(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data=json.dumps(
+            {"document_ids": ["doc-1"], "embedding_profile": "   "}
+        ),
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-ingest",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert "embedding_profile" in body["detail"]
+
+
+@pytest.mark.django_db
+def test_ingestion_run_normalises_payload_before_dispatch(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    captured: dict[str, object] = {}
+
+    def _fake_partition(tenant, case, document_ids):
+        captured["partition_args"] = (tenant, case, list(document_ids))
+        return ["doc-trimmed"], []
+
+    fake_vector = SimpleNamespace(
+        id="vector-space",
+        schema="rag",
+        backend="pgvector",
+        dimension=1536,
+    )
+    fake_resolution = SimpleNamespace(vector_space=fake_vector)
+    fake_binding = SimpleNamespace(profile_id="standard", resolution=fake_resolution)
+
+    def _fake_resolve(profile: str):
+        captured["resolved_profile_input"] = profile
+        return fake_binding
+
+    dispatched: dict[str, object] = {}
+
+    def _fake_delay(tenant, case, document_ids, profile_id, **kwargs):
+        dispatched["args"] = (tenant, case, document_ids, profile_id)
+        dispatched["kwargs"] = kwargs
+
+    monkeypatch.setattr(views, "partition_document_ids", _fake_partition)
+    monkeypatch.setattr(views, "resolve_ingestion_profile", _fake_resolve)
+    monkeypatch.setattr(views.run_ingestion, "delay", _fake_delay)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data=json.dumps(
+            {
+                "document_ids": [" doc-trimmed "],
+                "embedding_profile": " standard ",
+            }
+        ),
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-ingest",
+        },
+    )
+
+    assert response.status_code == 202
+    assert captured["resolved_profile_input"] == "standard"
+    assert captured["partition_args"][2] == ["doc-trimmed"]
+    assert dispatched["args"][2] == ["doc-trimmed"]
+    assert dispatched["args"][3] == "standard"
+    assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
