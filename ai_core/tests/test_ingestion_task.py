@@ -183,6 +183,7 @@ def test_run_ingestion_success(monkeypatch):
         trace_id="trace-xyz",
         idempotency_key="idem-1",
         timeout_seconds=5.0,
+        session_salt="sess-456",
     )
 
     assert response["status"] == "dispatched"

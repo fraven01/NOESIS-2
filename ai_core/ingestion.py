@@ -536,6 +536,8 @@ def run_ingestion(
     tenant_schema: Optional[str] = None,
     timeout_seconds: Optional[float] = None,
     dead_letter_queue: Optional[str] = None,
+    session_salt: Optional[str] = None,  # noqa: ARG001 - propagated by ScopedTask
+    session_scope: Optional[Tuple[str, str, str]] = None,  # noqa: ARG001 - unused hook
 ) -> Dict[str, object]:
     valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
     doc_count = len(valid_ids)
