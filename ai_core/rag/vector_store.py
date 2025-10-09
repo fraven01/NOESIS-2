@@ -98,9 +98,7 @@ class NullVectorStore:
             alpha_value = alpha_default
 
         try:
-            min_sim_value = (
-                float(min_sim) if min_sim is not None else min_sim_default
-            )
+            min_sim_value = float(min_sim) if min_sim is not None else min_sim_default
         except (TypeError, ValueError):
             min_sim_value = min_sim_default
 
@@ -121,8 +119,12 @@ class NullVectorStore:
             max_candidates_value = effective_top_k
         max_candidates_value = max(effective_top_k, max_candidates_value)
 
-        vec_limit_value = min(max_candidates_value, max(vec_limit_value, effective_top_k))
-        lex_limit_value = min(max_candidates_value, max(lex_limit_value, effective_top_k))
+        vec_limit_value = min(
+            max_candidates_value, max(vec_limit_value, effective_top_k)
+        )
+        lex_limit_value = min(
+            max_candidates_value, max(lex_limit_value, effective_top_k)
+        )
 
         if isinstance(visibility, Visibility):
             visibility_mode = visibility
@@ -1072,7 +1074,7 @@ def _build_pgvector_store(scope: str, config: Mapping[str, object]) -> VectorSto
             fallback_env_var=fallback_env_var,
             **kwargs,
         )
-    except RuntimeError as exc:
+    except RuntimeError:
         logger.info(
             "Falling back to shared pgvector client for scope %s; env vars %s/%s unset",
             scope,
