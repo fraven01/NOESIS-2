@@ -673,7 +673,10 @@ RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
     name="RagQueryResponse",
     summary="Composed retrieval answer",
     description="Returns the composed answer produced by the retrieval and compose nodes.",
-    value={"answer": "Consultants nutzen das Travel-Policy-Template.", "prompt_version": "2024-05-01"},
+    value={
+        "answer": "Consultants nutzen das Travel-Policy-Template.",
+        "prompt_version": "2024-05-01",
+    },
     response_only=True,
 )
 

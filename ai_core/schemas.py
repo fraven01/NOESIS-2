@@ -4,7 +4,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic import ConfigDict, FieldValidationInfo
-from pydantic import ConfigDict, ValidationInfo
+from pydantic import ValidationInfo
 from pydantic_core import PydanticCustomError
 
 # NOTE: This schema uses Pydantic v2 features (e.g., Field(min_length) on lists).
