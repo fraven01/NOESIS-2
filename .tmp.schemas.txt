@@ -1,9 +1,9 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from typing import Any, Mapping, Literal, Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
-from pydantic import ConfigDict, ValidationInfo
+from pydantic import ConfigDict, FieldValidationInfo
 from pydantic_core import PydanticCustomError
 
 # NOTE: This schema uses Pydantic v2 features (e.g., Field(min_length) on lists).
@@ -119,7 +119,7 @@ class RagHardDeleteAdminRequest(BaseModel):
     @field_validator("reason", "ticket_ref", mode="before")
     @classmethod
     def _validate_required_strings(
-        cls, value: object, info: ValidationInfo
+        cls, value: object, info: FieldValidationInfo
     ) -> str:
         if not isinstance(value, str):
             raise PydanticCustomError(
