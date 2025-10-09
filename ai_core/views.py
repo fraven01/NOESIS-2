@@ -6,7 +6,7 @@ import re
 from collections.abc import Mapping
 from types import ModuleType
 from importlib import import_module
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from django.conf import settings
 from django.db import connection
@@ -85,8 +85,16 @@ from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
+from .schemas import (
+    InfoIntakeRequest,
+    NeedsMappingRequest,
+    RagHardDeleteAdminRequest,
+    RagIngestionRunRequest,
+    RagUploadMetadata,
+    ScopeCheckRequest,
+    SystemDescriptionRequest,
+)
 from pydantic import ValidationError
-from .schemas import RagIngestionRunRequest
 
 from .rag.ingestion_contracts import (
     map_ingestion_error_to_status,
@@ -99,6 +107,14 @@ logger = logging.getLogger(__name__)
 
 
 CHECKPOINTER = FileCheckpointer()
+
+
+GRAPH_REQUEST_MODELS = {
+    "info_intake": InfoIntakeRequest,
+    "scope_check": ScopeCheckRequest,
+    "needs_mapping": NeedsMappingRequest,
+    "system_description": SystemDescriptionRequest,
+}
 
 
 def assert_case_active(tenant: str, case_id: str) -> None:
@@ -133,6 +149,20 @@ def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
 
     return Response({"detail": detail, "code": code}, status=status_code)
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    """Return a compact textual representation of a Pydantic validation error."""
+
+    messages: list[str] = []
+    for issue in error.errors():
+        location = ".".join(str(part) for part in issue.get("loc", ()))
+        message = issue.get("msg", "Invalid input")
+        if location:
+            messages.append(f"{location}: {message}")
+        else:
+            messages.append(message)
+    return "; ".join(messages)
 
 
 def _extract_internal_key(request: object) -> str | None:
@@ -397,6 +427,19 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 "invalid_json",
                 status.HTTP_400_BAD_REQUEST,
             )
+
+    request_model = GRAPH_REQUEST_MODELS.get(context.graph_name)
+    if request_model is not None:
+        data = incoming_state or {}
+        try:
+            validated = request_model.model_validate(data)
+        except ValidationError as exc:
+            return _error_response(
+                _format_validation_error(exc),
+                "invalid_request",
+                status.HTTP_400_BAD_REQUEST,
+            )
+        incoming_state = validated.model_dump(exclude_none=True)
 
     merged_state = merge_state(state, incoming_state)
 
@@ -1114,6 +1157,17 @@ class RagUploadView(APIView):
         if metadata_obj is None:
             metadata_obj = {}
 
+        try:
+            metadata_model = RagUploadMetadata.model_validate(metadata_obj)
+        except ValidationError as exc:
+            return _error_response(
+                str(exc), "invalid_metadata", status.HTTP_400_BAD_REQUEST
+            )
+
+        metadata_obj = metadata_model.model_dump()
+        if metadata_obj.get("external_id") is None:
+            metadata_obj.pop("external_id")
+
         original_name = getattr(upload, "name", "") or "upload.bin"
         try:
             safe_name = object_store.safe_filename(original_name)
@@ -1256,74 +1310,35 @@ class RagHardDeleteAdminView(APIView):
 
     @default_extend_schema(**RAG_HARD_DELETE_ADMIN_SCHEMA)
     def post(self, request: Request) -> Response:
-        payload = request.data if isinstance(request.data, dict) else {}
+        payload = request.data if isinstance(request.data, Mapping) else {}
 
-        tenant_id_raw = payload.get("tenant_id")
-        if not isinstance(tenant_id_raw, str) or not tenant_id_raw.strip():
-            return _error_response(
-                "tenant_id must be a valid UUID string.",
-                "invalid_tenant_id",
-                status.HTTP_400_BAD_REQUEST,
-            )
         try:
-            tenant_uuid = UUID(tenant_id_raw.strip())
-        except (TypeError, ValueError):
-            return _error_response(
-                "tenant_id must be a valid UUID string.",
+            request_data = RagHardDeleteAdminRequest.model_validate(payload)
+        except ValidationError as exc:
+            error = exc.errors()[0] if exc.errors() else None
+            message = error.get("msg") if error else str(exc)
+            code = error.get("type") if error else "validation_error"
+            if code not in {
                 "invalid_tenant_id",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        tenant_id = str(tenant_uuid)
-
-        document_ids_raw = payload.get("document_ids")
-        if not isinstance(document_ids_raw, list) or not document_ids_raw:
-            return _error_response(
-                "document_ids must be a non-empty list.",
                 "invalid_document_ids",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        document_ids: list[str] = []
-        for raw in document_ids_raw:
-            if not isinstance(raw, str) or not raw.strip():
-                return _error_response(
-                    "document_ids must contain non-empty UUID strings.",
-                    "invalid_document_ids",
-                    status.HTTP_400_BAD_REQUEST,
-                )
-            document_ids.append(raw.strip())
-
-        reason_raw = payload.get("reason")
-        if not isinstance(reason_raw, str) or not reason_raw.strip():
-            return _error_response(
-                "reason must be a non-empty string.",
                 "invalid_reason",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        reason = reason_raw.strip()
-
-        ticket_ref_raw = payload.get("ticket_ref")
-        if not isinstance(ticket_ref_raw, str) or not ticket_ref_raw.strip():
-            return _error_response(
-                "ticket_ref must be a non-empty string.",
                 "invalid_ticket_ref",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        ticket_ref = ticket_ref_raw.strip()
+            }:
+                code = "validation_error"
+            return _error_response(message, code, status.HTTP_400_BAD_REQUEST)
 
-        operator_label = payload.get("operator_label")
-        if isinstance(operator_label, str):
-            operator_label = operator_label.strip() or None
-        else:
-            operator_label = None
+        tenant_id = request_data.tenant_id
+        document_ids = request_data.document_ids
+        reason = request_data.reason
+        ticket_ref = request_data.ticket_ref
+        operator_label = request_data.operator_label
 
         tenant_schema = None
         header_schema = request.headers.get(X_TENANT_SCHEMA_HEADER)
         if isinstance(header_schema, str) and header_schema.strip():
             tenant_schema = header_schema.strip()
-        else:
-            payload_schema = payload.get("tenant_schema")
-            if isinstance(payload_schema, str) and payload_schema.strip():
-                tenant_schema = payload_schema.strip()
+        elif request_data.tenant_schema:
+            tenant_schema = request_data.tenant_schema
 
         trace_id = uuid4().hex
         bind_log_context(trace_id=trace_id, tenant=tenant_id)

@@ -17,6 +17,13 @@ flowchart LR
     A --> Out[Antwort]
 ```
 
+- **Validierungsstatus (Pydantic):**
+  - **Abgedeckt:**
+    - `RagUploadView` validiert optionale Metadaten mit `RagUploadMetadata` bevor Dateien persistiert werden.
+    - `RagIngestionRunView` nutzt `RagIngestionRunRequest`, um Dokument-IDs zu trimmen, Priorität zu prüfen und ein nicht-leeres Embedding-Profil zu erzwingen.
+    - `RagHardDeleteAdminView` übernimmt die Eingabeprüfung via `RagHardDeleteAdminRequest` und erzwingt UUID- sowie String-Kontrakte.
+    - Die Graph-Endpoints (`IntakeViewV1`, `ScopeViewV1`, `NeedsViewV1`, `SysDescViewV1` und Legacy-Varianten) validieren eingehende States über `InfoIntakeRequest`, `ScopeCheckRequest`, `NeedsMappingRequest` bzw. `SystemDescriptionRequest` bevor sie in LangGraph laufen.
+
 - Loader ziehen Quelldaten aus Dokumenten, APIs oder Datenbanken.
 - Splitter & Chunker erzeugen überlappende Textblöcke; Parameter stehen in [RAG-Ingestion](ingestion.md).
 - Embeddings landen in `pgvector` (siehe [Schema](schema.sql)), inklusive Metadaten pro Tenant.
