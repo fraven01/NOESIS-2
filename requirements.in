@@ -18,4 +18,4 @@ opentelemetry-exporter-otlp
 opentelemetry-instrumentation-logging
 whitenoise
 faker>=19,<38
-pydantic
+pydantic>=2.0,<3.0

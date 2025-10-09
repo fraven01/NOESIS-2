@@ -103,8 +103,8 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["detail"] == "document_ids must be a non-empty list."
-    assert body["code"] == "invalid_document_ids"
+    assert body["code"] == "validation_error"
+    assert "document_ids" in body["detail"]
 
 
 @pytest.mark.django_db
@@ -126,4 +126,31 @@ def test_rag_ingestion_run_without_profile_returns_400(
 
     assert response.status_code == 400
     body = response.json()
-    assert body["code"] == "INGEST_PROFILE_REQUIRED"
+    assert body["code"] == "validation_error"
+    assert "embedding_profile" in body["detail"]
+
+@pytest.mark.django_db
+def test_rag_ingestion_run_with_invalid_priority_returns_400(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data={
+            "document_ids": ["abc123"],
+            "priority": "urgent",
+            "embedding_profile": "standard",
+        },
+        content_type="application/json",
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-123",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert "priority" in body["detail"]

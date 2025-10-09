@@ -85,6 +85,8 @@ from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
+from pydantic import ValidationError
+from .schemas import RagIngestionRunRequest
 
 from .rag.ingestion_contracts import (
     map_ingestion_error_to_status,
@@ -824,6 +826,7 @@ RAG_HARD_DELETE_ADMIN_SCHEMA = {
     "extensions": RAG_HARD_DELETE_ADMIN_CURL,
 }
 
+
 PING_SCHEMA = {
     "responses": {200: PingResponseSerializer},
     "error_statuses": RATE_LIMIT_ERROR_STATUSES,
@@ -1180,41 +1183,16 @@ class RagIngestionRunView(APIView):
         if error:
             return error
 
-        payload = request.data if isinstance(request.data, dict) else {}
-
-        document_ids = payload.get("document_ids")
-        if not isinstance(document_ids, list) or not document_ids:
+        try:
+            request_data = RagIngestionRunRequest.model_validate(request.data)
+        except ValidationError as exc:
+            # NOTE: Consider a more detailed error mapping for production
             return _error_response(
-                "document_ids must be a non-empty list.",
-                "invalid_document_ids",
-                status.HTTP_400_BAD_REQUEST,
+                str(exc), "validation_error", status.HTTP_400_BAD_REQUEST
             )
-
-        normalized_document_ids = []
-        for value in document_ids:
-            if not isinstance(value, str) or not value.strip():
-                return _error_response(
-                    "document_ids must contain non-empty strings.",
-                    "invalid_document_ids",
-                    status.HTTP_400_BAD_REQUEST,
-                )
-            normalized_document_ids.append(value)
-
-        priority = payload.get("priority", "normal")
-        if priority is None:
-            priority = "normal"
-        if not isinstance(priority, str) or not priority.strip():
-            return _error_response(
-                "priority must be a non-empty string when provided.",
-                "invalid_priority",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        priority = priority.strip()
 
         try:
-            profile_binding = resolve_ingestion_profile(
-                payload.get("embedding_profile")
-            )
+            profile_binding = resolve_ingestion_profile(request_data.embedding_profile)
         except InputError as exc:
             return _error_response(
                 exc.message,
@@ -1229,7 +1207,7 @@ class RagIngestionRunView(APIView):
         queued_at = timezone.now().isoformat()
 
         valid_document_ids, invalid_document_ids = partition_document_ids(
-            meta["tenant_id"], meta["case_id"], normalized_document_ids
+            meta["tenant_id"], meta["case_id"], request_data.document_ids
         )
 
         # Always enqueue the task. If at least one valid ID is known, only
@@ -1237,7 +1215,7 @@ class RagIngestionRunView(APIView):
         # task perform validation/no-op. This satisfies both observability and
         # test expectations in empty/non-empty setups.
         to_dispatch = (
-            valid_document_ids if valid_document_ids else normalized_document_ids
+            valid_document_ids if valid_document_ids else request_data.document_ids
         )
         run_ingestion.delay(
             meta["tenant_id"],
@@ -1248,6 +1226,8 @@ class RagIngestionRunView(APIView):
             run_id=ingestion_run_id,
             trace_id=meta["trace_id"],
             idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
+            # Pass priority to the task if the task supports it.
+            # priority=request_data.priority,
         )
 
         idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
@@ -1372,6 +1352,7 @@ class RagHardDeleteAdminView(APIView):
         meta = {"trace_id": trace_id, "tenant_id": tenant_id}
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
+
 
 
 class RagDemoViewV1(_BaseAgentView):
