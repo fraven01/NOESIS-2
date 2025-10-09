@@ -90,6 +90,7 @@ from .schemas import (
     NeedsMappingRequest,
     RagHardDeleteAdminRequest,
     RagIngestionRunRequest,
+    RagQueryRequest,
     RagUploadMetadata,
     ScopeCheckRequest,
     SystemDescriptionRequest,
@@ -114,6 +115,7 @@ GRAPH_REQUEST_MODELS = {
     "scope_check": ScopeCheckRequest,
     "needs_mapping": NeedsMappingRequest,
     "system_description": SystemDescriptionRequest,
+    "rag.default": RagQueryRequest,
 }
 
 
@@ -653,6 +655,75 @@ SYSDESC_CURL = _curl(
     )
 )
 
+RAG_QUERY_REQUEST_EXAMPLE = OpenApiExample(
+    name="RagQueryRequest",
+    summary="Execute retrieval for a question",
+    description="Submit a question, optional pre-composed query and metadata to the production retrieval graph.",
+    value={
+        "question": "Welche Reisekosten gelten für Consultants?",
+        "filters": {"doc_class": "policy", "process": "travel"},
+        "visibility": "tenant",
+    },
+    request_only=True,
+)
+
+RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
+    name="RagQueryResponse",
+    summary="Composed retrieval answer",
+    description="Returns the composed answer produced by the retrieval and compose nodes.",
+    value={"answer": "Consultants nutzen das Travel-Policy-Template.", "prompt_version": "2024-05-01"},
+    response_only=True,
+)
+
+RAG_QUERY_CURL = _curl(
+    " ".join(
+        [
+            "curl -X POST https://api.noesis.example/v1/ai/rag/query/",
+            '-H "Content-Type: application/json"',
+            '-H "X-Tenant-Schema: acme_prod"',
+            '-H "X-Tenant-Id: acme"',
+            '-H "X-Case-Id: crm-7421"',
+            '-H "Idempotency-Key: 6cdb89f6-8826-4f9b-8c82-1f14b3d4c21b"',
+            '-d \'{"question": "Welche Reisekosten gelten für Consultants?", "filters": {"doc_class": "policy"}}\'',
+        ]
+    )
+)
+
+RAG_QUERY_REQUEST = inline_serializer(
+    name="RagQueryRequest",
+    fields={
+        "question": serializers.CharField(required=False),
+        "query": serializers.CharField(required=False),
+        "filters": serializers.JSONField(required=False),
+        "process": serializers.CharField(required=False),
+        "doc_class": serializers.CharField(required=False),
+        "visibility": serializers.CharField(required=False),
+        "visibility_override_allowed": serializers.BooleanField(required=False),
+        "hybrid": serializers.JSONField(required=False),
+    },
+)
+
+RAG_QUERY_RESPONSE = inline_serializer(
+    name="RagQueryResponse",
+    fields={
+        "answer": serializers.CharField(),
+        "prompt_version": serializers.CharField(),
+    },
+)
+
+RAG_QUERY_SCHEMA = {
+    "request": RAG_QUERY_REQUEST,
+    "responses": {200: RAG_QUERY_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": (
+        "Execute the production RAG graph. Headers are mapped to a ToolContext and the body is validated "
+        "against the RetrieveInput contract to populate query, filters and related metadata."
+    ),
+    "examples": [RAG_QUERY_REQUEST_EXAMPLE, RAG_QUERY_RESPONSE_EXAMPLE],
+    "extensions": RAG_QUERY_CURL,
+}
+
 RAG_UPLOAD_REQUEST_EXAMPLE = OpenApiExample(
     name="RagDocumentUploadRequest",
     summary="Document upload payload",
@@ -1094,6 +1165,16 @@ class LegacySysDescView(_GraphView):
         return super().post(request)
 
 
+class RagQueryViewV1(_GraphView):
+    """Execute the production retrieval augmented generation graph."""
+
+    graph_name = "rag.default"
+
+    @default_extend_schema(**RAG_QUERY_SCHEMA)
+    def post(self, request: Request) -> Response:
+        return super().post(request)
+
+
 class RagUploadView(APIView):
     """Handle multipart document uploads for ingestion pipelines."""
 
@@ -1431,6 +1512,9 @@ sysdesc = sysdesc_legacy
 
 rag_demo_v1 = RagDemoViewV1.as_view()
 rag_demo = rag_demo_v1
+
+rag_query_v1 = RagQueryViewV1.as_view()
+rag_query = rag_query_v1
 
 rag_upload_v1 = RagUploadView.as_view()
 rag_upload = rag_upload_v1

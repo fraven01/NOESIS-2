@@ -1,5 +1,6 @@
 import json
 from types import ModuleType, SimpleNamespace
+from typing import Any
 
 import pytest
 from rest_framework.request import Request
@@ -11,6 +12,7 @@ from structlog.testing import capture_logs
 from ai_core import views
 from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
+from ai_core.nodes.retrieve import RetrieveInput
 from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
 from common import logging as common_logging
@@ -797,3 +799,144 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     assert dispatched["args"][2] == ["doc-trimmed"]
     assert dispatched["args"][3] == "standard"
     assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    tenant_id = "tenant-rag"
+    case_id = "case-rag-001"
+    payload = {
+        "question": " Welche Richtlinien gelten? ",
+        "query": " travel policy ",
+        "filters": {"tags": ["travel"]},
+        "process": "travel",
+        "doc_class": "policy",
+        "visibility": "tenant",
+        "visibility_override_allowed": True,
+        "hybrid": {"alpha": 0.7},
+    }
+
+    recorded: dict[str, object] = {}
+
+    class DummyCheckpointer:
+        def __init__(self) -> None:
+            self.saved_state: dict[str, Any] | None = None
+
+        def load(self, ctx):
+            recorded["load_ctx"] = ctx
+            return {}
+
+        def save(self, ctx, state):
+            recorded["save_ctx"] = ctx
+            state_copy = dict(state)
+            self.saved_state = state_copy
+            recorded["saved_state"] = state_copy
+
+    dummy_checkpointer = DummyCheckpointer()
+    monkeypatch.setattr(views, "CHECKPOINTER", dummy_checkpointer)
+
+    def _run(state, meta):
+        tool_context_payload = meta.get("tool_context")
+        context = ToolContext.model_validate(tool_context_payload)
+        recorded["tool_context"] = context
+        params = RetrieveInput.from_state(state)
+        recorded["params"] = params
+        recorded["state_snapshot"] = dict(state)
+        return dict(state), {"answer": "Synthesised", "prompt_version": "v1"}
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data=payload,
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: tenant_id,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: case_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"answer": "Synthesised", "prompt_version": "v1"}
+
+    tool_context = recorded["tool_context"]
+    assert isinstance(tool_context, ToolContext)
+    assert tool_context.tenant_id == tenant_id
+    assert tool_context.case_id == case_id
+    assert tool_context.metadata.get("graph_name") == "rag.default"
+
+    params = recorded["params"]
+    assert isinstance(params, RetrieveInput)
+    assert params.query == "travel policy"
+    assert params.filters == {"tags": ["travel"]}
+    assert params.process == "travel"
+    assert params.doc_class == "policy"
+    assert params.visibility == "tenant"
+    assert params.visibility_override_allowed is True
+    assert params.hybrid == {"alpha": 0.7}
+
+    state_snapshot = recorded["state_snapshot"]
+    assert state_snapshot["question"] == "Welche Richtlinien gelten?"
+    assert state_snapshot["query"] == "travel policy"
+
+    assert dummy_checkpointer.saved_state == state_snapshot
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_populates_query_from_question(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    recorded: dict[str, object] = {}
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            state_copy = dict(state)
+            recorded["saved_state"] = state_copy
+
+    dummy_checkpointer = DummyCheckpointer()
+    monkeypatch.setattr(views, "CHECKPOINTER", dummy_checkpointer)
+
+    def _run(state, meta):
+        params = RetrieveInput.from_state(state)
+        recorded["params"] = params
+        recorded["state"] = dict(state)
+        return dict(state), {"answer": "Ready", "prompt_version": "v1"}
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    question_text = "Was ist RAG?"
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"question": question_text},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-002",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"answer": "Ready", "prompt_version": "v1"}
+
+    params = recorded["params"]
+    assert isinstance(params, RetrieveInput)
+    assert params.query == question_text
+
+    state = recorded["state"]
+    assert state["question"] == question_text
+    assert state["query"] == question_text
+
+    assert recorded["saved_state"] == state
