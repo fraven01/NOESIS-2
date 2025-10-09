@@ -7,6 +7,8 @@ import inspect
 import logging
 from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING, Any
 
+from psycopg2 import OperationalError
+
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from ai_core.rag.visibility import DEFAULT_VISIBILITY, Visibility
@@ -26,6 +28,142 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXTENDED_VISIBILITY = {Visibility.ALL, Visibility.DELETED}
+
+
+class NullVectorStore:
+    """Fallback store that returns empty results when no backend is available."""
+
+    def __init__(self, scope: str) -> None:
+        self._scope = scope
+        self.name = f"null:{scope}"
+        logger.warning(
+            "Null vector store initialised; hybrid search will return no results",
+            extra={"scope": scope},
+        )
+
+    def search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+    ) -> list[Chunk]:
+        logger.debug(
+            "Null vector store search invoked",
+            extra={"scope": self._scope, "tenant_id": tenant_id},
+        )
+        return []
+
+    def hybrid_search(
+        self,
+        query: str,
+        tenant_id: str,
+        *,
+        case_id: str | None = None,
+        top_k: int = 5,
+        filters: Mapping[str, object | None] | None = None,
+        alpha: float | None = None,
+        min_sim: float | None = None,
+        vec_limit: int | None = None,
+        lex_limit: int | None = None,
+        trgm_limit: float | None = None,
+        trgm_threshold: float | None = None,
+        max_candidates: int | None = None,
+        process: str | None = None,
+        doc_class: str | None = None,
+        visibility: object | None = None,
+        visibility_override_allowed: bool = False,
+    ) -> "HybridSearchResult":
+        from .vector_client import HybridSearchResult
+
+        logger.debug(
+            "Null vector store hybrid search invoked",
+            extra={"scope": self._scope, "tenant_id": tenant_id},
+        )
+
+        try:
+            effective_top_k = int(top_k)
+        except (TypeError, ValueError):
+            effective_top_k = 5
+        effective_top_k = min(max(1, effective_top_k), 10)
+
+        alpha_default = float(get_limit_setting("RAG_HYBRID_ALPHA", 0.7))
+        min_sim_default = float(get_limit_setting("RAG_MIN_SIM", 0.15))
+
+        try:
+            alpha_value = float(alpha) if alpha is not None else alpha_default
+        except (TypeError, ValueError):
+            alpha_value = alpha_default
+
+        try:
+            min_sim_value = (
+                float(min_sim) if min_sim is not None else min_sim_default
+            )
+        except (TypeError, ValueError):
+            min_sim_value = min_sim_default
+
+        def _coerce_limit(value: object | None) -> int:
+            try:
+                return int(value) if value is not None else effective_top_k
+            except (TypeError, ValueError):
+                return effective_top_k
+
+        vec_limit_value = _coerce_limit(vec_limit)
+        lex_limit_value = _coerce_limit(lex_limit)
+
+        try:
+            max_candidates_value = (
+                int(max_candidates) if max_candidates is not None else effective_top_k
+            )
+        except (TypeError, ValueError):
+            max_candidates_value = effective_top_k
+        max_candidates_value = max(effective_top_k, max_candidates_value)
+
+        vec_limit_value = min(max_candidates_value, max(vec_limit_value, effective_top_k))
+        lex_limit_value = min(max_candidates_value, max(lex_limit_value, effective_top_k))
+
+        if isinstance(visibility, Visibility):
+            visibility_mode = visibility
+        else:
+            try:
+                visibility_text = str(visibility or "").strip().lower()
+            except Exception:
+                visibility_text = ""
+            try:
+                visibility_mode = Visibility(visibility_text)
+            except ValueError:
+                visibility_mode = DEFAULT_VISIBILITY
+
+        result = HybridSearchResult(
+            chunks=[],
+            vector_candidates=0,
+            lexical_candidates=0,
+            fused_candidates=0,
+            duration_ms=0.0,
+            alpha=float(alpha_value),
+            min_sim=float(min_sim_value),
+            vec_limit=vec_limit_value,
+            lex_limit=lex_limit_value,
+            visibility=visibility_mode.value,
+        )
+        result.deleted_matches_blocked = 0
+        return result
+
+    def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
+        chunk_list = list(chunks)
+        logger.debug(
+            "Null vector store upsert invoked",
+            extra={"scope": self._scope, "chunk_count": len(chunk_list)},
+        )
+        return 0
+
+    def health_check(self) -> bool:
+        return False
+
+    def close(self) -> None:
+        return None
 
 
 def _coerce_int(value: object | None) -> int | None:
@@ -913,7 +1051,15 @@ def _build_pgvector_store(scope: str, config: Mapping[str, object]) -> VectorSto
 
     if dsn:
         logger.info("Initialising pgvector store for scope %s via explicit DSN", scope)
-        return PgVectorClient(str(dsn), **kwargs)
+        try:
+            return PgVectorClient(str(dsn), **kwargs)
+        except OperationalError as exc:
+            logger.warning(
+                "Falling back to null vector store for scope %s due to connection error",
+                scope,
+                extra={"scope": scope, "error": str(exc)},
+            )
+            return NullVectorStore(scope)
 
     env_var = str(config.get("dsn_env", "RAG_DATABASE_URL"))
     fallback_env_var = str(config.get("fallback_env", "DATABASE_URL"))
@@ -926,14 +1072,29 @@ def _build_pgvector_store(scope: str, config: Mapping[str, object]) -> VectorSto
             fallback_env_var=fallback_env_var,
             **kwargs,
         )
-    except RuntimeError:
+    except RuntimeError as exc:
         logger.info(
             "Falling back to shared pgvector client for scope %s; env vars %s/%s unset",
             scope,
             env_var,
             fallback_env_var,
         )
-        return get_default_client()
+        try:
+            return get_default_client()
+        except (RuntimeError, OperationalError) as shared_exc:
+            logger.warning(
+                "Shared pgvector client unavailable for scope %s; using null vector store",
+                scope,
+                extra={"scope": scope, "error": str(shared_exc)},
+            )
+            return NullVectorStore(scope)
+    except OperationalError as exc:
+        logger.warning(
+            "Failed to initialise pgvector store for scope %s; using null vector store",
+            scope,
+            extra={"scope": scope, "error": str(exc)},
+        )
+        return NullVectorStore(scope)
 
 
 def reset_default_router() -> None:
@@ -946,6 +1107,7 @@ def reset_default_router() -> None:
 
 
 __all__ = [
+    "NullVectorStore",
     "VectorStore",
     "VectorStoreRouter",
     "get_default_router",
