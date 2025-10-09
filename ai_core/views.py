@@ -87,7 +87,6 @@ from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import (
-    ToolError as ToolContractError,
     InputError as ToolInputError,
     RateLimitedError as ToolRateLimitedError,
     TimeoutError as ToolTimeoutError,
@@ -469,13 +468,19 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ToolRateLimitedError as _exc:
         logger.warning("tool.rate_limited")
-        return _error_response("Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS)
+        return _error_response(
+            "Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS
+        )
     except ToolTimeoutError as _exc:
         logger.warning("tool.timeout")
-        return _error_response("Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT)
+        return _error_response(
+            "Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT
+        )
     except ToolUpstreamServiceError as _exc:
         logger.warning("tool.upstream_error")
-        return _error_response("Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY)
+        return _error_response(
+            "Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY
+        )
     except RateLimitError as exc:  # LLM proxy signalled rate limiting
         try:
             extra = {
