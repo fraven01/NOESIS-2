@@ -118,9 +118,7 @@ class RagHardDeleteAdminRequest(BaseModel):
 
     @field_validator("reason", "ticket_ref", mode="before")
     @classmethod
-    def _validate_required_strings(
-        cls, value: object, info: ValidationInfo
-    ) -> str:
+    def _validate_required_strings(cls, value: object, info: ValidationInfo) -> str:
         if not isinstance(value, str):
             raise PydanticCustomError(
                 f"invalid_{info.field_name}",
