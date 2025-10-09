@@ -85,6 +85,14 @@ from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
+from ai_core.llm.client import LlmClientError, RateLimitError
+from ai_core.tool_contracts import (
+    ToolError as ToolContractError,
+    InputError as ToolInputError,
+    RateLimitedError as ToolRateLimitedError,
+    TimeoutError as ToolTimeoutError,
+    UpstreamServiceError as ToolUpstreamServiceError,
+)
 from .schemas import (
     InfoIntakeRequest,
     NeedsMappingRequest,
@@ -457,6 +465,54 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+    except ToolInputError as exc:
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+    except ToolRateLimitedError as _exc:
+        logger.warning("tool.rate_limited")
+        return _error_response("Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS)
+    except ToolTimeoutError as _exc:
+        logger.warning("tool.timeout")
+        return _error_response("Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT)
+    except ToolUpstreamServiceError as _exc:
+        logger.warning("tool.upstream_error")
+        return _error_response("Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY)
+    except RateLimitError as exc:  # LLM proxy signalled rate limiting
+        try:
+            extra = {
+                "status": getattr(exc, "status", None),
+                "code": getattr(exc, "code", None),
+            }
+            logger.warning("llm.rate_limited", extra=extra)
+        except Exception:
+            pass
+        status_code = (
+            int(getattr(exc, "status", 429))
+            if str(getattr(exc, "status", "")).isdigit()
+            else status.HTTP_429_TOO_MANY_REQUESTS
+        )
+        detail = getattr(exc, "detail", None) or "LLM rate limited."
+        return _error_response(detail, "llm_rate_limited", status_code)
+    except LlmClientError as exc:  # Upstream LLM error (4xx/5xx)
+        try:
+            extra = {
+                "status": getattr(exc, "status", None),
+                "code": getattr(exc, "code", None),
+            }
+            logger.warning("llm.client_error", extra=extra)
+        except Exception:
+            pass
+        raw_status = getattr(exc, "status", None)
+        # Map all upstream client/provider errors to Bad Gateway to avoid
+        # suggesting a client input error for consumers of this API.
+        status_code = status.HTTP_502_BAD_GATEWAY
+        # Preserve a 429 if it slipped through without specific type
+        try:
+            if isinstance(raw_status, int) and raw_status == 429:
+                status_code = status.HTTP_429_TOO_MANY_REQUESTS
+        except Exception:
+            pass
+        detail = getattr(exc, "detail", None) or "Upstream LLM error."
+        return _error_response(detail, "llm_error", status_code)
     except Exception:
         return _error_response(
             "Service temporarily unavailable.",

@@ -848,6 +848,7 @@ class PgVectorClient:
                                 + f"{distance_operator} %s::vector AS distance",
                                 "distance",
                             )
+                            # Bind parameters in textual order: SELECT (vector), WHERE params, LIMIT
                             cur.execute(
                                 vector_sql, (query_vec, *where_params, vec_limit_value)
                             )
