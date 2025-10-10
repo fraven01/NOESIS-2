@@ -14,7 +14,7 @@ from ai_core.nodes import (
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
-from ai_core.tool_contracts import ContextError, InputError, ToolContext
+from ai_core.tool_contracts import ContextError, InputError, NotFoundError, ToolContext
 
 META = {
     "tenant_id": "t1",
@@ -224,6 +224,36 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     assert top_match["id"] == "doc-1"
     assert top_match["source"] == "b"
     assert top_match["score"] == pytest.approx(0.9)
+
+
+
+
+def test_retrieve_raises_not_found_when_no_candidates(monkeypatch):
+    _patch_routing(monkeypatch)
+
+    hybrid_result = HybridSearchResult(
+        chunks=[],
+        vector_candidates=0,
+        lexical_candidates=0,
+        fused_candidates=0,
+        duration_ms=0.0,
+        alpha=0.5,
+        min_sim=0.1,
+        vec_limit=10,
+        lex_limit=10,
+    )
+
+    class _Router:
+        def hybrid_search(self, *_args, **_kwargs):
+            return hybrid_result
+
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
+
+    params = retrieve.RetrieveInput.from_state({"query": "missing", "hybrid": {}})
+    context = ToolContext(tenant_id="tenant-1", case_id="case-1")
+
+    with pytest.raises(NotFoundError, match="No matching documents"):
+        retrieve.run(context, params)
 
 
 def _mock_call(called):

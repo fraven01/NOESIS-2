@@ -1274,6 +1274,16 @@ class PgVectorClient:
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
+                        try:
+                            cur.execute(
+                                sql.SQL("SET LOCAL search_path TO {}, public").format(
+                                    sql.Identifier(self._schema)
+                                )
+                            )
+                        except Exception:
+                            # search_path is already configured at connection setup;
+                            # ignore errors when SET LOCAL is not available.
+                            pass
                         count_selects: List[str] = []
                         count_params: List[object] = []
 

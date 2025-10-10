@@ -92,6 +92,7 @@ from ai_core.tools import InputError
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import (
     InputError as ToolInputError,
+    NotFoundError as ToolNotFoundError,
     RateLimitedError as ToolRateLimitedError,
     TimeoutError as ToolTimeoutError,
     UpstreamServiceError as ToolUpstreamServiceError,
@@ -486,6 +487,10 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+    except ToolNotFoundError as exc:
+        logger.info("tool.not_found")
+        detail = str(exc) or "No matching documents were found."
+        return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
     except ToolInputError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ToolRateLimitedError as _exc:
