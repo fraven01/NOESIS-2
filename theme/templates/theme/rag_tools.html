@@ -16,37 +16,17 @@
     </p>
   </header>
 
-  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
     <div class="space-y-2">
       <h2 class="text-xl font-semibold text-slate-900">Upload Document</h2>
       <p class="text-sm text-slate-600">
-        Lade eine beliebige Datei hoch. Die API liefert ein
-        <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>,
-        das du für nachfolgende Queries verwenden kannst.
+        Lade eine Datei hoch, registriere sie im Dokumentenspeicher und starte automatisch eine Ingestion.
+        Die Antwort enthält sowohl die <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>
+        als auch den zugehörigen <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">ingestion_run_id</code>.
       </p>
     </div>
 
-    <aside class="mt-4 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-      <h3 class="text-sm font-semibold text-slate-700">Was passiert beim Upload?</h3>
-      <p>
-        Der Endpunkt stößt den regulären RAG-Ingestion-Flow an: Die Datei wird gespeichert, in Chunks zerlegt,
-        eingebettet und anschließend für die Vektor- und Hybrid-Suche verfügbar gemacht.
-      </p>
-      <ul class="list-disc space-y-1 pl-5 text-xs text-slate-500">
-        <li>
-          <code class="rounded bg-slate-100 px-1 py-0.5 text-[10px]">status</code>
-          gibt dir den Fortschritt zurück (&quot;queued&quot;, &quot;processing&quot;, &quot;succeeded&quot; oder &quot;failed&quot;).
-        </li>
-        <li>
-          Sobald der Status <strong>succeeded</strong> meldet, ist das Dokument inklusive Embeddings für Queries nutzbar.
-        </li>
-        <li>
-          Bei Fehlern liefert der Upload-Endpunkt dieselben Fehlermeldungen wie die produktive Ingestion.
-        </li>
-      </ul>
-    </aside>
-
-    <form id="upload-form" class="mt-6 space-y-4">
+    <form id="upload-form" class="space-y-4">
       <div class="space-y-1">
         <label class="block text-sm font-medium text-slate-700" for="upload-file">Datei</label>
         <input
@@ -76,9 +56,94 @@
         Upload starten
       </button>
     </form>
-    <div class="mt-6 space-y-2">
+    <div class="space-y-2">
       <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Upload Response</h3>
       <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="upload-response"></pre>
+    </div>
+  </section>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">Ingestion Control</h2>
+      <p class="text-sm text-slate-600">
+        Steuere den Ingestion-Workflow Schritt für Schritt: Starte Runs für bestehende Dokumente und überwache den Status
+        des letzten Durchlaufs im aktuellen Tenant- und Case-Kontext.
+      </p>
+    </div>
+
+    <div class="grid gap-8 lg:grid-cols-2">
+      <div class="space-y-4">
+        <div class="space-y-1">
+          <h3 class="text-lg font-semibold text-slate-900">Ingestion Run starten</h3>
+          <p class="text-sm text-slate-600">
+            Übermittle eine oder mehrere <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>-Werte (Komma oder Zeilenumbruch)
+            und wähle das gewünschte Embedding-Profil.
+          </p>
+        </div>
+        <form id="ingestion-form" class="space-y-4">
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="ingestion-document-ids">Document IDs</label>
+            <textarea
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="ingestion-document-ids"
+              name="document_ids"
+              rows="3"
+              placeholder="doc-123, doc-456"
+              required
+            ></textarea>
+          </div>
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="ingestion-profile">Embedding Profile</label>
+            <select
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="ingestion-profile"
+              name="embedding_profile"
+            >
+              <option value="{{ default_embedding_profile }}">{{ default_embedding_profile }}</option>
+              <option value="demo">demo</option>
+            </select>
+          </div>
+          <button
+            class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+            type="submit"
+          >
+            Ingestion starten
+          </button>
+        </form>
+        <div class="space-y-2">
+          <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Ingestion Response</h4>
+          <pre class="max-h-56 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="ingestion-response"></pre>
+        </div>
+      </div>
+
+      <div class="space-y-4">
+        <div class="space-y-1">
+          <h3 class="text-lg font-semibold text-slate-900">Ingestion Status</h3>
+          <p class="text-sm text-slate-600">
+            Lies den Status des letzten Ingestion-Runs aus. Der aktuell bekannte Run wird hier angezeigt und kann über
+            den Button aktualisiert werden.
+          </p>
+        </div>
+        <div class="rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
+          <p>
+            Letzter Run: <code class="rounded bg-slate-200 px-1 py-0.5 text-xs" id="last-run-id">–</code>
+          </p>
+        </div>
+        <div class="flex items-center gap-3">
+          <button
+            class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+            type="button"
+            id="status-refresh"
+          >
+            Status aktualisieren
+          </button>
+          <span class="text-xs text-slate-500">Antwort wird unten angezeigt.</span>
+        </div>
+        <div class="space-y-2">
+          <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Status Response</h4>
+          <pre class="max-h-56 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="status-response"></pre>
+        </div>
+      </div>
     </div>
   </section>
 
@@ -257,11 +322,13 @@
   (function () {
     const derivedTenantId = "{{ tenant_id|escapejs }}";
     const tenantId = derivedTenantId || window.location.hostname || "dev.localhost";
+    const defaultEmbeddingProfile = "{{ default_embedding_profile|escapejs }}" || "standard";
     const baseHeaders = {
       'X-Tenant-ID': tenantId,
       'X-User-ID': 'local',
       'X-Case-ID': 'local'
     };
+    let lastRunId = null;
 
     function getCsrfToken() {
       const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
@@ -276,6 +343,17 @@
 
     function prettyPrint(target, data) {
       renderJson(target, JSON.stringify(data, null, 2));
+    }
+
+    function updateLastRunId(runId) {
+      if (!runId) {
+        return;
+      }
+      lastRunId = runId;
+      const display = document.getElementById('last-run-id');
+      if (display) {
+        display.textContent = runId;
+      }
     }
 
     const uploadForm = document.getElementById('upload-form');
@@ -313,6 +391,9 @@
           try {
             const data = JSON.parse(text);
             prettyPrint(uploadResponseTarget, data);
+            if (data && typeof data === 'object' && data.ingestion_run_id) {
+              updateLastRunId(data.ingestion_run_id);
+            }
           } catch (err) {
             renderJson(uploadResponseTarget, text);
           }
@@ -320,6 +401,112 @@
           renderJson(uploadResponseTarget, String(error));
         }
       });
+    }
+
+    const ingestionForm = document.getElementById('ingestion-form');
+    const ingestionResponseTarget = 'ingestion-response';
+    if (ingestionForm) {
+      ingestionForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const docInput = document.getElementById('ingestion-document-ids');
+        if (!docInput || !(docInput instanceof HTMLTextAreaElement)) {
+          renderJson(ingestionResponseTarget, 'Document input not found.');
+          return;
+        }
+        const rawValue = docInput.value.trim();
+        if (!rawValue) {
+          renderJson(ingestionResponseTarget, 'Bitte mindestens eine document_id angeben.');
+          return;
+        }
+        const docs = rawValue
+          .split(/[\n,]/)
+          .map(function (entry) { return entry.trim(); })
+          .filter(function (entry) { return Boolean(entry); });
+        if (!docs.length) {
+          renderJson(ingestionResponseTarget, 'Bitte gültige document_ids angeben.');
+          return;
+        }
+
+        const profileSelect = document.getElementById('ingestion-profile');
+        const selectedProfile =
+          profileSelect && profileSelect instanceof HTMLSelectElement && profileSelect.value.trim()
+            ? profileSelect.value.trim()
+            : defaultEmbeddingProfile;
+
+        const payload = {
+          document_ids: docs,
+          embedding_profile: selectedProfile,
+        };
+
+        const headers = {
+          ...baseHeaders,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        };
+        const csrfToken = getCsrfToken();
+        if (csrfToken) {
+          headers['X-CSRFToken'] = csrfToken;
+        }
+
+        try {
+          const response = await fetch('/ai/rag/ingestion/run/', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+            credentials: 'include'
+          });
+          const text = await response.text();
+          try {
+            const data = JSON.parse(text);
+            prettyPrint(ingestionResponseTarget, data);
+            if (data && typeof data === 'object' && data.ingestion_run_id) {
+              updateLastRunId(data.ingestion_run_id);
+            }
+          } catch (err) {
+            renderJson(ingestionResponseTarget, text);
+          }
+        } catch (error) {
+          renderJson(ingestionResponseTarget, String(error));
+        }
+      });
+    }
+
+    const statusResponseTarget = 'status-response';
+
+    async function refreshStatus() {
+      const headers = {
+        ...baseHeaders,
+        Accept: 'application/json'
+      };
+      const csrfToken = getCsrfToken();
+      if (csrfToken) {
+        headers['X-CSRFToken'] = csrfToken;
+      }
+
+      try {
+        const response = await fetch('/ai/rag/ingestion/status/', {
+          method: 'GET',
+          headers,
+          credentials: 'include'
+        });
+        const text = await response.text();
+        try {
+          const data = JSON.parse(text);
+          prettyPrint(statusResponseTarget, data);
+          if (data && typeof data === 'object' && data.run_id) {
+            updateLastRunId(data.run_id);
+          }
+        } catch (err) {
+          renderJson(statusResponseTarget, text);
+        }
+      } catch (error) {
+        renderJson(statusResponseTarget, String(error));
+      }
+    }
+
+    const statusButton = document.getElementById('status-refresh');
+    if (statusButton) {
+      statusButton.addEventListener('click', refreshStatus);
     }
 
     const queryForm = document.getElementById('query-form');

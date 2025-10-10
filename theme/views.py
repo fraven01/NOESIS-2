@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.shortcuts import render
 
 
@@ -18,5 +19,8 @@ def rag_tools(request):
         "theme/rag_tools.html",
         {
             "tenant_id": tenant_id,
+            "default_embedding_profile": getattr(
+                settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+            ),
         },
     )
