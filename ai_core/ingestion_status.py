@@ -157,9 +157,7 @@ def mark_ingestion_run_completed(
     return payload
 
 
-def get_latest_ingestion_run(
-    tenant: str, case: str
-) -> dict[str, object] | None:
+def get_latest_ingestion_run(tenant: str, case: str) -> dict[str, object] | None:
     """Return the latest recorded ingestion run for the tenant/case pair."""
 
     status_path = _ingestion_status_path(tenant, case)

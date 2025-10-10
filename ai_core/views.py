@@ -1458,7 +1458,7 @@ class RagUploadView(APIView):
                 trace_id=meta["trace_id"],
                 idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
             )
-        except Exception as exc:  # pragma: no cover - defensive path
+        except Exception:  # pragma: no cover - defensive path
             logger.exception(
                 "Failed to dispatch ingestion run after upload",
                 extra={

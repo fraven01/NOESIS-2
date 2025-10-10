@@ -81,9 +81,8 @@ def test_rag_upload_persists_file_and_metadata(
     assert captured["tenant_id"] == test_tenant_schema_name
     assert captured["case_id"] == "case-123"
     assert captured["document_ids"] == [body["document_id"]]
-    assert (
-        captured["embedding_profile"]
-        == getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
+    assert captured["embedding_profile"] == getattr(
+        settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
     )
     assert captured["run_id"] == body["ingestion_run_id"]
     assert captured["trace_id"] == body["trace_id"]
@@ -107,11 +106,7 @@ def test_rag_upload_persists_file_and_metadata(
     assert set(stored_metadata) == {"source", "external_id"}
 
     status_path = (
-        Path(tmp_path)
-        / tenant_segment
-        / case_segment
-        / "ingestion"
-        / "run_status.json"
+        Path(tmp_path) / tenant_segment / case_segment / "ingestion" / "run_status.json"
     )
     assert status_path.exists()
     status_payload = json.loads(status_path.read_text())
