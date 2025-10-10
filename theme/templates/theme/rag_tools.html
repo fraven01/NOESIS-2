@@ -25,6 +25,27 @@
         das du für nachfolgende Queries verwenden kannst.
       </p>
     </div>
+
+    <aside class="mt-4 space-y-2 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
+      <h3 class="text-sm font-semibold text-slate-700">Was passiert beim Upload?</h3>
+      <p>
+        Der Endpunkt stößt den regulären RAG-Ingestion-Flow an: Die Datei wird gespeichert, in Chunks zerlegt,
+        eingebettet und anschließend für die Vektor- und Hybrid-Suche verfügbar gemacht.
+      </p>
+      <ul class="list-disc space-y-1 pl-5 text-xs text-slate-500">
+        <li>
+          <code class="rounded bg-slate-100 px-1 py-0.5 text-[10px]">status</code>
+          gibt dir den Fortschritt zurück (&quot;queued&quot;, &quot;processing&quot;, &quot;succeeded&quot; oder &quot;failed&quot;).
+        </li>
+        <li>
+          Sobald der Status <strong>succeeded</strong> meldet, ist das Dokument inklusive Embeddings für Queries nutzbar.
+        </li>
+        <li>
+          Bei Fehlern liefert der Upload-Endpunkt dieselben Fehlermeldungen wie die produktive Ingestion.
+        </li>
+      </ul>
+    </aside>
+
     <form id="upload-form" class="mt-6 space-y-4">
       <div class="space-y-1">
         <label class="block text-sm font-medium text-slate-700" for="upload-file">Datei</label>
