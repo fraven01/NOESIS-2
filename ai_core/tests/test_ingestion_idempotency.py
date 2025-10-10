@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from types import SimpleNamespace
 
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
@@ -28,6 +29,9 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
+    )
 
     def upload_document(content: str) -> str:
         upload = SimpleUploadedFile(
@@ -116,6 +120,9 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
+    )
 
     def upload_document() -> str:
         upload = SimpleUploadedFile(

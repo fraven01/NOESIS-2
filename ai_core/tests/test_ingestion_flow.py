@@ -2,6 +2,7 @@ import json
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from types import SimpleNamespace
 
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
@@ -26,6 +27,9 @@ def test_upload_ingest_query_end2end(
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
+    )
 
     # Upload
     upload = SimpleUploadedFile(
@@ -95,6 +99,10 @@ def test_ingestion_run_reports_missing_documents(
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
+    )
 
     upload = SimpleUploadedFile(
         "note.txt", b"hello ZEBRAGURKE world", content_type="text/plain"

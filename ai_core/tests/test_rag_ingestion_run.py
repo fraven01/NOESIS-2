@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 from django.utils import timezone
 
-from ai_core.infra import rate_limit
+from ai_core.infra import object_store, rate_limit
 from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
@@ -13,8 +13,11 @@ from common.constants import (
 
 
 @pytest.mark.django_db
-def test_rag_ingestion_run_queues_task(client, monkeypatch, test_tenant_schema_name):
+def test_rag_ingestion_run_queues_task(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     captured = {}
 

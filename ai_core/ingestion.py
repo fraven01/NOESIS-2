@@ -9,10 +9,15 @@ from celery import group, shared_task
 from celery.exceptions import TimeoutError as CeleryTimeoutError
 from common.celery import ScopedTask
 from common.logging import get_logger
+from django.utils import timezone
 
 from . import tasks as pipe
 from .infra import object_store
 from .ingestion_utils import make_fallback_external_id
+from .ingestion_status import (
+    mark_ingestion_run_completed,
+    mark_ingestion_run_running,
+)
 from ai_core.tools import InputError
 
 from .rag.ingestion_contracts import resolve_ingestion_profile
@@ -541,6 +546,7 @@ def run_ingestion(
     session_scope: Optional[Tuple[str, str, str]] = None,  # noqa: ARG001 - unused hook
 ) -> Dict[str, object]:
     valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
+    dispatch_ids = list(valid_ids if valid_ids else document_ids)
     doc_count = len(valid_ids)
     try:
         binding = resolve_ingestion_profile(embedding_profile)
@@ -588,6 +594,13 @@ def run_ingestion(
         idempotency_key=idempotency_key,
         embedding_profile=resolved_profile_id,
         vector_space_id=vector_space_id,
+    )
+    mark_ingestion_run_running(
+        tenant,
+        case,
+        run_id,
+        started_at=timezone.now().isoformat(),
+        document_ids=dispatch_ids,
     )
     started = time.perf_counter()
 
@@ -741,6 +754,8 @@ def run_ingestion(
             ),
         },
     )
+    finished_at = timezone.now().isoformat()
+
     response: Dict[str, object] = {
         "status": "dispatched",
         "count": doc_count,
@@ -754,6 +769,21 @@ def run_ingestion(
     if failure is not None:
         response["status"] = "failed"
         response["error"] = str(failure)
+
+    mark_ingestion_run_completed(
+        tenant,
+        case,
+        run_id,
+        finished_at=finished_at,
+        duration_ms=duration_ms,
+        inserted_documents=inserted,
+        replaced_documents=replaced,
+        skipped_documents=skipped,
+        inserted_chunks=total_chunks,
+        invalid_document_ids=invalid_ids,
+        document_ids=dispatch_ids,
+        error=response.get("error"),
+    )
 
     return response
 
