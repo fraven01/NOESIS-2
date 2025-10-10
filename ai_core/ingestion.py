@@ -16,6 +16,7 @@ from .ingestion_utils import make_fallback_external_id
 from ai_core.tools import InputError
 
 from .rag.ingestion_contracts import resolve_ingestion_profile
+from .rag.vector_schema import ensure_vector_space_schema
 from .rag.selector_utils import normalise_selector_value
 
 log = get_logger(__name__)
@@ -563,6 +564,20 @@ def run_ingestion(
     vector_space_schema = resolved_space.schema
     vector_space_backend = resolved_space.backend
     vector_space_dimension = resolved_space.dimension
+
+    schema_initialised = ensure_vector_space_schema(resolved_space)
+    if schema_initialised:
+        log.info(
+            "Initialised vector schema for ingestion run",
+            extra={
+                "tenant": tenant,
+                "case": case,
+                "run_id": run_id,
+                "embedding_profile": resolved_profile_id,
+                "vector_space_id": vector_space_id,
+                "vector_space_schema": vector_space_schema,
+            },
+        )
 
     pipe.log_ingestion_run_start(
         tenant=tenant,

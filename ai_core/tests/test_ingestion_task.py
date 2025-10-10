@@ -91,7 +91,28 @@ def _setup_common_monkeypatches(monkeypatch):
 
     monkeypatch.setattr(ingestion.record_dead_letter, "apply_async", fake_apply_async)
 
-    return dummy_process, start_calls, end_calls, apply_async_calls
+    schema_calls: List[Dict[str, Any]] = []
+
+    def fake_ensure_schema(space):
+        schema_calls.append(
+            {
+                "id": space.id,
+                "schema": space.schema,
+                "backend": space.backend,
+                "dimension": space.dimension,
+            }
+        )
+        return False
+
+    monkeypatch.setattr(ingestion, "ensure_vector_space_schema", fake_ensure_schema)
+
+    return (
+        dummy_process,
+        start_calls,
+        end_calls,
+        apply_async_calls,
+        schema_calls,
+    )
 
 
 def _expected_ingestion_resolution(profile: str = "standard"):
@@ -144,9 +165,13 @@ def _patch_perf_counter(monkeypatch, start: float, end: float) -> None:
 
 
 def test_run_ingestion_success(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = (
-        _setup_common_monkeypatches(monkeypatch)
-    )
+    (
+        dummy_process,
+        start_calls,
+        end_calls,
+        apply_async_calls,
+        schema_calls,
+    ) = _setup_common_monkeypatches(monkeypatch)
     valid_ids = ["doc-1", "doc-2"]
     invalid_ids = ["missing-1"]
     _patch_partition(monkeypatch, valid_ids, invalid_ids)
@@ -230,12 +255,24 @@ def test_run_ingestion_success(monkeypatch):
     assert end_call["embedding_profile"] == "standard"
     assert end_call["vector_space_id"] == "global"
     assert apply_async_calls == []
+    assert schema_calls == [
+        {
+            "id": "global",
+            "schema": "rag",
+            "backend": "pgvector",
+            "dimension": 1536,
+        }
+    ]
 
 
 def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = (
-        _setup_common_monkeypatches(monkeypatch)
-    )
+    (
+        dummy_process,
+        start_calls,
+        end_calls,
+        apply_async_calls,
+        schema_calls,
+    ) = _setup_common_monkeypatches(monkeypatch)
     valid_ids = ["doc-1", "doc-2"]
     _patch_partition(monkeypatch, valid_ids, [])
 
@@ -315,12 +352,24 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     assert end_calls[0]["skipped"] == 0
     assert end_calls[0]["total_chunks"] == 2
     assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
+    assert schema_calls == [
+        {
+            "id": "global",
+            "schema": "rag",
+            "backend": "pgvector",
+            "dimension": 1536,
+        }
+    ]
 
 
 def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = (
-        _setup_common_monkeypatches(monkeypatch)
-    )
+    (
+        dummy_process,
+        start_calls,
+        end_calls,
+        apply_async_calls,
+        schema_calls,
+    ) = _setup_common_monkeypatches(monkeypatch)
     valid_ids = ["doc-1", "doc-2"]
     _patch_partition(monkeypatch, valid_ids, [])
 
@@ -389,12 +438,24 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert start_calls[0]["doc_count"] == len(valid_ids)
     assert len(end_calls) == 1
     assert end_calls[0]["duration_ms"] == pytest.approx(600.0)
+    assert schema_calls == [
+        {
+            "id": "global",
+            "schema": "rag",
+            "backend": "pgvector",
+            "dimension": 1536,
+        }
+    ]
 
 
 def test_run_ingestion_contract_error_includes_context(monkeypatch):
-    dummy_process, start_calls, end_calls, apply_async_calls = (
-        _setup_common_monkeypatches(monkeypatch)
-    )
+    (
+        dummy_process,
+        start_calls,
+        end_calls,
+        apply_async_calls,
+        schema_calls,
+    ) = _setup_common_monkeypatches(monkeypatch)
     valid_ids = ["doc-1"]
     _patch_partition(monkeypatch, valid_ids, [])
 
@@ -440,3 +501,16 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
 
     assert start_calls[0]["doc_count"] == len(valid_ids)
     assert len(end_calls) == 1
+    assert end_calls[0]["inserted"] == 0
+    assert end_calls[0]["replaced"] == 0
+    assert end_calls[0]["skipped"] == 0
+    assert end_calls[0]["total_chunks"] == 0
+    assert end_calls[0]["duration_ms"] == pytest.approx(400.0)
+    assert schema_calls == [
+        {
+            "id": "global",
+            "schema": "rag",
+            "backend": "pgvector",
+            "dimension": 1536,
+        }
+    ]
