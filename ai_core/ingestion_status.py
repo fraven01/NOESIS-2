@@ -84,9 +84,12 @@ def mark_ingestion_run_running(
     except FileNotFoundError:
         return None
 
-    payload = _ensure_payload(existing, run_id)
-    if payload.get("run_id") != run_id:
+    if not isinstance(existing, Mapping):
+        existing = None
+    elif existing.get("run_id") != run_id:
         return None
+
+    payload = _ensure_payload(existing, run_id)
 
     payload.update(
         {
@@ -124,9 +127,12 @@ def mark_ingestion_run_completed(
     except FileNotFoundError:
         existing = None
 
-    payload = _ensure_payload(existing, run_id)
-    if payload.get("run_id") != run_id:
+    if not isinstance(existing, Mapping):
+        existing = None
+    elif existing.get("run_id") != run_id:
         return None
+
+    payload = _ensure_payload(existing, run_id)
 
     payload.update(
         {
