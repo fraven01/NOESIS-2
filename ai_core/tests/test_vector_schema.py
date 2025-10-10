@@ -77,7 +77,9 @@ def test_ensure_vector_space_schema_skips_non_pgvector(monkeypatch) -> None:
     def _fail_cursor():
         raise AssertionError("cursor should not be created for non-pgvector backends")
 
-    monkeypatch.setattr(vector_schema_module, "connection", SimpleNamespace(cursor=_fail_cursor))
+    monkeypatch.setattr(
+        vector_schema_module, "connection", SimpleNamespace(cursor=_fail_cursor)
+    )
 
     def _fail_render(*_args, **_kwargs):  # pragma: no cover - defensive
         raise AssertionError("render_schema_sql should not be called")

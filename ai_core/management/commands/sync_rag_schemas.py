@@ -39,7 +39,10 @@ class Command(BaseCommand):
         with connection.cursor() as cursor:
             for ddl in plan:
                 space_config = configuration.vector_spaces.get(ddl.space_id)
-                if space_config is not None and space_config.backend.lower() != "pgvector":
+                if (
+                    space_config is not None
+                    and space_config.backend.lower() != "pgvector"
+                ):
                     self.stdout.write(
                         self.style.WARNING(
                             "Skipping vector space '%s' (backend=%s)"

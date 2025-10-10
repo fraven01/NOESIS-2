@@ -50,9 +50,8 @@ class Command(BaseCommand):
                 raise CommandError(
                     "Schema template must contain {{SCHEMA_NAME}} and {{VECTOR_DIM}} placeholders"
                 )
-            rendered_sql = (
-                template.replace("{{SCHEMA_NAME}}", schema_name)
-                .replace("{{VECTOR_DIM}}", str(dimension))
+            rendered_sql = template.replace("{{SCHEMA_NAME}}", schema_name).replace(
+                "{{VECTOR_DIM}}", str(dimension)
             )
         else:
             try:
@@ -70,7 +69,6 @@ class Command(BaseCommand):
 
         self.stdout.write(
             self.style.SUCCESS(
-                "Applied RAG schema for %s (dimension=%s)"
-                % (schema_name, dimension)
+                "Applied RAG schema for %s (dimension=%s)" % (schema_name, dimension)
             )
         )
