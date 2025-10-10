@@ -250,12 +250,16 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
     router = _get_router()
     tenant_client: Any = router
+    scoped_client = False
     for_tenant = getattr(router, "for_tenant", None)
     if callable(for_tenant):
+        scoped_client = True
         try:
             tenant_client = for_tenant(tenant_id, tenant_schema)
         except TypeError:
             tenant_client = for_tenant(tenant_id)
+        if tenant_client is router:
+            scoped_client = False
 
     logger.debug(
         "Executing hybrid retrieval",
@@ -297,7 +301,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
             "rag.retrieve.no_matches",
             extra={"tenant_id": tenant_id, "case_id": case_id},
         )
-        raise NotFoundError("No matching documents were found for the query.")
+        if not scoped_client:
+            raise NotFoundError("No matching documents were found for the query.")
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
     final_matches = deduplicated[: hybrid_config.top_k]
