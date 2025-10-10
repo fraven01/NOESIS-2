@@ -7,10 +7,25 @@ from ai_core.tool_contracts import ToolContext
 
 
 def _dummy_output() -> retrieve.RetrieveOutput:
-    matches = [{"text": "snippet"}]
+    matches = [
+        {
+            "id": "doc-1",
+            "text": "snippet",
+            "score": 0.42,
+            "source": "handbook.md",
+        }
+    ]
     meta = retrieve.RetrieveMeta(
         routing={"profile": "default", "vector_space_id": "global"},
-        took_ms=0,
+        took_ms=12,
+        alpha=0.5,
+        min_sim=0.2,
+        top_k_effective=1,
+        max_candidates_effective=5,
+        vector_candidates=3,
+        lexical_candidates=2,
+        deleted_matches_blocked=0,
+        visibility_effective="active",
     )
     return retrieve.RetrieveOutput(matches=matches, meta=meta)
 
@@ -18,6 +33,7 @@ def _dummy_output() -> retrieve.RetrieveOutput:
 def _fake_compose(state: MutableMapping[str, Any], meta: MutableMapping[str, Any]):
     new_state = dict(state)
     assert "snippets" in new_state
+    assert "retrieval" in new_state
     new_state["answer"] = "answer"
     return new_state, {"answer": "answer", "prompt_version": "v-test"}
 
@@ -49,9 +65,31 @@ def test_graph_runs_retrieve_then_compose() -> None:
 
     assert calls == ["retrieve", "compose"]
     assert state["answer"] == "answer"
-    assert state["snippets"] == [{"text": "snippet"}]
+    assert state["snippets"] == [
+        {
+            "id": "doc-1",
+            "text": "snippet",
+            "score": 0.42,
+            "source": "handbook.md",
+        }
+    ]
+    snippets = result["snippets"]
+    assert isinstance(snippets[0]["score"], float)
+    assert snippets[0]["text"]
+    assert snippets[0]["source"]
+    assert isinstance(state["retrieval"], dict)
+    retrieval = state["retrieval"]
+    assert retrieval["alpha"] == 0.5
+    assert retrieval["min_sim"] == 0.2
+    assert retrieval["top_k_effective"] == 1
+    assert retrieval["visibility_effective"] == "active"
+    assert retrieval["took_ms"] == 12
+    assert retrieval["routing"]["profile"] == "default"
+    assert retrieval["routing"]["vector_space_id"] == "global"
     assert result["answer"] == "answer"
     assert result["prompt_version"] == "v-test"
+    assert result["retrieval"] == state["retrieval"]
+    assert result["snippets"] == state["snippets"]
 
 
 def test_graph_normalises_tenant_alias() -> None:
@@ -75,6 +113,14 @@ def test_graph_normalises_tenant_alias() -> None:
     assert captured["tenant_id"] == "tenant-alias"
     assert state["answer"] == "answer"
     assert result["answer"] == "answer"
+    retrieval = result["retrieval"]
+    assert retrieval["alpha"] == 0.5
+    assert retrieval["min_sim"] == 0.2
+    assert retrieval["top_k_effective"] == 1
+    assert retrieval["visibility_effective"] == "active"
+    assert retrieval["took_ms"] == 12
+    assert retrieval["routing"]["profile"] == "default"
+    assert retrieval["routing"]["vector_space_id"] == "global"
 
 
 def test_build_graph_returns_shared_instance() -> None:

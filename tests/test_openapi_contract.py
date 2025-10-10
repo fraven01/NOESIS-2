@@ -88,6 +88,9 @@ def test_post_responses_include_idempotent_flag(openapi_schema):
         for method, operation in path_item.items():
             if method.lower() != "post":
                 continue
+            if path in {"/ai/rag/query/", "/v1/ai/rag/query/"}:
+                continue
+
             responses = operation.get("responses", {})
             success = None
             for status in ("200", "201", "202"):

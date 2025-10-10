@@ -99,11 +99,31 @@ class RetrievalAugmentedGenerationGraph:
         context = _build_tool_context(working_meta)
         params = retrieve.RetrieveInput.from_state(working_state)
         retrieve_output = self.retrieve_node(context, params)
+        retrieval_meta = retrieve_output.meta.model_dump(
+            mode="json", exclude_none=True
+        )
         working_state["matches"] = retrieve_output.matches
         working_state["snippets"] = retrieve_output.matches
+        working_state["retrieval"] = retrieval_meta
 
-        final_state, result = self.compose_node(working_state, working_meta)
-        return final_state, result
+        final_state, compose_result = self.compose_node(working_state, working_meta)
+
+        retrieval_payload = final_state.get("retrieval", retrieval_meta)
+        if not isinstance(retrieval_payload, Mapping):
+            retrieval_payload = retrieval_meta
+
+        snippets_payload = final_state.get("snippets", retrieve_output.matches)
+        if not isinstance(snippets_payload, list):
+            snippets_payload = list(retrieve_output.matches)
+
+        result_payload = {
+            "answer": compose_result.get("answer"),
+            "prompt_version": compose_result.get("prompt_version"),
+            "retrieval": retrieval_payload,
+            "snippets": snippets_payload,
+        }
+
+        return final_state, result_payload
 
 
 GRAPH = RetrievalAugmentedGenerationGraph()

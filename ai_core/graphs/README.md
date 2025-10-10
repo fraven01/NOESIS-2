@@ -1,0 +1,1 @@
+Die Graphen bündeln die Business-Orchestrierung unserer Agenten: Sie koordinieren Capabilities, wählen Prompts und liefern den Vertrag, den das Frontend anspricht, während die Transport-Ebene lediglich Runner startet und Ergebnisse weiterreicht.

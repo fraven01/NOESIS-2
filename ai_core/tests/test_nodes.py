@@ -117,10 +117,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert meta_payload.vector_candidates == 37
     assert meta_payload.lexical_candidates == 41
     assert meta_payload.deleted_matches_blocked == 3
-    assert meta_payload.routing == {
-        "profile": "standard",
-        "vector_space_id": "rag/global",
-    }
+    assert meta_payload.routing.profile == "standard"
+    assert meta_payload.routing.vector_space_id == "rag/global"
     assert meta_payload.visibility_effective == "active"
 
 

@@ -1,0 +1,1 @@
+Das RAG-Verzeichnis liefert die Kern-Capabilities für Retrieval und Scoring, verwaltet Vektorspeicherzugriffe und stellt damit die diagnostischen Daten bereit, die in den Graphen und Views weitergegeben werden.
