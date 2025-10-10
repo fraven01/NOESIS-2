@@ -1,7 +1,9 @@
 import hashlib
+import threading
 import uuid
 
 import pytest
+from psycopg2.errors import UndefinedTable
 
 from ai_core.rag import metrics, vector_client
 from ai_core.rag.schemas import Chunk
@@ -2048,3 +2050,126 @@ class TestPgVectorClient:
         assert len(values) == vector_client.get_embedding_dim()
         assert values[0] > 0.0
         assert all(v == 0.0 for v in values[1:])
+
+
+def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None:
+    embedding_dim = 3
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: embedding_dim)
+
+    client = object.__new__(vector_client.PgVectorClient)
+    client._schema = "rag"
+    client._statement_timeout_ms = 15000
+    client._prepare_lock = threading.Lock()
+    client._indexes_ready = True
+    client._retries = 1
+    client._retry_base_delay = 0.0
+    client._distance_operator_cache = {}
+    monkeypatch.setattr(
+        client, "_get_distance_operator", lambda _conn, _kind: "<=>"
+    )
+
+    tenant = str(uuid.uuid4())
+    doc_hash = hashlib.sha256(b"lexical-error").hexdigest()
+    chunk_id = "vector-chunk"
+    doc_id = "doc-123"
+
+    monkeypatch.setattr(
+        vector_client.PgVectorClient,
+        "_embed_query",
+        lambda self, _query: [0.25] + [0.0] * (embedding_dim - 1),
+    )
+
+    restore_calls: list[object] = []
+
+    def _record_restore(self, _cur) -> None:  # type: ignore[no-untyped-def]
+        restore_calls.append(object())
+
+    monkeypatch.setattr(
+        client,
+        "_restore_session_after_rollback",
+        _record_restore.__get__(client, type(client)),
+    )
+
+    class _FakeCursor:
+        def __init__(self) -> None:
+            self._vector_rows: list[tuple] = []
+            self._fetchone_result: tuple | None = None
+
+        def __enter__(self) -> "_FakeCursor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> None:
+            return None
+
+        def execute(self, sql: str, params=None) -> None:
+            normalised = " ".join(str(sql).split())
+            if "SET LOCAL" in normalised or "SELECT set_limit" in normalised:
+                return
+            if "SELECT show_limit" in normalised:
+                self._fetchone_result = (0.1,)
+                return
+            if "FROM embeddings e" in normalised and "ORDER BY distance" in normalised:
+                self._vector_rows = [
+                    (
+                        chunk_id,
+                        "Vector row",
+                        {"tenant_id": tenant, "hash": doc_hash},
+                        doc_hash,
+                        doc_id,
+                        0.05,
+                    )
+                ]
+                return
+            if "c.text_norm % %s" in normalised and "ORDER BY lscore" in normalised:
+                raise UndefinedTable("relation \"embeddings\" does not exist")
+            if "COUNT(DISTINCT id)" in normalised:
+                self._fetchone_result = (1,)
+                return
+            if "similarity(c.text_norm" in normalised and "ORDER BY lscore" in normalised:
+                # Lexical fallback counts - no rows returned
+                self._vector_rows = []
+                return
+
+        def fetchall(self) -> list[tuple]:
+            result = list(self._vector_rows)
+            self._vector_rows = []
+            return result
+
+        def fetchone(self):
+            result = self._fetchone_result
+            self._fetchone_result = None
+            return result
+
+    class _FakeConnection:
+        def cursor(self):  # type: ignore[no-untyped-def]
+            return _FakeCursor()
+
+        def rollback(self) -> None:
+            return None
+
+    def _fake_connection(self):  # type: ignore[no-untyped-def]
+        fake = _FakeConnection()
+
+        class _Ctx:
+            def __enter__(self_inner):
+                return fake
+
+            def __exit__(self_inner, exc_type, exc, tb):
+                return None
+
+        return _Ctx()
+
+    monkeypatch.setattr(
+        client, "_connection", _fake_connection.__get__(client, type(client))
+    )
+
+    result = client.hybrid_search(
+        "restore session after lexical error",
+        tenant_id=tenant,
+        filters={},
+        top_k=1,
+    )
+
+    assert result.vector_candidates == 1
+    assert result.lexical_candidates == 0
+    assert restore_calls, "expected session restore after rollback"

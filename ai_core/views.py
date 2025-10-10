@@ -139,33 +139,36 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     """Derive the active tenant schema for the current request.
 
     Resolution order (first non-public wins):
-    1) Explicit header-backed attribute populated by TenantSchemaMiddleware
-    2) Request-bound tenant object (django-tenants)
-    3) Connection schema (django-tenants current schema)
+    1) Request-bound tenant object (django-tenants)
+    2) Connection schema (django-tenants current schema)
+    3) Explicit header-backed attribute populated by TenantSchemaMiddleware
     """
 
-    # 1) Header-provided schema (populated by our TenantSchemaMiddleware)
-    header_schema = getattr(request, "tenant_schema", None)
-    if isinstance(header_schema, str) and header_schema.strip():
-        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-        if header_schema != public_schema:
-            return header_schema
-
-    # 2) Tenant object from django-tenants (domain-based routing)
-    tenant_obj = getattr(request, "tenant", None)
-    schema_name = getattr(tenant_obj, "schema_name", None)
-    if not schema_name:
-        # 3) Fallback: current connection schema
-        schema_name = getattr(connection, "schema_name", None)
-
-    if not schema_name:
-        return None
-
     public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-    if schema_name == public_schema:
-        return None
 
-    return schema_name
+    def _normalise(schema: object | None) -> str | None:
+        if schema is None:
+            return None
+        if not isinstance(schema, str):
+            schema = str(schema)
+        candidate = schema.strip()
+        if not candidate or candidate == public_schema:
+            return None
+        return candidate
+
+    # 1) Tenant object from django-tenants (domain-based routing)
+    tenant_obj = getattr(request, "tenant", None)
+    resolved = _normalise(getattr(tenant_obj, "schema_name", None))
+    if resolved:
+        return resolved
+
+    # 2) Fallback: current connection schema
+    resolved = _normalise(getattr(connection, "schema_name", None))
+    if resolved:
+        return resolved
+
+    # 3) Explicit header provided by TenantSchemaMiddleware
+    return _normalise(getattr(request, "tenant_schema", None))
 
 
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -756,6 +759,7 @@ RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
     value={
         "answer": "Consultants nutzen das Travel-Policy-Template.",
         "prompt_version": "2024-05-01",
+        "idempotent": False,
     },
     response_only=True,
 )
@@ -793,6 +797,7 @@ RAG_QUERY_RESPONSE = inline_serializer(
     fields={
         "answer": serializers.CharField(),
         "prompt_version": serializers.CharField(),
+        "idempotent": serializers.BooleanField(),
     },
 )
 

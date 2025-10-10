@@ -1231,10 +1231,19 @@ class PgVectorClient:
                         applied_trgm_limit_value = applied_trgm_limit
                 except Exception as exc:
                     lexical_rows = []
+                    rollback_succeeded = False
                     try:
                         conn.rollback()
                     except Exception:  # pragma: no cover - defensive
                         pass
+                    else:
+                        rollback_succeeded = True
+                    if rollback_succeeded:
+                        try:
+                            with conn.cursor() as restore_cur:
+                                self._restore_session_after_rollback(restore_cur)
+                        except Exception:  # pragma: no cover - defensive
+                            pass
                     logger.warning(
                         "rag.hybrid.lexical_query_failed",
                         tenant_id=tenant,
