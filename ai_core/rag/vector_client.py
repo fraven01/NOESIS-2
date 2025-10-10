@@ -1500,17 +1500,6 @@ class PgVectorClient:
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             meta = dict(entry["metadata"])
-            # normalise legacy metadata keys if present
-            if "tenant_id" not in meta and "tenant" in meta:
-                try:
-                    meta["tenant_id"] = str(meta["tenant"])  # type: ignore[index]
-                except Exception:
-                    meta["tenant_id"] = meta.get("tenant")
-            if "case_id" not in meta and "case" in meta:
-                try:
-                    meta["case_id"] = str(meta["case"])  # type: ignore[index]
-                except Exception:
-                    meta["case_id"] = meta.get("case")
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
             if doc_hash and not meta.get("hash"):

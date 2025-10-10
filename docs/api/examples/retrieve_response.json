@@ -1,29 +1,28 @@
 {
-  "matches": [
-    {
-      "id": "doc-871#p3",
-      "text": "Rücksendungen sind innerhalb von 30 Tagen möglich, sofern das Produkt unbenutzt ist.",
-      "score": 0.82,
-      "source": "policies/returns.md",
-      "hash": "7f3d6a2c",
-      "meta": {
-        "page": 3,
-        "language": "de"
-      }
-    }
-  ],
-  "meta": {
+  "answer": "…",
+  "prompt_version": "v1",
+  "retrieval": {
     "alpha": 0.7,
     "min_sim": 0.15,
-    "top_k_effective": 1,
+    "top_k_effective": 3,
     "max_candidates_effective": 50,
     "vector_candidates": 37,
     "lexical_candidates": 41,
-    "visibility_effective": "active",
     "deleted_matches_blocked": 0,
+    "visibility_effective": "active",
+    "took_ms": 42,
     "routing": {
       "profile": "standard",
       "vector_space_id": "rag/global"
     }
-  }
+  },
+  "snippets": [
+    {
+      "id": "doc-871#p3",
+      "text": "…",
+      "score": 0.82,
+      "source": "…",
+      "hash": "…"
+    }
+  ]
 }

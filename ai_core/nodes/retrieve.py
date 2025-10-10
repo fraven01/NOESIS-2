@@ -54,19 +54,28 @@ class RetrieveInput(BaseModel):
         return cls(**data)
 
 
+class RetrieveRouting(BaseModel):
+    """Routing metadata resolved for the retrieval run."""
+
+    profile: str
+    vector_space_id: str
+
+    model_config = ConfigDict(extra="allow")
+
+
 class RetrieveMeta(BaseModel):
     """Metadata emitted by the retrieval tool."""
 
-    routing: Dict[str, str | None]
+    routing: RetrieveRouting
     took_ms: int
-    alpha: float | None = None
-    min_sim: float | None = None
-    top_k_effective: int | None = None
-    max_candidates_effective: int | None = None
-    vector_candidates: int | None = None
-    lexical_candidates: int | None = None
-    deleted_matches_blocked: int | None = None
-    visibility_effective: str | None = None
+    alpha: float
+    min_sim: float
+    top_k_effective: int
+    max_candidates_effective: int
+    vector_candidates: int
+    lexical_candidates: int
+    deleted_matches_blocked: int
+    visibility_effective: str
 
     model_config = ConfigDict(extra="allow")
 
@@ -347,6 +356,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
 __all__ = [
     "RetrieveInput",
+    "RetrieveRouting",
     "RetrieveMeta",
     "RetrieveOutput",
     "run",

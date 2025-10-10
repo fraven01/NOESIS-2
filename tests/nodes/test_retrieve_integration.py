@@ -214,10 +214,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload.top_k_effective == 3
     assert meta_payload.alpha == pytest.approx(0.55)
     assert meta_payload.min_sim == pytest.approx(0.35)
-    assert meta_payload.routing == {
-        "profile": "standard",
-        "vector_space_id": "rag/global",
-    }
+    assert meta_payload.routing.profile == "standard"
+    assert meta_payload.routing.vector_space_id == "rag/global"
     assert meta_payload.visibility_effective == "active"
 
 

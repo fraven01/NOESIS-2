@@ -40,6 +40,7 @@ from noesis2.api.serializers import (
     IntakeResponseSerializer,
     NeedsResponseSerializer,
     PingResponseSerializer,
+    RagQueryResponseSerializer,
     ScopeResponseSerializer,
     SysDescResponseSerializer,
 )
@@ -764,7 +765,31 @@ RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
     value={
         "answer": "Consultants nutzen das Travel-Policy-Template.",
         "prompt_version": "2024-05-01",
-        "idempotent": False,
+        "retrieval": {
+            "alpha": 0.7,
+            "min_sim": 0.15,
+            "top_k_effective": 1,
+            "max_candidates_effective": 50,
+            "vector_candidates": 37,
+            "lexical_candidates": 41,
+            "deleted_matches_blocked": 0,
+            "visibility_effective": "active",
+            "took_ms": 42,
+            "routing": {
+                "profile": "standard",
+                "vector_space_id": "rag/global",
+            },
+        },
+        "snippets": [
+            {
+                "id": "doc-871#p3",
+                "text": "Rücksendungen sind innerhalb von 30 Tagen möglich, sofern das Produkt unbenutzt ist.",
+                "score": 0.82,
+                "source": "policies/returns.md",
+                "hash": "7f3d6a2c",
+                "meta": {"page": 3, "language": "de"},
+            }
+        ],
     },
     response_only=True,
 )
@@ -797,14 +822,7 @@ RAG_QUERY_REQUEST = inline_serializer(
     },
 )
 
-RAG_QUERY_RESPONSE = inline_serializer(
-    name="RagQueryResponse",
-    fields={
-        "answer": serializers.CharField(),
-        "prompt_version": serializers.CharField(),
-        "idempotent": serializers.BooleanField(),
-    },
-)
+RAG_QUERY_RESPONSE = RagQueryResponseSerializer
 
 RAG_QUERY_SCHEMA = {
     "request": RAG_QUERY_REQUEST,
@@ -1308,7 +1326,16 @@ class RagQueryViewV1(_GraphView):
 
     @default_extend_schema(**RAG_QUERY_SCHEMA)
     def post(self, request: Request) -> Response:
-        return super().post(request)
+        response = super().post(request)
+
+        # Only validate successful responses returned from the graph runner.
+        if 200 <= response.status_code < 300:
+            graph_payload = response.data
+            serializer = RagQueryResponseSerializer(data=graph_payload)
+            serializer.is_valid(raise_exception=True)
+            response.data = graph_payload
+
+        return response
 
 
 class RagUploadView(APIView):
