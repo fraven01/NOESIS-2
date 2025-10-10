@@ -42,7 +42,7 @@
     "jobs:bootstrap": "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --build --rm bootstrap",
     "jobs:rag": "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm rag",
     "jobs:rag:health": "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm rag-health",
-    "dev:init": "npm run jobs:migrate && npm run jobs:bootstrap",
+    "dev:init": "npm run jobs:migrate && npm run jobs:rag && npm run jobs:bootstrap",
     "dev:reset": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v && docker compose -f docker-compose.yml -f docker-compose.dev.yml build --no-cache --pull && docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d && npm run dev:init && npm run dev:check",
     "dev:prune": "bash ./scripts/dev-prune.sh",
     "win:dev:reset": "powershell -NoProfile -ExecutionPolicy Bypass -File .\\scripts\\dev-reset.ps1",
