@@ -16,6 +16,11 @@ urlpatterns = [
     path("rag/documents/upload/", views.rag_upload, name="rag_upload"),
     path("rag/ingestion/run/", views.rag_ingestion_run, name="rag_ingestion_run"),
     path(
+        "rag/ingestion/status/",
+        views.rag_ingestion_status,
+        name="rag_ingestion_status",
+    ),
+    path(
         "rag/admin/hard-delete/",
         views.rag_hard_delete_admin,
         name="rag_hard_delete_admin",

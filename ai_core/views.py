@@ -82,6 +82,10 @@ except Exception:  # defensive: don't break module import if graphs change
 
 from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
+from .ingestion_status import (
+    get_latest_ingestion_run,
+    record_ingestion_run_queued,
+)
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
@@ -855,6 +859,9 @@ RAG_UPLOAD_RESPONSE = inline_serializer(
         "document_id": serializers.CharField(),
         "trace_id": serializers.CharField(),
         "idempotent": serializers.BooleanField(),
+        "ingestion_run_id": serializers.CharField(required=False),
+        "ingestion_status": serializers.CharField(required=False),
+        "external_id": serializers.CharField(),
     },
 )
 
@@ -927,6 +934,9 @@ RAG_INGESTION_RUN_RESPONSE = inline_serializer(
         "ingestion_run_id": serializers.CharField(),
         "trace_id": serializers.CharField(),
         "idempotent": serializers.BooleanField(),
+        "invalid_ids": serializers.ListField(
+            child=serializers.CharField(), required=False
+        ),
     },
 )
 
@@ -941,6 +951,41 @@ RAG_INGESTION_RUN_SCHEMA = {
         RAG_INGESTION_RUN_RESPONSE_EXAMPLE,
     ],
     "extensions": RAG_INGESTION_RUN_CURL,
+}
+
+RAG_INGESTION_STATUS_RESPONSE = inline_serializer(
+    name="RagIngestionStatusResponse",
+    fields={
+        "run_id": serializers.CharField(),
+        "status": serializers.CharField(),
+        "queued_at": serializers.CharField(required=False),
+        "started_at": serializers.CharField(required=False),
+        "finished_at": serializers.CharField(required=False),
+        "duration_ms": serializers.FloatField(required=False),
+        "document_ids": serializers.ListField(
+            child=serializers.CharField(), required=False
+        ),
+        "invalid_document_ids": serializers.ListField(
+            child=serializers.CharField(), required=False
+        ),
+        "inserted_documents": serializers.IntegerField(required=False),
+        "replaced_documents": serializers.IntegerField(required=False),
+        "skipped_documents": serializers.IntegerField(required=False),
+        "inserted_chunks": serializers.IntegerField(required=False),
+        "trace_id": serializers.CharField(required=False),
+        "embedding_profile": serializers.CharField(required=False),
+        "source": serializers.CharField(required=False),
+        "error": serializers.CharField(required=False),
+    },
+)
+
+RAG_INGESTION_STATUS_SCHEMA = {
+    "responses": {200: RAG_INGESTION_STATUS_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": (
+        "Return the latest ingestion run status for the current tenant and case."
+    ),
 }
 
 RAG_HARD_DELETE_ADMIN_REQUEST_EXAMPLE = OpenApiExample(
@@ -1377,6 +1422,69 @@ class RagUploadView(APIView):
             f"{storage_prefix}/{document_id}.meta.json", metadata_obj
         )
 
+        try:
+            profile_binding = resolve_ingestion_profile(
+                getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
+            )
+        except InputError as exc:
+            error_code = getattr(exc, "code", "invalid_ingestion_profile")
+            logger.exception(
+                "Failed to resolve default ingestion profile after upload",
+                extra={
+                    "tenant_id": meta["tenant_id"],
+                    "case_id": meta["case_id"],
+                    "error": str(exc),
+                },
+            )
+            return _error_response(
+                "Default ingestion profile is not configured correctly.",
+                error_code,
+                map_ingestion_error_to_status(error_code),
+            )
+
+        resolved_profile_id = profile_binding.profile_id
+        ingestion_run_id = uuid4().hex
+        queued_at = timezone.now().isoformat()
+        document_ids = [document_id]
+
+        try:
+            run_ingestion.delay(
+                meta["tenant_id"],
+                meta["case_id"],
+                document_ids,
+                resolved_profile_id,
+                tenant_schema=meta["tenant_schema"],
+                run_id=ingestion_run_id,
+                trace_id=meta["trace_id"],
+                idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
+            )
+        except Exception as exc:  # pragma: no cover - defensive path
+            logger.exception(
+                "Failed to dispatch ingestion run after upload",
+                extra={
+                    "tenant_id": meta["tenant_id"],
+                    "case_id": meta["case_id"],
+                    "document_id": document_id,
+                    "run_id": ingestion_run_id,
+                },
+            )
+            return _error_response(
+                "Failed to queue ingestion run for uploaded document.",
+                "ingestion_dispatch_failed",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        record_ingestion_run_queued(
+            meta["tenant_id"],
+            meta["case_id"],
+            ingestion_run_id,
+            document_ids,
+            queued_at=queued_at,
+            trace_id=meta["trace_id"],
+            embedding_profile=resolved_profile_id,
+            source="upload",
+        )
+
         idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
         response_payload = {
             "status": "accepted",
@@ -1384,6 +1492,8 @@ class RagUploadView(APIView):
             "trace_id": meta["trace_id"],
             "idempotent": idempotent,
             "external_id": external_id,
+            "ingestion_run_id": ingestion_run_id,
+            "ingestion_status": "queued",
         }
 
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
@@ -1446,6 +1556,18 @@ class RagIngestionRunView(APIView):
             # priority=request_data.priority,
         )
 
+        record_ingestion_run_queued(
+            meta["tenant_id"],
+            meta["case_id"],
+            ingestion_run_id,
+            to_dispatch,
+            queued_at=queued_at,
+            trace_id=meta["trace_id"],
+            embedding_profile=resolved_profile_id,
+            source="manual",
+            invalid_document_ids=invalid_document_ids,
+        )
+
         idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
         response_payload = {
             "status": "queued",
@@ -1461,6 +1583,68 @@ class RagIngestionRunView(APIView):
             response_payload["invalid_ids"] = []
 
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
+        return apply_std_headers(response, meta)
+
+
+class RagIngestionStatusView(APIView):
+    """Expose status information about recent ingestion runs."""
+
+    @default_extend_schema(**RAG_INGESTION_STATUS_SCHEMA)
+    def get(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
+        latest = get_latest_ingestion_run(meta["tenant_id"], meta["case_id"])
+        if not latest:
+            response = _error_response(
+                "No ingestion runs recorded for the current tenant/case.",
+                "ingestion_status_not_found",
+                status.HTTP_404_NOT_FOUND,
+            )
+            return apply_std_headers(response, meta)
+
+        response_payload: dict[str, object] = {}
+        allowed_keys = {
+            "run_id",
+            "status",
+            "queued_at",
+            "started_at",
+            "finished_at",
+            "duration_ms",
+            "document_ids",
+            "invalid_document_ids",
+            "inserted_documents",
+            "replaced_documents",
+            "skipped_documents",
+            "inserted_chunks",
+            "trace_id",
+            "embedding_profile",
+            "source",
+            "error",
+        }
+        for key in allowed_keys:
+            value = latest.get(key)
+            if value is None:
+                continue
+            if key in {"document_ids", "invalid_document_ids"} and not isinstance(
+                value, list
+            ):
+                try:
+                    value = list(value)
+                except TypeError:
+                    continue
+            response_payload[key] = value
+
+        if "run_id" not in response_payload or "status" not in response_payload:
+            response = _error_response(
+                "No ingestion runs recorded for the current tenant/case.",
+                "ingestion_status_not_found",
+                status.HTTP_404_NOT_FOUND,
+            )
+            return apply_std_headers(response, meta)
+
+        response = Response(response_payload, status=status.HTTP_200_OK)
         return apply_std_headers(response, meta)
 
 
@@ -1602,5 +1786,8 @@ rag_upload = rag_upload_v1
 
 rag_ingestion_run_v1 = RagIngestionRunView.as_view()
 rag_ingestion_run = rag_ingestion_run_v1
+
+rag_ingestion_status_v1 = RagIngestionStatusView.as_view()
+rag_ingestion_status = rag_ingestion_status_v1
 
 rag_hard_delete_admin = RagHardDeleteAdminView.as_view()

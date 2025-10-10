@@ -11,6 +11,7 @@ from psycopg2.extensions import make_dsn, parse_dsn
 from django.core.management import call_command
 from django.db import connection
 from django.core.files.uploadedfile import SimpleUploadedFile
+from types import SimpleNamespace
 
 from ai_core.ingestion import process_document
 from ai_core.rag import vector_client
@@ -250,6 +251,9 @@ def test_rebuild_rag_index_health_check(
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
+    )
 
     def _upload(content: str, external_id: str) -> str:
         upload = SimpleUploadedFile(

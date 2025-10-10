@@ -101,6 +101,10 @@ if "RAG_EMBEDDING_PROFILES" not in globals():
         },
     }
 
+RAG_DEFAULT_EMBEDDING_PROFILE = env(
+    "RAG_DEFAULT_EMBEDDING_PROFILE", default="standard"
+)
+
 _default_routing_rules_path = BASE_DIR / "config" / "rag_routing_rules.yaml"
 RAG_ROUTING_RULES_PATH = Path(
     env("RAG_ROUTING_RULES_PATH", default=str(_default_routing_rules_path))
