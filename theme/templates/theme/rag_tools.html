@@ -1,0 +1,396 @@
+{% extends 'theme/base.html' %}
+
+{% block title %}RAG Tools · NOESIS 2{% endblock %}
+
+{% block content %}
+<div class="space-y-10">
+  <header class="space-y-2">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900">RAG Manual Testing</h1>
+    <p class="max-w-2xl text-sm text-slate-600">
+      Nutze diese Werkbank, um Dateien hochzuladen und Queries gegen die bestehenden RAG-Endpunkte abzufeuern.
+      Alle Requests senden automatisch die aus der aktuellen Domain abgeleiteten Header
+      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Tenant-ID: {{ tenant_id }}</code>,
+      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-User-ID: local</code>
+      und
+      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Case-ID: local</code>.
+    </p>
+  </header>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">Upload Document</h2>
+      <p class="text-sm text-slate-600">
+        Lade eine beliebige Datei hoch. Die API liefert ein
+        <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>,
+        das du für nachfolgende Queries verwenden kannst.
+      </p>
+    </div>
+    <form id="upload-form" class="mt-6 space-y-4">
+      <div class="space-y-1">
+        <label class="block text-sm font-medium text-slate-700" for="upload-file">Datei</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="upload-file"
+          name="file"
+          type="file"
+          required
+        />
+      </div>
+      <div class="space-y-1">
+        <div class="flex items-center justify-between gap-2">
+          <label class="text-sm font-medium text-slate-700" for="upload-metadata">Metadata (optional)</label>
+          <span class="text-xs text-slate-500">JSON-Struktur, z.&nbsp;B. {"case": "abc"}</span>
+        </div>
+        <textarea
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="upload-metadata"
+          name="metadata"
+          rows="4"
+        ></textarea>
+      </div>
+      <button
+        class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+        type="submit"
+      >
+        Upload starten
+      </button>
+    </form>
+    <div class="mt-6 space-y-2">
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Upload Response</h3>
+      <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="upload-response"></pre>
+    </div>
+  </section>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">Query</h2>
+      <p class="text-sm text-slate-600">
+        Führe Queries gegen den Wissensspeicher aus. Über optionale Felder kannst du Routing und Hybrid-Search Feintuning testen.
+      </p>
+    </div>
+    <form id="query-form" class="mt-6 grid gap-6 md:grid-cols-2">
+      <div class="md:col-span-2 space-y-1">
+        <div class="flex items-center justify-between gap-2">
+          <label class="text-sm font-medium text-slate-700" for="query-text">Query</label>
+          <span class="text-xs text-slate-500">Wird zusätzlich als <code>question</code> gesendet.</span>
+        </div>
+        <textarea
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="query-text"
+          name="query"
+          rows="3"
+          required
+        ></textarea>
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="query-process">Process</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="query-process"
+          name="process"
+          type="text"
+          placeholder="z. B. classification"
+        />
+        <p class="text-xs text-slate-500">Optional: Erzwingt einen konkreten Prozess-Flow.</p>
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="query-doc-class">Doc class</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="query-doc-class"
+          name="doc_class"
+          type="text"
+          placeholder="z. B. contract"
+        />
+        <p class="text-xs text-slate-500">Optional: Beschränkt die Suche auf einen Dokumenttyp.</p>
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="query-visibility">Visibility</label>
+        <select
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="query-visibility"
+          name="visibility"
+        >
+          <option value="">Default</option>
+          <option value="active">active</option>
+          <option value="all">all</option>
+          <option value="deleted">deleted</option>
+        </select>
+        <p class="text-xs text-slate-500">Steuert, welche Dokument-Zustände durchsucht werden.</p>
+      </div>
+      <fieldset class="md:col-span-2 space-y-4 rounded-md border border-dashed border-slate-300 p-4">
+        <legend class="px-1 text-sm font-semibold uppercase tracking-wide text-slate-600">Hybrid Parameter</legend>
+        <p class="text-xs text-slate-500">
+          Mit diesen Werten kannst du die Balance zwischen Vektor- und Lexikal-Suche steuern. Leere Felder werden nicht gesendet.
+        </p>
+        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-alpha">alpha</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-alpha"
+              name="alpha"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              placeholder="0–1"
+            />
+            <p class="text-xs text-slate-500">Mischverhältnis Hybrid-Suche (0 = rein lexikalisch, 1 = rein vektorbasiert).</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-min-sim">min_sim</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-min-sim"
+              name="min_sim"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              placeholder="z. B. 0.35"
+            />
+            <p class="text-xs text-slate-500">Mindestsimilarität für Treffer im Vektorraum.</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-top-k">top_k</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-top-k"
+              name="top_k"
+              type="number"
+              min="1"
+              placeholder="Standard 5"
+            />
+            <p class="text-xs text-slate-500">Anzahl der kombinierten Kandidaten aus beiden Retrieval-Wege.</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-vec-limit">vec_limit</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-vec-limit"
+              name="vec_limit"
+              type="number"
+              min="1"
+              placeholder="Vektor-Kandidaten"
+            />
+            <p class="text-xs text-slate-500">Maximale Treffer aus dem Vektorindex.</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-lex-limit">lex_limit</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-lex-limit"
+              name="lex_limit"
+              type="number"
+              min="1"
+              placeholder="Lexikal-Kandidaten"
+            />
+            <p class="text-xs text-slate-500">Maximale Treffer aus der BM25/Trigram Suche.</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-max-candidates">max_candidates</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-max-candidates"
+              name="max_candidates"
+              type="number"
+              min="1"
+              placeholder="Gesamtkandidaten"
+            />
+            <p class="text-xs text-slate-500">Deckel für gemergte Treffer vor Re-Ranking.</p>
+          </div>
+          <div class="space-y-1">
+            <label class="text-sm font-medium text-slate-700" for="hybrid-trgm-limit">trgm_limit</label>
+            <input
+              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+              id="hybrid-trgm-limit"
+              name="trgm_limit"
+              type="number"
+              step="0.01"
+              min="0"
+              max="1"
+              placeholder="0–1"
+            />
+            <p class="text-xs text-slate-500">Grenze für trigram-basierte Recall-Erweiterung.</p>
+          </div>
+        </div>
+      </fieldset>
+      <div class="md:col-span-2">
+        <button
+          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          type="submit"
+        >
+          Query starten
+        </button>
+      </div>
+    </form>
+    <div class="mt-6 space-y-2">
+      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Query Response</h3>
+      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="query-response"></pre>
+    </div>
+  </section>
+</div>
+
+<script>
+  (function () {
+    const derivedTenantId = "{{ tenant_id|escapejs }}";
+    const tenantId = derivedTenantId || window.location.hostname || "dev.localhost";
+    const baseHeaders = {
+      'X-Tenant-ID': tenantId,
+      'X-User-ID': 'local',
+      'X-Case-ID': 'local'
+    };
+
+    function getCsrfToken() {
+      const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    function renderJson(target, value) {
+      const element = document.getElementById(target);
+      if (!element) return;
+      element.textContent = value;
+    }
+
+    function prettyPrint(target, data) {
+      renderJson(target, JSON.stringify(data, null, 2));
+    }
+
+    const uploadForm = document.getElementById('upload-form');
+    const uploadResponseTarget = 'upload-response';
+    if (uploadForm) {
+      uploadForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const fileInput = document.getElementById('upload-file');
+        const metadataInput = document.getElementById('upload-metadata');
+        if (!fileInput || !(fileInput instanceof HTMLInputElement) || !fileInput.files?.length) {
+          renderJson(uploadResponseTarget, 'Please choose a file to upload.');
+          return;
+        }
+
+        const formData = new FormData();
+        formData.append('file', fileInput.files[0]);
+        if (metadataInput && metadataInput.value.trim()) {
+          formData.append('metadata', metadataInput.value.trim());
+        }
+
+        const headers = { ...baseHeaders };
+        const csrfToken = getCsrfToken();
+        if (csrfToken) {
+          headers['X-CSRFToken'] = csrfToken;
+        }
+
+        try {
+          const response = await fetch('/ai/rag/documents/upload/', {
+            method: 'POST',
+            headers,
+            body: formData,
+            credentials: 'include'
+          });
+          const text = await response.text();
+          try {
+            const data = JSON.parse(text);
+            prettyPrint(uploadResponseTarget, data);
+          } catch (err) {
+            renderJson(uploadResponseTarget, text);
+          }
+        } catch (error) {
+          renderJson(uploadResponseTarget, String(error));
+        }
+      });
+    }
+
+    const queryForm = document.getElementById('query-form');
+    const queryResponseTarget = 'query-response';
+    if (queryForm) {
+      queryForm.addEventListener('submit', async function (event) {
+        event.preventDefault();
+        const queryText = document.getElementById('query-text');
+        if (!queryText || !(queryText instanceof HTMLTextAreaElement)) {
+          renderJson(queryResponseTarget, 'Query input not found.');
+          return;
+        }
+        const queryValue = queryText.value.trim();
+        if (!queryValue) {
+          renderJson(queryResponseTarget, 'Please enter a query.');
+          return;
+        }
+
+        const payload = {
+          query: queryValue,
+          question: queryValue,
+          hybrid: {}
+        };
+
+        const processInput = document.getElementById('query-process');
+        if (processInput && processInput.value.trim()) {
+          payload.process = processInput.value.trim();
+        }
+        const docClassInput = document.getElementById('query-doc-class');
+        if (docClassInput && docClassInput.value.trim()) {
+          payload.doc_class = docClassInput.value.trim();
+        }
+        const visibilitySelect = document.getElementById('query-visibility');
+        if (visibilitySelect && visibilitySelect.value) {
+          payload.visibility = visibilitySelect.value;
+        }
+
+        const hybridFields = [
+          { id: 'hybrid-alpha', key: 'alpha', parse: parseFloat },
+          { id: 'hybrid-min-sim', key: 'min_sim', parse: parseFloat },
+          { id: 'hybrid-top-k', key: 'top_k', parse: function (value) { return parseInt(value, 10); } },
+          { id: 'hybrid-vec-limit', key: 'vec_limit', parse: function (value) { return parseInt(value, 10); } },
+          { id: 'hybrid-lex-limit', key: 'lex_limit', parse: function (value) { return parseInt(value, 10); } },
+          { id: 'hybrid-max-candidates', key: 'max_candidates', parse: function (value) { return parseInt(value, 10); } },
+          { id: 'hybrid-trgm-limit', key: 'trgm_limit', parse: parseFloat }
+        ];
+
+        hybridFields.forEach(function (field) {
+          const input = document.getElementById(field.id);
+          if (!input || !(input instanceof HTMLInputElement)) {
+            return;
+          }
+          const value = input.value.trim();
+          if (!value) {
+            return;
+          }
+          const numberValue = field.parse(value);
+          if (!Number.isFinite(numberValue)) {
+            return;
+          }
+          payload.hybrid[field.key] = numberValue;
+        });
+
+        const headers = {
+          ...baseHeaders,
+          'Content-Type': 'application/json',
+          Accept: 'application/json'
+        };
+        const csrfToken = getCsrfToken();
+        if (csrfToken) {
+          headers['X-CSRFToken'] = csrfToken;
+        }
+
+        try {
+          const response = await fetch('/ai/rag/query/', {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(payload),
+            credentials: 'include'
+          });
+          const text = await response.text();
+          try {
+            const data = JSON.parse(text);
+            prettyPrint(queryResponseTarget, data);
+          } catch (err) {
+            renderJson(queryResponseTarget, text);
+          }
+        } catch (error) {
+          renderJson(queryResponseTarget, String(error));
+        }
+      });
+    }
+  })();
+</script>
+{% endblock %}
