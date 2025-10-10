@@ -226,8 +226,6 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     assert top_match["score"] == pytest.approx(0.9)
 
 
-
-
 def test_retrieve_raises_not_found_when_no_candidates(monkeypatch):
     _patch_routing(monkeypatch)
 

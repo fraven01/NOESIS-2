@@ -2064,9 +2064,7 @@ def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None
     client._retries = 1
     client._retry_base_delay = 0.0
     client._distance_operator_cache = {}
-    monkeypatch.setattr(
-        client, "_get_distance_operator", lambda _conn, _kind: "<=>"
-    )
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<=>")
 
     tenant = str(uuid.uuid4())
     doc_hash = hashlib.sha256(b"lexical-error").hexdigest()
@@ -2121,11 +2119,14 @@ def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None
                 ]
                 return
             if "c.text_norm % %s" in normalised and "ORDER BY lscore" in normalised:
-                raise UndefinedTable("relation \"embeddings\" does not exist")
+                raise UndefinedTable('relation "embeddings" does not exist')
             if "COUNT(DISTINCT id)" in normalised:
                 self._fetchone_result = (1,)
                 return
-            if "similarity(c.text_norm" in normalised and "ORDER BY lscore" in normalised:
+            if (
+                "similarity(c.text_norm" in normalised
+                and "ORDER BY lscore" in normalised
+            ):
                 # Lexical fallback counts - no rows returned
                 self._vector_rows = []
                 return

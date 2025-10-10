@@ -941,6 +941,7 @@ def test_rag_query_endpoint_populates_query_from_question(
 
     assert recorded["saved_state"] == state
 
+
 @pytest.mark.django_db
 def test_rag_query_endpoint_returns_not_found_when_no_matches(
     client, monkeypatch, test_tenant_schema_name
@@ -952,32 +953,30 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
             return {}
 
         def save(self, ctx, state):
-            raise AssertionError('save should not be called on not-found')
+            raise AssertionError("save should not be called on not-found")
 
     dummy_checkpointer = DummyCheckpointer()
     monkeypatch.setattr(views, "CHECKPOINTER", dummy_checkpointer)
 
     def _run(state, meta):
-        raise NotFoundError('No matching documents were found for the query.')
+        raise NotFoundError("No matching documents were found for the query.")
 
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
     response = client.post(
-        '/v1/ai/rag/query/',
-        data={'query': 'no hits', 'hybrid': {'alpha': 0.5}},
-        content_type='application/json',
+        "/v1/ai/rag/query/",
+        data={"query": "no hits", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: 'case-rag-404',
+            META_CASE_ID_KEY: "case-rag-404",
         },
     )
 
     assert response.status_code == 404
     assert response.json() == {
-        'detail': 'No matching documents were found for the query.',
-        'code': 'rag_no_matches',
+        "detail": "No matching documents were found for the query.",
+        "code": "rag_no_matches",
     }
-
-

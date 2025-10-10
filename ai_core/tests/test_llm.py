@@ -170,7 +170,6 @@ def test_llm_client_uses_configured_timeouts(monkeypatch):
     assert capture.timeouts == [7, 20]
 
 
-
 def test_llm_client_extends_timeout_for_synthesize(monkeypatch):
     metadata = {
         "tenant": "t1",
@@ -216,7 +215,6 @@ def test_llm_client_extends_timeout_for_synthesize(monkeypatch):
     call("synthesize", sanitized_prompt, metadata)
 
     assert capture.timeouts == [45]
-
 
 
 def test_llm_client_retries_on_rate_limit(monkeypatch):
