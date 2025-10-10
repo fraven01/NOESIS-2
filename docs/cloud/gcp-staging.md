@@ -24,7 +24,7 @@ Die Staging-Umgebung bildet die Produktionsarchitektur nach, erlaubt aber schnel
 
 ## Konfiguration
 - GitHub Actions setzt alle Variablen per `--set-env-vars`, siehe [Pipeline](../cicd/pipeline.md). Secret Manager wird in Staging nicht verwendet.
-- Wichtige Variablen: `EMBEDDINGS_MODEL`, `EMBEDDINGS_DIM`, `EMBEDDINGS_API_BASE`, `LANGFUSE_KEY`, `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LITELLM_URL`.
+- Wichtige Variablen: `EMBEDDINGS_MODEL_PRIMARY`, `DEMO_EMBEDDINGS_MODEL`, `EMBEDDINGS_DIM`, `DEMO_EMBEDDINGS_DIM`, `EMBEDDINGS_API_BASE`, `LANGFUSE_KEY`, `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LITELLM_URL`.
 - Basissecrets folgen dem Schema aus [Security](../security/secrets.md); Rotation erfolgt durch Aktualisierung der CI-Secrets und anschließendes Redeploy.
 - LiteLLM verlangt `require_auth: true` laut [`config/litellm-config.yaml`](../../config/litellm-config.yaml); nur Benutzer mit gültigem Master Key oder API Key erhalten Zugang.
 

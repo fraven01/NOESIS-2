@@ -1,38 +1,76 @@
+from __future__ import annotations
+
 from pathlib import Path
 
-from django.conf import settings
 from django.core.management.base import BaseCommand, CommandError
-from django.db import connection, transaction
+from django.db import connection
+
+from ai_core.rag.vector_schema import render_schema_sql
 
 
 class Command(BaseCommand):
-    help = "Apply docs/rag/schema.sql to the connected database (idempotent)."
+    help = "Apply the vector schema template for a single configured space."
 
     def add_arguments(self, parser):
         parser.add_argument(
+            "--schema",
+            required=True,
+            help="Target database schema (e.g. rag, rag_demo)",
+        )
+        parser.add_argument(
+            "--dimension",
+            required=True,
+            type=int,
+            help="Vector dimension that should be enforced (positive integer)",
+        )
+        parser.add_argument(
             "--path",
-            default=str(Path(settings.BASE_DIR) / "docs" / "rag" / "schema.sql"),
-            help="Path to schema.sql (default: docs/rag/schema.sql)",
+            default=None,
+            help=(
+                "Optional override for the schema template. Defaults to "
+                "docs/rag/schema.sql"
+            ),
         )
 
     def handle(self, *args, **options):
-        sql_path = Path(options["path"]).resolve()
-        if not sql_path.exists():
-            raise CommandError(f"Schema file not found: {sql_path}")
+        schema_name = str(options["schema"]).strip()
+        dimension = int(options["dimension"])
+        if not schema_name:
+            raise CommandError("--schema must be provided")
+        if dimension <= 0:
+            raise CommandError("--dimension must be a positive integer")
 
-        sql = sql_path.read_text(encoding="utf-8")
-        if not sql.strip():
-            self.stdout.write(
-                self.style.WARNING("Schema file is empty; nothing to do.")
+        template_override = options.get("path")
+        if template_override:
+            template_path = Path(template_override).resolve()
+            if not template_path.exists():
+                raise CommandError(f"Schema template not found: {template_path}")
+            template = template_path.read_text(encoding="utf-8")
+            if "{{SCHEMA_NAME}}" not in template or "{{VECTOR_DIM}}" not in template:
+                raise CommandError(
+                    "Schema template must contain {{SCHEMA_NAME}} and {{VECTOR_DIM}} placeholders"
+                )
+            rendered_sql = (
+                template.replace("{{SCHEMA_NAME}}", schema_name)
+                .replace("{{VECTOR_DIM}}", str(dimension))
             )
-            return
+        else:
+            try:
+                rendered_sql = render_schema_sql(schema_name, dimension)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                raise CommandError(str(exc)) from exc
 
-        # Execute as a single script; schema.sql is idempotent
         try:
-            with transaction.atomic():
-                with connection.cursor() as cur:
-                    cur.execute(sql)
-        except Exception as exc:  # noqa: BLE001 - we want to surface any SQL error
-            raise CommandError(f"Failed to apply RAG schema: {exc}") from exc
+            with connection.cursor() as cursor:
+                cursor.execute(rendered_sql)
+        except Exception as exc:  # noqa: BLE001 - surface SQL errors verbatim
+            raise CommandError(
+                f"Failed to apply RAG schema for '{schema_name}': {exc}"
+            ) from exc
 
-        self.stdout.write(self.style.SUCCESS(f"Applied RAG schema from {sql_path}"))
+        self.stdout.write(
+            self.style.SUCCESS(
+                "Applied RAG schema for %s (dimension=%s)"
+                % (schema_name, dimension)
+            )
+        )

@@ -99,7 +99,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | --- | --- |
 | `npm run dev:up` | Initialisiert Datenbank & Tenants im Compose-Stack, erstellt Superuser |
 | `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/ai/scope`) aus |
-| `npm run dev:init` | Führt `jobs:migrate`, `jobs:rag` und `jobs:bootstrap` aus (nach `up -d`) |
+| `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`); Vector-Schemata kommen über `rag-schema` automatisch |
 | `npm run dev:stack` / `npm run win:dev:stack` | Startet App + ELK, Migrationen, Bootstrap, Demo- & Heavy-Seeding |
 | `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
 | `npm run dev:restart` | Neustart von Web-, Worker- und Ingestion-Containern |
@@ -109,8 +109,8 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | `npm run dev:manage <cmd>` | Führt `python manage.py <cmd>` im `web`-Container aus |
 | `npm run jobs:migrate` | Compose-Job `migrate` für `migrate_schemas` |
 | `npm run jobs:bootstrap` | Compose-Job `bootstrap_public_tenant` |
-| `npm run jobs:rag` | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus |
-| `npm run jobs:rag:health` | Prüft pgvector/RAG-Schema |
+| `npm run jobs:rag` | Wendet `docs/rag/schema.sql` für alle konfigurierten Vector-Spaces an |
+| `npm run jobs:rag:health` | Prüft alle pgvector-Schemata via `check_rag_schemas` |
 
 Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:stack`, `win:dev:rebuild`).
 
@@ -160,8 +160,8 @@ Hinweise:
 | `make jobs:bootstrap` | Erstellt den Public-Tenant (`DOMAIN` erforderlich) |
 | `make tenant-new` | Legt einen neuen Tenant an (`SCHEMA`, `NAME`, `DOMAIN`) |
 | `make tenant-superuser` | Erstellt einen Tenant-Superuser (`SCHEMA`, `USERNAME`, `PASSWORD`, optional `EMAIL`) |
-| `make jobs:rag` | Spielt `docs/rag/schema.sql` gegen `RAG_DATABASE_URL`/`DATABASE_URL` ein |
-| `make jobs:rag:health` | Validiert RAG-Schema & `vector`-Extension |
+| `make jobs:rag` | Führt `manage.py sync_rag_schemas` (alle Vector-Spaces) gegen `DATABASE_URL`/`RAG_DATABASE_URL` aus |
+| `make jobs:rag:health` | Prüft alle Vector-Spaces via `manage.py check_rag_schemas` |
 | `make schema` | Exportiert das OpenAPI-Schema nach `docs/api/openapi.yaml` |
 | `make sdk` | Generiert SDKs unter `clients/` auf Basis des aktuellen Schemas |
 
@@ -519,8 +519,8 @@ Im Projektwurzelverzeichnis stehen Makefile-Targets zur Verfügung, um wiederkeh
 - `make jobs:bootstrap` – legt den öffentlichen Tenant per `bootstrap_public_tenant` an (`DOMAIN` erforderlich).
 - `make tenant-new` – erstellt ein neues Schema und die zugehörige Domain (`SCHEMA`, `NAME`, `DOMAIN`).
 - `make tenant-superuser` – erzeugt einen Superuser in einem Schema (`SCHEMA`, `USERNAME`, `PASSWORD`, optional `EMAIL`).
-- `make jobs:rag` – spielt [`docs/rag/schema.sql`](docs/rag/schema.sql) gegen den RAG-Store ein (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
-- `make jobs:rag:health` – prüft Schema, Tabellen und `vector`-Extension im RAG-Store (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
+- `make jobs:rag` – führt `python manage.py sync_rag_schemas` für alle konfigurierten Vector-Spaces aus (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
+- `make jobs:rag:health` – nutzt `python manage.py check_rag_schemas`, um alle Vector-Spaces samt Tabellen zu prüfen (`RAG_DATABASE_URL` oder fallback `DATABASE_URL`).
 
 Setze die benötigten Umgebungsvariablen vor dem Aufruf, z. B.:
 

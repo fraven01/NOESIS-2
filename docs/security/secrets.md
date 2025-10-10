@@ -11,8 +11,11 @@ Sichere Geheimnisse verhindern Datenverlust und Ausfälle. Dieses Dokument defin
 | `SECRET_KEY` | Django Crypto Key | `.env` zufällig generiert | CI Secret (per GitHub Secret) | Secret Manager Version, Rotation 90 Tage |
 | `ALLOWED_HOSTS` | Kommagetrennte Domains | `.env` (`localhost`) | CI-Variable mit Staging-Domain | Secret Manager, Prod-Domains + LB |
 | `LITELLM_URL` | Basis-URL für LiteLLM Proxy (Alias für `LITELLM_BASE_URL` im Code) | `.env` zeigt auf `http://litellm:4000` | CI setzt auf interne Cloud Run URL, nur auth Nutzer | Secret Manager liefert interne URL; optional zweiter Eintrag für IAP |
-| `EMBEDDINGS_MODEL` | Modellname für Embedding-Erstellung | `.env` frei wählbar (z.B. `text-embedding-3-small`) | CI-Variable pro Deploy; Versionswechsel nur nach Smoke-Test | Secret Manager Version, dokumentiert in Release-Notes |
-| `EMBEDDINGS_DIM` | Dimensionszahl der Vektoren (Integer) | `.env` konsistent zur lokalen Modellwahl | CI setzt Wert passend zum Modell | Secret Manager, gemeinsam mit Modellwechsel aktualisieren |
+| `EMBEDDINGS_MODEL_PRIMARY` | Primäres Embedding-Profil (Tenant „dev“) | `.env` z. B. `oai-embed-small` | CI-Variable pro Deploy; Versionswechsel nur nach Smoke-Test | Secret Manager Version, dokumentiert in Release-Notes |
+| `EMBEDDINGS_MODEL_FALLBACK` | Optionales Fallback-Modell für dev | `.env` (Default `oai-embed-small`) | CI-Variable, nur setzen wenn Provider mehrere Alias benötigt | Secret Manager Version |
+| `EMBEDDINGS_DIM` | Basis-Dimension für das Standardprofil | `.env` konsistent zur lokalen Modellwahl | CI setzt Wert passend zum Modell | Secret Manager, gemeinsam mit Modellwechsel aktualisieren |
+| `DEMO_EMBEDDINGS_MODEL` | Embedding-Profil für Demo-Tenant | `.env` z. B. `oai-embed-large` | CI-Variable, dokumentierter Smoke-Test vor Wechsel | Secret Manager Version |
+| `DEMO_EMBEDDINGS_DIM` | Dimension des Demo-Vector-Spaces | `.env` konsistent zur Modellwahl | CI setzt Wert passend zum Modell | Secret Manager, gemeinsam mit Modellwechsel aktualisieren |
 | `EMBEDDINGS_API_BASE` | LiteLLM-Endpunkt für Embedding-Requests | `.env` → `http://litellm:4000/v1` | CI `--set-env-vars` nutzt Cloud Run interne URL | Secret Manager verweist auf HTTPS Load Balancer oder interne URL |
 | `LANGFUSE_HOST` | Basis-URL für Langfuse Workspace | Optional lokal (`http://localhost:3000`) | CI-Variable; SaaS oder Self-Host URL | Secret Manager Wert, kein direkter Konsolenzugriff |
 | `LANGFUSE_KEY` | Server-SDK-Key für Worker und Agenten | `.env` Dummy | CI-Secret | Secret Manager Version, Rotation 60 Tage |

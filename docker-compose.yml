@@ -59,34 +59,23 @@ services:
     restart: unless-stopped
 
   rag-schema:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: noesis2_rag_schema
-    # Führe das idempotente Schema-SQL gegen Postgres aus
-    command: >
-      sh -c "
-        SCHEMA=${RAG_SCHEMA:-rag}; \
-        DIM=${RAG_VECTOR_DIM:-1536}; \
-        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /app/docs/rag/schema.sql > /tmp/schema.rendered.sql && \
-        psql \
-          -h db \
-          -U ${DB_USER:-noesis2} \
-          -d ${DB_NAME:-noesis2} \
-          -v ON_ERROR_STOP=1 \
-          -f /tmp/schema.rendered.sql
-      "
+    command: /usr/local/bin/python manage.py sync_rag_schemas
     volumes:
-      - .:/app:ro
+      - .:/app
+      - staticfiles:/app/staticfiles
     env_file:
       - .env
       - .env.docker
-    environment:
-      # psql nutzt dieses Env-Var als Passwort
-      PGPASSWORD: ${DB_PASSWORD:-noesis2}
-      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
-      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
     depends_on:
       - db
     restart: "no"
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-noesis2}:${DB_PASSWORD:-noesis2}@db:5432/${DB_NAME:-noesis2}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
 
   ingestion-worker:
     build:
