@@ -132,11 +132,26 @@ def assert_case_active(tenant: str, case_id: str) -> None:
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
-    """Derive the active tenant identifier for the current request."""
+    """Derive the active tenant schema for the current request.
 
+    Resolution order (first non-public wins):
+    1) Explicit header-backed attribute populated by TenantSchemaMiddleware
+    2) Request-bound tenant object (django-tenants)
+    3) Connection schema (django-tenants current schema)
+    """
+
+    # 1) Header-provided schema (populated by our TenantSchemaMiddleware)
+    header_schema = getattr(request, "tenant_schema", None)
+    if isinstance(header_schema, str) and header_schema.strip():
+        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+        if header_schema != public_schema:
+            return header_schema
+
+    # 2) Tenant object from django-tenants (domain-based routing)
     tenant_obj = getattr(request, "tenant", None)
     schema_name = getattr(tenant_obj, "schema_name", None)
     if not schema_name:
+        # 3) Fallback: current connection schema
         schema_name = getattr(connection, "schema_name", None)
 
     if not schema_name:

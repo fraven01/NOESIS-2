@@ -14,8 +14,12 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 
 COPY postcss.config.js tailwind.config.js ./
 COPY theme ./theme
-
-RUN npm run build:css
+# Some environments fail to load Tailwind's native binding (oxide) during Docker builds.
+# Force the portable JS/WASM path for reliable builds in CI/containers.
+ENV TAILWIND_DISABLE_OXIDE=1
+# Ensure output directory exists to avoid PostCSS write errors
+RUN mkdir -p ./theme/static/css \
+    && npm run build:css
 
 ########################################
 # Python builder stage

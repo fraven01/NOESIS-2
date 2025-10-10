@@ -26,16 +26,20 @@ configure_logging()
 
 
 DEFAULT_EMBEDDING_DIMENSION = env.int("EMBEDDINGS_DIM", default=1536)
-DEMO_EMBEDDING_DIMENSION = env.int("DEMO_EMBEDDINGS_DIM", default=3072)
+# Demo uses the same embedding dimension as standard by default
+DEMO_EMBEDDING_DIMENSION = env.int(
+    "DEMO_EMBEDDINGS_DIM", default=DEFAULT_EMBEDDING_DIMENSION
+)
 
 EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
-EMBEDDINGS_MODEL_PRIMARY = env(
-    "EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-small"
-)
+EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-small")
 EMBEDDINGS_MODEL_FALLBACK = env(
     "EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small"
 )
-DEMO_EMBEDDINGS_MODEL = env("DEMO_EMBEDDINGS_MODEL", default="oai-embed-large")
+# Demo uses the same embedding model as standard by default
+DEMO_EMBEDDINGS_MODEL = env(
+    "DEMO_EMBEDDINGS_MODEL", default=EMBEDDINGS_MODEL_PRIMARY
+)
 EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
 EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
 

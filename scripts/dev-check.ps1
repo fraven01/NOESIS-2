@@ -1,6 +1,36 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Continue'
 
+# Load minimal vars from .env for host-side checks (PowerShell session only)
+function Import-DotEnvVars {
+  param(
+    [string]$Path = ".env",
+    [string[]]$Keys = @("LITELLM_MASTER_KEY", "DEV_TENANT_SCHEMA", "TENANT_ID", "CASE_ID")
+  )
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  $lines = Get-Content -LiteralPath $Path -ErrorAction SilentlyContinue
+  foreach ($line in $lines) {
+    if ([string]::IsNullOrWhiteSpace($line)) { continue }
+    $trim = $line.Trim()
+    if ($trim.StartsWith('#')) { continue }
+    $kv = $trim -split '=', 2
+    if ($kv.Count -ne 2) { continue }
+    $k = $kv[0].Trim()
+    $v = $kv[1].Trim()
+    if ($Keys -notcontains $k) { continue }
+    # Strip surrounding quotes
+    if (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'"))) {
+      if ($v.Length -ge 2) { $v = $v.Substring(1, $v.Length - 2) }
+    }
+    if ($v -match '<.*>') { continue } # skip template placeholders
+    $existing = [System.Environment]::GetEnvironmentVariable($k, 'Process')
+    if (-not [string]::IsNullOrEmpty($existing)) { continue } # don't override
+    [System.Environment]::SetEnvironmentVariable($k, $v, 'Process')
+  }
+}
+
+Import-DotEnvVars -Path ".env"
+
 $DevTenantSchema = if ($env:DEV_TENANT_SCHEMA) { $env:DEV_TENANT_SCHEMA } else { 'dev' }
 $TenantId = if ($env:TENANT_ID) { $env:TENANT_ID } else { 'dev-tenant' }
 $CaseId = if ($env:CASE_ID) { $env:CASE_ID } else { 'local' }
@@ -56,7 +86,8 @@ if (-not $ok) { Write-Warning 'AI ping failed' }
 
 Write-Host "[dev-check] POST /ai/scope minimal payload"
 try {
-  $payload = '{"hello":"world"}'
+  # Provide required field expected by scope_check graph
+  $payload = '{"scope":"global"}'
   $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/ai/scope/' -Method POST -ContentType 'application/json' -Headers @{ 'X-Tenant-Schema' = $DevTenantSchema; 'X-Tenant-ID' = $TenantId; 'X-Case-ID' = $CaseId } -Body $payload
   $content = $resp.Content
   if ($content.Length -gt 200) { $content.Substring(0,200) + '...' } else { $content }
@@ -64,7 +95,8 @@ try {
 
 try {
   Write-Host "[dev-check] RAG migrate"
-  iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag"
+  # Apply pgvector schema for configured spaces
+  iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-schema"
 } catch { Write-Warning "RAG migrate failed: $_" }
 
 try {

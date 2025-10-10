@@ -33,12 +33,12 @@ RESP=$(curl -s -X POST \
     -H "X-Tenant-Schema: ${DEV_TENANT_SCHEMA}" \
     -H "X-Tenant-ID: ${TENANT_ID}" \
     -H "X-Case-ID: ${CASE_ID}" \
-    --data '{"hello":"world"}' \
+    --data '{"scope":"global"}' \
   http://localhost:8000/ai/scope/ || true)
 echo "$RESP" | head -c 200; echo
 
 echo "[dev-check] RAG migrate"
-docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag || {
+docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-schema || {
   echo "[dev-check] RAG migrate failed" >&2
 }
 echo "[dev-check] RAG health"
