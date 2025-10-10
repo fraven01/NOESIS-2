@@ -99,7 +99,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | --- | --- |
 | `npm run dev:up` | Initialisiert Datenbank & Tenants im Compose-Stack, erstellt Superuser |
 | `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/ai/scope`) aus |
-| `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`) |
+| `npm run dev:init` | Führt `jobs:migrate`, `jobs:rag` und `jobs:bootstrap` aus (nach `up -d`) |
 | `npm run dev:stack` / `npm run win:dev:stack` | Startet App + ELK, Migrationen, Bootstrap, Demo- & Heavy-Seeding |
 | `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
 | `npm run dev:restart` | Neustart von Web-, Worker- und Ingestion-Containern |
