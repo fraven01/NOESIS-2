@@ -170,6 +170,55 @@ def test_llm_client_uses_configured_timeouts(monkeypatch):
     assert capture.timeouts == [7, 20]
 
 
+
+def test_llm_client_extends_timeout_for_synthesize(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+    sanitized_prompt = mask_prompt("secret")
+
+    class CaptureTimeout:
+        def __init__(self):
+            self.timeouts: list[int] = []
+
+        def __call__(
+            self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
+        ):
+            self.timeouts.append(timeout)
+
+            class Resp:
+                status_code = 200
+                headers: dict[str, str] = {}
+
+                def json(self):
+                    return {
+                        "choices": [{"message": {"content": "ok"}}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    capture = CaptureTimeout()
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", capture)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    monkeypatch.setattr("ai_core.llm.client.resolve", lambda label: f"model-{label}")
+    monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
+    monkeypatch.setenv("LITELLM_API_KEY", "token")
+
+    from ai_core.infra import config as conf
+
+    conf.get_config.cache_clear()
+
+    call("synthesize", sanitized_prompt, metadata)
+
+    assert capture.timeouts == [45]
+
+
+
 def test_llm_client_retries_on_rate_limit(monkeypatch):
     metadata = {
         "tenant": "t1",

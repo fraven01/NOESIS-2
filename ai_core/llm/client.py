@@ -25,6 +25,9 @@ from .routing import resolve
 logger = get_logger(__name__)
 
 
+DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 45}
+
+
 class LlmClientError(Exception):
     """Base exception for LLM client errors."""
 
@@ -110,7 +113,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
-    timeout = cfg.timeouts.get(label, 20)
+    default_timeout = DEFAULT_LABEL_TIMEOUTS.get(label, 20)
+    timeout = cfg.timeouts.get(label, default_timeout)
     log_extra = {
         "trace_id": mask_value(metadata.get("trace_id")),
         "case_id": mask_value(case_value),

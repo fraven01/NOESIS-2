@@ -11,7 +11,12 @@ from ai_core.rag.profile_resolver import resolve_embedding_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
 from ai_core.rag.visibility import coerce_bool_flag
-from ai_core.tool_contracts import ContextError, InputError, ToolContext
+from ai_core.tool_contracts import (
+    ContextError,
+    InputError,
+    NotFoundError,
+    ToolContext,
+)
 from pydantic import BaseModel, ConfigDict
 
 
@@ -280,7 +285,19 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         visibility_override_allowed=visibility_override_allowed,
     )
 
+    vector_candidates = _coerce_int_value(
+        getattr(hybrid_result, "vector_candidates", 0) or 0, 0
+    )
+    lexical_candidates = _coerce_int_value(
+        getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
+    )
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
+    if not chunks and vector_candidates == 0 and lexical_candidates == 0:
+        logger.info(
+            "rag.retrieve.no_matches",
+            extra={"tenant_id": tenant_id, "case_id": case_id},
+        )
+        raise NotFoundError("No matching documents were found for the query.")
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
     final_matches = deduplicated[: hybrid_config.top_k]
@@ -294,12 +311,6 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     )
     min_sim_value = _coerce_float_value(
         getattr(hybrid_result, "min_sim", hybrid_config.min_sim), hybrid_config.min_sim
-    )
-    vector_candidates = _coerce_int_value(
-        getattr(hybrid_result, "vector_candidates", 0) or 0, 0
-    )
-    lexical_candidates = _coerce_int_value(
-        getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
     )
     deleted_matches_blocked = _coerce_int_value(
         getattr(hybrid_result, "deleted_matches_blocked", 0) or 0,
