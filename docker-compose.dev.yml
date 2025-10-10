@@ -144,33 +144,24 @@ services:
       APP_LOG_DIR: /app/logs
 
   rag-schema:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: noesis2_rag_schema
-    command: >
-      sh -c "
-        SCHEMA=${RAG_SCHEMA:-rag}; \
-        DIM=${RAG_VECTOR_DIM:-1536}; \
-        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /app/docs/rag/schema.sql > /tmp/schema.rendered.sql && \
-        psql \
-          -h db \
-          -U ${DB_USER:-noesis2} \
-          -d ${DB_NAME:-noesis2} \
-          -v ON_ERROR_STOP=1 \
-          -f /tmp/schema.rendered.sql
-      "
+    command: /usr/local/bin/python manage.py sync_rag_schemas
     volumes:
-      - .:/app:ro
+      - .:/app
+      - staticfiles:/app/staticfiles
     env_file:
       - .env
       - .env.docker
-    environment:
-      PGPASSWORD: ${DB_PASSWORD:-noesis2}
-      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
-      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
     depends_on:
       db:
-        condition: service_started
+        condition: service_healthy
     restart: "no"
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
 
   ingestion-worker:
     build:
@@ -197,50 +188,25 @@ services:
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
       APP_LOG_DIR: /app/logs
 
-  rag:
-    image: postgres:16-alpine
-    container_name: noesis2_rag_migrate
-    command: >
-      sh -c "
-        SCHEMA=${RAG_SCHEMA:-rag}; \
-        DIM=${RAG_VECTOR_DIM:-1536}; \
-        sed -e 's/{{SCHEMA_NAME}}/'\"$$SCHEMA\"'/g' -e 's/{{VECTOR_DIM}}/'\"$$DIM\"'/g' /schema/schema.sql > /tmp/schema.rendered.sql && \
-        PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 -f /tmp/schema.rendered.sql
-      "
-    volumes:
-      - ./docs/rag/schema.sql:/schema/schema.sql:ro
-    depends_on:
-      db:
-        condition: service_healthy
-    restart: "no"
-    environment:
-      DB_USER: ${DB_USER:-noesis2}
-      DB_PASSWORD: ${DB_PASSWORD:-noesis2}
-      DB_NAME: ${DB_NAME:-noesis2}
-      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
-      RAG_VECTOR_DIM: ${RAG_VECTOR_DIM:-1536}
-
   rag-health:
-    image: postgres:16-alpine
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: noesis2_rag_health
-    command:
-      - sh
-      - -lc
-      - |
-        PGPASSWORD=${DB_PASSWORD:-noesis2} psql -h db -U ${DB_USER:-noesis2} -d ${DB_NAME:-noesis2} -v ON_ERROR_STOP=1 \
-          -c "SELECT 1 FROM pg_extension WHERE extname='vector';" \
-          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.documents LIMIT 0;" \
-          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.chunks LIMIT 0;" \
-          -c "SELECT 1 FROM ${RAG_SCHEMA:-rag}.embeddings LIMIT 0;"
+    command: /usr/local/bin/python manage.py check_rag_schemas
+    volumes:
+      - .:/app
+      - staticfiles:/app/staticfiles
+    env_file:
+      - .env
+      - .env.docker
     depends_on:
       db:
         condition: service_healthy
     restart: "no"
     environment:
-      DB_USER: ${DB_USER:-noesis2}
-      DB_PASSWORD: ${DB_PASSWORD:-noesis2}
-      DB_NAME: ${DB_NAME:-noesis2}
-      RAG_SCHEMA: ${RAG_SCHEMA:-rag}
+      DATABASE_URL: ${DATABASE_URL:-postgresql://${DB_USER:-noesis2}:${DB_PASSWORD:-noesis2}@db:5432/${DB_NAME:-noesis2}}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
 
   migrate:
     build:

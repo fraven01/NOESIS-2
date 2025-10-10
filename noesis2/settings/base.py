@@ -25,14 +25,34 @@ environ.Env.read_env(BASE_DIR / ".env")
 configure_logging()
 
 
+DEFAULT_EMBEDDING_DIMENSION = env.int("EMBEDDINGS_DIM", default=1536)
+DEMO_EMBEDDING_DIMENSION = env.int("DEMO_EMBEDDINGS_DIM", default=3072)
+
+EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
+EMBEDDINGS_MODEL_PRIMARY = env(
+    "EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-small"
+)
+EMBEDDINGS_MODEL_FALLBACK = env(
+    "EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small"
+)
+DEMO_EMBEDDINGS_MODEL = env("DEMO_EMBEDDINGS_MODEL", default="oai-embed-large")
+EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
+EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
+
+
 if "RAG_VECTOR_STORES" not in globals():
     RAG_VECTOR_STORES = {
         "global": {
             "backend": "pgvector",
             "schema": "rag",
-            "dimension": 1536,
+            "dimension": DEFAULT_EMBEDDING_DIMENSION,
             # "dsn_env": "RAG_DATABASE_URL",
-        }
+        },
+        "demo": {
+            "backend": "pgvector",
+            "schema": "rag_demo",
+            "dimension": DEMO_EMBEDDING_DIMENSION,
+        },
     }
 
     # Beispiel für ein Setup mit dediziertem Scope:
@@ -70,22 +90,21 @@ RAG_HARD_DELETE_REINDEX_THRESHOLD = env.int(
 if "RAG_EMBEDDING_PROFILES" not in globals():
     RAG_EMBEDDING_PROFILES = {
         "standard": {
-            "model": env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large"),
-            "dimension": 1536,
+            "model": EMBEDDINGS_MODEL_PRIMARY,
+            "dimension": DEFAULT_EMBEDDING_DIMENSION,
             "vector_space": "global",
-        }
+        },
+        "demo": {
+            "model": DEMO_EMBEDDINGS_MODEL,
+            "dimension": DEMO_EMBEDDING_DIMENSION,
+            "vector_space": "demo",
+        },
     }
 
 _default_routing_rules_path = BASE_DIR / "config" / "rag_routing_rules.yaml"
 RAG_ROUTING_RULES_PATH = Path(
     env("RAG_ROUTING_RULES_PATH", default=str(_default_routing_rules_path))
 )
-
-EMBEDDINGS_PROVIDER = env("EMBEDDINGS_PROVIDER", default="litellm")
-EMBEDDINGS_MODEL_PRIMARY = env("EMBEDDINGS_MODEL_PRIMARY", default="oai-embed-large")
-EMBEDDINGS_MODEL_FALLBACK = env("EMBEDDINGS_MODEL_FALLBACK", default="oai-embed-small")
-EMBEDDINGS_BATCH_SIZE = env.int("EMBEDDINGS_BATCH_SIZE", default=64)
-EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.0)
 
 
 def _load_common_headers_table() -> str:

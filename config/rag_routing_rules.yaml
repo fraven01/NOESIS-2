@@ -12,4 +12,8 @@
 # Operators can override this file via the RAG_ROUTING_RULES_PATH setting.
 
 default_profile: standard
-rules: []
+rules:
+  - tenant: dev
+    profile: standard
+  - tenant: demo
+    profile: demo
