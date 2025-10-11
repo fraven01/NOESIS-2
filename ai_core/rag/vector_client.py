@@ -1535,7 +1535,9 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
-            raw_meta = dict(cast(Mapping[str, object] | None, entry.get("metadata")) or {})
+            raw_meta = dict(
+                cast(Mapping[str, object] | None, entry.get("metadata")) or {}
+            )
             candidate_tenant = cast(Optional[str], raw_meta.get("tenant_id"))
             candidate_case = cast(Optional[str], raw_meta.get("case_id"))
             reasons: List[str] = []
