@@ -107,7 +107,7 @@ class RagQueryResponseSerializer(serializers.Serializer):
     MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
     """
 
-    answer = serializers.CharField()
+    answer = serializers.CharField(allow_blank=True)
     prompt_version = serializers.CharField()
     retrieval = RagRetrievalMetaSerializer()
     snippets = RagSnippetSerializer(many=True)
