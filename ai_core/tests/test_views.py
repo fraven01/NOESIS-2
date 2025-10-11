@@ -999,6 +999,79 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
 
 
 @pytest.mark.django_db
+def test_rag_query_endpoint_allows_blank_answer(
+    client, monkeypatch, test_tenant_schema_name
+):
+    """Ensure an empty composed answer is accepted by the contract validator."""
+
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    retrieval_payload = {
+        "alpha": 0.7,
+        "min_sim": 0.15,
+        "top_k_effective": 1,
+        "max_candidates_effective": 50,
+        "vector_candidates": 2,
+        "lexical_candidates": 1,
+        "deleted_matches_blocked": 0,
+        "visibility_effective": "active",
+        "took_ms": 42,
+        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+    }
+    snippets_payload = [
+        {
+            "id": "doc-1#p1",
+            "text": "Relevanter Abschnitt",
+            "score": 0.42,
+            "source": "policies/travel.md",
+            "hash": "deadbeef",
+        }
+    ]
+
+    def _run(state, meta):
+        new_state = dict(state)
+        new_state["retrieval"] = retrieval_payload
+        new_state["snippets"] = snippets_payload
+        payload = {
+            "answer": "",
+            "prompt_version": "v1",
+            "retrieval": retrieval_payload,
+            "snippets": snippets_payload,
+        }
+        return new_state, payload
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "Was gilt?", "hybrid": {"alpha": 0.3}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-blank-answer",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == ""
+    assert payload["prompt_version"] == "v1"
+    assert payload["retrieval"]["vector_candidates"] == 2
+    assert payload["snippets"][0]["source"] == "policies/travel.md"
+
+
+@pytest.mark.django_db
 def test_rag_query_endpoint_rejects_missing_prompt_version(
     client, monkeypatch, test_tenant_schema_name
 ):
