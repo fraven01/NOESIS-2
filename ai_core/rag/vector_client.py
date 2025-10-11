@@ -1530,7 +1530,14 @@ class PgVectorClient:
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
 
-            lscore_value = max(0.0, float(score_raw))
+            score_source = raw_value if raw_value is not None else score_raw
+            try:
+                lscore_value = float(score_source) if score_source is not None else 0.0
+            except (TypeError, ValueError):
+                lscore_value = 0.0
+            if math.isnan(lscore_value) or math.isinf(lscore_value):
+                lscore_value = 0.0
+            lscore_value = max(0.0, lscore_value)
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
             if lexical_score_missing or allow_trgm_fallback_below_cutoff:
