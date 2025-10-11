@@ -132,13 +132,51 @@ def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/glo
 def test_retrieve_happy_path(monkeypatch, trgm_limit):
     _patch_routing(monkeypatch)
 
+    tenant = "tenant-123"
+    case = "case-7"
     vector_chunks = [
-        Chunk("Vector Match A", {"id": "doc-1", "score": 0.9, "source": "vector"}),
-        Chunk("Vector Match B", {"id": "doc-2", "score": 0.4, "source": "vector"}),
+        Chunk(
+            "Vector Match A",
+            {
+                "id": "doc-1",
+                "score": 0.9,
+                "source": "vector",
+                "tenant_id": tenant,
+                "case_id": case,
+            },
+        ),
+        Chunk(
+            "Vector Match B",
+            {
+                "id": "doc-2",
+                "score": 0.4,
+                "source": "vector",
+                "tenant_id": tenant,
+                "case_id": case,
+            },
+        ),
     ]
     lexical_chunks = [
-        Chunk("Lexical Match A", {"id": "doc-1", "score": 0.7, "source": "lexical"}),
-        Chunk("Lexical Match B", {"id": "doc-3", "score": 0.8, "source": "lexical"}),
+        Chunk(
+            "Lexical Match A",
+            {
+                "id": "doc-1",
+                "score": 0.7,
+                "source": "lexical",
+                "tenant_id": tenant,
+                "case_id": case,
+            },
+        ),
+        Chunk(
+            "Lexical Match B",
+            {
+                "id": "doc-3",
+                "score": 0.8,
+                "source": "lexical",
+                "tenant_id": tenant,
+                "case_id": case,
+            },
+        ),
     ]
 
     response = _HybridSearchResult(
@@ -169,9 +207,9 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     }
     params = retrieve.RetrieveInput.from_state(state)
     context = ToolContext(
-        tenant_id="tenant-123",
+        tenant_id=tenant,
         tenant_schema="tenant-schema",
-        case_id="case-7",
+        case_id=case,
     )
 
     result = retrieve.run(context, params)
@@ -227,11 +265,27 @@ def _run_visibility_scenario(
 ):
     _patch_routing(monkeypatch)
 
+    tenant = "tenant-visibility"
+    case = "case-vis"
     active_chunk = Chunk(
-        "Active", {"id": "doc-active", "score": 0.91, "source": "vector"}
+        "Active",
+        {
+            "id": "doc-active",
+            "score": 0.91,
+            "source": "vector",
+            "tenant_id": tenant,
+            "case_id": case,
+        },
     )
     deleted_chunk = Chunk(
-        "Deleted", {"id": "doc-deleted", "score": 0.42, "source": "vector"}
+        "Deleted",
+        {
+            "id": "doc-deleted",
+            "score": 0.42,
+            "source": "vector",
+            "tenant_id": tenant,
+            "case_id": case,
+        },
     )
 
     store = _VisibilityStore(active_chunk, deleted_chunk)
@@ -244,8 +298,8 @@ def _run_visibility_scenario(
 
     params = retrieve.RetrieveInput.from_state(state)
     context = ToolContext(
-        tenant_id="tenant-visibility",
-        case_id="case-vis",
+        tenant_id=tenant,
+        case_id=case,
         visibility_override_allowed=override_allowed,
     )
 

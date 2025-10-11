@@ -3,8 +3,7 @@ from typing import Any, Mapping, Literal, Annotated
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
-from pydantic import ConfigDict, FieldValidationInfo
-from pydantic import ValidationInfo
+from pydantic import ConfigDict, ValidationInfo
 from pydantic_core import PydanticCustomError
 
 # NOTE: This schema uses Pydantic v2 features (e.g., Field(min_length) on lists).
@@ -240,7 +239,7 @@ class RagQueryRequest(_GraphStateBase):
     )
     @classmethod
     def _normalise_optional_text(
-        cls, value: object, info: FieldValidationInfo
+        cls, value: object, info: ValidationInfo
     ) -> str | None:
         if value is None:
             return None
@@ -255,7 +254,7 @@ class RagQueryRequest(_GraphStateBase):
     @field_validator("filters", "hybrid", mode="before")
     @classmethod
     def _ensure_mapping(
-        cls, value: object, info: FieldValidationInfo
+        cls, value: object, info: ValidationInfo
     ) -> dict[str, Any] | None:
         if value is None:
             return None

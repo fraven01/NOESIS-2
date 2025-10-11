@@ -336,6 +336,26 @@ class PgVectorClient:
             tuple(padded_list),
         )
 
+    @staticmethod
+    def _ensure_chunk_metadata_contract(
+        meta: Mapping[str, object] | None,
+        *,
+        tenant_id: str | None,
+        case_id: str | None,
+        filters: Mapping[str, object | None] | None,
+        chunk_id: object,
+        doc_id: object,
+    ) -> Dict[str, object]:
+        enriched = dict(meta or {})
+        if "tenant_id" not in enriched:
+            enriched["tenant_id"] = tenant_id
+        filter_case_value = (filters or {}).get("case_id", case_id)
+        if "case_id" not in enriched:
+            enriched["case_id"] = filter_case_value
+        enriched.setdefault("doc_id", doc_id)
+        enriched.setdefault("chunk_id", chunk_id)
+        return enriched
+
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
         conn = self._pool.getconn()
@@ -1407,8 +1427,9 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
             text_value = text_value or ""
-            key = str(chunk_id)
-            metadata_dict = dict(metadata)
+            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
+            chunk_identifier = chunk_id if chunk_id is not None else key
+            metadata_dict = dict(metadata or {})
             entry = candidates.setdefault(
                 key,
                 {
@@ -1422,7 +1443,13 @@ class PgVectorClient:
                     "_allow_below_cutoff": False,
                 },
             )
-            entry["chunk_id"] = chunk_id if chunk_id is not None else key
+            entry["chunk_id"] = chunk_identifier
+            if not entry.get("metadata"):
+                entry["metadata"] = metadata_dict
+            if entry.get("doc_id") is None and doc_id is not None:
+                entry["doc_id"] = doc_id
+            if entry.get("doc_hash") is None and doc_hash is not None:
+                entry["doc_hash"] = doc_hash
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
             else:
@@ -1457,8 +1484,9 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
             text_value = text_value or ""
-            key = str(chunk_id)
-            metadata_dict = dict(metadata)
+            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
+            chunk_identifier = chunk_id if chunk_id is not None else key
+            metadata_dict = dict(metadata or {})
             entry = candidates.setdefault(
                 key,
                 {
@@ -1472,7 +1500,13 @@ class PgVectorClient:
                     "_allow_below_cutoff": False,
                 },
             )
-            entry["chunk_id"] = chunk_id if chunk_id is not None else key
+            entry["chunk_id"] = chunk_identifier
+            if not entry.get("metadata"):
+                entry["metadata"] = metadata_dict
+            if entry.get("doc_id") is None and doc_id is not None:
+                entry["doc_id"] = doc_id
+            if entry.get("doc_hash") is None and doc_hash is not None:
+                entry["doc_hash"] = doc_hash
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
@@ -1499,16 +1533,12 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
-            meta = dict(entry["metadata"])
+            raw_meta = entry.get("metadata") or {}
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
-            if doc_hash and not meta.get("hash"):
-                meta["hash"] = doc_hash
-            if doc_id is not None and "id" not in meta:
-                meta["id"] = str(doc_id)
-            if not strict_match(meta, tenant, case_value):
-                candidate_tenant = meta.get("tenant_id")
-                candidate_case = meta.get("case_id")
+            if not strict_match(raw_meta, tenant, case_value):
+                candidate_tenant = raw_meta.get("tenant_id")
+                candidate_case = raw_meta.get("case_id")
                 reasons: List[str] = []
                 if tenant is not None:
                     if candidate_tenant is None:
@@ -1532,6 +1562,18 @@ class PgVectorClient:
                     reasons=reasons or ["unknown"],
                 )
                 continue
+            meta = self._ensure_chunk_metadata_contract(
+                raw_meta,
+                tenant_id=tenant,
+                case_id=case_value,
+                filters=normalized_filters,
+                chunk_id=entry.get("chunk_id"),
+                doc_id=doc_id,
+            )
+            if doc_hash and not meta.get("hash"):
+                meta["hash"] = doc_hash
+            if doc_id is not None and "id" not in meta:
+                meta["id"] = str(doc_id)
             try:
                 vscore = float(entry.get("vscore", 0.0))
             except (TypeError, ValueError):
