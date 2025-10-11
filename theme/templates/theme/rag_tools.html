@@ -10,6 +10,7 @@
       Nutze diese Werkbank, um Dateien hochzuladen und Queries gegen die bestehenden RAG-Endpunkte abzufeuern.
       Alle Requests senden automatisch die aus der aktuellen Domain abgeleiteten Header
       <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Tenant-ID: {{ tenant_id }}</code>,
+      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Tenant-Schema: {{ tenant_schema }}</code>,
       <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-User-ID: local</code>
       und
       <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Case-ID: local</code>.
@@ -431,10 +432,16 @@
 <script>
   (function () {
     const derivedTenantId = "{{ tenant_id|escapejs }}";
+    const derivedTenantSchema = "{{ tenant_schema|escapejs }}";
     const tenantId = derivedTenantId || window.location.hostname || "dev.localhost";
+    const tenantSchema =
+      derivedTenantSchema ||
+      (tenantId && tenantId.includes(".") ? tenantId.split(".", 1)[0] : tenantId) ||
+      "dev";
     const defaultEmbeddingProfile = "{{ default_embedding_profile|escapejs }}" || "standard";
     const baseHeaders = {
       'X-Tenant-ID': tenantId,
+      'X-Tenant-Schema': tenantSchema,
       'X-User-ID': 'local',
       'X-Case-ID': 'local'
     };
