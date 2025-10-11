@@ -311,9 +311,119 @@
         </button>
       </div>
     </form>
-    <div class="mt-6 space-y-2">
-      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Query Response</h3>
-      <pre class="max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="query-response"></pre>
+    <div class="mt-6 space-y-6" id="rag-output">
+      <div id="rag-error" class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
+
+      <section class="space-y-3">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Answer</h3>
+          <button
+            type="button"
+            id="rag-answer-copy"
+            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          >
+            Copy
+          </button>
+        </div>
+        <div
+          id="rag-answer"
+          class="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900"
+        >
+          –
+        </div>
+      </section>
+
+      <section class="space-y-2">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Prompt Version</h3>
+        <code
+          id="rag-prompt-version"
+          class="inline-block rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white"
+        >
+          –
+        </code>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Retrieval Diagnostics</h3>
+        <div class="overflow-x-auto">
+          <table id="rag-diagnostics" class="min-w-full divide-y divide-slate-200 text-sm">
+            <tbody class="divide-y divide-slate-200">
+              <tr data-field="alpha">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">alpha</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="min_sim">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">min_sim</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="top_k_effective">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">top_k_effective</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="max_candidates_effective">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">max_candidates_effective</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="vector_candidates">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">vector_candidates</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="lexical_candidates">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">lexical_candidates</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="deleted_matches_blocked">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">deleted_matches_blocked</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="visibility_effective">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">visibility_effective</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="took_ms">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">took_ms</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="routing.profile">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">routing.profile</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+              <tr data-field="routing.vector_space_id">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">routing.vector_space_id</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="space-y-3">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Snippets</h3>
+        <div id="rag-snippets" class="space-y-3">
+          <p class="text-sm text-slate-500">Keine Snippets geladen.</p>
+        </div>
+      </section>
+
+      <section class="space-y-2">
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="rag-raw-toggle">
+            <input
+              type="checkbox"
+              id="rag-raw-toggle"
+              class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+            />
+            Raw JSON anzeigen
+          </label>
+          <button
+            type="button"
+            id="rag-raw-copy"
+            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          >
+            Copy JSON
+          </button>
+        </div>
+        <pre class="hidden max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="rag-raw"></pre>
+      </section>
     </div>
   </section>
 </div>
@@ -354,6 +464,341 @@
       if (display) {
         display.textContent = runId;
       }
+    }
+
+    async function parseJsonOrText(res) {
+      const text = await res.text();
+      try {
+        return [res, JSON.parse(text)];
+      } catch (err) {
+        return [res, { __raw: text }];
+      }
+    }
+
+    function showError(message) {
+      const element = document.getElementById('rag-error');
+      if (!element) {
+        return;
+      }
+      element.textContent = message;
+      element.classList.remove('hidden');
+    }
+
+    function clearError() {
+      const element = document.getElementById('rag-error');
+      if (!element) {
+        return;
+      }
+      element.textContent = '';
+      element.classList.add('hidden');
+    }
+
+    function resetDiagnostics() {
+      const rows = document.querySelectorAll('#rag-diagnostics tr');
+      rows.forEach(function (row) {
+        const valueCell = row.querySelector('td');
+        if (valueCell) {
+          valueCell.textContent = '–';
+        }
+      });
+    }
+
+    function resetSnippets(message) {
+      const container = document.getElementById('rag-snippets');
+      if (!container) {
+        return;
+      }
+      container.innerHTML = '';
+      const placeholder = document.createElement('p');
+      placeholder.className = 'text-sm text-slate-500';
+      placeholder.textContent = message || 'Keine Snippets geladen.';
+      container.appendChild(placeholder);
+    }
+
+    function resetRagView() {
+      const answer = document.getElementById('rag-answer');
+      if (answer) {
+        answer.textContent = '–';
+      }
+      const prompt = document.getElementById('rag-prompt-version');
+      if (prompt) {
+        prompt.textContent = '–';
+      }
+      resetDiagnostics();
+      resetSnippets();
+      const raw = document.getElementById('rag-raw');
+      if (raw) {
+        raw.textContent = '';
+        const rawToggle = document.getElementById('rag-raw-toggle');
+        if (rawToggle && rawToggle instanceof HTMLInputElement) {
+          if (rawToggle.checked) {
+            raw.classList.remove('hidden');
+          } else {
+            raw.classList.add('hidden');
+          }
+        } else {
+          raw.classList.add('hidden');
+        }
+      }
+    }
+
+    function setRaw(data) {
+      const target = document.getElementById('rag-raw');
+      if (!target) {
+        return;
+      }
+      if (data === null || data === undefined) {
+        target.textContent = '';
+        return;
+      }
+      target.textContent = JSON.stringify(data, null, 2);
+    }
+
+    function fmtFloat(value) {
+      if (!Number.isFinite(value)) {
+        return '–';
+      }
+      return Number(value).toFixed(3);
+    }
+
+    function fmtNumber(value) {
+      if (Number.isFinite(value)) {
+        return String(value);
+      }
+      if (typeof value === 'boolean') {
+        return value ? 'true' : 'false';
+      }
+      return '–';
+    }
+
+    function fmtString(value) {
+      if (value === null || value === undefined) {
+        return '–';
+      }
+      const stringValue = String(value);
+      return stringValue.trim() === '' ? '–' : stringValue;
+    }
+
+    function truncate(text, limit) {
+      const maxLength = typeof limit === 'number' && limit > 0 ? limit : 280;
+      if (typeof text !== 'string') {
+        return '';
+      }
+      if (text.length <= maxLength) {
+        return text;
+      }
+      return text.slice(0, maxLength) + '…';
+    }
+
+    function renderRagV2(data) {
+      if (!data || typeof data !== 'object') {
+        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+        return false;
+      }
+
+      const requiredTopLevel = ['answer', 'prompt_version', 'retrieval', 'snippets'];
+      for (let i = 0; i < requiredTopLevel.length; i += 1) {
+        const key = requiredTopLevel[i];
+        if (!(key in data)) {
+          showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+          return false;
+        }
+      }
+
+      const retrieval = data.retrieval;
+      if (!retrieval || typeof retrieval !== 'object') {
+        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+        return false;
+      }
+
+      const requiredRetrieval = [
+        'alpha',
+        'min_sim',
+        'top_k_effective',
+        'max_candidates_effective',
+        'vector_candidates',
+        'lexical_candidates',
+        'deleted_matches_blocked',
+        'visibility_effective',
+        'took_ms',
+        'routing'
+      ];
+
+      for (let i = 0; i < requiredRetrieval.length; i += 1) {
+        const key = requiredRetrieval[i];
+        if (!(key in retrieval)) {
+          showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+          return false;
+        }
+      }
+
+      const routing = retrieval.routing;
+      if (!routing || typeof routing !== 'object') {
+        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+        return false;
+      }
+
+      if (!('profile' in routing) || !('vector_space_id' in routing)) {
+        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+        return false;
+      }
+
+      if (!Array.isArray(data.snippets)) {
+        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
+        return false;
+      }
+
+      const answer = document.getElementById('rag-answer');
+      if (answer) {
+        if (typeof data.answer === 'string') {
+          answer.textContent = data.answer;
+        } else if (data.answer == null) {
+          answer.textContent = '–';
+        } else {
+          answer.textContent = String(data.answer);
+        }
+      }
+
+      const prompt = document.getElementById('rag-prompt-version');
+      if (prompt) {
+        if (typeof data.prompt_version === 'string') {
+          prompt.textContent = data.prompt_version;
+        } else if (data.prompt_version == null) {
+          prompt.textContent = '–';
+        } else {
+          prompt.textContent = String(data.prompt_version);
+        }
+      }
+
+      const diagnostics = [
+        ['alpha', fmtFloat(retrieval.alpha)],
+        ['min_sim', fmtFloat(retrieval.min_sim)],
+        ['top_k_effective', fmtNumber(retrieval.top_k_effective)],
+        ['max_candidates_effective', fmtNumber(retrieval.max_candidates_effective)],
+        ['vector_candidates', fmtNumber(retrieval.vector_candidates)],
+        ['lexical_candidates', fmtNumber(retrieval.lexical_candidates)],
+        ['deleted_matches_blocked', fmtNumber(retrieval.deleted_matches_blocked)],
+        ['visibility_effective', fmtString(retrieval.visibility_effective)],
+        ['took_ms', fmtNumber(retrieval.took_ms)],
+        ['routing.profile', fmtString(routing.profile)],
+        ['routing.vector_space_id', fmtString(routing.vector_space_id)]
+      ];
+
+      diagnostics.forEach(function (entry) {
+        const field = entry[0];
+        const value = entry[1];
+        const row = document.querySelector('#rag-diagnostics tr[data-field="' + field + '"] td');
+        if (row) {
+          row.textContent = value;
+        }
+      });
+
+      const snippetContainer = document.getElementById('rag-snippets');
+      if (snippetContainer) {
+        snippetContainer.innerHTML = '';
+        if (Array.isArray(data.snippets) && data.snippets.length) {
+          data.snippets.forEach(function (snippet) {
+            const card = document.createElement('article');
+            card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+
+            const header = document.createElement('div');
+            header.className = 'flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600';
+
+            const score = document.createElement('span');
+            const scoreValue = Number.isFinite(snippet && snippet.score) ? Number(snippet.score).toFixed(3) : '–';
+            score.textContent = 'Score: ' + scoreValue;
+
+            const source = document.createElement('span');
+            const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '–';
+            source.textContent = 'Source: ' + sourceValue;
+
+            header.appendChild(score);
+            header.appendChild(source);
+
+            const body = document.createElement('div');
+            body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
+            const snippetText = snippet && typeof snippet.text === 'string' ? snippet.text : '';
+            body.textContent = truncate(snippetText, 280);
+
+            card.appendChild(header);
+            card.appendChild(body);
+            snippetContainer.appendChild(card);
+          });
+        } else {
+          const placeholder = document.createElement('p');
+          placeholder.className = 'text-sm text-slate-500';
+          placeholder.textContent = 'Keine Snippets gefunden.';
+          snippetContainer.appendChild(placeholder);
+        }
+      }
+
+      return true;
+    }
+
+    async function copyText(selector) {
+      const element = typeof selector === 'string' ? document.querySelector(selector) : selector;
+      if (!element) {
+        return;
+      }
+      const value = element.textContent || '';
+      if (!value) {
+        return;
+      }
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        try {
+          await navigator.clipboard.writeText(value);
+          return;
+        } catch (err) {
+          // Fallback below
+        }
+      }
+
+      const textarea = document.createElement('textarea');
+      textarea.value = value;
+      textarea.setAttribute('readonly', '');
+      textarea.style.position = 'absolute';
+      textarea.style.left = '-9999px';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+      } catch (err) {
+        console.warn('Copy failed', err);
+      }
+      document.body.removeChild(textarea);
+    }
+
+    async function copyTextJSON(selector) {
+      await copyText(selector);
+    }
+
+    const answerCopyButton = document.getElementById('rag-answer-copy');
+    if (answerCopyButton) {
+      answerCopyButton.addEventListener('click', function () {
+        copyText('#rag-answer');
+      });
+    }
+
+    const rawCopyButton = document.getElementById('rag-raw-copy');
+    if (rawCopyButton) {
+      rawCopyButton.addEventListener('click', function () {
+        copyTextJSON('#rag-raw');
+      });
+    }
+
+    const rawToggleControl = document.getElementById('rag-raw-toggle');
+    if (rawToggleControl && rawToggleControl instanceof HTMLInputElement) {
+      rawToggleControl.addEventListener('change', function (event) {
+        const rawElement = document.getElementById('rag-raw');
+        if (!rawElement) {
+          return;
+        }
+        if (event.target.checked) {
+          rawElement.classList.remove('hidden');
+        } else {
+          rawElement.classList.add('hidden');
+        }
+      });
     }
 
     const uploadForm = document.getElementById('upload-form');
@@ -510,18 +955,19 @@
     }
 
     const queryForm = document.getElementById('query-form');
-    const queryResponseTarget = 'query-response';
     if (queryForm) {
       queryForm.addEventListener('submit', async function (event) {
         event.preventDefault();
+        clearError();
+        resetRagView();
         const queryText = document.getElementById('query-text');
         if (!queryText || !(queryText instanceof HTMLTextAreaElement)) {
-          renderJson(queryResponseTarget, 'Query input not found.');
+          showError('Query input not found.');
           return;
         }
         const queryValue = queryText.value.trim();
         if (!queryValue) {
-          renderJson(queryResponseTarget, 'Please enter a query.');
+          showError('Please enter a query.');
           return;
         }
 
@@ -581,21 +1027,43 @@
         }
 
         try {
-          const response = await fetch('/ai/rag/query/', {
+          const response = await fetch('/v1/ai/rag/query/', {
             method: 'POST',
             headers,
             body: JSON.stringify(payload),
             credentials: 'include'
           });
-          const text = await response.text();
-          try {
-            const data = JSON.parse(text);
-            prettyPrint(queryResponseTarget, data);
-          } catch (err) {
-            renderJson(queryResponseTarget, text);
+          const parsed = await parseJsonOrText(response);
+          const res = parsed[0];
+          const obj = parsed[1];
+          const rawPayload = obj && typeof obj === 'object' && '__raw' in obj ? { __raw: obj.__raw } : obj;
+
+          if (res.ok) {
+            if (obj && typeof obj === 'object' && '__raw' in obj) {
+              setRaw(rawPayload);
+              showError('Antwort ist kein JSON.');
+              return;
+            }
+            const rendered = renderRagV2(obj);
+            setRaw(obj);
+            if (rendered) {
+              clearError();
+            }
+            return;
           }
+
+          if (res.status === 422 && obj && obj.code === 'retrieval_inconsistent_metadata') {
+            setRaw(rawPayload);
+            showError('Re-Index erforderlich: Chunks ohne tenant_id/case_id.');
+            return;
+          }
+
+          setRaw(rawPayload);
+          const statusText = res.statusText || 'Unbekannter Fehler';
+          showError('Fehler ' + res.status + ': ' + statusText + '. Details im Raw-Tab.');
         } catch (error) {
-          renderJson(queryResponseTarget, String(error));
+          setRaw({ error: String(error) });
+          showError('Netzwerkfehler: ' + String(error));
         }
       });
     }
