@@ -347,13 +347,10 @@ class PgVectorClient:
         doc_id: object,
     ) -> Dict[str, object]:
         enriched = dict(meta or {})
-        if "tenant_id" not in enriched and tenant_id:
-            enriched["tenant_id"] = tenant_id
-        filter_case_value = (filters or {}).get("case_id", case_id)
-        if "case_id" not in enriched:
-            enriched["case_id"] = filter_case_value
-        enriched.setdefault("doc_id", doc_id)
-        enriched.setdefault("chunk_id", chunk_id)
+        if "chunk_id" not in enriched and chunk_id is not None:
+            enriched["chunk_id"] = chunk_id
+        if "doc_id" not in enriched and doc_id is not None:
+            enriched["doc_id"] = doc_id
         return enriched
 
     @contextmanager
@@ -1429,20 +1426,17 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
-            metadata_dict = self._ensure_chunk_metadata_contract(
-                metadata,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=chunk_identifier,
-                doc_id=doc_id,
-            )
+            raw_meta = dict(cast(Mapping[str, object] | None, metadata) or {})
+            if "chunk_id" not in raw_meta and chunk_identifier is not None:
+                raw_meta["chunk_id"] = chunk_identifier
+            if "doc_id" not in raw_meta and doc_id is not None:
+                raw_meta["doc_id"] = doc_id
             entry = candidates.setdefault(
                 key,
                 {
                     "chunk_id": key,
                     "content": text_value,
-                    "metadata": metadata_dict,
+                    "metadata": raw_meta,
                     "doc_hash": doc_hash,
                     "doc_id": doc_id,
                     "vscore": 0.0,
@@ -1487,20 +1481,17 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
-            metadata_dict = self._ensure_chunk_metadata_contract(
-                metadata,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=chunk_identifier,
-                doc_id=doc_id,
-            )
+            raw_meta = dict(cast(Mapping[str, object] | None, metadata) or {})
+            if "chunk_id" not in raw_meta and chunk_identifier is not None:
+                raw_meta["chunk_id"] = chunk_identifier
+            if "doc_id" not in raw_meta and doc_id is not None:
+                raw_meta["doc_id"] = doc_id
             entry = candidates.setdefault(
                 key,
                 {
                     "chunk_id": key,
                     "content": text_value,
-                    "metadata": metadata_dict,
+                    "metadata": raw_meta,
                     "doc_hash": doc_hash,
                     "doc_id": doc_id,
                     "vscore": 0.0,
