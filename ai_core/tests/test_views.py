@@ -496,6 +496,22 @@ def test_state_helpers_reject_unsafe_identifiers(monkeypatch, tmp_path):
         views.CHECKPOINTER.load(_graph_context("tenant", "../case"))
 
 
+def test_state_helpers_recover_from_corrupted_checkpoint(monkeypatch, tmp_path, caplog):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    ctx = _graph_context("Tenant Name", "Case*ID")
+    checkpoint_path = tmp_path / views.CHECKPOINTER._path(ctx)  # type: ignore[attr-defined]
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    checkpoint_path.write_text("{invalid json", encoding="utf-8")
+
+    with caplog.at_level("WARNING"):
+        loaded = views.CHECKPOINTER.load(ctx)
+
+    assert loaded == {}
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8")) == {}
+    assert "graph.checkpoint.corrupted" in caplog.text
+
+
 def test_graph_view_lazy_registration_reuses_cached_runner(monkeypatch):
     monkeypatch.setattr(registry, "_REGISTRY", {})
 
