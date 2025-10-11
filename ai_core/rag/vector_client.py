@@ -1429,14 +1429,9 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
-            metadata_dict = self._ensure_chunk_metadata_contract(
-                metadata,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=chunk_identifier,
-                doc_id=doc_id,
-            )
+
+            metadata_dict = dict(metadata or {})
+
             entry = candidates.setdefault(
                 key,
                 {
@@ -1451,6 +1446,12 @@ class PgVectorClient:
                 },
             )
             entry["chunk_id"] = chunk_identifier
+            if not entry.get("metadata"):
+                entry["metadata"] = metadata_dict
+            if entry.get("doc_id") is None and doc_id is not None:
+                entry["doc_id"] = doc_id
+            if entry.get("doc_hash") is None and doc_hash is not None:
+                entry["doc_hash"] = doc_hash
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
             else:
@@ -1487,14 +1488,8 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
-            metadata_dict = self._ensure_chunk_metadata_contract(
-                metadata,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=chunk_identifier,
-                doc_id=doc_id,
-            )
+
+            metadata_dict = dict(metadata or {})
             entry = candidates.setdefault(
                 key,
                 {
@@ -1509,6 +1504,14 @@ class PgVectorClient:
                 },
             )
             entry["chunk_id"] = chunk_identifier
+
+            if not entry.get("metadata"):
+                entry["metadata"] = metadata_dict
+            if entry.get("doc_id") is None and doc_id is not None:
+                entry["doc_id"] = doc_id
+            if entry.get("doc_hash") is None and doc_hash is not None:
+                entry["doc_hash"] = doc_hash
+
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
@@ -1535,6 +1538,7 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
+<<<<<<< HEAD
             raw_meta = dict(
                 cast(Mapping[str, object] | None, entry.get("metadata")) or {}
             )
@@ -1581,15 +1585,14 @@ class PgVectorClient:
                 chunk_id=entry.get("chunk_id"),
                 doc_id=entry.get("doc_id"),
             )
+=======
+            raw_meta = entry.get("metadata") or {}
+>>>>>>> 094a12cb31247bbd4e101b9c4da65ad168241452
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
-            if doc_hash and not meta.get("hash"):
-                meta["hash"] = doc_hash
-            if doc_id is not None and "id" not in meta:
-                meta["id"] = str(doc_id)
-            if not strict_match(meta, tenant, case_value):
-                candidate_tenant = meta.get("tenant_id")
-                candidate_case = meta.get("case_id")
+            if not strict_match(raw_meta, tenant, case_value):
+                candidate_tenant = raw_meta.get("tenant_id")
+                candidate_case = raw_meta.get("case_id")
                 reasons: List[str] = []
                 if tenant is not None:
                     if candidate_tenant is None:
@@ -1613,6 +1616,18 @@ class PgVectorClient:
                     reasons=reasons or ["unknown"],
                 )
                 continue
+            meta = self._ensure_chunk_metadata_contract(
+                raw_meta,
+                tenant_id=tenant,
+                case_id=case_value,
+                filters=normalized_filters,
+                chunk_id=entry.get("chunk_id"),
+                doc_id=doc_id,
+            )
+            if doc_hash and not meta.get("hash"):
+                meta["hash"] = doc_hash
+            if doc_id is not None and "id" not in meta:
+                meta["id"] = str(doc_id)
             try:
                 vscore = float(entry.get("vscore", 0.0))
             except (TypeError, ValueError):
