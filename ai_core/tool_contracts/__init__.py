@@ -65,11 +65,16 @@ class ContextError(ToolError):
         self.field = field
 
 
+class InconsistentMetadataError(ToolError):
+    """Raised when tool inputs contain inconsistent metadata."""
+
+
 __all__ = [
     "ToolContext",
     "ToolError",
     "InputError",
     "ContextError",
+    "InconsistentMetadataError",
     "NotFoundError",
     "RateLimitedError",
     "TimeoutError",

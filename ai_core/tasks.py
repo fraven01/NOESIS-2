@@ -18,12 +18,13 @@ from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
 from django.utils import timezone
+from pydantic import ValidationError
 
 from .infra import object_store, pii, tracing
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
-from .rag.ingestion_contracts import ensure_embedding_dimensions
+from .rag.ingestion_contracts import ChunkMeta, ensure_embedding_dimensions
 from .rag.embeddings import (
     EmbeddingBatchResult,
     EmbeddingClientError,
@@ -528,11 +529,29 @@ def upsert(
     """Upsert embedded chunks into the vector client."""
     data = object_store.read_json(embeddings_path)
     chunk_objs = []
-    for ch in data:
+    for index, ch in enumerate(data):
         vector = ch.get("embedding")
         embedding = [float(v) for v in vector] if vector is not None else None
+        raw_meta = ch.get("meta", {})
+        try:
+            meta_model = ChunkMeta.model_validate(raw_meta)
+        except ValidationError as exc:
+            logger.error(
+                "ingestion.chunk.meta.invalid",
+                extra={
+                    "tenant_id": meta.get("tenant_id") if meta else None,
+                    "case_id": meta.get("case_id") if meta else None,
+                    "chunk_index": index,
+                    "keys": sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None,
+                },
+            )
+            raise ValueError("invalid chunk metadata") from exc
         chunk_objs.append(
-            Chunk(content=ch["content"], meta=ch["meta"], embedding=embedding)
+            Chunk(
+                content=ch["content"],
+                meta=meta_model.model_dump(exclude_none=True),
+                embedding=embedding,
+            )
         )
 
     tenant_id: Optional[str] = meta.get("tenant_id") if meta else None

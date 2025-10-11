@@ -1688,7 +1688,7 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant_id") or chunk.meta.get("tenant")
+            tenant_value = chunk.meta.get("tenant_id")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
@@ -1722,8 +1722,6 @@ class PgVectorClient:
                     "chunks": [],
                 }
             chunk_meta = dict(chunk.meta)
-            # normalise legacy key and ensure tenant_id is the canonical field
-            chunk_meta.pop("tenant", None)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(

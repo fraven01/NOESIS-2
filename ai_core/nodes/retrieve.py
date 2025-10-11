@@ -13,6 +13,7 @@ from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
 from ai_core.rag.visibility import coerce_bool_flag
 from ai_core.tool_contracts import (
     ContextError,
+    InconsistentMetadataError,
     InputError,
     NotFoundError,
     ToolContext,
@@ -188,6 +189,25 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     return ordered_matches
 
 
+def _ensure_chunk_metadata(
+    chunks: list[Chunk], *, tenant_id: str, case_id: str | None
+) -> None:
+    for index, chunk in enumerate(chunks):
+        meta = chunk.meta or {}
+        if "tenant_id" in meta and "case_id" in meta:
+            continue
+        logger.error(
+            "rag.retrieve.inconsistent_metadata",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "chunk_index": index,
+                "keys": sorted(meta.keys()),
+            },
+        )
+        raise InconsistentMetadataError("reindex required")
+
+
 def _coerce_float_value(value: object, fallback: float) -> float:
     try:
         return float(value)
@@ -305,6 +325,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
     )
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
+    _ensure_chunk_metadata(chunks, tenant_id=tenant_id, case_id=case_id)
     if not chunks and vector_candidates == 0 and lexical_candidates == 0:
         logger.info(
             "rag.retrieve.no_matches",
