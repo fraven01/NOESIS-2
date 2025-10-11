@@ -1,6 +1,8 @@
 from typing import Any, MutableMapping
 from unittest.mock import patch
 
+import pytest
+
 from ai_core.graphs import retrieval_augmented_generation
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
@@ -121,6 +123,41 @@ def test_graph_normalises_tenant_alias() -> None:
     assert retrieval["took_ms"] == 12
     assert retrieval["routing"]["profile"] == "default"
     assert retrieval["routing"]["vector_space_id"] == "global"
+
+
+def test_graph_fills_missing_snippet_fields() -> None:
+    def _recording_retrieve(
+        context: ToolContext, params: retrieve.RetrieveInput
+    ) -> retrieve.RetrieveOutput:
+        return _dummy_output()
+
+    def _compose_with_sparse_snippets(
+        state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
+    ):
+        new_state = dict(state)
+        sparse_snippet = {"id": "doc-1", "score": "0.2"}
+        new_state["snippets"] = [sparse_snippet]
+        new_state["answer"] = "filled"
+        return new_state, {
+            "answer": "filled",
+            "prompt_version": "v-test",
+            "snippets": [dict(sparse_snippet)],
+            "retrieval": new_state["retrieval"],
+        }
+
+    graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
+        retrieve_node=_recording_retrieve,
+        compose_node=_compose_with_sparse_snippets,
+    )
+
+    state, result = graph.run({}, {"tenant_id": "tenant", "case_id": "case"})
+
+    snippet = result["snippets"][0]
+    assert snippet["text"] == "snippet"
+    assert snippet["source"] == "handbook.md"
+    assert snippet["score"] == pytest.approx(0.2)
+    assert state["snippets"][0]["text"] == "snippet"
+    assert state["snippets"][0]["source"] == "handbook.md"
 
 
 def test_build_graph_returns_shared_instance() -> None:
