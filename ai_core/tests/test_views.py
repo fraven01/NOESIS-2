@@ -1260,7 +1260,11 @@ def test_rag_query_endpoint_surfaces_diagnostics(
         "deleted_matches_blocked": 1,
         "visibility_effective": "active",
         "took_ms": 21,
-        "routing": {"profile": "standard", "vector_space_id": "rag/global", "mode": "fallback"},
+        "routing": {
+            "profile": "standard",
+            "vector_space_id": "rag/global",
+            "mode": "fallback",
+        },
         "lexical_variant": "fallback",
     }
     snippets_payload = [
@@ -1313,7 +1317,10 @@ def test_rag_query_endpoint_surfaces_diagnostics(
     assert "lexical_variant" not in payload["retrieval"]
     diagnostics = payload.get("diagnostics")
     assert diagnostics
-    assert diagnostics["response"]["graph_debug"]["lexical_primary_failed"] == "tuple index out of range"
+    assert (
+        diagnostics["response"]["graph_debug"]["lexical_primary_failed"]
+        == "tuple index out of range"
+    )
     retrieval_diag = diagnostics["retrieval"]
     assert retrieval_diag["lexical_variant"] == "fallback"
     assert retrieval_diag["routing"]["mode"] == "fallback"
