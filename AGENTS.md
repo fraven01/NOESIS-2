@@ -40,28 +40,24 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 | Langfuse Traces & Kostenmetriken | Langfuse Store (Trace-, Span-, Metric-Records) | Observability Team | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 | Secrets & Konfigurationswerte | `.env`, GitHub Secrets, Secret Manager Versionen | Security & Platform | [docs/security/secrets.md#env-verträge](docs/security/secrets.md#env-verträge) |
 
-## Architektur-Layer & Verantwortlichkeiten
-Wir entwickeln als Modularer Monolith mit klaren Grenzen (Auskopplung später möglich):
+## Schichten & Verantwortlichkeiten
+- **Business/Orchestrierung**
+  - [ai_core/graphs/README.md](ai_core/graphs/README.md)  
+    Beschreibt die Geschäftsflüsse und wie LangGraph-Orchestrierungen die RAG-Kette für einzelne Cases auslösen.
 
-1. **Layer 1 – Worker/Services (app/services/***)**  
-   Zustandslose Module: `rag`, `extract`, `docbuild`, `web`, `multimodal`. Keine Graph-Abhängigkeit.  
-   Guardrails: Tenant-Filter, Timeouts, Idempotenz, Trace-Tags.
+- **Capabilities**
+  - [ai_core/nodes/README.md](ai_core/nodes/README.md)  
+    Erläutert die wiederverwendbaren Node-Bausteine für Retrieval, Guardrails und Tooling im Graph.
+  - [ai_core/rag/README.md](ai_core/rag/README.md)  
+    Dokumentiert die Retrieval-Schicht inkl. Indexing, Chunking und Abfragepfaden des RAG v2.
 
-2. **Layer 2 – Tool-Abstraktion (app/tools/***)**  
-   Pydantic-Contracts + schlanke Adapter, die Services aufrufen. Einheitliche Fehler-Typen.  
-   Schnittstellen sind stabil und versioniert.
-
-3. **Layer 3 – Prozess-Templates (app/process_graphs/***)**  
-   Wiederverwendbare LangGraph-Flows (z. B. „Systembeschreibung“, „Funktionsbeschreibung“, „Auswertung“).  
-   Sie orchestrieren `retrieve()`, `web.search()`, `extract()`, `docbuild()`. Siehe Agenten-Kontrollfluss. 
-
-4. **Layer 4 – Business Logic (app/tenant_logic/***)**  
-   Orchestrator lädt Tenant-Konfig (Vorlagen, Prompt-Versionen, Policies), wählt Graph aus und injiziert State. 
-
-5. **Layer 5 – Frontend (theme/**, docs/frontend-ueberblick.md)**  
-   React/TypeScript-UI mit Tailwind, Storybook, A11y-Checks. Hält sich an Frontend-Guidelines und Master Prompt.
-
-Primärquellen: Agenten-Kontrollfluss & Knoten/Guardrails, Frontend-Überblick & Master Prompt. 
+- **Platform-Kernel**
+  - [ai_core/llm/README.md](ai_core/llm/README.md)  
+    Führt durch die Modellanbindung, Prompt-Router und Model Contracts.
+  - [ai_core/infra/README.md](ai_core/infra/README.md)  
+    Legt die Infrastruktur-Adapter, Secrets und Observability-Hooks für den AI-Core fest.
+  - [ai_core/middleware/README.md](ai_core/middleware/README.md)  
+    Beschreibt die Middleware-Schicht für Telemetrie, Caching und Fehlerbehandlung zwischen Kernel und Capabilities.
 
 Hinweise:
 - Siehe Frontend Master Prompt: [docs/frontend-master-prompt.md](docs/frontend-master-prompt.md)
