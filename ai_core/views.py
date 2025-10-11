@@ -79,6 +79,13 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from . import services
+from .ingestion import run_ingestion as run_ingestion  # re-export for tests
+from .ingestion import partition_document_ids as partition_document_ids  # test hook
+from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
+from ai_core.graph.schemas import normalize_meta  # re-export for tests
+from .rag.ingestion_contracts import (
+    resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
+)
 from .infra import rate_limit
 from .ingestion_status import (
     get_latest_ingestion_run,
@@ -98,6 +105,23 @@ logger = logging.getLogger(__name__)
 def assert_case_active(tenant: str, case_id: str) -> None:
     """Placeholder for future case activity checks."""
     return None
+
+
+def make_fallback_external_id(filename: str, size: int, data: bytes) -> str:
+    """Derive a deterministic fallback external_id for uploads.
+
+    Combines filename, declared size and raw bytes using SHA-256, matching
+    historical behaviour used by tests and legacy ingestion flows.
+    """
+    try:
+        name_bytes = filename.encode("utf-8")
+    except Exception:  # pragma: no cover - defensive
+        name_bytes = str(filename).encode("utf-8", errors="ignore")
+    size_bytes = str(size).encode("utf-8")
+    buffer = name_bytes + size_bytes + (data or b"")
+    import hashlib
+
+    return hashlib.sha256(buffer).hexdigest()
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
@@ -1011,8 +1035,13 @@ class _GraphView(_BaseAgentView):
 
         graph_runner = self.get_graph()
         request.graph_name = self.graph_name
-        response = services.execute_graph(request, graph_runner)
+        response = _run_graph(request, graph_runner)
         return apply_std_headers(response, meta)
+
+
+def _run_graph(request: Request, graph_runner) -> Response:  # type: ignore[no-untyped-def]
+    """Compatibility wrapper used by tests to monkeypatch graph execution."""
+    return services.execute_graph(request, graph_runner)
 
 
 class IntakeViewV1(_GraphView):

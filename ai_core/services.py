@@ -17,6 +17,7 @@ import json
 import logging
 from collections.abc import Mapping
 from uuid import uuid4
+from importlib import import_module
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
@@ -27,7 +28,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
-from ai_core.graph.schemas import ToolContext, merge_state, normalize_meta
+from ai_core.graph.schemas import ToolContext, merge_state
+from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import (
     InconsistentMetadataError as ToolInconsistentMetadataError,
@@ -45,7 +47,7 @@ from .ingestion_status import record_ingestion_run_queued
 from .ingestion_utils import make_fallback_external_id
 from .rag.ingestion_contracts import (
     map_ingestion_error_to_status,
-    resolve_ingestion_profile,
+    resolve_ingestion_profile as _base_resolve_ingestion_profile,
 )
 from .schemas import (
     InfoIntakeRequest,
@@ -62,6 +64,65 @@ logger = logging.getLogger(__name__)
 
 
 CHECKPOINTER = FileCheckpointer()
+
+# Allow tests to monkeypatch the run_ingestion task via ai_core.views.run_ingestion
+# while keeping a sane default binding for production code paths.
+RUN_INGESTION = run_ingestion
+
+
+def _get_run_ingestion_task():  # type: ignore[no-untyped-def]
+    try:
+        views = import_module("ai_core.views")
+        task = getattr(views, "run_ingestion", None)
+        if task is not None:
+            return task
+    except Exception:
+        pass
+    return RUN_INGESTION
+
+
+def _get_partition_document_ids():  # type: ignore[no-untyped-def]
+    try:
+        views = import_module("ai_core.views")
+        fn = getattr(views, "partition_document_ids", None)
+        if callable(fn):
+            return fn
+    except Exception:
+        pass
+    return partition_document_ids
+
+
+def _get_checkpointer():  # type: ignore[no-untyped-def]
+    try:
+        views = import_module("ai_core.views")
+        cp = getattr(views, "CHECKPOINTER", None)
+        if cp is not None:
+            return cp
+    except Exception:
+        pass
+    return CHECKPOINTER
+
+
+def _normalize_meta(request):  # type: ignore[no-untyped-def]
+    try:
+        views = import_module("ai_core.views")
+        fn = getattr(views, "normalize_meta", None)
+        if callable(fn):
+            return fn(request)
+    except Exception:
+        pass
+    return _base_normalize_meta(request)
+
+
+def _resolve_ingestion_profile(profile: str):  # type: ignore[no-untyped-def]
+    try:
+        views = import_module("ai_core.views")
+        fn = getattr(views, "resolve_ingestion_profile", None)
+        if callable(fn):
+            return fn(profile)
+    except Exception:
+        pass
+    return _base_resolve_ingestion_profile(profile)
 
 
 GRAPH_REQUEST_MODELS = {
@@ -99,7 +160,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
     `_run_graph` function in the view layer.
     """
     try:
-        normalized_meta = normalize_meta(request)
+        normalized_meta = _normalize_meta(request)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
@@ -126,7 +187,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
     )
 
     try:
-        state = CHECKPOINTER.load(context)
+        state = _get_checkpointer().load(context)
     except (TypeError, ValueError) as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
@@ -265,7 +326,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         )
 
     try:
-        CHECKPOINTER.save(context, new_state)
+        _get_checkpointer().save(context, new_state)
     except (TypeError, ValueError) as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
@@ -290,7 +351,12 @@ def start_ingestion_run(
         )
 
     try:
-        profile_binding = resolve_ingestion_profile(validated_data.embedding_profile)
+        normalized_profile = (
+            str(validated_data.embedding_profile).strip()
+            if hasattr(validated_data, "embedding_profile")
+            else str(validated_data.get("embedding_profile", "")).strip()
+        )
+        profile_binding = _resolve_ingestion_profile(normalized_profile)
     except InputError as exc:
         return _error_response(
             exc.message,
@@ -302,14 +368,14 @@ def start_ingestion_run(
     ingestion_run_id = uuid4().hex
     queued_at = timezone.now().isoformat()
 
-    valid_document_ids, invalid_document_ids = partition_document_ids(
+    valid_document_ids, invalid_document_ids = _get_partition_document_ids()(
         meta["tenant_id"], meta["case_id"], validated_data.document_ids
     )
 
     to_dispatch = (
         valid_document_ids if valid_document_ids else validated_data.document_ids
     )
-    run_ingestion.delay(
+    _get_run_ingestion_task().delay(
         meta["tenant_id"],
         meta["case_id"],
         to_dispatch,
@@ -453,7 +519,7 @@ def handle_document_upload(
     object_store.write_json(f"{storage_prefix}/{document_id}.meta.json", metadata_obj)
 
     try:
-        profile_binding = resolve_ingestion_profile(
+        profile_binding = _resolve_ingestion_profile(
             getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
         )
     except InputError as exc:
@@ -478,7 +544,7 @@ def handle_document_upload(
     document_ids = [document_id]
 
     try:
-        run_ingestion.delay(
+        _get_run_ingestion_task().delay(
             meta["tenant_id"],
             meta["case_id"],
             document_ids,
