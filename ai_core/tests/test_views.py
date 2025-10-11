@@ -1236,6 +1236,90 @@ def test_rag_query_endpoint_normalises_numeric_types(
 
 
 @pytest.mark.django_db
+def test_rag_query_endpoint_surfaces_diagnostics(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    retrieval_payload = {
+        "alpha": 0.65,
+        "min_sim": 0.35,
+        "top_k_effective": 2,
+        "max_candidates_effective": 20,
+        "vector_candidates": 11,
+        "lexical_candidates": 7,
+        "deleted_matches_blocked": 1,
+        "visibility_effective": "active",
+        "took_ms": 21,
+        "routing": {"profile": "standard", "vector_space_id": "rag/global", "mode": "fallback"},
+        "lexical_variant": "fallback",
+    }
+    snippets_payload = [
+        {
+            "id": "doc-3",
+            "text": "Diagnostic snippet",
+            "score": 0.73,
+            "source": "guide.md",
+        }
+    ]
+
+    def _run(state, meta):
+        augmented = dict(state)
+        augmented.update(
+            {
+                "snippets": snippets_payload,
+                "matches": snippets_payload,
+                "retrieval": retrieval_payload,
+                "answer": "Synthesised",
+            }
+        )
+        return augmented, {
+            "answer": "Synthesised",
+            "prompt_version": "v3",
+            "retrieval": retrieval_payload,
+            "snippets": snippets_payload,
+            "graph_debug": {"lexical_primary_failed": "tuple index out of range"},
+        }
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "Was gilt?", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-diagnostics",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["answer"] == "Synthesised"
+    assert payload["prompt_version"] == "v3"
+    assert payload["retrieval"]["lexical_candidates"] == 7
+    assert payload["retrieval"]["routing"]["profile"] == "standard"
+    assert "lexical_variant" not in payload["retrieval"]
+    diagnostics = payload.get("diagnostics")
+    assert diagnostics
+    assert diagnostics["response"]["graph_debug"]["lexical_primary_failed"] == "tuple index out of range"
+    retrieval_diag = diagnostics["retrieval"]
+    assert retrieval_diag["lexical_variant"] == "fallback"
+    assert retrieval_diag["routing"]["mode"] == "fallback"
+
+
+@pytest.mark.django_db
 def test_rag_query_endpoint_populates_query_from_question(
     client, monkeypatch, test_tenant_schema_name
 ):
