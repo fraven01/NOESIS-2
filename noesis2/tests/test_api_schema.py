@@ -358,6 +358,53 @@ def test_ai_core_endpoints_expose_serializers():
         for sample in needs_operation.get("x-codeSamples", [])
     )
 
+    rag_operation = schema["paths"]["/v1/ai/rag/query/"]["post"]
+    rag_response_ref = rag_operation["responses"]["200"]["content"][
+        "application/json"
+    ]["schema"]["$ref"]
+    _, rag_component = _extract_component(schema, rag_response_ref)
+    rag_properties = rag_component["properties"]
+    assert {"answer", "prompt_version", "retrieval", "snippets"}.issubset(
+        rag_properties
+    )
+
+    retrieval_schema = rag_properties["retrieval"]
+    if "$ref" in retrieval_schema:
+        _, retrieval_component = _extract_component(schema, retrieval_schema["$ref"])
+    else:
+        retrieval_component = retrieval_schema
+    retrieval_props = retrieval_component["properties"]
+    expected_retrieval = {
+        "alpha",
+        "min_sim",
+        "top_k_effective",
+        "max_candidates_effective",
+        "vector_candidates",
+        "lexical_candidates",
+        "deleted_matches_blocked",
+        "visibility_effective",
+        "took_ms",
+        "routing",
+    }
+    assert expected_retrieval.issubset(retrieval_props)
+
+    routing_schema = retrieval_props["routing"]
+    if "$ref" in routing_schema:
+        _, routing_component = _extract_component(schema, routing_schema["$ref"])
+    else:
+        routing_component = routing_schema
+    routing_props = routing_component["properties"]
+    assert {"profile", "vector_space_id"}.issubset(routing_props)
+
+    snippets_schema = rag_properties["snippets"]
+    snippet_items = snippets_schema.get("items", {})
+    if "$ref" in snippet_items:
+        _, snippet_component = _extract_component(schema, snippet_items["$ref"])
+    else:
+        snippet_component = snippet_items
+    snippet_props = snippet_component["properties"]
+    assert snippet_props["score"]["type"] == "number"
+
     sysdesc_operation = schema["paths"]["/ai/sysdesc/"]["post"]
     sysdesc_response_ref = sysdesc_operation["responses"]["200"]["content"][
         "application/json"

@@ -1,0 +1,1 @@
+Die Infra-Komponenten bilden den Platform-Kernel für langlebige Ressourcen wie Datenquellen, Clients und Observability, an die Nodes und Graphen sich binden ohne deren Lebenszyklus individuell zu verwalten.

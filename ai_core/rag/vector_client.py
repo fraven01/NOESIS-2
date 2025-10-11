@@ -1500,17 +1500,6 @@ class PgVectorClient:
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
             meta = dict(entry["metadata"])
-            # normalise legacy metadata keys if present
-            if "tenant_id" not in meta and "tenant" in meta:
-                try:
-                    meta["tenant_id"] = str(meta["tenant"])  # type: ignore[index]
-                except Exception:
-                    meta["tenant_id"] = meta.get("tenant")
-            if "case_id" not in meta and "case" in meta:
-                try:
-                    meta["case_id"] = str(meta["case"])  # type: ignore[index]
-                except Exception:
-                    meta["case_id"] = meta.get("case")
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
             if doc_hash and not meta.get("hash"):
@@ -1699,7 +1688,7 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant_id") or chunk.meta.get("tenant")
+            tenant_value = chunk.meta.get("tenant_id")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
@@ -1733,8 +1722,6 @@ class PgVectorClient:
                     "chunks": [],
                 }
             chunk_meta = dict(chunk.meta)
-            # normalise legacy key and ensure tenant_id is the canonical field
-            chunk_meta.pop("tenant", None)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             grouped[key]["chunks"].append(

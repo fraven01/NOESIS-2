@@ -8,5 +8,5 @@ class Chunk:
 
     content: str
     meta: Dict[str, Any]
-    """Metadata with keys: tenant, case, source, hash."""
+    """Metadata including tenant_id, case_id, source, hash and related fields."""
     embedding: Optional[List[float]] = None

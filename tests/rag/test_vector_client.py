@@ -196,7 +196,12 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
             "chunks": [
                 Chunk(
                     content="hello world",
-                    meta={"tenant_id": tenant, "hash": "hash-1", "source": "unit-test"},
+                    meta={
+                        "tenant_id": tenant,
+                        "case_id": "case-1",
+                        "hash": "hash-1",
+                        "source": "unit-test",
+                    },
                     embedding=[3.0, 4.0],
                 )
             ],

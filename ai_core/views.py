@@ -40,6 +40,7 @@ from noesis2.api.serializers import (
     IntakeResponseSerializer,
     NeedsResponseSerializer,
     PingResponseSerializer,
+    RagQueryResponseSerializer,
     ScopeResponseSerializer,
     SysDescResponseSerializer,
 )
@@ -91,6 +92,7 @@ from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import (
+    InconsistentMetadataError as ToolInconsistentMetadataError,
     InputError as ToolInputError,
     NotFoundError as ToolNotFoundError,
     RateLimitedError as ToolRateLimitedError,
@@ -491,6 +493,16 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         logger.info("tool.not_found")
         detail = str(exc) or "No matching documents were found."
         return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
+    except ToolInconsistentMetadataError as exc:
+        logger.warning("tool.inconsistent_metadata")
+        payload = {
+            "detail": str(exc) or "reindex required",
+            "code": "retrieval_inconsistent_metadata",
+        }
+        context = getattr(exc, "context", None)
+        if context:
+            payload["context"] = context
+        return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
     except ToolInputError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ToolRateLimitedError as _exc:
@@ -764,7 +776,31 @@ RAG_QUERY_RESPONSE_EXAMPLE = OpenApiExample(
     value={
         "answer": "Consultants nutzen das Travel-Policy-Template.",
         "prompt_version": "2024-05-01",
-        "idempotent": False,
+        "retrieval": {
+            "alpha": 0.7,
+            "min_sim": 0.15,
+            "top_k_effective": 1,
+            "max_candidates_effective": 50,
+            "vector_candidates": 37,
+            "lexical_candidates": 41,
+            "deleted_matches_blocked": 0,
+            "visibility_effective": "active",
+            "took_ms": 42,
+            "routing": {
+                "profile": "standard",
+                "vector_space_id": "rag/global",
+            },
+        },
+        "snippets": [
+            {
+                "id": "doc-871#p3",
+                "text": "Rücksendungen sind innerhalb von 30 Tagen möglich, sofern das Produkt unbenutzt ist.",
+                "score": 0.82,
+                "source": "policies/returns.md",
+                "hash": "7f3d6a2c",
+                "meta": {"page": 3, "language": "de"},
+            }
+        ],
     },
     response_only=True,
 )
@@ -797,14 +833,7 @@ RAG_QUERY_REQUEST = inline_serializer(
     },
 )
 
-RAG_QUERY_RESPONSE = inline_serializer(
-    name="RagQueryResponse",
-    fields={
-        "answer": serializers.CharField(),
-        "prompt_version": serializers.CharField(),
-        "idempotent": serializers.BooleanField(),
-    },
-)
+RAG_QUERY_RESPONSE = RagQueryResponseSerializer
 
 RAG_QUERY_SCHEMA = {
     "request": RAG_QUERY_REQUEST,
@@ -1308,7 +1337,19 @@ class RagQueryViewV1(_GraphView):
 
     @default_extend_schema(**RAG_QUERY_SCHEMA)
     def post(self, request: Request) -> Response:
-        return super().post(request)
+        response = super().post(request)
+
+        # Only validate successful responses returned from the graph runner.
+        if 200 <= response.status_code < 300:
+            graph_payload = response.data
+            serializer = RagQueryResponseSerializer(data=graph_payload)
+            serializer.is_valid(raise_exception=True)
+            response.data = serializer.validated_data
+            bind_log_context(response_contract="rag.v2")
+            if isinstance(getattr(request, "log_context", None), dict):
+                request.log_context["response_contract"] = "rag.v2"
+
+        return response
 
 
 class RagUploadView(APIView):

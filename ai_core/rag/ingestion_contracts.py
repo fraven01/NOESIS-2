@@ -10,6 +10,8 @@ from common.logging import get_log_context, get_logger
 from ai_core.infra import tracing
 from ai_core.tools import InputError
 
+from pydantic import BaseModel, ConfigDict
+
 from .schemas import Chunk
 
 from .vector_space_resolver import (
@@ -46,6 +48,23 @@ class IngestionProfileResolution:
 
     profile_id: str
     resolution: VectorSpaceResolution
+
+
+class ChunkMeta(BaseModel):
+    """Validated chunk metadata persisted alongside embeddings."""
+
+    tenant_id: str
+    case_id: str
+    source: str
+    hash: str
+    external_id: str
+    content_hash: str
+    embedding_profile: str | None = None
+    vector_space_id: str | None = None
+    process: str | None = None
+    doc_class: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolution:
@@ -156,6 +175,7 @@ __all__ = [
     "IngestionContractErrorCode",
     "map_ingestion_error_to_status",
     "IngestionProfileResolution",
+    "ChunkMeta",
     "resolve_ingestion_profile",
     "ensure_embedding_dimensions",
 ]

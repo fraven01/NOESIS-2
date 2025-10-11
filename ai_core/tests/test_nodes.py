@@ -14,7 +14,13 @@ from ai_core.nodes import (
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
-from ai_core.tool_contracts import ContextError, InputError, NotFoundError, ToolContext
+from ai_core.tool_contracts import (
+    ContextError,
+    InconsistentMetadataError,
+    InputError,
+    NotFoundError,
+    ToolContext,
+)
 
 META = {
     "tenant_id": "t1",
@@ -50,7 +56,14 @@ def test_retrieve_hybrid_search(monkeypatch):
 
     chunk = Chunk(
         "Hybrid Result",
-        {"id": "doc-1", "source": "src", "hash": "h1", "score": 0.83},
+        {
+            "id": "doc-1",
+            "source": "src",
+            "hash": "h1",
+            "score": 0.83,
+            "tenant_id": "tenant-1",
+            "case_id": "case-1",
+        },
     )
     hybrid_result = HybridSearchResult(
         chunks=[chunk],
@@ -106,6 +119,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert match["id"] == "doc-1"
     assert match["score"] == pytest.approx(0.83)
     assert match["source"] == "src"
+    assert match["meta"]["tenant_id"] == "tenant-1"
+    assert match["meta"]["case_id"] == "case-1"
     assert isinstance(result.meta.took_ms, int)
     assert result.meta.took_ms >= 0
 
@@ -117,10 +132,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert meta_payload.vector_candidates == 37
     assert meta_payload.lexical_candidates == 41
     assert meta_payload.deleted_matches_blocked == 3
-    assert meta_payload.routing == {
-        "profile": "standard",
-        "vector_space_id": "rag/global",
-    }
+    assert meta_payload.routing.profile == "standard"
+    assert meta_payload.routing.vector_space_id == "rag/global"
     assert meta_payload.visibility_effective == "active"
 
 
@@ -190,9 +203,37 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     _patch_routing(monkeypatch)
 
     chunks = [
-        Chunk("First", {"id": "doc-1", "score": 0.4, "source": "a"}),
-        Chunk("Second", {"id": "doc-1", "score": 0.9, "source": "b", "extra": "x"}),
-        Chunk("Third", {"id": "doc-2", "score": 0.5, "source": "c"}),
+        Chunk(
+            "First",
+            {
+                "id": "doc-1",
+                "score": 0.4,
+                "source": "a",
+                "tenant_id": "tenant-1",
+                "case_id": "c1",
+            },
+        ),
+        Chunk(
+            "Second",
+            {
+                "id": "doc-1",
+                "score": 0.9,
+                "source": "b",
+                "extra": "x",
+                "tenant_id": "tenant-1",
+                "case_id": "c1",
+            },
+        ),
+        Chunk(
+            "Third",
+            {
+                "id": "doc-2",
+                "score": 0.5,
+                "source": "c",
+                "tenant_id": "tenant-1",
+                "case_id": "c1",
+            },
+        ),
     ]
     hybrid_result = HybridSearchResult(
         chunks=chunks,
@@ -224,6 +265,35 @@ def test_retrieve_deduplicates_matches(monkeypatch):
     assert top_match["id"] == "doc-1"
     assert top_match["source"] == "b"
     assert top_match["score"] == pytest.approx(0.9)
+
+
+def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
+    _patch_routing(monkeypatch)
+
+    chunk = Chunk("Invalid", {"tenant_id": "tenant-1"})
+    hybrid_result = HybridSearchResult(
+        chunks=[chunk],
+        vector_candidates=1,
+        lexical_candidates=0,
+        fused_candidates=1,
+        duration_ms=0.1,
+        alpha=0.7,
+        min_sim=0.15,
+        vec_limit=5,
+        lex_limit=5,
+    )
+
+    class _Router:
+        def hybrid_search(self, *_args, **_kwargs):
+            return hybrid_result
+
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
+
+    params = retrieve.RetrieveInput.from_state({"query": "hi", "hybrid": {}})
+    context = ToolContext(tenant_id="tenant-1", case_id="case-1")
+
+    with pytest.raises(InconsistentMetadataError, match="reindex required"):
+        retrieve.run(context, params)
 
 
 def test_retrieve_raises_not_found_when_no_candidates(monkeypatch):

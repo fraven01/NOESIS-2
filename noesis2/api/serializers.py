@@ -68,6 +68,51 @@ class SysDescResponseSerializer(IdempotentResponseSerializer):
     missing = serializers.ListField(child=serializers.CharField(), required=False)
 
 
+class RagSnippetSerializer(serializers.Serializer):
+    """Serializer describing individual retrieval snippets."""
+
+    id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    text = serializers.CharField()
+    score = serializers.FloatField()
+    source = serializers.CharField(allow_blank=True)
+    hash = serializers.CharField(required=False, allow_null=True, allow_blank=True)
+    meta = serializers.JSONField(required=False)
+
+
+class RagRetrievalRoutingSerializer(serializers.Serializer):
+    """Routing metadata emitted by the retrieval step."""
+
+    profile = serializers.CharField()
+    vector_space_id = serializers.CharField()
+
+
+class RagRetrievalMetaSerializer(serializers.Serializer):
+    """Serializer for the retrieval diagnostics payload."""
+
+    alpha = serializers.FloatField()
+    min_sim = serializers.FloatField()
+    top_k_effective = serializers.IntegerField()
+    max_candidates_effective = serializers.IntegerField()
+    vector_candidates = serializers.IntegerField()
+    lexical_candidates = serializers.IntegerField()
+    deleted_matches_blocked = serializers.IntegerField()
+    visibility_effective = serializers.CharField()
+    took_ms = serializers.IntegerField()
+    routing = RagRetrievalRoutingSerializer()
+
+
+class RagQueryResponseSerializer(serializers.Serializer):
+    """Response payload returned by the production RAG query endpoint.
+
+    MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
+    """
+
+    answer = serializers.CharField()
+    prompt_version = serializers.CharField()
+    retrieval = RagRetrievalMetaSerializer()
+    snippets = RagSnippetSerializer(many=True)
+
+
 class TenantDemoResponseSerializer(serializers.Serializer):
     """Response body returned by the tenant demo view."""
 

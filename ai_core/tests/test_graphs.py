@@ -43,3 +43,5 @@ def test_system_description_only_when_no_missing():
     state2, result2 = system_description.run({"missing": []}, META)
     assert "description" in state2
     assert result2["description"] == state2["description"]
+    expected = f"System for tenant {META['tenant_id']} case {META['case_id']}"
+    assert state2["description"] == expected

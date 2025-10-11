@@ -13,6 +13,7 @@ from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
 from ai_core.rag.visibility import coerce_bool_flag
 from ai_core.tool_contracts import (
     ContextError,
+    InconsistentMetadataError,
     InputError,
     NotFoundError,
     ToolContext,
@@ -54,21 +55,30 @@ class RetrieveInput(BaseModel):
         return cls(**data)
 
 
+class RetrieveRouting(BaseModel):
+    """Routing metadata resolved for the retrieval run."""
+
+    profile: str
+    vector_space_id: str
+
+    model_config = ConfigDict(extra="forbid")
+
+
 class RetrieveMeta(BaseModel):
     """Metadata emitted by the retrieval tool."""
 
-    routing: Dict[str, str | None]
+    routing: RetrieveRouting
     took_ms: int
-    alpha: float | None = None
-    min_sim: float | None = None
-    top_k_effective: int | None = None
-    max_candidates_effective: int | None = None
-    vector_candidates: int | None = None
-    lexical_candidates: int | None = None
-    deleted_matches_blocked: int | None = None
-    visibility_effective: str | None = None
+    alpha: float
+    min_sim: float
+    top_k_effective: int
+    max_candidates_effective: int
+    vector_candidates: int
+    lexical_candidates: int
+    deleted_matches_blocked: int
+    visibility_effective: str
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
 
 class RetrieveOutput(BaseModel):
@@ -177,6 +187,25 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
         key=lambda item: (-float(item.get("score", 0.0)), str(item.get("id") or ""))
     )
     return ordered_matches
+
+
+def _ensure_chunk_metadata(
+    chunks: list[Chunk], *, tenant_id: str, case_id: str | None
+) -> None:
+    for index, chunk in enumerate(chunks):
+        meta = chunk.meta or {}
+        if "tenant_id" in meta and "case_id" in meta:
+            continue
+        logger.error(
+            "rag.retrieve.inconsistent_metadata",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "chunk_index": index,
+                "keys": sorted(meta.keys()),
+            },
+        )
+        raise InconsistentMetadataError("reindex required")
 
 
 def _coerce_float_value(value: object, fallback: float) -> float:
@@ -296,6 +325,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         getattr(hybrid_result, "lexical_candidates", 0) or 0, 0
     )
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
+    _ensure_chunk_metadata(chunks, tenant_id=tenant_id, case_id=case_id)
     if not chunks and vector_candidates == 0 and lexical_candidates == 0:
         logger.info(
             "rag.retrieve.no_matches",
@@ -347,6 +377,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
 
 __all__ = [
     "RetrieveInput",
+    "RetrieveRouting",
     "RetrieveMeta",
     "RetrieveOutput",
     "run",

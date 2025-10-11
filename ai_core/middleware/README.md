@@ -1,0 +1,1 @@
+Das Middleware-Verzeichnis beherbergt platformseitige Kernel-Komponenten für Request- und Event-Pipelines, die Querschnittsfunktionen wie Auth, Tracing und Rate-Limits bereitstellen, bevor Business-Graphen übernehmen.
