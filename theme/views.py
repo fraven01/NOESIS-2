@@ -12,13 +12,23 @@ def rag_tools(request):
     """Render a minimal interface to exercise the RAG endpoints manually."""
 
     host = request.get_host() or ""
-    tenant_id = host.split(":", maxsplit=1)[0] if host else "dev.localhost"
+    hostname = host.split(":", maxsplit=1)[0]
+
+    tenant_id = hostname or "dev.localhost"
+
+    tenant_schema = None
+    if hostname:
+        tenant_schema = hostname.split(".", maxsplit=1)[0] or None
+
+    if not tenant_schema:
+        tenant_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
 
     return render(
         request,
         "theme/rag_tools.html",
         {
             "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
             "default_embedding_profile": getattr(
                 settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
             ),

@@ -13,5 +13,7 @@ def test_rag_tools_page_is_accessible(client):
     assert "Ingestion Status" in content
     assert "Query" in content
     assert "X-Tenant-ID: testserver" in content
+    assert "X-Tenant-Schema: testserver" in content
     assert 'const derivedTenantId = "testserver"' in content
+    assert 'const derivedTenantSchema = "testserver"' in content
     assert "const defaultEmbeddingProfile" in content
