@@ -347,7 +347,7 @@ class PgVectorClient:
         doc_id: object,
     ) -> Dict[str, object]:
         enriched = dict(meta or {})
-        if "tenant_id" not in enriched:
+        if "tenant_id" not in enriched and tenant_id:
             enriched["tenant_id"] = tenant_id
         filter_case_value = (filters or {}).get("case_id", case_id)
         if "case_id" not in enriched:
@@ -1429,7 +1429,9 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
+
             metadata_dict = dict(metadata or {})
+
             entry = candidates.setdefault(
                 key,
                 {
@@ -1486,6 +1488,7 @@ class PgVectorClient:
             text_value = text_value or ""
             key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
             chunk_identifier = chunk_id if chunk_id is not None else key
+
             metadata_dict = dict(metadata or {})
             entry = candidates.setdefault(
                 key,
@@ -1501,12 +1504,14 @@ class PgVectorClient:
                 },
             )
             entry["chunk_id"] = chunk_identifier
+
             if not entry.get("metadata"):
                 entry["metadata"] = metadata_dict
             if entry.get("doc_id") is None and doc_id is not None:
                 entry["doc_id"] = doc_id
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
+
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
