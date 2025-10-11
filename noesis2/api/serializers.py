@@ -102,7 +102,10 @@ class RagRetrievalMetaSerializer(serializers.Serializer):
 
 
 class RagQueryResponseSerializer(serializers.Serializer):
-    """Response payload returned by the production RAG query endpoint."""
+    """Response payload returned by the production RAG query endpoint.
+
+    MVP 2025-10 — Breaking Contract v2: Response enthält answer, prompt_version, retrieval, snippets.
+    """
 
     answer = serializers.CharField()
     prompt_version = serializers.CharField()

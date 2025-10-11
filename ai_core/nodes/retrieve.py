@@ -61,7 +61,7 @@ class RetrieveRouting(BaseModel):
     profile: str
     vector_space_id: str
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
 
 class RetrieveMeta(BaseModel):
@@ -78,7 +78,7 @@ class RetrieveMeta(BaseModel):
     deleted_matches_blocked: int
     visibility_effective: str
 
-    model_config = ConfigDict(extra="allow")
+    model_config = ConfigDict(extra="forbid")
 
 
 class RetrieveOutput(BaseModel):

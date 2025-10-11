@@ -999,6 +999,170 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
 
 
 @pytest.mark.django_db
+def test_rag_query_endpoint_rejects_missing_prompt_version(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    retrieval_payload = {
+        "alpha": 0.5,
+        "min_sim": 0.1,
+        "top_k_effective": 1,
+        "max_candidates_effective": 10,
+        "vector_candidates": 4,
+        "lexical_candidates": 3,
+        "deleted_matches_blocked": 0,
+        "visibility_effective": "active",
+        "took_ms": 17,
+        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+    }
+    snippets_payload = [
+        {
+            "id": "doc-1",
+            "text": "Snippet",
+            "score": 0.75,
+            "source": "handbook.md",
+        }
+    ]
+
+    def _run(state, meta):
+        augmented = dict(state)
+        augmented.update(
+            {
+                "snippets": snippets_payload,
+                "matches": snippets_payload,
+                "retrieval": retrieval_payload,
+                "answer": "Synthesised",
+            }
+        )
+        return augmented, {
+            "answer": "Synthesised",
+            "retrieval": retrieval_payload,
+            "snippets": snippets_payload,
+        }
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "Was gilt?", "hybrid": {"alpha": 0.3}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-missing-prompt-version",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert "prompt_version" in payload
+    assert payload["prompt_version"] == ["This field is required."]
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_normalises_numeric_types(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    retrieval_payload = {
+        "alpha": "0.65",
+        "min_sim": "0.35",
+        "top_k_effective": "2",
+        "max_candidates_effective": "20",
+        "vector_candidates": "11",
+        "lexical_candidates": "7",
+        "deleted_matches_blocked": "1",
+        "visibility_effective": "active",
+        "took_ms": "21",
+        "routing": {"profile": "standard", "vector_space_id": "rag/global"},
+    }
+    snippets_payload = [
+        {
+            "id": "doc-2",
+            "text": "Some snippet",
+            "score": "0.82",
+            "source": "faq.md",
+        }
+    ]
+
+    def _run(state, meta):
+        augmented = dict(state)
+        augmented.update(
+            {
+                "snippets": snippets_payload,
+                "matches": snippets_payload,
+                "retrieval": retrieval_payload,
+                "answer": "Typed",
+            }
+        )
+        return augmented, {
+            "answer": "Typed",
+            "prompt_version": "v2",
+            "retrieval": retrieval_payload,
+            "snippets": snippets_payload,
+        }
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"question": "Was gilt?", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-types",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    retrieval = payload["retrieval"]
+    assert isinstance(retrieval["top_k_effective"], int)
+    assert retrieval["top_k_effective"] == 2
+    assert isinstance(retrieval["max_candidates_effective"], int)
+    assert retrieval["max_candidates_effective"] == 20
+    assert isinstance(retrieval["vector_candidates"], int)
+    assert retrieval["vector_candidates"] == 11
+    assert isinstance(retrieval["lexical_candidates"], int)
+    assert retrieval["lexical_candidates"] == 7
+    assert isinstance(retrieval["deleted_matches_blocked"], int)
+    assert retrieval["deleted_matches_blocked"] == 1
+    assert isinstance(retrieval["took_ms"], int)
+    assert retrieval["took_ms"] == 21
+    assert isinstance(retrieval["alpha"], float)
+    assert retrieval["alpha"] == pytest.approx(0.65)
+    assert isinstance(retrieval["min_sim"], float)
+    assert retrieval["min_sim"] == pytest.approx(0.35)
+
+    snippet = payload["snippets"][0]
+    assert isinstance(snippet["score"], float)
+    assert snippet["score"] == pytest.approx(0.82)
+
+
+@pytest.mark.django_db
 def test_rag_query_endpoint_populates_query_from_question(
     client, monkeypatch, test_tenant_schema_name
 ):

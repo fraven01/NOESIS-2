@@ -1344,7 +1344,10 @@ class RagQueryViewV1(_GraphView):
             graph_payload = response.data
             serializer = RagQueryResponseSerializer(data=graph_payload)
             serializer.is_valid(raise_exception=True)
-            response.data = graph_payload
+            response.data = serializer.validated_data
+            bind_log_context(response_contract="rag.v2")
+            if isinstance(getattr(request, "log_context", None), dict):
+                request.log_context["response_contract"] = "rag.v2"
 
         return response
 
