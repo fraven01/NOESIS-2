@@ -535,7 +535,7 @@ def upsert(
         raw_meta = ch.get("meta", {})
         try:
             meta_model = ChunkMeta.model_validate(raw_meta)
-        except ValidationError as exc:
+        except ValidationError:
             logger.error(
                 "ingestion.chunk.meta.invalid",
                 extra={

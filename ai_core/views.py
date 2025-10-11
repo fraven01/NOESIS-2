@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from collections.abc import Mapping
@@ -13,7 +12,6 @@ from django.db import connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest
-from django.utils import timezone
 
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -58,7 +56,6 @@ from rest_framework.views import APIView
 
 from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.graph.adapters import module_runner
-from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graphs import (
@@ -82,25 +79,16 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from . import services
-from .infra import object_store, rate_limit
-from .ingestion import partition_document_ids, run_ingestion
+from .infra import rate_limit
 from .ingestion_status import (
     get_latest_ingestion_run,
-    record_ingestion_run_queued,
 )
-from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
 from .schemas import (
     RagHardDeleteAdminRequest,
-    RagIngestionRunRequest,
-    RagUploadMetadata,
 )
 from pydantic import ValidationError
 
-from .rag.ingestion_contracts import (
-    map_ingestion_error_to_status,
-    resolve_ingestion_profile,
-)
 from .infra.resp import apply_std_headers
 
 
@@ -351,186 +339,6 @@ def _prepare_request(request: Request):
     request.log_context = log_context
     bind_log_context(**log_context)
     return meta, None
-
-
-def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
-    meta, error = _prepare_request(request)
-    if error:
-        return error
-
-    try:
-        normalized_meta = normalize_meta(request)
-    except ValueError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-
-    tool_context_data = normalized_meta.get("tool_context")
-    tool_context: ToolContext | None = None
-    if isinstance(tool_context_data, ToolContext):
-        tool_context = tool_context_data
-    elif isinstance(tool_context_data, Mapping):
-        try:
-            tool_context = ToolContext(**tool_context_data)
-        except TypeError:
-            tool_context = None
-    if tool_context is not None:
-        setattr(request, "tool_context", tool_context)
-        if hasattr(request, "_request") and request._request is not request:
-            setattr(request._request, "tool_context", tool_context)
-
-    context = GraphContext(
-        tenant_id=normalized_meta["tenant_id"],
-        case_id=normalized_meta["case_id"],
-        trace_id=normalized_meta["trace_id"],
-        graph_name=normalized_meta["graph_name"],
-        graph_version=normalized_meta["graph_version"],
-    )
-
-    try:
-        state = CHECKPOINTER.load(context)
-    except (TypeError, ValueError) as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-
-    raw_body = getattr(request, "body", b"")
-    if not raw_body and hasattr(request, "_request"):
-        raw_body = getattr(request._request, "body", b"")
-
-    content_type_header = request.headers.get("Content-Type")
-    normalized_content_type = ""
-    if content_type_header:
-        normalized_content_type = content_type_header.split(";")[0].strip().lower()
-
-    incoming_state = None
-
-    if raw_body:
-        if normalized_content_type and not (
-            normalized_content_type == "application/json"
-            or normalized_content_type.endswith("+json")
-        ):
-            return _error_response(
-                "Request payload must be encoded as application/json.",
-                "unsupported_media_type",
-                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            )
-        try:
-            payload = json.loads(raw_body)
-            if isinstance(payload, dict):
-                incoming_state = payload
-        except json.JSONDecodeError:
-            return _error_response(
-                "Request payload contained invalid JSON.",
-                "invalid_json",
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-    request_model = GRAPH_REQUEST_MODELS.get(context.graph_name)
-    if request_model is not None:
-        data = incoming_state or {}
-        try:
-            validated = request_model.model_validate(data)
-        except ValidationError as exc:
-            return _error_response(
-                _format_validation_error(exc),
-                "invalid_request",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        incoming_state = validated.model_dump(exclude_none=True)
-
-    merged_state = merge_state(state, incoming_state)
-
-    runner_meta = dict(normalized_meta)
-    if normalized_meta.get("tenant_schema"):
-        runner_meta["tenant_schema"] = normalized_meta["tenant_schema"]
-    if normalized_meta.get("key_alias"):
-        runner_meta["key_alias"] = normalized_meta["key_alias"]
-
-    try:
-        new_state, result = graph_runner.run(merged_state, runner_meta)
-    except InputError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ValueError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ToolNotFoundError as exc:
-        logger.info("tool.not_found")
-        detail = str(exc) or "No matching documents were found."
-        return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
-    except ToolInconsistentMetadataError as exc:
-        logger.warning("tool.inconsistent_metadata")
-        payload = {
-            "detail": str(exc) or "reindex required",
-            "code": "retrieval_inconsistent_metadata",
-        }
-        context = getattr(exc, "context", None)
-        if context:
-            payload["context"] = context
-        return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
-    except ToolInputError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ToolRateLimitedError as _exc:
-        logger.warning("tool.rate_limited")
-        return _error_response(
-            "Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS
-        )
-    except ToolTimeoutError as _exc:
-        logger.warning("tool.timeout")
-        return _error_response(
-            "Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT
-        )
-    except ToolUpstreamServiceError as _exc:
-        logger.warning("tool.upstream_error")
-        return _error_response(
-            "Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY
-        )
-    except RateLimitError as exc:  # LLM proxy signalled rate limiting
-        try:
-            extra = {
-                "status": getattr(exc, "status", None),
-                "code": getattr(exc, "code", None),
-            }
-            logger.warning("llm.rate_limited", extra=extra)
-        except Exception:
-            pass
-        status_code = (
-            int(getattr(exc, "status", 429))
-            if str(getattr(exc, "status", "")).isdigit()
-            else status.HTTP_429_TOO_MANY_REQUESTS
-        )
-        detail = getattr(exc, "detail", None) or "LLM rate limited."
-        return _error_response(detail, "llm_rate_limited", status_code)
-    except LlmClientError as exc:  # Upstream LLM error (4xx/5xx)
-        try:
-            extra = {
-                "status": getattr(exc, "status", None),
-                "code": getattr(exc, "code", None),
-            }
-            logger.warning("llm.client_error", extra=extra)
-        except Exception:
-            pass
-        raw_status = getattr(exc, "status", None)
-        # Map all upstream client/provider errors to Bad Gateway to avoid
-        # suggesting a client input error for consumers of this API.
-        status_code = status.HTTP_502_BAD_GATEWAY
-        # Preserve a 429 if it slipped through without specific type
-        try:
-            if isinstance(raw_status, int) and raw_status == 429:
-                status_code = status.HTTP_429_TOO_MANY_REQUESTS
-        except Exception:
-            pass
-        detail = getattr(exc, "detail", None) or "Upstream LLM error."
-        return _error_response(detail, "llm_error", status_code)
-    except Exception:
-        return _error_response(
-            "Service temporarily unavailable.",
-            "service_unavailable",
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-
-    try:
-        CHECKPOINTER.save(context, new_state)
-    except (TypeError, ValueError) as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-
-    response = Response(result)
-    return apply_std_headers(response, meta)
 
 
 LEGACY_DEPRECATION_ID = "ai-core-legacy"

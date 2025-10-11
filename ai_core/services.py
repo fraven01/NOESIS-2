@@ -10,6 +10,7 @@ Pattern:
 - Views call functions in this `services` module.
 - Service functions contain the actual business logic, calling graphs, tasks, etc.
 """
+
 from __future__ import annotations
 
 import json
@@ -37,7 +38,6 @@ from ai_core.tool_contracts import RateLimitedError as ToolRateLimitedError
 from ai_core.tool_contracts import TimeoutError as ToolTimeoutError
 from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceError
 from ai_core.tools import InputError
-from common.constants import IDEMPOTENCY_KEY_HEADER
 
 from .infra import object_store
 from .ingestion import partition_document_ids, run_ingestion
@@ -450,9 +450,7 @@ def handle_document_upload(
 
     metadata_obj["external_id"] = external_id
 
-    object_store.write_json(
-        f"{storage_prefix}/{document_id}.meta.json", metadata_obj
-    )
+    object_store.write_json(f"{storage_prefix}/{document_id}.meta.json", metadata_obj)
 
     try:
         profile_binding = resolve_ingestion_profile(
