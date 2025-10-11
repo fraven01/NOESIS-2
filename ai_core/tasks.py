@@ -542,7 +542,9 @@ def upsert(
                     "tenant_id": meta.get("tenant_id") if meta else None,
                     "case_id": meta.get("case_id") if meta else None,
                     "chunk_index": index,
-                    "keys": sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None,
+                    "keys": (
+                        sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None
+                    ),
                 },
             )
             raise ValueError("invalid chunk metadata") from exc

@@ -359,9 +359,9 @@ def test_ai_core_endpoints_expose_serializers():
     )
 
     rag_operation = schema["paths"]["/v1/ai/rag/query/"]["post"]
-    rag_response_ref = rag_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["$ref"]
+    rag_response_ref = rag_operation["responses"]["200"]["content"]["application/json"][
+        "schema"
+    ]["$ref"]
     _, rag_component = _extract_component(schema, rag_response_ref)
     rag_properties = rag_component["properties"]
     assert {"answer", "prompt_version", "retrieval", "snippets"}.issubset(

@@ -402,9 +402,7 @@ def test_tenant_client_upsert_rejects_foreign_tenant(
 ) -> None:
     router, _, _ = router_and_stores
     tenant_client = router.for_tenant("tenant-789")
-    chunk = Chunk(
-        content="foo", meta={"tenant_id": "other", "case_id": "case"}
-    )
+    chunk = Chunk(content="foo", meta={"tenant_id": "other", "case_id": "case"})
     with pytest.raises(ValueError):
         tenant_client.upsert_chunks([chunk])
 

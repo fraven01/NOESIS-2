@@ -1322,7 +1322,9 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
             return {}
 
         def save(self, ctx, state):
-            raise AssertionError("save should not be called when metadata is inconsistent")
+            raise AssertionError(
+                "save should not be called when metadata is inconsistent"
+            )
 
     dummy_checkpointer = DummyCheckpointer()
     monkeypatch.setattr(views, "CHECKPOINTER", dummy_checkpointer)

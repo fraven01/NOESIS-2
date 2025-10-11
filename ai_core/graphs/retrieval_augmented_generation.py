@@ -175,9 +175,7 @@ class RetrievalAugmentedGenerationGraph:
         context = _build_tool_context(working_meta)
         params = retrieve.RetrieveInput.from_state(working_state)
         retrieve_output = self.retrieve_node(context, params)
-        retrieval_meta = retrieve_output.meta.model_dump(
-            mode="json", exclude_none=True
-        )
+        retrieval_meta = retrieve_output.meta.model_dump(mode="json", exclude_none=True)
         took_ms = retrieval_meta.get("took_ms")
         try:
             retrieval_meta["took_ms"] = int(took_ms)
