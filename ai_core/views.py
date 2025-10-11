@@ -80,6 +80,7 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from . import services
+
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
 from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
 from .ingestion import run_ingestion as run_ingestion  # re-export for tests
@@ -1224,9 +1225,7 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
             key: _serialise_json_value(value) for key, value in diagnostics.items()
         }
 
-    return {
-        key: _serialise_json_value(value) for key, value in projected.items()
-    }
+    return {key: _serialise_json_value(value) for key, value in projected.items()}
 
 
 class RagQueryViewV1(_GraphView):
