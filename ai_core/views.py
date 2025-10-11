@@ -82,7 +82,6 @@ from . import services
 from .ingestion import run_ingestion as run_ingestion  # re-export for tests
 from .ingestion import partition_document_ids as partition_document_ids  # test hook
 from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
-from ai_core.graph.schemas import normalize_meta  # re-export for tests
 from .rag.ingestion_contracts import (
     resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
 )

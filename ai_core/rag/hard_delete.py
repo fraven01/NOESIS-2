@@ -231,7 +231,9 @@ def _run_vacuum(store: object, schema: str) -> bool:
                 # short statement timeout (defaults to 2000ms, configurable).
                 try:
                     timeout_ms = int(
-                        getattr(settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000)
+                        getattr(
+                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
+                        )
                     )
                 except Exception:
                     timeout_ms = 2000
@@ -279,7 +281,9 @@ def _run_reindex(store: object, schema: str, stats: HardDeleteStats) -> bool:
                 # Apply a short timeout to avoid blocking tests on large indexes.
                 try:
                     timeout_ms = int(
-                        getattr(settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000)
+                        getattr(
+                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
+                        )
                     )
                 except Exception:
                     timeout_ms = 2000
