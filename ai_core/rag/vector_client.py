@@ -1538,7 +1538,6 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
-<<<<<<< HEAD
             raw_meta = dict(
                 cast(Mapping[str, object] | None, entry.get("metadata")) or {}
             )
@@ -1577,45 +1576,8 @@ class PgVectorClient:
                 )
                 continue
 
-            meta = self._ensure_chunk_metadata_contract(
-                raw_meta,
-                tenant_id=tenant,
-                case_id=case_value,
-                filters=normalized_filters,
-                chunk_id=entry.get("chunk_id"),
-                doc_id=entry.get("doc_id"),
-            )
-=======
-            raw_meta = entry.get("metadata") or {}
->>>>>>> 094a12cb31247bbd4e101b9c4da65ad168241452
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
-            if not strict_match(raw_meta, tenant, case_value):
-                candidate_tenant = raw_meta.get("tenant_id")
-                candidate_case = raw_meta.get("case_id")
-                reasons: List[str] = []
-                if tenant is not None:
-                    if candidate_tenant is None:
-                        reasons.append("tenant_missing")
-                    elif candidate_tenant != tenant:
-                        reasons.append("tenant_mismatch")
-                if case_value is not None:
-                    if candidate_case is None:
-                        reasons.append("case_missing")
-                    elif candidate_case != case_value:
-                        reasons.append("case_mismatch")
-                logger.info(
-                    "rag.strict.reject",
-                    tenant_id=tenant,
-                    case_id=case_value,
-                    candidate_tenant_id=candidate_tenant,
-                    candidate_case_id=candidate_case,
-                    doc_hash=doc_hash,
-                    doc_id=doc_id,
-                    chunk_id=entry["chunk_id"],
-                    reasons=reasons or ["unknown"],
-                )
-                continue
             meta = self._ensure_chunk_metadata_contract(
                 raw_meta,
                 tenant_id=tenant,
