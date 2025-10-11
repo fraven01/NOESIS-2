@@ -1,0 +1,9 @@
+{
+  "status": 422,
+  "code": "retrieval_inconsistent_metadata",
+  "detail": "reindex required",
+  "context": {
+    "chunk_index": 0,
+    "missing_keys": ["tenant_id", "case_id"]
+  }
+}

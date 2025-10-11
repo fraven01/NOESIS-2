@@ -15,7 +15,7 @@ from ai_core.graph.schemas import ToolContext
 from ai_core.nodes.retrieve import RetrieveInput
 from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
-from ai_core.tool_contracts import NotFoundError
+from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -1145,3 +1145,42 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
         "detail": "No matching documents were found for the query.",
         "code": "rag_no_matches",
     }
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    class DummyCheckpointer:
+        def load(self, ctx):
+            return {}
+
+        def save(self, ctx, state):
+            raise AssertionError("save should not be called when metadata is inconsistent")
+
+    dummy_checkpointer = DummyCheckpointer()
+    monkeypatch.setattr(views, "CHECKPOINTER", dummy_checkpointer)
+
+    def _run(state, meta):
+        raise InconsistentMetadataError("reindex required")
+
+    graph_runner = SimpleNamespace(run=_run)
+    monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data={"query": "bad meta", "hybrid": {"alpha": 0.5}},
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-rag-422",
+        },
+    )
+
+    assert response.status_code == 422
+    payload = response.json()
+    assert payload["code"] == "retrieval_inconsistent_metadata"
+    assert "reindex required" in payload["detail"]

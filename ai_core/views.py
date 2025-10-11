@@ -92,6 +92,7 @@ from .rag.hard_delete import hard_delete
 from ai_core.tools import InputError
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tool_contracts import (
+    InconsistentMetadataError as ToolInconsistentMetadataError,
     InputError as ToolInputError,
     NotFoundError as ToolNotFoundError,
     RateLimitedError as ToolRateLimitedError,
@@ -492,6 +493,16 @@ def _run_graph(request: Request, graph_runner: GraphRunner) -> Response:
         logger.info("tool.not_found")
         detail = str(exc) or "No matching documents were found."
         return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
+    except ToolInconsistentMetadataError as exc:
+        logger.warning("tool.inconsistent_metadata")
+        payload = {
+            "detail": str(exc) or "reindex required",
+            "code": "retrieval_inconsistent_metadata",
+        }
+        context = getattr(exc, "context", None)
+        if context:
+            payload["context"] = context
+        return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
     except ToolInputError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ToolRateLimitedError as _exc:

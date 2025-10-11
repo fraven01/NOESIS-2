@@ -143,7 +143,11 @@ class TestPgVectorClient:
         client = vector_client.get_default_client()
         chunk = Chunk(
             content="text",
-            meta={"tenant_id": str(uuid.uuid4()), "external_id": "ext-1"},
+            meta={
+                "tenant_id": str(uuid.uuid4()),
+                "case_id": "case-1",
+                "external_id": "ext-1",
+            },
             embedding=[0.0] * vector_client.get_embedding_dim(),
         )
         with pytest.raises(ValueError):
