@@ -1,4 +1,5 @@
 import pytest
+from django.conf import settings
 from django.urls import reverse
 
 
@@ -13,7 +14,8 @@ def test_rag_tools_page_is_accessible(client):
     assert "Ingestion Status" in content
     assert "Query" in content
     assert "X-Tenant-ID: testserver" in content
-    assert "X-Tenant-Schema: testserver" in content
+    default_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
+    assert f"X-Tenant-Schema: {default_schema}" in content
     assert 'const derivedTenantId = "testserver"' in content
-    assert 'const derivedTenantSchema = "testserver"' in content
+    assert f'const derivedTenantSchema = "{default_schema}"' in content
     assert "const defaultEmbeddingProfile" in content

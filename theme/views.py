@@ -17,8 +17,10 @@ def rag_tools(request):
     tenant_id = hostname or "dev.localhost"
 
     tenant_schema = None
-    if hostname:
-        tenant_schema = hostname.split(".", maxsplit=1)[0] or None
+    if hostname and "." in hostname:
+        candidate_schema = hostname.split(".", maxsplit=1)[0] or None
+        if candidate_schema and any(char.isalpha() for char in candidate_schema):
+            tenant_schema = candidate_schema
 
     if not tenant_schema:
         tenant_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
