@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from typing import Protocol
 
 from ai_core.infra.object_store import read_json, sanitize_identifier, write_json
+
+
+logger = logging.getLogger(__name__)
 
 
 class GraphRunner(Protocol):
@@ -48,8 +53,20 @@ class FileCheckpointer(Checkpointer):
         """Load a previously stored state or return an empty mapping."""
 
         try:
-            data = read_json(self._path(ctx))
+            path = self._path(ctx)
+            data = read_json(path)
         except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            logger.warning(
+                "graph.checkpoint.corrupted",
+                extra={
+                    "graph": ctx.graph_name,
+                    "tenant_id": ctx.tenant_id,
+                    "case_id": ctx.case_id,
+                },
+            )
+            write_json(path, {})
             return {}
         if not isinstance(data, dict):  # pragma: no cover - defensive branch
             raise TypeError("checkpoint data must be a dictionary")
