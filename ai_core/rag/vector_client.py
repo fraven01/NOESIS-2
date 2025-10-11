@@ -1535,8 +1535,44 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
+            raw_meta = dict(cast(Mapping[str, object] | None, entry.get("metadata")) or {})
+            candidate_tenant = cast(Optional[str], raw_meta.get("tenant_id"))
+            candidate_case = cast(Optional[str], raw_meta.get("case_id"))
+            reasons: List[str] = []
+            if tenant is not None:
+                if candidate_tenant is None:
+                    reasons.append("tenant_missing")
+                elif candidate_tenant != tenant:
+                    reasons.append("tenant_mismatch")
+            if case_value is not None:
+                if candidate_case is None:
+                    reasons.append("case_missing")
+                elif candidate_case != case_value:
+                    reasons.append("case_mismatch")
+
+            if case_value is None:
+                strict_ok = (tenant is None) or (
+                    candidate_tenant is not None and candidate_tenant == tenant
+                )
+            else:
+                strict_ok = strict_match(raw_meta, tenant, case_value)
+
+            if not strict_ok or reasons:
+                logger.info(
+                    "rag.strict.reject",
+                    tenant_id=tenant,
+                    case_id=case_value,
+                    candidate_tenant_id=candidate_tenant,
+                    candidate_case_id=candidate_case,
+                    doc_hash=entry.get("doc_hash"),
+                    doc_id=entry.get("doc_id"),
+                    chunk_id=entry.get("chunk_id"),
+                    reasons=reasons or ["unknown"],
+                )
+                continue
+
             meta = self._ensure_chunk_metadata_contract(
-                entry.get("metadata"),
+                raw_meta,
                 tenant_id=tenant,
                 case_id=case_value,
                 filters=normalized_filters,
