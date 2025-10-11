@@ -111,6 +111,9 @@ class RagQueryResponseSerializer(serializers.Serializer):
     prompt_version = serializers.CharField()
     retrieval = RagRetrievalMetaSerializer()
     snippets = RagSnippetSerializer(many=True)
+    diagnostics = serializers.DictField(
+        child=serializers.JSONField(), required=False, help_text="Non-contract extras."
+    )
 
 
 class TenantDemoResponseSerializer(serializers.Serializer):
