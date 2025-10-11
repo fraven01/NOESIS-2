@@ -58,9 +58,9 @@ from rest_framework.views import APIView
 
 from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.graph.adapters import module_runner
-from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
+from ai_core.graph.adapters import module_runner
+from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
-from ai_core.graph.schemas import ToolContext, merge_state, normalize_meta
 from ai_core.graphs import (
     info_intake,
     needs_mapping,
@@ -81,6 +81,7 @@ except Exception:  # defensive: don't break module import if graphs change
     pass
 
 
+from . import services
 from .infra import object_store, rate_limit
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_status import (
@@ -89,25 +90,10 @@ from .ingestion_status import (
 )
 from .ingestion_utils import make_fallback_external_id
 from .rag.hard_delete import hard_delete
-from ai_core.tools import InputError
-from ai_core.llm.client import LlmClientError, RateLimitError
-from ai_core.tool_contracts import (
-    InconsistentMetadataError as ToolInconsistentMetadataError,
-    InputError as ToolInputError,
-    NotFoundError as ToolNotFoundError,
-    RateLimitedError as ToolRateLimitedError,
-    TimeoutError as ToolTimeoutError,
-    UpstreamServiceError as ToolUpstreamServiceError,
-)
 from .schemas import (
-    InfoIntakeRequest,
-    NeedsMappingRequest,
     RagHardDeleteAdminRequest,
     RagIngestionRunRequest,
-    RagQueryRequest,
     RagUploadMetadata,
-    ScopeCheckRequest,
-    SystemDescriptionRequest,
 )
 from pydantic import ValidationError
 
@@ -119,18 +105,6 @@ from .infra.resp import apply_std_headers
 
 
 logger = logging.getLogger(__name__)
-
-
-CHECKPOINTER = FileCheckpointer()
-
-
-GRAPH_REQUEST_MODELS = {
-    "info_intake": InfoIntakeRequest,
-    "scope_check": ScopeCheckRequest,
-    "needs_mapping": NeedsMappingRequest,
-    "system_description": SystemDescriptionRequest,
-    "rag.default": RagQueryRequest,
-}
 
 
 def assert_case_active(tenant: str, case_id: str) -> None:
@@ -183,20 +157,6 @@ def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
 
     return Response({"detail": detail, "code": code}, status=status_code)
-
-
-def _format_validation_error(error: ValidationError) -> str:
-    """Return a compact textual representation of a Pydantic validation error."""
-
-    messages: list[str] = []
-    for issue in error.errors():
-        location = ".".join(str(part) for part in issue.get("loc", ()))
-        message = issue.get("msg", "Invalid input")
-        if location:
-            messages.append(f"{location}: {message}")
-        else:
-            messages.append(message)
-    return "; ".join(messages)
 
 
 def _extract_internal_key(request: object) -> str | None:
@@ -1237,9 +1197,14 @@ class _GraphView(_BaseAgentView):
         return registered
 
     def post(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
         graph_runner = self.get_graph()
         request.graph_name = self.graph_name
-        return _run_graph(request, graph_runner)
+        response = services.execute_graph(request, graph_runner)
+        return apply_std_headers(response, meta)
 
 
 class IntakeViewV1(_GraphView):
@@ -1379,175 +1344,16 @@ class RagUploadView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-        metadata_obj: dict[str, object] | None = None
         metadata_raw = request.data.get("metadata")
-        if metadata_raw not in (None, ""):
-            if isinstance(metadata_raw, (bytes, bytearray)):
-                try:
-                    metadata_text = metadata_raw.decode("utf-8")
-                except UnicodeDecodeError:
-                    return _error_response(
-                        "Metadata must be valid JSON.",
-                        "invalid_metadata",
-                        status.HTTP_400_BAD_REQUEST,
-                    )
-            else:
-                metadata_text = str(metadata_raw)
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
 
-            metadata_text = metadata_text.strip()
-            if metadata_text:
-                try:
-                    metadata_obj = json.loads(metadata_text)
-                except json.JSONDecodeError:
-                    return _error_response(
-                        "Metadata must be valid JSON.",
-                        "invalid_metadata",
-                        status.HTTP_400_BAD_REQUEST,
-                    )
-
-        if metadata_obj is not None and not isinstance(metadata_obj, dict):
-            return _error_response(
-                "Metadata must be a JSON object when provided.",
-                "invalid_metadata",
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        if metadata_obj is None:
-            metadata_obj = {}
-
-        try:
-            metadata_model = RagUploadMetadata.model_validate(metadata_obj)
-        except ValidationError as exc:
-            return _error_response(
-                str(exc), "invalid_metadata", status.HTTP_400_BAD_REQUEST
-            )
-
-        metadata_obj = metadata_model.model_dump()
-        if metadata_obj.get("external_id") is None:
-            metadata_obj.pop("external_id")
-
-        original_name = getattr(upload, "name", "") or "upload.bin"
-        try:
-            safe_name = object_store.safe_filename(original_name)
-        except ValueError:
-            safe_name = object_store.safe_filename("upload.bin")
-
-        try:
-            tenant_segment = object_store.sanitize_identifier(meta["tenant_id"])
-            case_segment = object_store.sanitize_identifier(meta["case_id"])
-        except ValueError:
-            return _error_response(
-                "Request metadata was invalid.",
-                "invalid_request",
-                status.HTTP_400_BAD_REQUEST,
-            )
-
-        document_id = uuid4().hex
-        storage_prefix = f"{tenant_segment}/{case_segment}/uploads"
-        object_path = f"{storage_prefix}/{document_id}_{safe_name}"
-
-        file_bytes = upload.read()
-        if not isinstance(file_bytes, (bytes, bytearray)):
-            file_bytes = bytes(file_bytes)
-
-        object_store.write_bytes(object_path, file_bytes)
-
-        supplied_external = metadata_obj.get("external_id")
-        if isinstance(supplied_external, str):
-            supplied_external = supplied_external.strip()
-        else:
-            supplied_external = None
-
-        if supplied_external:
-            external_id = supplied_external
-        else:
-            external_id = make_fallback_external_id(
-                original_name,
-                getattr(upload, "size", None) or len(file_bytes),
-                file_bytes,
-            )
-
-        metadata_obj["external_id"] = external_id
-
-        object_store.write_json(
-            f"{storage_prefix}/{document_id}.meta.json", metadata_obj
+        response = services.handle_document_upload(
+            upload,
+            metadata_raw,
+            meta,
+            idempotency_key,
         )
 
-        try:
-            profile_binding = resolve_ingestion_profile(
-                getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
-            )
-        except InputError as exc:
-            error_code = getattr(exc, "code", "invalid_ingestion_profile")
-            logger.exception(
-                "Failed to resolve default ingestion profile after upload",
-                extra={
-                    "tenant_id": meta["tenant_id"],
-                    "case_id": meta["case_id"],
-                    "error": str(exc),
-                },
-            )
-            return _error_response(
-                "Default ingestion profile is not configured correctly.",
-                error_code,
-                map_ingestion_error_to_status(error_code),
-            )
-
-        resolved_profile_id = profile_binding.profile_id
-        ingestion_run_id = uuid4().hex
-        queued_at = timezone.now().isoformat()
-        document_ids = [document_id]
-
-        try:
-            run_ingestion.delay(
-                meta["tenant_id"],
-                meta["case_id"],
-                document_ids,
-                resolved_profile_id,
-                tenant_schema=meta["tenant_schema"],
-                run_id=ingestion_run_id,
-                trace_id=meta["trace_id"],
-                idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
-            )
-        except Exception:  # pragma: no cover - defensive path
-            logger.exception(
-                "Failed to dispatch ingestion run after upload",
-                extra={
-                    "tenant_id": meta["tenant_id"],
-                    "case_id": meta["case_id"],
-                    "document_id": document_id,
-                    "run_id": ingestion_run_id,
-                },
-            )
-            return _error_response(
-                "Failed to queue ingestion run for uploaded document.",
-                "ingestion_dispatch_failed",
-                status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
-
-        record_ingestion_run_queued(
-            meta["tenant_id"],
-            meta["case_id"],
-            ingestion_run_id,
-            document_ids,
-            queued_at=queued_at,
-            trace_id=meta["trace_id"],
-            embedding_profile=resolved_profile_id,
-            source="upload",
-        )
-
-        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
-        response_payload = {
-            "status": "accepted",
-            "document_id": document_id,
-            "trace_id": meta["trace_id"],
-            "idempotent": idempotent,
-            "external_id": external_id,
-            "ingestion_run_id": ingestion_run_id,
-            "ingestion_status": "queued",
-        }
-
-        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 
 
@@ -1560,80 +1366,9 @@ class RagIngestionRunView(APIView):
         if error:
             return error
 
-        try:
-            request_data = RagIngestionRunRequest.model_validate(request.data)
-        except ValidationError as exc:
-            # NOTE: Consider a more detailed error mapping for production
-            return _error_response(
-                str(exc), "validation_error", status.HTTP_400_BAD_REQUEST
-            )
+        idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        response = services.start_ingestion_run(request.data, meta, idempotency_key)
 
-        try:
-            profile_binding = resolve_ingestion_profile(request_data.embedding_profile)
-        except InputError as exc:
-            return _error_response(
-                exc.message,
-                exc.code,
-                map_ingestion_error_to_status(exc.code),
-            )
-        resolved_profile_id = profile_binding.profile_id
-
-        ingestion_run_id = uuid4().hex
-        # Tests monkeypatch django.utils.timezone.now, so keep using the module
-        # import instead of a local alias to ensure the override is observed.
-        queued_at = timezone.now().isoformat()
-
-        valid_document_ids, invalid_document_ids = partition_document_ids(
-            meta["tenant_id"], meta["case_id"], request_data.document_ids
-        )
-
-        # Always enqueue the task. If at least one valid ID is known, only
-        # dispatch those; otherwise pass through the original list and let the
-        # task perform validation/no-op. This satisfies both observability and
-        # test expectations in empty/non-empty setups.
-        to_dispatch = (
-            valid_document_ids if valid_document_ids else request_data.document_ids
-        )
-        run_ingestion.delay(
-            meta["tenant_id"],
-            meta["case_id"],
-            to_dispatch,
-            resolved_profile_id,
-            tenant_schema=meta["tenant_schema"],
-            run_id=ingestion_run_id,
-            trace_id=meta["trace_id"],
-            idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
-            # Pass priority to the task if the task supports it.
-            # priority=request_data.priority,
-        )
-
-        record_ingestion_run_queued(
-            meta["tenant_id"],
-            meta["case_id"],
-            ingestion_run_id,
-            to_dispatch,
-            queued_at=queued_at,
-            trace_id=meta["trace_id"],
-            embedding_profile=resolved_profile_id,
-            source="manual",
-            invalid_document_ids=invalid_document_ids,
-        )
-
-        idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
-        response_payload = {
-            "status": "queued",
-            "queued_at": queued_at,
-            "ingestion_run_id": ingestion_run_id,
-            "trace_id": meta["trace_id"],
-            "idempotent": idempotent,
-        }
-
-        if invalid_document_ids:
-            response_payload["invalid_ids"] = invalid_document_ids
-        else:
-            response_payload["invalid_ids"] = []
-
-        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 
 

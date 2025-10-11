@@ -1541,8 +1541,14 @@ class PgVectorClient:
             raw_meta = dict(
                 cast(Mapping[str, object] | None, entry.get("metadata")) or {}
             )
-            candidate_tenant = cast(Optional[str], raw_meta.get("tenant_id"))
-            candidate_case = cast(Optional[str], raw_meta.get("case_id"))
+            # Be tolerant to legacy result metadata that may still use
+            # "tenant"/"case" keys instead of "tenant_id"/"case_id".
+            candidate_tenant = cast(
+                Optional[str], raw_meta.get("tenant_id") or raw_meta.get("tenant")
+            )
+            candidate_case = cast(
+                Optional[str], raw_meta.get("case_id") or raw_meta.get("case")
+            )
             reasons: List[str] = []
             if tenant is not None:
                 if candidate_tenant is None:
@@ -1746,7 +1752,9 @@ class PgVectorClient:
     def _group_by_document(self, chunks: Sequence[Chunk]) -> GroupedDocuments:
         grouped: GroupedDocuments = {}
         for chunk in chunks:
-            tenant_value = chunk.meta.get("tenant_id")
+            # Accept legacy key "tenant" as an alias for "tenant_id" to retain
+            # backwards compatibility with older call sites/tests.
+            tenant_value = chunk.meta.get("tenant_id") or chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
@@ -1775,7 +1783,7 @@ class PgVectorClient:
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
-                        if k not in {"tenant_id", "hash", "source"}
+                        if k not in {"tenant_id", "tenant", "hash", "source"}
                     },
                     "chunks": [],
                 }
