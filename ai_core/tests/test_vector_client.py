@@ -1831,6 +1831,52 @@ class TestPgVectorClient:
         assert sql_logs
         assert sql_logs[0]["lex_rows"] > 0
 
+    def test_hybrid_search_handles_mapping_rows(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_id = uuid.uuid4()
+        doc_hash = hashlib.sha256(b"mapping-row").hexdigest()
+
+        lexical_row = {
+            "id": doc_id,
+            "text": "Lexical mapping",
+            "metadata": {
+                "tenant_id": tenant,
+                "case_id": "case-mapping",
+                "doc_id": str(doc_id),
+            },
+            "hash": doc_hash,
+            "doc_id": doc_id,
+            "lscore": 0.62,
+        }
+
+        def _fake_run(self, fn, *, op_name: str):
+            return ([], [lexical_row], 5.0)
+
+        monkeypatch.setattr(
+            client,
+            "_run_with_retries",
+            _fake_run.__get__(client, type(client)),
+        )
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
+        )
+
+        result = client.hybrid_search(
+            "Lexical mapping",
+            tenant_id=tenant,
+            filters={"case_id": "case-mapping"},
+            top_k=1,
+            alpha=0.0,
+        )
+
+        assert result.lexical_candidates == 1
+        assert result.chunks
+        chunk_meta = result.chunks[0].meta
+        assert chunk_meta["lscore"] == pytest.approx(0.62)
+
     def test_hybrid_search_score_fusion_alpha_one_cutoff(self, monkeypatch) -> None:
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())

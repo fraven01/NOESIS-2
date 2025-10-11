@@ -1,10 +1,12 @@
 import json
+import uuid
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
 from rest_framework.request import Request
 from rest_framework.response import Response
+
 from django.conf import settings
 from django.test import RequestFactory
 from structlog.testing import capture_logs
@@ -1340,6 +1342,55 @@ def test_rag_query_endpoint_surfaces_diagnostics(
     retrieval_diag = diagnostics["retrieval"]
     assert retrieval_diag["lexical_variant"] == "fallback"
     assert retrieval_diag["routing"]["mode"] == "fallback"
+
+
+def test_normalise_rag_response_stringifies_uuid_values():
+    routing_space = uuid.uuid4()
+    snippet_id = uuid.uuid4()
+    doc_uuid = uuid.uuid4()
+    trace_uuid = uuid.uuid4()
+
+    payload = {
+        "answer": "Done",
+        "prompt_version": "v5",
+        "retrieval": {
+            "alpha": 0.5,
+            "min_sim": 0.15,
+            "top_k_effective": 3,
+            "max_candidates_effective": 25,
+            "vector_candidates": 7,
+            "lexical_candidates": 2,
+            "deleted_matches_blocked": 0,
+            "visibility_effective": "active",
+            "took_ms": 12,
+            "routing": {
+                "profile": "standard",
+                "vector_space_id": routing_space,
+            },
+        },
+        "snippets": [
+            {
+                "id": snippet_id,
+                "text": "Snippet text",
+                "score": 0.42,
+                "source": "doc.md",
+                "meta": {"doc_uuid": doc_uuid},
+            }
+        ],
+        "graph_debug": {"trace_id": trace_uuid},
+    }
+
+    normalised = views._normalise_rag_response(payload)
+
+    routing = normalised["retrieval"]["routing"]
+    assert isinstance(routing["vector_space_id"], str)
+
+    snippet = normalised["snippets"][0]
+    assert isinstance(snippet["id"], str)
+    assert isinstance(snippet["meta"]["doc_uuid"], str)
+
+    diagnostics = normalised["diagnostics"]["response"]
+    assert isinstance(diagnostics["graph_debug"]["trace_id"], str)
 
 
 @pytest.mark.django_db

@@ -337,6 +337,20 @@ class PgVectorClient:
         )
 
     @staticmethod
+    def _extract_score_from_row(row: object, *, kind: str) -> object | None:
+        if isinstance(row, Mapping):
+            key = "distance" if kind == "vector" else "lscore"
+            value = row.get(key)
+            if value is not None:
+                return value
+        if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
+            try:
+                return row[5]
+            except IndexError:
+                return None
+        return None
+
+    @staticmethod
     def _ensure_chunk_metadata_contract(
         meta: Mapping[str, object] | None,
         *,
@@ -1409,15 +1423,17 @@ class PgVectorClient:
 
         candidates: Dict[str, Dict[str, object]] = {}
         for row in vector_rows:
-            vector_score_missing = len(row) < 6
-            if not vector_score_missing:
+            score_candidate = self._extract_score_from_row(row, kind="vector")
+            raw_value: float | None = None
+            if score_candidate is not None:
                 try:
-                    raw_value = float(row[5])
+                    raw_value = float(score_candidate)
                 except (TypeError, ValueError):
-                    vector_score_missing = True
+                    raw_value = None
                 else:
                     if math.isnan(raw_value) or math.isinf(raw_value):
-                        vector_score_missing = True
+                        raw_value = None
+            vector_score_missing = raw_value is None
             (
                 chunk_id,
                 text_value,
@@ -1455,7 +1471,7 @@ class PgVectorClient:
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
             else:
-                distance_value = float(score_raw)
+                distance_value = float(raw_value)
                 if distance_score_mode == "inverse":
                     distance_value = max(0.0, distance_value)
                     vscore = 1.0 / (1.0 + distance_value)
@@ -1468,15 +1484,17 @@ class PgVectorClient:
         )
 
         for row in lexical_rows:
-            lexical_score_missing = len(row) < 6
-            if not lexical_score_missing:
+            score_candidate = self._extract_score_from_row(row, kind="lexical")
+            raw_value: float | None = None
+            if score_candidate is not None:
                 try:
-                    raw_value = float(row[5])
+                    raw_value = float(score_candidate)
                 except (TypeError, ValueError):
-                    lexical_score_missing = True
+                    raw_value = None
                 else:
                     if math.isnan(raw_value) or math.isinf(raw_value):
-                        lexical_score_missing = True
+                        raw_value = None
+            lexical_score_missing = raw_value is None
             (
                 chunk_id,
                 text_value,
@@ -1512,7 +1530,14 @@ class PgVectorClient:
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
 
-            lscore_value = max(0.0, float(score_raw))
+            score_source = raw_value if raw_value is not None else score_raw
+            try:
+                lscore_value = float(score_source) if score_source is not None else 0.0
+            except (TypeError, ValueError):
+                lscore_value = 0.0
+            if math.isnan(lscore_value) or math.isinf(lscore_value):
+                lscore_value = 0.0
+            lscore_value = max(0.0, lscore_value)
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
             if lexical_score_missing or allow_trgm_fallback_below_cutoff:

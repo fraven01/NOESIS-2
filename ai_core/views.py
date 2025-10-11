@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import uuid
 from collections.abc import Mapping
 from types import ModuleType
 from importlib import import_module
@@ -1131,6 +1132,16 @@ class LegacySysDescView(_GraphView):
         return super().post(request)
 
 
+def _serialise_json_value(value: object) -> object:
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, Mapping):
+        return {key: _serialise_json_value(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_serialise_json_value(item) for item in value]
+    return value
+
+
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
 
@@ -1207,9 +1218,13 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
         diagnostics["response"] = top_level_extras
 
     if diagnostics:
-        projected["diagnostics"] = diagnostics
+        projected["diagnostics"] = {
+            key: _serialise_json_value(value) for key, value in diagnostics.items()
+        }
 
-    return projected
+    return {
+        key: _serialise_json_value(value) for key, value in projected.items()
+    }
 
 
 class RagQueryViewV1(_GraphView):
