@@ -291,6 +291,46 @@ class PgVectorClient:
     def _normalise_result_row(
         row: Sequence[object], *, kind: str
     ) -> Tuple[object, object, Mapping[str, object], object, object, float]:
+        # Support both tuple/sequence-shaped rows and mapping-shaped rows
+        # returned by different query execution paths in tests and adapters.
+        # When a mapping is provided, extract fields by name.
+        from typing import Mapping as _Mapping  # local alias to avoid confusion
+
+        if isinstance(row, _Mapping):
+            # Expected keys: id, text, metadata, hash, doc_id and either
+            # distance (vector) or lscore (lexical)
+            chunk_id = row.get("id")
+            text_value = row.get("text")
+            metadata_value = row.get("metadata")
+            doc_hash = row.get("hash")
+            doc_id = row.get("doc_id")
+            score_candidate = PgVectorClient._extract_score_from_row(row, kind=kind)
+            fallback = 1.0 if kind == "vector" else 0.0
+            try:
+                score_float = (
+                    float(score_candidate) if score_candidate is not None else fallback
+                )
+            except (TypeError, ValueError):
+                score_float = fallback
+            if math.isnan(score_float) or math.isinf(score_float):
+                score_float = fallback
+
+            # Coerce metadata into a plain dict
+            metadata_dict: Dict[str, object]
+            if isinstance(metadata_value, _Mapping):
+                metadata_dict = dict(metadata_value)
+            else:
+                metadata_dict = {}
+
+            return (
+                chunk_id,
+                text_value,
+                metadata_dict,
+                doc_hash,
+                doc_id,
+                score_float,
+            )
+
         row_tuple = tuple(row)
         length = len(row_tuple)
         if length != 6:

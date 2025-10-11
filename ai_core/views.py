@@ -80,6 +80,8 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from . import services
+# Re-export normalize_meta so tests can monkeypatch via ai_core.views
+from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
 from .ingestion import run_ingestion as run_ingestion  # re-export for tests
 from .ingestion import partition_document_ids as partition_document_ids  # test hook
 from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
