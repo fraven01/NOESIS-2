@@ -1131,6 +1131,87 @@ class LegacySysDescView(_GraphView):
         return super().post(request)
 
 
+def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
+    """Return the payload projected onto the public RAG response contract."""
+
+    allowed_top_level = {"answer", "prompt_version", "retrieval", "snippets"}
+    allowed_retrieval = {
+        "alpha",
+        "min_sim",
+        "top_k_effective",
+        "max_candidates_effective",
+        "vector_candidates",
+        "lexical_candidates",
+        "deleted_matches_blocked",
+        "visibility_effective",
+        "took_ms",
+        "routing",
+    }
+    allowed_routing = {"profile", "vector_space_id"}
+
+    projected: dict[str, object] = {}
+    diagnostics: dict[str, object] = {}
+
+    top_level_extras = {
+        key: value for key, value in payload.items() if key not in allowed_top_level
+    }
+
+    for key in allowed_top_level:
+        if key not in payload:
+            continue
+        if key != "retrieval":
+            projected[key] = payload[key]
+            continue
+
+        value = payload[key]
+        if not isinstance(value, Mapping):
+            projected[key] = value
+            continue
+
+        retrieval_dict = dict(value)
+        retrieval_projected: dict[str, object] = {}
+        retrieval_extras: dict[str, object] = {}
+
+        for retrieval_key, retrieval_value in retrieval_dict.items():
+            if retrieval_key not in allowed_retrieval:
+                retrieval_extras[retrieval_key] = retrieval_value
+                continue
+            if retrieval_key != "routing":
+                retrieval_projected[retrieval_key] = retrieval_value
+                continue
+
+            if not isinstance(retrieval_value, Mapping):
+                retrieval_projected["routing"] = retrieval_value
+                continue
+
+            routing_dict = dict(retrieval_value)
+            routing_projected: dict[str, object] = {}
+            routing_extras: dict[str, object] = {}
+
+            for routing_key, routing_value in routing_dict.items():
+                if routing_key in allowed_routing:
+                    routing_projected[routing_key] = routing_value
+                else:
+                    routing_extras[routing_key] = routing_value
+
+            retrieval_projected["routing"] = routing_projected
+            if routing_extras:
+                retrieval_extras.setdefault("routing", routing_extras)
+
+        if retrieval_extras:
+            diagnostics["retrieval"] = retrieval_extras
+
+        projected[key] = retrieval_projected
+
+    if top_level_extras:
+        diagnostics["response"] = top_level_extras
+
+    if diagnostics:
+        projected["diagnostics"] = diagnostics
+
+    return projected
+
+
 class RagQueryViewV1(_GraphView):
     """Execute the production retrieval augmented generation graph."""
 
@@ -1143,6 +1224,8 @@ class RagQueryViewV1(_GraphView):
         # Only validate successful responses returned from the graph runner.
         if 200 <= response.status_code < 300:
             graph_payload = response.data
+            if isinstance(graph_payload, Mapping):
+                graph_payload = _normalise_rag_response(graph_payload)
             serializer = RagQueryResponseSerializer(data=graph_payload)
             serializer.is_valid(raise_exception=True)
             response.data = serializer.validated_data
