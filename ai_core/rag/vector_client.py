@@ -336,6 +336,26 @@ class PgVectorClient:
             tuple(padded_list),
         )
 
+    @staticmethod
+    def _ensure_chunk_metadata_contract(
+        meta: Mapping[str, object] | None,
+        *,
+        tenant_id: str | None,
+        case_id: str | None,
+        filters: Mapping[str, object | None] | None,
+        chunk_id: object,
+        doc_id: object,
+    ) -> Dict[str, object]:
+        enriched = dict(meta or {})
+        if "tenant_id" not in enriched and tenant_id:
+            enriched["tenant_id"] = tenant_id
+        filter_case_value = (filters or {}).get("case_id", case_id)
+        if "case_id" not in enriched:
+            enriched["case_id"] = filter_case_value
+        enriched.setdefault("doc_id", doc_id)
+        enriched.setdefault("chunk_id", chunk_id)
+        return enriched
+
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
         conn = self._pool.getconn()
@@ -1407,8 +1427,16 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
             text_value = text_value or ""
-            key = str(chunk_id)
-            metadata_dict = dict(metadata)
+            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
+            chunk_identifier = chunk_id if chunk_id is not None else key
+            metadata_dict = self._ensure_chunk_metadata_contract(
+                metadata,
+                tenant_id=tenant,
+                case_id=case_value,
+                filters=normalized_filters,
+                chunk_id=chunk_identifier,
+                doc_id=doc_id,
+            )
             entry = candidates.setdefault(
                 key,
                 {
@@ -1422,7 +1450,7 @@ class PgVectorClient:
                     "_allow_below_cutoff": False,
                 },
             )
-            entry["chunk_id"] = chunk_id if chunk_id is not None else key
+            entry["chunk_id"] = chunk_identifier
             if vector_score_missing:
                 entry["_allow_below_cutoff"] = True
             else:
@@ -1457,8 +1485,16 @@ class PgVectorClient:
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
             text_value = text_value or ""
-            key = str(chunk_id)
-            metadata_dict = dict(metadata)
+            key = str(chunk_id) if chunk_id is not None else f"row-{len(candidates)}"
+            chunk_identifier = chunk_id if chunk_id is not None else key
+            metadata_dict = self._ensure_chunk_metadata_contract(
+                metadata,
+                tenant_id=tenant,
+                case_id=case_value,
+                filters=normalized_filters,
+                chunk_id=chunk_identifier,
+                doc_id=doc_id,
+            )
             entry = candidates.setdefault(
                 key,
                 {
@@ -1472,7 +1508,7 @@ class PgVectorClient:
                     "_allow_below_cutoff": False,
                 },
             )
-            entry["chunk_id"] = chunk_id if chunk_id is not None else key
+            entry["chunk_id"] = chunk_identifier
             lscore_value = max(0.0, float(score_raw))
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
@@ -1499,7 +1535,50 @@ class PgVectorClient:
         )
         for entry in candidates.values():
             allow_below_cutoff = bool(entry.pop("_allow_below_cutoff", False))
-            meta = dict(entry["metadata"])
+            raw_meta = dict(cast(Mapping[str, object] | None, entry.get("metadata")) or {})
+            candidate_tenant = cast(Optional[str], raw_meta.get("tenant_id"))
+            candidate_case = cast(Optional[str], raw_meta.get("case_id"))
+            reasons: List[str] = []
+            if tenant is not None:
+                if candidate_tenant is None:
+                    reasons.append("tenant_missing")
+                elif candidate_tenant != tenant:
+                    reasons.append("tenant_mismatch")
+            if case_value is not None:
+                if candidate_case is None:
+                    reasons.append("case_missing")
+                elif candidate_case != case_value:
+                    reasons.append("case_mismatch")
+
+            if case_value is None:
+                strict_ok = (tenant is None) or (
+                    candidate_tenant is not None and candidate_tenant == tenant
+                )
+            else:
+                strict_ok = strict_match(raw_meta, tenant, case_value)
+
+            if not strict_ok or reasons:
+                logger.info(
+                    "rag.strict.reject",
+                    tenant_id=tenant,
+                    case_id=case_value,
+                    candidate_tenant_id=candidate_tenant,
+                    candidate_case_id=candidate_case,
+                    doc_hash=entry.get("doc_hash"),
+                    doc_id=entry.get("doc_id"),
+                    chunk_id=entry.get("chunk_id"),
+                    reasons=reasons or ["unknown"],
+                )
+                continue
+
+            meta = self._ensure_chunk_metadata_contract(
+                raw_meta,
+                tenant_id=tenant,
+                case_id=case_value,
+                filters=normalized_filters,
+                chunk_id=entry.get("chunk_id"),
+                doc_id=entry.get("doc_id"),
+            )
             doc_hash = entry.get("doc_hash")
             doc_id = entry.get("doc_id")
             if doc_hash and not meta.get("hash"):
