@@ -1349,6 +1349,9 @@ def test_normalise_rag_response_stringifies_uuid_values():
     snippet_id = uuid.uuid4()
     doc_uuid = uuid.uuid4()
     trace_uuid = uuid.uuid4()
+    extra_meta_key = uuid.uuid4()
+    retrieval_extra_uuid = uuid.uuid4()
+    match_uuid = uuid.uuid4()
 
     payload = {
         "answer": "Done",
@@ -1367,6 +1370,7 @@ def test_normalise_rag_response_stringifies_uuid_values():
                 "profile": "standard",
                 "vector_space_id": routing_space,
             },
+            "internal_debug": {"id": retrieval_extra_uuid},
         },
         "snippets": [
             {
@@ -1374,10 +1378,14 @@ def test_normalise_rag_response_stringifies_uuid_values():
                 "text": "Snippet text",
                 "score": 0.42,
                 "source": "doc.md",
-                "meta": {"doc_uuid": doc_uuid},
+                "meta": {
+                    "doc_uuid": doc_uuid,
+                    extra_meta_key: {"nested": {"inner_uuid": uuid.uuid4()}},
+                },
             }
         ],
         "graph_debug": {"trace_id": trace_uuid},
+        "matches": [{"meta": {"chunk_id": match_uuid}}],
     }
 
     normalised = views._normalise_rag_response(payload)
@@ -1385,12 +1393,17 @@ def test_normalise_rag_response_stringifies_uuid_values():
     routing = normalised["retrieval"]["routing"]
     assert isinstance(routing["vector_space_id"], str)
 
+    retrieval_diagnostics = normalised["diagnostics"]["retrieval"]
+    assert retrieval_diagnostics["internal_debug"]["id"] == str(retrieval_extra_uuid)
+
     snippet = normalised["snippets"][0]
     assert isinstance(snippet["id"], str)
     assert isinstance(snippet["meta"]["doc_uuid"], str)
+    assert isinstance(snippet["meta"][str(extra_meta_key)]["nested"]["inner_uuid"], str)
 
     diagnostics = normalised["diagnostics"]["response"]
     assert isinstance(diagnostics["graph_debug"]["trace_id"], str)
+    assert diagnostics["matches"][0]["meta"]["chunk_id"] == str(match_uuid)
 
 
 @pytest.mark.django_db

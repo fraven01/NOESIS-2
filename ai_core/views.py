@@ -1139,7 +1139,16 @@ def _serialise_json_value(value: object) -> object:
     if isinstance(value, uuid.UUID):
         return str(value)
     if isinstance(value, Mapping):
-        return {key: _serialise_json_value(val) for key, val in value.items()}
+        serialised: dict[str, object] = {}
+        for key, val in value.items():
+            if isinstance(key, uuid.UUID):
+                key_str = str(key)
+            elif isinstance(key, str):
+                key_str = key
+            else:
+                key_str = str(key)
+            serialised[key_str] = _serialise_json_value(val)
+        return serialised
     if isinstance(value, (list, tuple, set)):
         return [_serialise_json_value(item) for item in value]
     return value
@@ -1174,12 +1183,12 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
         if key not in payload:
             continue
         if key != "retrieval":
-            projected[key] = payload[key]
+            projected[key] = _serialise_json_value(payload[key])
             continue
 
         value = payload[key]
         if not isinstance(value, Mapping):
-            projected[key] = value
+            projected[key] = _serialise_json_value(value)
             continue
 
         retrieval_dict = dict(value)
@@ -1213,12 +1222,15 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
                 retrieval_extras.setdefault("routing", routing_extras)
 
         if retrieval_extras:
-            diagnostics["retrieval"] = retrieval_extras
+            diagnostics["retrieval"] = _serialise_json_value(retrieval_extras)
 
-        projected[key] = retrieval_projected
+        projected[key] = {
+            retrieval_key: _serialise_json_value(retrieval_value)
+            for retrieval_key, retrieval_value in retrieval_projected.items()
+        }
 
     if top_level_extras:
-        diagnostics["response"] = top_level_extras
+        diagnostics["response"] = _serialise_json_value(top_level_extras)
 
     if diagnostics:
         projected["diagnostics"] = {
