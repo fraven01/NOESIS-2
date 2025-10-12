@@ -1232,7 +1232,6 @@ class PgVectorClient:
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
                                     )
-                                    raise
                                 else:
                                     raise
                             if not lexical_rows_local and not should_run_fallback:
