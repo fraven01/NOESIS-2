@@ -12,7 +12,7 @@ iex "$compose build --no-cache --pull"
 Write-Host '[dev-reset] Bring up base services'
 iex "$compose up -d"
 
-Write-Host '[dev-reset] Run jobs: migrate + bootstrap'
+Write-Host '[dev-reset] Run jobs: migrate + bootstrap + rag'
 iex 'npm run dev:init'
 
 Write-Host '[dev-reset] Smoke checks'
