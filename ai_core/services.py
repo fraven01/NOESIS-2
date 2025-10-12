@@ -65,6 +65,7 @@ logger = logging.getLogger(__name__)
 
 CHECKPOINTER = FileCheckpointer()
 
+
 # Helper: make arbitrary payloads JSON-serialisable (UUIDs → strings)
 def _make_json_safe(value):  # type: ignore[no-untyped-def]
     """Return a structure that json.dumps can serialise.
@@ -85,6 +86,7 @@ def _make_json_safe(value):  # type: ignore[no-untyped-def]
     if isinstance(value, (list, tuple, set)):
         return [_make_json_safe(v) for v in value]
     return value
+
 
 # Allow tests to monkeypatch the run_ingestion task via ai_core.views.run_ingestion
 # while keeping a sane default binding for production code paths.

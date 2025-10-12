@@ -1257,13 +1257,17 @@ class RagQueryViewV1(_GraphView):
             serializer = RagQueryResponseSerializer(data=graph_payload)
             try:
                 serializer.is_valid(raise_exception=True)
-            except Exception as exc:
+            except Exception:
                 try:
                     logger.warning(
                         "rag.response.validation_failed",
                         extra={
                             "errors": getattr(serializer, "errors", None),
-                            "keys": list(graph_payload.keys()) if isinstance(graph_payload, dict) else None,
+                            "keys": (
+                                list(graph_payload.keys())
+                                if isinstance(graph_payload, dict)
+                                else None
+                            ),
                         },
                     )
                 except Exception:

@@ -1092,8 +1092,10 @@ class PgVectorClient:
                                     if limit_threshold is not None:
                                         for row in lexical_rows_local:
                                             try:
-                                                score_candidate = self._extract_score_from_row(
-                                                    row, kind="lexical"
+                                                score_candidate = (
+                                                    self._extract_score_from_row(
+                                                        row, kind="lexical"
+                                                    )
                                                 )
                                             except Exception:
                                                 # Defensive: ignore rows with unexpected shape/types
@@ -1123,7 +1125,9 @@ class PgVectorClient:
                                             first = lexical_rows_local[0]
                                             first_type = type(first).__name__
                                             try:
-                                                first_len = len(first)  # may fail for non-sequences
+                                                first_len = len(
+                                                    first
+                                                )  # may fail for non-sequences
                                             except Exception:
                                                 first_len = None
                                     except Exception:
