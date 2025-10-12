@@ -2009,7 +2009,17 @@ class PgVectorClient:
             pass
         fallback_promoted: List[Dict[str, object | None]] = []
         fallback_attempted = False
-        if min_sim_value > 0.0 and len(filtered_results) < top_k and results:
+        # Only run the cutoff fallback when the trigram fallback has been applied.
+        # This prevents vector-only queries from reintroducing candidates that were
+        # explicitly filtered out by the min_sim threshold, which is required by
+        # the hybrid search tests that expect an empty result set in that case.
+        cutoff_fallback_enabled = fallback_limit_used_value is not None
+        if (
+            min_sim_value > 0.0
+            and len(filtered_results) < top_k
+            and results
+            and cutoff_fallback_enabled
+        ):
             fallback_attempted = True
             needed = top_k - len(filtered_results)
             cutoff_candidates = {
