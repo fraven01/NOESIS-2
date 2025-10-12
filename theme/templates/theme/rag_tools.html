@@ -361,6 +361,10 @@
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">top_k_effective</th>
                 <td class="px-3 py-2 font-mono text-slate-900">–</td>
               </tr>
+              <tr data-field="matches_returned">
+                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">matches_returned</th>
+                <td class="px-3 py-2 font-mono text-slate-900">–</td>
+              </tr>
               <tr data-field="max_candidates_effective">
                 <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">max_candidates_effective</th>
                 <td class="px-3 py-2 font-mono text-slate-900">–</td>
@@ -622,6 +626,7 @@
         'alpha',
         'min_sim',
         'top_k_effective',
+        'matches_returned',
         'max_candidates_effective',
         'vector_candidates',
         'lexical_candidates',
@@ -681,6 +686,7 @@
         ['alpha', fmtFloat(retrieval.alpha)],
         ['min_sim', fmtFloat(retrieval.min_sim)],
         ['top_k_effective', fmtNumber(retrieval.top_k_effective)],
+        ['matches_returned', fmtNumber(retrieval.matches_returned)],
         ['max_candidates_effective', fmtNumber(retrieval.max_candidates_effective)],
         ['vector_candidates', fmtNumber(retrieval.vector_candidates)],
         ['lexical_candidates', fmtNumber(retrieval.lexical_candidates)],

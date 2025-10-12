@@ -127,7 +127,8 @@ def test_retrieve_hybrid_search(monkeypatch):
     meta_payload = result.meta
     assert meta_payload.alpha == pytest.approx(0.6)
     assert meta_payload.min_sim == pytest.approx(0.2)
-    assert meta_payload.top_k_effective == len(result.matches)
+    assert meta_payload.top_k_effective == router.calls[0]["top_k"]
+    assert meta_payload.matches_returned == len(result.matches)
     assert meta_payload.max_candidates_effective >= meta_payload.top_k_effective
     assert meta_payload.vector_candidates == 37
     assert meta_payload.lexical_candidates == 41

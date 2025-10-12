@@ -240,6 +240,7 @@ Das Feld `visibility` ist optional; wenn es fehlt oder nicht autorisiert ist, wi
 ```
 
 `meta.visibility_effective` bestätigt die angewendete Sichtbarkeitsregel für Observability und nachgelagerte Auswertungen.
+`meta.matches_returned` dokumentiert die Anzahl der nach Deduplizierung tatsächlich gelieferten Snippets.
 `meta.deleted_matches_blocked` zeigt an, wie viele Treffer aufgrund der Sichtbarkeitsregeln entfernt wurden (Soft-Deleted Inhalte bei `"active"`).
 
 #### Result-Metadaten

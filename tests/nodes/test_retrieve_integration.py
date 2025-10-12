@@ -249,7 +249,8 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload.vector_candidates == len(vector_chunks)
     assert meta_payload.lexical_candidates == len(lexical_chunks)
     assert meta_payload.deleted_matches_blocked == 2
-    assert meta_payload.top_k_effective == 3
+    assert meta_payload.top_k_effective == call_params["top_k"]
+    assert meta_payload.matches_returned == len(matches)
     assert meta_payload.alpha == pytest.approx(0.55)
     assert meta_payload.min_sim == pytest.approx(0.35)
     assert meta_payload.routing.profile == "standard"

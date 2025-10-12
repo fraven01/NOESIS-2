@@ -4,7 +4,8 @@
   "retrieval": {
     "alpha": 0.7,
     "min_sim": 0.15,
-    "top_k_effective": 3,
+    "top_k_effective": 5,
+    "matches_returned": 3,
     "max_candidates_effective": 50,
     "vector_candidates": 37,
     "lexical_candidates": 41,
