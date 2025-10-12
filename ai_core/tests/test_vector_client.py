@@ -1,6 +1,7 @@
 import hashlib
 import threading
 import uuid
+from collections.abc import Sequence
 
 import pytest
 from psycopg2.errors import UndefinedTable
@@ -1090,6 +1091,135 @@ class TestPgVectorClient:
         fake = connections[0]
         assert fake.search_path_calls >= 1
         assert fake.search_path_set is True
+
+    def test_lexical_row_without_negative_index(self, monkeypatch):
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        doc_hash = hashlib.sha256(b"lexical-noneg").hexdigest()
+        doc_id = uuid.uuid4()
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
+        )
+
+        class _NoNegativeRow(Sequence):
+            def __init__(self, values: tuple[object, ...]) -> None:
+                self._values = values
+
+            def __len__(self) -> int:
+                return len(self._values)
+
+            def __getitem__(self, index):  # type: ignore[override]
+                if isinstance(index, slice):
+                    return self._values[index]
+                if index < 0:
+                    raise IndexError("negative indices not supported")
+                return self._values[index]
+
+        class _Cursor:
+            def __init__(self) -> None:
+                self._next_fetchall: str | None = None
+                self._fetchone_result: tuple | None = None
+                self._last_limit: float | None = None
+
+            def __enter__(self) -> "_Cursor":
+                return self
+
+            def __exit__(self, exc_type, exc, tb) -> None:
+                return None
+
+            def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
+                text = str(sql)
+                if "pg_catalog.pg_opclass" in text:
+                    self._fetchone_result = (1,)
+                    return
+                if "SET LOCAL statement_timeout" in text:
+                    return
+                if "SELECT set_limit" in text:
+                    self._last_limit = float(params[0]) if params else None
+                    return
+                if "SELECT show_limit()" in text:
+                    if self._last_limit is None:
+                        self._fetchone_result = None
+                    else:
+                        self._fetchone_result = (self._last_limit,)
+                    return
+                if "FROM embeddings" in text:
+                    self._next_fetchall = "vector"
+                    return
+                if "c.text_norm % %s" in text:
+                    self._next_fetchall = "primary"
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in text:
+                    raise AssertionError("fallback should not execute")
+                self._next_fetchall = None
+
+            def fetchall(self) -> list[object]:
+                mode = self._next_fetchall
+                self._next_fetchall = None
+                if mode == "vector":
+                    return []
+                if mode == "primary":
+                    return [
+                        _NoNegativeRow(
+                            (
+                                str(uuid.uuid4()),
+                                "Lexical row without negative index support",
+                                {"tenant": tenant},
+                                doc_hash,
+                                doc_id,
+                                0.42,
+                            )
+                        )
+                    ]
+                return []
+
+            def fetchone(self):
+                result = self._fetchone_result
+                self._fetchone_result = None
+                return result
+
+        class _FakeConnection:
+            def cursor(self) -> _Cursor:
+                return _Cursor()
+
+            def rollback(self) -> None:
+                raise AssertionError("rollback should not be required")
+
+        def _fake_connection(self):  # type: ignore[no-untyped-def]
+            fake = _FakeConnection()
+
+            class _Ctx:
+                def __enter__(self_inner):
+                    return fake
+
+                def __exit__(self_inner, exc_type, exc, tb):
+                    return None
+
+            return _Ctx()
+
+        monkeypatch.setattr(
+            client, "_connection", _fake_connection.__get__(client, type(client))
+        )
+
+        with capture_logs() as logs:
+            result = client.hybrid_search(
+                "primary lexical only",
+                tenant_id=tenant,
+                filters={},
+                top_k=1,
+            )
+
+        assert result.lexical_candidates == 1
+        assert result.chunks
+        failures = [
+            entry
+            for entry in logs
+            if entry.get("event") == "rag.hybrid.lexical_primary_failed"
+        ]
+        assert failures == []
 
     def test_fallback_skips_when_limit_low_enough(
         self, monkeypatch: pytest.MonkeyPatch
