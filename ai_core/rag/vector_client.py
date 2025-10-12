@@ -44,6 +44,11 @@ register_default_jsonb(loads=json.loads, globally=True)
 
 logger = get_logger(__name__)
 
+logger.info(
+    "module_loaded",
+    extra={"module": __name__, "path": os.path.abspath(__file__)},
+)
+
 
 # Welche Filter-Schlüssel sind erlaubt und worauf mappen sie?
 # - "chunk_meta": JSONB c.metadata ->> '<key>'

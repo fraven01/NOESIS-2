@@ -134,6 +134,34 @@ GRAPH_REQUEST_MODELS = {
 }
 
 
+def _log_graph_response_payload(payload: object, context: GraphContext) -> None:
+    """Emit diagnostics about the response payload produced by a graph run."""
+
+    try:
+        payload_json = json.dumps(payload, ensure_ascii=False)
+    except TypeError:
+        logger.exception(
+            "graph.response_payload_serialization_error",
+            extra={
+                "graph": context.graph_name,
+                "tenant_id": context.tenant_id,
+                "case_id": context.case_id,
+                "payload_type": type(payload).__name__,
+            },
+        )
+        raise
+
+    logger.info(
+        "graph.response_payload",
+        extra={
+            "graph": context.graph_name,
+            "tenant_id": context.tenant_id,
+            "case_id": context.case_id,
+            "payload_json": payload_json,
+        },
+    )
+
+
 def _error_response(detail: str, code: str, status_code: int) -> Response:
     """Return a standardised error payload."""
     return Response({"detail": detail, "code": code}, status=status_code)
@@ -330,7 +358,35 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
     except (TypeError, ValueError) as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 
-    return Response(result)
+    try:
+        _log_graph_response_payload(result, context)
+    except TypeError:
+        raise
+    except Exception:
+        logger.exception(
+            "graph.response_payload_logging_failed",
+            extra={
+                "graph": context.graph_name,
+                "tenant_id": context.tenant_id,
+                "case_id": context.case_id,
+            },
+        )
+
+    try:
+        response = Response(result)
+    except TypeError:
+        logger.exception(
+            "graph.response_serialization_error",
+            extra={
+                "graph": context.graph_name,
+                "tenant_id": context.tenant_id,
+                "case_id": context.case_id,
+                "payload_type": type(result).__name__,
+            },
+        )
+        raise
+
+    return response
 
 
 def start_ingestion_run(
