@@ -1937,10 +1937,12 @@ class PgVectorClient:
             )
         except Exception:
             pass
-        below_cutoff = 0
+        below_cutoff_count = 0
         filtered_out_details: List[Dict[str, object | None]] = []
+        below_cutoff_chunks: List[Chunk] = []
+        filtered_results: List[Chunk] = []
+        selected_chunk_keys: set[str] = set()
         if min_sim_value > 0.0:
-            filtered_results: List[Chunk] = []
             for chunk, allow in results:
                 fused_value = float(chunk.meta.get("fused", 0.0))
                 if math.isnan(fused_value) or math.isinf(fused_value):
@@ -1948,16 +1950,21 @@ class PgVectorClient:
 
                 is_below_cutoff = fused_value < min_sim_value
                 if is_below_cutoff:
-                    below_cutoff += 1
+                    below_cutoff_count += 1
 
                 if allow or not is_below_cutoff:
                     filtered_results.append(chunk)
+                    chunk_key = _safe_chunk_identifier(
+                        chunk.meta.get("chunk_id")
+                    ) or f"id:{id(chunk)}"
+                    selected_chunk_keys.add(chunk_key)
                     if is_below_cutoff:
                         # These chunks are returned to the caller but still count as
                         # below-cutoff for telemetry and metrics purposes.
                         continue
 
                 if is_below_cutoff and not allow:
+                    below_cutoff_chunks.append(chunk)
                     filtered_out_details.append(
                         {
                             "chunk_id": _safe_chunk_identifier(
@@ -1966,12 +1973,18 @@ class PgVectorClient:
                             "fused": _safe_float(fused_value),
                         }
                     )
-            if below_cutoff > 0:
+            if below_cutoff_count > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant_id=tenant).inc(
-                    float(below_cutoff)
+                    float(below_cutoff_count)
                 )
         else:
             filtered_results = [chunk for chunk, _ in results]
+        if not selected_chunk_keys:
+            selected_chunk_keys = {
+                _safe_chunk_identifier(chunk.meta.get("chunk_id"))
+                or f"id:{id(chunk)}"
+                for chunk in filtered_results
+            }
         try:
             logger.debug(
                 "rag.hybrid.results.post_min_sim",
@@ -1994,8 +2007,53 @@ class PgVectorClient:
             )
         except Exception:
             pass
+        fallback_promoted: List[Dict[str, object | None]] = []
+        fallback_attempted = False
+        if min_sim_value > 0.0 and len(filtered_results) < top_k and results:
+            fallback_attempted = True
+            needed = top_k - len(filtered_results)
+            cutoff_candidates = {
+                (
+                    _safe_chunk_identifier(chunk.meta.get("chunk_id"))
+                    or f"id:{id(chunk)}"
+                ): chunk
+                for chunk in below_cutoff_chunks
+            }
+            for chunk, _ in results:
+                if needed <= 0:
+                    break
+                chunk_key = (
+                    _safe_chunk_identifier(chunk.meta.get("chunk_id"))
+                    or f"id:{id(chunk)}"
+                )
+                if chunk_key in selected_chunk_keys:
+                    continue
+                if chunk_key not in cutoff_candidates:
+                    continue
+                chunk.meta["cutoff_fallback"] = True
+                filtered_results.append(chunk)
+                selected_chunk_keys.add(chunk_key)
+                fallback_promoted.append(
+                    {
+                        "chunk_id": chunk_key,
+                        "fused": _safe_float(chunk.meta.get("fused")),
+                    }
+                )
+                needed -= 1
+            if fallback_promoted:
+                promoted_ids = {
+                    entry.get("chunk_id")
+                    for entry in fallback_promoted
+                    if entry.get("chunk_id") is not None
+                }
+                if promoted_ids:
+                    filtered_out_details = [
+                        detail
+                        for detail in filtered_out_details
+                        if detail.get("chunk_id") not in promoted_ids
+                    ]
         limited_results = filtered_results[:top_k]
-        if not limited_results and results and min_sim_value > 0.0:
+        if fallback_attempted:
             try:
                 logger.info(
                     "rag.hybrid.cutoff_fallback",
@@ -2004,7 +2062,23 @@ class PgVectorClient:
                         "case_id": case_value,
                         "requested_min_sim": min_sim_value,
                         "returned": len(limited_results),
-                        "below_cutoff": below_cutoff,
+                        "below_cutoff": below_cutoff_count,
+                        "promoted": fallback_promoted,
+                    },
+                )
+            except Exception:
+                pass
+        elif not limited_results and results and min_sim_value > 0.0:
+            try:
+                logger.info(
+                    "rag.hybrid.cutoff_fallback",
+                    extra={
+                        "tenant_id": tenant,
+                        "case_id": case_value,
+                        "requested_min_sim": min_sim_value,
+                        "returned": len(limited_results),
+                        "below_cutoff": below_cutoff_count,
+                        "promoted": [],
                     },
                 )
             except Exception:
@@ -2074,7 +2148,7 @@ class PgVectorClient:
             min_sim=min_sim_value,
             vec_limit=vec_limit_value,
             lex_limit=lex_limit_value,
-            below_cutoff=below_cutoff,
+            below_cutoff=below_cutoff_count,
             returned_after_cutoff=len(filtered_results),
             query_embedding_empty=query_embedding_empty,
             applied_trgm_limit=applied_trgm_limit_value,

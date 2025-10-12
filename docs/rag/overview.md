@@ -129,6 +129,13 @@ Der Router deckelt `top_k` weiterhin auf zehn Ergebnisse. Die Policy `RAG_CANDID
 
 Selektoren für Routing-Regeln (`tenant`, `process`, `doc_class`) werden beim Laden und zur Laufzeit getrimmt und in Kleinschreibung überführt. Die Spezifität bestimmt sich über die Anzahl gesetzter Felder; die Auflösung folgt „höchste Spezifität gewinnt, Gleichstand ⇒ Fehler“.
 
+### Similarity Cutoff & Fallback
+
+- `RAG_MIN_SIM` (Default `0.15`) definiert die minimale Fused-Similarity, die Treffer bestehen müssen. Werte darunter werden standardmäßig aussortiert und in `HybridSearchResult.below_cutoff` gezählt.
+- Damit Retrieval nicht leerläuft, wenn sämtliche Kandidaten knapp unterhalb des Limits liegen, füllt der `PgVectorClient` die Ergebnisliste bis `top_k` automatisch mit den bestbewerteten, zuvor verworfenen Chunks auf. Diese Treffer tragen `meta["cutoff_fallback"] = True`, sodass Downstream-Komponenten (UI, Langfuse) degradierte Qualität klar kennzeichnen können.
+- Das Logging (`rag.hybrid.cutoff_fallback`) enthält neben dem angeforderten Schwellwert auch die IDs der nachgerückten Chunks (`promoted`). Dadurch lassen sich Ausreißer gezielt untersuchen und das Limit (`RAG_MIN_SIM`) tenant- oder use-case-spezifisch nachschärfen.
+- Empfehlung: Passe `RAG_MIN_SIM` nur in Ausnahmefällen an (z. B. für stark verrauschte Datenquellen). Werte < 0.05 führen häufig zu kaum verwertbaren Treffern; dokumentiere abweichende Settings im jeweiligen Projekt-Runbook.
+
 ## Löschkonzept
 - Dokumente erhalten Hashes (siehe [Schema](schema.sql)) und `metadata` mit Herkunft.
 - Löschläufe laufen als Ingestion-Task mit Modus „delete“ und markieren `documents.deleted_at` (Soft Delete). Hard Delete optional über `DELETE ... WHERE tenant_id = ?`.
