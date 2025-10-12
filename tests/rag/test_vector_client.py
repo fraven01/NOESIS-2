@@ -498,6 +498,118 @@ def test_applies_set_limit_and_logs_applied_value(monkeypatch):
     assert float(applied_logs[0].get("applied")) == pytest.approx(0.05)
 
 
+def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_rows = [
+        (
+            "chunk-a",
+            "low score A",
+            {"tenant_id": tenant},
+            "hash-a",
+            "doc-a",
+            0.05,
+        ),
+        (
+            "chunk-b",
+            "low score B",
+            {"tenant_id": tenant},
+            "hash-b",
+            "doc-b",
+            0.04,
+        ),
+    ]
+
+    def _fake_run(_fn, *, op_name: str):
+        return ([], lexical_rows, 1.0)
+
+    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+    with capture_logs() as logs:
+        result = client.hybrid_search(
+            "fallback please",
+            tenant_id=tenant,
+            filters={"case_id": None},
+            alpha=0.0,
+            min_sim=0.1,
+            top_k=2,
+        )
+
+    assert len(result.chunks) == 2
+    assert result.below_cutoff == 2
+    assert result.returned_after_cutoff == 2
+
+    fallback_logs = [
+        entry for entry in logs if entry.get("event") == "rag.hybrid.cutoff_fallback"
+    ]
+    assert fallback_logs, "expected cutoff fallback log entry"
+    promoted = fallback_logs[-1].get("promoted")
+    assert promoted, "expected promoted chunk metadata in fallback log"
+    promoted_ids = {item.get("chunk_id") for item in promoted}
+
+    for chunk in result.chunks:
+        meta = chunk.meta
+        assert meta.get("cutoff_fallback") is True
+        assert float(meta.get("fused", 0.0)) < 0.1
+        assert meta.get("chunk_id") in promoted_ids
+
+
+def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+
+    lexical_rows = [
+        (
+            "chunk-top",
+            "best",
+            {"tenant_id": tenant},
+            "hash-top",
+            "doc-top",
+            0.09,
+        ),
+        (
+            "chunk-mid",
+            "middle",
+            {"tenant_id": tenant},
+            "hash-mid",
+            "doc-mid",
+            0.07,
+        ),
+        (
+            "chunk-low",
+            "lowest",
+            {"tenant_id": tenant},
+            "hash-low",
+            "doc-low",
+            0.05,
+        ),
+    ]
+
+    def _fake_run(_fn, *, op_name: str):
+        return ([], lexical_rows, 1.0)
+
+    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+    result = client.hybrid_search(
+        "fallback ordering",
+        tenant_id=tenant,
+        filters={"case_id": None},
+        alpha=0.0,
+        min_sim=0.1,
+        top_k=2,
+    )
+
+    assert len(result.chunks) == 2
+    assert result.below_cutoff == 3
+
+    returned_ids = [chunk.meta.get("chunk_id") for chunk in result.chunks]
+    assert returned_ids == ["chunk-top", "chunk-mid"]
+    for chunk in result.chunks:
+        assert chunk.meta.get("cutoff_fallback") is True
+        assert float(chunk.meta.get("fused", 0.0)) < 0.1
+
+
 def test_row_shape_mismatch_does_not_crash(monkeypatch):
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
