@@ -1945,10 +1945,19 @@ class PgVectorClient:
                 fused_value = float(chunk.meta.get("fused", 0.0))
                 if math.isnan(fused_value) or math.isinf(fused_value):
                     fused_value = 0.0
-                if allow or fused_value >= min_sim_value:
-                    filtered_results.append(chunk)
-                else:
+
+                is_below_cutoff = fused_value < min_sim_value
+                if is_below_cutoff:
                     below_cutoff += 1
+
+                if allow or not is_below_cutoff:
+                    filtered_results.append(chunk)
+                    if is_below_cutoff:
+                        # These chunks are returned to the caller but still count as
+                        # below-cutoff for telemetry and metrics purposes.
+                        continue
+
+                if is_below_cutoff and not allow:
                     filtered_out_details.append(
                         {
                             "chunk_id": _safe_chunk_identifier(
