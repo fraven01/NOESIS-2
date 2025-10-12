@@ -41,9 +41,8 @@ def test_normalise_rag_response_serialises_nested_uuids() -> None:
     retrieval = normalised["retrieval"]
     assert retrieval["took_ms"] == 12
     assert retrieval["vector_candidates"][0]["document_id"] == str(retrieval_uuid_key)
-    assert (
-        retrieval["vector_candidates"][0]["metadata"]["source_id"]
-        == str(retrieval_uuid_value)
+    assert retrieval["vector_candidates"][0]["metadata"]["source_id"] == str(
+        retrieval_uuid_value
     )
     assert isinstance(retrieval["routing"], dict)
     assert retrieval["routing"]["profile"] == "default"

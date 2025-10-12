@@ -1205,7 +1205,9 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
             else:
                 retrieval_projected[retrieval_key] = retrieval_value
 
-        if "routing" in retrieval_dict and isinstance(retrieval_dict["routing"], Mapping):
+        if "routing" in retrieval_dict and isinstance(
+            retrieval_dict["routing"], Mapping
+        ):
             routing_dict = dict(retrieval_dict["routing"])
             routing_projected_nested: dict[str, object] = {}
             for routing_key, routing_value in routing_dict.items():
