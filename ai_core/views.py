@@ -4,6 +4,7 @@ import logging
 import re
 import uuid
 from collections.abc import Mapping
+from pathlib import Path
 from types import ModuleType
 from importlib import import_module
 from uuid import uuid4
@@ -103,6 +104,11 @@ from .infra.resp import apply_std_headers
 
 
 logger = logging.getLogger(__name__)
+
+logger.info(
+    "module_loaded",
+    extra={"module": __name__, "path": str(Path(__file__).resolve())},
+)
 
 
 def assert_case_active(tenant: str, case_id: str) -> None:
