@@ -41,10 +41,13 @@ EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.
 
 
 if "RAG_VECTOR_STORES" not in globals():
+    rag_schema_override = os.getenv("RAG_VECTOR_SCHEMA", "").strip()
+    default_vector_schema = rag_schema_override or "rag"
+
     RAG_VECTOR_STORES = {
         "global": {
             "backend": "pgvector",
-            "schema": "rag",
+            "schema": default_vector_schema,
             "dimension": DEFAULT_EMBEDDING_DIMENSION,
             # "dsn_env": "RAG_DATABASE_URL",
         },
