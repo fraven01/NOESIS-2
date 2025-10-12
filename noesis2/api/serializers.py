@@ -92,6 +92,7 @@ class RagRetrievalMetaSerializer(serializers.Serializer):
     alpha = serializers.FloatField()
     min_sim = serializers.FloatField()
     top_k_effective = serializers.IntegerField()
+    matches_returned = serializers.IntegerField()
     max_candidates_effective = serializers.IntegerField()
     vector_candidates = serializers.IntegerField()
     lexical_candidates = serializers.IntegerField()

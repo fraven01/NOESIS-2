@@ -842,6 +842,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
         "alpha": 0.7,
         "min_sim": 0.15,
         "top_k_effective": 1,
+        "matches_returned": 1,
         "max_candidates_effective": 50,
         "vector_candidates": 37,
         "lexical_candidates": 41,
@@ -934,6 +935,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     assert retrieval["alpha"] == 0.7
     assert retrieval["min_sim"] == 0.15
     assert retrieval["top_k_effective"] == 1
+    assert retrieval["matches_returned"] == 1
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 42
     assert retrieval["routing"]["profile"] == "standard"
@@ -968,6 +970,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     assert retrieval_state["alpha"] == 0.7
     assert retrieval_state["min_sim"] == 0.15
     assert retrieval_state["top_k_effective"] == 1
+    assert retrieval_state["matches_returned"] == 1
     assert retrieval_state["visibility_effective"] == "active"
     assert retrieval_state["took_ms"] == 42
     assert retrieval_state["routing"]["profile"] == "standard"
@@ -1040,6 +1043,7 @@ def test_rag_query_endpoint_allows_blank_answer(
         "alpha": 0.7,
         "min_sim": 0.15,
         "top_k_effective": 1,
+        "matches_returned": 1,
         "max_candidates_effective": 50,
         "vector_candidates": 2,
         "lexical_candidates": 1,
@@ -1111,6 +1115,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
         "alpha": 0.5,
         "min_sim": 0.1,
         "top_k_effective": 1,
+        "matches_returned": 1,
         "max_candidates_effective": 10,
         "vector_candidates": 4,
         "lexical_candidates": 3,
@@ -1183,6 +1188,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
         "alpha": "0.65",
         "min_sim": "0.35",
         "top_k_effective": "2",
+        "matches_returned": "1",
         "max_candidates_effective": "20",
         "vector_candidates": "11",
         "lexical_candidates": "7",
@@ -1236,6 +1242,8 @@ def test_rag_query_endpoint_normalises_numeric_types(
     retrieval = payload["retrieval"]
     assert isinstance(retrieval["top_k_effective"], int)
     assert retrieval["top_k_effective"] == 2
+    assert isinstance(retrieval["matches_returned"], int)
+    assert retrieval["matches_returned"] == 1
     assert isinstance(retrieval["max_candidates_effective"], int)
     assert retrieval["max_candidates_effective"] == 20
     assert isinstance(retrieval["vector_candidates"], int)
@@ -1382,6 +1390,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
         "alpha": 0.65,
         "min_sim": 0.35,
         "top_k_effective": 2,
+        "matches_returned": 1,
         "max_candidates_effective": 20,
         "vector_candidates": 11,
         "lexical_candidates": 7,
@@ -1441,6 +1450,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
     assert payload["answer"] == "Synthesised"
     assert payload["prompt_version"] == "v3"
     assert payload["retrieval"]["lexical_candidates"] == 7
+    assert payload["retrieval"]["matches_returned"] == 1
     assert payload["retrieval"]["routing"]["profile"] == "standard"
     assert "lexical_variant" not in payload["retrieval"]
     diagnostics = payload.get("diagnostics")
@@ -1470,6 +1480,7 @@ def test_normalise_rag_response_stringifies_uuid_values():
             "alpha": 0.5,
             "min_sim": 0.15,
             "top_k_effective": 3,
+            "matches_returned": 1,
             "max_candidates_effective": 25,
             "vector_candidates": 7,
             "lexical_candidates": 2,
@@ -1543,6 +1554,7 @@ def test_rag_query_endpoint_populates_query_from_question(
             "alpha": 0.5,
             "min_sim": 0.1,
             "top_k_effective": 1,
+            "matches_returned": 1,
             "max_candidates_effective": 25,
             "vector_candidates": 12,
             "lexical_candidates": 18,

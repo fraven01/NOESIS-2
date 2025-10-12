@@ -82,6 +82,7 @@ class RetrieveMeta(BaseModel):
     alpha: float
     min_sim: float
     top_k_effective: int
+    matches_returned: int
     max_candidates_effective: int
     vector_candidates: int
     lexical_candidates: int
@@ -372,7 +373,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     meta_payload = {
         "alpha": alpha_value,
         "min_sim": min_sim_value,
-        "top_k_effective": len(final_matches),
+        "top_k_effective": hybrid_config.top_k,
+        "matches_returned": len(final_matches),
         "max_candidates_effective": hybrid_config.max_candidates,
         "vector_candidates": vector_candidates,
         "lexical_candidates": lexical_candidates,

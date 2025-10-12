@@ -51,12 +51,14 @@
         "alpha",
         "min_sim",
         "top_k_effective",
+        "matches_returned",
         "max_candidates_effective",
         "vector_candidates",
         "lexical_candidates",
         "deleted_matches_blocked",
         "routing",
-        "visibility_effective"
+        "visibility_effective",
+        "took_ms"
       ],
       "properties": {
         "alpha": {
@@ -73,8 +75,13 @@
         },
         "top_k_effective": {
           "type": "integer",
+          "minimum": 1,
+          "description": "Effective top_k applied after normalisation and caps."
+        },
+        "matches_returned": {
+          "type": "integer",
           "minimum": 0,
-          "description": "Number of matches returned after trimming."
+          "description": "Number of deduplicated matches returned in the payload."
         },
         "max_candidates_effective": {
           "type": "integer",
@@ -114,6 +121,11 @@
         "visibility_effective": {
           "type": "string",
           "description": "Visibility policy actually applied by the router."
+        },
+        "took_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Total latency of the retrieval operation in milliseconds."
         }
       }
     }

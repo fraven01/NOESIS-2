@@ -378,6 +378,7 @@ def test_ai_core_endpoints_expose_serializers():
         "alpha",
         "min_sim",
         "top_k_effective",
+        "matches_returned",
         "max_candidates_effective",
         "vector_candidates",
         "lexical_candidates",

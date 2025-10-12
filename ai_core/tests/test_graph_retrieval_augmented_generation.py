@@ -23,6 +23,7 @@ def _dummy_output() -> retrieve.RetrieveOutput:
         alpha=0.5,
         min_sim=0.2,
         top_k_effective=1,
+        matches_returned=1,
         max_candidates_effective=5,
         vector_candidates=3,
         lexical_candidates=2,
@@ -84,6 +85,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
     assert retrieval["alpha"] == 0.5
     assert retrieval["min_sim"] == 0.2
     assert retrieval["top_k_effective"] == 1
+    assert retrieval["matches_returned"] == 1
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 12
     assert retrieval["routing"]["profile"] == "default"
@@ -119,6 +121,7 @@ def test_graph_normalises_tenant_alias() -> None:
     assert retrieval["alpha"] == 0.5
     assert retrieval["min_sim"] == 0.2
     assert retrieval["top_k_effective"] == 1
+    assert retrieval["matches_returned"] == 1
     assert retrieval["visibility_effective"] == "active"
     assert retrieval["took_ms"] == 12
     assert retrieval["routing"]["profile"] == "default"
