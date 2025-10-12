@@ -13,7 +13,7 @@ $COMPOSE build --no-cache --pull
 echo "[dev-reset] Bring up base services"
 $COMPOSE up -d
 
-echo "[dev-reset] Run jobs: migrate + bootstrap"
+echo "[dev-reset] Run jobs: migrate + bootstrap + rag"
 npm run dev:init
 
 echo "[dev-reset] Smoke checks"

@@ -147,6 +147,7 @@ if (-not $ok) {
 }
 
 Write-Host "[dev-up] Init jobs: migrate + bootstrap"
+$env:DEV_TENANT_SCHEMA = $DevTenantSchema
 Invoke-Expression 'npm run dev:init'
 
 if ($IncludeElk -or $SeedDemo) {

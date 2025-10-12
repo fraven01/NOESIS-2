@@ -10,12 +10,18 @@ Einige wichtige Parameter können zur Laufzeit über Umgebungsvariablen (z.B. in
 
 Das für die Erstellung von Vektor-Embeddings verwendete Modell sowie dessen Dimensionen werden über Umgebungsvariablen definiert.
 
-| Umgebungsvariable          | Beschreibung                                                                                             | Standardwert                  |
-| -------------------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------- |
-| `EMBEDDINGS_MODEL_PRIMARY` | Der Name/Alias des primären Embedding-Modells, das für das "standard" Profil verwendet wird.             | `oai-embed-small`             |
-| `EMBEDDINGS_DIM`           | Die Anzahl der Dimensionen für das primäre Embedding-Modell.                                             | `1536`                        |
-| `DEMO_EMBEDDINGS_MODEL`    | Der Modellname für das "demo" Profil.                                                                    | Wert von `EMBEDDINGS_MODEL_PRIMARY` |
-| `DEMO_EMBEDDINGS_DIM`      | Die Anzahl der Dimensionen für das Demo-Modell.                                                          | Wert von `EMBEDDINGS_DIM`     |
+| Umgebungsvariable          | Beschreibung                                                                 | Standardwert                  |
+| -------------------------- | ----------------------------------------------------------------------------- | ----------------------------- |
+| `EMBEDDINGS_MODEL_PRIMARY` | Der Name/Alias des primären Embedding-Modells, das für das "standard" Profil verwendet wird. | `oai-embed-small`             |
+| `EMBEDDINGS_DIM`           | Die Anzahl der Dimensionen für das primäre Embedding-Modell.                  | `1536`                        |
+| `DEMO_EMBEDDINGS_MODEL`    | Der Modellname für das "demo" Profil.                                        | Wert von `EMBEDDINGS_MODEL_PRIMARY` |
+| `DEMO_EMBEDDINGS_DIM`      | Die Anzahl der Dimensionen für das Demo-Modell.                              | Wert von `EMBEDDINGS_DIM`     |
+
+### Vector-Schema Override
+
+| Umgebungsvariable   | Beschreibung                                                                                 | Standardwert |
+| ------------------- | --------------------------------------------------------------------------------------------- | ------------ |
+| `RAG_VECTOR_SCHEMA` | Überschreibt das Schema des Standard-Vector-Spaces (`RAG_VECTOR_STORES['global']`).            | `rag` (oder Wert von `DEV_TENANT_SCHEMA`) |
 
 **Beispiel:**
 Um ein anderes Modell zu verwenden, kann die folgende Zeile in die `.env`-Datei eingetragen werden:
@@ -53,5 +59,7 @@ RAG_VECTOR_STORES = {
     },
 }
 ```
+
+> Hinweis: Über die Umgebungsvariable `RAG_VECTOR_SCHEMA` kann das Schema des `global`-Spaces ohne Code-Änderung überschrieben werden. Ohne Override wird – falls gesetzt – automatisch `DEV_TENANT_SCHEMA` verwendet, ansonsten bleibt der Standard `rag`.
 
 Ein Wechsel zu einem anderen Backend (z.B. Weaviate, Milvus) würde eine direkte Änderung dieses Python-Dictionarys erfordern.

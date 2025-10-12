@@ -21,6 +21,8 @@ DEV_SUPERUSER_USERNAME=${DEV_SUPERUSER_USERNAME:-admin}
 DEV_SUPERUSER_EMAIL=${DEV_SUPERUSER_EMAIL:-admin@example.com}
 DEV_SUPERUSER_PASSWORD=${DEV_SUPERUSER_PASSWORD:-admin123}
 
+export DEV_TENANT_SCHEMA
+
 echo "[dev-up] Bringing up services (db, redis, litellm, web, worker)"
 $COMPOSE up -d
 
