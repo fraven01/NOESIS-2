@@ -42,6 +42,8 @@ EMBEDDINGS_TIMEOUT_SECONDS = env.float("EMBEDDINGS_TIMEOUT_SECONDS", default=20.
 
 if "RAG_VECTOR_STORES" not in globals():
     rag_schema_override = os.getenv("RAG_VECTOR_SCHEMA", "").strip()
+    if not rag_schema_override:
+        rag_schema_override = os.getenv("DEV_TENANT_SCHEMA", "").strip()
     default_vector_schema = rag_schema_override or "rag"
 
     RAG_VECTOR_STORES = {

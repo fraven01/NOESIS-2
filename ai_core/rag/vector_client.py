@@ -2364,9 +2364,12 @@ def _resolve_vector_schema() -> str:
     flag used by :class:`~ai_core.rag.vector_store.VectorStoreRouter`.
     """
 
-    schema_env = os.getenv("RAG_VECTOR_SCHEMA")
-    if schema_env:
-        return schema_env
+    for env_var in ("RAG_VECTOR_SCHEMA", "DEV_TENANT_SCHEMA"):
+        schema_env = os.getenv(env_var)
+        if schema_env:
+            schema_env = schema_env.strip()
+            if schema_env:
+                return schema_env
 
     stores_config: Mapping[str, Mapping[str, object]] | None = None
     configured_default_scope: str | None = None

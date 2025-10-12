@@ -21,7 +21,7 @@ Das für die Erstellung von Vektor-Embeddings verwendete Modell sowie dessen Dim
 
 | Umgebungsvariable   | Beschreibung                                                                                 | Standardwert |
 | ------------------- | --------------------------------------------------------------------------------------------- | ------------ |
-| `RAG_VECTOR_SCHEMA` | Überschreibt das Schema des Standard-Vector-Spaces (`RAG_VECTOR_STORES['global']`).            | `rag`        |
+| `RAG_VECTOR_SCHEMA` | Überschreibt das Schema des Standard-Vector-Spaces (`RAG_VECTOR_STORES['global']`).            | `rag` (oder Wert von `DEV_TENANT_SCHEMA`) |
 
 **Beispiel:**
 Um ein anderes Modell zu verwenden, kann die folgende Zeile in die `.env`-Datei eingetragen werden:
@@ -60,6 +60,6 @@ RAG_VECTOR_STORES = {
 }
 ```
 
-> Hinweis: Über die Umgebungsvariable `RAG_VECTOR_SCHEMA` kann das Schema des `global`-Spaces ohne Code-Änderung überschrieben werden. Der Standard bleibt `rag`, solange kein Override gesetzt ist.
+> Hinweis: Über die Umgebungsvariable `RAG_VECTOR_SCHEMA` kann das Schema des `global`-Spaces ohne Code-Änderung überschrieben werden. Ohne Override wird – falls gesetzt – automatisch `DEV_TENANT_SCHEMA` verwendet, ansonsten bleibt der Standard `rag`.
 
 Ein Wechsel zu einem anderen Backend (z.B. Weaviate, Milvus) würde eine direkte Änderung dieses Python-Dictionarys erfordern.
