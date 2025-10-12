@@ -269,7 +269,7 @@ class TestPgVectorClient:
         assert uuid.UUID(results[0].meta["tenant_id"])  # tenant ids are normalised
         assert 0.0 <= results[0].meta["score"] <= 1.0
         assert results[0].meta.get("hash") == chunk.meta["hash"]
-        assert results[0].meta.get("external_id") == "legacy-doc"
+        assert results[0].meta.get("external_id") == chunk.meta["external_id"]
 
     def test_upsert_skips_when_hash_unchanged(self, monkeypatch):
         class _Counter:
