@@ -1969,15 +1969,27 @@ class PgVectorClient:
         return content_hash
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
+        """Return a UUID for ``tenant_id`` while keeping legacy IDs stable."""
+
+        if isinstance(tenant_id, uuid.UUID):
+            return tenant_id
+
+        text = str(tenant_id or "").strip()
+        if not text or text.lower() == "none":
+            raise ValueError("Chunk metadata must include a tenant identifier")
+
         try:
-            return uuid.UUID(str(tenant_id))
+            return uuid.UUID(text)
         except (TypeError, ValueError):
-            if tenant_id in {None, "", "None"}:
-                raise ValueError("Chunk metadata must include a tenant identifier")
-            derived = uuid.uuid5(uuid.NAMESPACE_URL, f"tenant:{tenant_id}")
+            normalised = text.lower()
+            derived = uuid.uuid5(uuid.NAMESPACE_URL, f"tenant:{normalised}")
             logger.warning(
                 "Mapped legacy tenant identifier to deterministic UUID",
-                extra={"tenant_id": tenant_id, "derived_tenant_uuid": str(derived)},
+                extra={
+                    "tenant_id": text,
+                    "normalised_tenant_id": normalised,
+                    "derived_tenant_uuid": str(derived),
+                },
             )
             return derived
 

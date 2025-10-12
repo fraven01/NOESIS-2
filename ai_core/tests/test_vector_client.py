@@ -238,6 +238,34 @@ class TestPgVectorClient:
         )
         assert len(results) == 1
         assert histogram.samples
+
+    def test_hybrid_search_normalises_textual_tenant_ids(self) -> None:
+        client = vector_client.get_default_client()
+        tenant_slug = "tenant-case"
+        doc_hash = hashlib.sha256(b"tenant-case").hexdigest()
+        chunk = Chunk(
+            content="tenant case document",
+            meta={
+                "tenant_id": tenant_slug,
+                "hash": doc_hash,
+                "case_id": "case-normalised",
+                "source": "case-test",
+                "external_id": "tenant-case-doc",
+            },
+            embedding=[0.1] + [0.0] * (vector_client.get_embedding_dim() - 1),
+        )
+
+        written = client.upsert_chunks([chunk])
+        assert written == 1
+
+        results = client.search(
+            "tenant case document",
+            tenant_id=tenant_slug.upper(),
+            filters={"case_id": None},
+            top_k=1,
+        )
+
+        assert len(results) == 1
         assert uuid.UUID(results[0].meta["tenant_id"])  # tenant ids are normalised
         assert 0.0 <= results[0].meta["score"] <= 1.0
         assert results[0].meta.get("hash") == chunk.meta["hash"]
