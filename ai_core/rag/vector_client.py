@@ -1167,7 +1167,7 @@ class PgVectorClient:
                                     should_run_fallback = True
                                 elif (
                                     applied_trgm_limit is None
-                                    or applied_trgm_limit > 0.1
+                                    or applied_trgm_limit >= 0.1 - 1e-9
                                 ):
                                     should_run_fallback = True
                             if should_run_fallback:
