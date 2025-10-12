@@ -10,6 +10,7 @@ from celery.exceptions import TimeoutError as CeleryTimeoutError
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.utils import timezone
+from django.conf import settings
 
 from . import tasks as pipe
 from .infra import object_store
@@ -379,16 +380,28 @@ def process_document(
             created_artifacts.append((current_step, str(text["path"])))
 
         current_step = "pii_mask"
-        masked, reused = _ensure_step(
-            tenant,
-            case,
-            document_id,
-            state,
-            current_step,
-            lambda: pipe.pii_mask(meta, text["path"]),
-        )
-        if not reused and masked.get("path"):
-            created_artifacts.append((current_step, str(masked["path"])))
+        if not getattr(settings, "INGESTION_PII_MASK_ENABLED", True):
+            masked = {"path": text["path"]}
+            reused = True
+            # Mark step as skipped in state for traceability
+            state.setdefault("steps", {})[current_step] = {
+                "path": text.get("path"),
+                "skipped": True,
+                "completed_at": time.time(),
+                "cleaned": True,
+            }
+            _write_pipeline_state(tenant, case, document_id, state)
+        else:
+            masked, reused = _ensure_step(
+                tenant,
+                case,
+                document_id,
+                state,
+                current_step,
+                lambda: pipe.pii_mask(meta, text["path"]),
+            )
+            if not reused and masked.get("path"):
+                created_artifacts.append((current_step, str(masked["path"])))
 
         current_step = "chunk"
         chunks, reused = _ensure_step(

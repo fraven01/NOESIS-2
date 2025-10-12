@@ -170,6 +170,11 @@ PII_LOGGING_REDACTION = os.getenv("PII_LOGGING_REDACTION", "true").lower() == "t
 PII_HMAC_SECRET = os.getenv("PII_HMAC_SECRET", "")
 PII_NAME_DETECTION = os.getenv("PII_NAME_DETECTION", "false").lower() == "true"
 
+# Ingestion pipeline flags
+INGESTION_PII_MASK_ENABLED = (
+    os.getenv("INGESTION_PII_MASK_ENABLED", "true").lower() == "true"
+)
+
 ENABLE_API_DOCS = env.bool("ENABLE_API_DOCS", default=False)
 API_DOCS_TITLE = env("API_DOCS_TITLE", default="NOESIS 2 API")
 API_IMAGE_TAG = env("API_IMAGE_TAG", default="")

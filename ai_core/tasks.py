@@ -21,6 +21,7 @@ from django.utils import timezone
 from pydantic import ValidationError
 
 from .infra import object_store, pii, tracing
+from .infra.pii_flags import get_pii_config
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
@@ -151,7 +152,12 @@ def pii_mask(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     text = full.read_text(encoding="utf-8")
     masked = pii.mask(text)
     if masked == text:
-        masked = re.sub(r"\d", "X", text)
+        # Only apply fallback numeric masking when PII masking is enabled.
+        config = get_pii_config()
+        mode = str(config.get("mode", "")).lower()
+        policy = str(config.get("policy", "")).lower()
+        if mode != "off" and policy != "off":
+            masked = re.sub(r"\d", "X", text)
     out_path = _build_path(meta, "text", f"{Path(text_path).stem}.masked.txt")
     object_store.put_bytes(out_path, masked.encode("utf-8"))
     return {"path": out_path}
