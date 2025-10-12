@@ -827,6 +827,50 @@ class PgVectorClient:
         fallback_tried_limits: List[float] = []
         total_without_filter: Optional[int] = None
 
+        def _safe_chunk_identifier(value: object | None) -> str | None:
+            if value is None:
+                return None
+            try:
+                text = str(value)
+            except Exception:
+                return None
+            return text
+
+        def _safe_float(value: object | None) -> float | None:
+            if value is None:
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                return None
+            if math.isnan(number) or math.isinf(number):
+                return None
+            return number
+
+        def _summarise_rows(
+            rows: Iterable[object], *, kind: str
+        ) -> List[Dict[str, object | None]]:
+            summary: List[Dict[str, object | None]] = []
+            for row in rows:
+                chunk_ref: object | None = None
+                if isinstance(row, Mapping):
+                    chunk_ref = row.get("id")
+                elif isinstance(row, Sequence) and not isinstance(
+                    row, (str, bytes, bytearray)
+                ):
+                    try:
+                        chunk_ref = row[0]
+                    except Exception:
+                        chunk_ref = None
+                score_raw = self._extract_score_from_row(row, kind=kind)
+                summary.append(
+                    {
+                        "chunk_id": _safe_chunk_identifier(chunk_ref),
+                        "score": _safe_float(score_raw),
+                    }
+                )
+            return summary
+
         def _operation() -> Tuple[List[tuple], List[tuple], float]:
             nonlocal applied_trgm_limit_value
             nonlocal fallback_limit_used_value
@@ -933,6 +977,20 @@ class PgVectorClient:
                                 vector_sql, (query_vec, *where_params, vec_limit_value)
                             )
                             vector_rows = cur.fetchall()
+                            try:
+                                logger.debug(
+                                    "rag.hybrid.rows.vector_raw",
+                                    extra={
+                                        "tenant_id": tenant,
+                                        "case_id": case_value,
+                                        "count": len(vector_rows),
+                                        "rows": _summarise_rows(
+                                            vector_rows, kind="vector"
+                                        ),
+                                    },
+                                )
+                            except Exception:
+                                pass
                             try:
                                 logger.warning(
                                     "rag.debug.rows.vector",
@@ -1058,6 +1116,20 @@ class PgVectorClient:
                                 )
                                 lexical_rows_local = cur.fetchall()
                                 lexical_query_variant = "primary"
+                                try:
+                                    logger.debug(
+                                        "rag.hybrid.rows.lexical_raw",
+                                        extra={
+                                            "tenant_id": tenant,
+                                            "case_id": case_value,
+                                            "count": len(lexical_rows_local),
+                                            "rows": _summarise_rows(
+                                                lexical_rows_local, kind="lexical"
+                                            ),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
                                 try:
                                     logger.warning(
                                         "rag.debug.rows.lexical",
@@ -1265,6 +1337,21 @@ class PgVectorClient:
                                     fallback_last_limit_value = float(limit_value)
                                     attempt_rows = cur.fetchall()
                                     last_attempt_rows = list(attempt_rows)
+                                    try:
+                                        logger.debug(
+                                            "rag.hybrid.rows.lexical_raw",
+                                            extra={
+                                                "tenant_id": tenant,
+                                                "case_id": case_value,
+                                                "count": len(attempt_rows),
+                                                "limit": float(limit_value),
+                                                "rows": _summarise_rows(
+                                                    attempt_rows, kind="lexical"
+                                                ),
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
                                     try:
                                         logger.warning(
                                             "rag.debug.rows.lexical",
@@ -1665,6 +1752,28 @@ class PgVectorClient:
 
                 entry["_allow_below_cutoff"] = True
 
+        try:
+            logger.debug(
+                "rag.hybrid.candidates.compiled",
+                extra={
+                    "tenant_id": tenant,
+                    "case_id": case_value,
+                    "count": len(candidates),
+                    "entries": [
+                        {
+                            "chunk_id": _safe_chunk_identifier(entry.get("chunk_id")),
+                            "vscore": _safe_float(entry.get("vscore")),
+                            "lscore": _safe_float(entry.get("lscore")),
+                            "allow_below_cutoff": bool(
+                                entry.get("_allow_below_cutoff", False)
+                            ),
+                        }
+                        for entry in candidates.values()
+                    ],
+                },
+            )
+        except Exception:
+            pass
         fused_candidates = len(candidates)
         logger.info(
             "rag.hybrid.debug.fusion",
@@ -1696,6 +1805,31 @@ class PgVectorClient:
                 Optional[str], raw_meta.get("case_id") or raw_meta.get("case")
             )
             reasons: List[str] = []
+            try:
+                vector_preview = float(entry.get("vscore", 0.0))
+            except (TypeError, ValueError):
+                vector_preview = 0.0
+            if math.isnan(vector_preview) or math.isinf(vector_preview):
+                vector_preview = 0.0
+            try:
+                lexical_preview = float(entry.get("lscore", 0.0))
+            except (TypeError, ValueError):
+                lexical_preview = 0.0
+            if math.isnan(lexical_preview) or math.isinf(lexical_preview):
+                lexical_preview = 0.0
+            if query_embedding_empty:
+                fused_preview = max(0.0, min(1.0, lexical_preview))
+            elif has_vector_signal:
+                fused_preview = max(
+                    0.0,
+                    min(
+                        1.0,
+                        alpha_value * vector_preview
+                        + (1.0 - alpha_value) * lexical_preview,
+                    ),
+                )
+            else:
+                fused_preview = max(0.0, min(1.0, lexical_preview))
             if tenant is not None:
                 if candidate_tenant is None:
                     reasons.append("tenant_missing")
@@ -1725,6 +1859,10 @@ class PgVectorClient:
                     doc_id=entry.get("doc_id"),
                     chunk_id=entry.get("chunk_id"),
                     reasons=reasons or ["unknown"],
+                    vector_score=vector_preview,
+                    lexical_score=lexical_preview,
+                    fused_score=fused_preview,
+                    allow_below_cutoff=bool(entry.get("_allow_below_cutoff", False)),
                 )
                 continue
 
@@ -1776,24 +1914,77 @@ class PgVectorClient:
         results.sort(
             key=lambda item: float(item[0].meta.get("fused", 0.0)), reverse=True
         )
-        below_cutoff = 0
-        if min_sim_value > 0.0:
-            below_cutoff = sum(
-                1
-                for chunk, _ in results
-                if float(chunk.meta.get("fused", 0.0)) < min_sim_value
+        try:
+            logger.debug(
+                "rag.hybrid.results.pre_min_sim",
+                extra={
+                    "tenant_id": tenant,
+                    "case_id": case_value,
+                    "min_sim": min_sim_value,
+                    "results": [
+                        {
+                            "chunk_id": _safe_chunk_identifier(
+                                chunk.meta.get("chunk_id")
+                            ),
+                            "fused": _safe_float(chunk.meta.get("fused")),
+                            "vscore": _safe_float(chunk.meta.get("vscore")),
+                            "lscore": _safe_float(chunk.meta.get("lscore")),
+                            "allow_below_cutoff": bool(allow),
+                        }
+                        for chunk, allow in results
+                    ],
+                },
             )
+        except Exception:
+            pass
+        below_cutoff = 0
+        filtered_out_details: List[Dict[str, object | None]] = []
+        if min_sim_value > 0.0:
+            filtered_results: List[Chunk] = []
+            for chunk, allow in results:
+                fused_value = float(chunk.meta.get("fused", 0.0))
+                if math.isnan(fused_value) or math.isinf(fused_value):
+                    fused_value = 0.0
+                if allow or fused_value >= min_sim_value:
+                    filtered_results.append(chunk)
+                else:
+                    below_cutoff += 1
+                    filtered_out_details.append(
+                        {
+                            "chunk_id": _safe_chunk_identifier(
+                                chunk.meta.get("chunk_id")
+                            ),
+                            "fused": _safe_float(fused_value),
+                        }
+                    )
             if below_cutoff > 0:
                 metrics.RAG_QUERY_BELOW_CUTOFF_TOTAL.labels(tenant_id=tenant).inc(
                     float(below_cutoff)
                 )
-            filtered_results = [
-                chunk
-                for chunk, allow in results
-                if allow or float(chunk.meta.get("fused", 0.0)) >= min_sim_value
-            ]
         else:
             filtered_results = [chunk for chunk, _ in results]
+        try:
+            logger.debug(
+                "rag.hybrid.results.post_min_sim",
+                extra={
+                    "tenant_id": tenant,
+                    "case_id": case_value,
+                    "min_sim": min_sim_value,
+                    "returned": len(filtered_results),
+                    "filtered_out": filtered_out_details,
+                    "kept": [
+                        {
+                            "chunk_id": _safe_chunk_identifier(
+                                chunk.meta.get("chunk_id")
+                            ),
+                            "fused": _safe_float(chunk.meta.get("fused")),
+                        }
+                        for chunk in filtered_results
+                    ],
+                },
+            )
+        except Exception:
+            pass
         limited_results = filtered_results[:top_k]
         if not limited_results and results and min_sim_value > 0.0:
             try:
