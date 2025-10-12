@@ -65,6 +65,27 @@ logger = logging.getLogger(__name__)
 
 CHECKPOINTER = FileCheckpointer()
 
+# Helper: make arbitrary payloads JSON-serialisable (UUIDs → strings)
+def _make_json_safe(value):  # type: ignore[no-untyped-def]
+    """Return a structure that json.dumps can serialise.
+
+    - Converts uuid.UUID instances to str
+    - Recurses into mappings and sequences
+    """
+    import uuid as _uuid
+    from collections.abc import Mapping as _Mapping
+
+    if isinstance(value, _uuid.UUID):
+        return str(value)
+    if isinstance(value, _Mapping):
+        return {
+            (str(k) if isinstance(k, _uuid.UUID) else k): _make_json_safe(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, (list, tuple, set)):
+        return [_make_json_safe(v) for v in value]
+    return value
+
 # Allow tests to monkeypatch the run_ingestion task via ai_core.views.run_ingestion
 # while keeping a sane default binding for production code paths.
 RUN_INGESTION = run_ingestion
@@ -138,7 +159,7 @@ def _log_graph_response_payload(payload: object, context: GraphContext) -> None:
     """Emit diagnostics about the response payload produced by a graph run."""
 
     try:
-        payload_json = json.dumps(payload, ensure_ascii=False)
+        payload_json = json.dumps(_make_json_safe(payload), ensure_ascii=False)
     except TypeError:
         logger.exception(
             "graph.response_payload_serialization_error",
@@ -354,7 +375,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         )
 
     try:
-        _get_checkpointer().save(context, new_state)
+        _get_checkpointer().save(context, _make_json_safe(new_state))
     except (TypeError, ValueError) as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
 

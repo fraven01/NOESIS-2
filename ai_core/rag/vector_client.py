@@ -868,7 +868,7 @@ class PgVectorClient:
                     FROM chunks c
                     JOIN documents d ON c.document_id = d.id
                     WHERE {where_sql_value}
-                      AND c.text_norm % %s
+                      AND c.text_norm %% %s
                     ORDER BY lscore DESC
                     LIMIT %s
                 """
@@ -1038,7 +1038,7 @@ class PgVectorClient:
                             FROM chunks c
                             JOIN documents d ON c.document_id = d.id
                             WHERE {where_sql}
-                              AND c.text_norm % %s
+                              AND c.text_norm %% %s
                             ORDER BY lscore DESC
                             LIMIT %s
                         """
@@ -1090,22 +1090,17 @@ class PgVectorClient:
                                             limit_threshold = None
                                     if limit_threshold is not None:
                                         for row in lexical_rows_local:
-                                            if not isinstance(row, Sequence):
-                                                continue
                                             try:
-                                                row_length = len(row)
+                                                score_candidate = self._extract_score_from_row(
+                                                    row, kind="lexical"
+                                                )
                                             except Exception:
+                                                # Defensive: ignore rows with unexpected shape/types
                                                 continue
-                                            if row_length <= 0:
-                                                continue
-                                            try:
-                                                score = row[row_length - 1]
-                                            except (IndexError, KeyError, TypeError):
-                                                continue
-                                            if score is None:
+                                            if score_candidate is None:
                                                 continue
                                             try:
-                                                score_value = float(score)
+                                                score_value = float(score_candidate)
                                             except (TypeError, ValueError):
                                                 continue
                                             if score_value < limit_threshold - 1e-6:
@@ -1117,6 +1112,21 @@ class PgVectorClient:
                                 if isinstance(exc, (IndexError, ValueError)):
                                     should_run_fallback = True
                                     fallback_requires_rollback = True
+                                    # Collect minimal diagnostics about the returned row shape
+                                    rows_count = 0
+                                    first_len = None
+                                    first_type = None
+                                    try:
+                                        rows_count = len(lexical_rows_local)
+                                        if lexical_rows_local:
+                                            first = lexical_rows_local[0]
+                                            first_type = type(first).__name__
+                                            try:
+                                                first_len = len(first)  # may fail for non-sequences
+                                            except Exception:
+                                                first_len = None
+                                    except Exception:
+                                        pass
                                     lexical_rows_local = []
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
@@ -1124,6 +1134,10 @@ class PgVectorClient:
                                             "tenant_id": tenant,
                                             "case_id": case_value,
                                             "error": str(exc),
+                                            "applied_trgm_limit": applied_trgm_limit,
+                                            "rows_count": rows_count,
+                                            "row_first_len": first_len,
+                                            "row_first_type": first_type,
                                         },
                                     )
                                 elif isinstance(exc, PsycopgError):

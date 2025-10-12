@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import re
 import uuid
 from collections.abc import Mapping
@@ -27,7 +26,7 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
 )
-from common.logging import bind_log_context
+from common.logging import bind_log_context, get_logger
 from noesis2.api import (
     DeprecationHeadersMixin,
     RATE_LIMIT_ERROR_STATUSES,
@@ -103,7 +102,7 @@ from pydantic import ValidationError
 from .infra.resp import apply_std_headers
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 logger.info(
     "module_loaded",
@@ -1256,7 +1255,20 @@ class RagQueryViewV1(_GraphView):
             if isinstance(graph_payload, Mapping):
                 graph_payload = _normalise_rag_response(graph_payload)
             serializer = RagQueryResponseSerializer(data=graph_payload)
-            serializer.is_valid(raise_exception=True)
+            try:
+                serializer.is_valid(raise_exception=True)
+            except Exception as exc:
+                try:
+                    logger.warning(
+                        "rag.response.validation_failed",
+                        extra={
+                            "errors": getattr(serializer, "errors", None),
+                            "keys": list(graph_payload.keys()) if isinstance(graph_payload, dict) else None,
+                        },
+                    )
+                except Exception:
+                    pass
+                raise
             response.data = serializer.validated_data
             bind_log_context(response_contract="rag.v2")
             if isinstance(getattr(request, "log_context", None), dict):
