@@ -1199,15 +1199,16 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
             if retrieval_key not in allowed_retrieval:
                 retrieval_extras[retrieval_key] = retrieval_value
                 continue
-            if retrieval_key != "routing":
+            
+            # Special handling for took_ms type correction
+            if retrieval_key == "took_ms" and isinstance(retrieval_value, float):
+                retrieval_projected[retrieval_key] = int(retrieval_value)
+            else:
                 retrieval_projected[retrieval_key] = retrieval_value
-                continue
 
-            if not isinstance(retrieval_value, Mapping):
-                retrieval_projected["routing"] = retrieval_value
-                continue
-
-            routing_dict = dict(retrieval_value)
+        # Separate loop for routing to handle its nested structure cleanly
+        if "routing" in retrieval_dict and isinstance(retrieval_dict["routing"], Mapping):
+            routing_dict = dict(retrieval_dict["routing"])
             routing_projected: dict[str, object] = {}
             routing_extras: dict[str, object] = {}
 
@@ -1216,28 +1217,26 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
                     routing_projected[routing_key] = routing_value
                 else:
                     routing_extras[routing_key] = routing_value
-
+            
             retrieval_projected["routing"] = routing_projected
             if routing_extras:
                 retrieval_extras.setdefault("routing", routing_extras)
+        
+        elif "routing" in retrieval_dict: # Handle non-mapping routing value
+             retrieval_projected["routing"] = retrieval_dict["routing"]
 
         if retrieval_extras:
             diagnostics["retrieval"] = _serialise_json_value(retrieval_extras)
 
-        projected[key] = {
-            retrieval_key: _serialise_json_value(retrieval_value)
-            for retrieval_key, retrieval_value in retrieval_projected.items()
-        }
+        projected[key] = _serialise_json_value(retrieval_projected)
 
     if top_level_extras:
         diagnostics["response"] = _serialise_json_value(top_level_extras)
 
     if diagnostics:
-        projected["diagnostics"] = {
-            key: _serialise_json_value(value) for key, value in diagnostics.items()
-        }
+        projected["diagnostics"] = diagnostics
 
-    return {key: _serialise_json_value(value) for key, value in projected.items()}
+    return projected
 
 
 class RagQueryViewV1(_GraphView):

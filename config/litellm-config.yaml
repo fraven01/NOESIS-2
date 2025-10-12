@@ -3,6 +3,10 @@ general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
   proxy_port: 4000
   num_retries: 1
+  pass_through_endpoints:
+    - path: /schedule/model_cost_map_reload/status
+      target: http://litellm:4000/schedule/model_cost_map_reload/status
+      auth: False
 
 model_list:
   - model_name: gemini-2.5-flash
