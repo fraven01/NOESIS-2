@@ -80,6 +80,7 @@ _OPERATOR_FOR_CLASS: dict[str, str] = {
 FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
 FALLBACK_RETRY_BASE_DELAY_MS = 50
+_LEXICAL_RESULT_MIN_COLUMNS = 6
 _ZERO_EPSILON = 1e-12
 
 
@@ -1459,6 +1460,54 @@ class PgVectorClient:
         vector_rows, lexical_rows, duration_ms = self._run_with_retries(
             _operation, op_name="search"
         )
+
+        filtered_lexical_rows: List[object] = []
+        for row in lexical_rows:
+            if isinstance(row, Mapping):
+                filtered_lexical_rows.append(row)
+                continue
+            if isinstance(row, Sequence) and not isinstance(
+                row, (str, bytes, bytearray)
+            ):
+                try:
+                    row_length = len(row)
+                except Exception:
+                    row_length = None
+                if row_length is None or row_length < _LEXICAL_RESULT_MIN_COLUMNS:
+                    try:
+                        logger.warning(
+                            "rag.hybrid.lexical_row_malformed",
+                            extra={
+                                "tenant_id": tenant,
+                                "case_id": case_value,
+                                "row_len": row_length,
+                                "row_preview": repr(row)[:200],
+                            },
+                        )
+                    except Exception:
+                        pass
+                    continue
+            elif not isinstance(row, (str, bytes, bytearray)):
+                try:
+                    row_length = len(row)  # type: ignore[arg-type]
+                except Exception:
+                    row_length = None
+                if row_length is None or row_length < _LEXICAL_RESULT_MIN_COLUMNS:
+                    try:
+                        logger.warning(
+                            "rag.hybrid.lexical_row_malformed",
+                            extra={
+                                "tenant_id": tenant,
+                                "case_id": case_value,
+                                "row_len": row_length,
+                                "row_preview": repr(row)[:200],
+                            },
+                        )
+                    except Exception:
+                        pass
+                    continue
+            filtered_lexical_rows.append(row)
+        lexical_rows = list(filtered_lexical_rows)
 
         logger.info(
             "rag.hybrid.sql_counts",
