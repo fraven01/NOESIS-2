@@ -1085,9 +1085,18 @@ class PgVectorClient:
                                             limit_threshold = None
                                     if limit_threshold is not None:
                                         for row in lexical_rows_local:
-                                            if not isinstance(row, Sequence) or not row:
+                                            if not isinstance(row, Sequence):
                                                 continue
-                                            score = row[-1]
+                                            try:
+                                                row_length = len(row)
+                                            except Exception:
+                                                continue
+                                            if row_length <= 0:
+                                                continue
+                                            try:
+                                                score = row[row_length - 1]
+                                            except (IndexError, KeyError, TypeError):
+                                                continue
                                             if score is None:
                                                 continue
                                             try:
