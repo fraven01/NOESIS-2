@@ -1050,12 +1050,12 @@ class PgVectorClient:
                             effective=trgm_limit_value,
                         )
 
-                        def _fetch_show_limit_value() -> float | None:
+                        def _fetch_show_limit_value(cursor) -> float | None:
                             try:
-                                cur.execute("SELECT show_limit()")
+                                cursor.execute("SELECT show_limit()")
                             except Exception:
                                 return None
-                            current = cur.fetchone()
+                            current = cursor.fetchone()
                             if (
                                 current
                                 and isinstance(current, Sequence)
@@ -1074,7 +1074,7 @@ class PgVectorClient:
                                 "SELECT set_limit(%s::float4)",
                                 (float(trgm_limit_value),),
                             )
-                            applied_trgm_limit = _fetch_show_limit_value()
+                            applied_trgm_limit = _fetch_show_limit_value(cur)
                         except Exception as exc:  # pragma: no cover - defensive
                             logger.warning(
                                 "rag.pgtrgm.limit.error",
@@ -1243,13 +1243,22 @@ class PgVectorClient:
                                 ):
                                     should_run_fallback = True
                             if should_run_fallback:
+                                rollback_succeeded = False
                                 if fallback_requires_rollback:
                                     try:
                                         conn.rollback()
                                     except Exception:  # pragma: no cover - defensive
                                         pass
                                     else:
-                                        self._restore_session_after_rollback(cur)
+                                        rollback_succeeded = True
+                                if fallback_requires_rollback and rollback_succeeded:
+                                    try:
+                                        with conn.cursor() as restore_cur:
+                                            self._restore_session_after_rollback(
+                                                restore_cur
+                                            )
+                                    except Exception:  # pragma: no cover - defensive
+                                        pass
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
                                     extra={
@@ -1322,90 +1331,104 @@ class PgVectorClient:
                                 best_rows: List[tuple] = []
                                 best_limit: float | None = None
                                 fallback_last_limit_value: float | None = None
-                                for limit_value in fallback_limits:
-                                    fallback_tried_limits.append(limit_value)
-                                    cur.execute(
-                                        fallback_lexical_sql,
-                                        (
-                                            query_db_norm,
-                                            *where_params,
-                                            query_db_norm,
-                                            limit_value,
-                                            lex_limit_value,
-                                        ),
-                                    )
-                                    fallback_last_limit_value = float(limit_value)
-                                    attempt_rows = cur.fetchall()
-                                    last_attempt_rows = list(attempt_rows)
+                                with conn.cursor() as fallback_cur:
                                     try:
-                                        logger.debug(
-                                            "rag.hybrid.rows.lexical_raw",
-                                            extra={
-                                                "tenant_id": tenant,
-                                                "case_id": case_value,
-                                                "count": len(attempt_rows),
-                                                "limit": float(limit_value),
-                                                "rows": _summarise_rows(
-                                                    attempt_rows, kind="lexical"
-                                                ),
-                                            },
+                                        fallback_cur.execute(
+                                            "SET LOCAL statement_timeout = %s",
+                                            (str(self._statement_timeout_ms),),
                                         )
-                                    except Exception:
+                                    except Exception:  # pragma: no cover - defensive
                                         pass
-                                    try:
-                                        logger.warning(
-                                            "rag.debug.rows.lexical",
-                                            extra={
-                                                "count": len(attempt_rows),
-                                                "first_len": (
-                                                    len(attempt_rows[0])
-                                                    if attempt_rows
-                                                    else 0
-                                                ),
-                                            },
+                                    for limit_value in fallback_limits:
+                                        fallback_tried_limits.append(limit_value)
+                                        fallback_cur.execute(
+                                            fallback_lexical_sql,
+                                            (
+                                                query_db_norm,
+                                                *where_params,
+                                                query_db_norm,
+                                                limit_value,
+                                                lex_limit_value,
+                                            ),
                                         )
-                                    except Exception:
-                                        pass
-                                    if attempt_rows:
-                                        lexical_rows_local = attempt_rows
-                                        best_rows = attempt_rows
-                                        best_limit = limit_value
-                                        if limit_value <= fallback_floor + 1e-9:
-                                            picked_limit = limit_value
-                                            break
-                                else:
-                                    if best_rows:
-                                        lexical_rows_local = best_rows
-                                        picked_limit = best_limit
+                                        fallback_last_limit_value = float(limit_value)
+                                        attempt_rows = fallback_cur.fetchall()
+                                        last_attempt_rows = list(attempt_rows)
+                                        try:
+                                            logger.debug(
+                                                "rag.hybrid.rows.lexical_raw",
+                                                extra={
+                                                    "tenant_id": tenant,
+                                                    "case_id": case_value,
+                                                    "count": len(attempt_rows),
+                                                    "limit": float(limit_value),
+                                                    "rows": _summarise_rows(
+                                                        attempt_rows,
+                                                        kind="lexical",
+                                                    ),
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
+                                        try:
+                                            logger.warning(
+                                                "rag.debug.rows.lexical",
+                                                extra={
+                                                    "count": len(attempt_rows),
+                                                    "first_len": (
+                                                        len(attempt_rows[0])
+                                                        if attempt_rows
+                                                        else 0
+                                                    ),
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
+                                        if attempt_rows:
+                                            lexical_rows_local = attempt_rows
+                                            best_rows = attempt_rows
+                                            best_limit = limit_value
+                                            if limit_value <= fallback_floor + 1e-9:
+                                                picked_limit = limit_value
+                                                break
                                     else:
-                                        lexical_rows_local = last_attempt_rows
-                                if picked_limit is None and best_limit is not None:
-                                    picked_limit = best_limit
-                                lexical_query_variant = "fallback"
-                                fallback_limit_used_value = picked_limit
-                                if fallback_limit_used_value is None:
-                                    fallback_limit_used_value = (
-                                        fallback_last_limit_value
-                                    )
-                                lexical_fallback_limit_value = fallback_limit_used_value
-                                if (
-                                    picked_limit is not None
-                                    and requested_trgm_limit is None
-                                    and (
-                                        applied_trgm_limit is None
-                                        or picked_limit < applied_trgm_limit - 1e-9
-                                    )
-                                ):
-                                    try:
-                                        cur.execute(
-                                            "SELECT set_limit(%s::float4)",
-                                            (float(picked_limit),),
+                                        if best_rows:
+                                            lexical_rows_local = best_rows
+                                            picked_limit = best_limit
+                                        else:
+                                            lexical_rows_local = last_attempt_rows
+                                    if picked_limit is None and best_limit is not None:
+                                        picked_limit = best_limit
+                                    lexical_query_variant = "fallback"
+                                    fallback_limit_used_value = picked_limit
+                                    if fallback_limit_used_value is None:
+                                        fallback_limit_used_value = (
+                                            fallback_last_limit_value
                                         )
-                                        reapplied_limit = _fetch_show_limit_value()
-                                    except Exception:
-                                        reapplied_limit = None
-                                    if reapplied_limit is not None:
-                                        applied_trgm_limit = reapplied_limit
+                                    lexical_fallback_limit_value = (
+                                        fallback_limit_used_value
+                                    )
+                                    if (
+                                        picked_limit is not None
+                                        and requested_trgm_limit is None
+                                        and (
+                                            applied_trgm_limit is None
+                                            or picked_limit
+                                            < applied_trgm_limit - 1e-9
+                                        )
+                                    ):
+                                        try:
+                                            fallback_cur.execute(
+                                                "SELECT set_limit(%s::float4)",
+                                                (float(picked_limit),),
+                                            )
+                                            reapplied_limit = _fetch_show_limit_value(
+                                                fallback_cur
+                                            )
+                                        except Exception:
+                                            reapplied_limit = None
+                                        if reapplied_limit is not None:
+                                            applied_trgm_limit = reapplied_limit
                                 logger.info(
                                     "rag.hybrid.trgm_fallback_applied",
                                     tenant_id=tenant,
