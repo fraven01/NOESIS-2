@@ -521,10 +521,15 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
         ),
     ]
 
-    def _fake_run(_fn, *, op_name: str):
-        return ([], lexical_rows, 1.0)
-
-    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+    cursor = _FakeCursor(show_limit_value=0.30, lexical_rows=lexical_rows)
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _query: [0.0] * vector_client.get_embedding_dim(),
+    )
+    monkeypatch.setattr(client, "_run_with_retries", lambda fn, *, op_name: fn())
 
     with capture_logs() as logs:
         result = client.hybrid_search(
@@ -586,10 +591,15 @@ def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
         ),
     ]
 
-    def _fake_run(_fn, *, op_name: str):
-        return ([], lexical_rows, 1.0)
-
-    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+    cursor = _FakeCursor(show_limit_value=0.30, lexical_rows=lexical_rows)
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _query: [0.0] * vector_client.get_embedding_dim(),
+    )
+    monkeypatch.setattr(client, "_run_with_retries", lambda fn, *, op_name: fn())
 
     result = client.hybrid_search(
         "fallback ordering",
@@ -1055,7 +1065,7 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
     failure_logs = [
         entry
         for entry in logs
-        if entry.get("event") == "rag.hybrid.lexical_query_failed"
+        if entry.get("event") == "rag.hybrid.lexical_primary_failed"
     ]
     assert len(failure_logs) == 1
     entry = failure_logs[0]
