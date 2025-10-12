@@ -39,7 +39,11 @@ def test_hybrid_search_skips_malformed_lexical_rows():
     def fake_run_with_retries(self, fn, *, op_name):
         return vector_rows, lexical_rows, 1.23
 
+    def fake_embed_query(self, query):
+        return [1.0]
+
     client._run_with_retries = types.MethodType(fake_run_with_retries, client)
+    client._embed_query = types.MethodType(fake_embed_query, client)
 
     result = client.hybrid_search(query="test", tenant_id=tenant_id)
 
