@@ -477,8 +477,7 @@ class PgVectorClient:
             )
         try:
             cur.execute(
-                "SET LOCAL statement_timeout = %s",
-                (str(self._statement_timeout_ms),),
+                f"SET LOCAL statement_timeout = {int(self._statement_timeout_ms)}"
             )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(
@@ -507,10 +506,12 @@ class PgVectorClient:
             with self._connection() as conn:
                 try:
                     with conn.cursor() as cur:
-                        cur.execute(
-                            "SET LOCAL statement_timeout = %s",
-                            (str(self._statement_timeout_ms),),
-                        )
+                        try:
+                            cur.execute(
+                                f"SET LOCAL statement_timeout = {int(self._statement_timeout_ms)}"
+                            )
+                        except Exception:
+                            pass
                         document_ids, doc_actions = self._ensure_documents(cur, grouped)
                         inserted_chunks, per_doc_timings = self._replace_chunks(
                             cur, grouped, document_ids, doc_actions

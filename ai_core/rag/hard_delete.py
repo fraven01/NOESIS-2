@@ -150,6 +150,21 @@ def _collect_stats(
     with store.connection() as conn:  # type: ignore[attr-defined]
         try:
             with conn.cursor() as cur:
+                # Apply short timeouts to avoid long lock waits during DELETE.
+                try:
+                    timeout_ms = int(
+                        getattr(
+                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
+                        )
+                    )
+                except Exception:
+                    timeout_ms = 2000
+                try:
+                    cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
+                    cur.execute(f"SET LOCAL lock_timeout = {int(timeout_ms)}")
+                except Exception:
+                    # Best-effort; continue without custom timeouts if SET fails
+                    pass
                 cur.execute(
                     """
                     SELECT id
@@ -238,7 +253,8 @@ def _run_vacuum(store: object, schema: str) -> bool:
                 except Exception:
                     timeout_ms = 2000
                 try:
-                    cur.execute("SET statement_timeout = %s", (str(timeout_ms),))
+                    cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
+                    cur.execute(f"SET lock_timeout = {int(timeout_ms)}")
                 except Exception:  # pragma: no cover - best-effort safeguard
                     pass
                 cur.execute(
@@ -256,6 +272,10 @@ def _run_vacuum(store: object, schema: str) -> bool:
             try:
                 with conn.cursor() as cur:
                     cur.execute("SET statement_timeout TO DEFAULT")
+                    try:
+                        cur.execute("SET lock_timeout TO DEFAULT")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             conn.autocommit = prev_autocommit
@@ -288,7 +308,8 @@ def _run_reindex(store: object, schema: str, stats: HardDeleteStats) -> bool:
                 except Exception:
                     timeout_ms = 2000
                 try:
-                    cur.execute("SET statement_timeout = %s", (str(timeout_ms),))
+                    cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
+                    cur.execute(f"SET lock_timeout = {int(timeout_ms)}")
                 except Exception:  # pragma: no cover - best-effort safeguard
                     pass
                 cur.execute(
@@ -306,6 +327,10 @@ def _run_reindex(store: object, schema: str, stats: HardDeleteStats) -> bool:
             try:
                 with conn.cursor() as cur:
                     cur.execute("SET statement_timeout TO DEFAULT")
+                    try:
+                        cur.execute("SET lock_timeout TO DEFAULT")
+                    except Exception:
+                        pass
             except Exception:
                 pass
             conn.autocommit = prev_autocommit
