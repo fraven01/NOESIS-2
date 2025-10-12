@@ -14,9 +14,12 @@ from structlog.testing import capture_logs
 from ai_core import views
 from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
-from ai_core.nodes.retrieve import RetrieveInput
 from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
+import ai_core.nodes.retrieve as retrieve
+from ai_core.nodes.retrieve import RetrieveInput
+from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
 from common.constants import (
@@ -1251,6 +1254,113 @@ def test_rag_query_endpoint_normalises_numeric_types(
     snippet = payload["snippets"][0]
     assert isinstance(snippet["score"], float)
     assert snippet["score"] == pytest.approx(0.82)
+
+
+@pytest.mark.django_db
+def test_rag_query_endpoint_applies_top_k_override(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("ai_core.nodes._hybrid_params.TOPK_DEFAULT", 1)
+
+    class DummyCheckpointer:
+        def load(self, _context):
+            return {}
+
+        def save(self, _context, _state):
+            return None
+
+    monkeypatch.setattr(views, "CHECKPOINTER", DummyCheckpointer())
+
+    class _Router:
+        def __init__(self):
+            self.calls: list[int] = []
+
+        def hybrid_search(
+            self,
+            query,
+            *,
+            case_id=None,
+            top_k=5,
+            **_kwargs,
+        ):
+            self.calls.append(int(top_k))
+            tenant_meta = test_tenant_schema_name
+            case_meta = case_id or "case-topk"
+            chunks = [
+                Chunk(
+                    f"Snippet {index}",
+                    {
+                        "id": f"doc-{index}",
+                        "score": 0.9 - (index * 0.01),
+                        "source": f"doc-{index}.md",
+                        "tenant_id": tenant_meta,
+                        "case_id": case_meta,
+                    },
+                )
+                for index in range(5)
+            ]
+            return HybridSearchResult(
+                chunks=chunks,
+                vector_candidates=len(chunks),
+                lexical_candidates=len(chunks),
+                fused_candidates=len(chunks),
+                duration_ms=1.0,
+                alpha=0.7,
+                min_sim=0.15,
+                vec_limit=10,
+                lex_limit=10,
+            )
+
+    router = _Router()
+    monkeypatch.setattr(retrieve, "_ROUTER", None)
+    monkeypatch.setattr(retrieve, "_get_router", lambda: router)
+
+    def _run_graph(request_obj, _graph):
+        body = request_obj.body
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+        state = json.loads(body or "{}")
+        context = ToolContext(
+            tenant_id=request_obj.META.get(META_TENANT_ID_KEY, ""),
+            tenant_schema=request_obj.META.get(META_TENANT_SCHEMA_KEY),
+            case_id=request_obj.META.get(META_CASE_ID_KEY, ""),
+            trace_id="test-trace",
+            metadata={"graph_name": "rag.default", "graph_version": "test"},
+        )
+        params = retrieve.RetrieveInput.from_state(state)
+        output = retrieve.run(context, params)
+        retrieval_meta = output.meta.model_dump(mode="json", exclude_none=True)
+        payload = {
+            "answer": "Stub answer",
+            "prompt_version": "test",
+            "retrieval": retrieval_meta,
+            "snippets": output.matches,
+        }
+        return Response(payload)
+
+    monkeypatch.setattr(views, "_run_graph", _run_graph)
+
+    payload = {"question": "Welche Richtlinien gelten?", "top_k": 5, "hybrid": {}}
+
+    response = client.post(
+        "/v1/ai/rag/query/",
+        data=payload,
+        content_type="application/json",
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-topk",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert router.calls and router.calls[-1] == 5
+    retrieval = body["retrieval"]
+    assert retrieval["top_k_effective"] == 5
+    assert len(body["snippets"]) <= 5
 
 
 @pytest.mark.django_db

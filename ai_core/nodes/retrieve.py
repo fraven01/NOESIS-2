@@ -50,8 +50,18 @@ class RetrieveInput(BaseModel):
             "visibility_override_allowed": state.get("visibility_override_allowed"),
             "hybrid": state.get("hybrid"),
         }
+        state_top_k: Any | None = None
         if top_k is not None:
-            data["top_k"] = top_k
+            state_top_k = top_k
+        else:
+            candidate = state.get("top_k")
+            if isinstance(candidate, str):
+                if candidate.strip():
+                    state_top_k = candidate
+            elif candidate is not None:
+                state_top_k = candidate
+        if state_top_k is not None:
+            data["top_k"] = state_top_k
         return cls(**data)
 
 
