@@ -124,6 +124,9 @@ Hinweise:
 - Windows-Variante: `npm run win:dev:test` (identische Trennung, aber mit PowerShell-kompatibler Shell-Kette).
 - Hintergrund: Der Docker-Stack initialisiert neben `noesis2` und `litellm` automatisch auch `noesis2_test`. Damit stehen produktionsnahe Daten und Testläufe nebeneinander, ohne dass `pytest` Tenant-Schemata oder Embedding-Tabellen der laufenden Entwicklung verändert.
 
+- Vor jedem Testlauf setzt der `rag_db`-Fixture die Test-Datenbank vollständig zurück (DROP/CREATE), sodass alle Tests deterministisch vom gleichen Ausgangszustand starten und Altlasten früherer Läufe ausgeschlossen sind.
+
+
 ### API-Schema & SDKs
 
 | Kommando | Ergebnis |
