@@ -123,7 +123,9 @@ Hinweise:
 - `npm run dev:test` führt die Python-Tests im `web`-Container aus und setzt `AI_CORE_TEST_DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2_test`. Die Tests laufen damit gegen eine isolierte Test-Datenbank, sodass Mandanten-Daten, Embeddings und Artefakte aus der normalen Entwicklung (`noesis2`) unangetastet bleiben. Die Dev-Dependencies werden on-the-fly installiert und `pytest -q -rs` ausgeführt (Kurz-Ausgabe inkl. Skip-Gründen).
 - Windows-Variante: `npm run win:dev:test` (identische Trennung, aber mit PowerShell-kompatibler Shell-Kette).
 - Hintergrund: Der Docker-Stack initialisiert neben `noesis2` und `litellm` automatisch auch `noesis2_test`. Damit stehen produktionsnahe Daten und Testläufe nebeneinander, ohne dass `pytest` Tenant-Schemata oder Embedding-Tabellen der laufenden Entwicklung verändert.
+
 - Vor jedem Testlauf setzt der `rag_db`-Fixture die Test-Datenbank vollständig zurück (DROP/CREATE), sodass alle Tests deterministisch vom gleichen Ausgangszustand starten und Altlasten früherer Läufe ausgeschlossen sind.
+
 
 ### API-Schema & SDKs
 
