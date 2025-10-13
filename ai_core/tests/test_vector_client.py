@@ -863,6 +863,7 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-show-limit").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -988,6 +989,7 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-search-path").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -1126,6 +1128,7 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"lexical-noneg").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -1257,6 +1260,7 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"trgm-direct").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
