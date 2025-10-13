@@ -144,7 +144,7 @@ def _ensure_pristine_test_database(dsn: str) -> None:
 
     admin_dsn = _derive_admin_dsn(dsn)
     if not admin_dsn:
-        pytest.fail(
+        pytest.skip(
             f"Konnte keine Admin-Verbindung zum Zurücksetzen der Test-Datenbank '{dbname}' ableiten."
         )
 
@@ -153,7 +153,8 @@ def _ensure_pristine_test_database(dsn: str) -> None:
     try:
         admin_conn = psycopg2.connect(admin_dsn)
     except Exception as exc:
-        pytest.fail(
+        pytest.skip(
+            "PostgreSQL mit Admin-Zugriff erforderlich für RAG-Tests: "
             f"Verbindung zur Admin-Datenbank fehlgeschlagen, Test-Datenbank '{dbname}' kann nicht zurückgesetzt werden: {exc}"
         )
 
@@ -179,7 +180,8 @@ def _ensure_pristine_test_database(dsn: str) -> None:
                     sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname))
                 )
     except Exception as exc:
-        pytest.fail(
+        pytest.skip(
+            "PostgreSQL mit Admin-Zugriff erforderlich für RAG-Tests: "
             f"Zurücksetzen der Test-Datenbank '{dbname}' fehlgeschlagen: {exc}"
         )
     finally:
