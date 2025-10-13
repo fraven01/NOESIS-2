@@ -36,6 +36,7 @@ class TestPgVectorClient:
         )
 
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         class _FallbackCursor:
             def __init__(self) -> None:
@@ -71,7 +72,7 @@ class TestPgVectorClient:
                                 "chunk-adaptive",
                                 "Lexical adaptive",
                                 {
-                                    "tenant": tenant,
+                                    "tenant_id": normalized_tenant,
                                     "hash": doc_hash,
                                     "external_id": "adaptive-doc",
                                 },
@@ -918,7 +919,7 @@ class TestPgVectorClient:
                                 "chunk-fallback",
                                 "Fallback lexical",
                                 {
-                                    "tenant": tenant,
+                                    "tenant_id": normalized_tenant,
                                     "hash": doc_hash,
                                     "external_id": "fallback-doc",
                                 },
@@ -1053,7 +1054,7 @@ class TestPgVectorClient:
                             "chunk-fallback",
                             "Lexical fallback",
                             {
-                                "tenant": tenant,
+                                "tenant_id": normalized_tenant,
                                 "hash": doc_hash,
                                 "external_id": "fallback-doc",
                             },
@@ -1195,7 +1196,7 @@ class TestPgVectorClient:
                             (
                                 str(uuid.uuid4()),
                                 "Lexical row without negative index support",
-                                {"tenant": tenant},
+                                {"tenant_id": normalized_tenant},
                                 doc_hash,
                                 doc_id,
                                 0.42,
@@ -1293,7 +1294,7 @@ class TestPgVectorClient:
                             "chunk-direct",
                             "Direct lexical",
                             {
-                                "tenant": tenant,
+                                "tenant_id": normalized_tenant,
                                 "hash": doc_hash,
                                 "external_id": "direct-doc",
                             },
@@ -1640,13 +1641,16 @@ class TestPgVectorClient:
                 if "embedding" in text and "::vector" in text:
                     self._owner.vector_sql.append(text)
                     tenant_id = str(uuid.uuid4())
+                    normalized_candidate = str(
+                        client._coerce_tenant_uuid(tenant_id)
+                    )
                     doc_hash = hashlib.sha256(b"fallback-operator").hexdigest()
                     doc_id = uuid.uuid4()
                     self._fetchall_result = [
                         (
                             "vector-chunk",
                             "Vector candidate",
-                            {"tenant": tenant_id},
+                            {"tenant_id": normalized_candidate},
                             doc_hash,
                             doc_id,
                             0.12,
@@ -2278,6 +2282,7 @@ def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None
     doc_hash = hashlib.sha256(b"lexical-error").hexdigest()
     chunk_id = "vector-chunk"
     doc_id = "doc-123"
+    normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
     monkeypatch.setattr(
         vector_client.PgVectorClient,
@@ -2319,22 +2324,19 @@ def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None
                     (
                         chunk_id,
                         "Vector row",
-                        {"tenant_id": tenant, "hash": doc_hash},
+                        {"tenant_id": normalized_tenant, "hash": doc_hash},
                         doc_hash,
                         doc_id,
                         0.05,
                     )
                 ]
                 return
-            if "c.text_norm % %s" in normalised and "ORDER BY lscore" in normalised:
+            if "c.text_norm %% %s" in normalised and "ORDER BY lscore" in normalised:
                 raise UndefinedTable('relation "embeddings" does not exist')
             if "COUNT(DISTINCT id)" in normalised:
                 self._fetchone_result = (1,)
                 return
-            if (
-                "similarity(c.text_norm" in normalised
-                and "ORDER BY lscore" in normalised
-            ):
+            if "similarity(c.text_norm" in normalised and "ORDER BY lscore" in normalised:
                 # Lexical fallback counts - no rows returned
                 self._vector_rows = []
                 return
