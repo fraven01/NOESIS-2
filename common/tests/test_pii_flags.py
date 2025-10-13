@@ -134,28 +134,33 @@ def test_mask_text_deterministic_under_scope(pii_config_env):
     assert config["deterministic"] is True
     assert config["hmac_secret"] == b"scope-secret"
 
-    set_session_scope(
-        tenant_id="tenant-a",
-        case_id="case-42",
-        session_salt="trace-99",
-    )
+    set_pii_config(config)
     try:
-        first = mask_text(
-            "Contact user@example.com",
-            config["policy"],
-            config["deterministic"],
-            config["hmac_secret"],
-            mode=config["mode"],
+        scoped_config = get_pii_config()
+        set_session_scope(
+            tenant_id="tenant-a",
+            case_id="case-42",
+            session_salt="trace-99",
         )
-        second = mask_text(
-            "Contact user@example.com",
-            config["policy"],
-            config["deterministic"],
-            config["hmac_secret"],
-            mode=config["mode"],
-        )
+        try:
+            first = mask_text(
+                "Contact user@example.com",
+                scoped_config["policy"],
+                scoped_config["deterministic"],
+                scoped_config["hmac_secret"],
+                mode=scoped_config["mode"],
+            )
+            second = mask_text(
+                "Contact user@example.com",
+                scoped_config["policy"],
+                scoped_config["deterministic"],
+                scoped_config["hmac_secret"],
+                mode=scoped_config["mode"],
+            )
+        finally:
+            clear_session_scope()
     finally:
-        clear_session_scope()
+        clear_pii_config()
 
     assert first == second
     assert "<EMAIL_" in first
