@@ -233,7 +233,14 @@ def rag_database(rag_test_dsn: str, monkeypatch, settings) -> Iterator[str]:
                 sql.Identifier(DEFAULT_SCHEMA_NAME)
             )
         )
-        cur.execute("TRUNCATE TABLE embeddings, chunks, documents CASCADE")
+        try:
+            cur.execute("TRUNCATE TABLE embeddings, chunks, documents CASCADE")
+        except (
+            errors.UndefinedTable,
+            errors.InvalidSchemaName,
+        ):
+            reset_vector_schema(cur, DEFAULT_SCHEMA_NAME)
+            cur.execute("TRUNCATE TABLE embeddings, chunks, documents CASCADE")
     conn.close()
     monkeypatch.setenv("DATABASE_URL", rag_test_dsn)
     monkeypatch.setenv("RAG_DATABASE_URL", rag_test_dsn)
