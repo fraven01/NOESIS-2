@@ -1,17 +1,60 @@
 import importlib
 import io
 import json
+from contextlib import contextmanager
 from typing import Iterable, Mapping
 from urllib.parse import unquote
 
 import structlog
+from django.conf import settings
 from django.test import override_settings
 
 import common.logging as logging_utils
+from ai_core.infra.pii_flags import clear_pii_config, set_pii_config
+
+
+@contextmanager
+def _scoped_pii_config(config: Mapping[str, object]):
+    set_pii_config(config)
+    try:
+        yield
+    finally:
+        clear_pii_config()
+
+
+def _pii_config(
+    *,
+    logging_redaction: bool,
+    deterministic: bool,
+    hmac_secret: str | bytes | None,
+) -> dict[str, object]:
+    secret_value: bytes | None
+    if isinstance(hmac_secret, (bytes, bytearray)):
+        secret_value = bytes(hmac_secret)
+    elif hmac_secret in (None, ""):
+        secret_value = None
+    else:
+        secret_value = str(hmac_secret).encode("utf-8")
+
+    deterministic_enabled = bool(deterministic) and secret_value is not None
+
+    return {
+        "mode": str(settings.PII_MODE),
+        "policy": str(settings.PII_POLICY),
+        "deterministic": deterministic_enabled,
+        "post_response": bool(settings.PII_POST_RESPONSE),
+        "logging_redaction": bool(logging_redaction),
+        "hmac_secret": secret_value if deterministic_enabled else None,
+        "name_detection": bool(settings.PII_NAME_DETECTION)
+        and str(settings.PII_MODE) == "gold",
+        "session_scope": None,
+    }
 
 
 def _capture_logs(
     entries: Iterable[tuple[str, Mapping[str, object] | None]],
+    *,
+    pii_config: Mapping[str, object],
     **overrides,
 ) -> list[dict[str, object]]:
     entries_list = list(entries)
@@ -22,9 +65,10 @@ def _capture_logs(
     with override_settings(**overrides):
         module.configure_logging(stream)
         logger = module.get_logger("test")
-        for event, payload in entries_list:
-            extra = dict(payload or {})
-            logger.info(event, **extra)
+        with _scoped_pii_config(pii_config):
+            for event, payload in entries_list:
+                extra = dict(payload or {})
+                logger.info(event, **extra)
     contents = [line for line in stream.getvalue().splitlines() if line.strip()]
     if len(contents) > len(entries_list):
         contents = contents[-len(entries_list) :]
@@ -32,8 +76,14 @@ def _capture_logs(
 
 
 def test_logging_redaction_masks_string_fields():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("Contact user@example.com", {"detail": "+49 170 1234567", "optional": None})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -48,8 +98,14 @@ def test_logging_redaction_masks_string_fields():
 
 
 def test_logging_redaction_deterministic_tokens():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=True,
+        hmac_secret="secret",
+    )
     records = _capture_logs(
         [("user@example.com", None), ("user@example.com", None)],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=True,
         PII_HMAC_SECRET="secret",
@@ -60,8 +116,14 @@ def test_logging_redaction_deterministic_tokens():
 
 
 def test_logging_redaction_can_be_disabled():
+    pii_config = _pii_config(
+        logging_redaction=False,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("user@example.com", None)],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=False,
     )
     event = records[0]["event"]
@@ -71,8 +133,14 @@ def test_logging_redaction_can_be_disabled():
 
 def test_logging_redaction_preserves_json_spacing():
     payload = '{ "access_token": "secret", "note": "keep spacing" }'
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("event", {"payload": payload})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -86,8 +154,14 @@ def test_logging_redaction_preserves_json_spacing():
 def test_logging_redaction_skips_structured_for_large_fields():
     large_chunk = "a" * (70 * 1024)
     large_text = f"prefix {large_chunk} user@example.com"
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [(large_text, None)],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -99,8 +173,14 @@ def test_logging_redaction_skips_structured_for_large_fields():
 def test_logging_redaction_fast_path_preserves_large_json_spacing():
     large_value = "a" * (70 * 1024)
     payload = '{ "email": "user@example.com", "note": "' + large_value + '" }'
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("event", {"payload": payload})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -115,8 +195,14 @@ def test_logging_redaction_fast_path_preserves_large_json_spacing():
 
 def test_logging_redaction_leaves_pre_masked_tokens():
     pre_masked = "<EMAIL_ab12cd34>"
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=True,
+        hmac_secret="secret",
+    )
     records = _capture_logs(
         [(pre_masked, {"detail": "[REDACTED_EMAIL]", "note": "[REDACTED]"})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=True,
         PII_HMAC_SECRET="secret",
@@ -145,8 +231,14 @@ def test_logging_redaction_processor_order():
 
 
 def test_logging_redaction_fast_path_skips_boring_messages():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("processed 42 items", {"detail": "iteration complete"})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -157,8 +249,14 @@ def test_logging_redaction_fast_path_skips_boring_messages():
 
 
 def test_logging_redaction_fast_path_skips_harmless_query_strings():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("https://h/p?ok=1", None)],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -167,8 +265,14 @@ def test_logging_redaction_fast_path_skips_harmless_query_strings():
 
 
 def test_logging_redaction_fast_path_masks_email_queries():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("https://h/p?email=a@b.de&ok=1", None)],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -180,8 +284,14 @@ def test_logging_redaction_fast_path_masks_email_queries():
 
 
 def test_logging_redaction_fast_path_masks_auth_headers():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("login", {"auth": "Bearer eyJhbGciOi"})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
@@ -192,8 +302,14 @@ def test_logging_redaction_fast_path_masks_auth_headers():
 
 
 def test_logging_redaction_fast_path_masks_phone_numbers():
+    pii_config = _pii_config(
+        logging_redaction=True,
+        deterministic=False,
+        hmac_secret=None,
+    )
     records = _capture_logs(
         [("contact", {"text": "call +49 151 2345678"})],
+        pii_config=pii_config,
         PII_LOGGING_REDACTION=True,
         PII_DETERMINISTIC=False,
         PII_HMAC_SECRET="",
