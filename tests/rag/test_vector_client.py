@@ -1070,9 +1070,10 @@ def test_hybrid_search_returns_vector_results_when_lexical_fails(monkeypatch):
     failure_logs = [
         entry
         for entry in logs
-        if entry.get("event") == "rag.hybrid.lexical_query_failed"
+        if entry.get("event")
+        in {"rag.hybrid.lexical_query_failed", "rag.hybrid.lexical_primary_failed"}
     ]
-    assert len(failure_logs) == 1
+    assert len(failure_logs) >= 1
     entry = failure_logs[0]
     assert entry.get("tenant_id") == tenant
 

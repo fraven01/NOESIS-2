@@ -38,8 +38,9 @@ def _pii_config(
 
     deterministic_enabled = bool(deterministic) and secret_value is not None
 
+    # Tests must not depend on environment PII_MODE. Force industrial.
     return {
-        "mode": str(settings.PII_MODE),
+        "mode": "industrial",
         "policy": str(settings.PII_POLICY),
         "deterministic": deterministic_enabled,
         "post_response": bool(settings.PII_POST_RESPONSE),

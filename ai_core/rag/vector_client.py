@@ -1208,15 +1208,13 @@ class PgVectorClient:
                                     lexical_rows_local = []
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
-                                        extra={
-                                            "tenant_id": tenant,
-                                            "case_id": case_value,
-                                            "error": str(exc),
-                                            "applied_trgm_limit": applied_trgm_limit,
-                                            "rows_count": rows_count,
-                                            "row_first_len": first_len,
-                                            "row_first_type": first_type,
-                                        },
+                                        tenant_id=tenant,
+                                        case_id=case_value,
+                                        error=str(exc),
+                                        applied_trgm_limit=applied_trgm_limit,
+                                        rows_count=rows_count,
+                                        row_first_len=first_len,
+                                        row_first_type=first_type,
                                     )
                                 elif isinstance(exc, PsycopgError):
                                     if vector_query_failed:
@@ -1231,6 +1229,9 @@ class PgVectorClient:
                                     lexical_rows_local = []
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
+                                        tenant_id=tenant,
+                                        case_id=case_value,
+                                        error=str(exc),
                                     )
                                 else:
                                     raise
@@ -1687,6 +1688,11 @@ class PgVectorClient:
                     vscore = max(0.0, 1.0 - float(distance_value))
                 entry["vscore"] = max(float(entry.get("vscore", 0.0)), vscore)
 
+        # Only mark candidates as allowed-below-cutoff for exceptional cases.
+        # We no longer blanket-allow all lexical candidates when a trigram
+        # fallback occurred with alpha=0.0 — that decision is deferred to the
+        # dedicated cutoff fallback stage below which selects only the best
+        # needed candidates up to top_k.
         allow_trgm_fallback_below_cutoff = (
             fallback_limit_used_value is not None and alpha_value <= 0.0
         )
@@ -1748,8 +1754,11 @@ class PgVectorClient:
             lscore_value = max(0.0, lscore_value)
             entry["lscore"] = max(float(entry.get("lscore", 0.0)), lscore_value)
 
-            if lexical_score_missing or allow_trgm_fallback_below_cutoff:
-
+            # Permit bypassing the min_sim cutoff only when the lexical score is
+            # structurally missing (row shape/NaN), not merely because a trigram
+            # fallback happened. The proper promotion of below-cutoff items is
+            # handled later by the cutoff fallback logic which respects top_k.
+            if lexical_score_missing:
                 entry["_allow_below_cutoff"] = True
 
         try:

@@ -863,6 +863,8 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-show-limit").hexdigest()
         doc_id = uuid.uuid4()
+        # Ensure consistent tenant metadata in mocked rows
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -1012,6 +1014,20 @@ class TestPgVectorClient:
                 return None
 
             def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
+                # Handle both plain strings and psycopg2.sql-composed objects.
+                # The application uses psycopg2.sql objects for SET search_path,
+                # which don't stringify to the final SQL. Detect those safely.
+                try:
+                    from psycopg2 import sql as _sql  # type: ignore
+                except Exception:
+                    _sql = None  # type: ignore
+
+                if _sql is not None and isinstance(sql, (_sql.SQL, _sql.Composed)):
+                    # This branch represents safe SQL objects (e.g. SET search_path ...)
+                    # sent by the application; mark search_path as applied.
+                    self._owner.mark_search_path()
+                    return
+
                 text = str(sql)
                 if "pg_catalog.pg_opclass" in text:
                     self._fetchone_result = (1,)
@@ -1187,6 +1203,7 @@ class TestPgVectorClient:
     def test_lexical_row_without_negative_index(self, monkeypatch):
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
         doc_hash = hashlib.sha256(b"lexical-noneg").hexdigest()
         doc_id = uuid.uuid4()
 
@@ -1318,6 +1335,7 @@ class TestPgVectorClient:
     ) -> None:
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
         doc_hash = hashlib.sha256(b"trgm-direct").hexdigest()
         doc_id = uuid.uuid4()
 
