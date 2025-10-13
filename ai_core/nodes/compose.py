@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
 from ai_core.infra.mask_prompt import mask_prompt, mask_response
 from ai_core.infra.pii_flags import get_pii_config
@@ -25,11 +25,41 @@ def run(
     return _run(prompt, state, meta=meta_with_version)
 
 
+def _resolve_snippet_label(snippet: Mapping[str, Any], index: int) -> str:
+    raw_label = snippet.get("citation")
+    if not isinstance(raw_label, str) or not raw_label.strip():
+        for candidate in (snippet.get("source"), snippet.get("id")):
+            if isinstance(candidate, str) and candidate.strip():
+                raw_label = candidate
+                break
+        else:
+            raw_label = f"Snippet {index + 1}"
+    return raw_label.strip()
+
+
+def _format_snippet_context(snippets: Iterable[Mapping[str, Any]]) -> str:
+    formatted: list[str] = []
+    for index, snippet in enumerate(snippets):
+        text_value = snippet.get("text")
+        text = str(text_value or "").strip()
+        label = _resolve_snippet_label(snippet, index)
+        if text:
+            formatted.append(f"[{label}] {text}")
+        else:
+            formatted.append(f"[{label}]")
+    return "\n".join(formatted)
+
+
 @trace("compose")
 def _run(
     prompt: Dict[str, str], state: Dict[str, Any], *, meta: Dict[str, str]
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    snippets_text = "\n".join(s.get("text", "") for s in state.get("snippets", []))
+    snippets_data = [
+        snippet
+        for snippet in state.get("snippets", [])
+        if isinstance(snippet, Mapping)
+    ]
+    snippets_text = _format_snippet_context(snippets_data)
     question = state.get("question", "")
     full_prompt = f"{prompt['text']}\n\nQuestion: {question}\nContext:\n{snippets_text}"
     pii_config = get_pii_config()

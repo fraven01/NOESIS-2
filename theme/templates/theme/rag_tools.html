@@ -722,8 +722,11 @@
             score.textContent = 'Score: ' + scoreValue;
 
             const source = document.createElement('span');
-            const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '–';
-            source.textContent = 'Source: ' + sourceValue;
+            const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '';
+            const citationValue = snippet && typeof snippet.citation === 'string' && snippet.citation.trim()
+              ? snippet.citation.trim()
+              : sourceValue || '–';
+            source.textContent = 'Fundstelle: ' + citationValue;
 
             header.appendChild(score);
             header.appendChild(source);

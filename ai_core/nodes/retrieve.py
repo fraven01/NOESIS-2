@@ -145,6 +145,114 @@ def _extract_id(meta: Mapping[str, Any]) -> str | None:
     return text or None
 
 
+def _coerce_positive_int(value: object) -> int | None:
+    try:
+        candidate = int(str(value))
+    except (TypeError, ValueError):
+        return None
+    if candidate < 0:
+        return None
+    return candidate
+
+
+def _coerce_str(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _format_range(start: int | None, end: int | None, prefix: str) -> str | None:
+    if start is None:
+        return None
+    if end is None or end == start:
+        return f"{prefix}{start}"
+    return f"{prefix}{start}-{end}"
+
+
+def _build_citation(metadata: Mapping[str, object]) -> str | None:
+    source = _coerce_str(metadata.get("source"))
+    if not source:
+        return None
+
+    explicit_locator = _coerce_str(
+        metadata.get("citation")
+        or metadata.get("source_location")
+        or metadata.get("locator")
+        or metadata.get("location")
+    )
+    if explicit_locator:
+        if explicit_locator.lower().startswith(source.lower()):
+            return explicit_locator
+        return f"{source} · {explicit_locator}"
+
+    location_parts: list[str] = []
+
+    page_value = _coerce_positive_int(metadata.get("page"))
+    if page_value is None:
+        page_value = _coerce_positive_int(metadata.get("page_number"))
+    if page_value is None:
+        page_index = _coerce_positive_int(metadata.get("page_index"))
+        if page_index is not None:
+            page_value = page_index + 1
+    if page_value is not None:
+        location_parts.append(f"S.{page_value}")
+
+    line_start = _coerce_positive_int(
+        metadata.get("line_start")
+        or metadata.get("start_line")
+        or metadata.get("line_begin")
+    )
+    line_end = _coerce_positive_int(
+        metadata.get("line_end")
+        or metadata.get("end_line")
+        or metadata.get("line_finish")
+    )
+    line_range = _format_range(line_start, line_end, "Z.")
+    if line_range:
+        location_parts.append(line_range)
+
+    char_start = _coerce_positive_int(
+        metadata.get("char_start")
+        or metadata.get("start_char")
+        or metadata.get("char_begin")
+    )
+    char_end = _coerce_positive_int(
+        metadata.get("char_end")
+        or metadata.get("end_char")
+        or metadata.get("char_finish")
+    )
+    char_range = _format_range(char_start, char_end, "Zeichen ")
+    if char_range:
+        location_parts.append(char_range)
+
+    for key in ("section", "heading", "title", "chapter"):
+        section_value = _coerce_str(metadata.get(key))
+        if section_value:
+            location_parts.append(section_value)
+
+    if not location_parts:
+        chunk_id = _coerce_str(metadata.get("chunk_id"))
+        doc_id = _coerce_str(metadata.get("doc_id"))
+        external_id = _coerce_str(metadata.get("external_id"))
+        hash_id = _coerce_str(metadata.get("hash"))
+        if chunk_id:
+            short = chunk_id[:8] if len(chunk_id) > 12 else chunk_id
+            location_parts.append(f"Chunk {short}")
+        elif doc_id:
+            location_parts.append(f"Dok-ID {doc_id}")
+        elif external_id:
+            location_parts.append(f"Dok {external_id}")
+        elif hash_id:
+            short = hash_id[:8] if len(hash_id) > 12 else hash_id
+            location_parts.append(f"Hash {short}")
+
+    if location_parts:
+        return " · ".join([source, *location_parts])
+
+    return source
+
+
 def _chunk_to_match(chunk: Chunk) -> Dict[str, Any]:
     metadata = dict(chunk.meta or {})
     match: Dict[str, Any] = {
@@ -154,6 +262,9 @@ def _chunk_to_match(chunk: Chunk) -> Dict[str, Any]:
         "source": metadata.get("source", ""),
         "hash": metadata.get("hash"),
     }
+    citation = _build_citation(metadata)
+    if citation:
+        match["citation"] = citation
     extra_meta = {
         key: value
         for key, value in metadata.items()
