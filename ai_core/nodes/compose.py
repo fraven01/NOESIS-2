@@ -55,9 +55,7 @@ def _run(
     prompt: Dict[str, str], state: Dict[str, Any], *, meta: Dict[str, str]
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     snippets_data = [
-        snippet
-        for snippet in state.get("snippets", [])
-        if isinstance(snippet, Mapping)
+        snippet for snippet in state.get("snippets", []) if isinstance(snippet, Mapping)
     ]
     snippets_text = _format_snippet_context(snippets_data)
     question = state.get("question", "")

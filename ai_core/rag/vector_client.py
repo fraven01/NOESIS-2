@@ -1960,9 +1960,10 @@ class PgVectorClient:
 
                 if allow or not is_below_cutoff:
                     filtered_results.append(chunk)
-                    chunk_key = _safe_chunk_identifier(
-                        chunk.meta.get("chunk_id")
-                    ) or f"id:{id(chunk)}"
+                    chunk_key = (
+                        _safe_chunk_identifier(chunk.meta.get("chunk_id"))
+                        or f"id:{id(chunk)}"
+                    )
                     selected_chunk_keys.add(chunk_key)
                     if is_below_cutoff:
                         # These chunks are returned to the caller but still count as
@@ -1987,8 +1988,7 @@ class PgVectorClient:
             filtered_results = [chunk for chunk, _ in results]
         if not selected_chunk_keys:
             selected_chunk_keys = {
-                _safe_chunk_identifier(chunk.meta.get("chunk_id"))
-                or f"id:{id(chunk)}"
+                _safe_chunk_identifier(chunk.meta.get("chunk_id")) or f"id:{id(chunk)}"
                 for chunk in filtered_results
             }
         try:

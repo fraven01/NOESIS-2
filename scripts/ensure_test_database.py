@@ -31,16 +31,19 @@ def ensure_database(admin_url: str, database: str) -> bool:
             with psycopg2.connect(admin_url) as conn:
                 conn.autocommit = True
                 with conn.cursor() as cur:
-                    cur.execute("SELECT 1 FROM pg_database WHERE datname = %s", (database,))
+                    cur.execute(
+                        "SELECT 1 FROM pg_database WHERE datname = %s", (database,)
+                    )
                     if cur.fetchone():
-                        print(f"ensure_test_database: '{database}' already present", flush=True)
+                        print(
+                            f"ensure_test_database: '{database}' already present",
+                            flush=True,
+                        )
                         return False
                     cur.execute(
-                        sql.SQL("CREATE DATABASE {}").format(
-                            sql.Identifier(database)
-                        )
+                        sql.SQL("CREATE DATABASE {}").format(sql.Identifier(database))
                     )
-                        
+
         except errors.DuplicateDatabase:
             print(f"ensure_test_database: '{database}' already present", flush=True)
             return False

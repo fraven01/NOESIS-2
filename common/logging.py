@@ -111,6 +111,8 @@ def _collapse_placeholders(original: str, masked: str) -> str:
     collapsed = _ENCODED_GENERIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", collapsed)
     collapsed = _ENCODED_DETERMINISTIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", collapsed)
     return collapsed
+
+
 _PII_KEY_PATTERN = re.compile(
     r"(?i)(email|token|secret|password|pass|session|auth|key)\s*[:=]"
 )

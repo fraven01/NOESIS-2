@@ -1722,9 +1722,7 @@ class TestPgVectorClient:
                 if "embedding" in text and "::vector" in text:
                     self._owner.vector_sql.append(text)
                     tenant_id = str(uuid.uuid4())
-                    normalized_candidate = str(
-                        client._coerce_tenant_uuid(tenant_id)
-                    )
+                    normalized_candidate = str(client._coerce_tenant_uuid(tenant_id))
                     doc_hash = hashlib.sha256(b"fallback-operator").hexdigest()
                     doc_id = uuid.uuid4()
                     self._fetchall_result = [
@@ -2417,7 +2415,10 @@ def test_hybrid_search_restores_session_after_lexical_error(monkeypatch) -> None
             if "COUNT(DISTINCT id)" in normalised:
                 self._fetchone_result = (1,)
                 return
-            if "similarity(c.text_norm" in normalised and "ORDER BY lscore" in normalised:
+            if (
+                "similarity(c.text_norm" in normalised
+                and "ORDER BY lscore" in normalised
+            ):
                 # Lexical fallback counts - no rows returned
                 self._vector_rows = []
                 return
