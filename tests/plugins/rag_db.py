@@ -227,6 +227,8 @@ def ensure_vector_extensions_in_django_test_db(django_db_setup, django_db_blocke
                         cur.execute("ALTER EXTENSION pg_trgm SET SCHEMA public")
                     except Exception:
                         pass
+                except errors.UndefinedFile as exc:
+                    pytest.skip(f"pg_trgm extension not available: {exc}")
                 except Exception:
                     pass
         except Exception:
