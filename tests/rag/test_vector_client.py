@@ -521,10 +521,14 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
         ),
     ]
 
-    def _fake_run(_fn, *, op_name: str):
-        return ([], lexical_rows, 1.0)
-
-    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+    cursor = _FakeCursor(
+        show_limit_value=0.30,
+        lexical_rows=lexical_rows,
+        lexical_required_limit=0.05,
+        respect_set_limit=False,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
 
     with capture_logs() as logs:
         result = client.hybrid_search(
@@ -539,6 +543,9 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
     assert len(result.chunks) == 2
     assert result.below_cutoff == 2
     assert result.returned_after_cutoff == 2
+
+    executed_sql = "\n".join(sql for sql, _ in cursor.executed)
+    assert ">= %s" in executed_sql, "expected lexical fallback query to run"
 
     fallback_logs = [
         entry for entry in logs if entry.get("event") == "rag.hybrid.cutoff_fallback"
@@ -586,10 +593,14 @@ def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
         ),
     ]
 
-    def _fake_run(_fn, *, op_name: str):
-        return ([], lexical_rows, 1.0)
-
-    monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+    cursor = _FakeCursor(
+        show_limit_value=0.40,
+        lexical_rows=lexical_rows,
+        lexical_required_limit=0.05,
+        respect_set_limit=False,
+    )
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
 
     result = client.hybrid_search(
         "fallback ordering",
@@ -602,6 +613,10 @@ def test_cutoff_fallback_prioritises_best_candidates(monkeypatch):
 
     assert len(result.chunks) == 2
     assert result.below_cutoff == 3
+    assert result.returned_after_cutoff == 2
+
+    executed_sql = "\n".join(sql for sql, _ in cursor.executed)
+    assert ">= %s" in executed_sql, "expected lexical fallback query to run"
 
     returned_ids = [chunk.meta.get("chunk_id") for chunk in result.chunks]
     assert returned_ids == ["chunk-top", "chunk-mid"]
