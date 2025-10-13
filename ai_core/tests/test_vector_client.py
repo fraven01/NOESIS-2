@@ -988,6 +988,7 @@ class TestPgVectorClient:
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-search-path").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -995,10 +996,12 @@ class TestPgVectorClient:
             lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
+        primary_modes: list[str] = ["error", "empty"]
+
         class _Cursor:
             def __init__(self, owner) -> None:
                 self._owner = owner
-                self._next_fetchall: str | None = None
+                self._next_fetchall: tuple[str, str | None] | None = None
                 self._fetchone_result: tuple | None = None
                 self._fallback_limit: float | None = None
 
@@ -1017,6 +1020,7 @@ class TestPgVectorClient:
                     self._owner.mark_search_path()
                     return
                 if "SET LOCAL statement_timeout" in text:
+                    self._owner.mark_statement_timeout()
                     return
                 if "SELECT set_limit" in text:
                     self._owner.last_limit = float(params[0]) if params else None
@@ -1028,25 +1032,50 @@ class TestPgVectorClient:
                         self._fetchone_result = (self._owner.last_limit,)
                     return
                 if "FROM embeddings" in text:
-                    self._next_fetchall = "vector"
+                    self._next_fetchall = ("vector", None)
                     return
                 if "c.text_norm % %s" in text:
-                    self._next_fetchall = "primary"
+                    self._next_fetchall = (
+                        "primary",
+                        self._owner.next_primary_mode(),
+                    )
                     return
                 if "similarity(c.text_norm, %s) >= %s" in text:
-                    self._next_fetchall = "fallback"
                     self._fallback_limit = float(params[-2]) if params else None
+                    self._next_fetchall = ("fallback", None)
                     return
                 self._next_fetchall = None
 
             def fetchall(self) -> list[tuple]:
                 mode = self._next_fetchall
                 self._next_fetchall = None
-                if mode == "vector":
+                if not mode:
                     return []
-                if mode == "primary":
-                    raise IndexError("simulated lexical failure")
-                if mode == "fallback":
+                kind, detail = mode
+                if kind == "vector":
+                    return []
+                if kind == "primary":
+                    if detail == "error":
+                        raise IndexError("simulated lexical failure")
+                    if detail == "rows":
+                        if not self._owner.search_path_set:
+                            raise RuntimeError("search path missing")
+                        return [
+                            (
+                                "chunk-primary",
+                                "Lexical primary",
+                                {
+                                    "tenant_id": normalized_tenant,
+                                    "hash": doc_hash,
+                                    "external_id": "primary-doc",
+                                },
+                                doc_hash,
+                                doc_id,
+                                0.41,
+                            )
+                        ]
+                    return []
+                if kind == "fallback":
                     if not self._owner.search_path_set:
                         raise RuntimeError("search path missing")
                     return [
@@ -1071,25 +1100,38 @@ class TestPgVectorClient:
                 return result
 
         class _FakeConnection:
-            def __init__(self) -> None:
-                self.search_path_set = True
+            def __init__(self, primary_mode: str) -> None:
+                self.search_path_set = False
                 self.search_path_calls = 0
+                self.statement_timeout_calls = 0
+                self.rollback_calls = 0
                 self.last_limit: float | None = None
+                self._primary_modes: list[str] = [primary_mode]
 
             def mark_search_path(self) -> None:
                 self.search_path_set = True
                 self.search_path_calls += 1
+
+            def mark_statement_timeout(self) -> None:
+                self.statement_timeout_calls += 1
+
+            def next_primary_mode(self) -> str:
+                if self._primary_modes:
+                    return self._primary_modes.pop(0)
+                return "empty"
 
             def cursor(self) -> _Cursor:
                 return _Cursor(self)
 
             def rollback(self) -> None:
                 self.search_path_set = False
+                self.rollback_calls += 1
 
         connections: list[_FakeConnection] = []
 
         def _fake_connection(self):  # type: ignore[no-untyped-def]
-            fake = _FakeConnection()
+            mode = primary_modes.pop(0) if primary_modes else "empty"
+            fake = _FakeConnection(mode)
             connections.append(fake)
 
             class _Ctx:
@@ -1105,7 +1147,7 @@ class TestPgVectorClient:
             client, "_connection", _fake_connection.__get__(client, type(client))
         )
 
-        result = client.hybrid_search(
+        result_failure = client.hybrid_search(
             "trigger fallback",
             tenant_id=tenant,
             filters={},
@@ -1114,12 +1156,33 @@ class TestPgVectorClient:
             trgm_limit=0.09,
         )
 
-        assert result.lexical_candidates == 1
-        assert result.chunks
+        result_no_rollback = client.hybrid_search(
+            "trigger fallback",
+            tenant_id=tenant,
+            filters={},
+            top_k=1,
+            alpha=0.0,
+            trgm_limit=0.09,
+        )
+
+        assert result_failure.lexical_candidates == 1
+        assert result_failure.chunks
+        assert result_no_rollback.lexical_candidates == 1
+        assert result_no_rollback.chunks
         assert connections
-        fake = connections[0]
-        assert fake.search_path_calls >= 1
-        assert fake.search_path_set is True
+        assert len(connections) >= 2
+
+        failure_conn = connections[0]
+        assert failure_conn.rollback_calls == 1
+        assert failure_conn.search_path_calls == failure_conn.rollback_calls + 1
+        assert failure_conn.statement_timeout_calls == failure_conn.rollback_calls + 2
+        assert failure_conn.search_path_set is True
+
+        no_rollback_conn = connections[1]
+        assert no_rollback_conn.rollback_calls == 0
+        assert no_rollback_conn.search_path_calls == 1
+        assert no_rollback_conn.statement_timeout_calls == 2
+        assert no_rollback_conn.search_path_set is True
 
     def test_lexical_row_without_negative_index(self, monkeypatch):
         client = vector_client.get_default_client()
