@@ -77,14 +77,15 @@ def ensure_default_pii_secret():
 
 @pytest.fixture(autouse=True, scope="session")
 def ensure_tenant_engine():
-    """Skip tests if the PostgreSQL tenant backend isn't configured."""
+    """Gate tenant-backed RAG fixtures on the expected Django engine."""
     from django.conf import settings
 
     if settings.DATABASES["default"]["ENGINE"] != "django_tenants.postgresql_backend":
-        pytest.skip(
-            "Tests require the django-tenants PostgreSQL backend",
-            allow_module_level=True,
-        )
+        # Not all test environments provision the tenant backend (for example CI
+        # jobs that only exercise non-RAG components). Returning early keeps the
+        # RAG-specific fixtures idle while still allowing unrelated test modules
+        # to execute instead of marking the entire session as skipped.
+        return
 
 
 @pytest.fixture(autouse=True)
