@@ -115,6 +115,16 @@ def _normalise_snippets(
             except (TypeError, ValueError):
                 base["score"] = 0.0
 
+        citation = base.get("citation")
+        if not isinstance(citation, str):
+            fallback_citation = None
+            if isinstance(fallback_item, Mapping):
+                fallback_citation = fallback_item.get("citation")
+            if isinstance(fallback_citation, str):
+                base["citation"] = fallback_citation
+            elif isinstance(base.get("source"), str):
+                base["citation"] = base["source"]
+
         normalised.append(base)
 
     return normalised

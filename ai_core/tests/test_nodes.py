@@ -63,6 +63,10 @@ def test_retrieve_hybrid_search(monkeypatch):
             "score": 0.83,
             "tenant_id": "tenant-1",
             "case_id": "case-1",
+            "page_number": 3,
+            "line_start": 12,
+            "line_end": 14,
+            "chunk_id": "chunk-1234567890",
         },
     )
     hybrid_result = HybridSearchResult(
@@ -119,6 +123,7 @@ def test_retrieve_hybrid_search(monkeypatch):
     assert match["id"] == "doc-1"
     assert match["score"] == pytest.approx(0.83)
     assert match["source"] == "src"
+    assert match["citation"] == "src · S.3 · Z.12-14"
     assert match["meta"]["tenant_id"] == "tenant-1"
     assert match["meta"]["case_id"] == "case-1"
     assert isinstance(result.meta.took_ms, int)
@@ -343,7 +348,7 @@ def test_compose_masks_and_sets_version(monkeypatch):
         "snippets": [{"text": "Answer", "source": "s"}],
     }
     prompt = load("retriever/answer")
-    snippets_text = "\n".join(s.get("text", "") for s in state["snippets"])
+    snippets_text = compose._format_snippet_context(state["snippets"])
     expected_prompt = mask_prompt(
         f"{prompt['text']}\n\nQuestion: {state['question']}\nContext:\n{snippets_text}"
     )
