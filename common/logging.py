@@ -89,6 +89,28 @@ _PII_FAST_PATH_MARKERS: tuple[str, ...] = (
     "session=",
     "auth=",
 )
+
+_GENERIC_PLACEHOLDER_PATTERN = re.compile(r"\[REDACTED(?:_[A-Z0-9_]+)?\]")
+_DETERMINISTIC_PLACEHOLDER_PATTERN = re.compile(r"<[A-Z0-9_]+_[0-9a-fA-F]{8}>")
+_ENCODED_GENERIC_PLACEHOLDER_PATTERN = re.compile(
+    r"%5BREDACTED(?:_[A-Z0-9_]+)?%5D", re.IGNORECASE
+)
+_ENCODED_DETERMINISTIC_PLACEHOLDER_PATTERN = re.compile(
+    r"%3C[A-Z0-9_]+_[0-9a-fA-F]{8}%3E", re.IGNORECASE
+)
+
+
+def _collapse_placeholders(original: str, masked: str) -> str:
+    """Normalise tagged placeholders to the generic ``[REDACTED]`` token."""
+
+    if masked == original:
+        return masked
+
+    collapsed = _GENERIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", masked)
+    collapsed = _DETERMINISTIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", collapsed)
+    collapsed = _ENCODED_GENERIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", collapsed)
+    collapsed = _ENCODED_DETERMINISTIC_PLACEHOLDER_PATTERN.sub("[REDACTED]", collapsed)
+    return collapsed
 _PII_KEY_PATTERN = re.compile(
     r"(?i)(email|token|secret|password|pass|session|auth|key)\s*[:=]"
 )
@@ -361,7 +383,7 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
                 json_dump_kwargs=json_kwargs,
             )
             if masked != raw_value:
-                event_dict[key] = masked
+                event_dict[key] = _collapse_placeholders(raw_value, masked)
         return event_dict
 
     return _processor
