@@ -125,7 +125,10 @@ def test_get_pii_config_gold_mode(pii_config_env):
 
 
 def test_mask_text_deterministic_under_scope(pii_config_env):
+    # Ensure masking is enabled regardless of ambient defaults
     pii_config_env(
+        PII_MODE="industrial",
+        PII_POLICY="balanced",
         PII_HMAC_SECRET="scope-secret",
         PII_DETERMINISTIC=True,
     )

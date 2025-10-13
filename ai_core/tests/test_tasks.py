@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import pytest
 from structlog.testing import capture_logs
+from django.conf import settings
 
 from ai_core import tasks
 from ai_core.infra import object_store
@@ -87,6 +88,11 @@ def test_build_chunk_prefix_combines_breadcrumbs_and_title() -> None:
     assert prefix == "Handbuch / Abschnitt A / Teil 1 — Einführung"
 
 
+@pytest.mark.skipif(
+    str(getattr(settings, "PII_MODE", "industrial")).lower() == "off"
+    or str(getattr(settings, "PII_POLICY", "balanced")).lower() == "off",
+    reason="PII masking disabled in settings",
+)
 @pytest.mark.usefixtures("rag_database")
 def test_upsert_persists_chunks(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

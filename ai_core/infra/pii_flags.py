@@ -133,9 +133,57 @@ def get_pii_config_version() -> int:
 
 
 def set_pii_config(config: Mapping[str, object]) -> None:
-    """Activate a scoped PII configuration for the current context."""
+    """Activate a scoped PII configuration for the current context.
 
-    _PII_CONFIG.set(MappingProxyType(dict(config)))
+    The provided mapping may be partial. We merge it with the defaults from
+    Django settings and apply the same finalization rules as for settings-based
+    configs (e.g., only enable ``deterministic`` when a non-empty secret is
+    present). ``session_scope`` is passed through as-is.
+    """
+
+    # Start from settings-backed defaults
+    base = _config_from_settings()
+
+    # Apply overrides from the provided mapping (partial allowed)
+    mode = _coalesce_str(config.get("mode", base["mode"]), base["mode"])  # type: ignore[arg-type]
+    policy = _coalesce_str(config.get("policy", base["policy"]), base["policy"])  # type: ignore[arg-type]
+    deterministic = _coalesce_bool(
+        config.get("deterministic", base["deterministic"]),  # type: ignore[arg-type]
+        bool(base["deterministic"]),
+    )
+    post_response = _coalesce_bool(
+        config.get("post_response", base["post_response"]),  # type: ignore[arg-type]
+        bool(base["post_response"]),
+    )
+    logging_redaction = _coalesce_bool(
+        config.get("logging_redaction", base["logging_redaction"]),  # type: ignore[arg-type]
+        bool(base["logging_redaction"]),
+    )
+    name_detection = _coalesce_bool(
+        config.get("name_detection", base.get("name_detection", False)),  # type: ignore[arg-type]
+        bool(base.get("name_detection", False)),
+    )
+    # Prefer explicit override for secret even if empty string provided
+    hmac_secret = _coalesce_secret(
+        config.get("hmac_secret", base.get("hmac_secret")),  # type: ignore[arg-type]
+        base.get("hmac_secret"),
+    )
+
+    finalized = _finalize_config(
+        mode=mode,
+        policy=policy,
+        deterministic=deterministic,
+        post_response=post_response,
+        logging_redaction=logging_redaction,
+        hmac_secret=hmac_secret,
+        name_detection=name_detection,
+    )
+
+    # Preserve optional session scope if provided
+    if "session_scope" in config:
+        finalized["session_scope"] = config.get("session_scope")
+
+    _PII_CONFIG.set(MappingProxyType(finalized))
     current = _PII_CONFIG_VERSION.get()
     _PII_CONFIG_VERSION.set(current + 1)
 

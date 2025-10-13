@@ -194,6 +194,11 @@ SHARED_APPS = [
     "customers.apps.CustomersConfig",
 ]
 
+# In tests, include a tiny helper app that ensures pg_trgm
+# is available in the public schema for the Django test DB.
+if bool(os.environ.get("PYTEST_CURRENT_TEST")):
+    SHARED_APPS.append("testsupport")
+
 # Apps that are installed separately for each tenant schema
 # Order matters for template overrides: keep `theme` before `django.contrib.admin`.
 TENANT_APPS = [

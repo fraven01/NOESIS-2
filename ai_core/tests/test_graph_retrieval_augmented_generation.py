@@ -74,6 +74,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
             "text": "snippet",
             "score": 0.42,
             "source": "handbook.md",
+            "citation": "handbook.md",
         }
     ]
     snippets = result["snippets"]

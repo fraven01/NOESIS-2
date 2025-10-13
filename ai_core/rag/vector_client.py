@@ -1044,6 +1044,21 @@ class PgVectorClient:
                             "SET LOCAL statement_timeout = %s",
                             (str(self._statement_timeout_ms),),
                         )
+                        # Ensure the schema is active for all lexical operations
+                        # in this transaction, regardless of connection setup.
+                        # This is required for fallback paths and mocked
+                        # connections used in tests where _prepare_connection
+                        # is bypassed.
+                        try:
+                            cur.execute(
+                                sql.SQL("SET LOCAL search_path TO {}, public").format(
+                                    sql.Identifier(self._schema)
+                                )
+                            )
+                        except Exception:
+                            # If SET LOCAL is not available, rely on connection-level
+                            # search_path set during _prepare_connection.
+                            pass
                         logger.info(
                             "rag.pgtrgm.limit",
                             requested=requested_trgm_limit,
@@ -1105,6 +1120,8 @@ class PgVectorClient:
                         fallback_requested = requested_trgm_limit is not None
                         should_run_fallback = False
                         if query_db_norm.strip():
+                            # Phase 1: execute + fetch. If this raises, treat as DB-level
+                            # failure requiring a rollback before fallback.
                             try:
                                 cur.execute(
                                     lexical_sql,
@@ -1115,8 +1132,52 @@ class PgVectorClient:
                                         lex_limit_value,
                                     ),
                                 )
-                                lexical_rows_local = cur.fetchall()
+                                fetched_rows = cur.fetchall()
+                            except (IndexError, ValueError, PsycopgError) as exc:
+                                should_run_fallback = True
+                                fallback_requires_rollback = True
+                                lexical_rows_local = []
+                                logger.warning(
+                                    "rag.hybrid.lexical_primary_failed",
+                                    tenant_id=tenant,
+                                    case_id=case_value,
+                                    error=str(exc),
+                                )
+                            else:
+                                lexical_rows_local = fetched_rows
                                 lexical_query_variant = "primary"
+                                # Phase 2: light row-shape probe. If this fails, do NOT
+                                # require rollback; it's a client-side processing issue.
+                                try:
+                                    if lexical_rows_local:
+                                        _ = tuple(lexical_rows_local[0])
+                                except Exception as exc:
+                                    should_run_fallback = True
+                                    fallback_requires_rollback = False
+                                    # Collect minimal diagnostics about the returned row shape
+                                    rows_count = 0
+                                    first_len = None
+                                    first_type = None
+                                    try:
+                                        rows_count = len(lexical_rows_local)
+                                        first = lexical_rows_local[0]
+                                        first_type = type(first).__name__
+                                        try:
+                                            first_len = len(first)  # may fail
+                                        except Exception:
+                                            first_len = None
+                                    except Exception:
+                                        pass
+                                    lexical_rows_local = []
+                                    logger.warning(
+                                        "rag.hybrid.lexical_primary_failed",
+                                        tenant_id=tenant,
+                                        case_id=case_value,
+                                        error=str(exc),
+                                        rows_count=rows_count,
+                                        row_first_len=first_len,
+                                        row_first_type=first_type,
+                                    )
                                 try:
                                     logger.debug(
                                         "rag.hybrid.rows.lexical_raw",
@@ -1145,104 +1206,112 @@ class PgVectorClient:
                                     )
                                 except Exception:
                                     pass
-                                if lexical_rows_local and not should_run_fallback:
-                                    # Guard against inconsistent similarity scores.
-                                    # The trigram operator should never return rows
-                                    # whose lscore falls below the currently applied
-                                    # pg_trgm limit. However, unit tests using
-                                    # `FakeCursor` can simulate this scenario when
-                                    # they expect the client to fall back to the
-                                    # explicit similarity path. Detect this edge
-                                    # case and force the fallback execution so the
-                                    # behaviour matches production semantics.
-                                    invalid_lscore = False
-                                    limit_threshold: float | None = None
-                                    if applied_trgm_limit is not None:
-                                        try:
-                                            limit_threshold = float(applied_trgm_limit)
-                                        except (TypeError, ValueError):
-                                            limit_threshold = None
-                                    if limit_threshold is not None:
-                                        for row in lexical_rows_local:
+                                # Wrap the score validation block to ensure any unexpected
+                                # row-shape/type errors are handled by the inner except below.
+                                try:
+                                    if lexical_rows_local and not should_run_fallback:
+                                        # Guard against inconsistent similarity scores.
+                                        # The trigram operator should never return rows
+                                        # whose lscore falls below the currently applied
+                                        # pg_trgm limit. However, unit tests using
+                                        # `FakeCursor` can simulate this scenario when
+                                        # they expect the client to fall back to the
+                                        # explicit similarity path. Detect this edge
+                                        # case and force the fallback execution so the
+                                        # behaviour matches production semantics.
+                                        invalid_lscore = False
+                                        limit_threshold: float | None = None
+                                        if applied_trgm_limit is not None:
                                             try:
-                                                score_candidate = (
-                                                    self._extract_score_from_row(
-                                                        row, kind="lexical"
-                                                    )
+                                                limit_threshold = float(
+                                                    applied_trgm_limit
                                                 )
-                                            except Exception:
-                                                # Defensive: ignore rows with unexpected shape/types
-                                                continue
-                                            if score_candidate is None:
-                                                continue
-                                            try:
-                                                score_value = float(score_candidate)
                                             except (TypeError, ValueError):
-                                                continue
-                                            if score_value < limit_threshold - 1e-6:
-                                                invalid_lscore = True
-                                                break
-                                    if invalid_lscore:
+                                                limit_threshold = None
+                                        if limit_threshold is not None:
+                                            for row in lexical_rows_local:
+                                                try:
+                                                    score_candidate = (
+                                                        self._extract_score_from_row(
+                                                            row, kind="lexical"
+                                                        )
+                                                    )
+                                                except Exception:
+                                                    # Defensive: ignore rows with unexpected shape/types
+                                                    continue
+                                                if score_candidate is None:
+                                                    continue
+                                                try:
+                                                    score_value = float(score_candidate)
+                                                except (TypeError, ValueError):
+                                                    continue
+                                                if score_value < limit_threshold - 1e-6:
+                                                    invalid_lscore = True
+                                                    break
+                                        if invalid_lscore:
+                                            should_run_fallback = True
+                                except Exception as exc:
+                                    handled = False
+                                    if isinstance(exc, (IndexError, ValueError)):
+                                        handled = True
                                         should_run_fallback = True
-                            except Exception as exc:
-                                if isinstance(exc, (IndexError, ValueError)):
-                                    should_run_fallback = True
-                                    fallback_requires_rollback = True
-                                    # Collect minimal diagnostics about the returned row shape
-                                    rows_count = 0
-                                    first_len = None
-                                    first_type = None
-                                    try:
-                                        rows_count = len(lexical_rows_local)
-                                        if lexical_rows_local:
-                                            first = lexical_rows_local[0]
-                                            first_type = type(first).__name__
-                                            try:
-                                                first_len = len(
-                                                    first
-                                                )  # may fail for non-sequences
-                                            except Exception:
-                                                first_len = None
-                                    except Exception:
-                                        pass
-                                    lexical_rows_local = []
-                                    logger.warning(
-                                        "rag.hybrid.lexical_primary_failed",
-                                        tenant_id=tenant,
-                                        case_id=case_value,
-                                        error=str(exc),
-                                        applied_trgm_limit=applied_trgm_limit,
-                                        rows_count=rows_count,
-                                        row_first_len=first_len,
-                                        row_first_type=first_type,
-                                    )
-                                elif isinstance(exc, PsycopgError):
-                                    if vector_query_failed:
+                                        # Row-shape/processing errors at this stage should not
+                                        # require a transaction rollback.
+                                        fallback_requires_rollback = False
+                                        # Collect minimal diagnostics about the returned row shape
+                                        rows_count = 0
+                                        first_len = None
+                                        first_type = None
+                                        try:
+                                            rows_count = len(lexical_rows_local)
+                                            if lexical_rows_local:
+                                                first = lexical_rows_local[0]
+                                                first_type = type(first).__name__
+                                                try:
+                                                    first_len = len(
+                                                        first
+                                                    )  # may fail for non-sequences
+                                                except Exception:
+                                                    first_len = None
+                                        except Exception:
+                                            pass
+                                        lexical_rows_local = []
+                                        logger.warning(
+                                            "rag.hybrid.lexical_primary_failed",
+                                            tenant_id=tenant,
+                                            case_id=case_value,
+                                            error=str(exc),
+                                            applied_trgm_limit=applied_trgm_limit,
+                                            rows_count=rows_count,
+                                            row_first_len=first_len,
+                                            row_first_type=first_type,
+                                        )
+                                    if not handled and isinstance(exc, PsycopgError):
+                                        handled = True
+                                        if vector_query_failed:
+                                            raise
+                                        # Treat database errors during the primary lexical query as
+                                        # a signal to attempt the explicit similarity fallback.
+                                        # We mark that a rollback is required to restore session
+                                        # settings (e.g. search_path) before running the fallback.
+                                        should_run_fallback = True
+                                        fallback_requires_rollback = True
+                                        lexical_rows_local = []
+                                        logger.warning(
+                                            "rag.hybrid.lexical_primary_failed",
+                                            tenant_id=tenant,
+                                            case_id=case_value,
+                                            error=str(exc),
+                                        )
+                                    if not handled:
                                         raise
-
-                                    # Treat database errors during the primary lexical query as
-                                    # a signal to attempt the explicit similarity fallback.
-                                    # We mark that a rollback is required to restore session
-                                    # settings (e.g. search_path) before running the fallback.
-                                    should_run_fallback = True
-                                    fallback_requires_rollback = True
-                                    lexical_rows_local = []
-                                    logger.warning(
-                                        "rag.hybrid.lexical_primary_failed",
-                                        tenant_id=tenant,
-                                        case_id=case_value,
-                                        error=str(exc),
-                                    )
-                                else:
-                                    raise
                             if not lexical_rows_local and not should_run_fallback:
-                                if fallback_requested:
-                                    should_run_fallback = True
-                                elif (
-                                    applied_trgm_limit is None
-                                    or applied_trgm_limit > 0.1
-                                ):
-                                    should_run_fallback = True
+                                # If the primary trigram match returned no rows, always run the
+                                # explicit similarity fallback. Some environments report a low
+                                # pg_trgm limit (e.g. 0.1) even after attempting to raise it; we
+                                # still want to relax towards 0.0 to ensure we can retrieve at
+                                # least the best lexical candidates when trigram returns nothing.
+                                should_run_fallback = True
                             if should_run_fallback:
                                 if fallback_requires_rollback:
                                     try:

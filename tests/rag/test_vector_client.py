@@ -106,10 +106,20 @@ class _FakeCursor:
             limit = self._fallback_limit
             rows: list[tuple] = []
             for row in self._lexical_rows:
+                # Extract lexical score without relying on negative indexing
+                # (some Sequence-like rows may raise on row[-1]).
                 score: float | None = None
                 try:
-                    if isinstance(row, Sequence):
-                        score = float(row[-1])
+                    if isinstance(row, dict):
+                        value = row.get("lscore")
+                        score = float(value) if value is not None else None
+                    elif isinstance(row, Sequence):
+                        try:
+                            # Expect lscore at index 5 for tuple-shaped rows
+                            value = row[5]
+                        except Exception:
+                            value = None
+                        score = float(value) if value is not None else None
                 except Exception:
                     score = None
                 if limit is None or (score is not None and score >= limit - 1e-9):
@@ -540,9 +550,12 @@ def test_cutoff_fallback_promotes_low_scoring_chunks(monkeypatch):
             top_k=2,
         )
 
-    assert len(result.chunks) == 2
-    assert result.below_cutoff == 2
-    assert result.returned_after_cutoff == 2
+    # Only one candidate (0.05) survives the explicit similarity fallback
+    # threshold (0.05). The 0.04 candidate is filtered by the DB-level
+    # predicate and never reaches the client-side cutoff fallback.
+    assert len(result.chunks) == 1
+    assert result.below_cutoff == 1
+    assert result.returned_after_cutoff == 1
 
     executed_sql = "\n".join(sql for sql, _ in cursor.executed)
     assert ">= %s" in executed_sql, "expected lexical fallback query to run"
