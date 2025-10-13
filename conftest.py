@@ -3,6 +3,19 @@ from pathlib import Path
 
 import pytest
 
+
+_TENANT_BACKEND_AVAILABLE = True
+
+
+def _require_tenant_backend(fixture_name: str) -> None:
+    """Skip tenant-aware fixtures when the django-tenants backend is absent."""
+
+    if not _TENANT_BACKEND_AVAILABLE:
+        pytest.skip(
+            "django-tenants backend not configured; "
+            f"{fixture_name} fixture is unavailable"
+        )
+
 from ai_core.rag.embeddings import EmbeddingBatchResult
 
 
@@ -80,12 +93,17 @@ def ensure_tenant_engine():
     """Gate tenant-backed RAG fixtures on the expected Django engine."""
     from django.conf import settings
 
-    if settings.DATABASES["default"]["ENGINE"] != "django_tenants.postgresql_backend":
+    global _TENANT_BACKEND_AVAILABLE
+
+    if settings.DATABASES["default"].get("ENGINE") != "django_tenants.postgresql_backend":
         # Not all test environments provision the tenant backend (for example CI
-        # jobs that only exercise non-RAG components). Returning early keeps the
-        # RAG-specific fixtures idle while still allowing unrelated test modules
-        # to execute instead of marking the entire session as skipped.
+        # jobs that only exercise non-RAG components). Mark the backend as
+        # unavailable so tenant-aware fixtures can skip themselves while still
+        # allowing unrelated tests to execute.
+        _TENANT_BACKEND_AVAILABLE = False
         return
+
+    _TENANT_BACKEND_AVAILABLE = True
 
 
 @pytest.fixture(autouse=True)
@@ -155,6 +173,9 @@ def ensure_public_schema(django_db_setup, django_db_blocker):
     """Ensure the shared (public) schema migrations run before tenant setup."""
     from django.core.management import call_command
 
+    if not _TENANT_BACKEND_AVAILABLE:
+        return
+
     with django_db_blocker.unblock():
         call_command("migrate_schemas", shared=True, interactive=False, verbosity=0)
         try:
@@ -172,6 +193,8 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
     """
     from customers.models import Tenant, Domain
 
+    _require_tenant_backend("test_tenant_schema_name")
+
     with django_db_blocker.unblock():
         tenant, _ = Tenant.objects.get_or_create(
             schema_name="autotest", defaults={"name": "Autotest Tenant"}
@@ -186,14 +209,20 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
 
 
 @pytest.fixture(autouse=True)
-def use_test_tenant(request, test_tenant_schema_name):
+def use_test_tenant(request):
     """Run each test inside the test tenant schema by default."""
     from django_tenants.utils import schema_context
+
+    if not _TENANT_BACKEND_AVAILABLE:
+        yield
+        return
 
     try:
         from django_tenants.test.cases import TenantTestCase
     except Exception:
         TenantTestCase = None
+
+    test_tenant_schema_name = request.getfixturevalue("test_tenant_schema_name")
 
     cls = getattr(request.node, "cls", None)
     if TenantTestCase and cls and issubclass(cls, TenantTestCase):
@@ -293,6 +322,9 @@ def ensure_profiles_userprofile_isolation_testdata(request, django_db_blocker):
         and cls.__name__ == "TestUserProfileIsolation"
         and hasattr(cls, "setUpTestData")
     ):
+        if not _TENANT_BACKEND_AVAILABLE:
+            _require_tenant_backend("ensure_profiles_userprofile_isolation_testdata")
+
         if not getattr(cls, "__setUpTestData_done__", False):
             with django_db_blocker.unblock():
                 cls.setUpTestData()
