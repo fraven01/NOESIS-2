@@ -103,9 +103,9 @@ def reset_vector_schema(
 SCHEMA_SQL = render_vector_schema()
 
 
-def _extract_dbname(dsn: str) -> str | None:
+def _parse_dsn_components(dsn: str) -> dict[str, str]:
     if not dsn:
-        return None
+        return {}
     try:
         canonical = make_dsn(dsn=dsn)
     except Exception:
@@ -113,9 +113,77 @@ def _extract_dbname(dsn: str) -> str | None:
     try:
         parsed = parse_dsn(canonical)
     except Exception:
-        return None
+        return {}
+    return {key: str(value) for key, value in parsed.items() if value is not None}
+
+
+def _extract_dbname(dsn: str) -> str | None:
+    parsed = _parse_dsn_components(dsn)
     name = parsed.get("dbname") or parsed.get("database")
     return str(name) if name else None
+
+
+def _derive_admin_dsn(dsn: str, *, fallback_db: str = "postgres") -> str | None:
+    parsed = _parse_dsn_components(dsn)
+    if not parsed:
+        return None
+    parsed["dbname"] = fallback_db
+    parsed.pop("database", None)
+    try:
+        return make_dsn(**parsed)
+    except Exception:
+        return None
+
+
+def _ensure_pristine_test_database(dsn: str) -> None:
+    dbname = _extract_dbname(dsn)
+    if not dbname:
+        return
+    if not dbname.lower().endswith("_test"):
+        return
+
+    admin_dsn = _derive_admin_dsn(dsn)
+    if not admin_dsn:
+        pytest.fail(
+            f"Konnte keine Admin-Verbindung zum Zurücksetzen der Test-Datenbank '{dbname}' ableiten."
+        )
+
+    owner = _parse_dsn_components(dsn).get("user")
+
+    try:
+        admin_conn = psycopg2.connect(admin_dsn)
+    except Exception as exc:
+        pytest.fail(
+            f"Verbindung zur Admin-Datenbank fehlgeschlagen, Test-Datenbank '{dbname}' kann nicht zurückgesetzt werden: {exc}"
+        )
+
+    admin_conn.set_isolation_level(ISOLATION_LEVEL_AUTOCOMMIT)
+    try:
+        with admin_conn.cursor() as cur:
+            cur.execute(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                "WHERE datname = %s AND pid <> pg_backend_pid()",
+                (dbname,),
+            )
+            cur.execute(
+                sql.SQL("DROP DATABASE IF EXISTS {}").format(sql.Identifier(dbname))
+            )
+            if owner:
+                cur.execute(
+                    sql.SQL("CREATE DATABASE {} OWNER {}").format(
+                        sql.Identifier(dbname), sql.Identifier(owner)
+                    )
+                )
+            else:
+                cur.execute(
+                    sql.SQL("CREATE DATABASE {}").format(sql.Identifier(dbname))
+                )
+    except Exception as exc:
+        pytest.fail(
+            f"Zurücksetzen der Test-Datenbank '{dbname}' fehlgeschlagen: {exc}"
+        )
+    finally:
+        admin_conn.close()
 
 
 @pytest.fixture(autouse=True, scope="session")
@@ -171,6 +239,7 @@ def rag_test_dsn() -> Iterator[str]:
         "AI_CORE_TEST_DATABASE_URL",
         "postgresql://postgres:postgres@localhost:5432/postgres",
     )
+    _ensure_pristine_test_database(dsn)
     try:
         conn = psycopg2.connect(dsn)
     except OperationalError:
@@ -192,7 +261,25 @@ def rag_test_dsn() -> Iterator[str]:
                 pass
         except errors.UndefinedFile as exc:
             pytest.skip(f"pgvector extension not available: {exc}")
-        reset_vector_schema(cur, DEFAULT_SCHEMA_NAME)
+
+        # ``reset_vector_schema`` prefers environment-provided DSNs for DDL.
+        # Point the helpers at the dedicated test database so we do not drop
+        # and recreate schemas in the development database when tests run.
+        original_database_url = os.environ.get("DATABASE_URL")
+        original_rag_url = os.environ.get("RAG_DATABASE_URL")
+        try:
+            os.environ["DATABASE_URL"] = dsn
+            os.environ["RAG_DATABASE_URL"] = dsn
+            reset_vector_schema(cur, DEFAULT_SCHEMA_NAME)
+        finally:
+            if original_database_url is None:
+                os.environ.pop("DATABASE_URL", None)
+            else:
+                os.environ["DATABASE_URL"] = original_database_url
+            if original_rag_url is None:
+                os.environ.pop("RAG_DATABASE_URL", None)
+            else:
+                os.environ["RAG_DATABASE_URL"] = original_rag_url
     finally:
         cur.close()
         conn.close()
