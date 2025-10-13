@@ -1,7 +1,7 @@
-import os
-
 import pytest
 from celery import current_app
+from django.conf import settings
+from django.test import override_settings
 
 from ai_core.infra.pii_flags import (
     clear_pii_config,
@@ -27,33 +27,40 @@ def reset_pii_context():
     clear_tenant_pii_config_cache()
 
 
-@pytest.mark.skipif(
-    os.getenv("PII_MODE", "industrial") != "industrial",
-    reason="default config is only asserted in industrial mode",
-)
-def test_get_pii_config_defaults(settings):
+def test_get_pii_config_defaults():
     """Smoke test that the default PII configuration is wired correctly."""
 
-    assert settings.PII_MODE == "industrial"
-    assert settings.PII_POLICY == "balanced"
-    assert settings.PII_DETERMINISTIC is True
-    assert settings.PII_POST_RESPONSE is False
-    assert settings.PII_LOGGING_REDACTION is True
-    assert settings.PII_HMAC_SECRET == ""
-    assert settings.PII_NAME_DETECTION is False
+    with override_settings(
+        PII_MODE="industrial",
+        PII_POLICY="balanced",
+        PII_DETERMINISTIC=True,
+        PII_POST_RESPONSE=False,
+        PII_LOGGING_REDACTION=True,
+        PII_HMAC_SECRET="",
+        PII_NAME_DETECTION=False,
+    ):
+        clear_pii_config()
 
-    config = get_pii_config()
+        assert settings.PII_MODE == "industrial"
+        assert settings.PII_POLICY == "balanced"
+        assert settings.PII_DETERMINISTIC is True
+        assert settings.PII_POST_RESPONSE is False
+        assert settings.PII_LOGGING_REDACTION is True
+        assert settings.PII_HMAC_SECRET == ""
+        assert settings.PII_NAME_DETECTION is False
 
-    assert config == {
-        "mode": "industrial",
-        "policy": "balanced",
-        "deterministic": False,
-        "post_response": False,
-        "logging_redaction": True,
-        "hmac_secret": None,
-        "name_detection": False,
-        "session_scope": None,
-    }
+        config = get_pii_config()
+
+        assert config == {
+            "mode": "industrial",
+            "policy": "balanced",
+            "deterministic": False,
+            "post_response": False,
+            "logging_redaction": True,
+            "hmac_secret": None,
+            "name_detection": False,
+            "session_scope": None,
+        }
 
 
 def test_pii_config_version_increments_on_set_and_clear():
