@@ -1693,9 +1693,6 @@ class PgVectorClient:
         # fallback occurred with alpha=0.0 — that decision is deferred to the
         # dedicated cutoff fallback stage below which selects only the best
         # needed candidates up to top_k.
-        allow_trgm_fallback_below_cutoff = (
-            fallback_limit_used_value is not None and alpha_value <= 0.0
-        )
 
         for row in lexical_rows:
             score_candidate = self._extract_score_from_row(row, kind="lexical")
