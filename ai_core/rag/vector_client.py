@@ -188,6 +188,25 @@ def _get_setting(name: str, default: float | int | str) -> float | int | str:
         return default
 
 
+def _get_bool_setting(name: str, default: bool) -> bool:
+    env_value = os.getenv(name)
+    if env_value is not None:
+        lowered = env_value.strip().lower()
+        if lowered in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    try:  # pragma: no cover - requires Django settings
+        from django.conf import settings  # type: ignore
+
+        value = getattr(settings, name, default)
+        if isinstance(value, bool):
+            return value
+    except Exception:
+        return default
+    return default
+
+
 DocumentKey = Tuple[str, str]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
@@ -229,7 +248,12 @@ class UpsertResult(int):
 
 
 class PgVectorClient:
-    """pgvector-backed client for chunk storage and retrieval."""
+    """pgvector-backed client for chunk storage and retrieval.
+
+    Near-duplicate detection converts pgvector distances into a cosine-like
+    similarity in ``[0, 1]``. The ``RAG_NEAR_DUPLICATE_THRESHOLD`` setting is
+    therefore interpreted uniformly across cosine and L2 operators.
+    """
 
     _ROW_SHAPE_WARNINGS: ClassVar[set[Tuple[str, int]]] = set()
     _NEAR_DUPLICATE_OPERATOR_WARNINGS: ClassVar[set[str]] = set()
@@ -291,6 +315,9 @@ class PgVectorClient:
         self._near_duplicate_enabled = (
             near_strategy in {"skip", "replace"}
             and self._near_duplicate_threshold > 0.0
+        )
+        self._require_unit_norm_for_l2 = _get_bool_setting(
+            "RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", False
         )
         self._near_duplicate_operator_supported: bool | None = None
 
@@ -496,20 +523,6 @@ class PgVectorClient:
             },
         )
 
-    @staticmethod
-    def _distance_to_similarity(operator: str, distance: float) -> float | None:
-        """Map pgvector distance to a cosine-like similarity score."""
-
-        if operator == "<=>":
-            similarity = 1.0 - distance
-        elif operator == "<->":
-            # L2 distance lies in [0, 2] for unit-normalised vectors.
-            clamped = max(0.0, min(distance, 2.0))
-            similarity = 1.0 - ((clamped**2) / 2.0)
-        else:
-            return None
-        return max(0.0, min(1.0, similarity))
-
     def _get_distance_operator(self, conn, index_kind: str) -> str:
         key = index_kind.upper()
         cached = self._distance_operator_cache.get(key)
@@ -535,14 +548,23 @@ class PgVectorClient:
         if operator == "<=>":
             supported = True
         elif operator == "<->":
-            supported = True
-            logger.info(
-                "ingestion.doc.near_duplicate_l2_enabled",
-                extra={
-                    "index_kind": key,
-                    "requires_unit_normalised": True,
-                },
-            )
+            if self._require_unit_norm_for_l2:
+                supported = True
+                logger.info(
+                    "ingestion.doc.near_duplicate_l2_enabled",
+                    extra={
+                        "index_kind": key,
+                        "requires_unit_normalised": True,
+                    },
+                )
+            else:
+                logger.info(
+                    "ingestion.doc.near_duplicate_l2_disabled",
+                    extra={
+                        "index_kind": key,
+                        "requires_unit_normalised": False,
+                    },
+                )
         else:
             logger.info(
                 "ingestion.doc.near_duplicate_operator_unsupported",
@@ -2641,12 +2663,13 @@ class PgVectorClient:
 
     def _compute_document_embedding(
         self, doc: Mapping[str, object]
-    ) -> List[float] | None:
+    ) -> tuple[List[float], bool] | None:
         chunks = doc.get("chunks", [])
         if not isinstance(chunks, Sequence):
             return None
         vectors: List[List[float]] = []
         dimension: int | None = None
+        unit_normalised = True
         for chunk in chunks:
             embedding = getattr(chunk, "embedding", None)
             if embedding is None:
@@ -2661,6 +2684,11 @@ class PgVectorClient:
                 dimension = len(floats)
             if len(floats) != dimension:
                 continue
+            norm = math.sqrt(sum(value * value for value in floats))
+            if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
+                unit_normalised = False
+            elif not math.isclose(norm, 1.0, rel_tol=1e-5, abs_tol=1e-5):
+                unit_normalised = False
             vectors.append(floats)
         if not vectors or dimension is None:
             return None
@@ -2672,7 +2700,10 @@ class PgVectorClient:
         if count <= 0:
             return None
         averaged = [value / count for value in aggregated]
-        return _normalise_vector(averaged)
+        normalised = _normalise_vector(averaged)
+        if normalised is None:
+            return None
+        return normalised, unit_normalised
 
     def _find_near_duplicate(
         self,
@@ -2681,6 +2712,7 @@ class PgVectorClient:
         vector: Sequence[float],
         *,
         external_id: str,
+        embedding_is_unit_normalised: bool,
     ) -> Dict[str, object] | None:
         if not vector:
             return None
@@ -2735,31 +2767,66 @@ class PgVectorClient:
                 tenant_uuid=tenant_uuid,
             )
             return None
+        if (
+            operator == "<->"
+            and self._require_unit_norm_for_l2
+            and not embedding_is_unit_normalised
+        ):
+            self._near_duplicate_enabled = False
+            self._near_duplicate_operator_supported = False
+            self._near_duplicate_operator_support[index_kind.upper()] = False
+            logger.warning(
+                "ingestion.doc.near_duplicate_l2_unit_norm_missing",
+                extra={
+                    "tenant_id": str(tenant_uuid),
+                    "index_kind": index_kind,
+                    "operator": operator,
+                },
+            )
+            return None
         self._near_duplicate_operator_supported = True
+        if operator == "<=>":
+            sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
+            order_sql = sql.SQL("e.embedding <=> %s::vector ASC")
+        else:
+            sim_sql = sql.SQL(
+                "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
+            )
+            order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+
         query = sql.SQL(
             """
-            SELECT d.id, d.external_id, (e.embedding {op} %s::vector) AS distance
+            SELECT d.id, d.external_id, {sim} AS similarity
             FROM documents d
             JOIN chunks c ON c.document_id = d.id
             JOIN embeddings e ON e.chunk_id = c.id
             WHERE d.tenant_id = %s
               AND d.deleted_at IS NULL
               AND d.external_id <> %s
-            ORDER BY e.embedding {op} %s::vector ASC
+            ORDER BY {order}
             LIMIT %s
             """
-        ).format(op=sql.SQL(operator))
+        ).format(sim=sim_sql, order=order_sql)
         tenant_value = str(tenant_uuid)
-        cur.execute(
-            query,
-            (
+        params: Tuple[object, ...]
+        if operator == "<=>":
+            params = (
                 vector_str,
                 tenant_value,
                 external_id,
                 vector_str,
                 self._near_duplicate_probe_limit,
-            ),
-        )
+            )
+        else:
+            params = (
+                vector_str,
+                vector_str,
+                tenant_value,
+                external_id,
+                vector_str,
+                self._near_duplicate_probe_limit,
+            )
+        cur.execute(query, params)
         rows = cur.fetchall()
         best: Dict[str, object] | None = None
         best_similarity = self._near_duplicate_threshold
@@ -2768,23 +2835,16 @@ class PgVectorClient:
                 continue
             candidate_id = row[0]
             candidate_external_id = row[1]
-            distance_value = row[2]
+            similarity_value = row[2]
             if candidate_external_id == external_id:
                 continue
             try:
-                distance = float(distance_value)
+                similarity = float(similarity_value)
             except (TypeError, ValueError):
                 continue
-            if math.isnan(distance) or math.isinf(distance):
+            if math.isnan(similarity) or math.isinf(similarity):
                 continue
-            similarity = self._distance_to_similarity(operator, distance)
-            if similarity is None:
-                self._disable_near_duplicate_for_operator(
-                    index_kind=index_kind,
-                    operator=operator,
-                    tenant_uuid=tenant_uuid,
-                )
-                break
+            similarity = max(0.0, min(1.0, similarity))
             if similarity < self._near_duplicate_threshold:
                 continue
             try:
@@ -2831,11 +2891,13 @@ class PgVectorClient:
             if self._near_duplicate_enabled:
                 doc_embedding = self._compute_document_embedding(doc)
                 if doc_embedding is not None:
+                    embedding_vector, is_unit_normalised = doc_embedding
                     near_duplicate_details = self._find_near_duplicate(
                         cur,
                         tenant_uuid,
-                        doc_embedding,
+                        embedding_vector,
                         external_id=external_id,
+                        embedding_is_unit_normalised=is_unit_normalised,
                     )
             if near_duplicate_details is not None:
                 doc["near_duplicate_info"] = near_duplicate_details

@@ -1,4 +1,5 @@
 import hashlib
+import math
 import threading
 import uuid
 from collections.abc import Sequence
@@ -554,6 +555,48 @@ class TestPgVectorClient:
     def test_near_duplicate_skip_with_l2_operator(self, monkeypatch):
         monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
         monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+
+        tenant = str(uuid.uuid4())
+        dim = vector_client.get_embedding_dim()
+        value = 1.0 / math.sqrt(dim)
+        unit_vector = [value] * dim
+        base_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"baseline").hexdigest(),
+                "source": "unit",
+            },
+            embedding=unit_vector,
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        duplicate_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-duplicate",
+                "hash": hashlib.sha256(b"duplicate").hexdigest(),
+                "source": "unit",
+            },
+            embedding=unit_vector,
+        )
+        result = client.upsert_chunks([duplicate_chunk])
+        assert result == 0
+        payload = result.documents[0]
+        assert payload["action"] == "near_duplicate_skipped"
+        assert payload["near_duplicate_of"] == "doc-base"
+        assert payload["near_duplicate_similarity"] >= 0.99
+
+    def test_near_duplicate_l2_disabled_without_unit_norm(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
         vector_client.reset_default_client()
         client = vector_client.get_default_client()
         monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
@@ -582,11 +625,11 @@ class TestPgVectorClient:
             embedding=[0.3] * vector_client.get_embedding_dim(),
         )
         result = client.upsert_chunks([duplicate_chunk])
-        assert result == 0
+        assert result == 1
         payload = result.documents[0]
-        assert payload["action"] == "near_duplicate_skipped"
-        assert payload["near_duplicate_of"] == "doc-base"
-        assert payload["near_duplicate_similarity"] == 1.0
+        assert payload["action"] == "inserted"
+        assert "near_duplicate_of" not in payload
+        assert client._near_duplicate_enabled is False
 
     def test_near_duplicate_disabled_for_inner_product_operator(
         self, monkeypatch, caplog
