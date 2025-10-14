@@ -348,7 +348,7 @@ def _normalise_strength(value: float) -> float:
 
 
 def _tokenise(text: str | None) -> set[str]:
-    if not text:
+    if not isinstance(text, str) or not text:
         return set()
     tokens = {match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text)}
     return tokens
