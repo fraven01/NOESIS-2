@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Dict, Mapping, cast
@@ -35,6 +36,9 @@ class EmbeddingConfigErrorCode:
 
 
 _EMBEDDING_DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
+
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_PROFILE_CHUNK_LIMIT = 512
@@ -325,16 +329,47 @@ def get_vector_space(space_id: str) -> VectorSpaceConfig:
 def get_embedding_profile(profile_id: str) -> EmbeddingProfileConfig:
     """Return a configured embedding profile by identifier."""
 
-    config = get_embedding_configuration().embedding_profiles
+    configuration = get_embedding_configuration()
+    config = configuration.embedding_profiles
     try:
         return config[profile_id]
     except KeyError as exc:  # pragma: no cover - defensive guard
-        raise EmbeddingConfigurationError(
-            _format_error(
-                EmbeddingConfigErrorCode.UNKNOWN_PROFILE,
-                f"Unknown embedding profile '{profile_id}'",
+        default_profile_id = str(
+            getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "")
+        ).strip()
+        if default_profile_id and default_profile_id in config:
+            logger.warning(
+                "Unknown embedding profile '%s'. Falling back to default profile '%s'.",
+                profile_id,
+                default_profile_id,
             )
-        ) from exc
+            return config[default_profile_id]
+
+        fallback_profile = next(iter(config.values()), None)
+        if fallback_profile is None:  # pragma: no cover - configuration validated elsewhere
+            raise EmbeddingConfigurationError(
+                _format_error(
+                    EmbeddingConfigErrorCode.PROFILES_EMPTY,
+                    "No embedding profiles configured",
+                )
+            ) from exc
+        logger.warning(
+            (
+                "Unknown embedding profile '%s'. Default profile '%s' unavailable. "
+                "Falling back to '%s' with safe chunk limit %s."
+            ),
+            profile_id,
+            default_profile_id or "<unset>",
+            fallback_profile.id,
+            _DEFAULT_PROFILE_CHUNK_LIMIT,
+        )
+        return EmbeddingProfileConfig(
+            id=fallback_profile.id,
+            model=fallback_profile.model,
+            dimension=fallback_profile.dimension,
+            vector_space=fallback_profile.vector_space,
+            chunk_hard_limit=_DEFAULT_PROFILE_CHUNK_LIMIT,
+        )
 
 
 __all__ = [

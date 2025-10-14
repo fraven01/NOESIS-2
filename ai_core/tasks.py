@@ -25,6 +25,7 @@ from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
 from .rag.embedding_config import get_embedding_profile
+from .rag.parents import limit_parent_payload
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
 from .rag.ingestion_contracts import ChunkMeta, ensure_embedding_dimensions
@@ -391,6 +392,8 @@ def _resolve_overlap_tokens(
     if configured_value is not None:
         overlap = min(overlap, configured_value)
 
+    overlap = min(overlap, max(0, target_tokens - 1))
+
     return max(0, min(overlap, hard_limit))
 
 
@@ -637,7 +640,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             info["content"] = content_text
             parent_nodes[parent_id] = info
 
-    payload = {"chunks": chunks, "parents": parent_nodes}
+    limited_parents = limit_parent_payload(parent_nodes)
+    payload = {"chunks": chunks, "parents": limited_parents}
     out_path = _build_path(meta, "embeddings", "chunks.json")
     object_store.write_json(out_path, payload)
     return {"path": out_path}

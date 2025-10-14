@@ -551,6 +551,87 @@ class TestPgVectorClient:
         assert matches
         assert matches[0].meta["external_id"] == "doc-new"
 
+    def test_near_duplicate_skip_with_l2_operator(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+
+        tenant = str(uuid.uuid4())
+        base_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"baseline").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.3] * vector_client.get_embedding_dim(),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        duplicate_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-duplicate",
+                "hash": hashlib.sha256(b"duplicate").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.3] * vector_client.get_embedding_dim(),
+        )
+        result = client.upsert_chunks([duplicate_chunk])
+        assert result == 0
+        payload = result.documents[0]
+        assert payload["action"] == "near_duplicate_skipped"
+        assert payload["near_duplicate_of"] == "doc-base"
+        assert payload["near_duplicate_similarity"] == 1.0
+
+    def test_near_duplicate_disabled_for_inner_product_operator(
+        self, monkeypatch, caplog
+    ) -> None:
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<#>")
+
+        tenant = str(uuid.uuid4())
+        base_chunk = Chunk(
+            content="content",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"base").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.4] * vector_client.get_embedding_dim(),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        with caplog.at_level("WARNING"):
+            duplicate_chunk = Chunk(
+                content="content",
+                meta={
+                    "tenant_id": tenant,
+                    "external_id": "doc-duplicate",
+                    "hash": hashlib.sha256(b"dup").hexdigest(),
+                    "source": "unit",
+                },
+                embedding=[0.4] * vector_client.get_embedding_dim(),
+            )
+            result = client.upsert_chunks([duplicate_chunk])
+
+        assert result == 1
+        payload = result.documents[0]
+        assert payload["action"] == "inserted"
+        assert "near_duplicate" not in payload
+        assert client._near_duplicate_enabled is False
+        assert any(
+            record.message == "ingestion.doc.near_duplicate_operator_unsupported"
+            for record in caplog.records
+        )
+
     def test_search_caps_top_k(self):
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())

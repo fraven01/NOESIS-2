@@ -33,6 +33,7 @@ from common.logging import get_log_context, get_logger
 from ai_core.rag.vector_store import VectorStore
 from .embeddings import EmbeddingClientError, get_embedding_client
 from .normalization import normalise_text, normalise_text_db
+from .parents import limit_parent_payload
 
 from . import metrics
 from .filters import strict_match
@@ -231,6 +232,7 @@ class PgVectorClient:
     """pgvector-backed client for chunk storage and retrieval."""
 
     _ROW_SHAPE_WARNINGS: ClassVar[set[Tuple[str, int]]] = set()
+    _NEAR_DUPLICATE_OPERATOR_WARNINGS: ClassVar[set[str]] = set()
 
     def __init__(
         self,
@@ -290,6 +292,7 @@ class PgVectorClient:
             near_strategy in {"skip", "replace"}
             and self._near_duplicate_threshold > 0.0
         )
+        self._near_duplicate_operator_supported: bool | None = None
 
     @classmethod
     def from_env(
@@ -468,6 +471,44 @@ class PgVectorClient:
             if self._indexes_ready:
                 return
             self._indexes_ready = True
+
+    def _disable_near_duplicate_for_operator(
+        self,
+        *,
+        index_kind: str,
+        operator: str,
+        tenant_uuid: uuid.UUID,
+    ) -> None:
+        """Disable near-duplicate detection for unsupported operators."""
+
+        self._near_duplicate_enabled = False
+        self._near_duplicate_operator_supported = False
+        warning_key = f"{index_kind}:{operator}"
+        if warning_key in self._NEAR_DUPLICATE_OPERATOR_WARNINGS:
+            return
+        self._NEAR_DUPLICATE_OPERATOR_WARNINGS.add(warning_key)
+        logger.warning(
+            "ingestion.doc.near_duplicate_operator_unsupported",
+            extra={
+                "tenant_id": str(tenant_uuid),
+                "index_kind": index_kind,
+                "operator": operator,
+            },
+        )
+
+    @staticmethod
+    def _distance_to_similarity(operator: str, distance: float) -> float | None:
+        """Map pgvector distance to a cosine-like similarity score."""
+
+        if operator == "<=>":
+            similarity = 1.0 - distance
+        elif operator == "<->":
+            # L2 distance lies in [0, 2] for unit-normalised vectors.
+            clamped = max(0.0, min(distance, 2.0))
+            similarity = 1.0 - ((clamped**2) / 2.0)
+        else:
+            return None
+        return max(0.0, min(1.0, similarity))
 
     def _get_distance_operator(self, conn, index_kind: str) -> str:
         key = index_kind.upper()
@@ -2513,7 +2554,7 @@ class PgVectorClient:
                     elif node is not None:
                         subset[parent_id] = node
                 if subset:
-                    payload[str(row_id)] = subset
+                    payload[str(row_id)] = limit_parent_payload(subset)
             return payload
 
         try:
@@ -2589,7 +2630,8 @@ class PgVectorClient:
             parents_map = grouped[key].get("parents")
             chunk_parents = chunk.parents
             if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):
-                for parent_id, parent_meta in chunk_parents.items():
+                limited_chunk_parents = limit_parent_payload(chunk_parents)
+                for parent_id, parent_meta in limited_chunk_parents.items():
                     if parent_id not in parents_map:
                         parents_map[parent_id] = parent_meta
             grouped[key]["chunks"].append(
@@ -2653,6 +2695,8 @@ class PgVectorClient:
             )
             return None
         vector = normalised
+        if self._near_duplicate_operator_supported is False:
+            return None
         try:
             vector_str = self._format_vector(vector)
         except ValueError:
@@ -2684,9 +2728,17 @@ class PgVectorClient:
             )
             return None
 
+        if operator not in {"<=>", "<->"}:
+            self._disable_near_duplicate_for_operator(
+                index_kind=index_kind,
+                operator=operator,
+                tenant_uuid=tenant_uuid,
+            )
+            return None
+        self._near_duplicate_operator_supported = True
         query = sql.SQL(
             """
-            SELECT d.id, d.external_id, 1.0 - (e.embedding {op} %s::vector) AS similarity
+            SELECT d.id, d.external_id, (e.embedding {op} %s::vector) AS distance
             FROM documents d
             JOIN chunks c ON c.document_id = d.id
             JOIN embeddings e ON e.chunk_id = c.id
@@ -2716,15 +2768,23 @@ class PgVectorClient:
                 continue
             candidate_id = row[0]
             candidate_external_id = row[1]
-            similarity_value = row[2]
+            distance_value = row[2]
             if candidate_external_id == external_id:
                 continue
             try:
-                similarity = float(similarity_value)
+                distance = float(distance_value)
             except (TypeError, ValueError):
                 continue
-            if math.isnan(similarity) or math.isinf(similarity):
+            if math.isnan(distance) or math.isinf(distance):
                 continue
+            similarity = self._distance_to_similarity(operator, distance)
+            if similarity is None:
+                self._disable_near_duplicate_for_operator(
+                    index_kind=index_kind,
+                    operator=operator,
+                    tenant_uuid=tenant_uuid,
+                )
+                break
             if similarity < self._near_duplicate_threshold:
                 continue
             try:
@@ -2827,7 +2887,7 @@ class PgVectorClient:
 
             parents_map = doc.get("parents")
             if isinstance(parents_map, Mapping) and parents_map:
-                metadata_dict["parent_nodes"] = parents_map
+                metadata_dict["parent_nodes"] = limit_parent_payload(parents_map)
 
             metadata = Json(metadata_dict)
             document_id = doc["id"]
