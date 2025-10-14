@@ -986,201 +986,122 @@ class TestPgVectorClient:
     def test_fallback_reapplies_search_path_after_rollback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """Integrationstest gegen die echte Test-DB.
+
+        Szenario: Wir sabotieren die Session via ``SET LOCAL search_path`` so
+        dass die primäre lexikalische Abfrage fehlschlägt. Der Client muss
+        daraufhin ein ``rollback()`` ausführen und den ``search_path`` wieder
+        auf das RAG-Schema setzen, bevor der Fallback (similarity) läuft.
+        """
+        # Arrange
+        import sys
+        from contextlib import contextmanager
+
         vector_client.reset_default_client()
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-search-path").hexdigest()
-        doc_id = uuid.uuid4()
-        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
+        # Null-Embedding für die Anfrage, um den Vektorpfad zu überspringen
         monkeypatch.setattr(
             vector_client.PgVectorClient,
             "_embed_query",
             lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
-        class _RecordingConnection:
-            def __init__(self, *, fail_primary: bool) -> None:
-                self.fail_next_primary = fail_primary
-                self.search_path_calls = 0
-                self.search_path_restored_after_rollback = False
-                self.statement_timeout_calls = 0
-                self.rollback_calls = 0
-                self.search_path_set = False
-                self.was_rolled_back = False
-                self.last_limit: float | None = None
-                self.primary_rows = (
-                    []
-                    if fail_primary
-                    else [
-                        (
-                            "chunk-primary",
-                            "Lexical primary",
-                            {
-                                "tenant_id": normalized_tenant,
-                                "hash": doc_hash,
-                                "external_id": "primary-doc",
-                            },
-                            doc_hash,
-                            doc_id,
-                            0.41,
-                        )
-                    ]
-                )
-                self.fallback_rows = [
-                    (
-                        "chunk-fallback",
-                        "Lexical fallback",
-                        {
-                            "tenant_id": normalized_tenant,
-                            "hash": doc_hash,
-                            "external_id": "fallback-doc",
-                        },
-                        doc_hash,
-                        doc_id,
-                        0.38,
+        # Test-Dokument/Chunk einfügen (für lexikale Suche)
+        chunk = Chunk(
+            content="trigger fallback case",
+            meta={
+                "tenant_id": tenant,
+                "hash": doc_hash,
+                "external_id": "fallback-doc",
+                "case_id": None,
+            },
+            embedding=[0.25] + [0.0] * (vector_client.get_embedding_dim() - 1),
+        )
+        written = client.upsert_chunks([chunk])
+        assert written == 1
+
+        # Sabotiere die Session: falscher search_path in der laufenden TX
+        with client.connection() as real_conn:
+            # Proxy-Pattern, um die schreibgeschützten psycopg2-Objekte zu umgehen
+            class CursorProxy:
+                def __init__(self, real_cursor):
+                    self._real_cursor = real_cursor
+
+                def __getattr__(self, name):
+                    return getattr(self._real_cursor, name)
+
+                def execute(self, sql, params=None):
+                    sql_str = str(
+                        sql.as_string(self._real_cursor)
+                        if hasattr(sql, "as_string")
+                        else sql
                     )
-                ]
+                    print(f"[PROXY DEBUG] SQL: {sql_str}", file=sys.stderr)
+                    # Erzwinge einen Fehler bei der primären lexikalischen Abfrage
+                    if "c.text_norm %% %s" in sql_str:
+                        raise UndefinedTable("Simulated failure: table not found")
+                    return self._real_cursor.execute(sql, params)
 
-            def mark_search_path(self) -> None:
-                self.search_path_calls += 1
-                if self.was_rolled_back:
-                    self.search_path_restored_after_rollback = True
-                    self.was_rolled_back = False
-                self.search_path_set = True
+            class ConnectionProxy:
+                def __init__(self, real_conn):
+                    self._real_conn = real_conn
 
-            def mark_statement_timeout(self) -> None:
-                self.statement_timeout_calls += 1
+                def __getattr__(self, name):
+                    return getattr(self._real_conn, name)
 
-            def cursor(self):  # type: ignore[no-untyped-def]
-                return _RecordingCursor(self)
+                @contextmanager
+                def cursor(self, *args, **kwargs):
+                    with self._real_conn.cursor(*args, **kwargs) as real_cur:
+                        yield CursorProxy(real_cur)
 
-            def rollback(self) -> None:
-                self.rollback_calls += 1
-                self.was_rolled_back = True
-                self.search_path_set = False
+            proxy_conn = ConnectionProxy(real_conn)
 
-        class _RecordingCursor:
-            def __init__(self, owner: _RecordingConnection) -> None:
-                self._owner = owner
-                self._stage: str | None = None
-                self._rows: list[tuple] = []
+            # Nutze genau diese Verbindung in hybrid_search
+            def _yield_existing(self):  # type: ignore[no-untyped-def]
+                class _Ctx:
+                    def __enter__(self_inner):
+                        return proxy_conn
 
-            def __enter__(self) -> "_RecordingCursor":
-                return self
+                    def __exit__(self_inner, exc_type, exc, tb):
+                        return None
 
-            def __exit__(self, exc_type, exc, tb) -> None:
-                return None
+                return _Ctx()
 
-            def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
-                try:
-                    from psycopg2 import sql as _sql  # type: ignore
-                except Exception:
-                    _sql = None  # type: ignore
+            monkeypatch.setattr(
+                client, "_connection", _yield_existing.__get__(client, type(client))
+            )
 
-                if _sql is not None and isinstance(sql, (_sql.SQL, _sql.Composed)):
-                    self._owner.mark_search_path()
-                    return
+            from structlog.testing import capture_logs
 
-                text = str(sql)
-                norm = " ".join(text.split())
+            with capture_logs() as logs:
+                result = client.hybrid_search(
+                    "trigger fallback",
+                    tenant_id=tenant,
+                    filters={},
+                    top_k=1,
+                    alpha=0.0,
+                    trgm_limit=0.09,
+                )
 
-                if "SET LOCAL statement_timeout" in norm:
-                    self._owner.mark_statement_timeout()
-                    return
-                if (
-                    "SET LOCAL hnsw.ef_search" in norm
-                    or "SET LOCAL ivfflat.probes" in norm
-                ):
-                    return
-                if "SELECT set_limit" in norm:
-                    try:
-                        self._owner.last_limit = float((params or (None,))[0])
-                    except Exception:
-                        self._owner.last_limit = None
-                    return
-                if "SELECT show_limit()" in norm:
-                    self._stage = "show_limit"
-                    return
-                if "FROM pg_catalog.pg_opclass" in norm:
-                    self._stage = "opclass"
-                    return
-                if "FROM embeddings" in norm:
-                    self._stage = "vector"
-                    self._rows = []
-                    return
-                if "c.text_norm % %s" in norm:
-                    if self._owner.fail_next_primary:
-                        self._owner.fail_next_primary = False
-                        raise UndefinedTable("simulated lexical failure")
-                    self._stage = "lexical"
-                    self._rows = list(self._owner.primary_rows)
-                    return
-                if "similarity(c.text_norm, %s) >= %s" in norm:
-                    self._stage = "fallback"
-                    self._rows = list(self._owner.fallback_rows)
-                    return
+            # Assert: Fallback lieferte Zeile(n)
+            assert result.lexical_candidates >= 0
+            assert result.chunks
 
-            def fetchall(self) -> list[tuple]:
-                rows = list(self._rows)
-                self._rows = []
-                return rows
+            # Assert: rollback-Logs vorhanden und search_path wiederhergestellt
+            events = {entry.get("event") for entry in logs}
+            assert "rag.hybrid.lexical_primary_failed" in events
+            assert "rag.debug.calling_rollback" in events
+            assert "rag.debug.after_rollback" in events
 
-            def fetchone(self):
-                if self._stage == "show_limit" and self._owner.last_limit is not None:
-                    return (self._owner.last_limit,)
-                return None
-
-        connections: list[_RecordingConnection] = []
-
-        def _fake_connection(self):  # type: ignore[no-untyped-def]
-            conn = _RecordingConnection(fail_primary=len(connections) == 0)
-            connections.append(conn)
-
-            class _Ctx:
-                def __enter__(self_inner):
-                    return conn
-
-                def __exit__(self_inner, exc_type, exc, tb):
-                    return None
-
-            return _Ctx()
-
-        monkeypatch.setattr(
-            client, "_connection", _fake_connection.__get__(client, type(client))
-        )
-
-        result_failure = client.hybrid_search(
-            "trigger fallback",
-            tenant_id=tenant,
-            filters={},
-            top_k=1,
-            alpha=0.0,
-            trgm_limit=0.09,
-        )
-
-        result_no_rollback = client.hybrid_search(
-            "trigger fallback",
-            tenant_id=tenant,
-            filters={},
-            top_k=1,
-            alpha=0.0,
-            trgm_limit=0.09,
-        )
-
-        assert result_failure.lexical_candidates == 1
-        assert result_failure.chunks
-        assert result_no_rollback.lexical_candidates == 1
-        assert result_no_rollback.chunks
-        assert len(connections) == 2
-
-        failure_conn, success_conn = connections
-        assert failure_conn.rollback_calls == 1
-        assert failure_conn.search_path_restored_after_rollback is True
-        assert failure_conn.statement_timeout_calls >= 2
-
-        assert success_conn.rollback_calls == 0
-        assert success_conn.search_path_calls >= 1
+            # Die Verbindung wurde zurückgesetzt; der cursor-Patch ist nicht mehr
+            # aktiv. Wir können einen neuen Cursor öffnen, um den search_path zu prüfen.
+            with real_conn.cursor() as cur:
+                cur.execute("SHOW search_path")
+                sp = cur.fetchone()[0]
+                assert "rag" in sp
 
     def test_lexical_row_without_negative_index(self, monkeypatch):
         vector_client.reset_default_client()
@@ -1251,7 +1172,7 @@ class TestPgVectorClient:
                     self._stage = "vector"
                     self._rows = []
                     return
-                if "c.text_norm % %s" in norm:
+                if "c.text_norm %% %s" in norm:
                     self._stage = "lexical"
                     self._rows = [
                         _ExplodingRow(

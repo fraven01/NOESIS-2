@@ -120,8 +120,10 @@ Hinweise:
 
 ### Tests im Docker-Container
 
-- `npm run dev:test` führt die Python-Tests im `web`-Container aus und setzt `AI_CORE_TEST_DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2_test`. Die Tests laufen damit gegen eine isolierte Test-Datenbank, sodass Mandanten-Daten, Embeddings und Artefakte aus der normalen Entwicklung (`noesis2`) unangetastet bleiben. Die Dev-Dependencies werden on-the-fly installiert und `pytest -q -rs` ausgeführt (Kurz-Ausgabe inkl. Skip-Gründen).
-- Windows-Variante: `npm run win:dev:test` (identische Trennung, aber mit PowerShell-kompatibler Shell-Kette).
+- `npm run dev:test` führt die Python-Tests im `web`-Container aus und setzt `AI_CORE_TEST_DATABASE_URL=postgresql://noesis2:noesis2@db:5432/noesis2_test`. Die Tests laufen damit gegen eine isolierte Test-Datenbank, sodass Mandanten-Daten, Embeddings und Artefakte aus der normalen Entwicklung (`noesis2`) unangetastet bleiben. Abhängigkeiten werden installiert und `pytest -q -rs` ausgeführt. Zur Beschleunigung wird ein persistenter Pip-Cache als Named Volume (`pip-cache`) gemountet, sodass Wheels/Downloads nicht jedes Mal neu geladen werden.
+- Optionaler Clean-Run (Linux): `npm run dev:test:clean` führt die gleichen Schritte aus und leert danach explizit den Pip-Cache (`pip cache purge`). Nur verwenden, wenn du den Cache bewusst zurücksetzen willst.
+- Windows-Variante: `npm run win:dev:test` (identische Trennung, PowerShell-kompatible Shell). Zusätzlich wird `python -m pip install --upgrade pip` ausgeführt, bevor die Requirements installiert werden.
+- Optionaler Clean-Run: `npm run win:dev:test:clean` führt die gleichen Schritte aus und leert danach explizit den Pip-Cache (`pip cache purge`). Verwende diesen nur, wenn du den Cache bewusst zurücksetzen möchtest, da sonst der Geschwindigkeitsvorteil entfällt.
 - Hintergrund: Der Docker-Stack initialisiert neben `noesis2` und `litellm` automatisch auch `noesis2_test`. Damit stehen produktionsnahe Daten und Testläufe nebeneinander, ohne dass `pytest` Tenant-Schemata oder Embedding-Tabellen der laufenden Entwicklung verändert.
 
 - Vor jedem Testlauf setzt der `rag_db`-Fixture die Test-Datenbank vollständig zurück (DROP/CREATE), sodass alle Tests deterministisch vom gleichen Ausgangszustand starten und Altlasten früherer Läufe ausgeschlossen sind.

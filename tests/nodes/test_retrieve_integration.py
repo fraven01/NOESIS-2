@@ -237,7 +237,11 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
 
     matches = result.matches
     assert len(matches) == 3
-    assert {match["id"] for match in matches} == {"doc-1", "doc-2", "doc-3"}
+    # Dechunking now returns top chunks, allowing multiple per document.
+    ids = [match["id"] for match in matches]
+    assert ids == ["doc-1", "doc-3", "doc-1"]
+    assert ids.count("doc-1") == 2
+    assert "doc-2" not in ids
     assert matches[0]["id"] == "doc-1"
     assert matches[0]["score"] == pytest.approx(0.9)
     assert matches[0]["score"] >= matches[-1]["score"]

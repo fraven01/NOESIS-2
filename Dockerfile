@@ -93,7 +93,8 @@ WORKDIR /app
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
     apt-get update \
-    && apt-get install -y --no-install-recommends procps \
+    && apt-get install -y --no-install-recommends procps ca-certificates openssl curl \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user

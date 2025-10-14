@@ -259,3 +259,5 @@ volumes:
     driver: local
   staticfiles:
     driver: local
+  pip-cache:
+    driver: local
