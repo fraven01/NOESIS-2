@@ -67,6 +67,42 @@ def test_getters_return_single_entries(settings) -> None:
     assert profile.chunk_hard_limit == 512
 
 
+def test_get_embedding_profile_falls_back_to_default(settings, caplog) -> None:
+    settings.RAG_VECTOR_STORES = {"global": _base_vector_space()}
+    settings.RAG_EMBEDDING_PROFILES = {
+        "standard": _base_profile(),
+        "extended": {
+            "model": "oai-embed-xl",
+            "dimension": 1536,
+            "vector_space": "global",
+            "chunk_hard_limit": 1024,
+        },
+    }
+    settings.RAG_DEFAULT_EMBEDDING_PROFILE = "standard"
+
+    with caplog.at_level("WARNING"):
+        profile = get_embedding_profile("unknown")
+
+    assert profile.id == "standard"
+    assert profile.chunk_hard_limit == 512
+    assert "Falling back to default profile" in caplog.text
+
+
+def test_get_embedding_profile_uses_safe_limit_when_default_missing(
+    settings, caplog
+) -> None:
+    settings.RAG_VECTOR_STORES = {"global": _base_vector_space()}
+    settings.RAG_EMBEDDING_PROFILES = {"standard": _base_profile()}
+    settings.RAG_DEFAULT_EMBEDDING_PROFILE = "missing"
+
+    with caplog.at_level("WARNING"):
+        profile = get_embedding_profile("unknown")
+
+    assert profile.id == "standard"
+    assert profile.chunk_hard_limit == 512
+    assert "Default profile 'missing' unavailable" in caplog.text
+
+
 def test_validate_configuration_raises_on_dimension_mismatch(settings) -> None:
     settings.RAG_VECTOR_STORES = {"global": _base_vector_space()}
     mismatched = _base_profile()
