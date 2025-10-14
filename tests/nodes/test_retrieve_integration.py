@@ -63,6 +63,54 @@ class _FakeRouter:
         return self._parents
 
 
+class _TenantScopedClient:
+    def __init__(self, response):
+        self._response = response
+        self.hybrid_calls: list[tuple[str, dict[str, object]]] = []
+
+    def hybrid_search(self, query, **kwargs):
+        self.hybrid_calls.append((query, kwargs))
+        return self._response
+
+
+class _TenantOnlyRouter:
+    def __init__(self, response):
+        self._response = response
+        self.for_tenant_calls: list[str] = []
+        self.clients: list[_TenantScopedClient] = []
+
+    def for_tenant(self, tenant_id):
+        self.for_tenant_calls.append(tenant_id)
+        client = _TenantScopedClient(self._response)
+        self.clients.append(client)
+        return client
+
+
+class _UnscopedRouter:
+    def __init__(self, response):
+        self._response = response
+        self.hybrid_calls: list[tuple[str, dict[str, object]]] = []
+
+    def hybrid_search(self, query, **kwargs):
+        self.hybrid_calls.append((query, kwargs))
+        return self._response
+
+
+class _BadSignatureRouter:
+    def __init__(self, response):
+        self._response = response
+        self.hybrid_calls: list[tuple[str, dict[str, object]]] = []
+        self.for_tenant_calls: list[tuple[str, str | None, str | None]] = []
+
+    def for_tenant(self, tenant_id, tenant_schema, scope):  # pragma: no cover - guard
+        self.for_tenant_calls.append((tenant_id, tenant_schema, scope))
+        raise AssertionError("for_tenant should not be invoked for incompatible signature")
+
+    def hybrid_search(self, query, **kwargs):
+        self.hybrid_calls.append((query, kwargs))
+        return self._response
+
+
 class _VisibilityStore:
     def __init__(self, active_chunk: Chunk, deleted_chunk: Chunk) -> None:
         self.name = "global"
@@ -440,3 +488,106 @@ def test_retrieve_visibility_override_denied_without_guard(
     meta = result.meta
     assert meta.visibility_effective == "active"
     assert meta.deleted_matches_blocked == 1
+
+
+def _basic_params() -> retrieve.RetrieveInput:
+    return retrieve.RetrieveInput.from_state(
+        {"query": "docs", "hybrid": {"top_k": 1, "alpha": 0.5, "min_sim": 0.2}}
+    )
+
+
+def test_retrieve_scoped_router_without_schema(monkeypatch, caplog):
+    _patch_routing(monkeypatch)
+
+    response = _HybridSearchResult(
+        [
+            Chunk(
+                "Scoped",
+                {
+                    "id": "doc-1",
+                    "score": 0.8,
+                    "source": "vector",
+                    "tenant_id": "tenant-123",
+                    "case_id": "case-1",
+                },
+            )
+        ],
+        vector_candidates=1,
+        lexical_candidates=0,
+        alpha=0.5,
+        min_sim=0.2,
+    )
+    router = _TenantOnlyRouter(response)
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    context = ToolContext(tenant_id="tenant-123", case_id="case-1")
+    with caplog.at_level("WARNING"):
+        result = retrieve.run(context, _basic_params())
+
+    assert [match["id"] for match in result.matches] == ["doc-1"]
+    assert router.for_tenant_calls == ["tenant-123"]
+    assert not caplog.records
+
+
+def test_retrieve_warns_without_for_tenant(monkeypatch, caplog):
+    _patch_routing(monkeypatch)
+
+    response = _HybridSearchResult(
+        [
+            Chunk(
+                "Unscoped",
+                {
+                    "id": "doc-2",
+                    "score": 0.7,
+                    "source": "vector",
+                    "tenant_id": "tenant-456",
+                    "case_id": "case-9",
+                },
+            )
+        ],
+        vector_candidates=1,
+        lexical_candidates=0,
+        alpha=0.5,
+        min_sim=0.2,
+    )
+    router = _UnscopedRouter(response)
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    context = ToolContext(tenant_id="tenant-456", case_id="case-9")
+    with caplog.at_level("WARNING"):
+        result = retrieve.run(context, _basic_params())
+
+    assert [match["id"] for match in result.matches] == ["doc-2"]
+    assert "rag.retrieve.router_incompatible" in caplog.text
+
+
+def test_retrieve_warns_on_incompatible_for_tenant(monkeypatch, caplog):
+    _patch_routing(monkeypatch)
+
+    response = _HybridSearchResult(
+        [
+            Chunk(
+                "Fallback",
+                {
+                    "id": "doc-3",
+                    "score": 0.6,
+                    "source": "vector",
+                    "tenant_id": "tenant-789",
+                    "case_id": "case-2",
+                },
+            )
+        ],
+        vector_candidates=1,
+        lexical_candidates=0,
+        alpha=0.5,
+        min_sim=0.2,
+    )
+    router = _BadSignatureRouter(response)
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    context = ToolContext(tenant_id="tenant-789", case_id="case-2")
+    with caplog.at_level("WARNING"):
+        result = retrieve.run(context, _basic_params())
+
+    assert [match["id"] for match in result.matches] == ["doc-3"]
+    assert "rag.retrieve.router_incompatible" in caplog.text

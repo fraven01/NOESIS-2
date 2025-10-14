@@ -3,7 +3,9 @@ from __future__ import annotations
 import math
 import re
 import time
-from typing import Any, Dict, Iterable, Mapping
+from dataclasses import dataclass
+from inspect import Signature, signature
+from typing import Any, Callable, Dict, Iterable, Mapping
 
 from common.logging import get_logger
 
@@ -108,6 +110,14 @@ logger = get_logger(__name__)
 
 
 _ROUTER: VectorStoreRouter | None = None
+_ROUTER_ADAPTORS: Dict[int, "_RouterAdaptor"] = {}
+
+
+@dataclass(frozen=True)
+class _RouterAdaptor:
+    factory: Callable[[str, str | None], Any]
+    is_scoped: bool
+    requires_warning: bool
 
 
 def _get_router() -> VectorStoreRouter:
@@ -120,6 +130,60 @@ def _get_router() -> VectorStoreRouter:
 def _reset_router_for_tests() -> None:
     global _ROUTER
     _ROUTER = None
+    _ROUTER_ADAPTORS.clear()
+
+
+def _build_router_adaptor(router: VectorStoreRouter) -> _RouterAdaptor:
+    for_tenant = getattr(router, "for_tenant", None)
+    if not callable(for_tenant):
+        return _RouterAdaptor(
+            factory=lambda tenant_id, tenant_schema: router,
+            is_scoped=False,
+            requires_warning=True,
+        )
+
+    try:
+        sig: Signature = signature(for_tenant)
+    except (TypeError, ValueError):
+        return _RouterAdaptor(
+            factory=lambda tenant_id, tenant_schema: router,
+            is_scoped=False,
+            requires_warning=True,
+        )
+
+    try:
+        sig.bind("tenant", "schema")
+    except TypeError:
+        pass
+    else:
+        return _RouterAdaptor(
+            factory=lambda tenant_id, tenant_schema: for_tenant(tenant_id, tenant_schema),
+            is_scoped=True,
+            requires_warning=False,
+        )
+
+    try:
+        sig.bind("tenant")
+    except TypeError:
+        return _RouterAdaptor(
+            factory=lambda tenant_id, tenant_schema: router,
+            is_scoped=False,
+            requires_warning=True,
+        )
+
+    return _RouterAdaptor(
+        factory=lambda tenant_id, tenant_schema: for_tenant(tenant_id),
+        is_scoped=True,
+        requires_warning=False,
+    )
+
+
+def _get_router_adaptor(router: VectorStoreRouter) -> _RouterAdaptor:
+    adaptor = _ROUTER_ADAPTORS.get(id(router))
+    if adaptor is None:
+        adaptor = _build_router_adaptor(router)
+        _ROUTER_ADAPTORS[id(router)] = adaptor
+    return adaptor
 
 
 def _ensure_mapping(value: object, *, field: str) -> Mapping[str, Any] | None:
@@ -515,17 +579,18 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     visibility_override_allowed = coerce_bool_flag(override_flag)
 
     router = _get_router()
-    tenant_client: Any = router
-    scoped_client = False
-    for_tenant = getattr(router, "for_tenant", None)
-    if callable(for_tenant):
-        scoped_client = True
-        try:
-            tenant_client = for_tenant(tenant_id, tenant_schema)
-        except TypeError:
-            tenant_client = for_tenant(tenant_id)
-        if tenant_client is router:
-            scoped_client = False
+    adaptor = _get_router_adaptor(router)
+    if adaptor.requires_warning:
+        logger.warning(
+            "rag.retrieve.router_incompatible",
+            extra={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "router": type(router).__name__,
+            },
+        )
+    tenant_client = adaptor.factory(tenant_id, tenant_schema)
+    scoped_client = adaptor.is_scoped and tenant_client is not router
 
     logger.debug(
         "Executing hybrid retrieval",
