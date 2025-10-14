@@ -1088,7 +1088,10 @@ class TestPgVectorClient:
                 if "SET LOCAL statement_timeout" in norm:
                     self._owner.mark_statement_timeout()
                     return
-                if "SET LOCAL hnsw.ef_search" in norm or "SET LOCAL ivfflat.probes" in norm:
+                if (
+                    "SET LOCAL hnsw.ef_search" in norm
+                    or "SET LOCAL ivfflat.probes" in norm
+                ):
                     return
                 if "SELECT set_limit" in norm:
                     try:
