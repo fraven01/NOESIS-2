@@ -392,6 +392,8 @@ def _resolve_overlap_tokens(
     if configured_value is not None:
         overlap = min(overlap, configured_value)
 
+    overlap = min(overlap, max(0, target_tokens - 1))
+
     return max(0, min(overlap, hard_limit))
 
 
