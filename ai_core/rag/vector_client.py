@@ -2566,6 +2566,7 @@ class PgVectorClient:
                     metadata = EXCLUDED.metadata,
                     deleted_at = NULL
                 WHERE documents.hash IS DISTINCT FROM EXCLUDED.hash
+                    OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
                 RETURNING id, hash
                 """,
                 (
