@@ -492,7 +492,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             profile_limit = get_embedding_profile(profile_key).chunk_hard_limit
             meta["embedding_profile"] = profile_key
     fallback_limit = 512
-    hard_limit = max(target_tokens, profile_limit or fallback_limit)
+    if profile_limit is not None:
+        hard_limit = profile_limit
+        target_tokens = min(target_tokens, hard_limit)
+    else:
+        hard_limit = max(target_tokens, fallback_limit)
     overlap_tokens = _resolve_overlap_tokens(
         text,
         meta,
