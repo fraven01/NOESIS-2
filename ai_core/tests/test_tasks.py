@@ -92,6 +92,115 @@ def test_chunkify_enforces_hard_limit_and_long_sentences() -> None:
     assert chunks[1:] == expected_long_chunks
 
 
+def test_resolve_overlap_respects_zero_configuration(monkeypatch) -> None:
+    meta = {"tenant_id": "tenant", "case_id": "case"}
+    text = "Dies ist ein narrativer Text, der normalerweise eine Überlappung hätte."
+    target_tokens = 200
+    hard_limit = 256
+
+    monkeypatch.setattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 0, raising=False)
+
+    with tasks.force_whitespace_tokenizer():
+        overlap = tasks._resolve_overlap_tokens(
+            text,
+            meta,
+            target_tokens=target_tokens,
+            hard_limit=hard_limit,
+        )
+
+    assert overlap == 0
+
+
+def test_chunk_dynamic_overlap_varies_by_document_style(monkeypatch) -> None:
+    narrative_meta = {
+        "tenant_id": "tenant-dynamic",
+        "case_id": "case-dynamic",
+        "external_id": "story-1",
+        "doc_class": "narrative",
+    }
+    faq_meta = {**narrative_meta, "external_id": "faq-1", "doc_class": "faq"}
+
+    narrative_text = (
+        "Ich ging gestern durch den Park und erinnerte mich daran, "
+        "wie wir gemeinsam die langen Wege entlang spaziert sind. "
+        "Wir sprachen darüber, was uns bewegt und wohin wir als nächstes gehen."
+    )
+    faq_text = (
+        "Frage: Wie bestelle ich?\nAntwort: Wählen Sie einen Artikel aus.\n"
+        "- Schritt 1: Produkt wählen\n- Schritt 2: In den Warenkorb legen\n"
+        "- Schritt 3: Bestellung abschließen"
+    )
+
+    narrative_path = tasks._build_path(narrative_meta, "text", "story.txt")
+    faq_path = tasks._build_path(faq_meta, "text", "faq.txt")
+    object_store.put_bytes(narrative_path, narrative_text.encode("utf-8"))
+    object_store.put_bytes(faq_path, faq_text.encode("utf-8"))
+
+    original_chunkify = tasks._chunkify
+
+    def _capture(overlaps: list[int]):
+        def _wrapper(
+            sentences,
+            *,
+            target_tokens,
+            overlap_tokens,
+            hard_limit,
+        ):
+            overlaps.append(overlap_tokens)
+            return original_chunkify(
+                sentences,
+                target_tokens=target_tokens,
+                overlap_tokens=overlap_tokens,
+                hard_limit=hard_limit,
+            )
+
+        return _wrapper
+
+    narrative_overlaps: list[int] = []
+    faq_overlaps: list[int] = []
+
+    with tasks.force_whitespace_tokenizer():
+        monkeypatch.setattr(tasks, "_chunkify", _capture(narrative_overlaps))
+        tasks.chunk(narrative_meta, narrative_path)
+
+        monkeypatch.setattr(tasks, "_chunkify", _capture(faq_overlaps))
+        tasks.chunk(faq_meta, faq_path)
+
+        monkeypatch.setattr(tasks, "_chunkify", original_chunkify)
+
+    assert narrative_overlaps, "expected overlap capture for narrative document"
+    assert faq_overlaps, "expected overlap capture for FAQ document"
+
+    target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
+    hard_limit = max(target_tokens, 512)
+    narrative_expected = tasks._resolve_overlap_tokens(
+        narrative_text,
+        narrative_meta,
+        target_tokens=target_tokens,
+        hard_limit=hard_limit,
+    )
+    faq_expected = tasks._resolve_overlap_tokens(
+        faq_text,
+        faq_meta,
+        target_tokens=target_tokens,
+        hard_limit=hard_limit,
+    )
+
+    assert max(narrative_overlaps) == narrative_expected
+    assert max(faq_overlaps) == faq_expected
+    assert narrative_expected > faq_expected
+
+    for overlap in (narrative_expected, faq_expected):
+        ratio = overlap / max(1, target_tokens)
+        assert 0.10 <= ratio <= 0.25
+
+    stored_root = object_store.BASE_PATH / narrative_meta["tenant_id"]
+    if stored_root.exists():
+        import shutil
+
+        shutil.rmtree(stored_root)
+
+
 def test_chunk_uses_structured_blocks_and_limit() -> None:
     meta = {"tenant_id": "tenant", "case_id": "case", "external_id": "doc"}
     document = (
