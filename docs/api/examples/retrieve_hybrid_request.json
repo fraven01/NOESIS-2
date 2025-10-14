@@ -8,6 +8,7 @@
   "hybrid": {
     "alpha": 0.7,
     "min_sim": 0.15,
-    "top_k": 5
+    "top_k": 5,
+    "diversify_strength": 0.3
   }
 }

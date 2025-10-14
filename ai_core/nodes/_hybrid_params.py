@@ -16,6 +16,7 @@ _ALLOWED_KEYS = {
     "lex_limit",
     "trgm_limit",
     "max_candidates",
+    "diversify_strength",
 }
 
 
@@ -28,6 +29,7 @@ class HybridParameters:
     lex_limit: int
     trgm_limit: float | None
     max_candidates: int
+    diversify_strength: float
 
     def as_dict(self) -> dict[str, float | int | None]:
         return {
@@ -38,6 +40,7 @@ class HybridParameters:
             "lex_limit": self.lex_limit,
             "trgm_limit": self.trgm_limit,
             "max_candidates": self.max_candidates,
+            "diversify_strength": self.diversify_strength,
         }
 
 
@@ -87,6 +90,9 @@ def _parse_hybrid_mapping(mapping: Mapping[str, Any]) -> HybridParameters:
     lex_limit_raw = mapping.get("lex_limit", 50)
     trgm_limit_raw = mapping.get("trgm_limit")
     max_candidates_raw = mapping.get("max_candidates")
+    diversify_strength_raw = mapping.get(
+        "diversify_strength", RAG.DIVERSIFY_STRENGTH_DEFAULT
+    )
 
     alpha = _normalise_fraction(_coerce_float(alpha_raw, field="alpha"))
     min_sim = _normalise_fraction(_coerce_float(min_sim_raw, field="min_sim"))
@@ -122,6 +128,10 @@ def _parse_hybrid_mapping(mapping: Mapping[str, Any]) -> HybridParameters:
 
     max_candidates = max(max_candidates_value, top_k)
 
+    diversify_strength = _normalise_fraction(
+        _coerce_float(diversify_strength_raw, field="diversify_strength")
+    )
+
     return HybridParameters(
         alpha=alpha,
         min_sim=min_sim,
@@ -130,6 +140,7 @@ def _parse_hybrid_mapping(mapping: Mapping[str, Any]) -> HybridParameters:
         lex_limit=lex_limit_value,
         trgm_limit=trgm_limit,
         max_candidates=max_candidates,
+        diversify_strength=diversify_strength,
     )
 
 
@@ -160,6 +171,7 @@ def parse_hybrid_parameters(
             lex_limit=params.lex_limit,
             trgm_limit=params.trgm_limit,
             max_candidates=max_candidates,
+            diversify_strength=params.diversify_strength,
         )
 
     state["hybrid"] = params.as_dict()
