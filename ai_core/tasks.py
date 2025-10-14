@@ -364,18 +364,21 @@ def _resolve_overlap_tokens(
     target_tokens: int,
     hard_limit: int,
 ) -> int:
-    ratio = _estimate_overlap_ratio(text, meta)
-    overlap = int(round(target_tokens * ratio))
-    if ratio > 0 and overlap == 0:
-        overlap = 1
-
     configured_limit = getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", None)
     try:
         configured_value = int(configured_limit) if configured_limit is not None else None
     except (TypeError, ValueError):  # pragma: no cover - defensive
         configured_value = None
 
-    if configured_value is not None and configured_value > 0:
+    if configured_value is not None and configured_value <= 0:
+        return 0
+
+    ratio = _estimate_overlap_ratio(text, meta)
+    overlap = int(round(target_tokens * ratio))
+    if ratio > 0 and overlap == 0:
+        overlap = 1
+
+    if configured_value is not None:
         overlap = min(overlap, configured_value)
 
     return max(0, min(overlap, hard_limit))

@@ -92,6 +92,25 @@ def test_chunkify_enforces_hard_limit_and_long_sentences() -> None:
     assert chunks[1:] == expected_long_chunks
 
 
+def test_resolve_overlap_respects_zero_configuration(monkeypatch) -> None:
+    meta = {"tenant_id": "tenant", "case_id": "case"}
+    text = "Dies ist ein narrativer Text, der normalerweise eine Überlappung hätte."
+    target_tokens = 200
+    hard_limit = 256
+
+    monkeypatch.setattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 0, raising=False)
+
+    with tasks.force_whitespace_tokenizer():
+        overlap = tasks._resolve_overlap_tokens(
+            text,
+            meta,
+            target_tokens=target_tokens,
+            hard_limit=hard_limit,
+        )
+
+    assert overlap == 0
+
+
 def test_chunk_dynamic_overlap_varies_by_document_style(monkeypatch) -> None:
     narrative_meta = {
         "tenant_id": "tenant-dynamic",
