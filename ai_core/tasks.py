@@ -636,6 +636,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
         parent_contents[parent_id].append(normalised)
 
+    def _append_parent_text_with_root(parent_id: str, text: str, level: int) -> None:
+        _append_parent_text(parent_id, text, level)
+        if parent_id != root_id:
+            _append_parent_text(root_id, text, 0)
+
     def _register_section(title: str, level: int) -> Dict[str, object]:
         nonlocal section_counter, order_counter
         section_counter += 1
@@ -668,7 +673,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 parent_stack.pop()
             section_info = _register_section(heading_title.strip(), level)
             parent_stack.append(section_info)
-            _append_parent_text(section_info["id"], stripped_block, level)
+            _append_parent_text_with_root(section_info["id"], stripped_block, level)
             continue
 
         block_pieces = [block]
@@ -681,7 +686,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             if parent_stack:
                 target_info = parent_stack[-1]
                 target_level = int(target_info.get("level") or 0)
-                _append_parent_text(target_info["id"], piece_text, target_level)
+                _append_parent_text_with_root(target_info["id"], piece_text, target_level)
             else:
                 _append_parent_text(root_id, piece_text, 0)
             sentences = _split_sentences(piece)
@@ -708,7 +713,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             if parent_stack:
                 target_info = parent_stack[-1]
                 target_level = int(target_info.get("level") or 0)
-                _append_parent_text(target_info["id"], fallback_text, target_level)
+                _append_parent_text_with_root(target_info["id"], fallback_text, target_level)
             else:
                 _append_parent_text(root_id, fallback_text, 0)
         chunk_candidates.append((text, unique_fallback_ids or [root_id]))
