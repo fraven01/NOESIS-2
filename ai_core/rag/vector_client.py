@@ -544,7 +544,7 @@ class PgVectorClient:
                 },
             )
         else:
-            logger.info(
+            logger.warning(
                 "ingestion.doc.near_duplicate_operator_unsupported",
                 extra={"index_kind": key, "operator": operator},
             )
@@ -2824,6 +2824,17 @@ class PgVectorClient:
             doc["content_hash"] = content_hash
             metadata_dict = dict(doc.get("metadata", {}))
             metadata_dict.setdefault("hash", content_hash)
+
+            if self._near_duplicate_enabled:
+                index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
+                try:
+                    operator = self._get_distance_operator(cur.connection, index_kind)
+                    if not self._is_near_duplicate_operator_supported(
+                        index_kind, operator
+                    ):
+                        self._near_duplicate_enabled = False
+                except Exception:
+                    self._near_duplicate_enabled = False
 
             near_duplicate_details = None
             if self._near_duplicate_enabled:

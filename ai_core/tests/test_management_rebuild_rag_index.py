@@ -246,6 +246,9 @@ def test_rebuild_rag_index_health_check(
     settings,
     test_tenant_schema_name,
 ) -> None:
+    vector_client.reset_default_client()
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "off")
+
     tenant = test_tenant_schema_name
     case = "case-index-health"
     store_path = tmp_path / "object-store"
@@ -277,8 +280,10 @@ def test_rebuild_rag_index_health_check(
         assert body["external_id"] == external_id
         return body["document_id"]
 
-    doc_one = _upload("Vector index smoke check one", "index-health-one")
-    doc_two = _upload("Vector index smoke check two", "index-health-two")
+    doc_one = _upload("First document for vector index health check.", "index-health-one")
+    doc_two = _upload(
+        "Second, completely different document for the same test.", "index-health-two"
+    )
 
     first_result = process_document(
         tenant,

@@ -632,7 +632,7 @@ class TestPgVectorClient:
         assert "near_duplicate" not in payload
         assert client._near_duplicate_enabled is False
         assert any(
-            record.message == "ingestion.doc.near_duplicate_operator_unsupported"
+            "'event': 'ingestion.doc.near_duplicate_operator_unsupported'" in record.message
             for record in caplog.records
         )
 

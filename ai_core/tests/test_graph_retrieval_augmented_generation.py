@@ -29,6 +29,7 @@ def _dummy_output() -> retrieve.RetrieveOutput:
         lexical_candidates=2,
         deleted_matches_blocked=0,
         visibility_effective="active",
+        diversify_strength=0.0,
     )
     return retrieve.RetrieveOutput(matches=matches, meta=meta)
 
