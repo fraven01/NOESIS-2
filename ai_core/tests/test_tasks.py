@@ -112,6 +112,26 @@ def test_resolve_overlap_respects_zero_configuration(monkeypatch) -> None:
     assert overlap == 0
 
 
+def test_resolve_overlap_stays_below_target(monkeypatch) -> None:
+    meta = {"tenant_id": "tenant", "case_id": "case"}
+    text = "Kurzer Text reicht, Verhältnis wird gepatcht."
+    target_tokens = 128
+    hard_limit = 256
+
+    monkeypatch.setattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", None, raising=False)
+    monkeypatch.setattr(tasks, "_estimate_overlap_ratio", lambda *_: 1.0)
+
+    with tasks.force_whitespace_tokenizer():
+        overlap = tasks._resolve_overlap_tokens(
+            text,
+            meta,
+            target_tokens=target_tokens,
+            hard_limit=hard_limit,
+        )
+
+    assert overlap == target_tokens - 1
+
+
 def test_chunk_dynamic_overlap_varies_by_document_style(monkeypatch) -> None:
     narrative_meta = {
         "tenant_id": "tenant-dynamic",
