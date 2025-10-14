@@ -22,6 +22,7 @@ from pydantic import ValidationError
 
 from .infra import object_store, pii, tracing
 from .infra.pii_flags import get_pii_config
+from .segmentation import segment_markdown_blocks
 from .rag import metrics
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
@@ -370,14 +371,25 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
     overlap_tokens = int(getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80))
     hard_limit = max(target_tokens, 512)
-    sentences = _split_sentences(text)
     prefix = _build_chunk_prefix(meta)
-    chunk_bodies = _chunkify(
-        sentences,
-        target_tokens=target_tokens,
-        overlap_tokens=overlap_tokens,
-        hard_limit=hard_limit,
-    )
+    chunk_bodies: List[str] = []
+    structured_blocks = segment_markdown_blocks(text)
+    for block in structured_blocks:
+        block_pieces = [block]
+        if _token_count(block) > hard_limit:
+            block_pieces = _split_by_limit(block, hard_limit)
+        for piece in block_pieces:
+            sentences = _split_sentences(piece)
+            if not sentences:
+                continue
+            chunk_bodies.extend(
+                _chunkify(
+                    sentences,
+                    target_tokens=target_tokens,
+                    overlap_tokens=overlap_tokens,
+                    hard_limit=hard_limit,
+                )
+            )
 
     chunks: List[Dict[str, object]] = []
     for body in chunk_bodies:
