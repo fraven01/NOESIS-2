@@ -504,6 +504,34 @@ def _build_chunk_prefix(meta: Dict[str, str]) -> str:
     return " — ".join(part for part in parts if part)
 
 
+def _resolve_parent_capture_max_depth() -> int:
+    try:
+        value = getattr(settings, "RAG_PARENT_CAPTURE_MAX_DEPTH", 0)
+    except Exception:
+        return 0
+
+    try:
+        depth = int(value)
+    except (TypeError, ValueError):
+        return 0
+
+    return depth if depth > 0 else 0
+
+
+def _resolve_parent_capture_max_bytes() -> int:
+    try:
+        value = getattr(settings, "RAG_PARENT_CAPTURE_MAX_BYTES", 0)
+    except Exception:
+        return 0
+
+    try:
+        byte_limit = int(value)
+    except (TypeError, ValueError):
+        return 0
+
+    return byte_limit if byte_limit > 0 else 0
+
+
 def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     """Split text into overlapping chunks for embeddings and capture parents."""
 
@@ -542,6 +570,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     structured_blocks = segment_markdown_blocks(text)
     parent_nodes: Dict[str, Dict[str, object]] = {}
     parent_contents: Dict[str, List[str]] = {}
+    parent_content_bytes: Dict[str, int] = {}
+    parent_capture_max_depth = _resolve_parent_capture_max_depth()
+    parent_capture_max_bytes = _resolve_parent_capture_max_bytes()
     parent_stack: List[Dict[str, object]] = []
     section_counter = 0
     order_counter = 0
@@ -556,6 +587,54 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         "order": order_counter,
     }
     parent_contents[root_id] = []
+    parent_content_bytes[root_id] = 0
+
+    def _within_capture_depth(level: int) -> bool:
+        if parent_capture_max_depth <= 0:
+            return True
+        return level <= parent_capture_max_depth
+
+    def _append_parent_text(parent_id: str, text: str, level: int) -> None:
+        if not text:
+            return
+        normalised = text.strip()
+        if not normalised:
+            return
+        if not _within_capture_depth(level):
+            return
+
+        if parent_capture_max_bytes > 0:
+            used = parent_content_bytes.get(parent_id, 0)
+            remaining = parent_capture_max_bytes - used
+            if remaining <= 0:
+                parent_nodes[parent_id]["capture_limited"] = True
+                return
+
+            separator_bytes = 0
+            if parent_contents[parent_id]:
+                separator_bytes = len("\n\n".encode("utf-8"))
+            if remaining <= separator_bytes:
+                parent_nodes[parent_id]["capture_limited"] = True
+                return
+
+            allowed = remaining - separator_bytes
+            encoded = normalised.encode("utf-8")
+            if len(encoded) > allowed:
+                truncated = encoded[:allowed]
+                preview = truncated.decode("utf-8", errors="ignore").strip()
+                parent_nodes[parent_id]["capture_limited"] = True
+                if not preview:
+                    return
+                parent_contents[parent_id].append(preview)
+                appended_bytes = len(preview.encode("utf-8"))
+                parent_content_bytes[parent_id] = used + separator_bytes + appended_bytes
+                return
+
+            parent_contents[parent_id].append(normalised)
+            parent_content_bytes[parent_id] = used + separator_bytes + len(encoded)
+            return
+
+        parent_contents[parent_id].append(normalised)
 
     def _register_section(title: str, level: int) -> Dict[str, object]:
         nonlocal section_counter, order_counter
@@ -571,6 +650,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         }
         parent_nodes[parent_id] = info
         parent_contents[parent_id] = []
+        parent_content_bytes[parent_id] = 0
         return info
 
     chunk_candidates: List[Tuple[str, List[str]]] = []
@@ -588,8 +668,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 parent_stack.pop()
             section_info = _register_section(heading_title.strip(), level)
             parent_stack.append(section_info)
-            parent_contents[root_id].append(stripped_block)
-            parent_contents[section_info["id"]].append(stripped_block)
+            _append_parent_text(section_info["id"], stripped_block, level)
             continue
 
         block_pieces = [block]
@@ -599,10 +678,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             piece_text = piece.strip()
             if not piece_text:
                 continue
-            parent_contents[root_id].append(piece_text)
             if parent_stack:
-                for info in parent_stack:
-                    parent_contents[info["id"]].append(piece_text)
+                target_info = parent_stack[-1]
+                target_level = int(target_info.get("level") or 0)
+                _append_parent_text(target_info["id"], piece_text, target_level)
+            else:
+                _append_parent_text(root_id, piece_text, 0)
             sentences = _split_sentences(piece)
             if not sentences:
                 continue
@@ -624,10 +705,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         unique_fallback_ids = list(dict.fromkeys(pid for pid in fallback_ids if pid))
         fallback_text = text.strip()
         if fallback_text:
-            parent_contents[root_id].append(fallback_text)
             if parent_stack:
-                for info in parent_stack:
-                    parent_contents[info["id"]].append(fallback_text)
+                target_info = parent_stack[-1]
+                target_level = int(target_info.get("level") or 0)
+                _append_parent_text(target_info["id"], fallback_text, target_level)
+            else:
+                _append_parent_text(root_id, fallback_text, 0)
         chunk_candidates.append((text, unique_fallback_ids or [root_id]))
 
     chunks: List[Dict[str, object]] = []
