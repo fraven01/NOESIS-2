@@ -461,7 +461,7 @@ def _build_chunk_prefix(meta: Dict[str, str]) -> str:
 
 
 def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
-    """Split text into overlapping chunks for embeddings."""
+    """Split text into overlapping chunks for embeddings and capture parents."""
 
     full = object_store.BASE_PATH / text_path
     text = full.read_text(encoding="utf-8")
@@ -482,27 +482,102 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         hard_limit=hard_limit,
     )
     prefix = _build_chunk_prefix(meta)
-    chunk_bodies: List[str] = []
+
     structured_blocks = segment_markdown_blocks(text)
+    parent_nodes: Dict[str, Dict[str, object]] = {}
+    parent_contents: Dict[str, List[str]] = {}
+    parent_stack: List[Dict[str, object]] = []
+    section_counter = 0
+    order_counter = 0
+
+    doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
+    root_id = f"{external_id}#doc"
+    parent_nodes[root_id] = {
+        "id": root_id,
+        "type": "document",
+        "title": doc_title or None,
+        "level": 0,
+        "order": order_counter,
+    }
+    parent_contents[root_id] = []
+
+    def _register_section(title: str, level: int) -> Dict[str, object]:
+        nonlocal section_counter, order_counter
+        section_counter += 1
+        order_counter += 1
+        parent_id = f"{external_id}#sec-{section_counter}"
+        info = {
+            "id": parent_id,
+            "type": "section",
+            "title": title or None,
+            "level": level,
+            "order": order_counter,
+        }
+        parent_nodes[parent_id] = info
+        parent_contents[parent_id] = []
+        return info
+
+    chunk_candidates: List[Tuple[str, List[str]]] = []
+    heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+
     for block in structured_blocks:
+        stripped_block = block.strip()
+        if not stripped_block:
+            continue
+        heading_match = heading_pattern.match(stripped_block)
+        if heading_match:
+            hashes, heading_title = heading_match.groups()
+            level = len(hashes)
+            while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
+                parent_stack.pop()
+            section_info = _register_section(heading_title.strip(), level)
+            parent_stack.append(section_info)
+            parent_contents[root_id].append(stripped_block)
+            parent_contents[section_info["id"]].append(stripped_block)
+            continue
+
         block_pieces = [block]
         if _token_count(block) > hard_limit:
             block_pieces = _split_by_limit(block, hard_limit)
         for piece in block_pieces:
+            piece_text = piece.strip()
+            if not piece_text:
+                continue
+            parent_contents[root_id].append(piece_text)
+            if parent_stack:
+                for info in parent_stack:
+                    parent_contents[info["id"]].append(piece_text)
             sentences = _split_sentences(piece)
             if not sentences:
                 continue
-            chunk_bodies.extend(
-                _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
+            bodies = _chunkify(
+                sentences,
+                target_tokens=target_tokens,
+                overlap_tokens=overlap_tokens,
+                hard_limit=hard_limit,
             )
+            if not bodies:
+                continue
+            parent_ids = [root_id] + [info["id"] for info in parent_stack]
+            unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+            for body in bodies:
+                chunk_candidates.append((body, unique_parent_ids))
+
+    if not chunk_candidates:
+        fallback_ids = [root_id] + [info["id"] for info in parent_stack]
+        unique_fallback_ids = list(
+            dict.fromkeys(pid for pid in fallback_ids if pid)
+        )
+        fallback_text = text.strip()
+        if fallback_text:
+            parent_contents[root_id].append(fallback_text)
+            if parent_stack:
+                for info in parent_stack:
+                    parent_contents[info["id"]].append(fallback_text)
+        chunk_candidates.append((text, unique_fallback_ids or [root_id]))
 
     chunks: List[Dict[str, object]] = []
-    for body in chunk_bodies:
+    for body, parent_ids in chunk_candidates:
         chunk_text = body
         if prefix:
             chunk_text = f"{prefix}\n\n{body}" if body else prefix
@@ -514,6 +589,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             "hash": content_hash,
             "external_id": external_id,
             "content_hash": content_hash,
+            "parent_ids": parent_ids,
         }
         if meta.get("embedding_profile"):
             chunk_meta["embedding_profile"] = meta["embedding_profile"]
@@ -531,34 +607,17 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             }
         )
 
-    if not chunks:
-        normalised = normalise_text(text)
-        chunk_meta = {
-            "tenant_id": meta["tenant_id"],
-            "case_id": meta.get("case_id"),
-            "source": text_path,
-            "hash": content_hash,
-            "external_id": external_id,
-            "content_hash": content_hash,
-        }
-        if meta.get("embedding_profile"):
-            chunk_meta["embedding_profile"] = meta["embedding_profile"]
-        if meta.get("vector_space_id"):
-            chunk_meta["vector_space_id"] = meta["vector_space_id"]
-        if meta.get("process"):
-            chunk_meta["process"] = meta["process"]
-        if meta.get("doc_class"):
-            chunk_meta["doc_class"] = meta["doc_class"]
-        chunks.append(
-            {
-                "content": text,
-                "normalized": normalised,
-                "meta": chunk_meta,
-            }
-        )
+    for parent_id, info in parent_nodes.items():
+        content_parts = parent_contents.get(parent_id) or []
+        content_text = "\n\n".join(part for part in content_parts if part).strip()
+        if content_text:
+            info = dict(info)
+            info["content"] = content_text
+            parent_nodes[parent_id] = info
 
+    payload = {"chunks": chunks, "parents": parent_nodes}
     out_path = _build_path(meta, "embeddings", "chunks.json")
-    object_store.write_json(out_path, chunks)
+    object_store.write_json(out_path, payload)
     return {"path": out_path}
 
 
@@ -566,7 +625,15 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Generate embedding vectors for chunks via LiteLLM."""
 
-    chunks = object_store.read_json(chunks_path)
+    raw_chunks = object_store.read_json(chunks_path)
+    parents: Dict[str, object] = {}
+    if isinstance(raw_chunks, dict):
+        chunks = list(raw_chunks.get("chunks", []) or [])
+        parent_payload = raw_chunks.get("parents") or {}
+        if isinstance(parent_payload, dict):
+            parents = parent_payload
+    else:
+        chunks = list(raw_chunks or [])
     client = get_embedding_client()
     batch_size = max(
         1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size))
@@ -643,8 +710,9 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         "ingestion.embed.summary",
         extra={"chunks": total_chunks, "batches": batches},
     )
+    payload = {"chunks": embeddings, "parents": parents}
     out_path = _build_path(meta, "embeddings", "vectors.json")
-    object_store.write_json(out_path, embeddings)
+    object_store.write_json(out_path, payload)
     return {"path": out_path}
 
 
@@ -655,7 +723,15 @@ def upsert(
     tenant_schema: Optional[str] = None,
 ) -> int:
     """Upsert embedded chunks into the vector client."""
-    data = object_store.read_json(embeddings_path)
+    raw_data = object_store.read_json(embeddings_path)
+    parents: Dict[str, Dict[str, object]] | None = None
+    if isinstance(raw_data, dict):
+        data = list(raw_data.get("chunks", []) or [])
+        parents_payload = raw_data.get("parents") or {}
+        if isinstance(parents_payload, dict) and parents_payload:
+            parents = parents_payload
+    else:
+        data = list(raw_data or [])
     chunk_objs = []
     for index, ch in enumerate(data):
         vector = ch.get("embedding")
@@ -698,20 +774,30 @@ def upsert(
                 ):
                     if raw_meta.get(key) is not None:
                         fallback_meta[key] = raw_meta.get(key)
+            parents_map = parents
+            if isinstance(ch.get("parents"), dict):
+                local_parents = ch.get("parents")
+                parents_map = local_parents if local_parents else parents_map
             chunk_objs.append(
                 Chunk(
                     content=ch["content"],
                     meta=fallback_meta,
                     embedding=embedding,
+                    parents=parents_map,
                 )
             )
             continue
         # Strict path: validated metadata
+        parents_map = parents
+        if isinstance(ch.get("parents"), dict):
+            local_parents = ch.get("parents")
+            parents_map = local_parents if local_parents else parents_map
         chunk_objs.append(
             Chunk(
                 content=ch["content"],
                 meta=meta_model.model_dump(exclude_none=True),
                 embedding=embedding,
+                parents=parents_map,
             )
         )
 

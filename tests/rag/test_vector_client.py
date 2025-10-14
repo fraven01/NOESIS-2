@@ -168,6 +168,54 @@ class _FakeCounter:
         self.values.append(value)
 
 
+def test_fetch_parent_context_returns_requested_nodes(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    doc_id = uuid.uuid4()
+
+    class _ParentCursor:
+        def __init__(self) -> None:
+            self.executed: list[tuple[str, object | None]] = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
+            self.executed.append((str(sql), params))
+
+        def fetchall(self):
+            return [
+                (
+                    doc_id,
+                    {"section-1": {"id": "section-1", "content": "Parent section"}},
+                )
+            ]
+
+    class _Conn:
+        def __init__(self):
+            self.cursor_obj = _ParentCursor()
+
+        def cursor(self):
+            return self.cursor_obj
+
+    fake_conn = _Conn()
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+
+    result = client.fetch_parent_context(
+        tenant,
+        {str(doc_id): ["section-1", "missing"]},
+    )
+
+    assert result == {
+        str(doc_id): {"section-1": {"id": "section-1", "content": "Parent section"}}
+    }
+    assert fake_conn.cursor_obj.executed
+
+
 def test_replace_chunks_normalises_embeddings(monkeypatch):
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
