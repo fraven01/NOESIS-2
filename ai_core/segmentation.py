@@ -111,7 +111,11 @@ def _fallback_segment(text: str) -> List[str]:
                     list_lines.append(next_line)
                     i += 1
                     continue
-                if next_line.strip().startswith("    ") or next_line.startswith("    "):
+                # Lines starting with four spaces are treated as indented paragraphs
+                # that continue the list item in Markdown. Preserve them in the
+                # current list segment so that list items with multi-line content are
+                # grouped together.
+                if next_line.startswith("    "):
                     list_lines.append(next_line)
                     i += 1
                     continue

@@ -7,6 +7,7 @@ from django.conf import settings
 
 from ai_core import tasks
 from ai_core.infra import object_store
+from ai_core import segmentation
 from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag import metrics, vector_client
 from ai_core.rag.embedding_config import reset_embedding_configuration_cache
@@ -47,6 +48,52 @@ def test_segment_markdown_blocks_detects_structures() -> None:
         "- Punkt eins\n- Punkt zwei",
         "```python\nprint('x')\n```",
         "| A | B |\n| --- | --- |\n| 1 | 2 |",
+    ]
+
+
+def test_fallback_segment_groups_indented_list_paragraphs() -> None:
+    document = (
+        "- Punkt eins\n"
+        "    Ausführliche Beschreibung.\n"
+        "    Weitere Details zur ersten Aufgabe.\n"
+        "- Punkt zwei\n"
+        "    Ergänzende Zeile.\n"
+    )
+
+    segments = segmentation._fallback_segment(document)
+
+    assert segments == [
+        (
+            "- Punkt eins\n"
+            "    Ausführliche Beschreibung.\n"
+            "    Weitere Details zur ersten Aufgabe.\n"
+            "- Punkt zwei\n"
+            "    Ergänzende Zeile."
+        )
+    ]
+
+
+def test_segment_markdown_blocks_falls_back_to_list_indent(monkeypatch) -> None:
+    document = (
+        "- Punkt eins\n"
+        "    Ausführliche Beschreibung.\n"
+        "    Weitere Details zur ersten Aufgabe.\n"
+        "- Punkt zwei\n"
+        "    Ergänzende Zeile.\n"
+    )
+
+    monkeypatch.setattr(segmentation, "_MARKDOWN", None, raising=False)
+
+    segments = segment_markdown_blocks(document)
+
+    assert segments == [
+        (
+            "- Punkt eins\n"
+            "    Ausführliche Beschreibung.\n"
+            "    Weitere Details zur ersten Aufgabe.\n"
+            "- Punkt zwei\n"
+            "    Ergänzende Zeile."
+        )
     ]
 
 
