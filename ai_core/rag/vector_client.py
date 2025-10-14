@@ -267,6 +267,7 @@ class PgVectorClient:
         self._retries = max(1, retries_value)
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
         self._distance_operator_cache: Dict[str, str] = {}
+        self._near_duplicate_operator_support: Dict[str, bool] = {}
         near_strategy = str(
             _get_setting("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
         ).lower()
@@ -482,6 +483,33 @@ class PgVectorClient:
             )
         self._distance_operator_cache[key] = operator
         return operator
+
+    def _is_near_duplicate_operator_supported(self, index_kind: str, operator: str) -> bool:
+        key = index_kind.upper()
+        cached = self._near_duplicate_operator_support.get(key)
+        if cached is not None:
+            return cached
+
+        supported = False
+        if operator == "<=>":
+            supported = True
+        elif operator == "<->":
+            supported = True
+            logger.info(
+                "ingestion.doc.near_duplicate_l2_enabled",
+                extra={
+                    "index_kind": key,
+                    "requires_unit_normalised": True,
+                },
+            )
+        else:
+            logger.info(
+                "ingestion.doc.near_duplicate_operator_unsupported",
+                extra={"index_kind": key, "operator": operator},
+            )
+
+        self._near_duplicate_operator_support[key] = supported
+        return supported
 
     def _restore_session_after_rollback(self, cur) -> None:  # type: ignore[no-untyped-def]
         """Re-apply session level settings after a transaction rollback."""
@@ -2614,6 +2642,17 @@ class PgVectorClient:
     ) -> Dict[str, object] | None:
         if not vector:
             return None
+        normalised = _normalise_vector(vector)
+        if normalised is None:
+            logger.info(
+                "ingestion.doc.near_duplicate_vector_unusable",
+                extra={
+                    "tenant_id": str(tenant_uuid),
+                    "external_id": external_id,
+                },
+            )
+            return None
+        vector = normalised
         try:
             vector_str = self._format_vector(vector)
         except ValueError:
@@ -2634,6 +2673,17 @@ class PgVectorClient:
                 },
             )
             return None
+        if not self._is_near_duplicate_operator_supported(index_kind, operator):
+            logger.info(
+                "ingestion.doc.near_duplicate_operator_disabled",
+                extra={
+                    "tenant_id": str(tenant_uuid),
+                    "index_kind": index_kind,
+                    "operator": operator,
+                },
+            )
+            return None
+
         query = sql.SQL(
             """
             SELECT d.id, d.external_id, 1.0 - (e.embedding {op} %s::vector) AS similarity
