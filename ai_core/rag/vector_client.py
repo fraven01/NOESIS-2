@@ -2820,7 +2820,7 @@ class PgVectorClient:
                 "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
             )
             distance_sql = sql.SQL("e.embedding <-> %s::vector")
-            select_vector_params = [vector_str, vector_str]
+            select_vector_params = [vector_str, vector_str, vector_str]
         else:
             sim_sql = sql.SQL("e.embedding <-> %s::vector")
             distance_sql = sql.SQL("e.embedding <-> %s::vector")
