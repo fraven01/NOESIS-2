@@ -383,7 +383,10 @@ def _apply_diversification(
     lambda_param = 1.0 - normalised_strength
 
     relevance_scores = [float(match.get("score", 0.0)) for match in matches]
-    token_sets = [_tokenise(match.get("text")) for match in matches]
+    token_sets = [
+        _tokenise(match.get("text") or match.get("content") or "")
+        for match in matches
+    ]
 
     ordered_indices = list(range(len(matches)))
     ordered_indices.sort(key=lambda idx: (-relevance_scores[idx], idx))
