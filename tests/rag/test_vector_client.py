@@ -1203,6 +1203,153 @@ def test_hybrid_search_raises_when_vector_and_lexical_fail(monkeypatch):
     assert vector_logs and lexical_logs
 
 
+def test_near_duplicate_cosine_threshold(monkeypatch):
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.95")
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<=>")
+
+    tenant = str(uuid.uuid4())
+    dim = vector_client.get_embedding_dim()
+    value = 1.0 / math.sqrt(dim)
+    unit_vector = [value] * dim
+    base_chunk = Chunk(
+        content="baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-base",
+            "hash": "hash-base",
+            "source": "unit-test",
+        },
+        embedding=unit_vector,
+    )
+    assert client.upsert_chunks([base_chunk]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            match = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                unit_vector,
+                external_id="doc-new",
+                embedding_is_unit_normalised=True,
+            )
+            assert match is not None
+            assert match["external_id"] == "doc-base"
+            assert float(match["similarity"]) >= 0.95
+
+            flipped = list(unit_vector)
+            flipped[0] = -flipped[0]
+            miss = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                flipped,
+                external_id="doc-alt",
+                embedding_is_unit_normalised=True,
+            )
+            assert miss is None
+
+
+def test_near_duplicate_l2_unit_vectors(monkeypatch):
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+
+    tenant = str(uuid.uuid4())
+    dim = vector_client.get_embedding_dim()
+    value = 1.0 / math.sqrt(dim)
+    unit_vector = [value] * dim
+    base_chunk = Chunk(
+        content="baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-base",
+            "hash": "hash-base",
+            "source": "unit-test",
+        },
+        embedding=unit_vector,
+    )
+    assert client.upsert_chunks([base_chunk]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            match = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                unit_vector,
+                external_id="doc-new",
+                embedding_is_unit_normalised=True,
+            )
+            assert match is not None
+            assert match["external_id"] == "doc-base"
+            assert float(match["similarity"]) >= 0.97
+
+            shifted = list(unit_vector)
+            shifted[0] = 0.0
+            miss = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                shifted,
+                external_id="doc-alt",
+                embedding_is_unit_normalised=True,
+            )
+            assert miss is None
+
+
+def test_near_duplicate_l2_distance_fallback(monkeypatch):
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "false")
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+
+    tenant = str(uuid.uuid4())
+    dim = vector_client.get_embedding_dim()
+    base_vector = [0.25] + [0.0] * (dim - 1)
+    base_chunk = Chunk(
+        content="baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-base",
+            "hash": "hash-base",
+            "source": "unit-test",
+        },
+        embedding=base_vector,
+    )
+    assert client.upsert_chunks([base_chunk]) == 1
+
+    cutoff = math.sqrt(max(0.0, 2.0 * (1.0 - client._near_duplicate_threshold)))
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            match = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                base_vector,
+                external_id="doc-new",
+                embedding_is_unit_normalised=False,
+            )
+            assert match is not None
+            assert match["external_id"] == "doc-base"
+            assert float(match["similarity"]) == pytest.approx(1.0)
+
+            far_vector = list(base_vector)
+            far_vector[0] = far_vector[0] + cutoff + 0.01
+            miss = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                far_vector,
+                external_id="doc-alt",
+                embedding_is_unit_normalised=False,
+            )
+            assert miss is None
+
+
 def _insert_active_and_soft_deleted_documents(
     client, tenant: str
 ) -> tuple[uuid.UUID, uuid.UUID, str]:
