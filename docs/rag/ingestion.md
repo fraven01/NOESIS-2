@@ -49,6 +49,16 @@ flowchart TD
 - Netzwerkfehler lösen Wiederholungen aus; nach Erfolg werden Dead-Letter-Einträge automatisch erneut angestoßen.
 - Fehler werden in Langfuse als Span `ingestion.error` mit Metadaten protokolliert.
 
+## Near-Duplicate Detection
+
+- `RAG_NEAR_DUPLICATE_THRESHOLD` vergleicht eine kosinus-ähnliche Ähnlichkeit in
+  `[0,1]`, unabhängig davon, ob der Index per Cosine- (`<=>`) oder L2-Operator
+  (`<->`) gesucht wird. Werte wie `0.97` bedeuten somit immer „97 % ähnlich“.
+- `RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM` muss auf `true` stehen, damit der
+  L2-Pfad aktiv bleibt; andernfalls wird auf Cosine zurückgefallen, da die
+  L2-Skalierung nur mit unit-normalisierten Embeddings mathematisch korrekt
+  ist.
+
 # Schritte
 1. Lade das Dokument via `POST /ai/rag/documents/upload/` hoch, dokumentiere die zurückgegebene `document_id` und prüfe Upload-Fehler (z.B. Tenant-Mismatch, Dateigrößenlimit) sofort im Response.
 2. Stoße den Ingest mit `POST /ai/rag/ingestion/run/` samt Payload `{ "document_ids": [<document_id>] }` an; ein 202-Response signalisiert, dass der Task in der `ingestion` Queue liegt. Bei 4xx-Replies Profil-/Statusfehler korrigieren, bei 5xx erneut triggern oder einen Retry-Job anlegen.
