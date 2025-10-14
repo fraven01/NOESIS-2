@@ -548,8 +548,8 @@ class PgVectorClient:
         if operator == "<=>":
             supported = True
         elif operator == "<->":
+            supported = True
             if self._require_unit_norm_for_l2:
-                supported = True
                 logger.info(
                     "ingestion.doc.near_duplicate_l2_enabled",
                     extra={
@@ -559,7 +559,7 @@ class PgVectorClient:
                 )
             else:
                 logger.info(
-                    "ingestion.doc.near_duplicate_l2_disabled",
+                    "ingestion.doc.near_duplicate_l2_distance_mode",
                     extra={
                         "index_kind": key,
                         "requires_unit_normalised": False,
@@ -2714,7 +2714,13 @@ class PgVectorClient:
     ) -> Dict[str, object] | None:
         if not vector:
             return None
-        normalised = _normalise_vector(vector)
+        try:
+            raw_vector = [float(value) for value in vector]
+        except (TypeError, ValueError):
+            return None
+        if not raw_vector:
+            return None
+        normalised = _normalise_vector(raw_vector)
         if normalised is None:
             logger.info(
                 "ingestion.doc.near_duplicate_vector_unusable",
@@ -2724,16 +2730,10 @@ class PgVectorClient:
                 },
             )
             return None
-        vector = normalised
+        vector_for_similarity = normalised
+        vector_for_distance = raw_vector
         if self._near_duplicate_operator_supported is False:
             return None
-        try:
-            vector_str = self._format_vector(vector)
-        except ValueError:
-            try:
-                vector_str = self._format_vector_lenient(vector)
-            except Exception:
-                return None
         index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
         try:
             operator = self._get_distance_operator(cur.connection, index_kind)
@@ -2765,32 +2765,66 @@ class PgVectorClient:
                 tenant_uuid=tenant_uuid,
             )
             return None
-        if (
-            operator == "<->"
-            and self._require_unit_norm_for_l2
-            and not embedding_is_unit_normalised
-        ):
-            self._near_duplicate_enabled = False
-            self._near_duplicate_operator_supported = False
-            self._near_duplicate_operator_support[index_kind.upper()] = False
-            logger.warning(
-                "ingestion.doc.near_duplicate_l2_unit_norm_missing",
-                extra={
-                    "tenant_id": str(tenant_uuid),
-                    "index_kind": index_kind,
-                    "operator": operator,
-                },
-            )
-            return None
+        use_distance_metric = False
+        distance_cutoff: float | None = None
+        if operator == "<->":
+            if self._require_unit_norm_for_l2:
+                if not embedding_is_unit_normalised:
+                    self._near_duplicate_enabled = False
+                    self._near_duplicate_operator_supported = False
+                    self._near_duplicate_operator_support[index_kind.upper()] = False
+                    logger.warning(
+                        "ingestion.doc.near_duplicate_l2_unit_norm_missing",
+                        extra={
+                            "tenant_id": str(tenant_uuid),
+                            "index_kind": index_kind,
+                            "operator": operator,
+                        },
+                    )
+                    return None
+                vector_to_format = vector_for_similarity
+            else:
+                use_distance_metric = True
+                vector_to_format = vector_for_distance
+                try:
+                    distance_cutoff = math.sqrt(
+                        max(0.0, 2.0 * (1.0 - self._near_duplicate_threshold))
+                    )
+                except Exception:
+                    distance_cutoff = None
+                if distance_cutoff is None:
+                    return None
+            try:
+                vector_str = self._format_vector(vector_to_format)
+            except ValueError:
+                try:
+                    vector_str = self._format_vector_lenient(vector_to_format)
+                except Exception:
+                    return None
+        else:
+            vector_to_format = vector_for_similarity
+            try:
+                vector_str = self._format_vector(vector_to_format)
+            except ValueError:
+                try:
+                    vector_str = self._format_vector_lenient(vector_to_format)
+                except Exception:
+                    return None
         self._near_duplicate_operator_supported = True
         if operator == "<=>":
             sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
             order_sql = sql.SQL("e.embedding <=> %s::vector ASC")
-        else:
+            select_vector_params = [vector_str]
+        elif not use_distance_metric:
             sim_sql = sql.SQL(
                 "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
             )
             order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+            select_vector_params = [vector_str, vector_str]
+        else:
+            sim_sql = sql.SQL("e.embedding <-> %s::vector")
+            order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+            select_vector_params = [vector_str]
 
         query = sql.SQL(
             """
@@ -2806,28 +2840,19 @@ class PgVectorClient:
             """
         ).format(sim=sim_sql, order=order_sql)
         tenant_value = str(tenant_uuid)
-        params: Tuple[object, ...]
-        if operator == "<=>":
-            params = (
-                vector_str,
-                tenant_value,
-                external_id,
-                vector_str,
-                self._near_duplicate_probe_limit,
-            )
-        else:
-            params = (
-                vector_str,
-                vector_str,
-                tenant_value,
-                external_id,
-                vector_str,
-                self._near_duplicate_probe_limit,
-            )
+        params_list: List[object] = [
+            *select_vector_params,
+            tenant_value,
+            external_id,
+            vector_str,
+            self._near_duplicate_probe_limit,
+        ]
+        params = tuple(params_list)
         cur.execute(query, params)
         rows = cur.fetchall()
         best: Dict[str, object] | None = None
         best_similarity = self._near_duplicate_threshold
+        best_distance = distance_cutoff if use_distance_metric else None
         for row in rows:
             if not isinstance(row, Sequence) or len(row) < 3:
                 continue
@@ -2842,9 +2867,28 @@ class PgVectorClient:
                 continue
             if math.isnan(similarity) or math.isinf(similarity):
                 continue
-            similarity = max(0.0, min(1.0, similarity))
-            if similarity < self._near_duplicate_threshold:
-                continue
+            if use_distance_metric:
+                distance = max(0.0, similarity)
+                cutoff = distance_cutoff if distance_cutoff is not None else best_distance
+                if cutoff is None:
+                    continue
+                if distance > cutoff + 1e-9:
+                    continue
+                if best_distance is not None and distance > best_distance + 1e-12:
+                    continue
+                best_distance = distance
+                if cutoff <= _ZERO_EPSILON:
+                    similarity = 1.0 if distance <= _ZERO_EPSILON else 0.0
+                else:
+                    ratio = min(distance / cutoff, 1.0)
+                    similarity = max(0.0, 1.0 - ratio)
+            else:
+                similarity = max(0.0, min(1.0, similarity))
+                if similarity < self._near_duplicate_threshold:
+                    continue
+                if similarity < best_similarity:
+                    continue
+                best_similarity = similarity
             try:
                 candidate_uuid = (
                     candidate_id
@@ -2854,13 +2898,11 @@ class PgVectorClient:
             except (TypeError, ValueError):
                 continue
             external_text = str(candidate_external_id)
-            if similarity >= best_similarity:
-                best_similarity = similarity
-                best = {
-                    "id": candidate_uuid,
-                    "external_id": external_text,
-                    "similarity": similarity,
-                }
+            best = {
+                "id": candidate_uuid,
+                "external_id": external_text,
+                "similarity": similarity,
+            }
         return best
 
     def _ensure_documents(

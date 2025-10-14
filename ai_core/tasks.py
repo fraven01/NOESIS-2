@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import re
 import time
@@ -35,6 +36,39 @@ from .rag.embeddings import (
     get_embedding_client,
 )
 from .rag.vector_store import get_default_router
+
+_ZERO_EPSILON = 1e-12
+
+
+def _should_normalise_embeddings() -> bool:
+    env_value = os.getenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM")
+    if env_value is not None:
+        lowered = env_value.strip().lower()
+        if lowered in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if lowered in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    try:
+        return bool(getattr(settings, "RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM"))
+    except Exception:
+        return False
+
+
+def _normalise_embedding(values: Sequence[float] | None) -> List[float] | None:
+    if not values:
+        return None
+    try:
+        floats = [float(value) for value in values]
+    except (TypeError, ValueError):
+        return None
+    norm_sq = math.fsum(value * value for value in floats)
+    if norm_sq <= _ZERO_EPSILON:
+        return None
+    norm = math.sqrt(norm_sq)
+    if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
+        return None
+    scale = 1.0 / norm
+    return [value * scale for value in floats]
 
 logger = get_logger(__name__)
 
@@ -757,6 +791,10 @@ def upsert(
     for index, ch in enumerate(data):
         vector = ch.get("embedding")
         embedding = [float(v) for v in vector] if vector is not None else None
+        if embedding is not None and _should_normalise_embeddings():
+            normalised = _normalise_embedding(embedding)
+            if normalised is not None:
+                embedding = normalised
         raw_meta = ch.get("meta", {})
         try:
             meta_model = ChunkMeta.model_validate(raw_meta)
