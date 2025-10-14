@@ -38,11 +38,13 @@ def _configure_embeddings(settings) -> None:
             "model": "oai-embed-large",
             "dimension": 1536,
             "vector_space": "global",
+            "chunk_hard_limit": 512,
         },
         "legacy": {
             "model": "oai-embed-small",
             "dimension": 1024,
             "vector_space": "legacy",
+            "chunk_hard_limit": 400,
         },
     }
 

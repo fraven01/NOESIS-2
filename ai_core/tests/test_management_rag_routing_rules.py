@@ -48,11 +48,13 @@ def routing_config(tmp_path, settings):
             "model": "oai-embed-large",
             "dimension": 1536,
             "vector_space": "global",
+            "chunk_hard_limit": 512,
         },
         "premium": {
             "model": "vertex_ai/text-embedding-004",
             "dimension": 1536,
             "vector_space": "global",
+            "chunk_hard_limit": 768,
         },
     }
     return rules

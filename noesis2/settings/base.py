@@ -98,11 +98,13 @@ if "RAG_EMBEDDING_PROFILES" not in globals():
             "model": EMBEDDINGS_MODEL_PRIMARY,
             "dimension": DEFAULT_EMBEDDING_DIMENSION,
             "vector_space": "global",
+            "chunk_hard_limit": 512,
         },
         "demo": {
             "model": DEMO_EMBEDDINGS_MODEL,
             "dimension": DEMO_EMBEDDING_DIMENSION,
             "vector_space": "demo",
+            "chunk_hard_limit": 1024,
         },
     }
 

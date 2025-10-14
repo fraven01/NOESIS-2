@@ -24,6 +24,7 @@ from .infra import object_store, pii, tracing
 from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
+from .rag.embedding_config import get_embedding_profile
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
 from .rag.ingestion_contracts import ChunkMeta, ensure_embedding_dimensions
@@ -268,18 +269,24 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
     if not text:
         return []
 
+    limit = max(1, int(hard_limit))
+
     if _should_use_tiktoken():
         token_ids = _TOKEN_ENCODING.encode(text, disallowed_special=())
         if not token_ids:
             return []
+        if len(token_ids) <= limit:
+            return [text]
         parts: List[str] = []
-        for start in range(0, len(token_ids), hard_limit):
-            chunk_ids = token_ids[start : start + hard_limit]
+        for start in range(0, len(token_ids), limit):
+            chunk_ids = token_ids[start : start + limit]
             parts.append(_TOKEN_ENCODING.decode(chunk_ids))
         return parts
 
     whitespace_chunks = list(re.finditer(r"\S+\s*", text))
     if len(whitespace_chunks) > 1:
+        if len(whitespace_chunks) <= limit:
+            return [text]
         parts: List[str] = []
         current_segments: List[str] = []
         current_tokens = 0
@@ -291,7 +298,7 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
             if not stripped:
                 continue
 
-            if current_tokens + 1 > hard_limit and current_segments:
+            if current_tokens + 1 > limit and current_segments:
                 parts.append("".join(current_segments).rstrip())
                 current_segments = []
                 current_tokens = 0
@@ -304,7 +311,10 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
 
         return [part for part in parts if part]
 
-    return [text[i : i + hard_limit] for i in range(0, len(text), hard_limit)]
+    if len(text) <= limit:
+        return [text]
+
+    return [text[i : i + limit] for i in range(0, len(text), limit)]
 
 
 def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
@@ -474,7 +484,19 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         raise ValueError("external_id required for chunk")
 
     target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
-    hard_limit = max(target_tokens, 512)
+    profile_limit: Optional[int] = None
+    profile_id = meta.get("embedding_profile")
+    if profile_id is not None:
+        profile_key = str(profile_id).strip()
+        if profile_key:
+            profile_limit = get_embedding_profile(profile_key).chunk_hard_limit
+            meta["embedding_profile"] = profile_key
+    fallback_limit = 512
+    if profile_limit is not None:
+        hard_limit = profile_limit
+        target_tokens = min(target_tokens, hard_limit)
+    else:
+        hard_limit = max(target_tokens, fallback_limit)
     overlap_tokens = _resolve_overlap_tokens(
         text,
         meta,

@@ -9,6 +9,7 @@ from ai_core import tasks
 from ai_core.infra import object_store
 from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag import metrics, vector_client
+from ai_core.rag.embedding_config import reset_embedding_configuration_cache
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
 from common import logging as common_logging
@@ -201,8 +202,26 @@ def test_chunk_dynamic_overlap_varies_by_document_style(monkeypatch) -> None:
         shutil.rmtree(stored_root)
 
 
-def test_chunk_uses_structured_blocks_and_limit() -> None:
-    meta = {"tenant_id": "tenant", "case_id": "case", "external_id": "doc"}
+def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
+    settings.RAG_VECTOR_STORES = {
+        "global": {"backend": "pgvector", "schema": "rag", "dimension": 1536}
+    }
+    settings.RAG_EMBEDDING_PROFILES = {
+        "standard": {
+            "model": "oai-embed-large",
+            "dimension": 1536,
+            "vector_space": "global",
+            "chunk_hard_limit": 512,
+        }
+    }
+    reset_embedding_configuration_cache()
+
+    meta = {
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc",
+        "embedding_profile": "standard",
+    }
     document = (
         "# Titel\n\nEin Absatz.\n\n- Punkt eins\n- Punkt zwei\n\n"
         "```python\nprint('x')\n```\n\n"
@@ -211,26 +230,107 @@ def test_chunk_uses_structured_blocks_and_limit() -> None:
     text_path = tasks._build_path(meta, "text", "doc.txt")
     object_store.put_bytes(text_path, document.encode("utf-8"))
 
-    with tasks.force_whitespace_tokenizer():
-        result = tasks.chunk(meta, text_path)
+    try:
+        with tasks.force_whitespace_tokenizer():
+            result = tasks.chunk(meta, text_path)
 
-    chunk_records = object_store.read_json(result["path"])
-    contents = [entry["content"] for entry in chunk_records]
+        chunk_payload = object_store.read_json(result["path"])
+        chunks = list(chunk_payload.get("chunks", []))
+        contents = [entry["content"] for entry in chunks]
 
-    assert contents[0].strip() == "# Titel"
-    assert any("```python" in content for content in contents)
-    assert any("Punkt eins" in content for content in contents)
+        parents = dict(chunk_payload.get("parents", {}))
+        root_id = f"{meta['external_id']}#doc"
+        assert root_id in parents
+        root_content = parents[root_id].get("content", "") if parents[root_id] else ""
+        assert "# Titel" in root_content
 
-    long_chunks = [content for content in contents if "wort" in content]
-    assert len(long_chunks) > 1
-    for chunk_text in long_chunks:
-        assert len([token for token in chunk_text.split() if token]) <= 512
+        assert any("```python" in content for content in contents)
+        assert any("Punkt eins" in content for content in contents)
+
+        long_chunks = [entry["content"] for entry in chunks if "wort" in entry["content"]]
+        assert len(long_chunks) > 1
+        for chunk_text in long_chunks:
+            assert len([token for token in chunk_text.split() if token]) <= 512
+    finally:
+        reset_embedding_configuration_cache()
 
     stored_root = object_store.BASE_PATH / meta["tenant_id"]
     if stored_root.exists():
         import shutil
 
         shutil.rmtree(stored_root)
+
+
+def test_chunk_hard_limit_scales_with_profile_capacity(settings) -> None:
+    settings.RAG_VECTOR_STORES = {
+        "global": {"backend": "pgvector", "schema": "rag", "dimension": 1536}
+    }
+    settings.RAG_EMBEDDING_PROFILES = {
+        "compact": {
+            "model": "oai-embed-small",
+            "dimension": 1536,
+            "vector_space": "global",
+            "chunk_hard_limit": 512,
+        },
+        "expanded": {
+            "model": "oai-embed-large",
+            "dimension": 1536,
+            "vector_space": "global",
+            "chunk_hard_limit": 1024,
+        },
+    }
+    reset_embedding_configuration_cache()
+
+    compact_meta = {
+        "tenant_id": "tenant-compact",
+        "case_id": "case-compact",
+        "external_id": "doc-compact",
+        "embedding_profile": "compact",
+    }
+    expanded_meta = {
+        "tenant_id": "tenant-expanded",
+        "case_id": "case-expanded",
+        "external_id": "doc-expanded",
+        "embedding_profile": "expanded",
+    }
+    document = " ".join(f"wort{i}" for i in range(900))
+
+    compact_path = tasks._build_path(compact_meta, "text", "doc.txt")
+    expanded_path = tasks._build_path(expanded_meta, "text", "doc.txt")
+    object_store.put_bytes(compact_path, document.encode("utf-8"))
+    object_store.put_bytes(expanded_path, document.encode("utf-8"))
+
+    try:
+        with tasks.force_whitespace_tokenizer():
+            compact_result = tasks.chunk(compact_meta, compact_path)
+            expanded_result = tasks.chunk(expanded_meta, expanded_path)
+
+        compact_payload = object_store.read_json(compact_result["path"])
+        expanded_payload = object_store.read_json(expanded_result["path"])
+
+        compact_lengths = [
+            len([token for token in chunk["content"].split() if token])
+            for chunk in compact_payload.get("chunks", [])
+        ]
+        expanded_lengths = [
+            len([token for token in chunk["content"].split() if token])
+            for chunk in expanded_payload.get("chunks", [])
+        ]
+
+        assert compact_lengths, "expected compact profile to produce chunks"
+        assert expanded_lengths, "expected expanded profile to produce chunks"
+
+        assert max(compact_lengths) <= 512
+        assert max(expanded_lengths) > 512
+        assert max(expanded_lengths) <= 1024
+    finally:
+        reset_embedding_configuration_cache()
+        for meta in (compact_meta, expanded_meta):
+            stored_root = object_store.BASE_PATH / meta["tenant_id"]
+            if stored_root.exists():
+                import shutil
+
+                shutil.rmtree(stored_root)
 
 
 def test_build_chunk_prefix_combines_breadcrumbs_and_title() -> None:

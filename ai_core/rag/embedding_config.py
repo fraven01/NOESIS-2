@@ -31,9 +31,13 @@ class EmbeddingConfigErrorCode:
     DIMENSION_MISMATCH = "EMB_DIM_MISMATCH"
     PROFILES_EMPTY = "EMB_NO_PROFILES"
     UNKNOWN_PROFILE = "EMB_UNKNOWN_PROFILE"
+    PROFILE_CHUNK_LIMIT_INVALID = "EMB_PROFILE_CHUNK_LIMIT_INVALID"
 
 
 _EMBEDDING_DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
+
+
+_DEFAULT_PROFILE_CHUNK_LIMIT = 512
 
 
 def _format_error(code: str, message: str) -> str:
@@ -58,6 +62,7 @@ class EmbeddingProfileConfig:
     model: str
     dimension: int
     vector_space: str
+    chunk_hard_limit: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +102,31 @@ def _coerce_dimension(raw: object, *, context: str, error_code: str) -> int:
             )
         )
     return dimension
+
+
+def _coerce_chunk_limit(raw: object, *, context: str) -> int:
+    if raw is None:
+        return _DEFAULT_PROFILE_CHUNK_LIMIT
+
+    try:
+        limit = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:
+        raise EmbeddingConfigurationError(
+            _format_error(
+                EmbeddingConfigErrorCode.PROFILE_CHUNK_LIMIT_INVALID,
+                f"{context} chunk_hard_limit must be a positive integer",
+            )
+        ) from exc
+
+    if limit <= 0:
+        raise EmbeddingConfigurationError(
+            _format_error(
+                EmbeddingConfigErrorCode.PROFILE_CHUNK_LIMIT_INVALID,
+                f"{context} chunk_hard_limit must be positive",
+            )
+        )
+
+    return limit
 
 
 def _parse_vector_spaces(
@@ -206,11 +236,32 @@ def _parse_embedding_profiles(
                     ),
                 )
             )
+        chunk_limit_raw: object | None = None
+        for key in (
+            "chunk_hard_limit",
+            "chunk_limit",
+            "chunk_window",
+            "context_window",
+            "context_length",
+        ):
+            candidate = raw_config.get(key)
+            if isinstance(candidate, str) and not candidate.strip():
+                candidate = None
+            if candidate is not None:
+                chunk_limit_raw = candidate
+                break
+
+        chunk_hard_limit = _coerce_chunk_limit(
+            chunk_limit_raw,
+            context=f"Embedding profile '{profile_id}'",
+        )
+
         parsed[profile_id] = EmbeddingProfileConfig(
             id=str(profile_id),
             model=model,
             dimension=dimension,
             vector_space=vector_space_id,
+            chunk_hard_limit=chunk_hard_limit,
         )
     if not parsed:
         raise EmbeddingConfigurationError(

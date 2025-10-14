@@ -34,6 +34,7 @@ def _base_profile() -> dict[str, object]:
         "model": "oai-embed-large",
         "dimension": 1536,
         "vector_space": "global",
+        "chunk_hard_limit": 512,
     }
 
 
@@ -50,6 +51,7 @@ def test_get_embedding_configuration_returns_dataclasses(settings) -> None:
         config.embedding_profiles["standard"].vector_space
         == config.vector_spaces["global"].id
     )
+    assert config.embedding_profiles["standard"].chunk_hard_limit == 512
 
 
 def test_getters_return_single_entries(settings) -> None:
@@ -62,6 +64,7 @@ def test_getters_return_single_entries(settings) -> None:
     assert vector_space.schema == "rag"
     assert profile.model == "oai-embed-large"
     assert profile.vector_space == "global"
+    assert profile.chunk_hard_limit == 512
 
 
 def test_validate_configuration_raises_on_dimension_mismatch(settings) -> None:
@@ -130,3 +133,37 @@ def test_profile_dimension_must_be_positive_integer(settings) -> None:
     message = str(excinfo.value)
     assert "EMB_PROFILE_DIM_INVALID" in message
     assert "must be an integer" in message
+
+
+def test_profile_chunk_limit_defaults_when_missing(settings) -> None:
+    settings.RAG_VECTOR_STORES = {"global": _base_vector_space()}
+    profile = _base_profile()
+    profile.pop("chunk_hard_limit")
+    settings.RAG_EMBEDDING_PROFILES = {"standard": profile}
+
+    config = get_embedding_configuration()
+
+    assert config.embedding_profiles["standard"].chunk_hard_limit == 512
+
+
+def test_profile_chunk_limit_requires_positive_integer(settings) -> None:
+    settings.RAG_VECTOR_STORES = {"global": _base_vector_space()}
+    profile = _base_profile()
+    profile["chunk_hard_limit"] = 0
+    settings.RAG_EMBEDDING_PROFILES = {"standard": profile}
+
+    with pytest.raises(EmbeddingConfigurationError) as excinfo:
+        get_embedding_configuration()
+
+    message = str(excinfo.value)
+    assert "EMB_PROFILE_CHUNK_LIMIT_INVALID" in message
+    assert "chunk_hard_limit" in message
+
+    profile["chunk_hard_limit"] = "invalid"
+    settings.RAG_EMBEDDING_PROFILES = {"standard": profile}
+    reset_embedding_configuration_cache()
+
+    with pytest.raises(EmbeddingConfigurationError) as excinfo:
+        get_embedding_configuration()
+
+    assert "EMB_PROFILE_CHUNK_LIMIT_INVALID" in str(excinfo.value)
