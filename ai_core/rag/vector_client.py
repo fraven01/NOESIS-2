@@ -2813,17 +2813,17 @@ class PgVectorClient:
         self._near_duplicate_operator_supported = True
         if operator == "<=>":
             sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
-            order_sql = sql.SQL("e.embedding <=> %s::vector ASC")
+            distance_sql = sql.SQL("e.embedding <=> %s::vector")
             select_vector_params = [vector_str]
         elif not use_distance_metric:
             sim_sql = sql.SQL(
                 "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
             )
-            order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+            distance_sql = sql.SQL("e.embedding <-> %s::vector")
             select_vector_params = [vector_str, vector_str]
         else:
             sim_sql = sql.SQL("e.embedding <-> %s::vector")
-            order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+            distance_sql = sql.SQL("e.embedding <-> %s::vector")
             select_vector_params = [vector_str]
 
         if use_distance_metric:
@@ -2831,32 +2831,48 @@ class PgVectorClient:
         else:
             global_order_sql = sql.SQL("DESC")
 
+        prefetch_limit = max(self._near_duplicate_probe_limit, self._near_duplicate_probe_limit * 4)
         query = sql.SQL(
             """
-            SELECT id, external_id, similarity
-            FROM (
-                SELECT DISTINCT ON (d.id)
+            WITH base AS (
+                SELECT
                     d.id,
                     d.external_id,
-                    {sim} AS similarity
+                    {sim} AS similarity,
+                    {distance} AS chunk_distance
                 FROM documents d
                 JOIN chunks c ON c.document_id = d.id
                 JOIN embeddings e ON e.chunk_id = c.id
                 WHERE d.tenant_id = %s
                   AND d.deleted_at IS NULL
                   AND d.external_id <> %s
-                ORDER BY d.id ASC, {order}
-            ) AS per_document
+                ORDER BY chunk_distance ASC
+                LIMIT %s
+            )
+            SELECT id, external_id, similarity
+            FROM (
+                SELECT
+                    id,
+                    external_id,
+                    similarity,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY id
+                        ORDER BY chunk_distance ASC
+                    ) AS chunk_rank
+                FROM base
+            ) AS ranked
+            WHERE chunk_rank = 1
             ORDER BY similarity {global_order}
             LIMIT %s
             """
-        ).format(sim=sim_sql, order=order_sql, global_order=global_order_sql)
+        ).format(sim=sim_sql, distance=distance_sql, global_order=global_order_sql)
         tenant_value = str(tenant_uuid)
         params_list: List[object] = [
             *select_vector_params,
             tenant_value,
             external_id,
             vector_str,
+            prefetch_limit,
             self._near_duplicate_probe_limit,
         ]
         params = tuple(params_list)
