@@ -149,6 +149,15 @@ def parse_hybrid_parameters(
     *,
     override_top_k: int | None = None,
 ) -> HybridParameters:
+    """Normalise and persist hybrid retrieval parameters in ``state``.
+
+    Notes
+    -----
+    ``diversify_strength`` is stored exactly as provided (bounded between 0 and 1)
+    and later converted to the MMR :math:`\lambda` parameter as ``1 - strength``.
+    Documenting this here keeps the parser aligned with the retrieval logic and
+    avoids surprises for API consumers that expect a direct ``lambda`` mapping.
+    """
     if "hybrid" not in state:
         raise ValueError("state must include a 'hybrid' configuration")
 
