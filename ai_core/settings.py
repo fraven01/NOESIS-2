@@ -16,6 +16,7 @@ class RAG:
     TOPK_MIN: int = 1
     HYBRID_ALPHA_DEFAULT: float = 0.7
     MIN_SIM_DEFAULT: float = 0.15
+    DIVERSIFY_STRENGTH_DEFAULT: float = 0.3
 
 
 __all__ = ["RAG"]

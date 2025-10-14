@@ -2,6 +2,7 @@ import pytest
 
 from ai_core.nodes import retrieve
 from ai_core.nodes._hybrid_params import TOPK_DEFAULT, TOPK_MAX, parse_hybrid_parameters
+from ai_core.settings import RAG
 
 
 def test_parse_defaults_and_clamps_values():
@@ -17,6 +18,9 @@ def test_parse_defaults_and_clamps_values():
     assert params.trgm_limit is None
     assert params.max_candidates == max(
         params.top_k, params.vec_limit, params.lex_limit
+    )
+    assert params.diversify_strength == pytest.approx(
+        RAG.DIVERSIFY_STRENGTH_DEFAULT
     )
     assert state["hybrid"] == params.as_dict()
 
@@ -44,6 +48,9 @@ def test_parse_raises_max_candidates_to_top_k():
     assert params.max_candidates == 7
     assert params.max_candidates >= params.top_k
     assert params.max_candidates >= max(params.vec_limit, params.lex_limit)
+    assert params.diversify_strength == pytest.approx(
+        RAG.DIVERSIFY_STRENGTH_DEFAULT
+    )
 
 
 def test_parse_supports_override_top_k_and_promotes_candidates():
@@ -61,6 +68,9 @@ def test_parse_supports_override_top_k_and_promotes_candidates():
     assert params.top_k == TOPK_MAX
     assert params.max_candidates >= params.top_k
     assert state["hybrid"]["top_k"] == TOPK_MAX
+    assert params.diversify_strength == pytest.approx(
+        RAG.DIVERSIFY_STRENGTH_DEFAULT
+    )
 
 
 def test_deduplicate_matches_prefers_best_score_and_is_stable():
@@ -111,3 +121,56 @@ def test_parse_trgm_limit_accepts_strings_and_clamps_fraction():
 
     assert params.trgm_limit == pytest.approx(1.0)
     assert state["hybrid"]["trgm_limit"] == params.trgm_limit
+
+
+def test_parse_accepts_custom_diversify_strength():
+    state = {"hybrid": {"diversify_strength": 0.8}}
+
+    params = parse_hybrid_parameters(state)
+
+    assert params.diversify_strength == pytest.approx(0.8)
+    assert state["hybrid"]["diversify_strength"] == pytest.approx(0.8)
+
+
+def test_diversification_promotes_dissimilar_matches():
+    matches = [
+        {
+            "id": "doc-1",
+            "text": "Alpha beta gamma",
+            "score": 0.95,
+        },
+        {
+            "id": "doc-2",
+            "text": "Alpha beta gamma delta",
+            "score": 0.93,
+        },
+        {
+            "id": "doc-3",
+            "text": "Completely unrelated content",
+            "score": 0.9,
+        },
+    ]
+
+    diversified = retrieve._apply_diversification(
+        matches, top_k=2, strength=0.5
+    )
+
+    assert [match["id"] for match in diversified[:2]] == ["doc-1", "doc-3"]
+
+
+def test_diversification_respects_zero_strength():
+    matches = [
+        {"id": "doc-1", "text": "One", "score": 0.9},
+        {"id": "doc-2", "text": "Two", "score": 0.8},
+        {"id": "doc-3", "text": "Three", "score": 0.7},
+    ]
+
+    diversified = retrieve._apply_diversification(
+        matches, top_k=2, strength=0.0
+    )
+
+    assert [match["id"] for match in diversified] == [
+        "doc-1",
+        "doc-2",
+        "doc-3",
+    ]

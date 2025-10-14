@@ -286,11 +286,13 @@ RAG_EMBEDDING_PROFILES = {
         "model": "oai-embed-large",
         "dimension": 1536,
         "vector_space": "global",
+        "chunk_hard_limit": 512,
     },
     "premium": {
         "model": "vertex_ai/text-embedding-004",
         "dimension": 3072,
         "vector_space": "enterprise",
+        "chunk_hard_limit": 1024,
     },
 }
 ```

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import math
+import re
 import time
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, Mapping
 
 from common.logging import get_logger
 
@@ -88,6 +90,7 @@ class RetrieveMeta(BaseModel):
     lexical_candidates: int
     deleted_matches_blocked: int
     visibility_effective: str
+    diversify_strength: float
 
     model_config = ConfigDict(extra="forbid")
 
@@ -337,6 +340,93 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     return ordered_matches
 
 
+_TOKEN_PATTERN = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
+
+
+def _normalise_strength(value: float) -> float:
+    return max(0.0, min(1.0, value))
+
+
+def _tokenise(text: str | None) -> set[str]:
+    if not isinstance(text, str) or not text:
+        return set()
+    tokens = {match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text)}
+    return tokens
+
+
+def _similarity(tokens_a: set[str], tokens_b: set[str]) -> float:
+    if not tokens_a or not tokens_b:
+        return 0.0
+    overlap = tokens_a.intersection(tokens_b)
+    if not overlap:
+        return 0.0
+    denominator = math.sqrt(len(tokens_a) * len(tokens_b))
+    if denominator == 0:
+        return 0.0
+    return len(overlap) / denominator
+
+
+def _apply_diversification(
+    matches: list[Dict[str, Any]], *, top_k: int, strength: float
+) -> list[Dict[str, Any]]:
+    if len(matches) <= 1:
+        return matches
+
+    limit = min(max(1, top_k), len(matches))
+    if limit <= 1:
+        return matches
+
+    normalised_strength = _normalise_strength(float(strength))
+    if normalised_strength <= 0.0:
+        return matches
+
+    lambda_param = 1.0 - normalised_strength
+
+    relevance_scores = [float(match.get("score", 0.0)) for match in matches]
+    token_sets = [
+        _tokenise(match.get("text") or match.get("content") or "")
+        for match in matches
+    ]
+
+    ordered_indices = list(range(len(matches)))
+    ordered_indices.sort(key=lambda idx: (-relevance_scores[idx], idx))
+
+    selected: list[int] = []
+    candidate_pool = ordered_indices.copy()
+
+    while candidate_pool and len(selected) < limit:
+        if not selected:
+            selected.append(candidate_pool.pop(0))
+            continue
+
+        best_index: int | None = None
+        best_score = float("-inf")
+        for idx in candidate_pool:
+            diversity_penalty = 0.0
+            if selected:
+                diversity_penalty = max(
+                    _similarity(token_sets[idx], token_sets[chosen])
+                    for chosen in selected
+                )
+            mmr_score = lambda_param * relevance_scores[idx] - (
+                (1.0 - lambda_param) * diversity_penalty
+            )
+            if mmr_score > best_score or (
+                math.isclose(mmr_score, best_score) and idx < (best_index or idx)
+            ):
+                best_score = mmr_score
+                best_index = idx
+
+        if best_index is None:
+            best_index = candidate_pool[0]
+        selected.append(best_index)
+        candidate_pool.remove(best_index)
+
+    remaining = [idx for idx in ordered_indices if idx not in selected]
+    final_order = selected + remaining
+    return [matches[idx] for idx in final_order]
+
+
 def _ensure_chunk_metadata(
     chunks: list[Chunk], *, tenant_id: str, case_id: str | None
 ) -> None:
@@ -474,6 +564,28 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     )
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
     _ensure_chunk_metadata(chunks, tenant_id=tenant_id, case_id=case_id)
+    parent_requests: Dict[str, set[str]] = {}
+    for chunk in chunks:
+        meta_map = chunk.meta or {}
+        doc_identifier = _coerce_str(meta_map.get("doc_id"))
+        if not doc_identifier:
+            continue
+        parent_candidates = meta_map.get("parent_ids")
+        if isinstance(parent_candidates, Iterable) and not isinstance(
+            parent_candidates, (str, bytes)
+        ):
+            normalised_ids: list[str] = []
+            for candidate in parent_candidates:
+                parent_id = _coerce_str(candidate)
+                if parent_id:
+                    normalised_ids.append(parent_id)
+            if normalised_ids:
+                parent_requests.setdefault(doc_identifier, set()).update(
+                    normalised_ids
+                )
+                meta_map["parent_ids"] = normalised_ids
+        elif "parent_ids" in meta_map:
+            meta_map["parent_ids"] = []
     if not chunks and vector_candidates == 0 and lexical_candidates == 0:
         logger.info(
             "rag.retrieve.no_matches",
@@ -481,9 +593,91 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         )
         if not scoped_client:
             raise NotFoundError("No matching documents were found for the query.")
+
+    parent_context: Dict[str, Dict[str, Any]] = {}
+    if parent_requests:
+        fetch_parents = getattr(tenant_client, "fetch_parent_context", None)
+        if callable(fetch_parents):
+            payload = {
+                doc_id: sorted(parent_ids)
+                for doc_id, parent_ids in parent_requests.items()
+            }
+            try:
+                if scoped_client:
+                    parent_context = fetch_parents(payload)  # type: ignore[misc]
+                else:
+                    parent_context = fetch_parents(tenant_id, payload)  # type: ignore[misc]
+            except TypeError:
+                try:
+                    parent_context = fetch_parents(payload)  # type: ignore[misc]
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.warning(
+                        "rag.retrieve.parent_lookup_failed",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "case_id": case_id,
+                            "doc_count": len(parent_requests),
+                            "error": str(exc),
+                        },
+                    )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "rag.retrieve.parent_lookup_failed",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "case_id": case_id,
+                        "doc_count": len(parent_requests),
+                        "error": str(exc),
+                    },
+                )
+
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
-    final_matches = deduplicated[: hybrid_config.top_k]
+    diversified = _apply_diversification(
+        deduplicated,
+        top_k=hybrid_config.top_k,
+        strength=hybrid_config.diversify_strength,
+    )
+    final_matches = diversified[: hybrid_config.top_k]
+
+    if parent_context:
+        for match in final_matches:
+            meta_section = match.get("meta")
+            if meta_section is None:
+                meta_section = {}
+                match["meta"] = meta_section
+            elif not isinstance(meta_section, dict):
+                try:
+                    meta_section = dict(meta_section)
+                except Exception:
+                    meta_section = {}
+                match["meta"] = meta_section
+            doc_identifier = _coerce_str(meta_section.get("doc_id"))
+            if not doc_identifier:
+                continue
+            parent_candidates = meta_section.get("parent_ids")
+            if not isinstance(parent_candidates, Iterable) or isinstance(
+                parent_candidates, (str, bytes)
+            ):
+                continue
+            ordered_ids: list[str] = []
+            for candidate in parent_candidates:
+                parent_id = _coerce_str(candidate)
+                if parent_id:
+                    ordered_ids.append(parent_id)
+            if not ordered_ids:
+                continue
+            doc_parents = parent_context.get(doc_identifier)
+            if not isinstance(doc_parents, Mapping):
+                continue
+            parents_payload = [
+                doc_parents[parent_id]
+                for parent_id in ordered_ids
+                if parent_id in doc_parents
+            ]
+            if parents_payload:
+                meta_section["parents"] = parents_payload
+                meta_section["parent_ids"] = ordered_ids
 
     routing_meta = _resolve_routing_metadata(
         tenant_id=tenant_id, process=process, doc_class=doc_class
@@ -519,6 +713,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         "deleted_matches_blocked": deleted_matches_blocked,
         "visibility_effective": visibility_effective,
         "took_ms": took_ms,
+        "diversify_strength": hybrid_config.diversify_strength,
     }
 
     return RetrieveOutput(matches=final_matches, meta=RetrieveMeta(**meta_payload))

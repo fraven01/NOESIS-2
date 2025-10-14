@@ -30,6 +30,7 @@ def _configure_vector_spaces(settings, spaces):
             "model": "test-model",
             "dimension": next(iter(spaces.values()))["dimension"],
             "vector_space": next(iter(spaces.keys())),
+            "chunk_hard_limit": 512,
         }
     }
     reset_embedding_configuration_cache()
@@ -62,7 +63,12 @@ def test_validate_vector_schemas_detects_dimension_conflict(settings) -> None:
     }
     settings.RAG_VECTOR_STORES = spaces
     settings.RAG_EMBEDDING_PROFILES = {
-        "p": {"model": "m", "dimension": 3, "vector_space": "primary"}
+        "p": {
+            "model": "m",
+            "dimension": 3,
+            "vector_space": "primary",
+            "chunk_hard_limit": 256,
+        }
     }
     reset_embedding_configuration_cache()
 

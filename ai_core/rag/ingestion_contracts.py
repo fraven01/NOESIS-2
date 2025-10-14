@@ -63,6 +63,7 @@ class ChunkMeta(BaseModel):
     vector_space_id: str | None = None
     process: str | None = None
     doc_class: str | None = None
+    parent_ids: list[str] | None = None
 
     model_config = ConfigDict(extra="forbid")
 
