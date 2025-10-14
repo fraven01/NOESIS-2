@@ -2424,6 +2424,86 @@ class PgVectorClient:
             deleted_matches_blocked=deleted_matches_blocked_value,
         )
 
+    def fetch_parent_context(
+        self,
+        tenant_id: str,
+        requests: Mapping[str, Iterable[str]],
+    ) -> Dict[str, Dict[str, object]]:
+        """Return parent node payloads for the requested document/parent IDs."""
+
+        if not requests:
+            return {}
+
+        requested: Dict[uuid.UUID, set[str]] = {}
+        for doc_id, parent_ids in requests.items():
+            try:
+                doc_uuid = uuid.UUID(str(doc_id))
+            except (TypeError, ValueError):
+                continue
+            parent_set: set[str] = set()
+            for parent_id in parent_ids:
+                try:
+                    text = str(parent_id).strip()
+                except Exception:  # pragma: no cover - defensive
+                    continue
+                if text:
+                    parent_set.add(text)
+            if parent_set:
+                requested[doc_uuid] = parent_set
+
+        if not requested:
+            return {}
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        doc_ids = list(requested.keys())
+        results: Dict[str, Dict[str, object]] = {}
+
+        def _operation() -> Dict[str, Dict[str, object]]:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id, metadata->'parent_nodes'
+                        FROM documents
+                        WHERE tenant_id = %s AND id = ANY(%s)
+                        """,
+                        (str(tenant_uuid), doc_ids),
+                    )
+                    rows = cur.fetchall()
+            payload: Dict[str, Dict[str, object]] = {}
+            for row_id, parent_payload in rows:
+                requested_ids = requested.get(row_id)
+                if not requested_ids:
+                    continue
+                if not isinstance(parent_payload, Mapping):
+                    continue
+                subset: Dict[str, object] = {}
+                for parent_id in requested_ids:
+                    node = parent_payload.get(parent_id)
+                    if isinstance(node, Mapping):
+                        subset[parent_id] = dict(node)
+                    elif node is not None:
+                        subset[parent_id] = node
+                if subset:
+                    payload[str(row_id)] = subset
+            return payload
+
+        try:
+            results = self._run_with_retries(
+                _operation, op_name="fetch_parent_context"
+            )
+        except Exception:  # pragma: no cover - defensive logging
+            logger.exception(
+                "rag.parents.lookup_failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "doc_count": len(requested),
+                },
+            )
+            return {}
+
+        return results
+
     def health_check(self) -> bool:
         """Run a lightweight query to assert connectivity."""
 
@@ -2473,10 +2553,17 @@ class PgVectorClient:
                         if k not in {"tenant_id", "tenant", "hash", "source"}
                     },
                     "chunks": [],
+                    "parents": {},
                 }
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
+            parents_map = grouped[key].get("parents")
+            chunk_parents = chunk.parents
+            if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):
+                for parent_id, parent_meta in chunk_parents.items():
+                    if parent_id not in parents_map:
+                        parents_map[parent_id] = parent_meta
             grouped[key]["chunks"].append(
                 Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)
             )
@@ -2629,6 +2716,7 @@ class PgVectorClient:
             doc["content_hash"] = content_hash
             metadata_dict = dict(doc.get("metadata", {}))
             metadata_dict.setdefault("hash", content_hash)
+
             near_duplicate_details = None
             if self._near_duplicate_enabled:
                 doc_embedding = self._compute_document_embedding(doc)
@@ -2686,6 +2774,11 @@ class PgVectorClient:
                         extra={**log_extra, "document_id": str(existing_id)},
                     )
                     continue
+
+            parents_map = doc.get("parents")
+            if isinstance(parents_map, Mapping) and parents_map:
+                metadata_dict["parent_nodes"] = parents_map
+
             metadata = Json(metadata_dict)
             document_id = doc["id"]
             cur.execute(
@@ -2698,6 +2791,7 @@ class PgVectorClient:
                     metadata = EXCLUDED.metadata,
                     deleted_at = NULL
                 WHERE documents.hash IS DISTINCT FROM EXCLUDED.hash
+                    OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
                 RETURNING id, hash
                 """,
                 (

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import pytest
 
 from ai_core.nodes import retrieve
@@ -39,10 +41,12 @@ class _HybridSearchResult:
 
 
 class _FakeRouter:
-    def __init__(self, response):
+    def __init__(self, response, *, parents: dict[str, dict[str, object]] | None = None):
         self._response = response
         self.for_tenant_calls = []
         self.hybrid_calls = []
+        self.parent_calls: list[tuple[str, dict[str, list[str]]]] = []
+        self._parents = parents or {}
 
     def for_tenant(self, tenant_id, tenant_schema=None):
         self.for_tenant_calls.append((tenant_id, tenant_schema))
@@ -51,6 +55,10 @@ class _FakeRouter:
     def hybrid_search(self, query, **kwargs):
         self.hybrid_calls.append((query, kwargs))
         return self._response
+
+    def fetch_parent_context(self, tenant_id, requests):
+        self.parent_calls.append((tenant_id, dict(requests)))
+        return self._parents
 
 
 class _VisibilityStore:
@@ -256,6 +264,52 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
     assert meta_payload.routing.profile == "standard"
     assert meta_payload.routing.vector_space_id == "rag/global"
     assert meta_payload.visibility_effective == "active"
+
+
+def test_retrieve_includes_parent_context(monkeypatch):
+    _patch_routing(monkeypatch)
+
+    tenant = "tenant-parent"
+    case = "case-parent"
+    doc_uuid = "11111111-1111-1111-1111-111111111111"
+    chunk = Chunk(
+        "Parented chunk",
+        {
+            "id": "doc-parent",
+            "doc_id": doc_uuid,
+            "score": 0.9,
+            "source": "vector",
+            "tenant_id": tenant,
+            "case_id": case,
+            "parent_ids": ["section-1"],
+        },
+    )
+    response = _HybridSearchResult(
+        [chunk],
+        vector_candidates=1,
+        lexical_candidates=0,
+        alpha=0.55,
+        min_sim=0.35,
+    )
+    parent_payload = {doc_uuid: {"section-1": {"id": "section-1", "content": "Section text"}}}
+    router = _FakeRouter(response, parents=parent_payload)
+    monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
+
+    params = retrieve.RetrieveInput.from_state(
+        {
+            "query": "context",
+            "hybrid": {"alpha": 0.55, "min_sim": 0.35, "top_k": 1},
+        }
+    )
+    context = ToolContext(tenant_id=tenant, tenant_schema=None, case_id=case)
+
+    result = retrieve.run(context, params)
+
+    assert router.parent_calls == [(tenant, {doc_uuid: ["section-1"]})]
+    assert result.matches
+    meta = result.matches[0]["meta"]
+    assert meta["parent_ids"] == ["section-1"]
+    assert meta["parents"] == [{"id": "section-1", "content": "Section text"}]
 
 
 def _run_visibility_scenario(

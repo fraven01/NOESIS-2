@@ -153,6 +153,13 @@ class NullVectorStore:
         result.deleted_matches_blocked = 0
         return result
 
+    def fetch_parent_context(
+        self,
+        tenant_id: str,
+        requests: Mapping[str, Iterable[str]],
+    ) -> Dict[str, Dict[str, object]]:
+        return {}
+
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
         chunk_list = list(chunks)
         logger.debug(
@@ -342,6 +349,13 @@ class VectorStore(Protocol):
     ) -> "HybridSearchResult":
         """Execute a hybrid semantic/lexical search."""
 
+    def fetch_parent_context(
+        self,
+        tenant_id: str,
+        requests: Mapping[str, Iterable[str]],
+    ) -> Dict[str, Dict[str, object]]:
+        """Return parent node payloads for the requested document identifiers."""
+
     def close(self) -> None:
         """Release underlying resources if applicable."""
 
@@ -382,6 +396,12 @@ class TenantScopedVectorStore(Protocol):
         max_candidates: int | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid search within the tenant scope."""
+
+    def fetch_parent_context(
+        self,
+        requests: Mapping[str, Iterable[str]],
+    ) -> Dict[str, Dict[str, object]]:
+        """Return parent nodes for the requested identifiers within the scope."""
 
 
 class VectorStoreRouter:
@@ -790,6 +810,28 @@ class VectorStoreRouter:
         )
         return fallback_result
 
+    def fetch_parent_context(
+        self,
+        tenant_id: str,
+        requests: Mapping[str, Iterable[str]],
+        *,
+        tenant_schema: str | None = None,
+        scope: str | None = None,
+    ) -> Dict[str, Dict[str, object]]:
+        """Fetch parent node payloads from the backend store."""
+
+        if not requests:
+            return {}
+
+        resolved_scope = scope
+        if resolved_scope is None:
+            resolved_scope = self._resolve_scope(tenant_id, tenant_schema)
+        store = self._get_store(resolved_scope or self._default_scope)
+        fetcher = getattr(store, "fetch_parent_context", None)
+        if not callable(fetcher):
+            return {}
+        return fetcher(tenant_id, requests)
+
     def upsert_chunks(
         self,
         chunks: Iterable[Chunk],
@@ -940,6 +982,18 @@ class _TenantScopedClient:
             doc_class=doc_class,
             visibility=visibility,
             visibility_override_allowed=visibility_override_allowed,
+        )
+
+    def fetch_parent_context(
+        self, requests: Mapping[str, Iterable[str]]
+    ) -> Dict[str, Dict[str, object]]:
+        fetcher = getattr(self._router, "fetch_parent_context", None)
+        if not callable(fetcher):
+            return {}
+        return fetcher(
+            tenant_id=self._tenant_id,
+            requests=requests,
+            scope=self._scope,
         )
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:

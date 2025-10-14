@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Iterable, Mapping
 
 from common.logging import get_logger
 
@@ -474,6 +474,28 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     )
     chunks = list(getattr(hybrid_result, "chunks", []) or [])
     _ensure_chunk_metadata(chunks, tenant_id=tenant_id, case_id=case_id)
+    parent_requests: Dict[str, set[str]] = {}
+    for chunk in chunks:
+        meta_map = chunk.meta or {}
+        doc_identifier = _coerce_str(meta_map.get("doc_id"))
+        if not doc_identifier:
+            continue
+        parent_candidates = meta_map.get("parent_ids")
+        if isinstance(parent_candidates, Iterable) and not isinstance(
+            parent_candidates, (str, bytes)
+        ):
+            normalised_ids: list[str] = []
+            for candidate in parent_candidates:
+                parent_id = _coerce_str(candidate)
+                if parent_id:
+                    normalised_ids.append(parent_id)
+            if normalised_ids:
+                parent_requests.setdefault(doc_identifier, set()).update(
+                    normalised_ids
+                )
+                meta_map["parent_ids"] = normalised_ids
+        elif "parent_ids" in meta_map:
+            meta_map["parent_ids"] = []
     if not chunks and vector_candidates == 0 and lexical_candidates == 0:
         logger.info(
             "rag.retrieve.no_matches",
@@ -481,9 +503,86 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         )
         if not scoped_client:
             raise NotFoundError("No matching documents were found for the query.")
+
+    parent_context: Dict[str, Dict[str, Any]] = {}
+    if parent_requests:
+        fetch_parents = getattr(tenant_client, "fetch_parent_context", None)
+        if callable(fetch_parents):
+            payload = {
+                doc_id: sorted(parent_ids)
+                for doc_id, parent_ids in parent_requests.items()
+            }
+            try:
+                if scoped_client:
+                    parent_context = fetch_parents(payload)  # type: ignore[misc]
+                else:
+                    parent_context = fetch_parents(tenant_id, payload)  # type: ignore[misc]
+            except TypeError:
+                try:
+                    parent_context = fetch_parents(payload)  # type: ignore[misc]
+                except Exception as exc:  # pragma: no cover - defensive logging
+                    logger.warning(
+                        "rag.retrieve.parent_lookup_failed",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "case_id": case_id,
+                            "doc_count": len(parent_requests),
+                            "error": str(exc),
+                        },
+                    )
+            except Exception as exc:  # pragma: no cover - defensive logging
+                logger.warning(
+                    "rag.retrieve.parent_lookup_failed",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "case_id": case_id,
+                        "doc_count": len(parent_requests),
+                        "error": str(exc),
+                    },
+                )
+
     matches = [_chunk_to_match(chunk) for chunk in chunks]
     deduplicated = _deduplicate_matches(matches)
     final_matches = deduplicated[: hybrid_config.top_k]
+
+    if parent_context:
+        for match in final_matches:
+            meta_section = match.get("meta")
+            if meta_section is None:
+                meta_section = {}
+                match["meta"] = meta_section
+            elif not isinstance(meta_section, dict):
+                try:
+                    meta_section = dict(meta_section)
+                except Exception:
+                    meta_section = {}
+                match["meta"] = meta_section
+            doc_identifier = _coerce_str(meta_section.get("doc_id"))
+            if not doc_identifier:
+                continue
+            parent_candidates = meta_section.get("parent_ids")
+            if not isinstance(parent_candidates, Iterable) or isinstance(
+                parent_candidates, (str, bytes)
+            ):
+                continue
+            ordered_ids: list[str] = []
+            for candidate in parent_candidates:
+                parent_id = _coerce_str(candidate)
+                if parent_id:
+                    ordered_ids.append(parent_id)
+            if not ordered_ids:
+                continue
+            doc_parents = parent_context.get(doc_identifier)
+            if not isinstance(doc_parents, Mapping):
+                continue
+            parents_payload = [
+                doc_parents[parent_id]
+                for parent_id in ordered_ids
+                if parent_id in doc_parents
+            ]
+            if parents_payload:
+                meta_section["parents"] = parents_payload
+                meta_section["parent_ids"] = ordered_ids
 
     routing_meta = _resolve_routing_metadata(
         tenant_id=tenant_id, process=process, doc_class=doc_class
