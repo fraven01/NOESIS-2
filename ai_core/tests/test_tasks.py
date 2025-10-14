@@ -7,6 +7,7 @@ from django.conf import settings
 
 from ai_core import tasks
 from ai_core.infra import object_store
+from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag import metrics, vector_client
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
@@ -32,6 +33,20 @@ def test_split_sentences_falls_back_to_paragraphs() -> None:
     result = tasks._split_sentences(text)
 
     assert result == ["Abschnitt eins", "Abschnitt zwei", "Abschnitt drei"]
+
+
+def test_segment_markdown_blocks_detects_structures() -> None:
+    document = """# Titel\n\nEin Absatz mit Text.\n\n- Punkt eins\n- Punkt zwei\n\n```python\nprint('x')\n```\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n"""
+
+    segments = segment_markdown_blocks(document)
+
+    assert segments[:5] == [
+        "# Titel",
+        "Ein Absatz mit Text.",
+        "- Punkt eins\n- Punkt zwei",
+        "```python\nprint('x')\n```",
+        "| A | B |\n| --- | --- |\n| 1 | 2 |",
+    ]
 
 
 def test_chunkify_applies_overlap_and_limits() -> None:
@@ -75,6 +90,38 @@ def test_chunkify_enforces_hard_limit_and_long_sentences() -> None:
 
     assert chunks[0] == "kurz eins"
     assert chunks[1:] == expected_long_chunks
+
+
+def test_chunk_uses_structured_blocks_and_limit() -> None:
+    meta = {"tenant_id": "tenant", "case_id": "case", "external_id": "doc"}
+    document = (
+        "# Titel\n\nEin Absatz.\n\n- Punkt eins\n- Punkt zwei\n\n"
+        "```python\nprint('x')\n```\n\n"
+        + " ".join(f"wort{i}" for i in range(600))
+    )
+    text_path = tasks._build_path(meta, "text", "doc.txt")
+    object_store.put_bytes(text_path, document.encode("utf-8"))
+
+    with tasks.force_whitespace_tokenizer():
+        result = tasks.chunk(meta, text_path)
+
+    chunk_records = object_store.read_json(result["path"])
+    contents = [entry["content"] for entry in chunk_records]
+
+    assert contents[0].strip() == "# Titel"
+    assert any("```python" in content for content in contents)
+    assert any("Punkt eins" in content for content in contents)
+
+    long_chunks = [content for content in contents if "wort" in content]
+    assert len(long_chunks) > 1
+    for chunk_text in long_chunks:
+        assert len([token for token in chunk_text.split() if token]) <= 512
+
+    stored_root = object_store.BASE_PATH / meta["tenant_id"]
+    if stored_root.exists():
+        import shutil
+
+        shutil.rmtree(stored_root)
 
 
 def test_build_chunk_prefix_combines_breadcrumbs_and_title() -> None:
