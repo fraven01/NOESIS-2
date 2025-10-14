@@ -30,6 +30,7 @@ def _configure_embeddings(settings) -> None:
             "model": "oai-embed-large",
             "dimension": 1536,
             "vector_space": "global",
+            "chunk_hard_limit": 512,
         }
     }
 
