@@ -5,7 +5,7 @@ import pytest
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter
-from ai_core.tool_contracts import ToolContext
+from ai_core.tool_contracts import ContextError, ToolContext
 
 
 class _DummyProfile:
@@ -561,7 +561,7 @@ def test_retrieve_warns_without_for_tenant(monkeypatch, caplog):
     assert "rag.retrieve.router_incompatible" in caplog.text
 
 
-def test_retrieve_warns_on_incompatible_for_tenant(monkeypatch, caplog):
+def test_retrieve_raises_on_incompatible_for_tenant(monkeypatch):
     _patch_routing(monkeypatch)
 
     response = _HybridSearchResult(
@@ -586,8 +586,5 @@ def test_retrieve_warns_on_incompatible_for_tenant(monkeypatch, caplog):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
     context = ToolContext(tenant_id="tenant-789", case_id="case-2")
-    with caplog.at_level("WARNING"):
-        result = retrieve.run(context, _basic_params())
-
-    assert [match["id"] for match in result.matches] == ["doc-3"]
-    assert "rag.retrieve.router_incompatible" in caplog.text
+    with pytest.raises(ContextError, match="for_tenant must accept"):
+        retrieve.run(context, _basic_params())

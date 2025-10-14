@@ -142,14 +142,16 @@ def _build_router_adaptor(router: VectorStoreRouter) -> _RouterAdaptor:
             requires_warning=True,
         )
 
+    router_name = type(router).__name__
+    scope_error = (
+        f"{router_name}.for_tenant must accept (tenant_id) or"
+        " (tenant_id, tenant_schema)"
+    )
+
     try:
         sig: Signature = signature(for_tenant)
-    except (TypeError, ValueError):
-        return _RouterAdaptor(
-            factory=lambda tenant_id, tenant_schema: router,
-            is_scoped=False,
-            requires_warning=True,
-        )
+    except (TypeError, ValueError) as exc:
+        raise ContextError(scope_error, field="router") from exc
 
     try:
         sig.bind("tenant", "schema")
@@ -164,12 +166,8 @@ def _build_router_adaptor(router: VectorStoreRouter) -> _RouterAdaptor:
 
     try:
         sig.bind("tenant")
-    except TypeError:
-        return _RouterAdaptor(
-            factory=lambda tenant_id, tenant_schema: router,
-            is_scoped=False,
-            requires_warning=True,
-        )
+    except TypeError as exc:
+        raise ContextError(scope_error, field="router") from exc
 
     return _RouterAdaptor(
         factory=lambda tenant_id, tenant_schema: for_tenant(tenant_id),
