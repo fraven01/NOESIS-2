@@ -198,6 +198,34 @@ _FORCE_WHITESPACE_TOKENIZER = os.getenv(
     "yes",
 )
 
+_PRONOUN_PATTERN = re.compile(
+    r"\b(ich|mich|mir|du|dich|dir|er|ihn|ihm|sie|ihr|es|wir|uns|euch|"
+    r"they|them|their|theirs|he|him|his|she|her|hers|we|us|our|ours|i|me|my|mine)\b",
+    re.IGNORECASE,
+)
+
+_LIST_LIKE_KEYWORDS = (
+    "faq",
+    "liste",
+    "list",
+    "bullet",
+    "checklist",
+    "glossary",
+    "table",
+)
+
+_NARRATIVE_KEYWORDS = (
+    "narrative",
+    "narrativ",
+    "story",
+    "bericht",
+    "report",
+    "fallstudie",
+    "memo",
+    "conversation",
+    "transkript",
+)
+
 
 def _should_use_tiktoken() -> bool:
     return _TOKEN_ENCODING is not None and not _FORCE_WHITESPACE_TOKENIZER
@@ -277,6 +305,80 @@ def _split_by_limit(text: str, hard_limit: int) -> List[str]:
         return [part for part in parts if part]
 
     return [text[i : i + hard_limit] for i in range(0, len(text), hard_limit)]
+
+
+def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
+    """Estimate chunk overlap ratio between 10% and 25%."""
+
+    ratio_min = 0.10
+    ratio_max = 0.25
+    stripped = text.strip()
+    if not stripped:
+        return ratio_min
+
+    ratio = 0.15
+    doc_type = str(
+        meta.get("doc_class")
+        or meta.get("document_type")
+        or meta.get("type")
+        or ""
+    ).lower()
+    if doc_type:
+        if any(keyword in doc_type for keyword in _LIST_LIKE_KEYWORDS):
+            return ratio_min
+        if any(keyword in doc_type for keyword in _NARRATIVE_KEYWORDS):
+            ratio = max(ratio, 0.22)
+
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    if lines:
+        bullet_lines = sum(
+            1
+            for line in lines
+            if re.match(r"^(?:[-*•]\s|\d+\.\s)", line)
+        )
+        bullet_ratio = bullet_lines / max(1, len(lines))
+        if bullet_ratio >= 0.4:
+            ratio -= 0.03
+        elif bullet_ratio <= 0.1 and len(lines) > 4:
+            ratio += 0.02
+
+    words = re.findall(r"\b\w+\b", stripped)
+    word_count = len(words)
+    if word_count:
+        pronoun_count = len(_PRONOUN_PATTERN.findall(stripped))
+        pronoun_ratio = pronoun_count / word_count
+        if pronoun_ratio >= 0.07:
+            ratio += 0.07
+        elif pronoun_ratio >= 0.04:
+            ratio += 0.04
+        elif pronoun_ratio <= 0.015:
+            ratio -= 0.02
+
+    return max(ratio_min, min(ratio, ratio_max))
+
+
+def _resolve_overlap_tokens(
+    text: str,
+    meta: Dict[str, str],
+    *,
+    target_tokens: int,
+    hard_limit: int,
+) -> int:
+    ratio = _estimate_overlap_ratio(text, meta)
+    overlap = int(round(target_tokens * ratio))
+    if ratio > 0 and overlap == 0:
+        overlap = 1
+
+    configured_limit = getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", None)
+    try:
+        configured_value = int(configured_limit) if configured_limit is not None else None
+    except (TypeError, ValueError):  # pragma: no cover - defensive
+        configured_value = None
+
+    if configured_value is not None and configured_value > 0:
+        overlap = min(overlap, configured_value)
+
+    return max(0, min(overlap, hard_limit))
 
 
 def _chunkify(
@@ -369,8 +471,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         raise ValueError("external_id required for chunk")
 
     target_tokens = int(getattr(settings, "RAG_CHUNK_TARGET_TOKENS", 450))
-    overlap_tokens = int(getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", 80))
     hard_limit = max(target_tokens, 512)
+    overlap_tokens = _resolve_overlap_tokens(
+        text,
+        meta,
+        target_tokens=target_tokens,
+        hard_limit=hard_limit,
+    )
     prefix = _build_chunk_prefix(meta)
     chunk_bodies: List[str] = []
     structured_blocks = segment_markdown_blocks(text)
