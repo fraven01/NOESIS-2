@@ -2814,17 +2814,17 @@ class PgVectorClient:
         if operator == "<=>":
             sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
             distance_sql = sql.SQL("e.embedding <=> %s::vector")
-            select_vector_params = [vector_str]
+            select_vector_params = [vector_str, vector_str]
         elif not use_distance_metric:
             sim_sql = sql.SQL(
                 "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
             )
             distance_sql = sql.SQL("e.embedding <-> %s::vector")
-            select_vector_params = [vector_str, vector_str]
+            select_vector_params = [vector_str, vector_str, vector_str]
         else:
             sim_sql = sql.SQL("e.embedding <-> %s::vector")
             distance_sql = sql.SQL("e.embedding <-> %s::vector")
-            select_vector_params = [vector_str]
+            select_vector_params = [vector_str, vector_str]
 
         if use_distance_metric:
             global_order_sql = sql.SQL("ASC")
@@ -2873,7 +2873,6 @@ class PgVectorClient:
             *select_vector_params,
             tenant_value,
             external_id,
-            vector_str,
             prefetch_limit,
             self._near_duplicate_probe_limit,
         ]
