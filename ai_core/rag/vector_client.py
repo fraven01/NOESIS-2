@@ -503,7 +503,7 @@ class PgVectorClient:
         elif operator == "<->":
             # L2 distance lies in [0, 2] for unit-normalised vectors.
             clamped = max(0.0, min(distance, 2.0))
-            similarity = 1.0 - (clamped / 2.0)
+            similarity = 1.0 - ((clamped**2) / 2.0)
         else:
             return None
         return max(0.0, min(1.0, similarity))
