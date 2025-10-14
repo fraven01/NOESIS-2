@@ -290,14 +290,40 @@ def _merge_duplicate(existing: Dict[str, Any], candidate: Dict[str, Any]) -> Non
             existing["meta"] = merged
 
 
+def _normalise_identifier(value: object) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _match_key(match: Mapping[str, Any], index: int) -> tuple[str, ...]:
+    meta = match.get("meta")
+    if isinstance(meta, Mapping):
+        chunk_identifier = _normalise_identifier(meta.get("chunk_id"))
+        if chunk_identifier:
+            return ("chunk_id", chunk_identifier)
+
+    hash_identifier = _normalise_identifier(match.get("hash"))
+    if hash_identifier:
+        return ("hash", hash_identifier)
+
+    doc_identifier = _normalise_identifier(match.get("id"))
+    text_value = match.get("text")
+    if doc_identifier and isinstance(text_value, str):
+        return ("id:text", doc_identifier, text_value)
+    if doc_identifier:
+        return ("id:index", doc_identifier, str(index))
+
+    return ("index", str(index))
+
+
 def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
-    aggregated: dict[str, Dict[str, Any]] = {}
-    ordered_keys: list[str] = []
+    aggregated: dict[tuple[str, ...], Dict[str, Any]] = {}
+    ordered_keys: list[tuple[str, ...]] = []
 
     for index, match in enumerate(matches):
-        identifier = match.get("id")
-        if identifier is None:
-            identifier = f"__chunk_{index}"
+        identifier = _match_key(match, index)
         if identifier in aggregated:
             _merge_duplicate(aggregated[identifier], match)
             continue

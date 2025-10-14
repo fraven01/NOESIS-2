@@ -213,6 +213,7 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             "First",
             {
                 "id": "doc-1",
+                "chunk_id": "chunk-1",
                 "score": 0.4,
                 "source": "a",
                 "tenant_id": "tenant-1",
@@ -223,6 +224,7 @@ def test_retrieve_deduplicates_matches(monkeypatch):
             "Second",
             {
                 "id": "doc-1",
+                "chunk_id": "chunk-1",
                 "score": 0.9,
                 "source": "b",
                 "extra": "x",
@@ -233,7 +235,19 @@ def test_retrieve_deduplicates_matches(monkeypatch):
         Chunk(
             "Third",
             {
+                "id": "doc-1",
+                "chunk_id": "chunk-2",
+                "score": 0.6,
+                "source": "d",
+                "tenant_id": "tenant-1",
+                "case_id": "c1",
+            },
+        ),
+        Chunk(
+            "Fourth",
+            {
                 "id": "doc-2",
+                "chunk_id": "chunk-3",
                 "score": 0.5,
                 "source": "c",
                 "tenant_id": "tenant-1",
@@ -265,12 +279,22 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 
     result = retrieve.run(context, params)
 
-    assert len(result.matches) == 2
-    assert {match["id"] for match in result.matches} == {"doc-1", "doc-2"}
+    assert len(result.matches) == 3
+    assert [match["meta"]["chunk_id"] for match in result.matches] == [
+        "chunk-1",
+        "chunk-2",
+        "chunk-3",
+    ]
     top_match = result.matches[0]
     assert top_match["id"] == "doc-1"
     assert top_match["source"] == "b"
     assert top_match["score"] == pytest.approx(0.9)
+    doc_1_chunks = [match for match in result.matches if match["id"] == "doc-1"]
+    assert len(doc_1_chunks) == 2
+    assert {match["meta"]["chunk_id"] for match in doc_1_chunks} == {
+        "chunk-1",
+        "chunk-2",
+    }
 
 
 def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
