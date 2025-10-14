@@ -78,6 +78,13 @@
           "type": "integer",
           "minimum": 1,
           "description": "Upper bound for the combined candidate pool before fusion."
+        },
+        "diversify_strength": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.3,
+          "description": "Weight applied to Maximal Marginal Relevance diversification after deduplication."
         }
       }
     }
