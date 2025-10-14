@@ -33,6 +33,7 @@ from common.logging import get_log_context, get_logger
 from ai_core.rag.vector_store import VectorStore
 from .embeddings import EmbeddingClientError, get_embedding_client
 from .normalization import normalise_text, normalise_text_db
+from .parents import limit_parent_payload
 
 from . import metrics
 from .filters import strict_match
@@ -2485,7 +2486,7 @@ class PgVectorClient:
                     elif node is not None:
                         subset[parent_id] = node
                 if subset:
-                    payload[str(row_id)] = subset
+                    payload[str(row_id)] = limit_parent_payload(subset)
             return payload
 
         try:
@@ -2561,7 +2562,8 @@ class PgVectorClient:
             parents_map = grouped[key].get("parents")
             chunk_parents = chunk.parents
             if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):
-                for parent_id, parent_meta in chunk_parents.items():
+                limited_chunk_parents = limit_parent_payload(chunk_parents)
+                for parent_id, parent_meta in limited_chunk_parents.items():
                     if parent_id not in parents_map:
                         parents_map[parent_id] = parent_meta
             grouped[key]["chunks"].append(
@@ -2777,7 +2779,7 @@ class PgVectorClient:
 
             parents_map = doc.get("parents")
             if isinstance(parents_map, Mapping) and parents_map:
-                metadata_dict["parent_nodes"] = parents_map
+                metadata_dict["parent_nodes"] = limit_parent_payload(parents_map)
 
             metadata = Json(metadata_dict)
             document_id = doc["id"]
