@@ -348,7 +348,7 @@ def _normalise_strength(value: float) -> float:
 
 
 def _tokenise(text: str | None) -> set[str]:
-    if not text:
+    if not isinstance(text, str) or not text:
         return set()
     tokens = {match.group(0).lower() for match in _TOKEN_PATTERN.finditer(text)}
     return tokens
@@ -383,7 +383,10 @@ def _apply_diversification(
     lambda_param = 1.0 - normalised_strength
 
     relevance_scores = [float(match.get("score", 0.0)) for match in matches]
-    token_sets = [_tokenise(match.get("text")) for match in matches]
+    token_sets = [
+        _tokenise(match.get("text") or match.get("content") or "")
+        for match in matches
+    ]
 
     ordered_indices = list(range(len(matches)))
     ordered_indices.sort(key=lambda idx: (-relevance_scores[idx], idx))
