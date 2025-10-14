@@ -76,6 +76,9 @@ _OPERATOR_FOR_CLASS: dict[str, str] = {
     "vector_ip_ops": "<#>",
 }
 
+_TRUE_VALUES = {"1", "true", "t", "yes", "y", "on"}
+_FALSE_VALUES = {"0", "false", "f", "no", "n", "off"}
+
 
 FALLBACK_STATEMENT_TIMEOUT_MS = 15000
 FALLBACK_RETRY_ATTEMPTS = 3
@@ -187,6 +190,41 @@ def _get_setting(name: str, default: float | int | str) -> float | int | str:
         return default
 
 
+def _coerce_to_bool(value: object) -> Optional[bool]:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if math.isnan(float(value)) or math.isinf(float(value)):
+            return None
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in _TRUE_VALUES:
+            return True
+        if lowered in _FALSE_VALUES:
+            return False
+    return None
+
+
+def _get_bool_setting(name: str, default: bool) -> bool:
+    env_value = os.getenv(name)
+    if env_value is not None:
+        coerced = _coerce_to_bool(env_value)
+        if coerced is not None:
+            return coerced
+    try:  # pragma: no cover - requires Django settings
+        from django.conf import settings  # type: ignore
+
+        attr = getattr(settings, name, None)
+    except Exception:
+        attr = None
+    if attr is not None:
+        coerced = _coerce_to_bool(attr)
+        if coerced is not None:
+            return coerced
+    return default
+
+
 DocumentKey = Tuple[str, str]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
@@ -228,7 +266,13 @@ class UpsertResult(int):
 
 
 class PgVectorClient:
-    """pgvector-backed client for chunk storage and retrieval."""
+    """pgvector-backed client for chunk storage and retrieval.
+
+    ``RAG_NEAR_DUPLICATE_THRESHOLD`` is interpreted as a cosine-style similarity
+    (``1.0`` for identical vectors, ``0.0`` for orthogonal vectors) regardless of
+    the underlying pgvector operator. L2 distances are therefore mapped onto
+    this scale before the threshold is evaluated.
+    """
 
     _ROW_SHAPE_WARNINGS: ClassVar[set[Tuple[str, int]]] = set()
 
@@ -267,6 +311,12 @@ class PgVectorClient:
         self._retries = max(1, retries_value)
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
         self._distance_operator_cache: Dict[str, str] = {}
+        self._near_duplicate_require_unit_norm = _get_bool_setting(
+            "RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", True
+        )
+        self._embeddings_unit_normalised = _get_bool_setting(
+            "RAG_EMBEDDINGS_UNIT_NORMALISED", False
+        )
         near_strategy = str(
             _get_setting("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
         ).lower()
@@ -482,6 +532,17 @@ class PgVectorClient:
             )
         self._distance_operator_cache[key] = operator
         return operator
+
+    def _is_near_duplicate_operator_supported(
+        self, operator: str
+    ) -> tuple[bool, Optional[str]]:
+        if operator == "<=>":
+            return True, None
+        if operator == "<->":
+            if self._near_duplicate_require_unit_norm and not self._embeddings_unit_normalised:
+                return False, "unit_norm_required"
+            return True, None
+        return False, "operator_unhandled"
 
     def _restore_session_after_rollback(self, cur) -> None:  # type: ignore[no-untyped-def]
         """Re-apply session level settings after a transaction rollback."""
@@ -2634,30 +2695,69 @@ class PgVectorClient:
                 },
             )
             return None
+        supported, reason = self._is_near_duplicate_operator_supported(operator)
+        if not supported:
+            extra = {
+                "tenant_id": str(tenant_uuid),
+                "index_kind": index_kind,
+                "operator": operator,
+            }
+            if reason:
+                extra["reason"] = reason
+            logger.info("ingestion.doc.near_duplicate_operator_unsupported", extra=extra)
+            return None
+        if operator == "<=>":
+            sim_sql = sql.SQL("1.0 - (e.embedding <=> %s::vector)")
+            order_sql = sql.SQL("e.embedding <=> %s::vector ASC")
+        elif operator == "<->":
+            sim_sql = sql.SQL(
+                "1.0 - ((e.embedding <-> %s::vector) * (e.embedding <-> %s::vector)) / 2.0"
+            )
+            order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
+        else:  # pragma: no cover - defensive fallback
+            logger.info(
+                "ingestion.doc.near_duplicate_operator_unsupported",
+                extra={
+                    "tenant_id": str(tenant_uuid),
+                    "index_kind": index_kind,
+                    "operator": operator,
+                    "reason": "operator_unhandled",
+                },
+            )
+            return None
+
         query = sql.SQL(
             """
-            SELECT d.id, d.external_id, 1.0 - (e.embedding {op} %s::vector) AS similarity
+            SELECT d.id, d.external_id, {sim} AS similarity
             FROM documents d
             JOIN chunks c ON c.document_id = d.id
             JOIN embeddings e ON e.chunk_id = c.id
             WHERE d.tenant_id = %s
               AND d.deleted_at IS NULL
               AND d.external_id <> %s
-            ORDER BY e.embedding {op} %s::vector ASC
+            ORDER BY {order}
             LIMIT %s
             """
-        ).format(op=sql.SQL(operator))
+        ).format(sim=sim_sql, order=order_sql)
         tenant_value = str(tenant_uuid)
-        cur.execute(
-            query,
-            (
+        if operator == "<=>":
+            params: Sequence[object] = (
                 vector_str,
                 tenant_value,
                 external_id,
                 vector_str,
                 self._near_duplicate_probe_limit,
-            ),
-        )
+            )
+        else:
+            params = (
+                vector_str,
+                vector_str,
+                tenant_value,
+                external_id,
+                vector_str,
+                self._near_duplicate_probe_limit,
+            )
+        cur.execute(query, params)
         rows = cur.fetchall()
         best: Dict[str, object] | None = None
         best_similarity = self._near_duplicate_threshold

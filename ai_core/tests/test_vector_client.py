@@ -1,4 +1,5 @@
 import hashlib
+import math
 import threading
 import uuid
 from collections.abc import Sequence
@@ -550,6 +551,112 @@ class TestPgVectorClient:
         )
         assert matches
         assert matches[0].meta["external_id"] == "doc-new"
+
+    def test_near_duplicate_similarity_uses_l2_mapping(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
+        monkeypatch.setenv("RAG_EMBEDDINGS_UNIT_NORMALISED", "true")
+        vector_client.reset_default_client()
+
+        def _force_l2(self, conn, index_kind):  # type: ignore[no-untyped-def]
+            return "<->"
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_get_distance_operator",
+            _force_l2,
+        )
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        dim = vector_client.get_embedding_dim()
+        base_vector = [0.0] * dim
+        base_vector[0] = 1.0
+        base_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"baseline").hexdigest(),
+                "source": "unit",
+            },
+            embedding=list(base_vector),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        variant_vector = [0.0] * dim
+        variant_vector[0] = 0.995
+        variant_vector[1] = 0.1
+        norm = math.sqrt(variant_vector[0] ** 2 + variant_vector[1] ** 2)
+        variant_vector[0] /= norm
+        variant_vector[1] /= norm
+        variant_chunk = Chunk(
+            content="variant",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-variant",
+                "hash": hashlib.sha256(b"variant").hexdigest(),
+                "source": "unit",
+            },
+            embedding=list(variant_vector),
+        )
+        result = client.upsert_chunks([variant_chunk])
+        assert result == 0
+        payload = result.documents[0]
+        assert payload["action"] == "near_duplicate_skipped"
+        expected_distance = math.dist(base_vector, variant_vector)
+        expected_similarity = 1.0 - (expected_distance * expected_distance) / 2.0
+        assert expected_similarity > 0.97
+        assert payload["near_duplicate_similarity"] == pytest.approx(
+            expected_similarity, rel=1e-6
+        )
+
+    def test_l2_near_duplicate_disabled_without_unit_norm(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
+        monkeypatch.setenv("RAG_EMBEDDINGS_UNIT_NORMALISED", "false")
+        vector_client.reset_default_client()
+
+        def _force_l2(self, conn, index_kind):  # type: ignore[no-untyped-def]
+            return "<->"
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_get_distance_operator",
+            _force_l2,
+        )
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        dim = vector_client.get_embedding_dim()
+        base_vector = [2.0] + [0.0] * (dim - 1)
+        base_chunk = Chunk(
+            content="baseline",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"base-unnormalised").hexdigest(),
+                "source": "unit",
+            },
+            embedding=list(base_vector),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        duplicate_chunk = Chunk(
+            content="duplicate",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-duplicate",
+                "hash": hashlib.sha256(b"dup-unnormalised").hexdigest(),
+                "source": "unit",
+            },
+            embedding=list(base_vector),
+        )
+        result = client.upsert_chunks([duplicate_chunk])
+        assert result == 1
+        payload = result.documents[0]
+        assert payload["action"] == "inserted"
+        assert "near_duplicate_of" not in payload
 
     def test_search_caps_top_k(self):
         client = vector_client.get_default_client()
