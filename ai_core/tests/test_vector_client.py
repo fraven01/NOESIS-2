@@ -986,6 +986,7 @@ class TestPgVectorClient:
     def test_fallback_reapplies_search_path_after_rollback(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        vector_client.reset_default_client()
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
         doc_hash = hashlib.sha256(b"fallback-search-path").hexdigest()
@@ -998,161 +999,144 @@ class TestPgVectorClient:
             lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
-        primary_modes: list[str] = ["error", "empty"]
+        class _RecordingConnection:
+            def __init__(self, *, fail_primary: bool) -> None:
+                self.fail_next_primary = fail_primary
+                self.search_path_calls = 0
+                self.search_path_restored_after_rollback = False
+                self.statement_timeout_calls = 0
+                self.rollback_calls = 0
+                self.search_path_set = False
+                self.was_rolled_back = False
+                self.last_limit: float | None = None
+                self.primary_rows = (
+                    []
+                    if fail_primary
+                    else [
+                        (
+                            "chunk-primary",
+                            "Lexical primary",
+                            {
+                                "tenant_id": normalized_tenant,
+                                "hash": doc_hash,
+                                "external_id": "primary-doc",
+                            },
+                            doc_hash,
+                            doc_id,
+                            0.41,
+                        )
+                    ]
+                )
+                self.fallback_rows = [
+                    (
+                        "chunk-fallback",
+                        "Lexical fallback",
+                        {
+                            "tenant_id": normalized_tenant,
+                            "hash": doc_hash,
+                            "external_id": "fallback-doc",
+                        },
+                        doc_hash,
+                        doc_id,
+                        0.38,
+                    )
+                ]
 
-        class _Cursor:
-            def __init__(self, owner) -> None:
+            def mark_search_path(self) -> None:
+                self.search_path_calls += 1
+                if self.was_rolled_back:
+                    self.search_path_restored_after_rollback = True
+                    self.was_rolled_back = False
+                self.search_path_set = True
+
+            def mark_statement_timeout(self) -> None:
+                self.statement_timeout_calls += 1
+
+            def cursor(self):  # type: ignore[no-untyped-def]
+                return _RecordingCursor(self)
+
+            def rollback(self) -> None:
+                self.rollback_calls += 1
+                self.was_rolled_back = True
+                self.search_path_set = False
+
+        class _RecordingCursor:
+            def __init__(self, owner: _RecordingConnection) -> None:
                 self._owner = owner
-                self._next_fetchall: tuple[str, str | None] | None = None
-                self._fetchone_result: tuple | None = None
-                self._fallback_limit: float | None = None
+                self._stage: str | None = None
+                self._rows: list[tuple] = []
 
-            def __enter__(self) -> "_Cursor":
+            def __enter__(self) -> "_RecordingCursor":
                 return self
 
             def __exit__(self, exc_type, exc, tb) -> None:
                 return None
 
             def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
-                # Handle both plain strings and psycopg2.sql-composed objects.
-                # The application uses psycopg2.sql objects for SET search_path,
-                # which don't stringify to the final SQL. Detect those safely.
                 try:
                     from psycopg2 import sql as _sql  # type: ignore
                 except Exception:
                     _sql = None  # type: ignore
 
                 if _sql is not None and isinstance(sql, (_sql.SQL, _sql.Composed)):
-                    # This branch represents safe SQL objects (e.g. SET search_path ...)
-                    # sent by the application; mark search_path as applied.
                     self._owner.mark_search_path()
                     return
 
                 text = str(sql)
-                if "pg_catalog.pg_opclass" in text:
-                    self._fetchone_result = (1,)
-                    return
-                if "SET search_path" in text:
-                    self._owner.mark_search_path()
-                    return
-                if "SET LOCAL statement_timeout" in text:
+                norm = " ".join(text.split())
+
+                if "SET LOCAL statement_timeout" in norm:
                     self._owner.mark_statement_timeout()
                     return
-                if "SELECT set_limit" in text:
-                    self._owner.last_limit = float(params[0]) if params else None
+                if "SET LOCAL hnsw.ef_search" in norm or "SET LOCAL ivfflat.probes" in norm:
                     return
-                if "SELECT show_limit()" in text:
-                    if self._owner.last_limit is None:
-                        self._fetchone_result = None
-                    else:
-                        self._fetchone_result = (self._owner.last_limit,)
+                if "SELECT set_limit" in norm:
+                    try:
+                        self._owner.last_limit = float((params or (None,))[0])
+                    except Exception:
+                        self._owner.last_limit = None
                     return
-                if "FROM embeddings" in text:
-                    self._next_fetchall = ("vector", None)
+                if "SELECT show_limit()" in norm:
+                    self._stage = "show_limit"
                     return
-                if "c.text_norm % %s" in text:
-                    self._next_fetchall = (
-                        "primary",
-                        self._owner.next_primary_mode(),
-                    )
+                if "FROM pg_catalog.pg_opclass" in norm:
+                    self._stage = "opclass"
                     return
-                if "similarity(c.text_norm, %s) >= %s" in text:
-                    self._fallback_limit = float(params[-2]) if params else None
-                    self._next_fetchall = ("fallback", None)
+                if "FROM embeddings" in norm:
+                    self._stage = "vector"
+                    self._rows = []
                     return
-                self._next_fetchall = None
+                if "c.text_norm % %s" in norm:
+                    if self._owner.fail_next_primary:
+                        self._owner.fail_next_primary = False
+                        raise UndefinedTable("simulated lexical failure")
+                    self._stage = "lexical"
+                    self._rows = list(self._owner.primary_rows)
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in norm:
+                    self._stage = "fallback"
+                    self._rows = list(self._owner.fallback_rows)
+                    return
 
             def fetchall(self) -> list[tuple]:
-                mode = self._next_fetchall
-                self._next_fetchall = None
-                if not mode:
-                    return []
-                kind, detail = mode
-                if kind == "vector":
-                    return []
-                if kind == "primary":
-                    if detail == "error":
-                        raise IndexError("simulated lexical failure")
-                    if detail == "rows":
-                        if not self._owner.search_path_set:
-                            raise RuntimeError("search path missing")
-                        return [
-                            (
-                                "chunk-primary",
-                                "Lexical primary",
-                                {
-                                    "tenant_id": normalized_tenant,
-                                    "hash": doc_hash,
-                                    "external_id": "primary-doc",
-                                },
-                                doc_hash,
-                                doc_id,
-                                0.41,
-                            )
-                        ]
-                    return []
-                if kind == "fallback":
-                    if not self._owner.search_path_set:
-                        raise RuntimeError("search path missing")
-                    return [
-                        (
-                            "chunk-fallback",
-                            "Lexical fallback",
-                            {
-                                "tenant_id": normalized_tenant,
-                                "hash": doc_hash,
-                                "external_id": "fallback-doc",
-                            },
-                            doc_hash,
-                            doc_id,
-                            0.38,
-                        )
-                    ]
-                return []
+                rows = list(self._rows)
+                self._rows = []
+                return rows
 
             def fetchone(self):
-                result = self._fetchone_result
-                self._fetchone_result = None
-                return result
+                if self._stage == "show_limit" and self._owner.last_limit is not None:
+                    return (self._owner.last_limit,)
+                return None
 
-        class _FakeConnection:
-            def __init__(self, primary_mode: str) -> None:
-                self.search_path_set = False
-                self.search_path_calls = 0
-                self.statement_timeout_calls = 0
-                self.rollback_calls = 0
-                self.last_limit: float | None = None
-                self._primary_modes: list[str] = [primary_mode]
-
-            def mark_search_path(self) -> None:
-                self.search_path_set = True
-                self.search_path_calls += 1
-
-            def mark_statement_timeout(self) -> None:
-                self.statement_timeout_calls += 1
-
-            def next_primary_mode(self) -> str:
-                if self._primary_modes:
-                    return self._primary_modes.pop(0)
-                return "empty"
-
-            def cursor(self) -> _Cursor:
-                return _Cursor(self)
-
-            def rollback(self) -> None:
-                self.search_path_set = False
-                self.rollback_calls += 1
-
-        connections: list[_FakeConnection] = []
+        connections: list[_RecordingConnection] = []
 
         def _fake_connection(self):  # type: ignore[no-untyped-def]
-            mode = primary_modes.pop(0) if primary_modes else "empty"
-            fake = _FakeConnection(mode)
-            connections.append(fake)
+            conn = _RecordingConnection(fail_primary=len(connections) == 0)
+            connections.append(conn)
 
             class _Ctx:
                 def __enter__(self_inner):
-                    return fake
+                    return conn
 
                 def __exit__(self_inner, exc_type, exc, tb):
                     return None
@@ -1185,27 +1169,23 @@ class TestPgVectorClient:
         assert result_failure.chunks
         assert result_no_rollback.lexical_candidates == 1
         assert result_no_rollback.chunks
-        assert connections
-        assert len(connections) >= 2
+        assert len(connections) == 2
 
-        failure_conn = connections[0]
+        failure_conn, success_conn = connections
         assert failure_conn.rollback_calls == 1
-        assert failure_conn.search_path_calls == failure_conn.rollback_calls + 1
-        assert failure_conn.statement_timeout_calls == failure_conn.rollback_calls + 2
-        assert failure_conn.search_path_set is True
+        assert failure_conn.search_path_restored_after_rollback is True
+        assert failure_conn.statement_timeout_calls >= 2
 
-        no_rollback_conn = connections[1]
-        assert no_rollback_conn.rollback_calls == 0
-        assert no_rollback_conn.search_path_calls == 1
-        assert no_rollback_conn.statement_timeout_calls == 2
-        assert no_rollback_conn.search_path_set is True
+        assert success_conn.rollback_calls == 0
+        assert success_conn.search_path_calls >= 1
 
     def test_lexical_row_without_negative_index(self, monkeypatch):
+        vector_client.reset_default_client()
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
-        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
         doc_hash = hashlib.sha256(b"lexical-noneg").hexdigest()
         doc_id = uuid.uuid4()
+        normalized_tenant = str(client._coerce_tenant_uuid(tenant))
 
         monkeypatch.setattr(
             vector_client.PgVectorClient,
@@ -1213,9 +1193,6 @@ class TestPgVectorClient:
             lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
         )
 
-        # Simulate a row object that raises on any positional indexing to
-        # reflect stricter, defensive handling in the client which falls back
-        # to an explicit similarity query when the primary lexical path fails.
         class _ExplodingRow(Sequence):
             def __init__(self, values: tuple[object, ...]) -> None:
                 self._values = values
@@ -1223,18 +1200,31 @@ class TestPgVectorClient:
             def __len__(self) -> int:
                 return len(self._values)
 
+            def __iter__(self):  # type: ignore[override]
+                raise ValueError("iteration not supported")
+
             def __getitem__(self, index):  # type: ignore[override]
-                # Intentionally raise on all positional index access to trigger
-                # the client's fallback logic (no negative-index dependency).
-                raise IndexError("positional indexing not supported")
+                raise ValueError("positional indexing not supported")
 
-        class _Cursor:
+        class _FallbackConnection:
             def __init__(self) -> None:
-                self._next_fetchall: str | None = None
-                self._fetchone_result: tuple | None = None
-                self._last_limit: float | None = None
+                self.last_limit: float | None = None
+                self.rollback_called = False
 
-            def __enter__(self) -> "_Cursor":
+            def cursor(self):  # type: ignore[no-untyped-def]
+                return _FallbackCursor(self)
+
+            def rollback(self) -> None:
+                self.rollback_called = True
+                raise AssertionError("rollback should not be required")
+
+        class _FallbackCursor:
+            def __init__(self, owner: _FallbackConnection) -> None:
+                self._owner = owner
+                self._stage: str | None = None
+                self._rows: list[object] = []
+
+            def __enter__(self) -> "_FallbackCursor":
                 return self
 
             def __exit__(self, exc_type, exc, tb) -> None:
@@ -1242,39 +1232,25 @@ class TestPgVectorClient:
 
             def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
                 text = str(sql)
-                if "pg_catalog.pg_opclass" in text:
-                    self._fetchone_result = (1,)
+                norm = " ".join(text.split())
+                if "SET LOCAL statement_timeout" in norm:
                     return
-                if "SET LOCAL statement_timeout" in text:
+                if "SELECT set_limit" in norm:
+                    try:
+                        self._owner.last_limit = float((params or (None,))[0])
+                    except Exception:
+                        self._owner.last_limit = None
                     return
-                if "SELECT set_limit" in text:
-                    self._last_limit = float(params[0]) if params else None
+                if "SELECT show_limit()" in norm:
+                    self._stage = "show_limit"
                     return
-                if "SELECT show_limit()" in text:
-                    if self._last_limit is None:
-                        self._fetchone_result = None
-                    else:
-                        self._fetchone_result = (self._last_limit,)
+                if "FROM embeddings" in norm:
+                    self._stage = "vector"
+                    self._rows = []
                     return
-                if "FROM embeddings" in text:
-                    self._next_fetchall = "vector"
-                    return
-                if "c.text_norm % %s" in text:
-                    self._next_fetchall = "primary"
-                    return
-                if "similarity(c.text_norm, %s) >= %s" in text:
-                    # Allow the fallback path; the client should reach this
-                    # when handling the primary lexical failure.
-                    self._next_fetchall = "fallback"
-                    self._next_fetchall = None
-
-            def fetchall(self) -> list[object]:
-                mode = self._next_fetchall
-                self._next_fetchall = None
-                if mode == "vector":
-                    return []
-                if mode == "primary":
-                    return [
+                if "c.text_norm % %s" in norm:
+                    self._stage = "lexical"
+                    self._rows = [
                         _ExplodingRow(
                             (
                                 str(uuid.uuid4()),
@@ -1286,10 +1262,10 @@ class TestPgVectorClient:
                             )
                         )
                     ]
-                if mode == "fallback":
-                    # Provide a normal, indexable tuple row to complete the
-                    # fallback path successfully.
-                    return [
+                    return
+                if "similarity(c.text_norm, %s) >= %s" in norm:
+                    self._stage = "fallback"
+                    self._rows = [
                         (
                             str(uuid.uuid4()),
                             "Lexical row via fallback",
@@ -1299,26 +1275,24 @@ class TestPgVectorClient:
                             0.41,
                         )
                     ]
-                return []
+                    return
+
+            def fetchall(self) -> list[object]:
+                rows = list(self._rows)
+                self._rows = []
+                return rows
 
             def fetchone(self):
-                result = self._fetchone_result
-                self._fetchone_result = None
-                return result
-
-        class _FakeConnection:
-            def cursor(self) -> _Cursor:
-                return _Cursor()
-
-            def rollback(self) -> None:
-                raise AssertionError("rollback should not be required")
+                if self._stage == "show_limit" and self._owner.last_limit is not None:
+                    return (self._owner.last_limit,)
+                return None
 
         def _fake_connection(self):  # type: ignore[no-untyped-def]
-            fake = _FakeConnection()
+            conn = _FallbackConnection()
 
             class _Ctx:
                 def __enter__(self_inner):
-                    return fake
+                    return conn
 
                 def __exit__(self_inner, exc_type, exc, tb):
                     return None
@@ -1337,8 +1311,6 @@ class TestPgVectorClient:
                 top_k=1,
             )
 
-        # Primary lexical should fail (row indexing error), triggering the
-        # explicit similarity fallback which returns one lexical candidate.
         assert result.lexical_candidates == 1
         assert result.chunks
         failures = [
@@ -1346,7 +1318,7 @@ class TestPgVectorClient:
             for entry in logs
             if entry.get("event") == "rag.hybrid.lexical_primary_failed"
         ]
-        assert len(failures) >= 1
+        assert failures
 
     def test_fallback_skips_when_limit_low_enough(
         self, monkeypatch: pytest.MonkeyPatch

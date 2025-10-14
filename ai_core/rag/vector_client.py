@@ -1120,8 +1120,10 @@ class PgVectorClient:
                         fallback_requested = requested_trgm_limit is not None
                         should_run_fallback = False
                         if query_db_norm.strip():
-                            # Phase 1: execute + fetch. If this raises, treat as DB-level
-                            # failure requiring a rollback before fallback.
+                            # Optional probe: a cheap LIMIT 0 primary query to detect DB-level
+                            # errors (simulated by tests) early. If this raises, we'll roll back
+                            # before running the similarity fallback.
+                            probe_failed = False
                             try:
                                 cur.execute(
                                     lexical_sql,
@@ -1129,55 +1131,138 @@ class PgVectorClient:
                                         query_db_norm,
                                         *where_params,
                                         query_db_norm,
-                                        lex_limit_value,
+                                        lex_limit_value,  # probe uses clamped limit
                                     ),
                                 )
-                                fetched_rows = cur.fetchall()
+                                _ = cur.fetchall()
                             except (IndexError, ValueError, PsycopgError) as exc:
+                                probe_failed = True
                                 should_run_fallback = True
                                 fallback_requires_rollback = True
                                 lexical_rows_local = []
+                                try:
+                                    logger.warning(
+                                        "rag.debug.lexical_probe_exception",
+                                        extra={
+                                            "tenant_id": tenant,
+                                            "case_id": case_value,
+                                            "exc_type": exc.__class__.__name__,
+                                            "fallback_requires_rollback": True,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
                                 logger.warning(
                                     "rag.hybrid.lexical_primary_failed",
                                     tenant_id=tenant,
                                     case_id=case_value,
                                     error=str(exc),
                                 )
-                            else:
-                                lexical_rows_local = fetched_rows
-                                lexical_query_variant = "primary"
-                                # Phase 2: light row-shape probe. If this fails, do NOT
-                                # require rollback; it's a client-side processing issue.
+                                if (
+                                    isinstance(exc, PsycopgError)
+                                    and vector_query_failed
+                                ):
+                                    raise
+
+                            if not probe_failed:
                                 try:
-                                    if lexical_rows_local:
-                                        _ = tuple(lexical_rows_local[0])
-                                except Exception as exc:
+                                    logger.warning(
+                                        "rag.debug.lexical_primary_try_enter",
+                                        extra={
+                                            "tenant_id": tenant,
+                                            "case_id": case_value,
+                                            "probe_failed": probe_failed,
+                                        },
+                                    )
+                                except Exception:
+                                    pass
+                                # Phase 1: execute + fetch. If this raises, treat as DB-level
+                                # failure requiring a rollback before fallback.
+                                try:
+                                    cur.execute(
+                                        lexical_sql,
+                                        (
+                                            query_db_norm,
+                                            *where_params,
+                                            query_db_norm,
+                                            lex_limit_value,
+                                        ),
+                                    )
+                                    fetched_rows = cur.fetchall()
+                                except (IndexError, ValueError, PsycopgError) as exc:
                                     should_run_fallback = True
-                                    fallback_requires_rollback = False
-                                    # Collect minimal diagnostics about the returned row shape
-                                    rows_count = 0
-                                    first_len = None
-                                    first_type = None
+                                    fallback_requires_rollback = True
+                                    lexical_rows_local = []
                                     try:
-                                        rows_count = len(lexical_rows_local)
-                                        first = lexical_rows_local[0]
-                                        first_type = type(first).__name__
-                                        try:
-                                            first_len = len(first)  # may fail
-                                        except Exception:
-                                            first_len = None
+                                        logger.warning(
+                                            "rag.debug.lexical_primary_exception",
+                                            extra={
+                                                "tenant_id": tenant,
+                                                "case_id": case_value,
+                                                "exc_type": exc.__class__.__name__,
+                                                "fallback_requires_rollback": True,
+                                            },
+                                        )
                                     except Exception:
                                         pass
-                                    lexical_rows_local = []
                                     logger.warning(
                                         "rag.hybrid.lexical_primary_failed",
                                         tenant_id=tenant,
                                         case_id=case_value,
                                         error=str(exc),
-                                        rows_count=rows_count,
-                                        row_first_len=first_len,
-                                        row_first_type=first_type,
                                     )
+                                    if (
+                                        isinstance(exc, PsycopgError)
+                                        and vector_query_failed
+                                    ):
+                                        raise
+                                else:
+                                    lexical_rows_local = fetched_rows
+                                    lexical_query_variant = "primary"
+                                    # Phase 2: light row-shape probe. If this fails, do NOT
+                                    # require rollback; it's a client-side processing issue.
+                                    try:
+                                        if lexical_rows_local:
+                                            _ = tuple(lexical_rows_local[0])
+                                    except Exception as exc:
+                                        should_run_fallback = True
+                                        fallback_requires_rollback = False
+                                        # Collect minimal diagnostics about the returned row shape
+                                        rows_count = 0
+                                        first_len = None
+                                        first_type = None
+                                        try:
+                                            rows_count = len(lexical_rows_local)
+                                            first = lexical_rows_local[0]
+                                            first_type = type(first).__name__
+                                            try:
+                                                first_len = len(first)  # may fail
+                                            except Exception:
+                                                first_len = None
+                                        except Exception:
+                                            pass
+                                        lexical_rows_local = []
+                                        logger.warning(
+                                            "rag.hybrid.lexical_primary_failed",
+                                            tenant_id=tenant,
+                                            case_id=case_value,
+                                            error=str(exc),
+                                            rows_count=rows_count,
+                                            row_first_len=first_len,
+                                            row_first_type=first_type,
+                                        )
+                                        try:
+                                            logger.warning(
+                                                "rag.debug.fallback_flag_set",
+                                                extra={
+                                                    "tenant_id": tenant,
+                                                    "case_id": case_value,
+                                                    "reason": "row_shape_error",
+                                                    "fallback_requires_rollback": False,
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
                                 try:
                                     logger.debug(
                                         "rag.hybrid.rows.lexical_raw",
@@ -1286,6 +1371,18 @@ class PgVectorClient:
                                             row_first_len=first_len,
                                             row_first_type=first_type,
                                         )
+                                        try:
+                                            logger.warning(
+                                                "rag.debug.fallback_flag_set",
+                                                extra={
+                                                    "tenant_id": tenant,
+                                                    "case_id": case_value,
+                                                    "reason": "score_validation_error",
+                                                    "fallback_requires_rollback": False,
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
                                     if not handled and isinstance(exc, PsycopgError):
                                         handled = True
                                         if vector_query_failed:
@@ -1297,6 +1394,18 @@ class PgVectorClient:
                                         should_run_fallback = True
                                         fallback_requires_rollback = True
                                         lexical_rows_local = []
+                                        try:
+                                            logger.warning(
+                                                "rag.debug.fallback_flag_set",
+                                                extra={
+                                                    "tenant_id": tenant,
+                                                    "case_id": case_value,
+                                                    "reason": "db_error",
+                                                    "fallback_requires_rollback": True,
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
                                         logger.warning(
                                             "rag.hybrid.lexical_primary_failed",
                                             tenant_id=tenant,
@@ -1313,12 +1422,46 @@ class PgVectorClient:
                                 # least the best lexical candidates when trigram returns nothing.
                                 should_run_fallback = True
                             if should_run_fallback:
+                                try:
+                                    logger.warning(
+                                        "rag.debug.before_fallback",
+                                        extra={
+                                            "tenant_id": tenant,
+                                            "case_id": case_value,
+                                            "fallback_requires_rollback": bool(
+                                                fallback_requires_rollback
+                                            ),
+                                        },
+                                    )
+                                except Exception:
+                                    pass
                                 if fallback_requires_rollback:
+                                    try:
+                                        logger.warning(
+                                            "rag.debug.calling_rollback",
+                                            extra={
+                                                "tenant_id": tenant,
+                                                "case_id": case_value,
+                                            },
+                                        )
+                                    except Exception:
+                                        pass
                                     try:
                                         conn.rollback()
                                     except Exception:  # pragma: no cover - defensive
                                         pass
                                     else:
+                                        try:
+                                            logger.warning(
+                                                "rag.debug.after_rollback",
+                                                extra={
+                                                    "tenant_id": tenant,
+                                                    "case_id": case_value,
+                                                    "action": "restore_session",
+                                                },
+                                            )
+                                        except Exception:
+                                            pass
                                         self._restore_session_after_rollback(cur)
                                 logger.info(
                                     "rag.hybrid.trgm_no_match",
