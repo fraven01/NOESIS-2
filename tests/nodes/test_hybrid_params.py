@@ -65,9 +65,9 @@ def test_parse_supports_override_top_k_and_promotes_candidates():
 
 def test_deduplicate_matches_prefers_best_score_and_is_stable():
     matches = [
-        {"id": "doc-1", "score": 0.5, "source": "vector"},
-        {"id": "doc-1", "score": 0.9, "source": "lexical"},
-        {"id": "doc-2", "score": 0.9, "source": "vector"},
+        {"id": "doc-1", "hash": "chunk-1", "score": 0.5, "source": "vector"},
+        {"id": "doc-1", "hash": "chunk-1", "score": 0.9, "source": "lexical"},
+        {"id": "doc-2", "hash": "chunk-2", "score": 0.9, "source": "vector"},
     ]
 
     deduplicated = retrieve._deduplicate_matches(matches)
