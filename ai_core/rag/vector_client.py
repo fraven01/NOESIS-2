@@ -267,6 +267,28 @@ class PgVectorClient:
         self._retries = max(1, retries_value)
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
         self._distance_operator_cache: Dict[str, str] = {}
+        near_strategy = str(
+            _get_setting("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        ).lower()
+        if near_strategy not in {"skip", "replace", "off"}:
+            near_strategy = "skip"
+        threshold_setting = _get_setting("RAG_NEAR_DUPLICATE_THRESHOLD", 0.97)
+        try:
+            near_threshold = float(threshold_setting)
+        except (TypeError, ValueError):
+            near_threshold = 0.97
+        probe_setting = _get_setting("RAG_NEAR_DUPLICATE_PROBE_LIMIT", 8)
+        try:
+            probe_limit = int(probe_setting)
+        except (TypeError, ValueError):
+            probe_limit = 8
+        self._near_duplicate_strategy = near_strategy
+        self._near_duplicate_threshold = max(0.0, min(1.0, near_threshold))
+        self._near_duplicate_probe_limit = max(1, probe_limit)
+        self._near_duplicate_enabled = (
+            near_strategy in {"skip", "replace"}
+            and self._near_duplicate_threshold > 0.0
+        )
 
     @classmethod
     def from_env(
@@ -525,7 +547,9 @@ class PgVectorClient:
         duration_ms = self._run_with_retries(_operation, op_name="upsert_chunks")
 
         skipped_documents = sum(
-            1 for action in doc_actions.values() if action == "skipped"
+            1
+            for action in doc_actions.values()
+            if action in {"skipped", "near_duplicate_skipped"}
         )
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
@@ -549,6 +573,19 @@ class PgVectorClient:
                 "chunk_count": chunk_count,
                 "duration_ms": duration,
             }
+            near_info = doc.get("near_duplicate_info")
+            if isinstance(near_info, Mapping):
+                matched_external = near_info.get("external_id")
+                if matched_external is not None:
+                    doc_payload["near_duplicate_of"] = str(matched_external)
+                similarity_value = near_info.get("similarity")
+                if similarity_value is not None:
+                    try:
+                        doc_payload["near_duplicate_similarity"] = float(
+                            similarity_value
+                        )
+                    except (TypeError, ValueError):
+                        pass
             metadata = doc.get("metadata", {})
             embedding_profile = metadata.get("embedding_profile")
             if embedding_profile:
@@ -560,8 +597,10 @@ class PgVectorClient:
             logger.info("ingestion.doc.result", extra=doc_payload)
             if action == "inserted":
                 metrics.INGESTION_DOCS_INSERTED.inc()
-            elif action == "replaced":
+            elif action in {"replaced", "near_duplicate_replaced"}:
                 metrics.INGESTION_DOCS_REPLACED.inc()
+            elif action in {"skipped", "near_duplicate_skipped"}:
+                metrics.INGESTION_DOCS_SKIPPED.inc()
             else:
                 metrics.INGESTION_DOCS_SKIPPED.inc()
             if action in {"inserted", "replaced"} and chunk_count:
@@ -2530,6 +2569,132 @@ class PgVectorClient:
             )
         return grouped
 
+    def _compute_document_embedding(
+        self, doc: Mapping[str, object]
+    ) -> List[float] | None:
+        chunks = doc.get("chunks", [])
+        if not isinstance(chunks, Sequence):
+            return None
+        vectors: List[List[float]] = []
+        dimension: int | None = None
+        for chunk in chunks:
+            embedding = getattr(chunk, "embedding", None)
+            if embedding is None:
+                continue
+            try:
+                floats = [float(value) for value in embedding]
+            except (TypeError, ValueError):
+                continue
+            if not floats:
+                continue
+            if dimension is None:
+                dimension = len(floats)
+            if len(floats) != dimension:
+                continue
+            vectors.append(floats)
+        if not vectors or dimension is None:
+            return None
+        aggregated = [0.0] * dimension
+        for vec in vectors:
+            for index, value in enumerate(vec):
+                aggregated[index] += value
+        count = float(len(vectors))
+        if count <= 0:
+            return None
+        averaged = [value / count for value in aggregated]
+        return _normalise_vector(averaged)
+
+    def _find_near_duplicate(
+        self,
+        cur,
+        tenant_uuid: uuid.UUID,
+        vector: Sequence[float],
+        *,
+        external_id: str,
+    ) -> Dict[str, object] | None:
+        if not vector:
+            return None
+        try:
+            vector_str = self._format_vector(vector)
+        except ValueError:
+            try:
+                vector_str = self._format_vector_lenient(vector)
+            except Exception:
+                return None
+        index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
+        try:
+            operator = self._get_distance_operator(cur.connection, index_kind)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "ingestion.doc.near_duplicate_operator_missing",
+                extra={
+                    "tenant_id": str(tenant_uuid),
+                    "index_kind": index_kind,
+                    "error": str(exc),
+                },
+            )
+            return None
+        query = sql.SQL(
+            """
+            SELECT d.id, d.external_id, 1.0 - (e.embedding {op} %s::vector) AS similarity
+            FROM documents d
+            JOIN chunks c ON c.document_id = d.id
+            JOIN embeddings e ON e.chunk_id = c.id
+            WHERE d.tenant_id = %s
+              AND d.deleted_at IS NULL
+              AND d.external_id <> %s
+            ORDER BY e.embedding {op} %s::vector ASC
+            LIMIT %s
+            """
+        ).format(op=sql.SQL(operator))
+        tenant_value = str(tenant_uuid)
+        cur.execute(
+            query,
+            (
+                vector_str,
+                tenant_value,
+                external_id,
+                vector_str,
+                self._near_duplicate_probe_limit,
+            ),
+        )
+        rows = cur.fetchall()
+        best: Dict[str, object] | None = None
+        best_similarity = self._near_duplicate_threshold
+        for row in rows:
+            if not isinstance(row, Sequence) or len(row) < 3:
+                continue
+            candidate_id = row[0]
+            candidate_external_id = row[1]
+            similarity_value = row[2]
+            if candidate_external_id == external_id:
+                continue
+            try:
+                similarity = float(similarity_value)
+            except (TypeError, ValueError):
+                continue
+            if math.isnan(similarity) or math.isinf(similarity):
+                continue
+            if similarity < self._near_duplicate_threshold:
+                continue
+            try:
+                candidate_uuid = (
+                    candidate_id
+                    if isinstance(candidate_id, uuid.UUID)
+                    else uuid.UUID(str(candidate_id))
+                )
+            except (TypeError, ValueError):
+                continue
+            external_text = str(candidate_external_id)
+            if similarity >= best_similarity:
+                best_similarity = similarity
+                best = {
+                    "id": candidate_uuid,
+                    "external_id": external_text,
+                    "similarity": similarity,
+                }
+        return best
+
     def _ensure_documents(
         self,
         cur,
@@ -2551,9 +2716,69 @@ class PgVectorClient:
             doc["content_hash"] = content_hash
             metadata_dict = dict(doc.get("metadata", {}))
             metadata_dict.setdefault("hash", content_hash)
+
+            near_duplicate_details = None
+            if self._near_duplicate_enabled:
+                doc_embedding = self._compute_document_embedding(doc)
+                if doc_embedding is not None:
+                    near_duplicate_details = self._find_near_duplicate(
+                        cur,
+                        tenant_uuid,
+                        doc_embedding,
+                        external_id=external_id,
+                    )
+            if near_duplicate_details is not None:
+                doc["near_duplicate_info"] = near_duplicate_details
+                similarity = float(near_duplicate_details.get("similarity", 0.0))
+                log_extra = {
+                    "tenant_id": doc["tenant_id"],
+                    "external_id": external_id,
+                    "similarity": similarity,
+                    "matched_external_id": near_duplicate_details.get("external_id"),
+                }
+                if self._near_duplicate_strategy == "skip":
+                    actions[key] = "near_duplicate_skipped"
+                    logger.info("ingestion.doc.near_duplicate_skipped", extra=log_extra)
+                    continue
+                if self._near_duplicate_strategy == "replace":
+                    metadata_dict["near_duplicate_of"] = str(
+                        near_duplicate_details.get("external_id")
+                    )
+                    metadata_dict["near_duplicate_similarity"] = similarity
+                    metadata = Json(metadata_dict)
+                    existing_id = near_duplicate_details["id"]
+                    cur.execute(
+                        """
+                        UPDATE documents
+                        SET external_id = %s,
+                            source = %s,
+                            hash = %s,
+                            metadata = %s,
+                            deleted_at = NULL
+                        WHERE id = %s
+                        """,
+                        (
+                            external_id,
+                            doc["source"],
+                            storage_hash,
+                            metadata,
+                            existing_id,
+                        ),
+                    )
+                    document_ids[key] = existing_id
+                    actions[key] = "near_duplicate_replaced"
+                    doc["metadata"] = metadata_dict
+                    doc["id"] = existing_id
+                    logger.info(
+                        "ingestion.doc.near_duplicate_replaced",
+                        extra={**log_extra, "document_id": str(existing_id)},
+                    )
+                    continue
+
             parents_map = doc.get("parents")
             if isinstance(parents_map, Mapping) and parents_map:
                 metadata_dict["parent_nodes"] = parents_map
+
             metadata = Json(metadata_dict)
             document_id = doc["id"]
             cur.execute(
@@ -2688,7 +2913,7 @@ class PgVectorClient:
         per_doc_stats: Dict[DocumentKey, Dict[str, float]] = {}
         for key, doc in grouped.items():
             action = doc_actions.get(key, "inserted")
-            if action == "skipped":
+            if action in {"skipped", "near_duplicate_skipped"}:
                 per_doc_stats[key] = {"chunk_count": 0, "duration_ms": 0.0}
                 continue
             document_id = document_ids[key]
