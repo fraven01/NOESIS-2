@@ -104,7 +104,9 @@ class _BadSignatureRouter:
 
     def for_tenant(self, tenant_id, tenant_schema, scope):  # pragma: no cover - guard
         self.for_tenant_calls.append((tenant_id, tenant_schema, scope))
-        raise AssertionError("for_tenant should not be invoked for incompatible signature")
+        raise AssertionError(
+            "for_tenant should not be invoked for incompatible signature"
+        )
 
     def hybrid_search(self, query, **kwargs):
         self.hybrid_calls.append((query, kwargs))

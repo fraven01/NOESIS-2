@@ -280,7 +280,9 @@ def test_rebuild_rag_index_health_check(
         assert body["external_id"] == external_id
         return body["document_id"]
 
-    doc_one = _upload("First document for vector index health check.", "index-health-one")
+    doc_one = _upload(
+        "First document for vector index health check.", "index-health-one"
+    )
     doc_two = _upload(
         "Second, completely different document for the same test.", "index-health-two"
     )

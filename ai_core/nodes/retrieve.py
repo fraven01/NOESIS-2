@@ -159,7 +159,9 @@ def _build_router_adaptor(router: VectorStoreRouter) -> _RouterAdaptor:
         pass
     else:
         return _RouterAdaptor(
-            factory=lambda tenant_id, tenant_schema: for_tenant(tenant_id, tenant_schema),
+            factory=lambda tenant_id, tenant_schema: for_tenant(
+                tenant_id, tenant_schema
+            ),
             is_scoped=True,
             requires_warning=False,
         )

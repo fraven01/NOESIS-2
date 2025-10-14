@@ -2831,7 +2831,9 @@ class PgVectorClient:
         else:
             global_order_sql = sql.SQL("DESC")
 
-        prefetch_limit = max(self._near_duplicate_probe_limit, self._near_duplicate_probe_limit * 4)
+        prefetch_limit = max(
+            self._near_duplicate_probe_limit, self._near_duplicate_probe_limit * 4
+        )
         query = sql.SQL(
             """
             WITH base AS (
@@ -2897,7 +2899,9 @@ class PgVectorClient:
                 continue
             if use_distance_metric:
                 distance = max(0.0, similarity)
-                cutoff = distance_cutoff if distance_cutoff is not None else best_distance
+                cutoff = (
+                    distance_cutoff if distance_cutoff is not None else best_distance
+                )
                 if cutoff is None:
                     continue
                 if distance > cutoff + 1e-9:

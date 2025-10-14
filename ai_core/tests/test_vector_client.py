@@ -558,7 +558,9 @@ class TestPgVectorClient:
         monkeypatch.setenv("RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", "true")
         vector_client.reset_default_client()
         client = vector_client.get_default_client()
-        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+        monkeypatch.setattr(
+            client, "_get_distance_operator", lambda _conn, _kind: "<->"
+        )
 
         tenant = str(uuid.uuid4())
         dim = vector_client.get_embedding_dim()
@@ -675,7 +677,8 @@ class TestPgVectorClient:
         assert "near_duplicate" not in payload
         assert client._near_duplicate_enabled is False
         assert any(
-            "'event': 'ingestion.doc.near_duplicate_operator_unsupported'" in record.message
+            "'event': 'ingestion.doc.near_duplicate_operator_unsupported'"
+            in record.message
             for record in caplog.records
         )
 

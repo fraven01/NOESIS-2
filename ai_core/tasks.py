@@ -70,6 +70,7 @@ def _normalise_embedding(values: Sequence[float] | None) -> List[float] | None:
     scale = 1.0 / norm
     return [value * scale for value in floats]
 
+
 logger = get_logger(__name__)
 
 
@@ -627,7 +628,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                     return
                 parent_contents[parent_id].append(preview)
                 appended_bytes = len(preview.encode("utf-8"))
-                parent_content_bytes[parent_id] = used + separator_bytes + appended_bytes
+                parent_content_bytes[parent_id] = (
+                    used + separator_bytes + appended_bytes
+                )
                 return
 
             parent_contents[parent_id].append(normalised)
@@ -686,7 +689,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             if parent_stack:
                 target_info = parent_stack[-1]
                 target_level = int(target_info.get("level") or 0)
-                _append_parent_text_with_root(target_info["id"], piece_text, target_level)
+                _append_parent_text_with_root(
+                    target_info["id"], piece_text, target_level
+                )
             else:
                 _append_parent_text(root_id, piece_text, 0)
             sentences = _split_sentences(piece)
@@ -713,7 +718,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             if parent_stack:
                 target_info = parent_stack[-1]
                 target_level = int(target_info.get("level") or 0)
-                _append_parent_text_with_root(target_info["id"], fallback_text, target_level)
+                _append_parent_text_with_root(
+                    target_info["id"], fallback_text, target_level
+                )
             else:
                 _append_parent_text(root_id, fallback_text, 0)
         chunk_candidates.append((text, unique_fallback_ids or [root_id]))
