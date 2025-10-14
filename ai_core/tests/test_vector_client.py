@@ -464,6 +464,93 @@ class TestPgVectorClient:
                 cur.execute("SELECT COUNT(*) FROM embeddings")
                 assert cur.fetchone()[0] == 1
 
+    def test_upsert_marks_near_duplicate_skip(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        base_chunk = Chunk(
+            content="source document",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"base").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.21] * vector_client.get_embedding_dim(),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        duplicate_chunk = Chunk(
+            content="near duplicate content",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-duplicate",
+                "hash": hashlib.sha256(b"duplicate").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.21] * vector_client.get_embedding_dim(),
+        )
+        result = client.upsert_chunks([duplicate_chunk])
+        assert result == 0
+        assert result.documents[0]["action"] == "near_duplicate_skipped"
+        assert result.documents[0]["near_duplicate_of"] == "doc-base"
+        assert result.documents[0]["near_duplicate_similarity"] >= 0.97
+
+        results = client.search(
+            "source document",
+            tenant_id=tenant,
+            filters={},
+            top_k=2,
+        )
+        assert len(results) == 1
+        assert results[0].meta["external_id"] == "doc-base"
+
+    def test_upsert_replaces_near_duplicate(self, monkeypatch):
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "replace")
+        monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
+        vector_client.reset_default_client()
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        base_chunk = Chunk(
+            content="primary",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-base",
+                "hash": hashlib.sha256(b"primary").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.25] * vector_client.get_embedding_dim(),
+        )
+        assert client.upsert_chunks([base_chunk]) == 1
+
+        replacement_chunk = Chunk(
+            content="replacement",
+            meta={
+                "tenant_id": tenant,
+                "external_id": "doc-new",
+                "hash": hashlib.sha256(b"replacement").hexdigest(),
+                "source": "unit",
+            },
+            embedding=[0.25] * vector_client.get_embedding_dim(),
+        )
+        result = client.upsert_chunks([replacement_chunk])
+        assert result == 1
+        payload = result.documents[0]
+        assert payload["action"] == "near_duplicate_replaced"
+        assert payload["near_duplicate_of"] == "doc-base"
+        assert payload["near_duplicate_similarity"] >= 0.97
+
+        matches = client.search(
+            "replacement",
+            tenant_id=tenant,
+            filters={},
+            top_k=2,
+        )
+        assert matches
+        assert matches[0].meta["external_id"] == "doc-new"
+
     def test_search_caps_top_k(self):
         client = vector_client.get_default_client()
         tenant = str(uuid.uuid4())
