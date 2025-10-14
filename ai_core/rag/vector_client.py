@@ -270,9 +270,7 @@ class PgVectorClient:
         self._retry_base_delay = max(0, retry_delay_value) / 1000.0
         self._distance_operator_cache: Dict[str, str] = {}
         self._near_duplicate_operator_support: Dict[str, bool] = {}
-        near_strategy = str(
-            _get_setting("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
-        ).lower()
+        near_strategy = str(_get_setting("RAG_NEAR_DUPLICATE_STRATEGY", "skip")).lower()
         if near_strategy not in {"skip", "replace", "off"}:
             near_strategy = "skip"
         threshold_setting = _get_setting("RAG_NEAR_DUPLICATE_THRESHOLD", 0.97)
@@ -525,7 +523,9 @@ class PgVectorClient:
         self._distance_operator_cache[key] = operator
         return operator
 
-    def _is_near_duplicate_operator_supported(self, index_kind: str, operator: str) -> bool:
+    def _is_near_duplicate_operator_supported(
+        self, index_kind: str, operator: str
+    ) -> bool:
         key = index_kind.upper()
         cached = self._near_duplicate_operator_support.get(key)
         if cached is not None:
@@ -2558,9 +2558,7 @@ class PgVectorClient:
             return payload
 
         try:
-            results = self._run_with_retries(
-                _operation, op_name="fetch_parent_context"
-            )
+            results = self._run_with_retries(_operation, op_name="fetch_parent_context")
         except Exception:  # pragma: no cover - defensive logging
             logger.exception(
                 "rag.parents.lookup_failed",

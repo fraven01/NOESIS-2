@@ -19,9 +19,7 @@ def test_parse_defaults_and_clamps_values():
     assert params.max_candidates == max(
         params.top_k, params.vec_limit, params.lex_limit
     )
-    assert params.diversify_strength == pytest.approx(
-        RAG.DIVERSIFY_STRENGTH_DEFAULT
-    )
+    assert params.diversify_strength == pytest.approx(RAG.DIVERSIFY_STRENGTH_DEFAULT)
     assert state["hybrid"] == params.as_dict()
 
 
@@ -48,9 +46,7 @@ def test_parse_raises_max_candidates_to_top_k():
     assert params.max_candidates == 7
     assert params.max_candidates >= params.top_k
     assert params.max_candidates >= max(params.vec_limit, params.lex_limit)
-    assert params.diversify_strength == pytest.approx(
-        RAG.DIVERSIFY_STRENGTH_DEFAULT
-    )
+    assert params.diversify_strength == pytest.approx(RAG.DIVERSIFY_STRENGTH_DEFAULT)
 
 
 def test_parse_supports_override_top_k_and_promotes_candidates():
@@ -68,9 +64,7 @@ def test_parse_supports_override_top_k_and_promotes_candidates():
     assert params.top_k == TOPK_MAX
     assert params.max_candidates >= params.top_k
     assert state["hybrid"]["top_k"] == TOPK_MAX
-    assert params.diversify_strength == pytest.approx(
-        RAG.DIVERSIFY_STRENGTH_DEFAULT
-    )
+    assert params.diversify_strength == pytest.approx(RAG.DIVERSIFY_STRENGTH_DEFAULT)
 
 
 def test_deduplicate_matches_prefers_best_score_and_is_stable():
@@ -151,9 +145,7 @@ def test_diversification_promotes_dissimilar_matches():
         },
     ]
 
-    diversified = retrieve._apply_diversification(
-        matches, top_k=2, strength=0.5
-    )
+    diversified = retrieve._apply_diversification(matches, top_k=2, strength=0.5)
 
     assert [match["id"] for match in diversified[:2]] == ["doc-1", "doc-3"]
 
@@ -165,9 +157,7 @@ def test_diversification_respects_zero_strength():
         {"id": "doc-3", "text": "Three", "score": 0.7},
     ]
 
-    diversified = retrieve._apply_diversification(
-        matches, top_k=2, strength=0.0
-    )
+    diversified = retrieve._apply_diversification(matches, top_k=2, strength=0.0)
 
     assert [match["id"] for match in diversified] == [
         "doc-1",

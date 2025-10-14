@@ -70,4 +70,3 @@ def limit_parent_payload(parents: Mapping[str, Any]) -> Dict[str, Dict[str, Any]
         limited[str(parent_id)] = node
 
     return limited
-

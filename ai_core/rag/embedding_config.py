@@ -346,7 +346,9 @@ def get_embedding_profile(profile_id: str) -> EmbeddingProfileConfig:
             return config[default_profile_id]
 
         fallback_profile = next(iter(config.values()), None)
-        if fallback_profile is None:  # pragma: no cover - configuration validated elsewhere
+        if (
+            fallback_profile is None
+        ):  # pragma: no cover - configuration validated elsewhere
             raise EmbeddingConfigurationError(
                 _format_error(
                     EmbeddingConfigErrorCode.PROFILES_EMPTY,

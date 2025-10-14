@@ -384,8 +384,7 @@ def _apply_diversification(
 
     relevance_scores = [float(match.get("score", 0.0)) for match in matches]
     token_sets = [
-        _tokenise(match.get("text") or match.get("content") or "")
-        for match in matches
+        _tokenise(match.get("text") or match.get("content") or "") for match in matches
     ]
 
     ordered_indices = list(range(len(matches)))
@@ -580,9 +579,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
                 if parent_id:
                     normalised_ids.append(parent_id)
             if normalised_ids:
-                parent_requests.setdefault(doc_identifier, set()).update(
-                    normalised_ids
-                )
+                parent_requests.setdefault(doc_identifier, set()).update(normalised_ids)
                 meta_map["parent_ids"] = normalised_ids
         elif "parent_ids" in meta_map:
             meta_map["parent_ids"] = []

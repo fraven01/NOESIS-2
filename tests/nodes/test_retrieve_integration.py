@@ -41,7 +41,9 @@ class _HybridSearchResult:
 
 
 class _FakeRouter:
-    def __init__(self, response, *, parents: dict[str, dict[str, object]] | None = None):
+    def __init__(
+        self, response, *, parents: dict[str, dict[str, object]] | None = None
+    ):
         self._response = response
         self.for_tenant_calls = []
         self.hybrid_calls = []
@@ -295,7 +297,9 @@ def test_retrieve_includes_parent_context(monkeypatch):
         alpha=0.55,
         min_sim=0.35,
     )
-    parent_payload = {doc_uuid: {"section-1": {"id": "section-1", "content": "Section text"}}}
+    parent_payload = {
+        doc_uuid: {"section-1": {"id": "section-1", "content": "Section text"}}
+    }
     router = _FakeRouter(response, parents=parent_payload)
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 

@@ -556,7 +556,9 @@ class TestPgVectorClient:
         monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.97")
         vector_client.reset_default_client()
         client = vector_client.get_default_client()
-        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<->")
+        monkeypatch.setattr(
+            client, "_get_distance_operator", lambda _conn, _kind: "<->"
+        )
 
         tenant = str(uuid.uuid4())
         base_chunk = Chunk(
@@ -594,7 +596,9 @@ class TestPgVectorClient:
         monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
         vector_client.reset_default_client()
         client = vector_client.get_default_client()
-        monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<#>")
+        monkeypatch.setattr(
+            client, "_get_distance_operator", lambda _conn, _kind: "<#>"
+        )
 
         tenant = str(uuid.uuid4())
         base_chunk = Chunk(

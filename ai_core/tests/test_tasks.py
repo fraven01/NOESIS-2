@@ -244,8 +244,7 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
     }
     document = (
         "# Titel\n\nEin Absatz.\n\n- Punkt eins\n- Punkt zwei\n\n"
-        "```python\nprint('x')\n```\n\n"
-        + " ".join(f"wort{i}" for i in range(600))
+        "```python\nprint('x')\n```\n\n" + " ".join(f"wort{i}" for i in range(600))
     )
     text_path = tasks._build_path(meta, "text", "doc.txt")
     object_store.put_bytes(text_path, document.encode("utf-8"))
@@ -267,7 +266,9 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         assert any("```python" in content for content in contents)
         assert any("Punkt eins" in content for content in contents)
 
-        long_chunks = [entry["content"] for entry in chunks if "wort" in entry["content"]]
+        long_chunks = [
+            entry["content"] for entry in chunks if "wort" in entry["content"]
+        ]
         assert len(long_chunks) > 1
         for chunk_text in long_chunks:
             assert len([token for token in chunk_text.split() if token]) <= 512

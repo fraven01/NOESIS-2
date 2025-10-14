@@ -170,4 +170,3 @@ def segment_markdown_blocks(text: str) -> List[str]:
         return [stripped]
 
     return segments
-

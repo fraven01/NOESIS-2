@@ -329,10 +329,7 @@ def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
 
     ratio = 0.15
     doc_type = str(
-        meta.get("doc_class")
-        or meta.get("document_type")
-        or meta.get("type")
-        or ""
+        meta.get("doc_class") or meta.get("document_type") or meta.get("type") or ""
     ).lower()
     if doc_type:
         if any(keyword in doc_type for keyword in _LIST_LIKE_KEYWORDS):
@@ -343,9 +340,7 @@ def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
     lines = [line.strip() for line in stripped.splitlines() if line.strip()]
     if lines:
         bullet_lines = sum(
-            1
-            for line in lines
-            if re.match(r"^(?:[-*•]\s|\d+\.\s)", line)
+            1 for line in lines if re.match(r"^(?:[-*•]\s|\d+\.\s)", line)
         )
         bullet_ratio = bullet_lines / max(1, len(lines))
         if bullet_ratio >= 0.4:
@@ -377,7 +372,9 @@ def _resolve_overlap_tokens(
 ) -> int:
     configured_limit = getattr(settings, "RAG_CHUNK_OVERLAP_TOKENS", None)
     try:
-        configured_value = int(configured_limit) if configured_limit is not None else None
+        configured_value = (
+            int(configured_limit) if configured_limit is not None else None
+        )
     except (TypeError, ValueError):  # pragma: no cover - defensive
         configured_value = None
 
@@ -590,9 +587,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     if not chunk_candidates:
         fallback_ids = [root_id] + [info["id"] for info in parent_stack]
-        unique_fallback_ids = list(
-            dict.fromkeys(pid for pid in fallback_ids if pid)
-        )
+        unique_fallback_ids = list(dict.fromkeys(pid for pid in fallback_ids if pid))
         fallback_text = text.strip()
         if fallback_text:
             parent_contents[root_id].append(fallback_text)
