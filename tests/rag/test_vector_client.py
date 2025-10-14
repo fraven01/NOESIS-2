@@ -1350,6 +1350,90 @@ def test_near_duplicate_l2_distance_fallback(monkeypatch):
             assert miss is None
 
 
+@pytest.fixture
+def near_duplicate_mixed_documents(monkeypatch):
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.9")
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<=>")
+
+    tenant = str(uuid.uuid4())
+    tenant_uuid = uuid.UUID(tenant)
+    client._near_duplicate_probe_limit = 3
+
+    dim = vector_client.get_embedding_dim()
+    assert dim >= 2
+
+    def make_vector(weight: float) -> list[float]:
+        weight = max(0.0, min(1.0, weight))
+        remainder = math.sqrt(max(0.0, 1.0 - weight * weight))
+        vector = [0.0] * dim
+        vector[0] = weight
+        vector[1] = remainder
+        return vector
+
+    short_external_id = "doc-short"
+    long_external_id = "doc-long"
+
+    short_embedding = make_vector(0.98)
+    long_embeddings = [make_vector(0.92 - 0.005 * idx) for idx in range(3)]
+
+    short_chunk = Chunk(
+        content="short doc",
+        meta={
+            "tenant_id": tenant,
+            "external_id": short_external_id,
+            "hash": "hash-short",
+            "source": "unit-test",
+        },
+        embedding=short_embedding,
+    )
+
+    long_chunks = [
+        Chunk(
+            content=f"long doc part {idx}",
+            meta={
+                "tenant_id": tenant,
+                "external_id": long_external_id,
+                "hash": f"hash-long-{idx}",
+                "source": "unit-test",
+            },
+            embedding=embedding,
+        )
+        for idx, embedding in enumerate(long_embeddings, start=1)
+    ]
+
+    assert client.upsert_chunks(long_chunks + [short_chunk]) == len(long_chunks) + 1
+
+    return {
+        "client": client,
+        "tenant_uuid": tenant_uuid,
+        "short_embedding": short_embedding,
+        "short_external_id": short_external_id,
+    }
+
+
+def test_near_duplicate_probe_fairness(near_duplicate_mixed_documents):
+    client = near_duplicate_mixed_documents["client"]
+    tenant_uuid = near_duplicate_mixed_documents["tenant_uuid"]
+    short_embedding = near_duplicate_mixed_documents["short_embedding"]
+    short_external_id = near_duplicate_mixed_documents["short_external_id"]
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            match = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                tenant_uuid,
+                short_embedding,
+                external_id="incoming-doc",
+                embedding_is_unit_normalised=True,
+            )
+
+    assert match is not None
+    assert match["external_id"] == short_external_id
+
+
 def _insert_active_and_soft_deleted_documents(
     client, tenant: str
 ) -> tuple[uuid.UUID, uuid.UUID, str]:

@@ -2826,19 +2826,31 @@ class PgVectorClient:
             order_sql = sql.SQL("e.embedding <-> %s::vector ASC")
             select_vector_params = [vector_str]
 
+        if use_distance_metric:
+            global_order_sql = sql.SQL("ASC")
+        else:
+            global_order_sql = sql.SQL("DESC")
+
         query = sql.SQL(
             """
-            SELECT d.id, d.external_id, {sim} AS similarity
-            FROM documents d
-            JOIN chunks c ON c.document_id = d.id
-            JOIN embeddings e ON e.chunk_id = c.id
-            WHERE d.tenant_id = %s
-              AND d.deleted_at IS NULL
-              AND d.external_id <> %s
-            ORDER BY {order}
+            SELECT id, external_id, similarity
+            FROM (
+                SELECT DISTINCT ON (d.id)
+                    d.id,
+                    d.external_id,
+                    {sim} AS similarity
+                FROM documents d
+                JOIN chunks c ON c.document_id = d.id
+                JOIN embeddings e ON e.chunk_id = c.id
+                WHERE d.tenant_id = %s
+                  AND d.deleted_at IS NULL
+                  AND d.external_id <> %s
+                ORDER BY d.id ASC, {order}
+            ) AS per_document
+            ORDER BY similarity {global_order}
             LIMIT %s
             """
-        ).format(sim=sim_sql, order=order_sql)
+        ).format(sim=sim_sql, order=order_sql, global_order=global_order_sql)
         tenant_value = str(tenant_uuid)
         params_list: List[object] = [
             *select_vector_params,
