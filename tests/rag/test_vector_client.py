@@ -916,7 +916,8 @@ def test_hybrid_search_applies_single_collection_filter(monkeypatch):
     monkeypatch.setattr(
         client,
         "_embed_query",
-        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+        lambda _q: [1.0]
+        + [0.0] * (vector_client.get_embedding_dim() - 1),
     )
 
     client.hybrid_search(
@@ -937,6 +938,11 @@ def test_hybrid_search_applies_single_collection_filter(monkeypatch):
     assert "collection_id = any" in sql.lower()
     assert params[-2] == [collection_id]
 
+    fallback_queries = [
+        sql for sql, _params in cursor.executed if "select 1 from embeddings" in sql.lower()
+    ]
+    assert not fallback_queries
+
 
 def test_hybrid_search_applies_case_filter(monkeypatch):
     vector_client.reset_default_client()
@@ -950,7 +956,8 @@ def test_hybrid_search_applies_case_filter(monkeypatch):
     monkeypatch.setattr(
         client,
         "_embed_query",
-        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+        lambda _q: [1.0]
+        + [0.0] * (vector_client.get_embedding_dim() - 1),
     )
 
     client.hybrid_search(
@@ -971,6 +978,11 @@ def test_hybrid_search_applies_case_filter(monkeypatch):
     assert "c.metadata ->> 'case_id' = %s" in sql
     assert params[-2] == case_id
 
+    fallback_queries = [
+        sql for sql, _params in cursor.executed if "select 1 from embeddings" in sql.lower()
+    ]
+    assert not fallback_queries
+
 
 def test_hybrid_search_applies_collection_ids_list(monkeypatch):
     vector_client.reset_default_client()
@@ -984,7 +996,8 @@ def test_hybrid_search_applies_collection_ids_list(monkeypatch):
     monkeypatch.setattr(
         client,
         "_embed_query",
-        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+        lambda _q: [1.0]
+        + [0.0] * (vector_client.get_embedding_dim() - 1),
     )
 
     client.hybrid_search(
@@ -1005,6 +1018,11 @@ def test_hybrid_search_applies_collection_ids_list(monkeypatch):
     assert "collection_id = any" in sql.lower()
     assert params[-2] == collection_ids
 
+    fallback_queries = [
+        sql for sql, _params in cursor.executed if "select 1 from embeddings" in sql.lower()
+    ]
+    assert not fallback_queries
+
 
 def test_hybrid_search_unions_case_and_collection_filters(monkeypatch):
     vector_client.reset_default_client()
@@ -1019,7 +1037,8 @@ def test_hybrid_search_unions_case_and_collection_filters(monkeypatch):
     monkeypatch.setattr(
         client,
         "_embed_query",
-        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+        lambda _q: [1.0]
+        + [0.0] * (vector_client.get_embedding_dim() - 1),
     )
 
     client.hybrid_search(
@@ -1040,6 +1059,11 @@ def test_hybrid_search_unions_case_and_collection_filters(monkeypatch):
     assert "(c.metadata ->> 'case_id' = %s) or (c.collection_id = any(%s))" in sql.lower()
     assert params[-3] == case_id
     assert params[-2] == collection_ids
+
+    fallback_queries = [
+        sql for sql, _params in cursor.executed if "select 1 from embeddings" in sql.lower()
+    ]
+    assert not fallback_queries
 
 
 def test_upsert_retries_operational_error_once(monkeypatch):
