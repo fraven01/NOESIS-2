@@ -2881,6 +2881,9 @@ class PgVectorClient:
         outer_embedding_sql = (
             sql.SQL(", stored_embedding") if include_embedding_in_results else sql.SQL("")
         )
+        ranked_embedding_sql = (
+            sql.SQL(", stored_embedding") if include_embedding_in_results else sql.SQL("")
+        )
         query = sql.SQL(
             """
             WITH base AS (
@@ -2903,7 +2906,7 @@ class PgVectorClient:
                 SELECT
                     id,
                     external_id,
-                    similarity,
+                    similarity{ranked_embedding},
                     ROW_NUMBER() OVER (
                         PARTITION BY id
                         ORDER BY chunk_distance ASC
@@ -2920,6 +2923,7 @@ class PgVectorClient:
             global_order=global_order_sql,
             embedding_column=embedding_column_sql,
             outer_embedding=outer_embedding_sql,
+            ranked_embedding=ranked_embedding_sql,
         )
         tenant_value = str(tenant_uuid)
         params_list: List[object] = [

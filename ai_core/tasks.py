@@ -605,7 +605,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         normalised = text.strip()
         if not normalised:
             return
-        if parent_capture_max_depth > 0 and not _within_capture_depth(level):
+        if (
+            parent_id != root_id
+            and parent_capture_max_depth > 0
+            and not _within_capture_depth(level)
+        ):
             return
 
         if parent_capture_max_bytes > 0:
@@ -646,7 +650,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     def _append_parent_text_with_root(parent_id: str, text: str, level: int) -> None:
         _append_parent_text(parent_id, text, level)
         if parent_id != root_id:
-            if parent_capture_max_depth > 0 and _within_capture_depth(level):
+            if parent_capture_max_depth > 0:
+                if _within_capture_depth(level):
+                    _append_parent_text(root_id, text, level)
+            else:
                 _append_parent_text(root_id, text, level)
 
     def _register_section(title: str, level: int) -> Dict[str, object]:
