@@ -593,10 +593,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     def _within_capture_depth(level: int) -> bool:
         """Return True when parent capture is allowed for the given heading level."""
         if parent_capture_max_depth <= 0:
-            # A depth of zero disables parent propagation so that only the node owning
-            # the content keeps it. This prevents leaking child content upwards when
-            # the feature is intentionally switched off (see RAG_PARENT_CAPTURE_MAX_DEPTH).
-            return False
+            # A value of zero disables the depth restriction so that parent capture
+            # behaves as an "all levels" setting.
+            return True
         return level <= parent_capture_max_depth
 
     def _append_parent_text(parent_id: str, text: str, level: int) -> None:
@@ -605,14 +604,15 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         normalised = text.strip()
         if not normalised:
             return
+        is_root_parent = parent_id == root_id
         if (
-            parent_id != root_id
+            not is_root_parent
             and parent_capture_max_depth > 0
             and not _within_capture_depth(level)
         ):
             return
 
-        if parent_capture_max_bytes > 0:
+        if parent_capture_max_bytes > 0 and not is_root_parent:
             used = parent_content_bytes.get(parent_id, 0)
             remaining = parent_capture_max_bytes - used
             if remaining <= 0:
@@ -646,6 +646,14 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             return
 
         parent_contents[parent_id].append(normalised)
+        if parent_capture_max_bytes > 0:
+            used = parent_content_bytes.get(parent_id, 0)
+            separator_bytes = 0
+            if used > 0:
+                separator_bytes = len("\n\n".encode("utf-8"))
+            parent_content_bytes[parent_id] = (
+                used + separator_bytes + len(normalised.encode("utf-8"))
+            )
 
     def _append_parent_text_with_root(parent_id: str, text: str, level: int) -> None:
         _append_parent_text(parent_id, text, level)
