@@ -651,6 +651,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         _append_parent_text(parent_id, text, level)
         if parent_id == root_id:
             return
+        if parent_capture_max_depth <= 0:
+            return
+        if not _within_capture_depth(level):
+            return
         _append_parent_text(root_id, text, level)
 
     def _register_section(title: str, level: int) -> Dict[str, object]:

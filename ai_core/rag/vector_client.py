@@ -2943,11 +2943,11 @@ class PgVectorClient:
                 SELECT
                     id,
                     external_id,
-                    similarity{ranked_embedding},
+                    similarity,
                     ROW_NUMBER() OVER (
                         PARTITION BY id
                         ORDER BY chunk_distance ASC
-                    ) AS chunk_rank
+                    ) AS chunk_rank{ranked_embedding}
                 FROM base
             ) AS ranked
             WHERE chunk_rank = 1
@@ -2960,7 +2960,7 @@ class PgVectorClient:
             global_order=global_order_sql,
             embedding_column=embedding_column_sql,
             outer_embedding=outer_embedding_sql,
-            ranked_embedding=ranked_embedding_sql,
+            ranked_embedding=outer_embedding_sql,
         )
         tenant_value = str(tenant_uuid)
         params_list: List[object] = [
