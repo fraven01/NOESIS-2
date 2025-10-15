@@ -281,6 +281,7 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
             "chunk_hard_limit": 512,
         }
     }
+    settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
     reset_embedding_configuration_cache()
 
     meta = {
