@@ -52,8 +52,28 @@ def test_chunk_parent_contents_are_direct(settings, configured_store):
 
     root_id = f"{meta['external_id']}#doc"
     root_parent = parents[root_id]
-    assert root_parent["content"] == "Document introduction outside sections."
-    assert "Parent section text" not in root_parent["content"]
+    expected_root_content = textwrap.dedent(
+        """
+        Document introduction outside sections.
+
+        # Heading One
+
+        Parent section text that should stay local.
+
+        ## Child Section
+
+        Child section body that must not leak upward.
+
+        ### Grandchild
+
+        Details that belong only to the grandchild section.
+
+        ## Second Child
+
+        Separate branch text.
+        """
+    ).strip()
+    assert root_parent["content"] == expected_root_content
 
     def _parent_by_title(title: str) -> dict[str, object]:
         for node in parents.values():
