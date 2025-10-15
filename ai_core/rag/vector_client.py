@@ -154,6 +154,40 @@ def _normalise_vector(values: Sequence[float] | None) -> list[float] | None:
     return [value * scale for value in floats]
 
 
+def _coerce_vector_values(value: object) -> list[float] | None:
+    """Attempt to coerce ``value`` into a list of floats."""
+
+    if value is None:
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        try:
+            return [float(component) for component in value]
+        except (TypeError, ValueError):
+            return None
+    tolist = getattr(value, "tolist", None)
+    if callable(tolist):  # pragma: no branch - defensive
+        try:
+            converted = tolist()
+        except Exception:  # pragma: no cover - defensive
+            return None
+        if isinstance(converted, Sequence) and not isinstance(
+            converted, (str, bytes, bytearray)
+        ):
+            try:
+                return [float(component) for component in converted]
+            except (TypeError, ValueError):
+                return None
+    values_attr = getattr(value, "values", None)
+    if isinstance(values_attr, Sequence) and not isinstance(
+        values_attr, (str, bytes, bytearray)
+    ):
+        try:
+            return [float(component) for component in values_attr]
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 def _coerce_env_value(
     value: str,
     default: float | int | str,
@@ -2769,6 +2803,7 @@ class PgVectorClient:
             )
             return None
         use_distance_metric = False
+        include_embedding_in_results = False
         distance_cutoff: float | None = None
         if operator == "<->":
             if self._require_unit_norm_for_l2:
@@ -2786,6 +2821,7 @@ class PgVectorClient:
                     )
                     return None
                 vector_to_format = vector_for_similarity
+                include_embedding_in_results = True
             else:
                 use_distance_metric = True
                 vector_to_format = vector_for_distance
@@ -2837,6 +2873,14 @@ class PgVectorClient:
         prefetch_limit = max(
             self._near_duplicate_probe_limit, self._near_duplicate_probe_limit * 4
         )
+        embedding_column_sql = (
+            sql.SQL(",\n                    e.embedding AS stored_embedding")
+            if include_embedding_in_results
+            else sql.SQL("")
+        )
+        outer_embedding_sql = (
+            sql.SQL(", stored_embedding") if include_embedding_in_results else sql.SQL("")
+        )
         query = sql.SQL(
             """
             WITH base AS (
@@ -2844,7 +2888,7 @@ class PgVectorClient:
                     d.id,
                     d.external_id,
                     {sim} AS similarity,
-                    {distance} AS chunk_distance
+                    {distance} AS chunk_distance{embedding_column}
                 FROM documents d
                 JOIN chunks c ON c.document_id = d.id
                 JOIN embeddings e ON e.chunk_id = c.id
@@ -2854,7 +2898,7 @@ class PgVectorClient:
                 ORDER BY chunk_distance ASC
                 LIMIT %s
             )
-            SELECT id, external_id, similarity
+            SELECT id, external_id, similarity{outer_embedding}
             FROM (
                 SELECT
                     id,
@@ -2870,7 +2914,13 @@ class PgVectorClient:
             ORDER BY similarity {global_order}
             LIMIT %s
             """
-        ).format(sim=sim_sql, distance=distance_sql, global_order=global_order_sql)
+        ).format(
+            sim=sim_sql,
+            distance=distance_sql,
+            global_order=global_order_sql,
+            embedding_column=embedding_column_sql,
+            outer_embedding=outer_embedding_sql,
+        )
         tenant_value = str(tenant_uuid)
         params_list: List[object] = [
             *select_vector_params,
@@ -2882,6 +2932,9 @@ class PgVectorClient:
         params = tuple(params_list)
         cur.execute(query, params)
         rows = cur.fetchall()
+        query_vector_for_similarity = (
+            vector_for_similarity if include_embedding_in_results else None
+        )
         best: Dict[str, object] | None = None
         best_similarity = self._near_duplicate_threshold
         best_distance = distance_cutoff if use_distance_metric else None
@@ -2891,6 +2944,25 @@ class PgVectorClient:
             candidate_id = row[0]
             candidate_external_id = row[1]
             similarity_value = row[2]
+            if include_embedding_in_results:
+                stored_embedding = None
+                if len(row) >= 4:
+                    stored_embedding = _coerce_vector_values(row[3])
+                if stored_embedding is None or query_vector_for_similarity is None:
+                    continue
+                normalised_candidate = _normalise_vector(stored_embedding)
+                if (
+                    normalised_candidate is None
+                    or len(normalised_candidate)
+                    != len(query_vector_for_similarity)
+                ):
+                    continue
+                similarity_value = math.fsum(
+                    candidate_component * query_component
+                    for candidate_component, query_component in zip(
+                        normalised_candidate, query_vector_for_similarity
+                    )
+                )
             if candidate_external_id == external_id:
                 continue
             try:
