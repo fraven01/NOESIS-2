@@ -591,7 +591,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     parent_content_bytes[root_id] = 0
 
     def _within_capture_depth(level: int) -> bool:
+        """Return True when parent capture is allowed for the given heading level."""
         if parent_capture_max_depth <= 0:
+            # A depth of zero disables parent propagation so that only the node owning
+            # the content keeps it. This prevents leaking child content upwards when
+            # the feature is intentionally switched off (see RAG_PARENT_CAPTURE_MAX_DEPTH).
             return False
         return level <= parent_capture_max_depth
 
