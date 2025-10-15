@@ -169,6 +169,25 @@ def _coerce_vector_values(value: object) -> list[float] | None:
             except (TypeError, ValueError):
                 return None
         return _coerce_vector_values(view.tobytes())
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return None
+        if text.startswith("[") and text.endswith("]"):
+            inner = text[1:-1].strip()
+            if not inner:
+                return []
+            components = inner.split(",")
+            result: list[float] = []
+            for component in components:
+                piece = component.strip()
+                if not piece:
+                    return None
+                try:
+                    result.append(float(piece))
+                except (TypeError, ValueError):
+                    return None
+            return result
     if isinstance(value, (bytes, bytearray)):
         data = bytes(value)
         if len(data) >= 2:
@@ -2986,24 +3005,24 @@ class PgVectorClient:
             candidate_external_id = row[1]
             similarity_value = row[2]
             if include_embedding_in_results:
-                stored_embedding = None
-                if len(row) >= 4:
+                recomputed_similarity: float | None = None
+                if query_vector_for_similarity is not None and len(row) >= 4:
                     stored_embedding = _coerce_vector_values(row[3])
-                if stored_embedding is None or query_vector_for_similarity is None:
-                    continue
-                normalised_candidate = _normalise_vector(stored_embedding)
-                if (
-                    normalised_candidate is None
-                    or len(normalised_candidate)
-                    != len(query_vector_for_similarity)
-                ):
-                    continue
-                similarity_value = math.fsum(
-                    candidate_component * query_component
-                    for candidate_component, query_component in zip(
-                        normalised_candidate, query_vector_for_similarity
-                    )
-                )
+                    if stored_embedding is not None:
+                        normalised_candidate = _normalise_vector(stored_embedding)
+                        if (
+                            normalised_candidate is not None
+                            and len(normalised_candidate)
+                            == len(query_vector_for_similarity)
+                        ):
+                            recomputed_similarity = math.fsum(
+                                candidate_component * query_component
+                                for candidate_component, query_component in zip(
+                                    normalised_candidate, query_vector_for_similarity
+                                )
+                            )
+                if recomputed_similarity is not None:
+                    similarity_value = recomputed_similarity
             if candidate_external_id == external_id:
                 continue
             try:
