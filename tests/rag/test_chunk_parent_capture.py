@@ -125,6 +125,25 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
     payload = object_store.read_json(result["path"])
     parents = payload["parents"]
 
+    root_parent = parents[f"{meta['external_id']}#doc"]
+    expected_root_content = textwrap.dedent(
+        f"""
+        # Level One
+
+        {level_one_body}
+
+        ## Level Two
+
+        {level_two_body}
+
+        ### Level Three
+
+        {level_three_body}
+        """
+    ).strip()
+    assert root_parent["content"] == expected_root_content
+    assert root_parent.get("capture_limited") is not True
+
     def _parent_by_title(title: str) -> dict[str, object]:
         for node in parents.values():
             if node.get("title") == title:
