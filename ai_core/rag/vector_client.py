@@ -4,6 +4,7 @@ import atexit
 import json
 import math
 import os
+import re
 import struct
 import threading
 import time
@@ -300,6 +301,21 @@ def _coerce_vector_values(value: object) -> list[float] | None:
 
     if value is None:
         return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("[") and stripped.endswith("]"):
+            stripped = stripped[1:-1].strip()
+        if not stripped:
+            return []
+        parts = [component for component in re.split(r"[\s,]+", stripped) if component]
+        if not parts:
+            return []
+        try:
+            return [float(component) for component in parts]
+        except (TypeError, ValueError):
+            return None
     if isinstance(value, memoryview):
         view = value
         if view.ndim == 1 and view.format in {"f", "d"}:
@@ -470,6 +486,7 @@ class PgVectorClient:
     _LOGGED_STATEMENT_SCHEMAS: ClassVar[set[str]] = set()
     _CHUNK_INSERT_STATEMENT_NAME = "rag.chunks.bulk_insert"
     _EMBEDDING_UPSERT_STATEMENT_NAME = "rag.embeddings.bulk_upsert"
+    _NEAR_DUPLICATE_PARSE_FALLBACK_LOGGED: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -3241,21 +3258,38 @@ class PgVectorClient:
             similarity_value = row[2]
             if include_embedding_in_results:
                 stored_embedding = None
+                fallback_to_sql_similarity = False
                 if len(row) >= 4:
                     stored_embedding = _coerce_vector_values(row[3])
-                if stored_embedding is None or query_vector_for_similarity is None:
-                    continue
-                normalised_candidate = _normalise_vector(stored_embedding)
-                if normalised_candidate is None or len(normalised_candidate) != len(
-                    query_vector_for_similarity
+                    if stored_embedding is None:
+                        fallback_to_sql_similarity = True
+                else:
+                    fallback_to_sql_similarity = True
+                if (
+                    stored_embedding is not None
+                    and query_vector_for_similarity is not None
                 ):
-                    continue
-                similarity_value = math.fsum(
-                    candidate_component * query_component
-                    for candidate_component, query_component in zip(
-                        normalised_candidate, query_vector_for_similarity
+                    normalised_candidate = _normalise_vector(stored_embedding)
+                    if (
+                        normalised_candidate is not None
+                        and len(normalised_candidate)
+                        == len(query_vector_for_similarity)
+                    ):
+                        similarity_value = math.fsum(
+                            candidate_component * query_component
+                            for candidate_component, query_component in zip(
+                                normalised_candidate, query_vector_for_similarity
+                            )
+                        )
+                    else:
+                        fallback_to_sql_similarity = True
+                else:
+                    fallback_to_sql_similarity = True
+                if fallback_to_sql_similarity:
+                    self._log_near_duplicate_similarity_fallback(
+                        tenant_uuid=tenant_uuid,
+                        external_id=external_id,
                     )
-                )
             if candidate_external_id == external_id:
                 continue
             try:
@@ -3303,6 +3337,21 @@ class PgVectorClient:
                 "similarity": similarity,
             }
         return best
+
+    @classmethod
+    def _log_near_duplicate_similarity_fallback(
+        cls, *, tenant_uuid: uuid.UUID, external_id: str
+    ) -> None:
+        if cls._NEAR_DUPLICATE_PARSE_FALLBACK_LOGGED:
+            return
+        cls._NEAR_DUPLICATE_PARSE_FALLBACK_LOGGED = True
+        logger.warning(
+            "ingestion.doc.near_duplicate_similarity_fallback",
+            extra={
+                "tenant_id": str(tenant_uuid),
+                "external_id": external_id,
+            },
+        )
 
     def _ensure_documents(
         self,
