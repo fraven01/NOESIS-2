@@ -7,6 +7,7 @@ import os
 import threading
 import time
 import uuid
+from array import array
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
@@ -158,6 +159,33 @@ def _coerce_vector_values(value: object) -> list[float] | None:
     """Attempt to coerce ``value`` into a list of floats."""
 
     if value is None:
+        return None
+    if isinstance(value, memoryview):
+        view = value
+        try:
+            cast_view = view.cast("f")
+        except (TypeError, ValueError):
+            cast_view = None
+        if cast_view is None:
+            try:
+                cast_view = view.cast("d")
+            except (TypeError, ValueError):
+                cast_view = None
+        if cast_view is not None:
+            try:
+                return [float(component) for component in cast_view]
+            except (TypeError, ValueError):
+                return None
+        return _coerce_vector_values(view.tobytes())
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+        for typecode in ("f", "d"):
+            try:
+                arr = array(typecode)
+                arr.frombytes(data)
+            except (ValueError, OverflowError):
+                continue
+            return [float(component) for component in arr]
         return None
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         try:
