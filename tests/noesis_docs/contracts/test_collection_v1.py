@@ -39,6 +39,19 @@ def test_collection_link_minimal_payload() -> None:
     assert isinstance(model.model_json_schema(), dict)
 
 
+@pytest.mark.parametrize("field_name", ["slug", "version_label"])
+def test_collection_models_normalise_blank_optional_identifiers(field_name: str) -> None:
+    payload = {
+        "tenant_id": "tenant",
+        "collection_id": uuid4(),
+        field_name: "   ",
+    }
+
+    model = CollectionRef(**payload)
+
+    assert getattr(model, field_name) is None
+
+
 @pytest.mark.parametrize("tenant_id", ["", "   "])
 def test_collection_ref_rejects_empty_tenant(tenant_id: str) -> None:
     with pytest.raises(ValidationError):
@@ -62,4 +75,19 @@ def test_collection_models_reject_overlong_identifiers(field_name: str) -> None:
         CollectionRef(**data)
 
     with pytest.raises(ValidationError):
+        CollectionLink(**data)
+
+
+@pytest.mark.parametrize("field_name", ["slug", "version_label"])
+def test_collection_models_reject_non_string_optional_identifiers(field_name: str) -> None:
+    data = {
+        "tenant_id": "tenant",
+        "collection_id": uuid4(),
+        field_name: 123,
+    }
+
+    with pytest.raises(TypeError):
+        CollectionRef(**data)
+
+    with pytest.raises(TypeError):
         CollectionLink(**data)

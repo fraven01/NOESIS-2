@@ -32,12 +32,13 @@ class CollectionRef(BaseModel):
     def _normalise_optional_identifiers(cls, value: Optional[str]) -> Optional[str]:
         if value is None:
             return None
-        if isinstance(value, str):
-            trimmed = value.strip()
-            if trimmed == "":
-                return None
-            return trimmed
-        return value
+        if not isinstance(value, str):
+            raise TypeError("value must be a string")
+
+        trimmed = value.strip()
+        if trimmed == "":
+            return None
+        return trimmed
 
 
 class CollectionLink(CollectionRef):
