@@ -14,6 +14,7 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )
+from common.logging import log_context
 
 
 def test_get_config_reads_env(monkeypatch):
@@ -126,6 +127,7 @@ def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):
             "case_id": "c1",
             "trace_id": "tid",
             "prompt_version": "v1",
+            "collection_id": "col-123",
         },
     )
     lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
@@ -134,6 +136,30 @@ def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):
     assert start["event"] == "node.start"
     assert end["event"] == "node.end"
     assert end["duration_ms"] >= 0
+    assert start["collection_id"] == "col-123"
+    assert end["collection_id"] == "col-123"
+
+
+def test_trace_logs_include_empty_collection_when_missing(capsys):
+    @trace("node-without-collection")
+    def sample(state, meta):
+        return "ok"
+
+    sample(
+        {},
+        {
+            "tenant_id": "t1",
+            "case_id": "c1",
+            "trace_id": "tid",
+            "prompt_version": "v1",
+        },
+    )
+
+    lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
+    assert len(lines) == 2
+    start, end = map(json.loads, lines)
+    assert start["collection_id"] == ""
+    assert end["collection_id"] == ""
 
 
 def test_trace_sends_to_langfuse(monkeypatch):
@@ -159,11 +185,13 @@ def test_trace_sends_to_langfuse(monkeypatch):
             "case_id": "c1",
             "trace_id": "tid",
             "prompt_version": "v1",
+            "collection_id": "col-123",
         },
     )
     assert dispatched[0]["traceId"] == "tid"
     assert dispatched[0]["name"] == "node2"
     assert dispatched[0]["metadata"]["tenant_id"] == "t1"
+    assert dispatched[0]["metadata"]["collection_id"] == "col-123"
 
 
 def test_trace_skips_langfuse_without_trace_id(monkeypatch):
@@ -215,7 +243,8 @@ def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
 
     monkeypatch.setattr(tracing.requests, "post", fake_post)
 
-    tracing.emit_span("tid", "node", {"foo": "bar"})
+    with log_context(collection_id="ctx-col"):
+        tracing.emit_span("tid", "node", {"foo": "bar"})
 
     assert done.wait(1), "langfuse dispatch did not complete"
 
@@ -229,5 +258,5 @@ def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
     assert calls
     assert calls[0]["json"]["traceId"] == "tid"
     assert calls[0]["json"]["name"] == "node"
-    assert calls[0]["json"]["metadata"] == {"foo": "bar"}
+    assert calls[0]["json"]["metadata"] == {"foo": "bar", "collection_id": "ctx-col"}
     assert calls[0]["thread"].startswith("langfuse")

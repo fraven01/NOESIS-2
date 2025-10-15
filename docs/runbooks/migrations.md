@@ -44,7 +44,50 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 - Schema anwenden (idempotent, nur einmal nötig):
   - Windows: `Get-Content docs/rag/schema.sql | docker compose -f docker-compose.yml -f docker-compose.dev.yml exec -T db psql -U $env:DB_USER -d $env:DB_NAME -v ON_ERROR_STOP=1 -f /dev/stdin`
 - Dienste nach Schemaänderungen neu starten: `npm run dev:restart` (Windows: `npm run win:dev:restart`).
+- Hinweis: Alte Einträge bleiben ohne Scope valide; optionaler Backfill nur bei Bedarf.
 - **Normalisierung alter Embeddings:** Nach dem Rollout der Einheitsvektor-Normalisierung müssen bestehende Einträge neu berechnet werden. Plane unmittelbar im Anschluss einen Re-Embed-Lauf (Ingestion-Batch oder dediziertes Maintenance-Skript), der alle aktiven Dokumente erneut embedden und überschreiben darf. Ohne diesen Schritt mischen sich alte, nicht normierte Vektoren in die Suche und verfälschen Cosine-Distanzen.
+
+### Collection-Scope Migration Checklist
+1) **Collections-Tabelle prüfen:**
+   ```sql
+   SELECT column_name
+   FROM information_schema.columns
+   WHERE table_schema = '{{SCHEMA_NAME}}'
+     AND table_name = 'collections';
+   ```
+   Erwartet werden `tenant_id`, `id`, optionale Labels sowie der zusammengesetzte Primärschlüssel `(tenant_id, id)`.
+2) **Foreign Keys & Spalten verifizieren:**
+   ```sql
+   SELECT attrelid::regclass AS table_name, attname AS column_name
+   FROM pg_attribute
+   WHERE attrelid IN ('{{SCHEMA_NAME}}.documents'::regclass,
+                      '{{SCHEMA_NAME}}.chunks'::regclass,
+                      '{{SCHEMA_NAME}}.embeddings'::regclass)
+     AND attname = 'collection_id';
+   ```
+   Ergänzend stellt der folgende Check sicher, dass alle Tabellen auf `collections` referenzieren:
+   ```sql
+   SELECT conrelid::regclass, confrelid::regclass
+   FROM pg_constraint
+   WHERE confrelid = '{{SCHEMA_NAME}}.collections'::regclass;
+   ```
+   Erwartet werden drei Zeilen (`documents`, `chunks`, `embeddings`).
+3) **Duplicate-Guards nach Scope testen:**
+   ```sql
+   EXPLAIN SELECT 1
+   FROM {{SCHEMA_NAME}}.documents
+   WHERE tenant_id = :tenant
+     AND collection_id IS NULL
+     AND hash = :hash;
+
+   EXPLAIN SELECT 1
+   FROM {{SCHEMA_NAME}}.documents
+   WHERE tenant_id = :tenant
+     AND collection_id = :collection
+     AND hash = :hash;
+   ```
+   Beide Abfragen müssen Index-Scans verwenden (`documents_tenant_hash_null_collection_idx` bzw. `documents_tenant_collection_hash_idx`).
+4) **Header-Bridge Smoke-Test:** Sende einen Upload mit `X-Collection-ID` ohne Body-Feld und prüfe, ob `.meta.json` sowie `documents.collection_id` denselben Wert tragen. Anschließend einen Query-Aufruf mit `filters.collection_ids=[...]` ausführen, um zu bestätigen, dass der Header ignoriert wird (Scope-Priorität Liste > Body > Header).
 
 ### Pgvector-Versionen vereinheitlichen (HNSW + Cosine)
 Ziel: `vector_cosine_ops` ist für HNSW-Indizes in allen Umgebungen verfügbar, damit Reindex-Läufe ohne Fallback (L2/IP) funktionieren.

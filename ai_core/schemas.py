@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Any, Mapping, Literal, Annotated
+from typing import Any, Mapping, Literal, Annotated, Sequence
 from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -8,6 +8,50 @@ from pydantic_core import PydanticCustomError
 
 # NOTE: This schema uses Pydantic v2 features (e.g., Field(min_length) on lists).
 # The project's requirements should be pinned to Pydantic >=2.0,<3.0.
+
+def _normalise_optional_uuid(value: object, field_name: str) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return str(value)
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed:
+            return None
+        try:
+            return str(UUID(trimmed))
+        except (TypeError, ValueError):
+            raise PydanticCustomError(
+                f"invalid_{field_name}",
+                f"{field_name} must be a valid UUID string.",
+            )
+    raise PydanticCustomError(
+        f"invalid_{field_name}",
+        f"{field_name} must be a valid UUID string.",
+    )
+
+
+def _normalise_collection_id_list(value: object) -> list[str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes, bytearray)):
+        raise PydanticCustomError(
+            "invalid_collection_ids",
+            "collection_ids must be provided as a list of UUID strings.",
+        )
+
+    normalised: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        parsed = _normalise_optional_uuid(item, "collection_id")
+        if parsed is None:
+            continue
+        if parsed in seen:
+            continue
+        seen.add(parsed)
+        normalised.append(parsed)
+
+    return normalised
 
 
 class RagIngestionRunRequest(BaseModel):
@@ -22,6 +66,7 @@ class RagIngestionRunRequest(BaseModel):
     )
     priority: Literal["low", "normal", "high"] = "normal"
     embedding_profile: str
+    collection_id: str | None = None
 
     @field_validator("document_ids", mode="after")
     @classmethod
@@ -57,6 +102,11 @@ class RagIngestionRunRequest(BaseModel):
                 "embedding_profile must be a non-empty string.",
             )
         return trimmed
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        return _normalise_optional_uuid(value, "collection_id")
 
 
 class RagHardDeleteAdminRequest(BaseModel):
@@ -159,6 +209,7 @@ class RagUploadMetadata(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     external_id: str | None = None
+    collection_id: str | None = None
 
     @field_validator("external_id", mode="before")
     @classmethod
@@ -169,6 +220,11 @@ class RagUploadMetadata(BaseModel):
             trimmed = value.strip()
             return trimmed or None
         return None
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        return _normalise_optional_uuid(value, "collection_id")
 
 
 class _GraphStateBase(BaseModel):
@@ -233,6 +289,7 @@ class RagQueryRequest(_GraphStateBase):
     visibility: str | None = None
     visibility_override_allowed: bool | None = None
     hybrid: dict[str, Any] | None = None
+    collection_id: str | None = None
 
     @field_validator(
         "question", "query", "process", "doc_class", "visibility", mode="before"
@@ -264,6 +321,49 @@ class RagQueryRequest(_GraphStateBase):
             f"invalid_{info.field_name}",
             f"{info.field_name} must be a JSON object when provided.",
         )
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        return _normalise_optional_uuid(value, "collection_id")
+
+    @model_validator(mode="after")
+    def _apply_collection_scope(self) -> "RagQueryRequest":
+        filters: dict[str, Any] | None = None
+        if self.filters is not None:
+            filters = dict(self.filters)
+
+        collection_ids: list[str] | None = None
+        if filters is not None and "collection_ids" in filters:
+            collection_ids = _normalise_collection_id_list(filters["collection_ids"])
+            if collection_ids:
+                filters["collection_ids"] = collection_ids
+            else:
+                filters.pop("collection_ids", None)
+
+        if filters is not None and "collection_id" in filters:
+            filter_value = _normalise_optional_uuid(
+                filters["collection_id"], "collection_id"
+            )
+            if filter_value:
+                filters["collection_id"] = filter_value
+            else:
+                filters.pop("collection_id", None)
+
+        if collection_ids:
+            self.collection_id = None
+        elif self.collection_id:
+            if filters is None:
+                filters = {}
+            if "collection_id" not in filters:
+                filters["collection_id"] = self.collection_id
+
+        if filters:
+            self.filters = filters
+        else:
+            self.filters = None
+
+        return self
 
     @model_validator(mode="after")
     def _ensure_question_query(self) -> "RagQueryRequest":

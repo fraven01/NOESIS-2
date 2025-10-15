@@ -10,6 +10,7 @@ from ai_core.infra import object_store
 from ai_core import segmentation
 from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag import metrics, vector_client
+from ai_core.rag.schemas import Chunk
 from ai_core.rag.embedding_config import reset_embedding_configuration_cache
 from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
@@ -479,6 +480,66 @@ def test_upsert_forwards_tenant_schema(monkeypatch):
 
     assert written == 1
     assert router.calls == [("tenant-42", "schema-tenant-42")]
+
+
+def test_upsert_respects_collection_scoped_idempotency(tmp_path, monkeypatch):
+    class _FakeRouter:
+        def __init__(self) -> None:
+            self.calls: list[list[Chunk]] = []
+            self.inserted: dict[tuple[str | None, str | None], set[str]] = {}
+
+        def for_tenant(self, tenant_id: str, tenant_schema: str | None = None):
+            return self
+
+        def upsert_chunks(self, chunks):
+            chunk_list = list(chunks)
+            for chunk in chunk_list:
+                key = (chunk.meta.get("external_id"), chunk.meta.get("collection_id"))
+                bucket = self.inserted.setdefault(key, set())
+                bucket.add(str(chunk.meta.get("hash")))
+            self.calls.append(chunk_list)
+            return len(chunk_list)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tasks.object_store, "BASE_PATH", tmp_path)
+
+    tenant = str(uuid.uuid4())
+    case = str(uuid.uuid4())
+    external_id = "doc-collection-scope"
+    collection_a = str(uuid.uuid4())
+    collection_b = str(uuid.uuid4())
+
+    router = _FakeRouter()
+    monkeypatch.setattr(tasks, "get_default_router", lambda: router)
+
+    def _run_pipeline(collection_id: str) -> int:
+        meta = {
+            "tenant_id": tenant,
+            "case_id": case,
+            "external_id": external_id,
+            "collection_id": collection_id,
+        }
+        raw = tasks.ingest_raw(meta, "doc.txt", b"Scoped content")
+        text = tasks.extract_text(meta, raw["path"])
+        masked = tasks.pii_mask(meta, text["path"])
+        chunks = tasks.chunk(meta, masked["path"])
+        embeds = tasks.embed(meta, chunks["path"])
+        return tasks.upsert(meta, embeds["path"])
+
+    first_insert = _run_pipeline(collection_a)
+    repeated_insert = _run_pipeline(collection_a)
+    second_collection_insert = _run_pipeline(collection_b)
+
+    assert first_insert == 1
+    assert repeated_insert == 1
+    assert second_collection_insert == 1
+
+    key_a = (external_id, collection_a)
+    key_b = (external_id, collection_b)
+
+    assert len(router.inserted[key_a]) == 1
+    assert len(router.inserted[key_b]) == 1
+    assert len(router.calls) == 3
 
 
 def test_upsert_raises_on_dimension_mismatch(monkeypatch):

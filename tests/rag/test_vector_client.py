@@ -2,6 +2,7 @@ import math
 import uuid
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from typing import Optional
 
 import pytest
 import psycopg2
@@ -220,7 +221,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
     document_id = uuid.uuid4()
-    doc_key = (tenant, "external-1")
+    doc_key = (tenant, "external-1", None)
 
     class _RecorderCursor:
         def __init__(self):
@@ -250,6 +251,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
             "tenant_id": tenant,
             "external_id": "external-1",
             "source": "unit-test",
+            "collection_id": None,
             "metadata": {},
             "chunks": [
                 Chunk(
@@ -266,7 +268,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
         }
     }
     document_ids = {doc_key: document_id}
-    doc_actions: dict[tuple[str, str], str] = {}
+    doc_actions: dict[tuple[str, str, Optional[str]], str] = {}
 
     client._replace_chunks(recorder, grouped, document_ids, doc_actions)
 
@@ -885,6 +887,144 @@ def test_hybrid_search_clamps_candidate_limits(monkeypatch):
     vector_client.reset_default_client()
 
 
+def test_hybrid_search_applies_single_collection_filter(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    collection_id = str(uuid.uuid4())
+
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+    )
+
+    client.hybrid_search(
+        "collection scoped",
+        tenant_id=tenant,
+        filters={"collection_id": collection_id},
+        alpha=0.0,
+        min_sim=0.0,
+    )
+
+    vector_queries = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if "from embeddings" in sql.lower()
+    ]
+    assert vector_queries
+    sql, params = vector_queries[0]
+    assert "collection_id = any" in sql.lower()
+    assert params[-2] == [collection_id]
+
+
+def test_hybrid_search_applies_case_filter(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    case_id = f"case-{uuid.uuid4()}"
+
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+    )
+
+    client.hybrid_search(
+        "case scoped",
+        tenant_id=tenant,
+        filters={"case_id": case_id},
+        alpha=0.0,
+        min_sim=0.0,
+    )
+
+    vector_queries = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if "from embeddings" in sql.lower()
+    ]
+    assert vector_queries
+    sql, params = vector_queries[0]
+    assert "c.metadata ->> 'case_id' = %s" in sql
+    assert params[-2] == case_id
+
+
+def test_hybrid_search_applies_collection_ids_list(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    collection_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+    )
+
+    client.hybrid_search(
+        "collection multi",
+        tenant_id=tenant,
+        filters={"collection_ids": collection_ids},
+        alpha=0.0,
+        min_sim=0.0,
+    )
+
+    vector_queries = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if "from embeddings" in sql.lower()
+    ]
+    assert vector_queries
+    sql, params = vector_queries[0]
+    assert "collection_id = any" in sql.lower()
+    assert params[-2] == collection_ids
+
+
+def test_hybrid_search_unions_case_and_collection_filters(monkeypatch):
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    case_id = f"case-{uuid.uuid4()}"
+    collection_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    cursor = _FakeCursor()
+    fake_conn = _FakeConn(cursor)
+    monkeypatch.setattr(client, "_connection", _fake_connection_ctx(fake_conn))
+    monkeypatch.setattr(
+        client,
+        "_embed_query",
+        lambda _q: [0.0] * vector_client.get_embedding_dim(),
+    )
+
+    client.hybrid_search(
+        "case plus collections",
+        tenant_id=tenant,
+        filters={"case_id": case_id, "collection_ids": collection_ids},
+        alpha=0.0,
+        min_sim=0.0,
+    )
+
+    vector_queries = [
+        (sql, params)
+        for sql, params in cursor.executed
+        if "from embeddings" in sql.lower()
+    ]
+    assert vector_queries
+    sql, params = vector_queries[0]
+    assert "(c.metadata ->> 'case_id' = %s) or (c.collection_id = any(%s))" in sql.lower()
+    assert params[-3] == case_id
+    assert params[-2] == collection_ids
+
+
 def test_upsert_retries_operational_error_once(monkeypatch):
     vector_client.reset_default_client()
     client = vector_client.get_default_client()
@@ -898,7 +1038,7 @@ def test_upsert_retries_operational_error_once(monkeypatch):
             "external_id": "doc-retry",
         },
     )
-    key = (tenant, "doc-retry")
+    key = (tenant, "doc-retry", None)
     grouped_doc = {
         key: {
             "id": uuid.uuid4(),
@@ -907,6 +1047,7 @@ def test_upsert_retries_operational_error_once(monkeypatch):
             "hash": "hash-retry",
             "content_hash": "hash-retry",
             "source": "unit-test",
+            "collection_id": None,
             "metadata": {},
             "chunks": [chunk],
         }
@@ -1248,6 +1389,197 @@ def test_near_duplicate_cosine_threshold(monkeypatch):
                 embedding_is_unit_normalised=True,
             )
             assert miss is None
+
+
+def test_upsert_allows_same_external_in_different_collections() -> None:
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    external_id = "doc-shared"
+    shared_hash = "hash-shared"
+    collection_a = str(uuid.uuid4())
+    collection_b = str(uuid.uuid4())
+
+    chunk_a = Chunk(
+        content="shared chunk",
+        meta={
+            "tenant_id": tenant,
+            "external_id": external_id,
+            "hash": shared_hash,
+            "source": "unit-test",
+            "collection_id": collection_a,
+        },
+    )
+    chunk_b = Chunk(
+        content="shared chunk",
+        meta={
+            "tenant_id": tenant,
+            "external_id": external_id,
+            "hash": shared_hash,
+            "source": "unit-test",
+            "collection_id": collection_b,
+        },
+    )
+
+    assert client.upsert_chunks([chunk_a]) == 1
+    assert client.upsert_chunks([chunk_b]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM documents
+                WHERE tenant_id = %s AND external_id = %s
+                """,
+                (tenant, external_id),
+            )
+            assert cur.fetchone()[0] == 2
+
+            cur.execute(
+                "SELECT COUNT(*) FROM chunks WHERE tenant_id = %s AND collection_id = %s",
+                (tenant, collection_a),
+            )
+            assert cur.fetchone()[0] == 1
+
+            cur.execute(
+                "SELECT COUNT(*) FROM chunks WHERE tenant_id = %s AND collection_id = %s",
+                (tenant, collection_b),
+            )
+            assert cur.fetchone()[0] == 1
+
+            cur.execute(
+                "SELECT COUNT(*) FROM collections WHERE tenant_id = %s",
+                (tenant,),
+            )
+            assert cur.fetchone()[0] >= 2
+
+
+def test_upsert_deduplicates_within_collection() -> None:
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    external_id = "doc-dedupe"
+    shared_hash = "hash-dedupe"
+    collection_id = str(uuid.uuid4())
+
+    chunk = Chunk(
+        content="stable chunk",
+        meta={
+            "tenant_id": tenant,
+            "external_id": external_id,
+            "hash": shared_hash,
+            "source": "unit-test",
+            "collection_id": collection_id,
+        },
+    )
+
+    assert client.upsert_chunks([chunk]) == 1
+    assert client.upsert_chunks([chunk]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM documents
+                WHERE tenant_id = %s AND external_id = %s
+                """,
+                (tenant, external_id),
+            )
+            assert cur.fetchone()[0] == 1
+
+            cur.execute(
+                "SELECT COUNT(*) FROM chunks WHERE tenant_id = %s AND collection_id = %s",
+                (tenant, collection_id),
+            )
+            assert cur.fetchone()[0] == 1
+
+
+def test_upsert_strips_collection_scope_from_metadata() -> None:
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    collection_id = str(uuid.uuid4())
+    chunk = Chunk(
+        content="metadata scope document",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-meta-scope",
+            "hash": "hash-meta-scope",
+            "source": "unit-test",
+            "collection_id": collection_id,
+        },
+    )
+
+    assert client.upsert_chunks([chunk]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT metadata FROM documents WHERE tenant_id = %s AND collection_id = %s",
+                (tenant, collection_id),
+            )
+            doc_metadata = cur.fetchone()[0]
+            assert isinstance(doc_metadata, dict)
+            assert "collection_id" not in doc_metadata
+
+            cur.execute(
+                "SELECT metadata FROM chunks WHERE tenant_id = %s AND collection_id = %s",
+                (tenant, collection_id),
+            )
+            chunk_metadata = cur.fetchone()[0]
+            assert isinstance(chunk_metadata, dict)
+            assert "collection_id" not in chunk_metadata
+
+
+def test_near_duplicate_respects_collection_scope(monkeypatch):
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
+    monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.95")
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    monkeypatch.setattr(client, "_get_distance_operator", lambda _conn, _kind: "<=>")
+
+    tenant = str(uuid.uuid4())
+    collection_a = str(uuid.uuid4())
+    collection_b = str(uuid.uuid4())
+    dim = vector_client.get_embedding_dim()
+    value = 1.0 / math.sqrt(dim)
+    unit_vector = [value] * dim
+    base_chunk = Chunk(
+        content="baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-base",
+            "hash": "hash-base",
+            "source": "unit-test",
+            "collection_id": collection_a,
+        },
+        embedding=unit_vector,
+    )
+    assert client.upsert_chunks([base_chunk]) == 1
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            match_same = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                unit_vector,
+                external_id="doc-new",
+                embedding_is_unit_normalised=True,
+                collection_uuid=uuid.UUID(collection_a),
+            )
+            assert match_same is not None
+
+            miss_other = client._find_near_duplicate(  # type: ignore[attr-defined]
+                cur,
+                uuid.UUID(tenant),
+                unit_vector,
+                external_id="doc-other",
+                embedding_is_unit_normalised=True,
+                collection_uuid=uuid.UUID(collection_b),
+            )
+            assert miss_other is None
 
 
 def test_near_duplicate_l2_unit_vectors(monkeypatch):

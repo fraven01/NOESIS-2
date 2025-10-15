@@ -38,6 +38,14 @@ Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenan
 | Schema pro Mandant | Eigenes Schema `tenant_<slug>` für Tabellen `documents`, `chunks`, `embeddings` | Skalierungspfad für Großkunden oder erhöhte Isolation |
 | Hybrid | Kern-Tabellen pro Schema, Embeddings global mit `tenant_id` | Wenn LiteLLM und Django gemeinsame Daten teilen müssen |
 
+## Collection-Scopes
+`collection_id` ergänzt `tenant_id` und `case_id` als optionale Persistenz- und Filterdimension. Die Scope-Information kann aus drei Quellen kommen und wird strikt priorisiert: `filters.collection_ids` (Liste) > `collection_id` im Body > `X-Collection-ID` Header (inkl. Alias-Varianten wie `collection_id`). Der Header darf fehlende Body-Werte ergänzen, aber niemals gesetzte Felder überschreiben.
+
+- **Upload & Storage:** Upload-Requests dürfen die Collection im Body oder via Header setzen. Der Web-Layer persistiert den Scope in `documents.collection_id` und spiegelt ihn in der abgelegten `.meta.json`, falls der Body keinen Wert geliefert hat. Bestehende Clients ohne Collection bleiben unverändert funktionsfähig, weil die Spalte `NULL` zulässt.
+- **Ingestion:** Der Worker übernimmt den Scope in Chunks und Embeddings. Die Idempotenzwächter deduplizieren nur innerhalb derselben Collection (`tenant_id`, `collection_id`, Hash), während identische Inhalte in unterschiedlichen Collections parallel bestehen dürfen.
+- **Retriever:** Hybrid-Suchen unterstützen drei Modi ohne zusätzliche Flags: (1) Case-only (`filters.case_id`), (2) Collection-only (`filters.collection_id` oder `filters.collection_ids`), (3) Case + mehrere Collections (Union der Kandidatenmenge). Tenant-Isolation bleibt eine harte WHERE-Bedingung. Logs und Traces dokumentieren die effektive Collection-Klassifizierung (`collection_scope` = `single|list|none`) sowie die Kandidatenanzahl.
+- **Tracing & Observability:** `collection_id` wird als Trace-Tag und im Debug-Logging mitgeführt, sodass Langfuse-Filter ohne Payload-Einsicht möglich sind.
+
 ## Mehrdimensionale Profile
 Wir unterscheiden künftig drei orthogonale Dimensionen, die Einfluss auf den Vektor-Speicher haben: (1) **Tenant** bzw. gebuchtes Service-Level, (2) **Prozesskontext** (z. B. Draft, Review, Final) und (3) **Dokumentklasse** (z. B. juristische Dokumente, technische Handbücher). Das aktuelle Setup unterstützt zwar Tenants über `tenant_id`, koppelt aber alle weiteren Dimensionen an ein einziges Embedding-Profil (`vector(1536)` + `oai-embed-large`).
 

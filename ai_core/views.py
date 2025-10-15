@@ -17,11 +17,13 @@ from django.http import HttpRequest
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
+    META_COLLECTION_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
     X_CASE_ID_HEADER,
+    X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
@@ -278,6 +280,7 @@ def _prepare_request(request: Request):
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
+    collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
 
     tenant_schema = _resolve_tenant_id(request)
     if not tenant_schema:
@@ -342,6 +345,12 @@ def _prepare_request(request: Request):
                 status.HTTP_400_BAD_REQUEST,
             )
 
+    collection_id = None
+    if collection_header is not None:
+        candidate = collection_header.strip()
+        if candidate:
+            collection_id = candidate
+
     trace_id = uuid4().hex
     assert_case_active(tenant_id, case_id)
     meta = {
@@ -352,6 +361,8 @@ def _prepare_request(request: Request):
     }
     if key_alias:
         meta["key_alias"] = key_alias
+    if collection_id:
+        meta["collection_id"] = collection_id
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id
@@ -361,12 +372,17 @@ def _prepare_request(request: Request):
         request.META[META_KEY_ALIAS_KEY] = key_alias
     else:
         request.META.pop(META_KEY_ALIAS_KEY, None)
+    if collection_id:
+        request.META[META_COLLECTION_ID_KEY] = collection_id
+    else:
+        request.META.pop(META_COLLECTION_ID_KEY, None)
 
     log_context = {
         "trace_id": trace_id,
         "case_id": case_id,
         "tenant": tenant_id,
         "key_alias": key_alias,
+        "collection_id": collection_id,
     }
     request.log_context = log_context
     bind_log_context(**log_context)
@@ -1333,7 +1349,19 @@ class RagIngestionRunView(APIView):
             return error
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
-        response = services.start_ingestion_run(request.data, meta, idempotency_key)
+        if isinstance(request.data, Mapping):
+            payload = dict(request.data)
+        else:
+            payload = dict(getattr(request, "data", {}) or {})
+
+        if (
+            meta.get("collection_id")
+            and not payload.get("collection_id")
+            and payload.get("collection_ids") in (None, "")
+        ):
+            payload["collection_id"] = meta["collection_id"]
+
+        response = services.start_ingestion_run(payload, meta, idempotency_key)
 
         return apply_std_headers(response, meta)
 

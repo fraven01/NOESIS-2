@@ -4,6 +4,7 @@ import json
 import time
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from uuid import UUID
 
 from celery import group, shared_task
 from celery.exceptions import TimeoutError as CeleryTimeoutError
@@ -308,6 +309,15 @@ def process_document(
         sanitized_meta_json = dict(meta_json)
         sanitized_meta_json.pop("tenant", None)
         sanitized_meta_json.pop("case", None)
+        raw_collection_id = meta_json.get("collection_id")
+        normalized_collection_id: str | None = None
+        if raw_collection_id is not None:
+            try:
+                normalized_collection_id = str(
+                    UUID(str(raw_collection_id).strip())
+                )
+            except (TypeError, ValueError, AttributeError):
+                normalized_collection_id = None
         normalized_process = normalise_selector_value(meta_json.get("process"))
         normalized_doc_class = normalise_selector_value(meta_json.get("doc_class"))
         if normalized_process is not None:
@@ -318,6 +328,10 @@ def process_document(
             sanitized_meta_json["doc_class"] = normalized_doc_class
         elif "doc_class" in sanitized_meta_json:
             sanitized_meta_json.pop("doc_class", None)
+        if normalized_collection_id is not None:
+            sanitized_meta_json["collection_id"] = normalized_collection_id
+        elif "collection_id" in sanitized_meta_json:
+            sanitized_meta_json.pop("collection_id", None)
         # Normalize meta keys to the new contract: tenant_id/case_id
         meta = {**sanitized_meta_json, "tenant_id": tenant, "case_id": case}
         if tenant_schema:
@@ -336,6 +350,8 @@ def process_document(
             meta["process"] = normalized_process
         if normalized_doc_class is not None:
             meta["doc_class"] = normalized_doc_class
+        if normalized_collection_id is not None:
+            meta["collection_id"] = normalized_collection_id
         state["meta"] = {
             "external_id": meta.get("external_id"),
             "file": fpath.name,
@@ -346,6 +362,8 @@ def process_document(
             state["meta"]["process"] = normalized_process
         if normalized_doc_class is not None:
             state["meta"]["doc_class"] = normalized_doc_class
+        if normalized_collection_id is not None:
+            state["meta"]["collection_id"] = normalized_collection_id
         object_store.write_json(
             _meta_store_path(tenant, case, document_id), sanitized_meta_json
         )

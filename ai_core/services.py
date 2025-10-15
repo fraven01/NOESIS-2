@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from uuid import uuid4
 from importlib import import_module
 
@@ -26,6 +26,12 @@ from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
+
+from common.constants import (
+    COLLECTION_ID_HEADER_CANDIDATES,
+    META_COLLECTION_ID_KEY,
+    X_COLLECTION_ID_HEADER,
+)
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.schemas import ToolContext, merge_state
@@ -146,6 +152,104 @@ def _resolve_ingestion_profile(profile: str):  # type: ignore[no-untyped-def]
     except Exception:
         pass
     return _base_resolve_ingestion_profile(profile)
+
+
+def _apply_collection_header_bridge(
+    request: Request, payload: Mapping[str, object] | None
+) -> dict[str, object]:
+    data = dict(payload or {})
+
+    header_value: str | None = None
+    headers = getattr(request, "headers", None)
+    if isinstance(headers, Mapping):
+        for candidate_key in COLLECTION_ID_HEADER_CANDIDATES:
+            candidate = headers.get(candidate_key)
+            if candidate is None:
+                continue
+            if not isinstance(candidate, str):
+                candidate = str(candidate)
+            candidate = candidate.strip()
+            if candidate:
+                header_value = candidate
+                break
+    if header_value is None:
+        meta = getattr(request, "META", None)
+        if isinstance(meta, Mapping):
+            candidate = meta.get(META_COLLECTION_ID_KEY)
+            if isinstance(candidate, str):
+                header_value = candidate.strip() or None
+
+    if not header_value:
+        return data
+
+    body_value = data.get("collection_id")
+    body_present = False
+    if isinstance(body_value, str):
+        if body_value.strip():
+            body_present = True
+        else:
+            body_value = None
+    elif body_value not in (None, ""):
+        body_present = True
+
+    filters_value = data.get("filters")
+    filter_has_list = False
+    collection_scope = "none"
+    if isinstance(filters_value, Mapping):
+        candidates = filters_value.get("collection_ids")
+        if candidates:
+            filter_has_list = True
+            collection_scope = "list"
+        single_filter = filters_value.get("collection_id")
+        if single_filter is not None:
+            try:
+                if str(single_filter).strip():
+                    body_present = True
+                    if not filter_has_list:
+                        collection_scope = "single"
+            except Exception:
+                body_present = True
+                if not filter_has_list:
+                    collection_scope = "single"
+
+    if not filter_has_list and body_present:
+        collection_scope = "single"
+
+    if not body_present and not filter_has_list:
+        data["collection_id"] = header_value
+    else:
+        reason = "filter_list_present" if filter_has_list else "body_present"
+        logger.debug(
+            "collection header ignored due to %s (collection_scope=%s)",
+            reason,
+            collection_scope,
+            extra={
+                "reason": reason,
+                "header_present": True,
+                "collection_scope": collection_scope,
+            },
+        )
+
+    return data
+
+
+def _persist_collection_scope(
+    tenant_id: str, case_id: str, document_ids: Iterable[str], collection_id: str
+) -> None:
+    tenant_segment = object_store.sanitize_identifier(tenant_id)
+    case_segment = object_store.sanitize_identifier(case_id)
+    for document_id in document_ids:
+        if not document_id:
+            continue
+        path = f"{tenant_segment}/{case_segment}/uploads/{document_id}.meta.json"
+        try:
+            metadata = object_store.read_json(path)
+        except FileNotFoundError:
+            continue
+        if not isinstance(metadata, dict):
+            metadata = {}
+        metadata["collection_id"] = collection_id
+        object_store.write_json(path, metadata)
 
 
 GRAPH_REQUEST_MODELS = {
@@ -274,9 +378,10 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 status.HTTP_400_BAD_REQUEST,
             )
 
+    data = _apply_collection_header_bridge(request, incoming_state)
+
     request_model = GRAPH_REQUEST_MODELS.get(context.graph_name)
     if request_model is not None:
-        data = incoming_state or {}
         try:
             validated = request_model.model_validate(data)
         except ValidationError as exc:
@@ -286,6 +391,8 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 status.HTTP_400_BAD_REQUEST,
             )
         incoming_state = validated.model_dump(exclude_none=True)
+    else:
+        incoming_state = data
 
     merged_state = merge_state(state, incoming_state)
 
@@ -429,6 +536,10 @@ def start_ingestion_run(
             str(exc), "validation_error", status.HTTP_400_BAD_REQUEST
         )
 
+    collection_scope = getattr(validated_data, "collection_id", None)
+    if collection_scope:
+        meta["collection_id"] = collection_scope
+
     try:
         normalized_profile = (
             str(validated_data.embedding_profile).strip()
@@ -454,6 +565,8 @@ def start_ingestion_run(
     to_dispatch = (
         valid_document_ids if valid_document_ids else validated_data.document_ids
     )
+    if collection_scope:
+        _persist_collection_scope(meta["tenant_id"], meta["case_id"], to_dispatch, collection_scope)
     _get_run_ingestion_task().delay(
         meta["tenant_id"],
         meta["case_id"],
@@ -541,6 +654,10 @@ def handle_document_upload(
     if metadata_obj is None:
         metadata_obj = {}
 
+    header_collection = meta.get("collection_id")
+    if header_collection and not metadata_obj.get("collection_id"):
+        metadata_obj["collection_id"] = header_collection
+
     try:
         metadata_model = RagUploadMetadata.model_validate(metadata_obj)
     except ValidationError as exc:
@@ -551,6 +668,8 @@ def handle_document_upload(
     metadata_obj = metadata_model.model_dump()
     if metadata_obj.get("external_id") is None:
         metadata_obj.pop("external_id")
+    if metadata_obj.get("collection_id") is None:
+        metadata_obj.pop("collection_id", None)
 
     original_name = getattr(upload, "name", "") or "upload.bin"
     try:

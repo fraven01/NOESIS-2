@@ -42,6 +42,7 @@ flowchart TD
 - Erfolgreiche Läufe übernehmen `embedding_profile` und `vector_space_id` in Statusdateien, Chunk-Metadaten und Dead-Letter-Payloads. Traces/Logs enthalten dieselben Felder, damit SRE das Profil/den Space jeder Operation nachvollziehen kann.
 - Dead-Letter-Einträge führen zusätzlich `vector_space_schema`, `vector_space_backend` sowie `vector_space_dimension`, sodass Incidents ohne manuelles Nachschlagen der Konfiguration analysiert werden können.
 - `ai_core.rag.ensure_embedding_dimensions()` stoppt das Upsert, sobald `len(embedding)` nicht mit der Vector-Space-Dimension übereinstimmt, und markiert den Lauf mit `INGEST_VECTOR_DIMENSION_MISMATCH` inklusive `tenant_id`, `process`, `doc_class` und Profil im Dead Letter.
+- **Collection-Scope (optional):** Upload, Ingestion und Queries akzeptieren `collection_id`. Scope-Priorität: `filters.collection_ids` > Body-Feld > `X-Collection-ID` Header. Der Header ergänzt fehlende Werte, überschreibt aber niemals Body/Filter. Persistiert wird die Collection in `documents`, `chunks` und `embeddings`; Idempotenz greift pro Collection, sodass identische Chunks in unterschiedlichen Collections nebeneinander existieren dürfen.
 
 ## Fehlertoleranz und Deduplizierung
 - Jeder Datensatz erhält einen SHA-256-Hash aus `(tenant_id, source, content)`. Der Hash wird vor Upsert geprüft; Matches werden übersprungen, auch wenn der Startbestand leer ist.

@@ -12,6 +12,7 @@ from ai_core.graph.schemas import ToolContext, normalize_meta
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
+    X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
@@ -122,3 +123,22 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     assert context.metadata["graph_version"] == "v0"
     assert context.metadata["requested_at"] == meta["requested_at"]
     assert meta["idempotency_key"] == "idem-b"
+
+
+def test_normalize_meta_includes_collection_scope(monkeypatch):
+    monkeypatch.setattr(schemas, "get_quota", lambda: 1)
+    request = _request(
+        {
+            X_TENANT_ID_HEADER: "tenant-c",
+            X_CASE_ID_HEADER: "case-c",
+            X_TRACE_ID_HEADER: "trace-c",
+            X_COLLECTION_ID_HEADER: "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6",
+        },
+        graph_name="info_intake",
+    )
+
+    meta = normalize_meta(request)
+
+    assert meta["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    context = ToolContext.model_validate(meta["tool_context"])
+    assert context.metadata.get("collection_id") == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"

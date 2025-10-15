@@ -65,7 +65,22 @@ SUPPORTED_METADATA_FILTERS = {
     "hash": "document_hash",
     "id": "document_id",
     "external_id": "document_external_id",
+    "collection_id": "chunk_collection",
 }
+
+
+@dataclass(frozen=True)
+class HybridScopePlan:
+    """Normalised scope configuration for a hybrid search request."""
+
+    normalized_filters: Dict[str, object | None]
+    metadata_filters: List[Tuple[str, object | None]]
+    case_value: Optional[str]
+    collection_ids_filter: Optional[List[str]]
+    has_single_collection_filter: bool
+    single_collection_value: Optional[str]
+    collection_ids_count: int
+    filter_debug: Dict[str, object | None]
 
 
 _OPERATOR_CLASS_PREFERENCE: tuple[str, ...] = (
@@ -91,6 +106,130 @@ def get_embedding_dim() -> int:
     """Return the embedding dimensionality reported by the provider."""
 
     return get_embedding_client().dim()
+
+
+def _prepare_scope_filters(
+    *,
+    tenant: str,
+    case_id: str | None,
+    raw_filters: Mapping[str, object | None] | None,
+    visibility_value: str,
+) -> HybridScopePlan:
+    """Normalise hybrid search scope inputs for downstream processing."""
+
+    normalized_filters: Dict[str, object | None] = {}
+    if raw_filters:
+        normalized_filters = {
+            key: (
+                value
+                if not (isinstance(value, str) and value == "") and value is not None
+                else None
+            )
+            for key, value in raw_filters.items()
+            if key != "visibility"
+        }
+
+    raw_collection_ids = normalized_filters.pop("collection_ids", None)
+    collection_ids_filter: list[str] | None = None
+    if isinstance(raw_collection_ids, Sequence) and not isinstance(
+        raw_collection_ids, (str, bytes, bytearray)
+    ):
+        seen: set[str] = set()
+        collected: list[str] = []
+        for item in raw_collection_ids:
+            if isinstance(item, str):
+                candidate = item.strip()
+            elif isinstance(item, uuid.UUID):
+                candidate = str(item)
+            else:
+                candidate = str(item).strip()
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            collected.append(candidate)
+        if collected:
+            collection_ids_filter = collected
+
+    has_single_collection_filter = False
+    if "collection_id" in normalized_filters:
+        single_value = normalized_filters["collection_id"]
+        if isinstance(single_value, str):
+            trimmed = single_value.strip()
+            normalized_filters["collection_id"] = trimmed or None
+        elif isinstance(single_value, uuid.UUID):
+            normalized_filters["collection_id"] = str(single_value)
+        elif single_value is None:
+            normalized_filters.pop("collection_id", None)
+        else:
+            candidate = str(single_value).strip()
+            normalized_filters["collection_id"] = candidate or None
+        if normalized_filters.get("collection_id") is None:
+            normalized_filters.pop("collection_id", None)
+        has_single_collection_filter = "collection_id" in normalized_filters
+
+    if case_id not in {None, ""}:
+        case_value: Optional[str] = str(case_id)
+    else:
+        raw_case_value = normalized_filters.get("case_id")
+        if raw_case_value in {None, ""}:
+            case_value = None
+        else:
+            case_value = str(raw_case_value)
+
+    normalized_filters["tenant_id"] = tenant
+    normalized_filters["case_id"] = case_value
+
+    metadata_filters = [
+        (key, value)
+        for key, value in normalized_filters.items()
+        if key not in {"tenant_id", "case_id", "collection_id"}
+        and value is not None
+        and key in SUPPORTED_METADATA_FILTERS
+    ]
+
+    filter_debug: Dict[str, object | None] = {
+        "tenant_id": "<set>",
+        "visibility": visibility_value,
+    }
+    for key, value in normalized_filters.items():
+        if key in {"tenant_id"}:
+            continue
+        filter_debug[key] = (
+            "<set>"
+            if value is not None and key in SUPPORTED_METADATA_FILTERS
+            else None
+        )
+
+    collection_ids_count = 0
+    if collection_ids_filter:
+        filter_debug["collection_ids"] = "<set>"
+        try:
+            collection_ids_count = len(collection_ids_filter)
+        except Exception:
+            collection_ids_count = 0
+
+    filter_debug["has_single_collection_filter"] = has_single_collection_filter
+
+    single_collection_value = None
+    if has_single_collection_filter:
+        single_candidate = normalized_filters.get("collection_id")
+        if isinstance(single_candidate, str):
+            single_collection_value = single_candidate
+        elif isinstance(single_candidate, uuid.UUID):
+            single_collection_value = str(single_candidate)
+        elif single_candidate is not None:
+            single_collection_value = str(single_candidate).strip() or None
+
+    return HybridScopePlan(
+        normalized_filters=normalized_filters,
+        metadata_filters=metadata_filters,
+        case_value=case_value,
+        collection_ids_filter=collection_ids_filter,
+        has_single_collection_filter=has_single_collection_filter,
+        single_collection_value=single_collection_value,
+        collection_ids_count=collection_ids_count,
+        filter_debug=filter_debug,
+    )
 
 
 def operator_class_exists(cur, operator_class: str, access_method: str) -> bool:
@@ -278,7 +417,7 @@ def _get_bool_setting(name: str, default: bool) -> bool:
     return default
 
 
-DocumentKey = Tuple[str, str]
+DocumentKey = Tuple[str, str, str | None]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
 
@@ -328,6 +467,9 @@ class PgVectorClient:
 
     _ROW_SHAPE_WARNINGS: ClassVar[set[Tuple[str, int]]] = set()
     _NEAR_DUPLICATE_OPERATOR_WARNINGS: ClassVar[set[str]] = set()
+    _LOGGED_STATEMENT_SCHEMAS: ClassVar[set[str]] = set()
+    _CHUNK_INSERT_STATEMENT_NAME = "rag.chunks.bulk_insert"
+    _EMBEDDING_UPSERT_STATEMENT_NAME = "rag.embeddings.bulk_upsert"
 
     def __init__(
         self,
@@ -389,6 +531,53 @@ class PgVectorClient:
             "RAG_NEAR_DUPLICATE_REQUIRE_UNIT_NORM", False
         )
         self._near_duplicate_operator_supported: bool | None = None
+
+        self._log_bulk_statement_templates()
+
+    def _table(self, name: str) -> sql.Identifier:
+        """Return a schema-qualified identifier for ``name``."""
+
+        return sql.Identifier(self._schema, name)
+
+    def _qualified_table_name(self, name: str) -> str:
+        """Return the quoted identifier for ``schema.table`` for logging."""
+
+        schema_part = self._schema.replace('"', '""')
+        table_part = name.replace('"', '""')
+        return f'"{schema_part}"."{table_part}"'
+
+    def _log_bulk_statement_templates(self) -> None:
+        """Emit debug logging for bulk insert statements once per schema."""
+
+        if self._schema in self._LOGGED_STATEMENT_SCHEMAS:
+            return
+
+        chunk_table = self._qualified_table_name("chunks")
+        embedding_table = self._qualified_table_name("embeddings")
+        chunk_sql = (
+            f"INSERT INTO {chunk_table} ("
+            "id, document_id, ord, text, tokens, metadata, tenant_id, collection_id) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)"
+        )
+        embedding_sql = (
+            f"INSERT INTO {embedding_table} (id, chunk_id, embedding, tenant_id, collection_id) "
+            "VALUES (%s, %s, %s::vector, %s, %s) "
+            "ON CONFLICT (chunk_id) DO UPDATE SET "
+            "embedding = EXCLUDED.embedding, "
+            "tenant_id = EXCLUDED.tenant_id, "
+            "collection_id = EXCLUDED.collection_id"
+        )
+        logger.debug(
+            "rag.vector.statements.registered",
+            extra={
+                "schema": self._schema,
+                "statements": {
+                    self._CHUNK_INSERT_STATEMENT_NAME: chunk_sql,
+                    self._EMBEDDING_UPSERT_STATEMENT_NAME: embedding_sql,
+                },
+            },
+        )
+        self._LOGGED_STATEMENT_SCHEMAS.add(self._schema)
 
     @classmethod
     def from_env(
@@ -528,7 +717,7 @@ class PgVectorClient:
         chunk_id: object,
         doc_id: object,
     ) -> Dict[str, object]:
-        enriched = dict(meta or {})
+        enriched = PgVectorClient._strip_collection_scope(meta)
         if "tenant_id" not in enriched and tenant_id:
             enriched["tenant_id"] = tenant_id
         filter_case_value = (filters or {}).get("case_id", case_id)
@@ -537,6 +726,22 @@ class PgVectorClient:
         enriched.setdefault("doc_id", doc_id)
         enriched.setdefault("chunk_id", chunk_id)
         return enriched
+
+    @staticmethod
+    def _strip_collection_scope(metadata: object) -> Dict[str, object]:
+        if isinstance(metadata, Mapping):
+            sanitized = dict(metadata)
+        elif isinstance(metadata, Sequence) and not isinstance(
+            metadata, (str, bytes, bytearray)
+        ):
+            try:
+                sanitized = dict(metadata)  # type: ignore[arg-type]
+            except Exception:
+                sanitized = {}
+        else:
+            sanitized = {}
+        sanitized.pop("collection_id", None)
+        return sanitized
 
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
@@ -846,46 +1051,45 @@ class PgVectorClient:
         visibility_mode = Visibility(visibility_value)
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         tenant = str(tenant_uuid)
-        normalized_filters: Dict[str, object | None] = {}
-        if filters:
-            normalized_filters = {
-                key: (
-                    value
-                    if not (isinstance(value, str) and value == "")
-                    and value is not None
-                    else None
+        scope_plan = _prepare_scope_filters(
+            tenant=tenant,
+            case_id=case_id,
+            raw_filters=filters,
+            visibility_value=visibility_mode.value,
+        )
+        normalized_filters = scope_plan.normalized_filters
+        metadata_filters = scope_plan.metadata_filters
+        case_value = scope_plan.case_value
+        collection_ids_filter = scope_plan.collection_ids_filter
+        has_single_collection_filter = scope_plan.has_single_collection_filter
+        single_collection_value = scope_plan.single_collection_value
+        collection_ids_count = scope_plan.collection_ids_count
+        filter_debug = dict(scope_plan.filter_debug)
+        case_filter_value: str | None = None
+        if case_value:
+            case_filter_value = self._normalise_filter_value(case_value)
+        effective_collection_filter: list[str] | None = None
+        if collection_ids_filter:
+            effective_collection_filter = [
+                self._normalise_filter_value(item) for item in collection_ids_filter
+            ]
+        elif has_single_collection_filter and single_collection_value is not None:
+            effective_collection_filter = [
+                self._normalise_filter_value(single_collection_value)
+            ]
+        collection_scope = "none"
+        if effective_collection_filter:
+            try:
+                collection_scope = (
+                    "single"
+                    if len(effective_collection_filter) == 1
+                    else "list"
                 )
-                for key, value in filters.items()
-                if key != "visibility"
-            }
-        case_value: Optional[str]
-        if case_id not in {None, ""}:
-            case_value = case_id
-        else:
-            case_value = normalized_filters.get("case_id")
-        if case_value is not None:
-            case_value = str(case_value)
-        normalized_filters["tenant_id"] = tenant
-        normalized_filters["case_id"] = case_value
-        metadata_filters = [
-            (key, value)
-            for key, value in normalized_filters.items()
-            if key not in {"tenant_id"}
-            and value is not None
-            and key in SUPPORTED_METADATA_FILTERS
-        ]
-        filter_debug: Dict[str, object | None] = {
-            "tenant_id": "<set>",
-            "visibility": visibility_mode.value,
-        }
-        for key, value in normalized_filters.items():
-            if key in {"tenant_id"}:
-                continue
-            filter_debug[key] = (
-                "<set>"
-                if value is not None and key in SUPPORTED_METADATA_FILTERS
-                else None
-            )
+            except Exception:
+                collection_scope = "list"
+        elif has_single_collection_filter:
+            collection_scope = "single"
+        filter_debug["collection_scope"] = collection_scope
         alpha_value = float(
             alpha if alpha is not None else _get_setting("RAG_HYBRID_ALPHA", 0.7)
         )
@@ -976,12 +1180,15 @@ class PgVectorClient:
         probes = int(_get_setting("RAG_IVF_PROBES", 64))
 
         logger.debug(
-            "RAG hybrid search inputs: tenant=%s top_k=%d vec_limit=%d lex_limit=%d filters=%s",
+            "RAG hybrid search inputs: tenant=%s top_k=%d vec_limit=%d lex_limit=%d filters=%s collection_ids_count=%d has_single_collection_filter=%s collection_scope=%s",
             tenant,
             top_k,
             vec_limit_value,
             lex_limit_value,
             filter_debug,
+            collection_ids_count,
+            str(has_single_collection_filter).lower(),
+            collection_scope,
         )
 
         where_clauses = ["d.tenant_id = %s"]
@@ -1011,6 +1218,17 @@ class PgVectorClient:
             elif kind == "document_external_id":
                 where_clauses.append("d.external_id = %s")
                 where_params.append(normalised)
+        if case_filter_value is not None and effective_collection_filter:
+            where_clauses.append(
+                "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))"
+            )
+            where_params.extend([case_filter_value, effective_collection_filter])
+        elif case_filter_value is not None:
+            where_clauses.append("c.metadata ->> 'case_id' = %s")
+            where_params.append(case_filter_value)
+        elif effective_collection_filter:
+            where_clauses.append("c.collection_id = ANY(%s)")
+            where_params.append(effective_collection_filter)
         where_sql = "\n          AND ".join(where_clauses)
         where_sql_without_deleted: str | None = None
         distance_operator_value: Optional[str] = None
@@ -2619,16 +2837,19 @@ class PgVectorClient:
         tenant_uuid = self._coerce_tenant_uuid(tenant_id)
         doc_ids = list(requested.keys())
         results: Dict[str, Dict[str, object]] = {}
+        documents_table = self._table("documents")
 
         def _operation() -> Dict[str, Dict[str, object]]:
             with self._connection() as conn:
                 with conn.cursor() as cur:
                     cur.execute(
-                        """
-                        SELECT id, metadata->'parent_nodes'
-                        FROM documents
-                        WHERE tenant_id = %s AND id = ANY(%s)
-                        """,
+                        sql.SQL(
+                            """
+                            SELECT id, metadata->'parent_nodes'
+                            FROM {}
+                            WHERE tenant_id = %s AND id = ANY(%s)
+                            """
+                        ).format(documents_table),
                         (str(tenant_uuid), doc_ids),
                     )
                     rows = cur.fetchall()
@@ -2685,6 +2906,17 @@ class PgVectorClient:
             doc_hash = str(chunk.meta.get("hash"))
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
+            raw_collection_id = chunk.meta.get("collection_id")
+            collection_id: str | None = None
+            if raw_collection_id not in {None, "", "None"}:
+                try:
+                    collection_id = str(uuid.UUID(str(raw_collection_id).strip()))
+                except (TypeError, ValueError, AttributeError):
+                    try:
+                        candidate = str(raw_collection_id).strip()
+                    except Exception:
+                        candidate = ""
+                    collection_id = candidate or None
             if tenant_value in {None, "", "None"}:
                 raise ValueError("Chunk metadata must include tenant_id")
             if not doc_hash or doc_hash == "None":
@@ -2698,7 +2930,7 @@ class PgVectorClient:
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
             tenant = str(tenant_uuid)
             external_id_str = str(external_id)
-            key = (tenant, external_id_str)
+            key = (tenant, external_id_str, collection_id)
             if key not in grouped:
                 grouped[key] = {
                     "id": uuid.uuid4(),
@@ -2707,6 +2939,7 @@ class PgVectorClient:
                     "hash": doc_hash,
                     "content_hash": doc_hash,
                     "source": source,
+                    "collection_id": collection_id,
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
@@ -2715,9 +2948,17 @@ class PgVectorClient:
                     "chunks": [],
                     "parents": {},
                 }
+            else:
+                doc_collection = grouped[key].get("collection_id")
+                if doc_collection is None and collection_id is not None:
+                    grouped[key]["collection_id"] = collection_id
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
+            if collection_id is not None:
+                chunk_meta["collection_id"] = collection_id
+            elif "collection_id" in chunk_meta:
+                chunk_meta.pop("collection_id", None)
             parents_map = grouped[key].get("parents")
             chunk_parents = chunk.parents
             if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):
@@ -2785,6 +3026,7 @@ class PgVectorClient:
         *,
         external_id: str,
         embedding_is_unit_normalised: bool,
+        collection_uuid: uuid.UUID | None = None,
     ) -> Dict[str, object] | None:
         if not vector:
             return None
@@ -2921,6 +3163,10 @@ class PgVectorClient:
             else sql.SQL("")
         )
 
+        documents_table = self._table("documents")
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+
         query = sql.SQL(
             """
             WITH base AS (
@@ -2929,10 +3175,11 @@ class PgVectorClient:
                     d.external_id,
                     {sim} AS similarity,
                     {distance} AS chunk_distance{embedding_column}
-                FROM documents d
-                JOIN chunks c ON c.document_id = d.id
-                JOIN embeddings e ON e.chunk_id = c.id
+                FROM {documents} d
+                JOIN {chunks} c ON c.document_id = d.id
+                JOIN {embeddings} e ON e.chunk_id = c.id
                 WHERE d.tenant_id = %s
+                  AND d.collection_id IS NOT DISTINCT FROM %s
                   AND d.deleted_at IS NULL
                   AND d.external_id <> %s
                 ORDER BY chunk_distance ASC
@@ -2961,11 +3208,18 @@ class PgVectorClient:
             embedding_column=embedding_column_sql,
             outer_embedding=outer_embedding_sql,
             ranked_embedding=outer_embedding_sql,
+            documents=documents_table,
+            chunks=chunks_table,
+            embeddings=embeddings_table,
         )
         tenant_value = str(tenant_uuid)
+        collection_value = (
+            str(collection_uuid) if collection_uuid is not None else None
+        )
         params_list: List[object] = [
             *select_vector_params,
             tenant_value,
+            collection_value,
             external_id,
             prefetch_limit,
             self._near_duplicate_probe_limit,
@@ -3057,19 +3311,32 @@ class PgVectorClient:
     ) -> Tuple[Dict[DocumentKey, uuid.UUID], Dict[DocumentKey, str]]:  # type: ignore[no-untyped-def]
         document_ids: Dict[DocumentKey, uuid.UUID] = {}
         actions: Dict[DocumentKey, str] = {}
+        documents_table = self._table("documents")
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
             external_id = str(doc["external_id"])
             content_hash = str(doc.get("content_hash", doc.get("hash", "")))
+            collection_value = doc.get("collection_id")
+            collection_uuid: uuid.UUID | None = None
+            if collection_value:
+                try:
+                    collection_uuid = (
+                        collection_value
+                        if isinstance(collection_value, uuid.UUID)
+                        else uuid.UUID(str(collection_value))
+                    )
+                except (TypeError, ValueError):
+                    collection_uuid = None
             storage_hash = self._compute_storage_hash(
                 cur,
                 tenant_uuid,
                 content_hash,
                 external_id,
+                collection_uuid=collection_uuid,
             )
             doc["hash"] = storage_hash
             doc["content_hash"] = content_hash
-            metadata_dict = dict(doc.get("metadata", {}))
+            metadata_dict = self._strip_collection_scope(doc.get("metadata"))
             metadata_dict.setdefault("hash", content_hash)
 
             if self._near_duplicate_enabled:
@@ -3094,6 +3361,7 @@ class PgVectorClient:
                         embedding_vector,
                         external_id=external_id,
                         embedding_is_unit_normalised=is_unit_normalised,
+                        collection_uuid=collection_uuid,
                     )
             if near_duplicate_details is not None:
                 doc["near_duplicate_info"] = near_duplicate_details
@@ -3116,15 +3384,17 @@ class PgVectorClient:
                     metadata = Json(metadata_dict)
                     existing_id = near_duplicate_details["id"]
                     cur.execute(
-                        """
-                        UPDATE documents
-                        SET external_id = %s,
-                            source = %s,
-                            hash = %s,
-                            metadata = %s,
-                            deleted_at = NULL
-                        WHERE id = %s
-                        """,
+                        sql.SQL(
+                            """
+                            UPDATE {}
+                            SET external_id = %s,
+                                source = %s,
+                                hash = %s,
+                                metadata = %s,
+                                deleted_at = NULL
+                            WHERE id = %s
+                            """
+                        ).format(documents_table),
                         (
                             external_id,
                             doc["source"],
@@ -3149,64 +3419,192 @@ class PgVectorClient:
 
             metadata = Json(metadata_dict)
             document_id = doc["id"]
-            cur.execute(
-                """
-                INSERT INTO documents (id, tenant_id, external_id, source, hash, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                ON CONFLICT (tenant_id, external_id) DO UPDATE
-                SET source = EXCLUDED.source,
-                    hash = EXCLUDED.hash,
-                    metadata = EXCLUDED.metadata,
-                    deleted_at = NULL
-                WHERE documents.hash IS DISTINCT FROM EXCLUDED.hash
-                    OR documents.metadata IS DISTINCT FROM EXCLUDED.metadata
-                RETURNING id, hash
-                """,
-                (
-                    document_id,
-                    str(tenant_uuid),
-                    external_id,
-                    doc["source"],
-                    storage_hash,
-                    metadata,
-                ),
-            )
-            upsert_result = cur.fetchone()
-            if upsert_result:
-                returned_id, _ = upsert_result
-                document_ids[key] = returned_id
-                if returned_id == document_id:
-                    actions[key] = "inserted"
-                else:
-                    actions[key] = "replaced"
-                continue
-
-            # Conflict occurred but existing row already matched the payload. Re-read to
-            # ensure we have the persisted identifiers for downstream actions.
-            cur.execute(
-                """
-                SELECT id, hash
-                FROM documents
-                WHERE tenant_id = %s AND external_id = %s
-                """,
-                (str(tenant_uuid), external_id),
-            )
-            existing = cur.fetchone()
-            if not existing:
-                raise RuntimeError(
-                    "Document upsert yielded no result but record is missing"
+            if collection_uuid is not None:
+                self._ensure_collection_scope(cur, tenant_uuid, collection_uuid)
+            tenant_value = str(tenant_uuid)
+            collection_text = str(collection_uuid) if collection_uuid is not None else None
+            existing: tuple | None
+            if collection_text is None:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        SELECT id, hash, metadata, source, deleted_at
+                        FROM {}
+                        WHERE tenant_id = %s
+                          AND collection_id IS NULL
+                          AND external_id = %s
+                        LIMIT 1
+                        """
+                    ).format(documents_table),
+                    (tenant_value, external_id),
                 )
-            existing_id, _ = existing
-            document_ids[key] = existing_id
-            actions[key] = "skipped"
-            logger.info(
-                "Skipping unchanged document during upsert",
+            else:
+                cur.execute(
+                    sql.SQL(
+                        """
+                        SELECT id, hash, metadata, source, deleted_at
+                        FROM {}
+                        WHERE tenant_id = %s
+                          AND collection_id = %s
+                          AND external_id = %s
+                        LIMIT 1
+                        """
+                    ).format(documents_table),
+                    (tenant_value, collection_text, external_id),
+                )
+            existing = cur.fetchone()
+            try:
+                if existing:
+                    (
+                        existing_id,
+                        existing_hash,
+                        existing_metadata,
+                        existing_source,
+                        existing_deleted,
+                    ) = existing
+                    needs_update = (
+                        str(existing_hash) != storage_hash
+                        or self._strip_collection_scope(existing_metadata)
+                        != metadata_dict
+                        or str(existing_source) != doc.get("source")
+                        or existing_deleted is not None
+                    )
+                    if needs_update:
+                        cur.execute(
+                            sql.SQL(
+                                """
+                                UPDATE {}
+                                SET source = %s,
+                                    hash = %s,
+                                    metadata = %s,
+                                    collection_id = %s,
+                                    deleted_at = NULL
+                                WHERE id = %s
+                                """
+                            ).format(documents_table),
+                            (
+                                doc["source"],
+                                storage_hash,
+                                metadata,
+                                collection_text,
+                                existing_id,
+                            ),
+                        )
+                        actions[key] = "replaced"
+                    else:
+                        actions[key] = "skipped"
+                    document_ids[key] = existing_id
+                    doc["id"] = existing_id
+                    doc["metadata"] = metadata_dict
+                    doc["collection_id"] = collection_text
+                    continue
+
+                cur.execute(
+                    sql.SQL(
+                        """
+                        INSERT INTO {} (
+                            id,
+                            tenant_id,
+                            collection_id,
+                            external_id,
+                            source,
+                            hash,
+                            metadata
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """
+                    ).format(documents_table),
+                    (
+                        document_id,
+                        tenant_value,
+                        collection_text,
+                        external_id,
+                        doc["source"],
+                        storage_hash,
+                        metadata,
+                    ),
+                )
+                document_ids[key] = document_id
+                actions[key] = "inserted"
+                doc["metadata"] = metadata_dict
+                doc["collection_id"] = collection_text
+            except UniqueViolation:
+                conn = cur.connection
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                with conn.cursor() as retry_cur:
+                    if collection_text is None:
+                        retry_cur.execute(
+                            sql.SQL(
+                                """
+                                SELECT id, hash, metadata, source, deleted_at
+                                FROM {}
+                                WHERE tenant_id = %s
+                                  AND collection_id IS NULL
+                                  AND external_id = %s
+                                LIMIT 1
+                                """
+                            ).format(documents_table),
+                            (tenant_value, external_id),
+                        )
+                    else:
+                        retry_cur.execute(
+                            sql.SQL(
+                                """
+                                SELECT id, hash, metadata, source, deleted_at
+                                FROM {}
+                                WHERE tenant_id = %s
+                                  AND collection_id = %s
+                                  AND external_id = %s
+                                LIMIT 1
+                                """
+                            ).format(documents_table),
+                            (tenant_value, collection_text, external_id),
+                        )
+                    duplicate = retry_cur.fetchone()
+                if not duplicate:
+                    raise
+                dup_id, _, dup_metadata, _, _ = duplicate
+                document_ids[key] = dup_id
+                actions[key] = "skipped"
+                doc["id"] = dup_id
+                doc["metadata"] = self._strip_collection_scope(dup_metadata)
+                doc["collection_id"] = collection_text
+                logger.info(
+                    "Skipping unchanged document during upsert",
+                    extra={
+                        "tenant_id": doc["tenant_id"],
+                        "external_id": external_id,
+                    },
+                )
+        return document_ids, actions
+
+    def _ensure_collection_scope(
+        self, cur, tenant_uuid: uuid.UUID, collection_uuid: uuid.UUID
+    ) -> None:
+        try:
+            collections_table = self._table("collections")
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {} (tenant_id, id)
+                    VALUES (%s, %s)
+                    ON CONFLICT (tenant_id, id) DO NOTHING
+                    """
+                ).format(collections_table),
+                (str(tenant_uuid), str(collection_uuid)),
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug(
+                "ingestion.collections.ensure_failed",
                 extra={
-                    "tenant_id": doc["tenant_id"],
-                    "external_id": external_id,
+                    "tenant_id": str(tenant_uuid),
+                    "collection_id": str(collection_uuid),
+                    "error": str(exc),
                 },
             )
-        return document_ids, actions
 
     def _compute_storage_hash(
         self,
@@ -3214,19 +3612,41 @@ class PgVectorClient:
         tenant_uuid: uuid.UUID,
         content_hash: str,
         external_id: str,
+        *,
+        collection_uuid: uuid.UUID | None = None,
     ) -> str:
         if not content_hash:
             return content_hash
         tenant_value = str(tenant_uuid)
-        cur.execute(
-            """
-            SELECT external_id
-            FROM documents
-            WHERE tenant_id = %s AND hash = %s
-            LIMIT 1
-            """,
-            (tenant_value, content_hash),
-        )
+        documents_table = self._table("documents")
+        if collection_uuid is None:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT external_id
+                    FROM {}
+                    WHERE tenant_id = %s
+                      AND collection_id IS NULL
+                      AND hash = %s
+                    LIMIT 1
+                    """
+                ).format(documents_table),
+                (tenant_value, content_hash),
+            )
+        else:
+            cur.execute(
+                sql.SQL(
+                    """
+                    SELECT external_id
+                    FROM {}
+                    WHERE tenant_id = %s
+                      AND collection_id = %s
+                      AND hash = %s
+                    LIMIT 1
+                    """
+                ).format(documents_table),
+                (tenant_value, str(collection_uuid), content_hash),
+            )
         existing = cur.fetchone()
         if existing:
             existing_external_id = existing[0]
@@ -3267,15 +3687,35 @@ class PgVectorClient:
         document_ids: Dict[DocumentKey, uuid.UUID],
         doc_actions: Dict[DocumentKey, str],
     ) -> Tuple[int, Dict[DocumentKey, Dict[str, float]]]:  # type: ignore[no-untyped-def]
-        chunk_insert_sql = """
-            INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
-            VALUES (%s, %s, %s, %s, %s, %s)
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+        chunk_insert_sql = sql.SQL(
+            """
+            INSERT INTO {} (
+                id,
+                document_id,
+                ord,
+                text,
+                tokens,
+                metadata,
+                tenant_id,
+                collection_id
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
         """
-        embedding_insert_sql = """
-            INSERT INTO embeddings (id, chunk_id, embedding)
-            VALUES (%s, %s, %s::vector)
-            ON CONFLICT (chunk_id) DO UPDATE SET embedding = EXCLUDED.embedding
+        ).format(chunks_table)
+        embedding_insert_sql = sql.SQL(
+            """
+            INSERT INTO {} (id, chunk_id, embedding, tenant_id, collection_id)
+            VALUES (%s, %s, %s::vector, %s, %s)
+            ON CONFLICT (chunk_id) DO UPDATE
+            SET embedding = EXCLUDED.embedding,
+                tenant_id = EXCLUDED.tenant_id,
+                collection_id = EXCLUDED.collection_id
         """
+        ).format(embeddings_table)
+        chunk_insert_sql_str = chunk_insert_sql.as_string(cur.connection)
+        embedding_insert_sql_str = embedding_insert_sql.as_string(cur.connection)
 
         inserted = 0
         per_doc_stats: Dict[DocumentKey, Dict[str, float]] = {}
@@ -3291,12 +3731,19 @@ class PgVectorClient:
                 per_doc_stats[key] = {"chunk_count": 0, "duration_ms": 0.0}
                 continue
             document_id = document_ids[key]
+            tenant_value = str(doc.get("tenant_id", ""))
+            collection_value = doc.get("collection_id")
             started = time.perf_counter()
             cur.execute(
-                "DELETE FROM embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = %s)",
+                sql.SQL(
+                    "DELETE FROM {} WHERE chunk_id IN (SELECT id FROM {} WHERE document_id = %s)"
+                ).format(embeddings_table, chunks_table),
                 (document_id,),
             )
-            cur.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+            cur.execute(
+                sql.SQL("DELETE FROM {} WHERE document_id = %s").format(chunks_table),
+                (document_id,),
+            )
 
             chunk_rows = []
             embedding_rows = []
@@ -3322,6 +3769,7 @@ class PgVectorClient:
                         },
                     )
                 tokens = self._estimate_tokens(chunk.content)
+                chunk_metadata = self._strip_collection_scope(chunk.meta)
                 chunk_rows.append(
                     (
                         chunk_id,
@@ -3329,7 +3777,9 @@ class PgVectorClient:
                         index,
                         chunk.content,
                         tokens,
-                        Json(dict(chunk.meta)),
+                        Json(chunk_metadata),
+                        tenant_value,
+                        collection_value,
                     )
                 )
                 chunk_count += 1
@@ -3346,12 +3796,20 @@ class PgVectorClient:
                             embedding_to_store = normalised_embedding
                     if embedding_to_store:
                         vector_value = self._format_vector(embedding_to_store)
-                        embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
+                        embedding_rows.append(
+                            (
+                                uuid.uuid4(),
+                                chunk_id,
+                                vector_value,
+                                tenant_value,
+                                collection_value,
+                            )
+                        )
 
             if chunk_rows:
-                cur.executemany(chunk_insert_sql, chunk_rows)
+                cur.executemany(chunk_insert_sql_str, chunk_rows)
             if embedding_rows:
-                cur.executemany(embedding_insert_sql, embedding_rows)
+                cur.executemany(embedding_insert_sql_str, embedding_rows)
             inserted += chunk_count
             per_doc_stats[key] = {
                 "chunk_count": float(chunk_count),

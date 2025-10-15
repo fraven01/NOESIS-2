@@ -12,6 +12,227 @@ from ai_core.rag.schemas import Chunk
 from structlog.testing import capture_logs
 
 
+def _make_vector_client(monkeypatch: pytest.MonkeyPatch) -> tuple[vector_client.PgVectorClient, list[tuple[str, tuple | None]]]:
+    """Return a minimally initialised vector client and capture list."""
+
+    executed: list[tuple[str, tuple | None]] = []
+
+    client = object.__new__(vector_client.PgVectorClient)
+    client._schema = "rag"
+    client._statement_timeout_ms = 5000
+    client._prepare_lock = threading.Lock()
+    client._indexes_ready = True
+    client._retries = 1
+    client._retry_base_delay = 0.0
+    client._distance_operator_cache = {}
+    client._near_duplicate_operator_support = {}
+    client._near_duplicate_strategy = "skip"
+    client._near_duplicate_threshold = 0.97
+    client._near_duplicate_probe_limit = 8
+    client._near_duplicate_enabled = False
+    client._require_unit_norm_for_l2 = False
+    client._near_duplicate_operator_supported = False
+    client._log_bulk_statement_templates = lambda: None  # type: ignore[assignment]
+    client._run_with_retries = lambda fn, op_name: fn()
+
+    def _fake_get_distance(self, conn, index_kind):  # type: ignore[no-untyped-def]
+        return "<=>"
+
+    client._get_distance_operator = _fake_get_distance.__get__(client, type(client))
+
+    def _fake_embed(self, _query):  # type: ignore[no-untyped-def]
+        return None
+
+    client._embed_query = _fake_embed.__get__(client, type(client))
+    client._coerce_tenant_uuid = vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+        client, vector_client.PgVectorClient
+    )
+
+    class _FakeCursor:
+        def __init__(self) -> None:
+            self._fetchall: list[tuple] = []
+            self._fetchone: tuple | None = None
+
+        def __enter__(self) -> "_FakeCursor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
+            sql_text = str(sql)
+            executed.append((sql_text, params))
+            if "show_limit" in sql_text:
+                self._fetchone = (0.3,)
+            else:
+                self._fetchone = None
+            self._fetchall = []
+
+        def fetchall(self) -> list[tuple]:
+            result = list(self._fetchall)
+            self._fetchall = []
+            return result
+
+        def fetchone(self):
+            result = self._fetchone
+            self._fetchone = None
+            return result
+
+    class _FakeConnection:
+        def cursor(self) -> _FakeCursor:
+            return _FakeCursor()
+
+        def rollback(self) -> None:
+            return None
+
+    def _fake_connection(self):  # type: ignore[no-untyped-def]
+        conn = _FakeConnection()
+
+        class _Ctx:
+            def __enter__(self_inner):
+                return conn
+
+            def __exit__(self_inner, exc_type, exc, tb) -> bool:
+                return False
+
+        return _Ctx()
+
+    client._connection = _fake_connection.__get__(client, type(client))
+    return client, executed
+
+
+def _extract_where_clauses(executed: list[tuple[str, tuple | None]]) -> list[str]:
+    return [sql for sql, _params in executed if "FROM chunks c" in sql]
+
+
+def test_prepare_scope_filters_prioritises_collection_list() -> None:
+    list_id_one = str(uuid.uuid4())
+    list_id_two = str(uuid.uuid4())
+    plan = vector_client._prepare_scope_filters(
+        tenant="tenant-1",
+        case_id=None,
+        raw_filters={
+            "collection_ids": [f"  {list_id_one}  ", list_id_two],
+            "collection_id": " body-scope ",
+            "case_id": "filter-case",
+        },
+        visibility_value="active",
+    )
+
+    assert plan.collection_ids_filter == [list_id_one, list_id_two]
+    assert plan.collection_ids_count == 2
+    assert plan.case_value == "filter-case"
+    assert plan.has_single_collection_filter is True
+    assert plan.filter_debug["collection_ids"] == "<set>"
+
+
+def test_prepare_scope_filters_prefers_case_argument() -> None:
+    plan = vector_client._prepare_scope_filters(
+        tenant="tenant-1",
+        case_id="case-from-arg",
+        raw_filters={"case_id": "ignored", "collection_id": None},
+        visibility_value="active",
+    )
+
+    assert plan.case_value == "case-from-arg"
+    assert plan.collection_ids_filter is None
+
+
+def test_hybrid_search_where_clause_case_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, executed = _make_vector_client(monkeypatch)
+
+    client.hybrid_search("frage", tenant_id="tenant-1", case_id="case-123")
+
+    where_clauses = _extract_where_clauses(executed)
+    assert any("c.metadata ->> 'case_id' = %s" in clause for clause in where_clauses)
+    assert all("c.collection_id = ANY" not in clause for clause in where_clauses)
+
+
+def test_hybrid_search_where_clause_collection_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, executed = _make_vector_client(monkeypatch)
+
+    client.hybrid_search(
+        "frage",
+        tenant_id="tenant-1",
+        filters={"collection_ids": ["col-1"]},
+    )
+
+    where_clauses = _extract_where_clauses(executed)
+    assert any("c.collection_id = ANY" in clause for clause in where_clauses)
+    assert all("c.metadata ->> 'case_id' = %s" not in clause for clause in where_clauses)
+
+
+def test_hybrid_search_where_clause_unions_case_and_collections(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, executed = _make_vector_client(monkeypatch)
+
+    client.hybrid_search(
+        "frage",
+        tenant_id="tenant-1",
+        case_id="case-123",
+        filters={"collection_ids": ["col-1", "col-2"]},
+    )
+
+    where_clauses = _extract_where_clauses(executed)
+    assert any(
+        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))" in clause
+        for clause in where_clauses
+    )
+
+
+def test_group_by_document_isolates_collections() -> None:
+    client = object.__new__(vector_client.PgVectorClient)
+    client._coerce_tenant_uuid = vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+        client, vector_client.PgVectorClient
+    )
+    collection_a = str(uuid.uuid4())
+    collection_b = str(uuid.uuid4())
+    tenant = str(uuid.uuid4())
+    doc_id = "doc-42"
+
+    tenant_key = str(client._coerce_tenant_uuid(tenant))
+
+    chunks = [
+        Chunk(
+            content="alpha",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection_a,
+            },
+        ),
+        Chunk(
+            content="beta",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection_a,
+            },
+        ),
+        Chunk(
+            content="gamma",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection_b,
+            },
+        ),
+    ]
+
+    grouped = client._group_by_document(chunks)
+
+    assert len(grouped) == 2
+    scoped_keys = {(key[1], key[2]) for key in grouped}
+    assert scoped_keys == {(doc_id, collection_a), (doc_id, collection_b)}
+    assert len(grouped[(tenant_key, doc_id, collection_a)]["chunks"]) == 2
+    assert len(grouped[(tenant_key, doc_id, collection_b)]["chunks"]) == 1
+
+
+
 @pytest.mark.usefixtures("rag_database")
 class TestPgVectorClient:
     def setup_method(self) -> None:
@@ -2143,6 +2364,79 @@ class TestPgVectorClient:
         assert reject["candidate_tenant_id"] == tenant
         assert result.chunks == []
         assert result.vector_candidates == 1
+
+    def test_hybrid_search_logs_collection_scope_count(self, monkeypatch) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        collection_ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
+        )
+
+        def _fake_run(_fn, *, op_name: str):
+            return [], [], 0.0
+
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        with capture_logs() as logs:
+            client.hybrid_search(
+                "collection count",
+                tenant_id=tenant,
+                filters={"collection_ids": collection_ids},
+                top_k=1,
+            )
+
+        debug_logs = [
+            entry
+            for entry in logs
+            if entry.get("event", "").startswith("RAG hybrid search inputs:")
+        ]
+        assert debug_logs
+        assert (
+            f"collection_ids_count={len(collection_ids)}"
+            in debug_logs[0].get("event", "")
+        )
+        assert "has_single_collection_filter=false" in debug_logs[0].get("event", "")
+        assert "collection_scope=list" in debug_logs[0].get("event", "")
+
+    def test_hybrid_search_logs_single_collection_flag(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = vector_client.get_default_client()
+        tenant = str(uuid.uuid4())
+        collection_id = str(uuid.uuid4())
+
+        monkeypatch.setattr(
+            vector_client.PgVectorClient,
+            "_embed_query",
+            lambda self, _query: [0.0] * vector_client.get_embedding_dim(),
+        )
+
+        def _fake_run(_fn, *, op_name: str):
+            return [], [], 0.0
+
+        monkeypatch.setattr(client, "_run_with_retries", _fake_run)
+
+        with capture_logs() as logs:
+            client.hybrid_search(
+                "collection single flag",
+                tenant_id=tenant,
+                filters={"collection_id": collection_id},
+                top_k=1,
+            )
+
+        debug_logs = [
+            entry
+            for entry in logs
+            if entry.get("event", "").startswith("RAG hybrid search inputs:")
+        ]
+        assert debug_logs
+        message = debug_logs[0].get("event", "")
+        assert "has_single_collection_filter=true" in message
+        assert "collection_scope=single" in message
 
     def test_hybrid_search_respects_request_trgm_limit(self) -> None:
         client = vector_client.get_default_client()

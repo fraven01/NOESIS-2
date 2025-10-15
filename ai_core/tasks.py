@@ -761,6 +761,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             chunk_meta["process"] = meta["process"]
         if meta.get("doc_class"):
             chunk_meta["doc_class"] = meta["doc_class"]
+        if meta.get("collection_id"):
+            chunk_meta["collection_id"] = meta["collection_id"]
         chunks.append(
             {
                 "content": chunk_text,
@@ -938,6 +940,7 @@ def upsert(
                     "vector_space_id",
                     "process",
                     "doc_class",
+                    "collection_id",
                 ):
                     if raw_meta.get(key) is not None:
                         fallback_meta[key] = raw_meta.get(key)

@@ -12,12 +12,27 @@ from typing import Any, Callable, TypeVar, cast
 
 import requests
 
-from common.logging import get_logger
+from common.logging import get_log_context, get_logger
 
 F = TypeVar("F", bound=Callable[..., Any])
 
 
 logger = get_logger(__name__)
+
+
+def _normalise_collection_value(value: object) -> str | None:
+    """Return a trimmed collection identifier or ``None`` when absent."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+    else:
+        try:
+            candidate = str(value).strip()
+        except Exception:
+            return None
+    return candidate or None
 
 
 def trace_meta(meta: dict[str, Any], prompt_version: str | None) -> dict[str, Any]:
@@ -118,7 +133,21 @@ def emit_span(trace_id: str, node_name: str, metadata: dict[str, Any]) -> None:
     without reaching into the module's private internals.
     """
 
-    _dispatch_langfuse(trace_id=trace_id, node_name=node_name, metadata=metadata)
+    metadata_payload = dict(metadata)
+    collection_value = _normalise_collection_value(metadata_payload.get("collection_id"))
+    if collection_value is None:
+        context_collection = _normalise_collection_value(
+            get_log_context().get("collection_id")
+        )
+        metadata_payload["collection_id"] = context_collection or ""
+    else:
+        metadata_payload["collection_id"] = collection_value
+
+    _dispatch_langfuse(
+        trace_id=trace_id,
+        node_name=node_name,
+        metadata=metadata_payload,
+    )
 
 
 def trace(node_name: str) -> Callable[[F], F]:
@@ -137,6 +166,9 @@ def trace(node_name: str) -> Callable[[F], F]:
             start_ts = time.time()
             tenant_value = meta_enriched.get("tenant_id")
             case_value = meta_enriched.get("case_id")
+            raw_collection_value = meta_enriched.get("collection_id")
+            collection_value = _normalise_collection_value(raw_collection_value)
+            collection_payload = collection_value or ""
 
             start_payload = {
                 "event": "node.start",
@@ -147,6 +179,7 @@ def trace(node_name: str) -> Callable[[F], F]:
                 "prompt_version": meta_enriched.get("prompt_version"),
                 "ts": start_ts,
             }
+            start_payload["collection_id"] = collection_payload
             emit_event(start_payload)
 
             try:
@@ -163,6 +196,7 @@ def trace(node_name: str) -> Callable[[F], F]:
                     "ts": end_ts,
                     "duration_ms": int((end_ts - start_ts) * 1000),
                 }
+                end_payload["collection_id"] = collection_payload
                 emit_event(end_payload)
 
                 trace_id = meta_enriched.get("trace_id")
@@ -177,6 +211,7 @@ def trace(node_name: str) -> Callable[[F], F]:
                             "tenant_id": tenant_value,
                             "case_id": case_value,
                             "prompt_version": meta_enriched.get("prompt_version"),
+                            "collection_id": collection_payload,
                         },
                     )
 
