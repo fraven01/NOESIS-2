@@ -938,7 +938,7 @@ class PgVectorClient:
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
         for key, doc in grouped.items():
-            tenant_id, external_id = key
+            tenant_id, external_id, collection_id = key
             action = doc_actions.get(key, "inserted")
             stats = per_doc_timings.get(
                 key,
@@ -957,6 +957,8 @@ class PgVectorClient:
                 "chunk_count": chunk_count,
                 "duration_ms": duration,
             }
+            if collection_id is not None:
+                doc_payload["collection_id"] = collection_id
             near_info = doc.get("near_duplicate_info")
             if isinstance(near_info, Mapping):
                 matched_external = near_info.get("external_id")
@@ -1196,17 +1198,18 @@ class PgVectorClient:
         ef_search = int(_get_setting("RAG_HNSW_EF_SEARCH", 80))
         probes = int(_get_setting("RAG_IVF_PROBES", 64))
 
-        logger.debug(
-            "RAG hybrid search inputs: tenant=%s top_k=%d vec_limit=%d lex_limit=%d filters=%s collection_ids_count=%d has_single_collection_filter=%s collection_scope=%s",
-            tenant,
-            top_k,
-            vec_limit_value,
-            lex_limit_value,
-            filter_debug,
-            collection_ids_count,
-            str(has_single_collection_filter).lower(),
-            collection_scope,
+        debug_message = (
+            "RAG hybrid search inputs: "
+            f"tenant={tenant} "
+            f"top_k={top_k} "
+            f"vec_limit={vec_limit_value} "
+            f"lex_limit={lex_limit_value} "
+            f"filters={filter_debug} "
+            f"collection_ids_count={collection_ids_count} "
+            f"has_single_collection_filter={str(has_single_collection_filter).lower()} "
+            f"collection_scope={collection_scope}"
         )
+        logger.debug(debug_message)
 
         where_clauses = ["d.tenant_id = %s"]
         deleted_visibility_clauses = (
