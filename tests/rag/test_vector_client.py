@@ -1239,8 +1239,7 @@ def test_near_duplicate_cosine_threshold(monkeypatch):
             assert match["external_id"] == "doc-base"
             assert float(match["similarity"]) >= 0.95
 
-            flipped = list(unit_vector)
-            flipped[0] = -flipped[0]
+            flipped = [-value for value in unit_vector]
             miss = client._find_near_duplicate(  # type: ignore[attr-defined]
                 cur,
                 uuid.UUID(tenant),
@@ -1289,7 +1288,12 @@ def test_near_duplicate_l2_unit_vectors(monkeypatch):
             assert float(match["similarity"]) >= 0.97
 
             shifted = list(unit_vector)
-            shifted[0] = 0.0
+            cutoff = max(1, dim // 2)
+            for index in range(cutoff):
+                shifted[index] = 0.0
+            norm = math.sqrt(sum(value * value for value in shifted))
+            assert norm > 0
+            shifted = [value / norm for value in shifted]
             miss = client._find_near_duplicate(  # type: ignore[attr-defined]
                 cur,
                 uuid.UUID(tenant),

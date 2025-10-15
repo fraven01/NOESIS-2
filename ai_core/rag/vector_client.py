@@ -2698,10 +2698,13 @@ class PgVectorClient:
         if count <= 0:
             return None
         averaged = [value / count for value in aggregated]
-        normalised = _normalise_vector(averaged)
-        if normalised is None:
+        norm_sq = math.fsum(value * value for value in averaged)
+        if norm_sq <= _ZERO_EPSILON:
             return None
-        return normalised, unit_normalised
+        norm = math.sqrt(norm_sq)
+        if not math.isfinite(norm) or norm <= _ZERO_EPSILON:
+            return None
+        return averaged, unit_normalised
 
     def _find_near_duplicate(
         self,
@@ -3165,6 +3168,12 @@ class PgVectorClient:
 
         inserted = 0
         per_doc_stats: Dict[DocumentKey, Dict[str, float]] = {}
+        index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
+        try:
+            storage_operator = self._get_distance_operator(cur.connection, index_kind)
+        except Exception:
+            storage_operator = None
+        store_normalised_embeddings = storage_operator != "<->"
         for key, doc in grouped.items():
             action = doc_actions.get(key, "inserted")
             if action in {"skipped", "near_duplicate_skipped"}:
@@ -3214,8 +3223,19 @@ class PgVectorClient:
                 )
                 chunk_count += 1
                 if normalised_embedding is not None:
-                    vector_value = self._format_vector(normalised_embedding)
-                    embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
+                    embedding_to_store: Sequence[float] | None = None
+                    if store_normalised_embeddings:
+                        embedding_to_store = normalised_embedding
+                    else:
+                        try:
+                            embedding_to_store = [
+                                float(value) for value in (embedding_values or [])
+                            ]
+                        except (TypeError, ValueError):
+                            embedding_to_store = normalised_embedding
+                    if embedding_to_store:
+                        vector_value = self._format_vector(embedding_to_store)
+                        embedding_rows.append((uuid.uuid4(), chunk_id, vector_value))
 
             if chunk_rows:
                 cur.executemany(chunk_insert_sql, chunk_rows)
