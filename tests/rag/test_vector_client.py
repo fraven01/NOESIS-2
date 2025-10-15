@@ -218,8 +218,6 @@ def test_fetch_parent_context_returns_requested_nodes(monkeypatch):
 
 
 def test_replace_chunks_normalises_embeddings(monkeypatch):
-    from unittest.mock import patch
-
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
     document_id = uuid.uuid4()
@@ -263,11 +261,23 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
 
     with client._connection() as conn:
         with conn.cursor() as cur:
-            with patch.object(type(cur), "executemany", wraps=cur.executemany) as spy_executemany:
-                client._replace_chunks(cur, grouped, document_ids, doc_actions)
+            calls: list[tuple[tuple, dict]] = []
+
+            class _SpyCursor:
+                def __init__(self, inner_cursor):
+                    self._inner = inner_cursor
+
+                def executemany(self, *args, **kwargs):  # noqa: D401 - simple spy wrapper
+                    calls.append((args, kwargs))
+                    return self._inner.executemany(*args, **kwargs)
+
+                def __getattr__(self, name):
+                    return getattr(self._inner, name)
+
+            client._replace_chunks(_SpyCursor(cur), grouped, document_ids, doc_actions)
             embedding_batches = []
-            for call in spy_executemany.call_args_list:
-                sql_statement, params = call.args[:2]
+            for args, _ in calls:
+                sql_statement, params = args[:2]
                 if "INSERT INTO" in sql_statement and "embeddings" in sql_statement:
                     embedding_batches.extend(params)
         conn.rollback()
