@@ -4,9 +4,11 @@ import atexit
 import json
 import math
 import os
+import struct
 import threading
 import time
 import uuid
+from array import array
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import (
@@ -158,6 +160,41 @@ def _coerce_vector_values(value: object) -> list[float] | None:
     """Attempt to coerce ``value`` into a list of floats."""
 
     if value is None:
+        return None
+    if isinstance(value, memoryview):
+        view = value
+        if view.ndim == 1 and view.format in {"f", "d"}:
+            try:
+                return [float(component) for component in view]
+            except (TypeError, ValueError):
+                return None
+        return _coerce_vector_values(view.tobytes())
+    if isinstance(value, (bytes, bytearray)):
+        data = bytes(value)
+        if len(data) >= 2:
+            dimension = struct.unpack("!H", data[:2])[0]
+            payload = data[2:]
+            if dimension == 0 and payload:
+                return None
+            for format_char in ("f", "d"):
+                component_size = struct.calcsize(f"!{format_char}")
+                expected_length = dimension * component_size
+                if dimension == 0 and not payload:
+                    return []
+                if len(payload) != expected_length:
+                    continue
+                try:
+                    unpacked = struct.unpack(f"!{dimension}{format_char}", payload)
+                except struct.error:
+                    continue
+                return [float(component) for component in unpacked]
+        for typecode in ("f", "d"):
+            try:
+                arr = array(typecode)
+                arr.frombytes(data)
+            except (ValueError, OverflowError):
+                continue
+            return [float(component) for component in arr]
         return None
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         try:
