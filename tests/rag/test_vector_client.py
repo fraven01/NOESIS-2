@@ -218,39 +218,13 @@ def test_fetch_parent_context_returns_requested_nodes(monkeypatch):
 
 
 def test_replace_chunks_normalises_embeddings(monkeypatch):
+    from unittest.mock import patch
+
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
     document_id = uuid.uuid4()
     doc_key = (tenant, "external-1", None)
 
-    class _RecorderCursor:
-        def __init__(self):
-            self.executed: list[tuple[str, object | None]] = []
-            self.batch_calls: list[tuple[str, list[tuple]]] = []
-            self.connection = self
-
-        def execute(self, sql, params=None):  # noqa: WPS110 - sql name
-            self.executed.append((str(sql), params))
-
-        def executemany(self, sql, seq):  # noqa: WPS110 - sql name
-            self.batch_calls.append((str(sql), list(seq)))
-
-        def cursor(self):
-            return self
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def fetchone(self):
-            return None
-
-        def rollback(self):
-            return None
-
-    recorder = _RecorderCursor()
     monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
     monkeypatch.setattr(client, "_get_distance_operator", lambda *_: "<=>")
 
@@ -287,12 +261,25 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
     document_ids = {doc_key: document_id}
     doc_actions: dict[tuple[str, str, Optional[str]], str] = {}
 
-    client._replace_chunks(recorder, grouped, document_ids, doc_actions)
+    with client._connection() as conn:
+        with conn.cursor() as cur:
+            with patch.object(type(cur), "executemany", wraps=cur.executemany) as spy_executemany:
+                client._replace_chunks(cur, grouped, document_ids, doc_actions)
+            embedding_batches = []
+            for call in spy_executemany.call_args_list:
+                sql_statement, params = call.args[:2]
+                if "INSERT INTO" in sql_statement and "embeddings" in sql_statement:
+                    embedding_batches.extend(params)
+        conn.rollback()
 
     assert captured, "expected embedding to be formatted"
     normalised = captured[0]
     assert len(normalised) == 2
     assert math.isclose(math.sqrt(sum(value * value for value in normalised)), 1.0)
+    assert embedding_batches, "expected embeddings to be stored"
+    expected_vector = original_format(normalised)
+    stored_vectors = [row[2] for row in embedding_batches]
+    assert expected_vector in stored_vectors
 
 
 def test_query_embedding_is_normalised(monkeypatch):
