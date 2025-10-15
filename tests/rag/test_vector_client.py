@@ -227,6 +227,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
         def __init__(self):
             self.executed: list[tuple[str, object | None]] = []
             self.batch_calls: list[tuple[str, list[tuple]]] = []
+            self.connection = self
 
         def execute(self, sql, params=None):  # noqa: WPS110 - sql name
             self.executed.append((str(sql), params))
@@ -234,8 +235,24 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
         def executemany(self, sql, seq):  # noqa: WPS110 - sql name
             self.batch_calls.append((str(sql), list(seq)))
 
+        def cursor(self):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def fetchone(self):
+            return None
+
+        def rollback(self):
+            return None
+
     recorder = _RecorderCursor()
     monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
+    monkeypatch.setattr(client, "_get_distance_operator", lambda *_: "<=>")
 
     captured: list[list[float]] = []
     original_format = client._format_vector

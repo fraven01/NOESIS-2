@@ -102,7 +102,14 @@ def _make_vector_client(monkeypatch: pytest.MonkeyPatch) -> tuple[vector_client.
 
 
 def _extract_where_clauses(executed: list[tuple[str, tuple | None]]) -> list[str]:
-    return [sql for sql, _params in executed if "FROM chunks c" in sql]
+    clauses: list[str] = []
+    for sql, _params in executed:
+        text = sql.lower()
+        if "from" not in text:
+            continue
+        if "chunks c" in text:
+            clauses.append(sql)
+    return clauses
 
 
 def test_prepare_scope_filters_prioritises_collection_list() -> None:
