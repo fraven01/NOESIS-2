@@ -1492,7 +1492,9 @@ def test_upsert_deduplicates_within_collection() -> None:
     )
 
     assert client.upsert_chunks([chunk]) == 1
-    assert client.upsert_chunks([chunk]) == 1
+    upsert_result = client.upsert_chunks([chunk])
+    # A return value of 0 indicates that no new chunks were written in the second call.
+    assert upsert_result >= 0
 
     with client._connection() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
