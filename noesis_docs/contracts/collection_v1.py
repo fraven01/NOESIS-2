@@ -1,4 +1,5 @@
 """Collection contract models (v1)."""
+
 from __future__ import annotations
 
 import re

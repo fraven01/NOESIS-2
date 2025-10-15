@@ -1,4 +1,5 @@
 """Tests for collection contract models."""
+
 from __future__ import annotations
 
 from uuid import uuid4
@@ -40,7 +41,9 @@ def test_collection_link_minimal_payload() -> None:
 
 
 @pytest.mark.parametrize("field_name", ["slug", "version_label"])
-def test_collection_models_normalise_blank_optional_identifiers(field_name: str) -> None:
+def test_collection_models_normalise_blank_optional_identifiers(
+    field_name: str,
+) -> None:
     payload = {
         "tenant_id": "tenant",
         "collection_id": uuid4(),
@@ -54,10 +57,10 @@ def test_collection_models_normalise_blank_optional_identifiers(field_name: str)
 
 def test_collection_models_normalise_unicode_inputs() -> None:
     payload = {
-        "tenant_id": "Tenant\u00A0",  # includes non-breaking space
+        "tenant_id": "Tenant\u00a0",  # includes non-breaking space
         "collection_id": uuid4(),
-        "slug": "fullwidth\uFF21-test",
-        "version_label": "v\uFF11",
+        "slug": "fullwidth\uff21-test",
+        "version_label": "v\uff11",
     }
 
     model = CollectionRef(**payload)
@@ -106,7 +109,9 @@ def test_collection_models_accept_identifier_at_length_limit() -> None:
 
 
 @pytest.mark.parametrize("field_name", ["slug", "version_label"])
-def test_collection_models_reject_non_string_optional_identifiers(field_name: str) -> None:
+def test_collection_models_reject_non_string_optional_identifiers(
+    field_name: str,
+) -> None:
     data = {
         "tenant_id": "tenant",
         "collection_id": uuid4(),
@@ -121,7 +126,9 @@ def test_collection_models_reject_non_string_optional_identifiers(field_name: st
 
 
 @pytest.mark.parametrize("field_name", ["slug", "version_label"])
-def test_collection_models_reject_invalid_identifier_characters(field_name: str) -> None:
+def test_collection_models_reject_invalid_identifier_characters(
+    field_name: str,
+) -> None:
     data = {
         "tenant_id": "tenant",
         "collection_id": uuid4(),

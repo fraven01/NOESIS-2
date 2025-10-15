@@ -2916,11 +2916,11 @@ class PgVectorClient:
             else sql.SQL("")
         )
         outer_embedding_sql = (
-            sql.SQL(", stored_embedding") if include_embedding_in_results else sql.SQL("")
+            sql.SQL(", stored_embedding")
+            if include_embedding_in_results
+            else sql.SQL("")
         )
-        ranked_embedding_sql = (
-            sql.SQL(", stored_embedding") if include_embedding_in_results else sql.SQL("")
-        )
+
         query = sql.SQL(
             """
             WITH base AS (
@@ -2992,10 +2992,8 @@ class PgVectorClient:
                 if stored_embedding is None or query_vector_for_similarity is None:
                     continue
                 normalised_candidate = _normalise_vector(stored_embedding)
-                if (
-                    normalised_candidate is None
-                    or len(normalised_candidate)
-                    != len(query_vector_for_similarity)
+                if normalised_candidate is None or len(normalised_candidate) != len(
+                    query_vector_for_similarity
                 ):
                     continue
                 similarity_value = math.fsum(
