@@ -10,10 +10,12 @@ from common.constants import (
     META_CASE_ID_KEY,
     META_IDEMPOTENCY_KEY,
     META_KEY_ALIAS_KEY,
+    META_COLLECTION_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
     X_CASE_ID_HEADER,
+    X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
@@ -69,6 +71,7 @@ def normalize_meta(request: Any) -> dict:
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")
     idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
+    collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
 
     meta = {
         "tenant_id": tenant_id,
@@ -87,10 +90,20 @@ def normalize_meta(request: Any) -> dict:
     key_alias = _coalesce(request, X_KEY_ALIAS_HEADER, META_KEY_ALIAS_KEY)
     if key_alias:
         meta["key_alias"] = key_alias
+    if collection_id:
+        meta["collection_id"] = collection_id
 
     missing = [key for key in REQUIRED_KEYS if not meta.get(key)]
     if missing:
         raise ValueError(f"missing required meta keys: {', '.join(sorted(missing))}")
+
+    context_metadata = {
+        "graph_name": graph_name,
+        "graph_version": graph_version,
+        "requested_at": meta["requested_at"],
+    }
+    if collection_id:
+        context_metadata["collection_id"] = collection_id
 
     tool_context = ToolContext(
         tenant_id=meta["tenant_id"],
@@ -98,11 +111,7 @@ def normalize_meta(request: Any) -> dict:
         trace_id=meta["trace_id"],
         idempotency_key=idempotency_key,
         tenant_schema=tenant_schema,
-        metadata={
-            "graph_name": graph_name,
-            "graph_version": graph_version,
-            "requested_at": meta["requested_at"],
-        },
+        metadata=context_metadata,
     )
 
     meta["tool_context"] = tool_context.model_dump(exclude_none=True)

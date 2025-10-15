@@ -14,6 +14,7 @@ SET search_path TO {{SCHEMA_NAME}}, public;
 --     GRANT SELECT ON TABLES TO app_ro;
 -- ALTER DEFAULT PRIVILEGES IN SCHEMA {{SCHEMA_NAME}}
 --     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO app_rw;
+-- Duplicate-Guards wirken per Collection (NULL vs. NOT NULL).
 
 -- Ensure extensions live in 'public' schema for global visibility
 CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;
@@ -60,9 +61,35 @@ BEGIN
     END IF;
 END $$;
 
-CREATE TABLE IF NOT EXISTS documents (
+-- Collections kapseln optionale Dokument-Scopes je Tenant. Alle
+-- Collection-IDs bleiben nullable in den Konsumententabellen, damit
+-- Legacy-Bestände ohne Collection weiter funktionieren. Duplicate-
+-- Guards berücksichtigen den Scope automatisch (NULL vs. NOT NULL).
+CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.collections (
+    tenant_id UUID NOT NULL,
+    id UUID NOT NULL,
+    slug TEXT,
+    version_label TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (tenant_id, id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS collections_tenant_slug_uk
+    ON {{SCHEMA_NAME}}.collections (tenant_id, slug)
+    WHERE slug IS NOT NULL AND slug <> '';
+
+CREATE UNIQUE INDEX IF NOT EXISTS collections_tenant_version_label_uk
+    ON {{SCHEMA_NAME}}.collections (tenant_id, version_label)
+    WHERE version_label IS NOT NULL AND version_label <> '';
+
+-- Dokumente, Chunks und Embeddings speichern `collection_id` als
+-- Spalte, nicht mehr (nur) im Metadata JSON. Header/Bodies können das
+-- Feld leer lassen; der Persistenzpfad setzt es optional und Indexe
+-- kombinieren es mit `tenant_id` für schnelle Scope-Filter.
+CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.documents (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
+    collection_id UUID,
     source TEXT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     hash TEXT NOT NULL,
@@ -70,32 +97,61 @@ CREATE TABLE IF NOT EXISTS documents (
     deleted_at TIMESTAMP WITH TIME ZONE
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_hash_idx
-    ON documents (tenant_id, hash);
-
 CREATE INDEX IF NOT EXISTS documents_metadata_gin_idx
-    ON documents USING GIN (metadata);
+    ON {{SCHEMA_NAME}}.documents USING GIN (metadata);
 
 ALTER TABLE {{SCHEMA_NAME}}.documents ADD COLUMN IF NOT EXISTS external_id TEXT;
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_external_id_uk
-    ON {{SCHEMA_NAME}}.documents (tenant_id, external_id);
+ALTER TABLE {{SCHEMA_NAME}}.documents ADD COLUMN IF NOT EXISTS collection_id UUID;
+
+ALTER TABLE {{SCHEMA_NAME}}.documents
+    ALTER COLUMN collection_id DROP NOT NULL;
 
 CREATE INDEX IF NOT EXISTS documents_hash_idx
     ON {{SCHEMA_NAME}}.documents (hash);
 
+CREATE INDEX IF NOT EXISTS documents_tenant_collection_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id);
+
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_hash_idx;
+
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_hash_null_collection_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, hash)
+    WHERE collection_id IS NULL;
+
+-- Duplicate guards now enforce uniqueness per collection scope (NULL vs scoped IDs).
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_hash_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, hash)
+    WHERE collection_id IS NOT NULL;
+
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_external_id_uk;
+
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_external_id_null_collection_uk
+    ON {{SCHEMA_NAME}}.documents (tenant_id, external_id)
+    WHERE collection_id IS NULL;
+
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_external_id_uk
+    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, external_id)
+    WHERE collection_id IS NOT NULL;
+
 CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.chunks (
     id UUID PRIMARY KEY,
-    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+    document_id UUID NOT NULL REFERENCES {{SCHEMA_NAME}}.documents(id) ON DELETE CASCADE,
     ord INTEGER NOT NULL,
     text TEXT NOT NULL,
     tokens INTEGER NOT NULL,
-    metadata JSONB NOT NULL DEFAULT '{}'
+    metadata JSONB NOT NULL DEFAULT '{}',
+    tenant_id UUID,
+    collection_id UUID
 );
 
 ALTER TABLE {{SCHEMA_NAME}}.chunks
     ADD COLUMN IF NOT EXISTS text_norm TEXT
         GENERATED ALWAYS AS (lower(regexp_replace(text, '\s+', ' ', 'g'))) STORED;
+
+ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS tenant_id UUID;
+
+ALTER TABLE {{SCHEMA_NAME}}.chunks ADD COLUMN IF NOT EXISTS collection_id UUID;
 
 CREATE INDEX IF NOT EXISTS chunks_document_ord_idx
     ON {{SCHEMA_NAME}}.chunks (document_id, ord);
@@ -110,16 +166,83 @@ CREATE INDEX IF NOT EXISTS chunks_metadata_case_idx
 CREATE INDEX IF NOT EXISTS chunks_text_norm_trgm_idx
     ON {{SCHEMA_NAME}}.chunks USING GIN (text_norm gin_trgm_ops);
 
+CREATE INDEX IF NOT EXISTS chunks_document_collection_idx
+    ON {{SCHEMA_NAME}}.chunks (document_id, collection_id);
+
+CREATE INDEX IF NOT EXISTS chunks_tenant_collection_idx
+    ON {{SCHEMA_NAME}}.chunks (tenant_id, collection_id);
+
+CREATE INDEX IF NOT EXISTS chunks_collection_idx
+    ON {{SCHEMA_NAME}}.chunks (collection_id)
+    WHERE collection_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS chunks_embedding_profile_scope_idx
+    ON {{SCHEMA_NAME}}.chunks (
+        (metadata->>'embedding_profile'),
+        (metadata->>'case'),
+        collection_id
+    )
+    WHERE metadata ? 'embedding_profile';
+
 CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.embeddings (
     id UUID PRIMARY KEY,
-    chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
-    embedding vector({{VECTOR_DIM}}) NOT NULL
+    chunk_id UUID NOT NULL REFERENCES {{SCHEMA_NAME}}.chunks(id) ON DELETE CASCADE,
+    embedding vector({{VECTOR_DIM}}) NOT NULL,
+    tenant_id UUID,
+    collection_id UUID
 );
+
+ALTER TABLE {{SCHEMA_NAME}}.embeddings ADD COLUMN IF NOT EXISTS tenant_id UUID;
+
+ALTER TABLE {{SCHEMA_NAME}}.embeddings ADD COLUMN IF NOT EXISTS collection_id UUID;
 
 CREATE UNIQUE INDEX IF NOT EXISTS embeddings_chunk_idx
     ON {{SCHEMA_NAME}}.embeddings (chunk_id);
 
-DROP INDEX IF EXISTS embeddings_embedding_hnsw;
+CREATE INDEX IF NOT EXISTS embeddings_collection_idx
+    ON {{SCHEMA_NAME}}.embeddings (collection_id)
+    WHERE collection_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS embeddings_tenant_collection_idx
+    ON {{SCHEMA_NAME}}.embeddings (tenant_id, collection_id);
+
+DO $$
+BEGIN
+    ALTER TABLE {{SCHEMA_NAME}}.documents
+        ADD CONSTRAINT documents_collection_fk
+        FOREIGN KEY (tenant_id, collection_id)
+        REFERENCES {{SCHEMA_NAME}}.collections (tenant_id, id)
+        DEFERRABLE INITIALLY IMMEDIATE;
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE {{SCHEMA_NAME}}.chunks
+        ADD CONSTRAINT chunks_collection_fk
+        FOREIGN KEY (tenant_id, collection_id)
+        REFERENCES {{SCHEMA_NAME}}.collections (tenant_id, id)
+        DEFERRABLE INITIALLY IMMEDIATE;
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
+
+DO $$
+BEGIN
+    ALTER TABLE {{SCHEMA_NAME}}.embeddings
+        ADD CONSTRAINT embeddings_collection_fk
+        FOREIGN KEY (tenant_id, collection_id)
+        REFERENCES {{SCHEMA_NAME}}.collections (tenant_id, id)
+        DEFERRABLE INITIALLY IMMEDIATE;
+EXCEPTION
+    WHEN duplicate_object THEN
+        NULL;
+END $$;
+
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.embeddings_embedding_hnsw;
 CREATE INDEX IF NOT EXISTS embeddings_embedding_hnsw
     ON {{SCHEMA_NAME}}.embeddings USING hnsw (embedding vector_cosine_ops)
     WITH (m = 32, ef_construction = 200);

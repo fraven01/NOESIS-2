@@ -64,6 +64,7 @@ class ChunkMeta(BaseModel):
     process: str | None = None
     doc_class: str | None = None
     parent_ids: list[str] | None = None
+    collection_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

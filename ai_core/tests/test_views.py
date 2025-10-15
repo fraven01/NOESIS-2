@@ -11,24 +11,28 @@ from django.conf import settings
 from django.test import RequestFactory
 from structlog.testing import capture_logs
 
-from ai_core import views
+from ai_core import services, views
 from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
 from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
 import ai_core.nodes.retrieve as retrieve
 from ai_core.nodes.retrieve import RetrieveInput
+from ai_core.schemas import RagQueryRequest
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
 from common.constants import (
+    COLLECTION_ID_HEADER_CANDIDATES,
     IDEMPOTENCY_KEY_HEADER,
+    META_COLLECTION_ID_KEY,
     META_CASE_ID_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     X_CASE_ID_HEADER,
+    X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
@@ -817,6 +821,116 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     assert dispatched["args"][2] == ["doc-trimmed"]
     assert dispatched["args"][3] == "standard"
     assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
+
+
+def test_rag_query_request_collection_list_overrides_body():
+    list_id_one = str(uuid.uuid4())
+    list_id_two = str(uuid.uuid4())
+    body_collection = str(uuid.uuid4())
+
+    request_model = RagQueryRequest(
+        question="Welche Daten liegen vor?",
+        hybrid={"alpha": 0.7},
+        collection_id=body_collection,
+        filters={"collection_ids": [list_id_one, list_id_two]},
+    )
+
+    assert request_model.collection_id is None
+    assert request_model.filters == {"collection_ids": [list_id_one, list_id_two]}
+
+
+def test_rag_query_request_applies_body_collection_when_no_list():
+    collection_value = str(uuid.uuid4())
+
+    request_model = RagQueryRequest(
+        question="Welche Daten liegen vor?",
+        hybrid={"alpha": 0.7},
+        collection_id=collection_value,
+        filters={},
+    )
+
+    assert request_model.collection_id == collection_value
+    assert request_model.filters == {"collection_id": collection_value}
+
+
+def test_collection_header_bridge_respects_priority():
+    header_value = str(uuid.uuid4())
+    body_value = str(uuid.uuid4())
+    list_value = [str(uuid.uuid4())]
+
+    base_payload = {"collection_id": body_value, "filters": {}}
+
+    request = SimpleNamespace(
+        headers={X_COLLECTION_ID_HEADER: header_value}, META={}
+    )
+    bridged = services._apply_collection_header_bridge(request, base_payload)
+    assert bridged["collection_id"] == body_value
+
+    request.headers[X_COLLECTION_ID_HEADER] = header_value
+    payload_with_list = {
+        "filters": {"collection_ids": list_value},
+        "collection_id": body_value,
+    }
+    bridged_with_list = services._apply_collection_header_bridge(
+        request, payload_with_list
+    )
+    assert bridged_with_list.get("collection_id") == body_value
+    assert bridged_with_list["filters"]["collection_ids"] == list_value
+
+    request.headers[X_COLLECTION_ID_HEADER] = header_value
+    payload_only_list = {"filters": {"collection_ids": list_value}}
+    bridged_only_list = services._apply_collection_header_bridge(
+        request, payload_only_list
+    )
+    assert "collection_id" not in bridged_only_list
+    assert bridged_only_list["filters"]["collection_ids"] == list_value
+
+    payload_missing = {"filters": {}}
+    bridged_missing = services._apply_collection_header_bridge(request, payload_missing)
+    assert bridged_missing["collection_id"] == header_value
+
+
+def test_collection_scope_priority_end_to_end():
+    header_value = str(uuid.uuid4())
+    body_value = str(uuid.uuid4())
+    list_value = [str(uuid.uuid4()), str(uuid.uuid4())]
+
+    request = SimpleNamespace(
+        headers={X_COLLECTION_ID_HEADER: header_value},
+        META={},
+    )
+
+    payload = {
+        "question": "Welche Daten liegen vor?",
+        "hybrid": {"alpha": 0.7},
+        "collection_id": body_value,
+        "filters": {"collection_ids": list_value},
+    }
+
+    bridged_payload = services._apply_collection_header_bridge(request, payload)
+    request_model = RagQueryRequest(**bridged_payload)
+
+    assert request_model.collection_id is None
+    assert request_model.filters == {"collection_ids": list_value}
+
+
+def test_collection_header_bridge_accepts_candidate_headers():
+    alternate_header = COLLECTION_ID_HEADER_CANDIDATES[1]
+    header_value = str(uuid.uuid4())
+
+    request = SimpleNamespace(headers={alternate_header: header_value}, META={})
+    bridged = services._apply_collection_header_bridge(request, {})
+
+    assert bridged["collection_id"] == header_value
+
+
+def test_collection_header_bridge_uses_meta_fallback():
+    header_value = str(uuid.uuid4())
+
+    request = SimpleNamespace(headers={}, META={META_COLLECTION_ID_KEY: header_value})
+    bridged = services._apply_collection_header_bridge(request, {})
+
+    assert bridged["collection_id"] == header_value
 
 
 @pytest.mark.django_db

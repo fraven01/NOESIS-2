@@ -41,7 +41,13 @@ __all__ = [
 ]
 
 
-_CONTEXT_FIELDS: tuple[str, ...] = ("trace_id", "case_id", "tenant", "key_alias")
+_CONTEXT_FIELDS: tuple[str, ...] = (
+    "trace_id",
+    "case_id",
+    "tenant",
+    "key_alias",
+    "collection_id",
+)
 _LOG_CONTEXT: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "log_context", default=None
 )

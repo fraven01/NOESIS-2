@@ -1,4 +1,7 @@
 from datetime import datetime, timezone as dt_timezone
+import json
+from pathlib import Path
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -7,6 +10,7 @@ from django.utils import timezone
 from ai_core.infra import object_store, rate_limit
 from common.constants import (
     META_CASE_ID_KEY,
+    META_COLLECTION_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -85,6 +89,70 @@ def test_rag_ingestion_run_queues_task(
         "idempotency_key": None,
         "tenant_schema": test_tenant_schema_name,
     }
+
+
+@pytest.mark.django_db
+def test_rag_ingestion_run_persists_collection_header_scope(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
+    case_segment = object_store.sanitize_identifier("case-collection-run")
+    document_id = "doc-collection"
+
+    meta_path = (
+        Path(tmp_path)
+        / tenant_segment
+        / case_segment
+        / "uploads"
+        / f"{document_id}.meta.json"
+    )
+    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    meta_path.write_text(json.dumps({"source": "ingestion"}))
+
+    collection_scope = str(uuid.uuid4())
+
+    def _assert_scope_persisted(
+        tenant_id,
+        case_id,
+        document_ids,
+        embedding_profile,
+        *,
+        run_id,
+        trace_id=None,
+        idempotency_key=None,
+        tenant_schema=None,
+    ):
+        assert list(document_ids) == [document_id]
+        persisted = json.loads(meta_path.read_text())
+        assert persisted["collection_id"] == collection_scope
+
+    monkeypatch.setattr(
+        "ai_core.views.run_ingestion",
+        SimpleNamespace(delay=_assert_scope_persisted),
+    )
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data={
+            "document_ids": [document_id],
+            "embedding_profile": "standard",
+        },
+        content_type="application/json",
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-collection-run",
+            META_COLLECTION_ID_KEY: collection_scope,
+        },
+    )
+
+    assert response.status_code == 202
+    stored_metadata = json.loads(meta_path.read_text())
+    assert stored_metadata["collection_id"] == collection_scope
+    assert stored_metadata["source"] == "ingestion"
 
 
 @pytest.mark.django_db
