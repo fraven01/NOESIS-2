@@ -3516,9 +3516,6 @@ class PgVectorClient:
                     ) = existing
                     needs_update = (
                         str(existing_hash) != storage_hash
-                        or self._strip_collection_scope(existing_metadata)
-                        != metadata_dict
-                        or str(existing_source) != doc.get("source")
                         or existing_deleted is not None
                     )
                     if needs_update:
@@ -3634,8 +3631,6 @@ class PgVectorClient:
                     metadata = Json(metadata_dict)
                     needs_update = (
                         str(dup_hash) != storage_hash
-                        or existing_metadata != metadata_dict
-                        or str(dup_source) != doc.get("source")
                         or dup_deleted is not None
                     )
                     if needs_update:

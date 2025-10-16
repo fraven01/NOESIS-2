@@ -29,7 +29,7 @@ NOESIS 2 nutzt [django-tenants](https://django-tenants.readthedocs.io/) und spei
 
 ## Request-Routing
 
-Der Middleware-Baustein `TenantSchemaMiddleware` liest den HTTP‑Header `X-Tenant-Schema` und speichert ihn in `request.tenant_schema`. Dekorator und Mixin in `common.tenants` prüfen diesen Wert und lehnen Anfragen ab, wenn er nicht zum aktiven Schema passt.
+Die Auswahl des Mandanten (Tenant) erfolgt primär über den Hostnamen der Anfrage, wie von `django-tenants` vorgesehen. Ein optionaler Schutzmechanismus in `common.tenants` (`tenant_schema_required` Decorator und `TenantSchemaRequiredMixin`) stellt sicher, dass der `X-Tenant-Schema`-Header explizit gesetzt wird und mit dem aktiven Schema übereinstimmt. Dies dient als zusätzliche Sicherheitsmaßnahme (Defense-in-Depth), um fehlgeleitete Anfragen zu verhindern. In Entwicklungs- und Testumgebungen (`DEBUG=True`) erlaubt die `HeaderTenantRoutingMiddleware` zusätzlich, den Mandanten direkt über den `X-Tenant-Schema`-Header zu wechseln, um lokale Tests ohne Domain-Konfiguration zu vereinfachen.
 
 ## Management-Kommandos
 
@@ -44,7 +44,7 @@ Im Django-Admin können `Tenant` und `Domain` verwaltet werden. Für ausgewählt
 
 ## Nutzung in Clients
 
-Alle API-Aufrufe müssen den Header `X-Tenant-Schema` setzen, damit die Anfrage im richtigen Schema ausgeführt wird. Beispiel:
+Für API-Endpunkte, die durch `tenant_schema_required` geschützt sind, muss der `X-Tenant-Schema`-Header gesetzt werden und mit dem durch den Hostnamen aufgelösten Schema übereinstimmen. Beispiel:
 
 ```
 curl -H "X-Tenant-Schema: alpha" http://localhost:8000/tenant-demo/

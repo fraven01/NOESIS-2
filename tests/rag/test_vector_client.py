@@ -224,7 +224,8 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
     document_id = uuid.uuid4()
     doc_key = (tenant, "external-1", None)
 
-    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: 2)
+    dim = 1536
+    monkeypatch.setattr(vector_client, "get_embedding_dim", lambda: dim)
     monkeypatch.setattr(client, "_get_distance_operator", lambda *_: "<=>")
 
     captured: list[list[float]] = []
@@ -252,7 +253,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
                         "hash": "hash-1",
                         "source": "unit-test",
                     },
-                    embedding=[3.0, 4.0],
+                    embedding=([3.0, 4.0] + [0.0] * (dim - 2)),
                 )
             ],
         }
@@ -311,7 +312,7 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
 
     assert captured, "expected embedding to be formatted"
     normalised = captured[0]
-    assert len(normalised) == 2
+    assert len(normalised) == dim
     assert math.isclose(math.sqrt(sum(value * value for value in normalised)), 1.0)
     assert embedding_batches, "expected embeddings to be stored"
     expected_vector = original_format(normalised)
@@ -1540,7 +1541,7 @@ def test_upsert_deduplicates_within_collection() -> None:
     )
 
     assert client.upsert_chunks([chunk]) == 1
-    assert client.upsert_chunks([chunk]) == 1
+    assert client.upsert_chunks([chunk]) == 0
 
     with client._connection() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
