@@ -3587,6 +3587,10 @@ class PgVectorClient:
                 except Exception:
                     pass
                 with conn.cursor() as retry_cur:
+                    try:
+                        self._restore_session_after_rollback(retry_cur)
+                    except Exception:
+                        pass
                     if collection_text is None:
                         retry_cur.execute(
                             sql.SQL(
@@ -3616,21 +3620,60 @@ class PgVectorClient:
                             (tenant_value, collection_text, external_id),
                         )
                     duplicate = retry_cur.fetchone()
-                if not duplicate:
-                    raise
-                dup_id, _, dup_metadata, _, _ = duplicate
-                document_ids[key] = dup_id
-                actions[key] = "skipped"
-                doc["id"] = dup_id
-                doc["metadata"] = self._strip_collection_scope(dup_metadata)
-                doc["collection_id"] = collection_text
-                logger.info(
-                    "Skipping unchanged document during upsert",
-                    extra={
-                        "tenant_id": doc["tenant_id"],
-                        "external_id": external_id,
-                    },
-                )
+                    if not duplicate:
+                        raise
+
+                    (
+                        dup_id,
+                        dup_hash,
+                        dup_metadata,
+                        dup_source,
+                        dup_deleted,
+                    ) = duplicate
+                    existing_metadata = self._strip_collection_scope(dup_metadata)
+                    metadata = Json(metadata_dict)
+                    needs_update = (
+                        str(dup_hash) != storage_hash
+                        or existing_metadata != metadata_dict
+                        or str(dup_source) != doc.get("source")
+                        or dup_deleted is not None
+                    )
+                    if needs_update:
+                        retry_cur.execute(
+                            sql.SQL(
+                                """
+                                UPDATE {}
+                                SET source = %s,
+                                    hash = %s,
+                                    metadata = %s,
+                                    collection_id = %s,
+                                    deleted_at = NULL
+                                WHERE id = %s
+                                """
+                            ).format(documents_table),
+                            (
+                                doc["source"],
+                                storage_hash,
+                                metadata,
+                                collection_text,
+                                dup_id,
+                            ),
+                        )
+                        actions[key] = "replaced"
+                    else:
+                        actions[key] = "skipped"
+                        logger.info(
+                            "Skipping unchanged document during upsert",
+                            extra={
+                                "tenant_id": doc["tenant_id"],
+                                "external_id": external_id,
+                            },
+                        )
+
+                    document_ids[key] = dup_id
+                    doc["id"] = dup_id
+                    doc["metadata"] = metadata_dict
+                    doc["collection_id"] = collection_text
         return document_ids, actions
 
     def _ensure_collection_scope(
