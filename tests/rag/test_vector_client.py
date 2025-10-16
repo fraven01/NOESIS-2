@@ -6,6 +6,7 @@ from typing import Optional
 
 import pytest
 import psycopg2
+from psycopg2 import sql
 from psycopg2.extras import Json
 from structlog.testing import capture_logs
 
@@ -261,6 +262,32 @@ def test_replace_chunks_normalises_embeddings(monkeypatch):
 
     with client._connection() as conn:
         with conn.cursor() as cur:
+            documents_table = client._table("documents")
+            cur.execute(
+                sql.SQL(
+                    """
+                    INSERT INTO {} (
+                        id,
+                        tenant_id,
+                        collection_id,
+                        external_id,
+                        source,
+                        hash,
+                        metadata
+                    )
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """
+                ).format(documents_table),
+                (
+                    document_id,
+                    tenant,
+                    None,
+                    "external-1",
+                    "unit-test",
+                    "hash-1",
+                    Json({"hash": "hash-1"}),
+                ),
+            )
             calls: list[tuple[tuple, dict]] = []
 
             class _SpyCursor:
