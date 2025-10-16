@@ -127,7 +127,9 @@ def test_rag_upload_bridges_collection_header_to_metadata(
         "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
     )
 
-    upload = SimpleUploadedFile("notes.txt", b"header scoped", content_type="text/plain")
+    upload = SimpleUploadedFile(
+        "notes.txt", b"header scoped", content_type="text/plain"
+    )
     payload = encode_multipart(BOUNDARY, {"file": upload})
 
     collection_scope = str(uuid.uuid4())
@@ -149,8 +151,8 @@ def test_rag_upload_bridges_collection_header_to_metadata(
 
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
     case_segment = object_store.sanitize_identifier("case-collection")
-    metadata_path = (
-        Path(tmp_path, tenant_segment, case_segment, "uploads", f"{document_id}.meta.json")
+    metadata_path = Path(
+        tmp_path, tenant_segment, case_segment, "uploads", f"{document_id}.meta.json"
     )
 
     assert metadata_path.exists()

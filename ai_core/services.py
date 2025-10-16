@@ -30,7 +30,6 @@ from rest_framework.response import Response
 from common.constants import (
     COLLECTION_ID_HEADER_CANDIDATES,
     META_COLLECTION_ID_KEY,
-    X_COLLECTION_ID_HEADER,
 )
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
@@ -566,7 +565,9 @@ def start_ingestion_run(
         valid_document_ids if valid_document_ids else validated_data.document_ids
     )
     if collection_scope:
-        _persist_collection_scope(meta["tenant_id"], meta["case_id"], to_dispatch, collection_scope)
+        _persist_collection_scope(
+            meta["tenant_id"], meta["case_id"], to_dispatch, collection_scope
+        )
     _get_run_ingestion_task().delay(
         meta["tenant_id"],
         meta["case_id"],

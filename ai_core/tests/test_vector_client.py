@@ -12,7 +12,9 @@ from ai_core.rag.schemas import Chunk
 from structlog.testing import capture_logs
 
 
-def _make_vector_client(monkeypatch: pytest.MonkeyPatch) -> tuple[vector_client.PgVectorClient, list[tuple[str, tuple | None]]]:
+def _make_vector_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[vector_client.PgVectorClient, list[tuple[str, tuple | None]]]:
     """Return a minimally initialised vector client and capture list."""
 
     executed: list[tuple[str, tuple | None]] = []
@@ -44,8 +46,10 @@ def _make_vector_client(monkeypatch: pytest.MonkeyPatch) -> tuple[vector_client.
         return None
 
     client._embed_query = _fake_embed.__get__(client, type(client))
-    client._coerce_tenant_uuid = vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
-        client, vector_client.PgVectorClient
+    client._coerce_tenant_uuid = (
+        vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+            client, vector_client.PgVectorClient
+        )
     )
 
     class _FakeCursor:
@@ -155,7 +159,9 @@ def test_hybrid_search_where_clause_case_only(monkeypatch: pytest.MonkeyPatch) -
     assert all("c.collection_id = ANY" not in clause for clause in where_clauses)
 
 
-def test_hybrid_search_where_clause_collection_only(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_hybrid_search_where_clause_collection_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     client, executed = _make_vector_client(monkeypatch)
 
     client.hybrid_search(
@@ -166,7 +172,9 @@ def test_hybrid_search_where_clause_collection_only(monkeypatch: pytest.MonkeyPa
 
     where_clauses = _extract_where_clauses(executed)
     assert any("c.collection_id = ANY" in clause for clause in where_clauses)
-    assert all("c.metadata ->> 'case_id' = %s" not in clause for clause in where_clauses)
+    assert all(
+        "c.metadata ->> 'case_id' = %s" not in clause for clause in where_clauses
+    )
 
 
 def test_hybrid_search_where_clause_unions_case_and_collections(
@@ -190,8 +198,10 @@ def test_hybrid_search_where_clause_unions_case_and_collections(
 
 def test_group_by_document_isolates_collections() -> None:
     client = object.__new__(vector_client.PgVectorClient)
-    client._coerce_tenant_uuid = vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
-        client, vector_client.PgVectorClient
+    client._coerce_tenant_uuid = (
+        vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+            client, vector_client.PgVectorClient
+        )
     )
     collection_a = str(uuid.uuid4())
     collection_b = str(uuid.uuid4())
@@ -237,7 +247,6 @@ def test_group_by_document_isolates_collections() -> None:
     assert scoped_keys == {(doc_id, collection_a), (doc_id, collection_b)}
     assert len(grouped[(tenant_key, doc_id, collection_a)]["chunks"]) == 2
     assert len(grouped[(tenant_key, doc_id, collection_b)]["chunks"]) == 1
-
 
 
 @pytest.mark.usefixtures("rag_database")
@@ -2402,9 +2411,8 @@ class TestPgVectorClient:
             if entry.get("event", "").startswith("RAG hybrid search inputs:")
         ]
         assert debug_logs
-        assert (
-            f"collection_ids_count={len(collection_ids)}"
-            in debug_logs[0].get("event", "")
+        assert f"collection_ids_count={len(collection_ids)}" in debug_logs[0].get(
+            "event", ""
         )
         assert "has_single_collection_filter=false" in debug_logs[0].get("event", "")
         assert "collection_scope=list" in debug_logs[0].get("event", "")

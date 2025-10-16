@@ -44,7 +44,9 @@ def _strip_invisible(text: str) -> str:
     """Remove invisible/control characters from ``text``."""
 
     return "".join(
-        char for char in text if unicodedata.category(char) not in _INVISIBLE_UNICODE_CATEGORIES
+        char
+        for char in text
+        if unicodedata.category(char) not in _INVISIBLE_UNICODE_CATEGORIES
     )
 
 

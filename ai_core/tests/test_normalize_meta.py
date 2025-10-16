@@ -141,4 +141,6 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
 
     assert meta["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
     context = ToolContext.model_validate(meta["tool_context"])
-    assert context.metadata.get("collection_id") == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    assert (
+        context.metadata.get("collection_id") == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    )

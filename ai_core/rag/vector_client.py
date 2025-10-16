@@ -196,9 +196,7 @@ def _prepare_scope_filters(
         if key in {"tenant_id"}:
             continue
         filter_debug[key] = (
-            "<set>"
-            if value is not None and key in SUPPORTED_METADATA_FILTERS
-            else None
+            "<set>" if value is not None and key in SUPPORTED_METADATA_FILTERS else None
         )
 
     collection_ids_count = 0
@@ -1100,9 +1098,7 @@ class PgVectorClient:
         if effective_collection_filter:
             try:
                 collection_scope = (
-                    "single"
-                    if len(effective_collection_filter) == 1
-                    else "list"
+                    "single" if len(effective_collection_filter) == 1 else "list"
                 )
             except Exception:
                 collection_scope = "list"
@@ -3233,9 +3229,7 @@ class PgVectorClient:
             embeddings=embeddings_table,
         )
         tenant_value = str(tenant_uuid)
-        collection_value = (
-            str(collection_uuid) if collection_uuid is not None else None
-        )
+        collection_value = str(collection_uuid) if collection_uuid is not None else None
         params_list: List[object] = [
             *select_vector_params,
             tenant_value,
@@ -3273,11 +3267,9 @@ class PgVectorClient:
                     and query_vector_for_similarity is not None
                 ):
                     normalised_candidate = _normalise_vector(stored_embedding)
-                    if (
-                        normalised_candidate is not None
-                        and len(normalised_candidate)
-                        == len(query_vector_for_similarity)
-                    ):
+                    if normalised_candidate is not None and len(
+                        normalised_candidate
+                    ) == len(query_vector_for_similarity):
                         similarity_value = math.fsum(
                             candidate_component * query_component
                             for candidate_component, query_component in zip(
@@ -3474,7 +3466,9 @@ class PgVectorClient:
             if collection_uuid is not None:
                 self._ensure_collection_scope(cur, tenant_uuid, collection_uuid)
             tenant_value = str(tenant_uuid)
-            collection_text = str(collection_uuid) if collection_uuid is not None else None
+            collection_text = (
+                str(collection_uuid) if collection_uuid is not None else None
+            )
             existing: tuple | None
             if collection_text is None:
                 cur.execute(
@@ -3627,11 +3621,9 @@ class PgVectorClient:
                         dup_source,
                         dup_deleted,
                     ) = duplicate
-                    existing_metadata = self._strip_collection_scope(dup_metadata)
                     metadata = Json(metadata_dict)
                     needs_update = (
-                        str(dup_hash) != storage_hash
-                        or dup_deleted is not None
+                        str(dup_hash) != storage_hash or dup_deleted is not None
                     )
                     if needs_update:
                         retry_cur.execute(

@@ -313,9 +313,7 @@ def process_document(
         normalized_collection_id: str | None = None
         if raw_collection_id is not None:
             try:
-                normalized_collection_id = str(
-                    UUID(str(raw_collection_id).strip())
-                )
+                normalized_collection_id = str(UUID(str(raw_collection_id).strip()))
             except (TypeError, ValueError, AttributeError):
                 normalized_collection_id = None
         normalized_process = normalise_selector_value(meta_json.get("process"))

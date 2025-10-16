@@ -36,14 +36,14 @@ def test_collection_ref_optional_identifiers_blank_values_become_none() -> None:
         tenant_id="tenant",
         collection_id=uuid4(),
         slug="   ",
-        version_label="\u200B",
+        version_label="\u200b",
     )
 
     assert ref.slug is None
     assert ref.version_label is None
 
 
-@pytest.mark.parametrize("tenant_value", ["", "   ", "\u200B"])
+@pytest.mark.parametrize("tenant_value", ["", "   ", "\u200b"])
 def test_collection_ref_rejects_empty_tenant_id(tenant_value: str) -> None:
     with pytest.raises(ValidationError) as exc:
         CollectionRef(tenant_id=tenant_value, collection_id=uuid4())

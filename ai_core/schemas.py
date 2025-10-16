@@ -9,6 +9,7 @@ from pydantic_core import PydanticCustomError
 # NOTE: This schema uses Pydantic v2 features (e.g., Field(min_length) on lists).
 # The project's requirements should be pinned to Pydantic >=2.0,<3.0.
 
+
 def _normalise_optional_uuid(value: object, field_name: str) -> str | None:
     if value is None:
         return None

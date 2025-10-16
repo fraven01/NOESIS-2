@@ -84,7 +84,11 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     assert second_result["external_id"] == external_id
     assert second_result["inserted"] == 0
     # Ingestion may emit a dedicated near-duplicate action, which still counts as one skipped document.
-    assert second_result["skipped"] + int(second_result["action"] == "near_duplicate_skipped") == 1
+    assert (
+        second_result["skipped"]
+        + int(second_result["action"] == "near_duplicate_skipped")
+        == 1
+    )
     assert second_result["replaced"] == 0
     assert second_result["action"] in {"skipped", "near_duplicate_skipped"}
     assert second_result["written"] == 0

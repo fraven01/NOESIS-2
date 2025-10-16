@@ -860,9 +860,7 @@ def test_collection_header_bridge_respects_priority():
 
     base_payload = {"collection_id": body_value, "filters": {}}
 
-    request = SimpleNamespace(
-        headers={X_COLLECTION_ID_HEADER: header_value}, META={}
-    )
+    request = SimpleNamespace(headers={X_COLLECTION_ID_HEADER: header_value}, META={})
     bridged = services._apply_collection_header_bridge(request, base_payload)
     assert bridged["collection_id"] == body_value
 

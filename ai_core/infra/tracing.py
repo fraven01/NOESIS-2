@@ -134,7 +134,9 @@ def emit_span(trace_id: str, node_name: str, metadata: dict[str, Any]) -> None:
     """
 
     metadata_payload = dict(metadata)
-    collection_value = _normalise_collection_value(metadata_payload.get("collection_id"))
+    collection_value = _normalise_collection_value(
+        metadata_payload.get("collection_id")
+    )
     if collection_value is None:
         context_collection = _normalise_collection_value(
             get_log_context().get("collection_id")
