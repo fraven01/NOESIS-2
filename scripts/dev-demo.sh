@@ -20,8 +20,7 @@ echo "[dev-demo] Bringing up core services"
 echo "[dev-demo] Applying migrations & bootstrap"
 npm run dev:init
 
-echo "[dev-demo] Seeding demo tenant data"
-npm run seed:demo
-
+echo "[dev-demo] Demo-Tenant verwendet das In-Memory-Dokumentensystem"
+echo "[dev-demo] Hinweis: Dokument-Datasets werden nun über documents.cli gepflegt (siehe docs/documents/cli-howto.md)."
 echo "[dev-demo] Fertig. Login unter http://demo.localhost:8000/admin/ mit demo/demo."
 echo "[dev-demo] Hinweis: Hosts-Eintrag 127.0.0.1 demo.localhost erforderlich."

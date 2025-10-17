@@ -58,10 +58,5 @@ done
 echo "[dev-up-all] Running migrations and bootstrap tasks"
 npm run dev:init
 
-echo "[dev-up-all] Seeding demo tenant dataset"
-npm run seed:demo
-
-echo "[dev-up-all] Seeding heavy dataset"
-npm run seed:heavy
-
+echo "[dev-up-all] Dokument-Datasets werden nun über documents.cli gepflegt (siehe docs/documents/cli-howto.md)."
 echo "[dev-up-all] Done. Kibana läuft unter http://localhost:5601 (ELASTIC_PASSWORD erforderlich)."

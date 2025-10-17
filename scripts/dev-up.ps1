@@ -150,14 +150,8 @@ Write-Host "[dev-up] Init jobs: migrate + bootstrap"
 $env:DEV_TENANT_SCHEMA = $DevTenantSchema
 Invoke-Expression 'npm run dev:init'
 
-if ($IncludeElk -or $SeedDemo) {
-    Write-Host '[dev-up] Seeding demo tenant dataset'
-    Invoke-Expression "$AppCompose exec web python manage.py create_demo_data --profile demo --seed 1337"
-}
-
-if ($IncludeElk -or $SeedHeavy) {
-    Write-Host '[dev-up] Seeding heavy dataset'
-    Invoke-Expression "$AppCompose exec web python manage.py create_demo_data --profile heavy --seed 42"
+if ($IncludeElk -or $SeedDemo -or $SeedHeavy) {
+    Write-Host '[dev-up] Hinweis: Dokument-Datasets werden über documents.cli gepflegt (siehe docs/documents/cli-howto.md)'
 }
 
 $tenantSchema = if ($env:DEV_TENANT_SCHEMA) { $env:DEV_TENANT_SCHEMA } else { 'demo' }
