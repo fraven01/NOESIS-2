@@ -35,9 +35,11 @@ export function AppShell({ breadcrumbs, actions, children, buildInfo }: AppShell
     triggerRef.current?.focus();
   };
 
+  const navigationItems = ['Dashboard', 'Projekte', 'Dokumente', 'Berichte', 'Einstellungen'];
+
   const nav = (
     <nav className="flex flex-col gap-2 p-4" aria-label="Haupt">
-      {['Dashboard', 'Projekte', 'Dokumente', 'Workflows', 'Berichte', 'Einstellungen'].map((item) => (
+      {navigationItems.map((item) => (
         <a
           key={item}
           href="#"
