@@ -20,7 +20,7 @@ Dieses Dokument beschreibt, wie NOESIS 2 Mandanten (Tenants) realisiert und wie 
    ```bash
    python manage.py create_tenant --schema=<schema> --name=<name> --domain=<domain>
    ```
-6. Optional: vorhandene Tenants auflisten (`list_tenants`) oder Demodaten erzeugen (`create_demo_data`).
+6. Optional: vorhandene Tenants auflisten (`list_tenants`). Dokument-Datasets werden über `documents.cli` gepflegt (siehe `docs/documents/cli-howto.md`).
 7. Eigene Views mit `tenant_schema_required` oder `TenantSchemaRequiredMixin` schützen, damit nur Anfragen mit korrektem Header akzeptiert werden.
 
 ## Architektur
@@ -36,7 +36,7 @@ Die Auswahl des Mandanten (Tenant) erfolgt primär über den Hostnamen der Anfra
 * `python manage.py bootstrap_public_tenant --domain <domain>` – legt das öffentliche Schema und die zugehörige Domain an.
 * `python manage.py create_tenant --schema=<schema> --name=<name> --domain=<domain>` – erstellt einen neuen Mandanten und erzeugt automatisch das Schema.
 * `python manage.py list_tenants` – listet alle vorhandenen Mandanten.
-* `python manage.py create_demo_data` – legt einen Demo-Mandanten mit Beispielnutzer und Projekten an.
+* Dokumentbeispiele: siehe `python -m documents.cli --help` oder die Beispiele in `docs/documents/cli-howto.md`.
 
 ## Django-Admin
 

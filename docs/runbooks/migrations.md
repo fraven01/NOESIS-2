@@ -18,6 +18,29 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
   - Windows: `npm run win:dev:manage makemigrations <app>`
   - Bash: `npm run dev:manage makemigrations <app>`
 
+### Legacy-Workflow-Tabellen abbauen
+
+- Vor dem Ausführen von `migrate_schemas` die ehemaligen Workflow-Tabellen prüfen:
+  ```sql
+  SELECT 'workflows_workflowtemplate' AS table_name, COUNT(*) AS rows
+  FROM {{SCHEMA_NAME}}.workflows_workflowtemplate
+  UNION ALL
+  SELECT 'workflows_workflowstep', COUNT(*)
+  FROM {{SCHEMA_NAME}}.workflows_workflowstep
+  UNION ALL
+  SELECT 'workflows_workflowinstance', COUNT(*)
+  FROM {{SCHEMA_NAME}}.workflows_workflowinstance;
+  ```
+- Wenn eine der Tabellen noch Daten enthält, sichere sie vor der Migration, z. B. via:
+  ```sql
+  \copy (
+    SELECT *
+    FROM {{SCHEMA_NAME}}.workflows_workflowinstance
+    ORDER BY created_at
+  ) TO 'legacy_workflowinstance.csv' WITH (FORMAT csv, HEADER true);
+  ```
+- Erst nach dem Backup `npm run dev:manage migrate_schemas --tenant` ausführen. Migration `common.0001_drop_legacy_workflows` löscht die Tabellen.
+
 2) Shared‑Migrationen anwenden (falls Shared App betroffen)
 - `npm run dev:manage migrate_schemas --shared`
 

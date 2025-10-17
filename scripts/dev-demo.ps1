@@ -16,8 +16,9 @@ Invoke-Expression "$compose up -d"
 Write-Host '[dev-demo] Applying migrations & bootstrap'
 Invoke-Expression 'npm run dev:init'
 
-Write-Host '[dev-demo] Seeding demo tenant data'
-Invoke-Expression 'npm run win:seed:demo'
-
-Write-Host '[dev-demo] Fertig. Login unter http://demo.localhost:8000/admin/ mit demo/demo.'
+Write-Host '[dev-demo] Demo-Tenant verwendet das In-Memory-Dokumentensystem'
+Write-Host '[dev-demo] Hinweis: Dokument-Datasets werden nun über documents.cli gepflegt (siehe docs/documents/cli-howto.md).'
+Write-Host '[dev-demo] Fertig. Demo-Tenant & Superuser jetzt via manage.py erzeugen:'
+Write-Host '[dev-demo]   python manage.py create_tenant --schema=demo --name="Demo Tenant" --domain=demo.localhost'
+Write-Host '[dev-demo]   python manage.py create_tenant_superuser --schema=demo --username=demo --email=demo@example.com'
 Write-Host '[dev-demo] Hinweis: Hosts-Eintrag 127.0.0.1 demo.localhost erforderlich.'

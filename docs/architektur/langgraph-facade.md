@@ -12,7 +12,7 @@ dateibasierten `FileCheckpointer` (`.ai_core_store/<tenant>/<case>/state.json`).
   (`info_intake`, `scope_check`, `needs_mapping`, `system_description`) als Runner.
 - `_GraphView` in `ai_core/views.py` nutzt `normalize_meta`, `merge_state` und die Registry,
 um Requests unverändert zu bedienen, inklusive Rate-Limits und Header-Contracts.
-- `workflows/` bleibt read-only (Modelle/Admin); keine Trigger oder Worker-Anbindung.
+- Die ehemaligen `workflows`-Modelle wurden entfernt; LangGraph bedient Cases direkt über `ai_core`.
 
 ## Ausblick
 - Austausch des `FileCheckpointer` gegen eine Datenbank- oder Objekt-Storage-Lösung
