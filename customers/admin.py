@@ -15,49 +15,65 @@ def is_public_schema() -> bool:
         return False
 
 
-class TenantAwareAdminSite(admin.AdminSite):
-    """Admin site that registers tenant models only on the public schema."""
+def enable_tenant_aware_admin(site: admin.AdminSite) -> admin.AdminSite:
+    """Mutate the existing admin site to be tenant aware."""
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._dynamic_models = []
+    if getattr(site, "_tenant_aware_enabled", False):
+        return site
 
-    def register_dynamic(self, model, admin_class=None, **options):
+    dynamic_models = []
+
+    original_register = site.register
+    original_unregister = site.unregister
+    original_each_context = site.each_context
+    original_get_app_list = site.get_app_list
+    original_admin_view = site.admin_view
+
+    def register_dynamic(model, admin_class=None, **options):
         """Register models that should only appear on the public schema."""
 
-        self._dynamic_models.append((model, admin_class, options))
+        dynamic_models.append((model, admin_class, options))
         if is_public_schema():
-            super().register(model, admin_class, **options)
+            original_register(model, admin_class, **options)
 
-    def _ensure_dynamic_models(self):
+    def ensure_dynamic_models():
         should_register = is_public_schema()
-        for model, admin_class, options in self._dynamic_models:
-            is_registered = model in self._registry
+        for model, admin_class, options in dynamic_models:
+            is_registered = model in site._registry
             if should_register and not is_registered:
-                super().register(model, admin_class, **options)
+                original_register(model, admin_class, **options)
             elif not should_register and is_registered:
-                super().unregister(model)
+                original_unregister(model)
 
-    def each_context(self, request):
-        self._ensure_dynamic_models()
-        return super().each_context(request)
+    def each_context(request):
+        ensure_dynamic_models()
+        return original_each_context(request)
 
-    def get_app_list(self, request, app_label=None):
-        self._ensure_dynamic_models()
-        return super().get_app_list(request, app_label)
+    def get_app_list(request, app_label=None):
+        ensure_dynamic_models()
+        return original_get_app_list(request, app_label)
 
-    def admin_view(self, view, cacheable=False):
+    def admin_view(view, cacheable=False):
+        view_func = original_admin_view(view, cacheable=cacheable)
+
         def wrapper(request, *args, **kwargs):
-            self._ensure_dynamic_models()
-            return super(TenantAwareAdminSite, self).admin_view(view, cacheable=cacheable)(
-                request, *args, **kwargs
-            )
+            ensure_dynamic_models()
+            return view_func(request, *args, **kwargs)
 
-        return update_wrapper(wrapper, view)
+        return update_wrapper(wrapper, view_func)
+
+    site.register_dynamic = register_dynamic
+    site._ensure_dynamic_models = ensure_dynamic_models
+    site.each_context = each_context
+    site.get_app_list = get_app_list
+    site.admin_view = admin_view
+    site._tenant_aware_dynamic_models = dynamic_models
+    site._tenant_aware_enabled = True
+
+    return site
 
 
-tenant_admin_site = TenantAwareAdminSite()
-admin.site = tenant_admin_site
+tenant_admin_site = enable_tenant_aware_admin(admin.site)
 admin.sites.site = tenant_admin_site
 
 
