@@ -22,5 +22,5 @@ def test_workflow_step_factory_creates_step():
 @pytest.mark.django_db
 def test_workflow_instance_factory_creates_instance():
     instance = WorkflowInstanceFactory()
-    assert instance.project is not None
+    assert instance.organization is not None
     assert instance.status == instance.STATUS_DRAFT

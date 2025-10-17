@@ -501,19 +501,12 @@ Das alte `noesis2/settings.py` wurde entfernt; verwende ausschließlich das modu
 - Umstellung per Env-Var: `DJANGO_SETTINGS_MODULE=noesis2.settings.production`
 
 ## Datenmigration und Standard-Organisation
-Beim Upgrade auf die mandantenfähige Struktur muss jedem bestehenden Projekt
-eine Organisation zugeordnet werden. Die Migration
-`projects/migrations/0002_project_organization.py` legt für vorhandene Projekte
-automatisch eine Organisation an. Sollten nach dem Deploy noch Projekte ohne
-Organisation existieren (z. B. nach einem manuellen Datenimport), kann der
-Management-Befehl `assign_default_org` genutzt werden:
-
-```bash
-python manage.py assign_default_org
-```
-
-Der Befehl erzeugt für jedes betroffene Projekt eine neue Organisation und
-aktualisiert das Projekt entsprechend.
+Das frühere `Project`-Modell wurde vollständig entfernt. Bestehende Instanzen,
+die noch `projects_*`-Tabellen enthalten, sollten diese im Rahmen der regulären
+Datenmigration löschen (z. B. per SQL-Drop im Wartungsfenster). Mandanten
+werden jetzt ausschließlich über `Organization` und deren Fachmodelle
+verwaltet; ein zusätzliches Auffüllen über `assign_default_org` ist nicht mehr
+notwendig.
 
 ## Tenant-Verwaltung
 
