@@ -2,7 +2,7 @@ import factory
 from factory.django import DjangoModelFactory
 
 from workflows.models import WorkflowTemplate, WorkflowStep, WorkflowInstance
-from projects.tests.factories import ProjectFactory
+from organizations.tests.factories import OrganizationFactory
 
 
 class WorkflowTemplateFactory(DjangoModelFactory):
@@ -25,4 +25,4 @@ class WorkflowInstanceFactory(DjangoModelFactory):
     class Meta:
         model = WorkflowInstance
 
-    project = factory.SubFactory(ProjectFactory)
+    organization = factory.SubFactory(OrganizationFactory)

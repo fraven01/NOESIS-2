@@ -6,7 +6,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("workflows", "0001_initial"),
-        ("projects", "0002_project_organization"),
+        ("organizations", "0001_initial"),
     ]
 
     operations = [
@@ -37,11 +37,11 @@ class Migration(migrations.Migration):
                     ),
                 ),
                 (
-                    "project",
+                    "organization",
                     models.ForeignKey(
                         on_delete=django.db.models.deletion.CASCADE,
-                        related_name="workflows",
-                        to="projects.project",
+                        related_name="workflow_instances",
+                        to="organizations.organization",
                     ),
                 ),
             ],

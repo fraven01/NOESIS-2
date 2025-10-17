@@ -24,15 +24,10 @@ class WorkflowInstanceAdmin(admin.ModelAdmin):
     """Admin configuration for :class:`WorkflowInstance`."""
 
     list_display = (
-        "project",
         "organization",
         "status",
         "created_at",
         "updated_at",
     )
-    list_filter = ("project__organization", "status")
-    list_select_related = ("project", "project__organization")
-
-    @staticmethod
-    def organization(obj):
-        return obj.project.organization
+    list_filter = ("organization", "status")
+    list_select_related = ("organization",)

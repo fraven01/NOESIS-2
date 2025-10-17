@@ -35,7 +35,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 | Datenobjekt | Schema/Ort | Besitzer | Primärquelle |
 | --- | --- | --- | --- |
 | Tenant-Schemata | PostgreSQL Public- & Tenant-Schemas (`django-tenants`) | Platform Engineering | [docs/multi-tenancy.md#architektur](docs/multi-tenancy.md#architektur) |
-| Organisations- & Projektmigrationen | Django Migrationen (`migrate_schemas`, `assign_default_org`) | Backend & Operatoren | [docs/multi-tenancy.md#lokales-setup-nach-pull](docs/multi-tenancy.md#lokales-setup-nach-pull) |
+| Organisations-Migrationen | Django Migrationen (`migrate_schemas`) | Backend & Operatoren | [docs/multi-tenancy.md#lokales-setup-nach-pull](docs/multi-tenancy.md#lokales-setup-nach-pull) |
 | RAG-Dokumente & Embeddings | `pgvector`-Tabellen inkl. Hash- und Metadata-Feldern | AI Platform & Data Ops | [docs/rag/schema.sql](docs/rag/schema.sql) |
 | Langfuse Traces & Kostenmetriken | Langfuse Store (Trace-, Span-, Metric-Records) | Observability Team | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 | Secrets & Konfigurationswerte | `.env`, GitHub Secrets, Secret Manager Versionen | Security & Platform | [docs/security/secrets.md#env-verträge](docs/security/secrets.md#env-verträge) |

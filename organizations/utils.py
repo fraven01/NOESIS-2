@@ -19,7 +19,7 @@ def current_organization(request: Optional[object] = None) -> Optional[Organizat
 
         from organizations.utils import set_current_organization
         with set_current_organization(my_org):
-            Project.objects.all()  # filtered to ``my_org``
+            WorkflowInstance.objects.all()  # filtered to ``my_org``
     """
     if request is not None:
         return getattr(request, "organization", None)

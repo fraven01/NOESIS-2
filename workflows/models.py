@@ -1,7 +1,7 @@
 from django.db import models
 
 from common.models import TimestampedModel
-from projects.models import Project
+from organizations.models import Organization
 from organizations.query import OrganizationManager
 
 
@@ -31,7 +31,7 @@ class WorkflowStep(TimestampedModel):
 
 
 class WorkflowInstance(TimestampedModel):
-    """Tracks the workflow status for a :class:`Project`."""
+    """Tracks the workflow status for an :class:`Organization`."""
 
     STATUS_DRAFT = "draft"
     STATUS_REVIEW = "review"
@@ -43,13 +43,13 @@ class WorkflowInstance(TimestampedModel):
         (STATUS_FINAL, "Final"),
     ]
 
-    project = models.ForeignKey(
-        Project, related_name="workflows", on_delete=models.CASCADE
+    organization = models.ForeignKey(
+        Organization, related_name="workflow_instances", on_delete=models.CASCADE
     )
     status = models.CharField(
         max_length=10, choices=STATUS_CHOICES, default=STATUS_DRAFT
     )
-    objects = OrganizationManager(organization_field="project__organization")
+    objects = OrganizationManager()
 
     def __str__(self) -> str:  # pragma: no cover - simple representation
-        return f"Workflow {self.get_status_display()} for {self.project}"
+        return f"Workflow {self.get_status_display()} for {self.organization}"
