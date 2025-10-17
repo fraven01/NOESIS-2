@@ -214,7 +214,6 @@ TENANT_APPS = [
     "rest_framework",
     "drf_spectacular",
     "documents",
-    "workflows",
     "ai_core",
     "users",
     "profiles",
