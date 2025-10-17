@@ -1,5 +1,4 @@
 .PHONY: jobs\:migrate jobs\:bootstrap tenant-new tenant-superuser jobs\:rag jobs\:rag\:health \
-        seed-baseline seed-demo seed-heavy seed-chaos seed-wipe seed-check \
         load\:k6 load\:locust
 
 PYTHON ?= python
@@ -43,19 +42,6 @@ jobs\:rag\:health:
 	if [ -z "$$RAG_URL" ]; then RAG_URL="$$DATABASE_URL"; fi; \
 	test -n "$$RAG_URL" || (echo "RAG_DATABASE_URL or DATABASE_URL must be set" >&2; exit 1); \
 	DATABASE_URL="$$RAG_URL" $(MANAGE) check_rag_schemas
-
-seed-baseline: ; $(MANAGE) create_demo_data --profile baseline --seed 1337
-
-seed-demo: ; $(MANAGE) create_demo_data --profile demo --seed 1337
-
-seed-heavy: ; $(MANAGE) create_demo_data --profile heavy --seed 42
-
-seed-chaos: ; $(MANAGE) create_demo_data --profile chaos --seed 99
-
-seed-wipe: ; $(MANAGE) create_demo_data --wipe --include-org
-
-seed-check: ; $(MANAGE) check_demo_data --profile demo --seed 1337
-
 
 .PHONY: schema sdk
 

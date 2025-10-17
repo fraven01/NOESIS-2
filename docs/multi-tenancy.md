@@ -17,8 +17,9 @@ Dieser Leitfaden beschreibt Einrichtung, Betrieb und Besonderheiten der Mandante
    - `python manage.py migrate_schemas`
 4) Public-Schema initialisieren:
    - `python manage.py bootstrap_public_tenant --domain localhost`
-5) Demo-Tenant + Daten (inkl. Admin-User `demo`/`demo`):
-   - `python manage.py create_demo_data`
+5) Demo-Tenant + Superuser (Beispiel):
+   - `python manage.py create_tenant --schema=demo --name="Demo Tenant" --domain=demo.localhost`
+   - `python manage.py create_tenant_superuser --schema=demo --username=demo --password=<PASSWORT>`
 6) Hosts-Datei ergänzen (Windows als Admin: `C:\Windows\System32\drivers\etc\hosts`):
    - `127.0.0.1 demo.localhost`
    - optional weitere Tenants: `127.0.0.1 acme.localhost`
@@ -33,7 +34,7 @@ Tipp: Alternativ zu Hosts-Einträgen kann `lvh.me` genutzt werden (Wildcard → 
 - Per‑Tenant Admin (Standard):
   - Zugriff pro Domain, z. B. `http://demo.localhost:8000/admin/`.
   - Benutzerverwaltung und Daten nur innerhalb des aktiven Tenants.
-  - Demo-Login: `demo` / `demo` (wird durch `create_demo_data` angelegt, inkl. is_staff/is_superuser).
+  - Demo-Login: über `create_tenant_superuser` frei wählbar (Standardempfehlung: `demo`/`demo` im lokalen Setup).
   - Operator (Public):
   - Verwaltung von Tenants/Domains erfolgt per CLI‑Commands, kein Public‑Admin‑Login (da User per Tenant).
   - Wichtige Befehle: `bootstrap_public_tenant`, `create_tenant`, `list_tenants`, `create_tenant_superuser`.
@@ -45,8 +46,9 @@ Tipp: Alternativ zu Hosts-Einträgen kann `lvh.me` genutzt werden (Wildcard → 
 - Vorgehen für Staging:
   1) Public‑Domain auf den Cloud‑Run‑Host setzen:
      - `python manage.py bootstrap_public_tenant --domain <run.app-host>`
-  2) Demo‑Tenant/Daten anlegen:
-     - `python manage.py create_demo_data`
+  2) Demo‑Tenant/Superuser anlegen:
+     - `python manage.py create_tenant --schema=demo --name="Demo Tenant" --domain=<run.app-host>`
+     - `python manage.py create_tenant_superuser --schema=demo --username=demo --password=<PASSWORT>`
   3) Cloud‑Run‑Host dem Demo‑Tenant zuordnen (zusätzliche Domain):
      - `python manage.py add_domain --schema=demo --domain=<run.app-host> --primary`
 - Multi‑Tenant per Subdomain ist ohne eigene Domain/Wildcard nicht möglich. Für mehrere Tenants: separate Services oder später eigene Domain mit Wildcard DNS einrichten.
