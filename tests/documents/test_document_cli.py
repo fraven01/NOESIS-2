@@ -35,6 +35,58 @@ def _write_inline_file(tmp_path: Path, name: str, payload: bytes) -> Path:
     return file_path
 
 
+def test_docs_add_requires_workflow_id(capsys):
+    context = _context()
+    payload = _encode(b"doc")
+
+    code, out, err = _run(
+        [
+            "docs",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--collection",
+            str(uuid4()),
+            "--inline",
+            payload,
+            "--source",
+            "upload",
+        ],
+        context,
+        capsys,
+    )
+
+    assert code == 1
+    assert json.loads(out)["error"] == "workflow_id_required"
+
+
+def test_assets_add_requires_workflow_id(capsys):
+    context = _context()
+    payload = _encode(b"asset")
+
+    code, out, err = _run(
+        [
+            "assets",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--document",
+            str(uuid4()),
+            "--media-type",
+            "image/png",
+            "--inline",
+            payload,
+            "--caption-method",
+            "none",
+        ],
+        context,
+        capsys,
+    )
+
+    assert code == 1
+    assert json.loads(out)["error"] == "workflow_id_required"
+
+
 def test_docs_add_get_list_delete_roundtrip(capsys):
     context = _context()
     collection_id = str(uuid4())
@@ -46,7 +98,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -74,7 +126,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
             "tenant-a",
             "--doc-id",
             doc_id,
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--prefer-latest",
         ],
@@ -96,7 +148,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
             collection_id,
             "--limit",
             "5",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
         ],
         context,
@@ -106,6 +158,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
     listing = json.loads(out)
     assert listing["items"][0]["document_id"] == doc_id
     assert listing["next_cursor"] is None
+    assert listing["workflow_id"] == WORKFLOW_ID
 
     code, out, err = _run(
         [
@@ -115,14 +168,14 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
             "tenant-a",
             "--doc-id",
             doc_id,
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
         ],
         context,
         capsys,
     )
     assert code == 0
-    assert json.loads(out) == {"deleted": True}
+    assert json.loads(out) == {"deleted": True, "workflow_id": WORKFLOW_ID}
 
     code, out, err = _run(
         [
@@ -132,7 +185,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
             "tenant-a",
             "--doc-id",
             doc_id,
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
         ],
         context,
@@ -140,6 +193,85 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
     )
     assert code == 1
     assert json.loads(out)["error"] == "document_not_found"
+
+
+def test_docs_get_without_workflow_id(capsys):
+    context = _context()
+    payload = _encode(b"hello world")
+
+    code, out, _ = _run(
+        [
+            "docs",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--workflow-id",
+            WORKFLOW_ID,
+            "--inline",
+            payload,
+            "--source",
+            "upload",
+        ],
+        context,
+        capsys,
+    )
+    stored = json.loads(out)
+
+    code, out, err = _run(
+        [
+            "docs",
+            "get",
+            "--tenant",
+            "tenant-a",
+            "--doc-id",
+            stored["ref"]["document_id"],
+        ],
+        context,
+        capsys,
+    )
+
+    assert code == 0
+    fetched = json.loads(out)
+    assert fetched["ref"]["document_id"] == stored["ref"]["document_id"]
+
+
+def test_docs_delete_requires_workflow_id(capsys):
+    context = _context()
+    payload = _encode(b"hello world")
+
+    code, out, _ = _run(
+        [
+            "docs",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--workflow-id",
+            WORKFLOW_ID,
+            "--inline",
+            payload,
+            "--source",
+            "upload",
+        ],
+        context,
+        capsys,
+    )
+    stored = json.loads(out)
+
+    code, out, err = _run(
+        [
+            "docs",
+            "delete",
+            "--tenant",
+            "tenant-a",
+            "--doc-id",
+            stored["ref"]["document_id"],
+        ],
+        context,
+        capsys,
+    )
+
+    assert code == 1
+    assert json.loads(out)["error"] == "workflow_id_required"
 
 
 def test_docs_add_with_existing_file_uri(capsys):
@@ -153,7 +285,7 @@ def test_docs_add_with_existing_file_uri(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -175,7 +307,7 @@ def test_docs_add_with_existing_file_uri(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -205,7 +337,7 @@ def test_docs_add_inline_file(tmp_path, capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -236,7 +368,7 @@ def test_assets_cli_flow(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -258,7 +390,7 @@ def test_assets_cli_flow(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             doc_id,
@@ -296,10 +428,29 @@ def test_assets_cli_flow(capsys):
     code, out, err = _run(
         [
             "assets",
+            "list",
+            "--tenant",
+            "tenant-a",
+            "--document",
+            doc_id,
+            "--workflow-id",
+            WORKFLOW_ID,
+        ],
+        context,
+        capsys,
+    )
+    assert code == 0
+    filtered_assets = json.loads(out)
+    assert filtered_assets["items"][0]["asset_id"] == asset_id
+    assert filtered_assets["workflow_id"] == WORKFLOW_ID
+
+    code, out, err = _run(
+        [
+            "assets",
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             doc_id,
@@ -339,12 +490,14 @@ def test_assets_cli_flow(capsys):
             "tenant-a",
             "--asset-id",
             asset_id,
+            "--workflow-id",
+            WORKFLOW_ID,
         ],
         context,
         capsys,
     )
     assert code == 0
-    assert json.loads(out) == {"deleted": True}
+    assert json.loads(out) == {"deleted": True, "workflow_id": WORKFLOW_ID}
 
     code, out, err = _run(
         [
@@ -362,6 +515,109 @@ def test_assets_cli_flow(capsys):
     assert json.loads(out)["error"] == "asset_not_found"
 
 
+def test_assets_get_optional_workflow_id(capsys):
+    context = _context()
+    collection_id = str(uuid4())
+    payload = _encode(b"document")
+
+    code, out, _ = _run(
+        [
+            "docs",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--workflow-id",
+            WORKFLOW_ID,
+            "--collection",
+            collection_id,
+            "--inline",
+            payload,
+            "--source",
+            "upload",
+        ],
+        context,
+        capsys,
+    )
+    doc = json.loads(out)
+
+    asset_payload = _encode(b"asset")
+    code, out, _ = _run(
+        [
+            "assets",
+            "add",
+            "--tenant",
+            "tenant-a",
+            "--workflow-id",
+            WORKFLOW_ID,
+            "--document",
+            doc["ref"]["document_id"],
+            "--media-type",
+            "image/png",
+            "--inline",
+            asset_payload,
+            "--caption-method",
+            "none",
+        ],
+        context,
+        capsys,
+    )
+    stored_asset = json.loads(out)
+    asset_id = stored_asset["ref"]["asset_id"]
+
+    code, out, err = _run(
+        [
+            "assets",
+            "get",
+            "--tenant",
+            "tenant-a",
+            "--asset-id",
+            asset_id,
+            "--workflow-id",
+            WORKFLOW_ID,
+        ],
+        context,
+        capsys,
+    )
+    assert code == 0
+    assert json.loads(out)["ref"]["asset_id"] == asset_id
+
+    code, out, err = _run(
+        [
+            "assets",
+            "get",
+            "--tenant",
+            "tenant-a",
+            "--asset-id",
+            asset_id,
+        ],
+        context,
+        capsys,
+    )
+    assert code == 0
+    assert json.loads(out)["ref"]["asset_id"] == asset_id
+
+
+def test_assets_delete_requires_workflow_id(capsys):
+    context = _context()
+    asset_id = str(uuid4())
+
+    code, out, err = _run(
+        [
+            "assets",
+            "delete",
+            "--tenant",
+            "tenant-a",
+            "--asset-id",
+            asset_id,
+        ],
+        context,
+        capsys,
+    )
+
+    assert code == 1
+    assert json.loads(out)["error"] == "workflow_id_required"
+
+
 def test_assets_add_inline_file(tmp_path, capsys):
     context = _context()
     collection_id = str(uuid4())
@@ -373,7 +629,7 @@ def test_assets_add_inline_file(tmp_path, capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -395,7 +651,7 @@ def test_assets_add_inline_file(tmp_path, capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             doc_id,
@@ -422,7 +678,7 @@ def test_error_on_missing_blob_source(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--source",
             "upload",
@@ -442,7 +698,7 @@ def test_invalid_inline_payload(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--inline",
             "not-base64",
@@ -465,7 +721,7 @@ def test_asset_add_missing_document(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             str(uuid4()),
@@ -494,7 +750,7 @@ def test_asset_add_ocr_only_warns_without_ocr_text(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             collection_id,
@@ -515,7 +771,7 @@ def test_asset_add_ocr_only_warns_without_ocr_text(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             doc["ref"]["document_id"],
@@ -544,7 +800,7 @@ def test_asset_add_rejects_parameterized_media_type(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--collection",
             str(uuid4()),
@@ -565,7 +821,7 @@ def test_asset_add_rejects_parameterized_media_type(capsys):
             "add",
             "--tenant",
             "tenant-a",
-            "--workflow",
+            "--workflow-id",
             WORKFLOW_ID,
             "--document",
             doc["ref"]["document_id"],
