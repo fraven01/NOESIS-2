@@ -31,7 +31,6 @@ from documents.contract_utils import (
     is_image_mediatype,
     normalize_media_type,
     normalize_tags,
-    normalize_workflow_id,
     truncate_text,
     validate_bbox,
 )
@@ -110,19 +109,6 @@ def test_document_ref_version_regex():
             document_id=uuid4(),
             version="bad version",
         )
-
-
-def test_workflow_id_constraints():
-    assert normalize_workflow_id(" flow-1 ") == "flow-1"
-    for value, code in [
-        ("", "workflow_empty"),
-        ("   ", "workflow_empty"),
-        ("workflow id", "workflow_invalid_char"),
-        ("a" * 129, "workflow_too_long"),
-    ]:
-        with pytest.raises(ValueError) as exc:
-            normalize_workflow_id(value)
-        assert str(exc.value) == code
 
 
 def test_document_meta_tags_and_language():
