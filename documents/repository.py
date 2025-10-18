@@ -336,8 +336,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         with log_context(tenant=tenant_id):
             log_extra_entry(**asset_log_fields(asset_copy))
             with self._lock:
-                if not self._has_active_document_locked(tenant_id, document_id):
+                document = self._latest_document_locked(tenant_id, document_id)
+                if document is None:
                     raise ValueError("document_missing")
+                if asset_copy.ref.workflow_id != document.ref.workflow_id:
+                    raise ValueError("asset_workflow_mismatch")
 
                 self._store_asset_locked(asset_copy)
                 self._refresh_document_assets_locked(tenant_id, document_id)

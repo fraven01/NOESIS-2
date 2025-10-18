@@ -28,6 +28,7 @@ from .contract_utils import (
     normalize_string,
     normalize_tags,
     normalize_tenant,
+    normalize_workflow_id,
     normalize_title,
     truncate_text,
     validate_bbox,
@@ -130,6 +131,9 @@ class DocumentRef(BaseModel):
     )
 
     tenant_id: str = Field(description="Tenant identifier owning the document.")
+    workflow_id: str = Field(
+        description="Workflow identifier that produced or manages the document."
+    )
     document_id: UUID = Field(description="Unique identifier of the document.")
     collection_id: Optional[UUID] = Field(
         default=None, description="Optional collection containing the document."
@@ -144,6 +148,11 @@ class DocumentRef(BaseModel):
     @classmethod
     def _normalize_tenant_id(cls, value: str) -> str:
         return normalize_tenant(value)
+
+    @field_validator("workflow_id", mode="before")
+    @classmethod
+    def _normalize_workflow_id(cls, value: str) -> str:
+        return normalize_workflow_id(value)
 
     @field_validator("document_id", "collection_id", mode="before")
     @classmethod
@@ -302,6 +311,9 @@ class DocumentMeta(BaseModel):
     )
 
     tenant_id: str = Field(description="Tenant identifier the metadata belongs to.")
+    workflow_id: str = Field(
+        description="Workflow identifier that groups document ingestion context."
+    )
     title: Optional[str] = Field(
         default=None,
         description="Optional human readable document title.",
@@ -335,6 +347,11 @@ class DocumentMeta(BaseModel):
     @classmethod
     def _normalize_tenant_id(cls, value: str) -> str:
         return normalize_tenant(value)
+
+    @field_validator("workflow_id", mode="before")
+    @classmethod
+    def _normalize_workflow_id(cls, value: str) -> str:
+        return normalize_workflow_id(value)
 
     @field_validator("title", mode="before")
     @classmethod
@@ -415,6 +432,9 @@ class AssetRef(BaseModel):
     )
 
     tenant_id: str = Field(description="Tenant identifier owning the asset.")
+    workflow_id: str = Field(
+        description="Workflow identifier linking the asset to its document workflow."
+    )
     asset_id: UUID = Field(description="Unique identifier of the asset.")
     document_id: UUID = Field(description="Identifier of the parent document.")
     collection_id: Optional[UUID] = Field(
@@ -425,6 +445,11 @@ class AssetRef(BaseModel):
     @classmethod
     def _normalize_tenant_id(cls, value: str) -> str:
         return normalize_tenant(value)
+
+    @field_validator("workflow_id", mode="before")
+    @classmethod
+    def _normalize_workflow_id(cls, value: str) -> str:
+        return normalize_workflow_id(value)
 
     @field_validator("asset_id", "document_id", "collection_id", mode="before")
     @classmethod
@@ -488,6 +513,12 @@ class Asset(BaseModel):
         description="UTC timestamp when the asset was generated or ingested."
     )
     checksum: str = Field(description="Checksum ensuring integrity of the asset payload.")
+
+    @property
+    def workflow_id(self) -> str:
+        """Expose the workflow identifier of the nested reference."""
+
+        return self.ref.workflow_id
 
     @field_validator("media_type")
     @classmethod
@@ -642,6 +673,8 @@ class NormalizedDocument(BaseModel):
     def _validate_relationships(self) -> "NormalizedDocument":
         if self.meta.tenant_id != self.ref.tenant_id:
             raise ValueError("meta_tenant_mismatch")
+        if self.meta.workflow_id != self.ref.workflow_id:
+            raise ValueError("meta_workflow_mismatch")
         for asset in self.assets:
             if asset.ref.tenant_id != self.ref.tenant_id:
                 raise ValueError("asset_tenant_mismatch")
@@ -649,6 +682,8 @@ class NormalizedDocument(BaseModel):
                 raise ValueError("asset_document_mismatch")
             if asset.ref.collection_id != self.ref.collection_id:
                 raise ValueError("asset_collection_mismatch")
+            if asset.ref.workflow_id != self.ref.workflow_id:
+                raise ValueError("asset_workflow_mismatch")
         if _STRICT_CHECKSUMS.get():
             blob_sha = getattr(self.blob, "sha256", None)
             if not blob_sha:

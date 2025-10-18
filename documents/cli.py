@@ -228,12 +228,14 @@ def _handle_docs_add(args: argparse.Namespace) -> int:
     document_id = args.doc_id or uuid4()
     ref = DocumentRef(
         tenant_id=args.tenant,
+        workflow_id=args.workflow,
         document_id=document_id,
         collection_id=args.collection,
         version=args.version,
     )
     meta = DocumentMeta(
         tenant_id=args.tenant,
+        workflow_id=args.workflow,
         title=args.title,
         language=args.lang,
         tags=args.tag or [],
@@ -338,6 +340,7 @@ def _handle_assets_add(args: argparse.Namespace) -> int:
     asset_id = args.asset_id or uuid4()
     ref = AssetRef(
         tenant_id=args.tenant,
+        workflow_id=args.workflow,
         asset_id=asset_id,
         document_id=UUID(args.document),
     )
@@ -461,6 +464,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     docs_add = docs_sub.add_parser("add", help="Add or update a document")
     docs_add.add_argument("--tenant", required=True)
+    docs_add.add_argument("--workflow", required=True)
     docs_add.add_argument("--doc-id")
     docs_add.add_argument("--collection")
     docs_add.add_argument("--version")
@@ -518,6 +522,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     assets_add = assets_sub.add_parser("add", help="Add an asset to a document")
     assets_add.add_argument("--tenant", required=True)
+    assets_add.add_argument("--workflow", required=True)
     assets_add.add_argument("--asset-id")
     assets_add.add_argument("--document", required=True)
     assets_add.add_argument("--media-type", required=True)

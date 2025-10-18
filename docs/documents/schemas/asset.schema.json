@@ -1,0 +1,363 @@
+{
+  "$defs": {
+    "AssetRef": {
+      "additionalProperties": false,
+      "description": "Reference to an extracted asset belonging to a document.",
+      "properties": {
+        "asset_id": {
+          "description": "Unique identifier of the asset.",
+          "format": "uuid",
+          "title": "Asset Id",
+          "type": "string"
+        },
+        "collection_id": {
+          "anyOf": [
+            {
+              "format": "uuid",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional collection identifier for the asset.",
+          "title": "Collection Id"
+        },
+        "document_id": {
+          "description": "Identifier of the parent document.",
+          "format": "uuid",
+          "title": "Document Id",
+          "type": "string"
+        },
+        "tenant_id": {
+          "description": "Tenant identifier owning the asset.",
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "workflow_id": {
+          "description": "Workflow identifier linking the asset to its document workflow.",
+          "title": "Workflow Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "tenant_id",
+        "workflow_id",
+        "asset_id",
+        "document_id"
+      ],
+      "title": "Asset Reference",
+      "type": "object"
+    },
+    "ExternalBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Type of external storage backend for the blob (http/https for web URLs).",
+          "enum": [
+            "s3",
+            "gcs",
+            "http",
+            "https"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional checksum when provided by the external source.",
+          "title": "Sha256"
+        },
+        "type": {
+          "const": "external",
+          "description": "Discriminator identifying an external blob reference.",
+          "title": "Type",
+          "type": "string"
+        },
+        "uri": {
+          "description": "External URI or object identifier.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "uri"
+      ],
+      "title": "ExternalBlob",
+      "type": "object"
+    },
+    "FileBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "description": "Hex encoded SHA-256 checksum of the blob contents.",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "description": "Blob size in bytes.",
+          "title": "Size",
+          "type": "integer"
+        },
+        "type": {
+          "const": "file",
+          "description": "Discriminator identifying a file blob.",
+          "title": "Type",
+          "type": "string"
+        },
+        "uri": {
+          "description": "URI for fetching the blob from storage.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "uri",
+        "sha256",
+        "size"
+      ],
+      "title": "FileBlob",
+      "type": "object"
+    },
+    "InlineBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "base64": {
+          "description": "Base64 encoded payload contents.",
+          "title": "Base64",
+          "type": "string"
+        },
+        "media_type": {
+          "description": "RFC compliant media type without parameters (type/subtype lowercase).",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Hex encoded SHA-256 checksum of the payload.",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "description": "Payload size in bytes.",
+          "title": "Size",
+          "type": "integer"
+        },
+        "type": {
+          "const": "inline",
+          "description": "Discriminator identifying inline data blobs.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "media_type",
+        "base64",
+        "sha256",
+        "size"
+      ],
+      "title": "InlineBlob",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "Representation of an extracted multimodal asset.",
+  "properties": {
+    "bbox": {
+      "anyOf": [
+        {
+          "items": {
+            "type": "number"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Normalized bounding box [x0, y0, x1, y1] within the page.",
+      "title": "Bbox"
+    },
+    "blob": {
+      "description": "Blob containing the asset payload or pointer.",
+      "discriminator": {
+        "mapping": {
+          "external": "#/$defs/ExternalBlob",
+          "file": "#/$defs/FileBlob",
+          "inline": "#/$defs/InlineBlob"
+        },
+        "propertyName": "type"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/FileBlob"
+        },
+        {
+          "$ref": "#/$defs/InlineBlob"
+        },
+        {
+          "$ref": "#/$defs/ExternalBlob"
+        }
+      ],
+      "title": "Blob Locator"
+    },
+    "caption_confidence": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Confidence for model generated captions (0.0-1.0).",
+      "title": "Caption Confidence"
+    },
+    "caption_method": {
+      "description": "Method used to derive the text description or caption.",
+      "enum": [
+        "vlm_caption",
+        "ocr_only",
+        "manual",
+        "none"
+      ],
+      "title": "Caption Method",
+      "type": "string"
+    },
+    "caption_model": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Model identifier if captions were generated by a VLM.",
+      "title": "Caption Model"
+    },
+    "checksum": {
+      "description": "Checksum ensuring integrity of the asset payload.",
+      "title": "Checksum",
+      "type": "string"
+    },
+    "context_after": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional textual context following the asset (<= 2048 bytes).",
+      "title": "Context After"
+    },
+    "context_before": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional textual context preceding the asset (<= 2048 bytes).",
+      "title": "Context Before"
+    },
+    "created_at": {
+      "description": "UTC timestamp when the asset was generated or ingested.",
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "media_type": {
+      "description": "Media type describing the asset content (lowercase type/subtype, no parameters).",
+      "title": "Media Type",
+      "type": "string"
+    },
+    "ocr_text": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional OCR extracted text for the asset (<= 8192 bytes).",
+      "title": "Ocr Text"
+    },
+    "origin_uri": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional URI of the source that produced the asset.",
+      "title": "Origin Uri"
+    },
+    "page_index": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional page index the asset originates from.",
+      "title": "Page Index"
+    },
+    "ref": {
+      "$ref": "#/$defs/AssetRef",
+      "description": "Reference identifiers for the asset."
+    },
+    "text_description": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional textual description for the asset (<= 2048 bytes).",
+      "title": "Text Description"
+    }
+  },
+  "required": [
+    "ref",
+    "media_type",
+    "blob",
+    "caption_method",
+    "created_at",
+    "checksum"
+  ],
+  "title": "Document Asset",
+  "type": "object"
+}

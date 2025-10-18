@@ -103,6 +103,7 @@ def _inline_blob(payload: bytes, media_type: str) -> InlineBlob:
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     collection_id: UUID | None = None,
     document_id: UUID | None = None,
     blob: InlineBlob | FileBlob,
@@ -110,10 +111,16 @@ def _make_document(
 ) -> NormalizedDocument:
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=document_id or uuid4(),
         collection_id=collection_id,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="E2E", tags=["obs"])
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title="E2E",
+        tags=["obs"],
+    )
     return NormalizedDocument(
         ref=ref,
         meta=meta,
@@ -128,12 +135,18 @@ def _make_document(
 def _make_inline_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     payload: bytes,
 ) -> Asset:
     blob = _inline_blob(payload, "image/png")
     return Asset(
-        ref=AssetRef(tenant_id=tenant_id, asset_id=uuid4(), document_id=document_id),
+        ref=AssetRef(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            asset_id=uuid4(),
+            document_id=document_id,
+        ),
         media_type="image/png",
         blob=blob,
         caption_method="none",
@@ -362,6 +375,7 @@ def test_cli_observability(
     tenant_id = "tenant-cli"
     collection_id = uuid4()
     inline_payload = base64.b64encode(b"cli-document").decode("ascii")
+    workflow_id = "workflow-1"
 
     exit_code = cli_main(
         [
@@ -370,6 +384,8 @@ def test_cli_observability(
             "add",
             "--tenant",
             tenant_id,
+            "--workflow",
+            workflow_id,
             "--collection",
             str(collection_id),
             "--inline",

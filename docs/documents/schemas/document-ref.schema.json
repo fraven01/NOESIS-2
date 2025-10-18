@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "description": "Stable reference to a stored document.",
+  "properties": {
+    "collection_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional collection containing the document.",
+      "title": "Collection Id"
+    },
+    "document_id": {
+      "description": "Unique identifier of the document.",
+      "format": "uuid",
+      "title": "Document Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant identifier owning the document.",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "version": {
+      "anyOf": [
+        {
+          "maxLength": 64,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional semantic version marker for the ingested document.",
+      "title": "Version"
+    },
+    "workflow_id": {
+      "description": "Workflow identifier that produced or manages the document.",
+      "title": "Workflow Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "workflow_id",
+    "document_id"
+  ],
+  "title": "Document Reference",
+  "type": "object"
+}

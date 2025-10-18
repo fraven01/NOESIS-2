@@ -1,0 +1,100 @@
+{
+  "additionalProperties": false,
+  "description": "Metadata captured during ingestion of a document.",
+  "properties": {
+    "crawl_timestamp": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Timestamp when the document was crawled or collected.",
+      "title": "Crawl Timestamp"
+    },
+    "external_ref": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional external reference identifiers provided by source systems (<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced).",
+      "title": "External Ref"
+    },
+    "language": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional BCP-47 language tag representing the primary language.",
+      "title": "Language"
+    },
+    "origin_uri": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Original source URI for the ingested document.",
+      "title": "Origin Uri"
+    },
+    "tags": {
+      "description": "Optional collection of tags for retrieval and filtering.",
+      "items": {
+        "type": "string"
+      },
+      "title": "Tags",
+      "type": "array"
+    },
+    "tenant_id": {
+      "description": "Tenant identifier the metadata belongs to.",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "title": {
+      "anyOf": [
+        {
+          "maxLength": 256,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional human readable document title.",
+      "title": "Title"
+    },
+    "workflow_id": {
+      "description": "Workflow identifier that groups document ingestion context.",
+      "title": "Workflow Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "workflow_id"
+  ],
+  "title": "Document Metadata",
+  "type": "object"
+}
