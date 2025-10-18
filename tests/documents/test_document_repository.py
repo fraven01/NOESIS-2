@@ -106,7 +106,7 @@ def test_upsert_and_get_roundtrip():
     doc = _make_document(tenant_id="tenant-a", document_id=doc_id, assets=[asset])
 
     stored = repo.upsert(doc)
-    fetched = repo.get("tenant-a", doc_id)
+    fetched = repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id)
 
     assert stored == fetched
     assert fetched is not None
@@ -134,7 +134,10 @@ def test_upsert_idempotency_preserves_latest_payload():
     stored = repo.upsert(second)
 
     assert stored.checksum == "c" * 64
-    assert repo.get("tenant-a", doc_id, "v1").checksum == "c" * 64
+    assert (
+        repo.get("tenant-a", doc_id, "v1", workflow_id=second.ref.workflow_id).checksum
+        == "c" * 64
+    )
 
 
 def test_get_prefer_latest_returns_most_recent_version():
@@ -295,7 +298,7 @@ def test_list_by_collection_paginates_with_cursor():
 def test_list_by_collection_empty_cursor_returns_none():
     repo = InMemoryDocumentsRepository()
     cursor = InMemoryDocumentsRepository._encode_cursor(
-        ["2024-01-01T00:00:00+00:00", str(uuid4()), ""]
+        ["2024-01-01T00:00:00+00:00", str(uuid4()), "workflow-test", ""]
     )
 
     refs, next_cursor = repo.list_by_collection(
@@ -340,12 +343,24 @@ def test_delete_document_soft_and_hard():
 
     repo.upsert(doc)
 
-    assert repo.delete("tenant-a", doc_id) is True
-    assert repo.get("tenant-a", doc_id) is None
-    assert repo.get_asset("tenant-a", asset.ref.asset_id) is None
+    assert repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is True
+    assert (
+        repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
+    )
+    assert (
+        repo.get_asset(
+            "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
+        )
+        is None
+    )
 
-    assert repo.delete("tenant-a", doc_id, hard=True) is True
-    assert repo.get("tenant-a", doc_id) is None
+    assert (
+        repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id, hard=True)
+        is True
+    )
+    assert (
+        repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
+    )
 
 
 def test_delete_document_returns_false_for_missing():
@@ -362,7 +377,9 @@ def test_add_asset_requires_existing_document():
     stored_asset = repo.add_asset(asset)
     assert stored_asset.ref.asset_id == asset.ref.asset_id
 
-    fetched_doc = repo.get("tenant-a", doc.ref.document_id)
+    fetched_doc = repo.get(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert fetched_doc is not None
     assert {a.ref.asset_id for a in fetched_doc.assets} == {asset.ref.asset_id}
 
@@ -410,7 +427,12 @@ def test_list_assets_by_document_sorted_and_limited():
     repo.add_asset(older)
     repo.add_asset(newer)
 
-    refs, cursor = repo.list_assets_by_document("tenant-a", doc.ref.document_id, limit=2)
+    refs, cursor = repo.list_assets_by_document(
+        "tenant-a",
+        doc.ref.document_id,
+        limit=2,
+        workflow_id=doc.ref.workflow_id,
+    )
     assert cursor is None
     assert [ref.asset_id for ref in refs] == [newer.ref.asset_id, older.ref.asset_id]
 
@@ -434,13 +456,20 @@ def test_list_assets_by_document_cursor_round_trip():
     repo.add_asset(first)
 
     page_one, cursor = repo.list_assets_by_document(
-        "tenant-a", doc.ref.document_id, limit=1
+        "tenant-a",
+        doc.ref.document_id,
+        limit=1,
+        workflow_id=doc.ref.workflow_id,
     )
     assert [ref.asset_id for ref in page_one] == [first.ref.asset_id]
     assert cursor is not None
 
     page_two, cursor_two = repo.list_assets_by_document(
-        "tenant-a", doc.ref.document_id, limit=1, cursor=cursor
+        "tenant-a",
+        doc.ref.document_id,
+        limit=1,
+        cursor=cursor,
+        workflow_id=doc.ref.workflow_id,
     )
     assert [ref.asset_id for ref in page_two] == [second.ref.asset_id]
     assert cursor_two is None
@@ -455,10 +484,18 @@ def test_delete_asset_soft_and_hard():
     repo.add_asset(asset)
 
     assert repo.delete_asset("tenant-a", asset.ref.asset_id) is True
-    assert repo.get_asset("tenant-a", asset.ref.asset_id) is None
+    assert (
+        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        is None
+    )
     assert repo.delete_asset("tenant-a", asset.ref.asset_id) is False
 
-    assert repo.delete_asset("tenant-a", asset.ref.asset_id, hard=True) is True
+    assert (
+        repo.delete_asset(
+            "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id, hard=True
+        )
+        is True
+    )
 
 
 def test_assets_follow_document_deletion_modes():
@@ -469,11 +506,19 @@ def test_assets_follow_document_deletion_modes():
     asset = _make_asset(tenant_id="tenant-a", document_id=doc.ref.document_id)
     repo.add_asset(asset)
 
-    repo.delete("tenant-a", doc.ref.document_id)
-    assert repo.get_asset("tenant-a", asset.ref.asset_id) is None
+    repo.delete("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
+    assert (
+        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        is None
+    )
 
-    repo.delete("tenant-a", doc.ref.document_id, hard=True)
-    assert repo.get_asset("tenant-a", asset.ref.asset_id) is None
+    repo.delete(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id, hard=True
+    )
+    assert (
+        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        is None
+    )
 
 
 def test_upsert_materializes_inline_document_and_assets():
@@ -540,14 +585,120 @@ def test_add_asset_materializes_inline_blob_and_updates_document_view():
     assert storage.get(stored_asset.blob.uri) == asset_payload
     assert stored_asset.checksum == checksum
 
-    fetched_asset = repo.get_asset(tenant_id, stored_asset.ref.asset_id)
+    fetched_asset = repo.get_asset(
+        tenant_id,
+        stored_asset.ref.asset_id,
+        workflow_id=stored_asset.ref.workflow_id,
+    )
     assert isinstance(fetched_asset, Asset)
     assert isinstance(fetched_asset.blob, FileBlob)
     assert storage.get(fetched_asset.blob.uri) == asset_payload
 
-    fetched_doc = repo.get(tenant_id, doc.ref.document_id)
+    fetched_doc = repo.get(
+        tenant_id, doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert fetched_doc is not None
     assert fetched_doc.assets
     assert isinstance(fetched_doc.assets[0].blob, FileBlob)
     assert storage.get(fetched_doc.assets[0].blob.uri) == asset_payload
 
+
+def test_workflow_scoped_document_operations():
+    repo = InMemoryDocumentsRepository()
+    tenant_id = "tenant-a"
+    collection_id = uuid4()
+    doc_id = uuid4()
+    baseline = datetime.now(timezone.utc)
+    first = _make_document(
+        tenant_id=tenant_id,
+        workflow_id="workflow-a",
+        document_id=doc_id,
+        collection_id=collection_id,
+        created_at=baseline - timedelta(minutes=5),
+    )
+    second = _make_document(
+        tenant_id=tenant_id,
+        workflow_id="workflow-b",
+        document_id=doc_id,
+        collection_id=collection_id,
+        created_at=baseline,
+    )
+
+    repo.upsert(first)
+    repo.upsert(second)
+
+    scoped_a = repo.get(tenant_id, doc_id, workflow_id="workflow-a")
+    assert scoped_a is not None and scoped_a.ref.workflow_id == "workflow-a"
+
+    scoped_b = repo.get(tenant_id, doc_id, workflow_id="workflow-b")
+    assert scoped_b is not None and scoped_b.ref.workflow_id == "workflow-b"
+
+    latest = repo.get(tenant_id, doc_id, prefer_latest=True)
+    assert latest is not None and latest.ref.workflow_id == "workflow-b"
+
+    filtered_refs, _ = repo.list_by_collection(
+        tenant_id,
+        collection_id,
+        workflow_id="workflow-a",
+    )
+    assert [ref.workflow_id for ref in filtered_refs] == ["workflow-a"]
+
+    repo.delete(tenant_id, doc_id, workflow_id="workflow-a")
+    assert repo.get(tenant_id, doc_id, workflow_id="workflow-a") is None
+    assert repo.get(tenant_id, doc_id, workflow_id="workflow-b") is not None
+
+
+def test_assets_are_isolated_per_workflow():
+    repo = InMemoryDocumentsRepository()
+    tenant_id = "tenant-a"
+    doc_id = uuid4()
+
+    doc_a = _make_document(
+        tenant_id=tenant_id,
+        workflow_id="workflow-a",
+        document_id=doc_id,
+    )
+    doc_b = _make_document(
+        tenant_id=tenant_id,
+        workflow_id="workflow-b",
+        document_id=doc_id,
+    )
+    repo.upsert(doc_a)
+    repo.upsert(doc_b)
+
+    shared_asset_id = uuid4()
+    asset_a = _make_asset(
+        tenant_id=tenant_id,
+        workflow_id="workflow-a",
+        document_id=doc_id,
+        asset_id=shared_asset_id,
+        created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+    )
+    asset_b = _make_asset(
+        tenant_id=tenant_id,
+        workflow_id="workflow-b",
+        document_id=doc_id,
+        asset_id=shared_asset_id,
+    )
+    repo.add_asset(asset_a)
+    repo.add_asset(asset_b)
+
+    scoped_a = repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-a")
+    assert scoped_a is not None and scoped_a.ref.workflow_id == "workflow-a"
+
+    scoped_b = repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-b")
+    assert scoped_b is not None and scoped_b.ref.workflow_id == "workflow-b"
+
+    default_asset = repo.get_asset(tenant_id, shared_asset_id)
+    assert default_asset is not None and default_asset.ref.workflow_id == "workflow-b"
+
+    refs, _ = repo.list_assets_by_document(
+        tenant_id,
+        doc_id,
+        workflow_id="workflow-a",
+    )
+    assert [ref.workflow_id for ref in refs] == ["workflow-a"]
+
+    repo.delete_asset(tenant_id, shared_asset_id, workflow_id="workflow-a")
+    assert repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-a") is None
+    assert repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-b") is not None

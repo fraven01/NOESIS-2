@@ -180,11 +180,15 @@ def test_document_repository_observability(
     stored = repo.upsert(document)
     assert isinstance(stored.blob, FileBlob)
 
-    fetched = repo.get(tenant_id, stored.ref.document_id)
+    fetched = repo.get(
+        tenant_id, stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
     assert fetched is not None
     assert isinstance(fetched.blob, FileBlob)
 
-    deleted = repo.delete(tenant_id, stored.ref.document_id)
+    deleted = repo.delete(
+        tenant_id, stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
     assert deleted is True
 
     upsert_events = _json_events(caplog, "docs.upsert")
@@ -273,11 +277,13 @@ def test_caption_pipeline_observability(
     asset = _make_inline_asset(tenant_id=tenant_id, document_id=doc_id, payload=asset_payload)
     stored_asset = repo.add_asset(asset)
 
-    stored_document = repo.get(tenant_id, doc_id)
+    stored_document = repo.get(tenant_id, doc_id, workflow_id=document.ref.workflow_id)
     assert stored_document is not None
     pipeline.process_document(stored_document)
 
-    updated_asset = repo.get_asset(tenant_id, stored_asset.ref.asset_id)
+    updated_asset = repo.get_asset(
+        tenant_id, stored_asset.ref.asset_id, workflow_id=stored_asset.ref.workflow_id
+    )
     assert updated_asset is not None
     assert updated_asset.text_description
     assert updated_asset.caption_method == "vlm_caption"

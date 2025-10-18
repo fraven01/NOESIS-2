@@ -199,6 +199,7 @@ def test_repository_upsert_emits_structured_logs(
     assert exit_events, "expected exit log with status ok"
     exit_event = exit_events[-1]
     assert exit_event["tenant_id"] == "tenant-log"
+    assert exit_event["workflow_id"] == doc.ref.workflow_id
     doc_id = str(doc.ref.document_id)
     logged_id = exit_event["document_id"]
     assert doc_id[:8] in logged_id and doc_id[-12:] in logged_id
@@ -230,11 +231,12 @@ def test_repository_add_asset_logs_sha_prefix(
     repo.upsert(doc)
     asset = _make_asset(tenant_id="tenant-asset", document_id=doc.ref.document_id)
 
-    repo.add_asset(asset)
+    repo.add_asset(asset, workflow_id=asset.ref.workflow_id)
 
     events = _json_events(caplog, "assets.add")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["asset_id"] == str(asset.ref.asset_id)
+    assert exit_event["workflow_id"] == asset.ref.workflow_id
     assert exit_event["sha256_prefix"] == asset.blob.sha256[:8]
     assert exit_event["uri_kind"] == "memory"
     _assert_no_base64(events)
