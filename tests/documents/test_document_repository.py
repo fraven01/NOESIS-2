@@ -375,6 +375,23 @@ def test_add_asset_requires_existing_document():
         )
 
 
+def test_add_asset_rejects_workflow_mismatch():
+    repo = InMemoryDocumentsRepository()
+    doc = _make_document(tenant_id="tenant-a", workflow_id="workflow-a")
+    repo.upsert(doc)
+
+    mismatched_asset = _make_asset(
+        tenant_id="tenant-a",
+        workflow_id="workflow-b",
+        document_id=doc.ref.document_id,
+    )
+
+    with pytest.raises(ValueError) as exc:
+        repo.add_asset(mismatched_asset)
+
+    assert str(exc.value) == "asset_workflow_mismatch"
+
+
 def test_list_assets_by_document_sorted_and_limited():
     repo = InMemoryDocumentsRepository()
     doc = _make_document(tenant_id="tenant-a")
