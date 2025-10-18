@@ -154,7 +154,9 @@ def test_pipeline_generates_caption_for_missing_description():
     )
 
     stored = pipeline.process_document(doc)
-    fetched = repo.get("tenant-a", stored.ref.document_id)
+    fetched = repo.get(
+        "tenant-a", stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
 
     assert fetched is not None
     assert fetched.assets[0].text_description
@@ -262,7 +264,10 @@ def test_pipeline_strict_mode_raises_on_caption_metadata_missing():
     with pytest.raises(ValueError, match="caption_confidence_missing"):
         pipeline.process_document(doc)
 
-    assert repo.get("tenant-a", doc.ref.document_id) is None
+    assert (
+        repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
+        is None
+    )
 
 
 def test_pipeline_raises_for_missing_blob():
@@ -283,7 +288,10 @@ def test_pipeline_raises_for_missing_blob():
     with pytest.raises(ValueError, match="blob_missing"):
         pipeline.process_document(doc)
 
-    assert repo.get("tenant-a", doc.ref.document_id) is None
+    assert (
+        repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
+        is None
+    )
 
 
 def test_pipeline_process_assets_persists_new_assets():
@@ -306,7 +314,9 @@ def test_pipeline_process_assets_persists_new_assets():
     assert stored_assets[0].caption_method == "vlm_caption"
     assert stored_assets[0].caption_model == "stub-det"
 
-    refs, _ = repo.list_assets_by_document("tenant-a", doc.ref.document_id)
+    refs, _ = repo.list_assets_by_document(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert len(refs) == 1
 
 
@@ -372,7 +382,9 @@ def test_process_collection_updates_missing_captions():
     assert updated
     assert updated[0].caption_method == "vlm_caption"
 
-    stored = repo.get("tenant-a", doc.ref.document_id)
+    stored = repo.get(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert stored is not None
     assert stored.assets[0].caption_method == "vlm_caption"
 

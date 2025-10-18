@@ -266,18 +266,20 @@ def _handle_docs_add(args: argparse.Namespace) -> int:
 def _handle_docs_get(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     document_id = UUID(args.doc_id)
-    with log_context(tenant=args.tenant):
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
         log_extra_entry(
             tenant_id=args.tenant,
             document_id=document_id,
             version=args.version,
             prefer_latest=args.prefer_latest,
+            workflow_id=args.workflow,
         )
         doc = context.repository.get(
             args.tenant,
             document_id,
             version=args.version,
             prefer_latest=args.prefer_latest,
+            workflow_id=args.workflow,
         )
         if doc is None:
             log_extra_exit(status="error", error_code="document_not_found")
@@ -290,13 +292,18 @@ def _handle_docs_get(args: argparse.Namespace) -> int:
 def _handle_docs_list(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     collection_id = UUID(args.collection)
-    with log_context(tenant=args.tenant, collection_id=str(collection_id)):
+    with log_context(
+        tenant=args.tenant,
+        collection_id=str(collection_id),
+        workflow_id=args.workflow,
+    ):
         log_extra_entry(
             tenant_id=args.tenant,
             collection_id=collection_id,
             limit=args.limit,
             cursor_present=bool(args.cursor),
             latest_only=args.latest_only,
+            workflow_id=args.workflow,
         )
         refs, cursor = context.repository.list_by_collection(
             args.tenant,
@@ -304,6 +311,7 @@ def _handle_docs_list(args: argparse.Namespace) -> int:
             limit=args.limit,
             cursor=args.cursor,
             latest_only=args.latest_only,
+            workflow_id=args.workflow,
         )
         payload = {"items": refs, "next_cursor": cursor}
         log_extra_exit(item_count=len(refs), next_cursor_present=bool(cursor))
@@ -314,10 +322,18 @@ def _handle_docs_list(args: argparse.Namespace) -> int:
 def _handle_docs_delete(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     document_id = UUID(args.doc_id)
-    with log_context(tenant=args.tenant):
-        log_extra_entry(tenant_id=args.tenant, document_id=document_id, hard=args.hard)
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
+        log_extra_entry(
+            tenant_id=args.tenant,
+            document_id=document_id,
+            hard=args.hard,
+            workflow_id=args.workflow,
+        )
         deleted = context.repository.delete(
-            args.tenant, document_id, hard=args.hard
+            args.tenant,
+            document_id,
+            workflow_id=args.workflow,
+            hard=args.hard,
         )
         if not deleted:
             log_extra_exit(status="error", error_code="document_not_found")
@@ -361,7 +377,7 @@ def _handle_assets_add(args: argparse.Namespace) -> int:
         created_at=datetime.now(timezone.utc),
         checksum=checksum,
     )
-    with log_context(tenant=args.tenant):
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
         log_extra_entry(**asset_log_fields(asset))
         try:
             stored = context.repository.add_asset(asset)
@@ -383,9 +399,15 @@ def _handle_assets_add(args: argparse.Namespace) -> int:
 def _handle_assets_get(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     asset_id = UUID(args.asset_id)
-    with log_context(tenant=args.tenant):
-        log_extra_entry(tenant_id=args.tenant, asset_id=asset_id)
-        asset = context.repository.get_asset(args.tenant, asset_id)
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
+        log_extra_entry(
+            tenant_id=args.tenant,
+            asset_id=asset_id,
+            workflow_id=args.workflow,
+        )
+        asset = context.repository.get_asset(
+            args.tenant, asset_id, workflow_id=args.workflow
+        )
         if asset is None:
             log_extra_exit(status="error", error_code="asset_not_found")
             return _print_error(args, "asset_not_found")
@@ -397,18 +419,20 @@ def _handle_assets_get(args: argparse.Namespace) -> int:
 def _handle_assets_list(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     document_id = UUID(args.document)
-    with log_context(tenant=args.tenant):
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
         log_extra_entry(
             tenant_id=args.tenant,
             document_id=document_id,
             limit=args.limit,
             cursor_present=bool(args.cursor),
+            workflow_id=args.workflow,
         )
         refs, cursor = context.repository.list_assets_by_document(
             args.tenant,
             document_id,
             limit=args.limit,
             cursor=args.cursor,
+            workflow_id=args.workflow,
         )
         payload = {"items": refs, "next_cursor": cursor}
         log_extra_exit(item_count=len(refs), next_cursor_present=bool(cursor))
@@ -419,10 +443,18 @@ def _handle_assets_list(args: argparse.Namespace) -> int:
 def _handle_assets_delete(args: argparse.Namespace) -> int:
     context: CLIContext = args.context
     asset_id = UUID(args.asset_id)
-    with log_context(tenant=args.tenant):
-        log_extra_entry(tenant_id=args.tenant, asset_id=asset_id, hard=args.hard)
+    with log_context(tenant=args.tenant, workflow_id=args.workflow):
+        log_extra_entry(
+            tenant_id=args.tenant,
+            asset_id=asset_id,
+            hard=args.hard,
+            workflow_id=args.workflow,
+        )
         deleted = context.repository.delete_asset(
-            args.tenant, asset_id, hard=args.hard
+            args.tenant,
+            asset_id,
+            workflow_id=args.workflow,
+            hard=args.hard,
         )
         if not deleted:
             log_extra_exit(status="error", error_code="asset_not_found")
@@ -495,6 +527,7 @@ def _build_parser() -> argparse.ArgumentParser:
     docs_get.add_argument("--doc-id", required=True)
     docs_get.add_argument("--version")
     docs_get.add_argument("--prefer-latest", action="store_true")
+    docs_get.add_argument("--workflow")
     docs_get.set_defaults(func=_handle_docs_get)
 
     docs_list = docs_sub.add_parser(
@@ -509,12 +542,14 @@ def _build_parser() -> argparse.ArgumentParser:
     docs_list.add_argument("--limit", type=int, default=100)
     docs_list.add_argument("--cursor")
     docs_list.add_argument("--latest-only", action="store_true")
+    docs_list.add_argument("--workflow")
     docs_list.set_defaults(func=_handle_docs_list)
 
     docs_delete = docs_sub.add_parser("delete", help="Delete a document")
     docs_delete.add_argument("--tenant", required=True)
     docs_delete.add_argument("--doc-id", required=True)
     docs_delete.add_argument("--hard", action="store_true")
+    docs_delete.add_argument("--workflow")
     docs_delete.set_defaults(func=_handle_docs_delete)
 
     assets_parser = subparsers.add_parser("assets", help="Asset operations")
@@ -551,6 +586,7 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_get = assets_sub.add_parser("get", help="Fetch an asset")
     assets_get.add_argument("--tenant", required=True)
     assets_get.add_argument("--asset-id", required=True)
+    assets_get.add_argument("--workflow")
     assets_get.set_defaults(func=_handle_assets_get)
 
     assets_list = assets_sub.add_parser(
@@ -560,12 +596,14 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_list.add_argument("--document", required=True)
     assets_list.add_argument("--limit", type=int, default=100)
     assets_list.add_argument("--cursor")
+    assets_list.add_argument("--workflow")
     assets_list.set_defaults(func=_handle_assets_list)
 
     assets_delete = assets_sub.add_parser("delete", help="Delete an asset")
     assets_delete.add_argument("--tenant", required=True)
     assets_delete.add_argument("--asset-id", required=True)
     assets_delete.add_argument("--hard", action="store_true")
+    assets_delete.add_argument("--workflow")
     assets_delete.set_defaults(func=_handle_assets_delete)
 
     return parser

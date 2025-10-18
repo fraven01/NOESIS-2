@@ -239,6 +239,7 @@ class AssetExtractionPipeline:
                     tenant_id,
                     ref_doc.document_id,
                     ref_doc.version,
+                    workflow_id=ref_doc.workflow_id,
                 )
                 if document is None:
                     continue

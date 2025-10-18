@@ -47,6 +47,7 @@ _CONTEXT_FIELDS: tuple[str, ...] = (
     "tenant",
     "key_alias",
     "collection_id",
+    "workflow_id",
 )
 _LOG_CONTEXT: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "log_context", default=None
