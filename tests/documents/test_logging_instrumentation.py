@@ -212,6 +212,7 @@ def test_repository_upsert_emits_structured_logs(
     assert upsert_span.status.status_code is StatusCode.OK
     assert upsert_span.attributes["noesis.tenant_id"] == "tenant-log"
     assert upsert_span.attributes["noesis.document_id"] == str(doc.ref.document_id)
+    assert upsert_span.attributes["noesis.workflow_id"] == doc.ref.workflow_id
     assert upsert_span.attributes["noesis.size_bytes"] == doc.blob.size
     span_context = upsert_span.context
     assert exit_event["trace_id"] == format_trace_id(span_context.trace_id)
@@ -247,6 +248,7 @@ def test_repository_add_asset_logs_sha_prefix(
     assert asset_span.attributes["noesis.asset_id"] == str(asset.ref.asset_id)
     assert asset_span.attributes["noesis.uri_kind"] == "memory"
     assert asset_span.attributes["noesis.size_bytes"] == asset.blob.size
+    assert asset_span.attributes["noesis.workflow_id"] == asset.ref.workflow_id
     span_exporter.clear()
 
 
@@ -334,6 +336,7 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
     events = _json_events(caplog, "cli.docs.add")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["tenant_id"] == "cli-tenant"
+    assert exit_event["workflow_id"] == workflow_id
     assert exit_event["status"] == "ok"
     assert "duration_ms" in exit_event
     _assert_no_base64(events)
@@ -363,6 +366,7 @@ def test_caption_pipeline_emits_caption_run(
     events = _json_events(caplog, "pipeline.assets_caption.item")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["tenant_id"] == "cap-tenant"
+    assert exit_event["workflow_id"] == doc.ref.workflow_id
     assert exit_event["model"]
     assert 0.0 <= exit_event["caption_confidence"] <= 1.0
     _assert_no_base64(events)
@@ -371,6 +375,7 @@ def test_caption_pipeline_emits_caption_run(
     doc_span = next(span for span in spans if span.name == "pipeline.assets_caption")
     assert doc_span.status.status_code is StatusCode.OK
     assert doc_span.attributes["noesis.tenant_id"] == "cap-tenant"
+    assert doc_span.attributes["noesis.workflow_id"] == doc.ref.workflow_id
 
     item_span = next(
         span for span in spans if span.name == "pipeline.assets_caption.item"
@@ -379,4 +384,5 @@ def test_caption_pipeline_emits_caption_run(
     assert item_span.attributes["noesis.caption.method"] == "vlm_caption"
     assert item_span.attributes["noesis.caption.model"]
     assert 0.0 <= item_span.attributes["noesis.caption.confidence"] <= 1.0
+    assert item_span.attributes["noesis.workflow_id"] == asset.ref.workflow_id
     span_exporter.clear()

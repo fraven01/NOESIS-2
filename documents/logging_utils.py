@@ -62,6 +62,7 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
             extra_entry = _ENTRY_EXTRA.get() or {}
             if extra_entry:
                 entry_fields.update(_coerce_fields(extra_entry))
+            workflow_label = entry_fields.get("workflow_id")
             tracer = trace.get_tracer(func.__module__ or __name__)
             try:
                 with tracer.start_as_current_span(event) as span:
@@ -73,6 +74,7 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         exit_fields = dict(entry_fields)
                         extra_exit = _EXIT_EXTRA.get() or {}
                         exit_fields.update(_coerce_fields(extra_exit))
+                        workflow = exit_fields.get("workflow_id") or workflow_label
                         duration_ms = _duration_ms(start)
                         error_message = _safe_error_message(exc)
                         _set_span_attributes(span, exit_fields)
@@ -80,7 +82,7 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         span.set_attribute("error.message", error_message)
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR, error_message))
-                        metrics.observe_event(event, "error", duration_ms)
+                        metrics.observe_event(event, "error", duration_ms, workflow_id=workflow)
                         logger.error(
                             event,
                             status="error",
@@ -94,6 +96,7 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         exit_fields = dict(entry_fields)
                         extra_exit = _EXIT_EXTRA.get() or {}
                         exit_fields.update(_coerce_fields(extra_exit))
+                        workflow = exit_fields.get("workflow_id") or workflow_label
                         status = str(exit_fields.pop("status", "ok"))
                         duration_ms = _duration_ms(start)
                         logger.info(
@@ -104,7 +107,7 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         )
                         _set_span_attributes(span, exit_fields)
                         span.set_status(Status(StatusCode.OK))
-                        metrics.observe_event(event, status, duration_ms)
+                        metrics.observe_event(event, status, duration_ms, workflow_id=workflow)
                         return result
             finally:
                 _ENTRY_EXTRA.reset(entry_token)
@@ -126,6 +129,9 @@ def document_log_fields(document: Any) -> dict[str, Any]:
         _add_field(fields, "collection_id", getattr(ref, "collection_id", None))
         _add_field(fields, "version", getattr(ref, "version", None))
         _add_field(fields, "workflow_id", getattr(ref, "workflow_id", None))
+    meta = getattr(document, "meta", None)
+    if meta is not None and "workflow_id" not in fields:
+        _add_field(fields, "workflow_id", getattr(meta, "workflow_id", None))
     _add_field(fields, "source", getattr(document, "source", None))
     fields.update(blob_log_fields(getattr(document, "blob", None)))
     checksum = getattr(document, "checksum", None)
@@ -151,6 +157,8 @@ def asset_log_fields(asset: Any) -> dict[str, Any]:
         _add_field(fields, "document_id", getattr(ref, "document_id", None))
         _add_field(fields, "collection_id", getattr(ref, "collection_id", None))
         _add_field(fields, "workflow_id", getattr(ref, "workflow_id", None))
+    if "workflow_id" not in fields:
+        _add_field(fields, "workflow_id", getattr(asset, "workflow_id", None))
     _add_field(fields, "media_type", getattr(asset, "media_type", None))
     fields.update(blob_log_fields(getattr(asset, "blob", None)))
     checksum = getattr(asset, "checksum", None)
@@ -236,6 +244,8 @@ def _extract_entry_fields(arguments: Mapping[str, Any]) -> dict[str, Any]:
             _add_field(fields, "asset_id", value)
         elif name == "version":
             _add_field(fields, "version", value)
+        elif name == "workflow_id":
+            _add_field(fields, "workflow_id", value)
         elif name in {"doc", "document"}:
             fields.update(document_log_fields(value))
         elif name == "asset":
@@ -309,6 +319,7 @@ _SPAN_FIELD_MAP: Mapping[str, str] = {
     "document_id": "noesis.document_id",
     "asset_id": "noesis.asset_id",
     "version": "noesis.version",
+    "workflow_id": "noesis.workflow_id",
     "source": "noesis.source",
     "uri_kind": "noesis.uri_kind",
     "size_bytes": "noesis.size_bytes",
