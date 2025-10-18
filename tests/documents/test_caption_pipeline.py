@@ -20,6 +20,7 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
+from documents.policies import DocumentPolicy
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
 
@@ -54,6 +55,15 @@ class _MissingConfidenceCaptioner(MultimodalCaptioner):
         return {
             "text_description": "generated",  # missing confidence on purpose
             "model": "stub",  # valid model ensures confidence check triggers
+        }
+
+
+class _LowConfidenceCaptioner(MultimodalCaptioner):
+    def caption(self, image: bytes, context: Optional[str] = None):
+        return {
+            "text_description": "low confidence caption",
+            "confidence": 0.2,
+            "model": "stub-low",
         }
 
 
@@ -163,6 +173,63 @@ def test_pipeline_generates_caption_for_missing_description():
     assert fetched.assets[0].caption_method == "vlm_caption"
     assert fetched.assets[0].caption_model == "stub-det"
     assert 0 <= fetched.assets[0].caption_confidence <= 1
+
+
+def test_pipeline_enforces_policy_threshold():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = _LowConfidenceCaptioner()
+    policy = DocumentPolicy(
+        caption_min_confidence=0.9,
+        pdf_ocr_enabled=True,
+        pdf_mode="fast",
+        include_pptx_notes=True,
+    )
+    pipeline = AssetExtractionPipeline(
+        repo,
+        storage,
+        captioner,
+        strict_caption_validation=True,
+        policy_provider=lambda *_args: policy,
+    )
+
+    inline = _make_inline_blob(b"policy-bytes")
+    doc_id = uuid4()
+    doc = _make_document(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        assets=[
+            _make_asset(
+                tenant_id="tenant-a",
+                document_id=doc_id,
+                blob=inline,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="caption_confidence_policy"):
+        pipeline.process_document(doc)
+
+
+def test_process_assets_rejects_workflow_mismatch():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = DeterministicCaptioner()
+    pipeline = AssetExtractionPipeline(repo, storage, captioner)
+
+    doc = _make_document(tenant_id="tenant-a", workflow_id="workflow-1")
+    repo.upsert(doc)
+
+    inline = _make_inline_blob(b"workflow-mismatch")
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        workflow_id="workflow-2",
+        document_id=doc.ref.document_id,
+        blob=inline,
+    )
+
+    with pytest.raises(ValueError, match="asset_workflow_mismatch"):
+        pipeline.process_assets("tenant-a", doc.ref.document_id, [asset])
 
 
 def test_pipeline_skips_assets_with_existing_description():
