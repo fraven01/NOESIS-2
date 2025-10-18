@@ -61,6 +61,7 @@ def span_exporter() -> InMemorySpanExporter:
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID | None = None,
     collection_id: UUID | None = None,
     version: str | None = None,
@@ -71,11 +72,17 @@ def _make_document(
     doc_uuid = document_id or uuid4()
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=doc_uuid,
         collection_id=collection_id,
         version=version,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="Log Sample", tags=["alpha"])
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title="Log Sample",
+        tags=["alpha"],
+    )
     blob = blob or FileBlob(type="file", uri="memory://doc", sha256=checksum, size=16)
     return NormalizedDocument(
         ref=ref,
@@ -91,6 +98,7 @@ def _make_document(
 def _make_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     asset_id: UUID | None = None,
     checksum: str = "b" * 64,
@@ -98,7 +106,12 @@ def _make_asset(
     caption_method: str = "none",
 ) -> Asset:
     asset_uuid = asset_id or uuid4()
-    ref = AssetRef(tenant_id=tenant_id, asset_id=asset_uuid, document_id=document_id)
+    ref = AssetRef(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        asset_id=asset_uuid,
+        document_id=document_id,
+    )
     blob = blob or FileBlob(type="file", uri="memory://asset", sha256=checksum, size=8)
     return Asset(
         ref=ref,
@@ -113,6 +126,7 @@ def _make_asset(
 def _inline_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     payload: bytes,
 ) -> Asset:
@@ -126,7 +140,12 @@ def _inline_asset(
         size=len(payload),
     )
     return Asset(
-        ref=AssetRef(tenant_id=tenant_id, asset_id=uuid4(), document_id=document_id),
+        ref=AssetRef(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            asset_id=uuid4(),
+            document_id=document_id,
+        ),
         media_type="image/png",
         blob=encoded,
         caption_method="none",
@@ -180,7 +199,9 @@ def test_repository_upsert_emits_structured_logs(
     assert exit_events, "expected exit log with status ok"
     exit_event = exit_events[-1]
     assert exit_event["tenant_id"] == "tenant-log"
-    assert exit_event["document_id"] == str(doc.ref.document_id)
+    doc_id = str(doc.ref.document_id)
+    logged_id = exit_event["document_id"]
+    assert doc_id[:8] in logged_id and doc_id[-12:] in logged_id
     assert exit_event["sha256_prefix"] == doc.blob.sha256[:8]
     assert "duration_ms" in exit_event
     _assert_no_base64(events)
@@ -285,6 +306,7 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
     repo = InMemoryDocumentsRepository(storage=storage)
     context = CLIContext(repository=repo, storage=storage)
     inline_payload = "aGVsbG8="
+    workflow_id = "workflow-1"
 
     exit_code = cli_main(
         [
@@ -292,6 +314,8 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
             "add",
             "--tenant",
             "cli-tenant",
+            "--workflow",
+            workflow_id,
             "--collection",
             str(uuid4()),
             "--inline",

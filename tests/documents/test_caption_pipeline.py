@@ -72,6 +72,7 @@ def _make_inline_blob(payload: bytes, media_type: str = "image/png") -> InlineBl
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: Optional[UUID] = None,
     collection_id: Optional[UUID] = None,
     assets: Optional[list[Asset]] = None,
@@ -80,10 +81,11 @@ def _make_document(
     doc_id = document_id or uuid4()
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=doc_id,
         collection_id=collection_id,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="Demo")
+    meta = DocumentMeta(tenant_id=tenant_id, workflow_id=workflow_id, title="Demo")
     blob = FileBlob(type="file", uri="memory://doc", sha256=checksum, size=1)
     return NormalizedDocument(
         ref=ref,
@@ -99,6 +101,7 @@ def _make_document(
 def _make_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     collection_id: Optional[UUID] = None,
     blob: FileBlob | InlineBlob,
@@ -110,6 +113,7 @@ def _make_asset(
 ) -> Asset:
     ref = AssetRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         asset_id=uuid4(),
         document_id=document_id,
         collection_id=collection_id,

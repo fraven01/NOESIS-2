@@ -20,6 +20,7 @@ Zweck: Identifiziert ein Dokument innerhalb eines Tenants und optional einer Col
 | Feld | Typ | Pflicht | Constraints | Fehlercodes |
 | --- | --- | --- | --- | --- |
 | tenant_id | str | Ja | NFKC, Trim, Invisibles entfernen, Länge ≤ 128 | `tenant_empty`, `tenant_too_long` |
+| workflow_id | str | Ja | NFKC, Trim, Invisibles entfernen, Regex `[A-Za-z0-9._-]+`, Länge ≤ 128 | `workflow_empty`, `workflow_invalid_char`, `workflow_too_long` |
 | document_id | UUID | Ja | Akzeptiert UUID-Objekt oder String (Trim); muss gültig sein | `uuid_empty`, `uuid_invalid`, `uuid_type` |
 | collection_id | UUID | Nein | Optional, gleiche Normalisierung wie `document_id` | `uuid_empty`, `uuid_invalid`, `uuid_type` |
 | version | str | Nein | Regex `[A-Za-z0-9._-]+`, Länge ≤ 64, Leere Strings ⇒ `None` | `version_too_long`, `version_invalid` |
@@ -29,6 +30,7 @@ Zweck: Identifiziert ein Dokument innerhalb eines Tenants und optional einer Col
 ```json
 {
   "tenant_id": "acme",
+  "workflow_id": "ingest-2024",
   "document_id": "5c6a9f0e-6d45-4f58-9a51-5c9045e40f6d",
   "collection_id": "00000000-0000-0000-0000-000000000123",
   "version": "v2.1"
@@ -39,6 +41,7 @@ Zweck: Identifiziert ein Dokument innerhalb eines Tenants und optional einer Col
 ```json
 {
   "tenant_id": "acme",
+  "workflow_id": "ingest-2024",
   "document_id": "5c6a9f0e-6d45-4f58-9a51-5c9045e40f6d",
   "version": "release 1"
 }
@@ -51,6 +54,7 @@ Zweck: Beschreibt Titel, Sprache, Tags und externe Referenzen. Wird von [Normali
 | Feld | Typ | Pflicht | Constraints | Fehlercodes |
 | --- | --- | --- | --- | --- |
 | tenant_id | str | Ja | Wie [DocumentRef](#documentref) | `tenant_empty`, `tenant_too_long` |
+| workflow_id | str | Ja | Wie [DocumentRef](#documentref) | `workflow_empty`, `workflow_invalid_char`, `workflow_too_long` |
 | title | str | Nein | Nach Normalisierung Länge ≤ 256, Leerwerte ⇒ `None` | `title_too_long` |
 | language | str | Nein | BCP-47-ähnlich, Segmente 1–8 alphanumerisch, keine doppelten/trailenden `-` | `language_invalid` |
 | tags | list[str] | Nein | Normalisierung, Deduplizierung, stabile Sortierung, Regex `[A-Za-z0-9._-]+`, Länge ≤ 64 | `tags_type`, `tag_invalid`, `tag_too_long` |
@@ -63,6 +67,7 @@ Zweck: Beschreibt Titel, Sprache, Tags und externe Referenzen. Wird von [Normali
 ```json
 {
   "tenant_id": "acme",
+  "workflow_id": "ingest-2024",
   "title": "Monthly Revenue Report",
   "language": "en-US",
   "tags": ["finance", "q1"],
@@ -79,6 +84,7 @@ Zweck: Beschreibt Titel, Sprache, Tags und externe Referenzen. Wird von [Normali
 ```json
 {
   "tenant_id": "acme",
+  "workflow_id": "ingest-2024",
   "language": "--de",
   "external_ref": {
     "": "value"
@@ -191,8 +197,8 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
 
 | Feld | Typ | Pflicht | Constraints | Fehlercodes |
 | --- | --- | --- | --- | --- |
-| ref | DocumentRef | Ja | Muss identischen Tenant liefern wie `meta` und Assets | `meta_tenant_mismatch`, `asset_tenant_mismatch`, `asset_document_mismatch`, `asset_collection_mismatch` |
-| meta | DocumentMeta | Ja | Siehe [DocumentMeta](#documentmeta) | — |
+| ref | DocumentRef | Ja | Muss identischen Tenant/Workflow liefern wie `meta` und Assets | `meta_tenant_mismatch`, `meta_workflow_mismatch`, `asset_tenant_mismatch`, `asset_document_mismatch`, `asset_collection_mismatch`, `asset_workflow_mismatch` |
+| meta | DocumentMeta | Ja | Siehe [DocumentMeta](#documentmeta) | `meta_workflow_mismatch` |
 | blob | BlobLocator | Ja | Siehe [BlobLocator](#bloblocator) | — |
 | checksum | str | Ja | 64-stelliger Hex-String; im Strict-Mode == Blob-SHA | `checksum_invalid`, `document_checksum_missing`, `document_checksum_mismatch` |
 | created_at | datetime | Ja | UTC, tz-aware | `created_at_naive` |
@@ -205,10 +211,12 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
 {
   "ref": {
     "tenant_id": "acme",
+    "workflow_id": "ingest-2024",
     "document_id": "c7f8b4f4-1b7b-4ad2-9da6-0f8df1d96c90"
   },
   "meta": {
     "tenant_id": "acme",
+    "workflow_id": "ingest-2024",
     "title": "Product Brochure",
     "language": "en",
     "tags": ["marketing"]
@@ -248,6 +256,7 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
     {
       "ref": {
         "tenant_id": "other",
+        "workflow_id": "ingest-2024",
         "asset_id": "54cc8d65-a74a-4ef0-bca9-0fdb45eb3a0f",
         "document_id": "c7f8b4f4-1b7b-4ad2-9da6-0f8df1d96c90"
       },
@@ -273,6 +282,7 @@ Zweck: Referenz auf ein einzelnes Asset und das dazugehörige Dokument.
 | Feld | Typ | Pflicht | Constraints | Fehlercodes |
 | --- | --- | --- | --- | --- |
 | tenant_id | str | Ja | Wie [DocumentRef](#documentref) | `tenant_empty`, `tenant_too_long` |
+| workflow_id | str | Ja | Wie [DocumentRef](#documentref) | `workflow_empty`, `workflow_invalid_char`, `workflow_too_long` |
 | asset_id | UUID | Ja | Akzeptiert String/UUID | `uuid_empty`, `uuid_invalid`, `uuid_type` |
 | document_id | UUID | Ja | Muss zur Dokument-ID passen | `uuid_empty`, `uuid_invalid`, `uuid_type` |
 | collection_id | UUID | Nein | Optional, übernimmt Wert aus Dokument | `uuid_empty`, `uuid_invalid`, `uuid_type` |
@@ -282,7 +292,7 @@ Zweck: Beschreibt ein extrahiertes Asset (z. B. Bild) inklusive Kontext, Blob un
 
 | Feld | Typ | Pflicht | Constraints | Fehlercodes |
 | --- | --- | --- | --- | --- |
-| ref | AssetRef | Ja | Muss denselben Tenant/Document wie [NormalizedDocument](#normalizeddocument) haben | `asset_tenant_mismatch`, `asset_document_mismatch`, `asset_collection_mismatch` |
+| ref | AssetRef | Ja | Muss denselben Tenant/Document/Workflow wie [NormalizedDocument](#normalizeddocument) haben | `asset_tenant_mismatch`, `asset_document_mismatch`, `asset_collection_mismatch`, `asset_workflow_mismatch` |
 | media_type | str | Ja | Lowercase `type/subtype`, keine Parameter | `media_type_empty`, `media_type_invalid`, `media_type_mismatch`, `media_type_guard` |
 | blob | BlobLocator | Ja | Siehe [BlobLocator](#bloblocator); Inline-Blobs müssen Media-Type matchen | `media_type_mismatch`, `asset_checksum_missing`, `asset_checksum_mismatch` |
 | origin_uri | str | Nein | Normalisierung, Leerwerte ⇒ `None` | — |
@@ -304,6 +314,7 @@ Zweck: Beschreibt ein extrahiertes Asset (z. B. Bild) inklusive Kontext, Blob un
 {
   "ref": {
     "tenant_id": "acme",
+    "workflow_id": "ingest-2024",
     "asset_id": "54cc8d65-a74a-4ef0-bca9-0fdb45eb3a0f",
     "document_id": "c7f8b4f4-1b7b-4ad2-9da6-0f8df1d96c90"
   },

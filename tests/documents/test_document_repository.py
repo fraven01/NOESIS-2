@@ -22,6 +22,7 @@ from documents.storage import InMemoryStorage
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID | None = None,
     collection_id: UUID | None = None,
     version: str | None = None,
@@ -34,11 +35,17 @@ def _make_document(
     created = created_at or datetime.now(timezone.utc)
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=doc_id,
         collection_id=collection_id,
         version=version,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="Sample", tags=["alpha"])
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title="Sample",
+        tags=["alpha"],
+    )
     doc_blob = blob or FileBlob(type="file", uri="s3://bucket/doc", sha256=checksum, size=10)
     return NormalizedDocument(
         ref=ref,
@@ -54,6 +61,7 @@ def _make_document(
 def _make_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     asset_id: UUID | None = None,
     created_at: datetime | None = None,
@@ -64,6 +72,7 @@ def _make_asset(
     created = created_at or datetime.now(timezone.utc)
     ref = AssetRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         asset_id=asset_uuid,
         document_id=document_id,
     )
