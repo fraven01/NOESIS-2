@@ -516,7 +516,7 @@ def test_cli_observability(
             "add",
             "--tenant",
             tenant_id,
-            "--workflow",
+            "--workflow-id",
             workflow_id,
             "--collection",
             str(collection_id),

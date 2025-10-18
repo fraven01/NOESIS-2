@@ -318,7 +318,7 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
             "add",
             "--tenant",
             "cli-tenant",
-            "--workflow",
+            "--workflow-id",
             workflow_id,
             "--collection",
             str(uuid4()),
