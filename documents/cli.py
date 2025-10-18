@@ -380,7 +380,7 @@ def _handle_assets_add(args: argparse.Namespace) -> int:
     with log_context(tenant=args.tenant, workflow_id=args.workflow):
         log_extra_entry(**asset_log_fields(asset))
         try:
-            stored = context.repository.add_asset(asset, workflow_id=args.workflow)
+            stored = context.repository.add_asset(asset)
         except ValueError as exc:
             log_extra_exit(status="error", error_code=str(exc))
             return _print_error(args, str(exc))
