@@ -1,6 +1,12 @@
 {% extends 'theme/base.html' %}
+{% load static %}
 
 {% block title %}RAG Tools · NOESIS 2{% endblock %}
+
+{% block head %}
+{{ block.super }}
+<script src="{% static 'theme/rag-tools-support.js' %}"></script>
+{% endblock %}
 
 {% block content %}
 <div class="space-y-10">
@@ -22,8 +28,21 @@
       <h2 class="text-xl font-semibold text-slate-900">Upload Document</h2>
       <p class="text-sm text-slate-600">
         Lade eine Datei hoch, registriere sie im Dokumentenspeicher und starte automatisch eine Ingestion.
-        Die Antwort enthält sowohl die <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>
-        als auch den zugehörigen <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">ingestion_run_id</code>.
+        Der Resolver empfiehlt das Profil <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">{{ resolver_profile_hint|default:"–" }}</code>
+        und weist Uploads der Collection <code class="rounded bg-slate-100 px-1 py-0.5 text-xs" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code> zu.
+        Die Antwort enthält weiterhin die <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>
+        sowie den zugehörigen <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">ingestion_run_id</code>.
+      </p>
+    </div>
+
+    <div class="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 space-y-2">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <span class="font-medium text-slate-700">Aktive Collection (Resolver)</span>
+        <code class="rounded bg-slate-200 px-2 py-0.5 text-xs font-mono" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>
+      </div>
+      <p class="text-xs text-slate-500">
+        Uploads und Ingestion verwenden diese Collection. Passe das Scope über das Feld
+        „Collection“ im Query-Formular an; ohne Auswahl wird der Vorgang abgebrochen.
       </p>
     </div>
 
@@ -68,7 +87,8 @@
       <h2 class="text-xl font-semibold text-slate-900">Ingestion Control</h2>
       <p class="text-sm text-slate-600">
         Steuere den Ingestion-Workflow Schritt für Schritt: Starte Runs für bestehende Dokumente und überwache den Status
-        des letzten Durchlaufs im aktuellen Tenant- und Case-Kontext.
+        des letzten Durchlaufs im aktuellen Tenant- und Case-Kontext. Alle Aktionen verwenden die aktive Collection
+        <code class="rounded bg-slate-100 px-1 py-0.5 text-xs" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>.
       </p>
     </div>
 
@@ -79,6 +99,13 @@
           <p class="text-sm text-slate-600">
             Übermittle eine oder mehrere <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>-Werte (Komma oder Zeilenumbruch)
             und wähle das gewünschte Embedding-Profil.
+          </p>
+        </div>
+        <div class="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
+          <p>
+            Aktuelle Collection: <code class="rounded bg-slate-200 px-1 py-0.5 text-xs font-mono" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>.
+            Legacy-Parameter <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">doc_class</code> aus URLs werden – sofern die
+            Collection-Routing-Flag aktiv ist – automatisch als Collection übernommen.
           </p>
         </div>
         <form id="ingestion-form" class="space-y-4">
@@ -181,15 +208,25 @@
         <p class="text-xs text-slate-500">Optional: Erzwingt einen konkreten Prozess-Flow.</p>
       </div>
       <div class="space-y-1">
-        <label class="text-sm font-medium text-slate-700" for="query-doc-class">Doc class</label>
+        <label class="text-sm font-medium text-slate-700" for="query-collection">Collection</label>
         <input
           class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="query-doc-class"
-          name="doc_class"
-          type="text"
-          placeholder="z. B. contract"
+          id="query-collection"
+          name="collection_id"
+          type="search"
+          list="query-collection-options"
+          placeholder="z. B. support-faq"
+          autocomplete="off"
         />
-        <p class="text-xs text-slate-500">Optional: Beschränkt die Suche auf einen Dokumenttyp.</p>
+        <datalist id="query-collection-options">
+          {% for option in collection_options %}
+          <option value="{{ option }}"></option>
+          {% endfor %}
+        </datalist>
+        <p class="text-xs text-slate-500">
+          Wähle die Collection für Uploads, Ingestion und Queries. Legacy-Parameter <code>doc_class</code> aus URLs werden bei
+          aktivem Collection-Routing automatisch als Collection verwendet.
+        </p>
       </div>
       <div class="space-y-1">
         <label class="text-sm font-medium text-slate-700" for="query-visibility">Visibility</label>
@@ -443,12 +480,188 @@
       (tenantId && tenantId.includes(".") ? tenantId.split(".", 1)[0] : tenantId) ||
       "dev";
     const defaultEmbeddingProfile = "{{ default_embedding_profile|escapejs }}" || "standard";
-    const baseHeaders = {
+    const allowDocClassAlias = {{ collection_alias_enabled|yesno:'true,false' }};
+    const resolverProfileHint = "{{ resolver_profile_hint|default_if_none:''|escapejs }}";
+    const resolverCollectionHint = "{{ resolver_collection_hint|default_if_none:''|escapejs }}";
+    const support = window.RagToolsSupport || {};
+    const normalizeCollectionInput =
+      typeof support.normalizeCollectionInput === 'function'
+        ? support.normalizeCollectionInput
+        : function (value) {
+            if (typeof value !== 'string') {
+              return '';
+            }
+            const trimmed = value.trim();
+            return trimmed || '';
+          };
+    const resolveEffectiveCollectionId =
+      typeof support.resolveEffectiveCollectionId === 'function'
+        ? support.resolveEffectiveCollectionId
+        : function (options) {
+            const opts = options || {};
+            const direct = normalizeCollectionInput(opts.collectionInput);
+            if (direct) {
+              return direct;
+            }
+            if (!opts.allowLegacy) {
+              return '';
+            }
+            return normalizeCollectionInput(opts.legacyDocClass);
+          };
+    const formatCollectionDisplay =
+      typeof support.formatCollectionDisplay === 'function'
+        ? support.formatCollectionDisplay
+        : function (value) {
+            const normalized = normalizeCollectionInput(value);
+            return normalized || '–';
+          };
+    const sanitizeKnownCollections =
+      typeof support.sanitizeKnownCollections === 'function'
+        ? support.sanitizeKnownCollections
+        : function (values) {
+            if (!Array.isArray(values)) {
+              return [];
+            }
+            const seen = new Set();
+            return values.reduce(function (acc, entry) {
+              const normalized = normalizeCollectionInput(entry);
+              if (!normalized || seen.has(normalized)) {
+                return acc;
+              }
+              seen.add(normalized);
+              acc.push(normalized);
+              return acc;
+            }, []);
+          };
+    const baseIsKnownCollection =
+      typeof support.isKnownCollection === 'function'
+        ? support.isKnownCollection
+        : function (value, list) {
+            if (!Array.isArray(list) || list.length === 0) {
+              return false;
+            }
+            const normalizedValue = normalizeCollectionInput(value);
+            if (!normalizedValue) {
+              return false;
+            }
+            return list.includes(normalizedValue);
+          };
+
+    const staticHeaders = {
       'X-Tenant-ID': tenantId,
       'X-Tenant-Schema': tenantSchema,
       'X-User-ID': 'local',
       'X-Case-ID': 'local'
     };
+    const searchParams = new URLSearchParams(window.location.search || '');
+    const initialCollectionParam = searchParams.get('collection_id');
+    const legacyDocClassParam = allowDocClassAlias ? searchParams.get('doc_class') : null;
+    const resolverCollectionHintNormalized = normalizeCollectionInput(resolverCollectionHint);
+    const collectionOptions = Array.from(
+      document.querySelectorAll('#query-collection-options option')
+    ).map(function (option) {
+      return option.value;
+    });
+    const knownCollections = sanitizeKnownCollections(collectionOptions);
+    const isKnownCollection = function (value) {
+      return baseIsKnownCollection(value, knownCollections);
+    };
+
+    let currentCollectionId = resolveEffectiveCollectionId({
+      collectionInput: initialCollectionParam,
+      legacyDocClass: legacyDocClassParam,
+      allowLegacy: allowDocClassAlias,
+    });
+    if (!currentCollectionId) {
+      currentCollectionId = resolverCollectionHintNormalized;
+    }
+
+    function updateCollectionDisplays(value) {
+      const formatted = formatCollectionDisplay(value);
+      const targets = document.querySelectorAll('[data-collection-display]');
+      targets.forEach(function (element) {
+        element.textContent = formatted;
+        if (value && isKnownCollection(value)) {
+          element.setAttribute('data-known', 'true');
+        } else {
+          element.setAttribute('data-known', 'false');
+        }
+      });
+    }
+
+    function buildHeaders(additional) {
+      const headers = { ...staticHeaders };
+      if (additional && typeof additional === 'object') {
+        Object.keys(additional).forEach(function (key) {
+          headers[key] = additional[key];
+        });
+      }
+      if (currentCollectionId) {
+        headers['X-Collection-ID'] = currentCollectionId;
+      }
+      return headers;
+    }
+
+    function determineCollection(rawValue, options) {
+      const opts = options || {};
+      const resolved = resolveEffectiveCollectionId({
+        collectionInput: rawValue,
+        legacyDocClass: legacyDocClassParam,
+        allowLegacy: allowDocClassAlias,
+      });
+      if (resolved) {
+        return resolved;
+      }
+      if (opts.allowResolverFallback && resolverCollectionHintNormalized) {
+        return resolverCollectionHintNormalized;
+      }
+      return '';
+    }
+
+    function requireCollection(scope) {
+      const opts = scope || {};
+      const rawValue =
+        opts.rawValue !== undefined
+          ? opts.rawValue
+          : collectionInput && collectionInput instanceof HTMLInputElement
+          ? collectionInput.value
+          : currentCollectionId;
+      const resolved = determineCollection(rawValue, {
+        allowResolverFallback: opts.allowResolverFallback !== false,
+      });
+      if (!resolved) {
+        currentCollectionId = '';
+        updateCollectionDisplays('');
+        return null;
+      }
+      currentCollectionId = resolved;
+      if (collectionInput && collectionInput instanceof HTMLInputElement) {
+        collectionInput.value = currentCollectionId;
+      }
+      updateCollectionDisplays(currentCollectionId);
+      return currentCollectionId;
+    }
+
+    const collectionInput = document.getElementById('query-collection');
+    updateCollectionDisplays(currentCollectionId);
+    if (collectionInput && collectionInput instanceof HTMLInputElement) {
+      if (currentCollectionId) {
+        collectionInput.value = currentCollectionId;
+      }
+      collectionInput.addEventListener('change', function (event) {
+        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
+        if (!resolved) {
+          updateCollectionDisplays('');
+        }
+      });
+      collectionInput.addEventListener('blur', function (event) {
+        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
+        if (!resolved) {
+          updateCollectionDisplays('');
+        }
+      });
+    }
+
     let lastRunId = null;
 
     function getCsrfToken() {
@@ -829,13 +1042,19 @@
           return;
         }
 
+        const collectionScope = requireCollection({ allowResolverFallback: true });
+        if (!collectionScope) {
+          renderJson(uploadResponseTarget, 'Bitte zuerst eine Collection auswählen.');
+          return;
+        }
+
         const formData = new FormData();
         formData.append('file', fileInput.files[0]);
         if (metadataInput && metadataInput.value.trim()) {
           formData.append('metadata', metadataInput.value.trim());
         }
 
-        const headers = { ...baseHeaders };
+        const headers = buildHeaders();
         const csrfToken = getCsrfToken();
         if (csrfToken) {
           headers['X-CSRFToken'] = csrfToken;
@@ -894,16 +1113,22 @@
             ? profileSelect.value.trim()
             : defaultEmbeddingProfile;
 
+        const collectionScope = requireCollection({ allowResolverFallback: true });
+        if (!collectionScope) {
+          renderJson(ingestionResponseTarget, 'Bitte zuerst eine Collection auswählen.');
+          return;
+        }
+
         const payload = {
           document_ids: docs,
           embedding_profile: selectedProfile,
+          collection_id: collectionScope,
         };
 
-        const headers = {
-          ...baseHeaders,
+        const headers = buildHeaders({
           'Content-Type': 'application/json',
           Accept: 'application/json'
-        };
+        });
         const csrfToken = getCsrfToken();
         if (csrfToken) {
           headers['X-CSRFToken'] = csrfToken;
@@ -935,10 +1160,10 @@
     const statusResponseTarget = 'status-response';
 
     async function refreshStatus() {
-      const headers = {
-        ...baseHeaders,
+      requireCollection({ allowResolverFallback: true });
+      const headers = buildHeaders({
         Accept: 'application/json'
-      };
+      });
       const csrfToken = getCsrfToken();
       if (csrfToken) {
         headers['X-CSRFToken'] = csrfToken;
@@ -997,10 +1222,12 @@
         if (processInput && processInput.value.trim()) {
           payload.process = processInput.value.trim();
         }
-        const docClassInput = document.getElementById('query-doc-class');
-        if (docClassInput && docClassInput.value.trim()) {
-          payload.doc_class = docClassInput.value.trim();
+        const collectionScope = requireCollection({ allowResolverFallback: true });
+        if (!collectionScope) {
+          showError('Bitte eine Collection auswählen.');
+          return;
         }
+        payload.collection_id = collectionScope;
         const visibilitySelect = document.getElementById('query-visibility');
         if (visibilitySelect && visibilitySelect.value) {
           payload.visibility = visibilitySelect.value;
@@ -1032,11 +1259,10 @@
           payload.hybrid[field.key] = numberValue;
         });
 
-        const headers = {
-          ...baseHeaders,
+        const headers = buildHeaders({
           'Content-Type': 'application/json',
           Accept: 'application/json'
-        };
+        });
         const csrfToken = getCsrfToken();
         if (csrfToken) {
           headers['X-CSRFToken'] = csrfToken;
