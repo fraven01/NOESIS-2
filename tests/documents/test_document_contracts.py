@@ -142,9 +142,7 @@ def test_document_meta_invalid_tags(tags):
 
 
 def test_document_meta_empty_tags_are_removed():
-    meta = DocumentMeta(
-        tenant_id="acme", workflow_id="wf", tags=["", "  ", "value"]
-    )
+    meta = DocumentMeta(tenant_id="acme", workflow_id="wf", tags=["", "  ", "value"])
     assert meta.tags == ["value"]
 
 
@@ -213,7 +211,9 @@ def test_document_meta_invalid_language(language):
         DocumentMeta(tenant_id="acme", workflow_id="wf", language=language)
 
 
-def make_inline_blob(media_type: str = "image/png", payload: bytes = b"payload") -> BlobLocator:
+def make_inline_blob(
+    media_type: str = "image/png", payload: bytes = b"payload"
+) -> BlobLocator:
     payload_bytes = payload
     payload = base64.b64encode(payload_bytes).decode()
     return {
@@ -404,13 +404,13 @@ def test_asset_media_guard_allows_matching_prefix():
     }
     with asset_media_guard(["image/"]):
         asset = Asset.model_validate(
-                {
-                    "ref": {
-                        "tenant_id": "acme",
-                        "workflow_id": DEFAULT_WORKFLOW,
-                        "asset_id": str(uuid4()),
-                        "document_id": str(uuid4()),
-                    },
+            {
+                "ref": {
+                    "tenant_id": "acme",
+                    "workflow_id": DEFAULT_WORKFLOW,
+                    "asset_id": str(uuid4()),
+                    "document_id": str(uuid4()),
+                },
                 "media_type": "image/png",
                 "blob": file_blob,
                 "caption_method": "manual",
@@ -430,13 +430,13 @@ def test_asset_media_guard_supports_multiple_prefixes():
     }
     with asset_media_guard(["image/", "video/"]):
         asset = Asset.model_validate(
-                {
-                    "ref": {
-                        "tenant_id": "acme",
-                        "workflow_id": DEFAULT_WORKFLOW,
-                        "asset_id": str(uuid4()),
-                        "document_id": str(uuid4()),
-                    },
+            {
+                "ref": {
+                    "tenant_id": "acme",
+                    "workflow_id": DEFAULT_WORKFLOW,
+                    "asset_id": str(uuid4()),
+                    "document_id": str(uuid4()),
+                },
                 "media_type": "video/mp4",
                 "blob": file_blob,
                 "caption_method": "manual",
@@ -578,7 +578,9 @@ def test_normalized_document_meta_workflow_mismatch():
     data["meta"]["workflow_id"] = "other-flow"
     with pytest.raises(ValidationError) as exc:
         NormalizedDocument.model_validate(data)
-    assert any("meta_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors())
+    assert any(
+        "meta_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors()
+    )
 
 
 def test_normalized_document_asset_workflow_mismatch():
@@ -587,7 +589,9 @@ def test_normalized_document_asset_workflow_mismatch():
     data["assets"][0]["ref"]["workflow_id"] = "other-flow"
     with pytest.raises(ValidationError) as exc:
         NormalizedDocument.model_validate(data)
-    assert any("asset_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors())
+    assert any(
+        "asset_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors()
+    )
 
 
 def test_normalized_document_invalid_tenant():
@@ -754,9 +758,7 @@ def test_source_upload_examples_roundtrip():
         make_file_blob("memory://upload/doc.pdf", b"upload-document")
     )
     doc_without_assets = NormalizedDocument(
-        ref=DocumentRef(
-            tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()
-        ),
+        ref=DocumentRef(tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()),
         meta=DocumentMeta(
             tenant_id=tenant,
             workflow_id=workflow_id,
@@ -891,9 +893,7 @@ def test_source_integration_example_roundtrip():
         checksum=asset_blob.sha256,
     )
     integration_doc = NormalizedDocument(
-        ref=DocumentRef(
-            tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id
-        ),
+        ref=DocumentRef(tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id),
         meta=DocumentMeta(
             tenant_id=tenant,
             workflow_id=workflow_id,
@@ -919,9 +919,7 @@ def test_source_integration_llm_context_example_roundtrip():
         make_inline_blob("text/markdown", payload=payload)
     )
     llm_doc = NormalizedDocument(
-        ref=DocumentRef(
-            tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id
-        ),
+        ref=DocumentRef(tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id),
         meta=DocumentMeta(
             tenant_id=tenant,
             workflow_id=workflow_id,

@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import pytest
 
 from documents.cli import CLIContext, main
 from documents.repository import InMemoryDocumentsRepository
@@ -889,4 +888,3 @@ def test_docs_list_empty_with_cursor(capsys):
     )
     assert code == 1
     assert json.loads(out)["error"] == "cursor_invalid"
-

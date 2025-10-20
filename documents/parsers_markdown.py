@@ -6,7 +6,17 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import os
 import re
-from typing import Any, Dict, Iterable, List, Mapping, MutableSequence, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    MutableSequence,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from urllib.parse import urlparse
 
 import yaml
@@ -500,7 +510,9 @@ class MarkdownDocumentParser(DocumentParser):
             meta_language = _extract_candidate(meta, "language")
             if meta_language and is_bcp47_like(meta_language):
                 default_language = meta_language
-        origin_uri = _extract_candidate(meta, "origin_uri") if meta is not None else None
+        origin_uri = (
+            _extract_candidate(meta, "origin_uri") if meta is not None else None
+        )
         state = _MarkdownState(
             default_language=default_language,
             origin_uri=origin_uri,
@@ -511,9 +523,13 @@ class MarkdownDocumentParser(DocumentParser):
         while index < len(tokens):
             token = tokens[index]
             if token.type == "heading_open":
-                level = int(token.tag[1]) if token.tag and token.tag.startswith("h") else 1
+                level = (
+                    int(token.tag[1]) if token.tag and token.tag.startswith("h") else 1
+                )
                 inline = tokens[index + 1] if index + 1 < len(tokens) else None
-                heading_text = inline.content if inline and inline.type == "inline" else ""
+                heading_text = (
+                    inline.content if inline and inline.type == "inline" else ""
+                )
                 state.push_heading(level, heading_text)
                 state.add_text_block(text=heading_text, kind="heading")
                 index += 3
@@ -530,7 +546,9 @@ class MarkdownDocumentParser(DocumentParser):
             if token.type == "fence":
                 language_hint = _normalise_code_language(token.info or "")
                 table_meta = {"lang": language_hint} if language_hint else None
-                state.add_text_block(text=token.content, kind="code", table_meta=table_meta)
+                state.add_text_block(
+                    text=token.content, kind="code", table_meta=table_meta
+                )
                 index += 1
                 continue
             if token.type == "code_block":
@@ -660,7 +678,9 @@ class MarkdownDocumentParser(DocumentParser):
         while index < len(tokens):
             token = tokens[index]
             if token.type == "list_item_close":
-                text = " ".join(fragment.strip() for fragment in fragments if fragment.strip())
+                text = " ".join(
+                    fragment.strip() for fragment in fragments if fragment.strip()
+                )
                 return text, index + 1
             if token.type == "inline":
                 fragments.append(self._render_inline(token, state))
@@ -788,7 +808,10 @@ class MarkdownDocumentParser(DocumentParser):
         return " ".join(part.strip() for part in collected if part.strip())
 
     def _scan_html_for_assets(
-        self, element: html.HtmlElement, state: _MarkdownState, before_text: Optional[str]
+        self,
+        element: html.HtmlElement,
+        state: _MarkdownState,
+        before_text: Optional[str],
     ) -> None:
         for img in element.findall(".//img"):
             src = img.get("src")
@@ -806,11 +829,15 @@ class MarkdownDocumentParser(DocumentParser):
             state.add_asset(
                 file_uri=src,
                 before_text=before_text,
-                after_text=_collapse_whitespace(after_text) if after_text else after_text,
+                after_text=(
+                    _collapse_whitespace(after_text) if after_text else after_text
+                ),
                 alt_text=alt_text,
             )
 
-    def _consume_html_table(self, element: html.HtmlElement, state: _MarkdownState) -> None:
+    def _consume_html_table(
+        self, element: html.HtmlElement, state: _MarkdownState
+    ) -> None:
         headers: List[str] = []
         rows: List[List[str]] = []
         column_count = 0
@@ -855,4 +882,3 @@ class MarkdownDocumentParser(DocumentParser):
             "sample_rows": sample_rows,
         }
         state.add_text_block(text=summary, kind="table_summary", table_meta=table_meta)
-

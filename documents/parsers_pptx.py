@@ -5,7 +5,7 @@ from __future__ import annotations
 import io
 import zipfile
 from collections.abc import Iterable, Mapping
-from typing import Any, List, Optional, Set, Tuple
+from typing import Any, List, Optional, Set, Tuple, Dict
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -324,7 +324,9 @@ class PptxDocumentParser(DocumentParser):
                 if combined_notes:
                     if note_languages:
                         notes_language = (
-                            next(iter(note_languages)) if len(note_languages) == 1 else None
+                            next(iter(note_languages))
+                            if len(note_languages) == 1
+                            else None
                         )
                     else:
                         notes_language = slide_language
@@ -350,7 +352,10 @@ class PptxDocumentParser(DocumentParser):
                 if shape_type == MSO_SHAPE_TYPE.PICTURE:
                     try:
                         image = shape.image
-                    except (AttributeError, KeyError) as exc:  # pragma: no cover - defensive guard
+                    except (
+                        AttributeError,
+                        KeyError,
+                    ) as exc:  # pragma: no cover - defensive guard
                         raise ValueError("pptx_image_missing") from exc
                     content = bytes(image.blob)
                     if len(content) > _PPTX_MAX_ASSET_SIZE:
@@ -413,7 +418,9 @@ class PptxDocumentParser(DocumentParser):
                         continue
                     chart_locator = f"{parent_ref}:chart:{getattr(shape, 'shape_id', asset_seq + 1)}"
                     chart_media_type = getattr(
-                        chart_part, "content_type", "application/vnd.openxmlformats-officedocument.drawingml.chart+xml"
+                        chart_part,
+                        "content_type",
+                        "application/vnd.openxmlformats-officedocument.drawingml.chart+xml",
                     )
                     candidates: List[Tuple[str, str]] = []
                     if notes_context:

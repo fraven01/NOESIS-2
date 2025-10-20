@@ -61,7 +61,9 @@ def _reset_metrics_state() -> None:
     metrics.reset_metrics()
 
 
-def _json_events(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, object]]:
+def _json_events(
+    caplog: pytest.LogCaptureFixture, event: str
+) -> list[dict[str, object]]:
     events: list[dict[str, object]] = []
     for record in caplog.records:
         message = record.getMessage()
@@ -200,16 +202,26 @@ def test_document_repository_observability(
     assert "duration_ms" in upsert_exit
     _assert_no_base64(upsert_events)
 
-    get_exit = [event for event in _json_events(caplog, "docs.get") if event.get("status") == "ok"][-1]
+    get_exit = [
+        event
+        for event in _json_events(caplog, "docs.get")
+        if event.get("status") == "ok"
+    ][-1]
     assert get_exit["document_id"] == str(stored.ref.document_id)
     assert get_exit["workflow_id"] == workflow_id
 
-    delete_exit = [event for event in _json_events(caplog, "docs.delete") if event.get("status") == "ok"][-1]
+    delete_exit = [
+        event
+        for event in _json_events(caplog, "docs.delete")
+        if event.get("status") == "ok"
+    ][-1]
     assert delete_exit["deleted"] is True
     assert delete_exit["workflow_id"] == workflow_id
 
     storage_events = _json_events(caplog, "storage.put")
-    storage_exit = [event for event in storage_events if event.get("status") == "ok"][-1]
+    storage_exit = [event for event in storage_events if event.get("status") == "ok"][
+        -1
+    ]
     assert storage_exit["sha256_prefix"] == checksum[:8]
 
     spans = span_exporter.get_finished_spans()
@@ -309,7 +321,9 @@ def test_caption_pipeline_observability(
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
     captioner = DeterministicCaptioner()
-    pipeline = AssetExtractionPipeline(repository=repo, storage=storage, captioner=captioner)
+    pipeline = AssetExtractionPipeline(
+        repository=repo, storage=storage, captioner=captioner
+    )
 
     tenant_id = "tenant-cap"
     doc_id = uuid4()
@@ -328,7 +342,9 @@ def test_caption_pipeline_observability(
     metrics.reset_metrics()
 
     asset_payload = b"image-bytes"
-    asset = _make_inline_asset(tenant_id=tenant_id, document_id=doc_id, payload=asset_payload)
+    asset = _make_inline_asset(
+        tenant_id=tenant_id, document_id=doc_id, payload=asset_payload
+    )
     stored_asset = repo.add_asset(asset)
 
     stored_document = repo.get(tenant_id, doc_id, workflow_id=document.ref.workflow_id)
@@ -348,7 +364,9 @@ def test_caption_pipeline_observability(
     assert asset_exit["workflow_id"] == stored_asset.ref.workflow_id
 
     pipeline_events = _json_events(caplog, "pipeline.assets_caption")
-    pipeline_exit = [event for event in pipeline_events if event.get("status") == "ok"][-1]
+    pipeline_exit = [event for event in pipeline_events if event.get("status") == "ok"][
+        -1
+    ]
     assert pipeline_exit["processed_assets"] >= 1
     assert pipeline_exit["workflow_id"] == workflow_id
     _assert_no_base64(asset_events + pipeline_events)
@@ -356,10 +374,18 @@ def test_caption_pipeline_observability(
     spans = span_exporter.get_finished_spans()
     span_names = {span.name: span for span in spans}
     assert span_names["assets.add"].status.status_code is StatusCode.OK
-    assert span_names["assets.add"].attributes["noesis.workflow_id"] == stored_asset.ref.workflow_id
+    assert (
+        span_names["assets.add"].attributes["noesis.workflow_id"]
+        == stored_asset.ref.workflow_id
+    )
     assert span_names["pipeline.assets_caption"].status.status_code is StatusCode.OK
-    assert span_names["pipeline.assets_caption"].attributes["noesis.workflow_id"] == workflow_id
-    assert span_names["pipeline.assets_caption.item"].status.status_code is StatusCode.OK
+    assert (
+        span_names["pipeline.assets_caption"].attributes["noesis.workflow_id"]
+        == workflow_id
+    )
+    assert (
+        span_names["pipeline.assets_caption.item"].status.status_code is StatusCode.OK
+    )
     assert (
         span_names["pipeline.assets_caption.item"].attributes["noesis.workflow_id"]
         == stored_asset.ref.workflow_id
@@ -606,7 +632,9 @@ def test_cli_observability(
     assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.add") >= 1.0
     assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.get") >= 1.0
     assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.list") >= 1.0
-    assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.delete") >= 1.0
+    assert (
+        _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.delete") >= 1.0
+    )
 
     assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.upsert") >= 1.0
     assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.get") >= 1.0
@@ -614,4 +642,3 @@ def test_cli_observability(
     assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.delete") >= 1.0
 
     span_exporter.clear()
-

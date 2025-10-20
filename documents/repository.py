@@ -104,9 +104,7 @@ class DocumentsRepository:
 
         raise NotImplementedError
 
-    def add_asset(
-        self, asset: Asset, workflow_id: Optional[str] = None
-    ) -> Asset:
+    def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
         """Persist an asset for a previously stored document."""
 
         raise NotImplementedError
@@ -171,9 +169,9 @@ class InMemoryDocumentsRepository(DocumentsRepository):
     def __init__(self, storage: Optional[Storage] = None) -> None:
         self._lock = RLock()
         self._storage = storage or InMemoryStorage()
-        self._documents: Dict[
-            Tuple[str, str, UUID, Optional[str]], _StoredDocument
-        ] = {}
+        self._documents: Dict[Tuple[str, str, UUID, Optional[str]], _StoredDocument] = (
+            {}
+        )
         self._assets: Dict[Tuple[str, str, UUID], _StoredAsset] = {}
         self._asset_index: Dict[Tuple[str, str, UUID], set[UUID]] = {}
 
@@ -422,15 +420,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 self._mark_assets_for_document_locked(
                     tenant_id, document_id, workflow_id=workflow_id, hard=hard
                 )
-                log_extra_exit(
-                    found=True, deleted=changed, workflow_id=workflow_id
-                )
+                log_extra_exit(found=True, deleted=changed, workflow_id=workflow_id)
                 return changed
 
     @log_call("assets.add")
-    def add_asset(
-        self, asset: Asset, workflow_id: Optional[str] = None
-    ) -> Asset:
+    def add_asset(self, asset: Asset, workflow_id: Optional[str] = None) -> Asset:
         asset_copy = self._materialize_asset(asset.model_copy(deep=True))
         tenant_id = asset_copy.ref.tenant_id
         document_id = asset_copy.ref.document_id
@@ -455,9 +449,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                     raise ValueError("asset_workflow_mismatch")
 
                 self._store_asset_locked(asset_copy)
-                self._refresh_document_assets_locked(
-                    tenant_id, document_id, workflow
-                )
+                self._refresh_document_assets_locked(tenant_id, document_id, workflow)
                 stored = self._snapshot_asset_locked(
                     tenant_id, workflow, asset_copy.ref.asset_id
                 )
@@ -479,9 +471,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 workflow_id=workflow_id,
             )
             with self._lock:
-                stored = self._get_asset_record_locked(
-                    tenant_id, asset_id, workflow_id
-                )
+                stored = self._get_asset_record_locked(tenant_id, asset_id, workflow_id)
                 if stored is None:
                     log_extra_exit(found=False)
                     return None
@@ -517,7 +507,9 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 sliced = entries[start : start + limit]
                 refs = [entry[1].ref.model_copy(deep=True) for entry in sliced]
                 next_cursor = self._next_cursor(entries, start, limit)
-                log_extra_exit(item_count=len(refs), next_cursor_present=bool(next_cursor))
+                log_extra_exit(
+                    item_count=len(refs), next_cursor_present=bool(next_cursor)
+                )
                 return refs, next_cursor
 
     @log_call("assets.delete")
@@ -571,9 +563,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                         stored.deleted = True
                         changed = True
 
-                    self._refresh_document_assets_locked(
-                        tenant_id, doc_id, wf
-                    )
+                    self._refresh_document_assets_locked(tenant_id, doc_id, wf)
 
                 log_extra_exit(found=True, deleted=changed, workflow_id=workflow_id)
                 return changed
@@ -758,7 +748,11 @@ class InMemoryDocumentsRepository(DocumentsRepository):
             return FileBlob(type="file", uri=uri, sha256=sha256, size=size)
 
         blob_sha = getattr(blob, "sha256", None)
-        if owner_checksum is not None and blob_sha is not None and blob_sha != owner_checksum:
+        if (
+            owner_checksum is not None
+            and blob_sha is not None
+            and blob_sha != owner_checksum
+        ):
             raise ValueError(checksum_error)
         return blob
 
@@ -956,4 +950,3 @@ __all__ = [
     "DocumentsRepository",
     "InMemoryDocumentsRepository",
 ]
-

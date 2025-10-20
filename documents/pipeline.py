@@ -15,6 +15,7 @@ from typing import (
     Any,
     Callable,
     Dict,
+    Iterable,
     Mapping,
     Optional,
     Sequence,
@@ -106,7 +107,7 @@ def _normalise_collection_key(key: CollectionKey) -> str:
 
 
 def _normalise_collection_mapping(
-    mapping: Optional[Mapping[CollectionKey, float]]
+    mapping: Optional[Mapping[CollectionKey, float]],
 ) -> Mapping[str, float]:
     if mapping is None:
         return MappingProxyType({})
@@ -143,7 +144,9 @@ class DocumentPipelineConfig:
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         object.__setattr__(
-            self, "pdf_safe_mode", _coerce_bool(self.pdf_safe_mode, field_name="pdf_safe_mode")
+            self,
+            "pdf_safe_mode",
+            _coerce_bool(self.pdf_safe_mode, field_name="pdf_safe_mode"),
         )
         object.__setattr__(
             self,
@@ -200,9 +203,7 @@ class DocumentPipelineConfig:
         if renderer is not None and not callable(renderer):
             raise ValueError("ocr_renderer_invalid")
 
-    def caption_min_confidence(
-        self, collection_id: Optional[CollectionKey]
-    ) -> float:
+    def caption_min_confidence(self, collection_id: Optional[CollectionKey]) -> float:
         """Return the effective caption confidence threshold for a collection.
 
         ``collection_id`` lookups are case-insensitive for string identifiers and
@@ -329,7 +330,9 @@ class DocumentProcessingContext:
             f"created_at={self.metadata.created_at!r}))"
         )
 
-    def transition(self, new_state: ProcessingState | str) -> "DocumentProcessingContext":
+    def transition(
+        self, new_state: ProcessingState | str
+    ) -> "DocumentProcessingContext":
         """Return a new context with ``new_state`` while preserving metadata."""
 
         try:
@@ -350,9 +353,7 @@ class DocumentProcessingContext:
         case_id: Optional[str] = None,
         initial_state: ProcessingState | str = ProcessingState.INGESTED,
     ) -> "DocumentProcessingContext":
-        metadata = DocumentProcessingMetadata.from_document(
-            document, case_id=case_id
-        )
+        metadata = DocumentProcessingMetadata.from_document(document, case_id=case_id)
         if not isinstance(initial_state, ProcessingState):
             initial_state = ProcessingState(initial_state)
         return cls(metadata=metadata, state=initial_state)
@@ -442,7 +443,9 @@ def _state_rank(state: Optional[ProcessingState | str]) -> int:
     return _STATE_SEQUENCE.index(state)
 
 
-def _max_state(first: ProcessingState, second: Optional[ProcessingState | str]) -> ProcessingState:
+def _max_state(
+    first: ProcessingState, second: Optional[ProcessingState | str]
+) -> ProcessingState:
     if second is None:
         return first
     if not isinstance(second, ProcessingState):
@@ -515,8 +518,12 @@ def _observe_caption_metrics(
     workflow_label = _normalise_workflow_label(workflow_id)
     if attempts:
         ratio = hits / attempts
-        metrics.PIPELINE_CAPTION_HIT_RATIO.labels(workflow_id=workflow_label).observe(ratio)
-    metrics.PIPELINE_CAPTION_ATTEMPTS_TOTAL.labels(workflow_id=workflow_label).inc(attempts)
+        metrics.PIPELINE_CAPTION_HIT_RATIO.labels(workflow_id=workflow_label).observe(
+            ratio
+        )
+    metrics.PIPELINE_CAPTION_ATTEMPTS_TOTAL.labels(workflow_id=workflow_label).inc(
+        attempts
+    )
     if hits:
         metrics.PIPELINE_CAPTION_HITS_TOTAL.labels(workflow_id=workflow_label).inc(hits)
 
@@ -543,13 +550,16 @@ def _run_phase(
             duration = (perf_counter() - start) * 1000.0
             span.record_exception(exc)
             span.set_status(Status(StatusCode.ERROR, str(exc)))
-            metrics.observe_event(metric_event, "error", duration, workflow_id=workflow_id)
+            metrics.observe_event(
+                metric_event, "error", duration, workflow_id=workflow_id
+            )
             raise
         else:
             duration = (perf_counter() - start) * 1000.0
             span.set_status(Status(StatusCode.OK))
             metrics.observe_event(metric_event, "ok", duration, workflow_id=workflow_id)
             return result
+
 
 @dataclass(frozen=True)
 class DocumentParseArtifact:
@@ -576,10 +586,10 @@ class DocumentParseArtifact:
         object.__setattr__(self, "statistics", MappingProxyType(dict(self.statistics)))
 
 
-def _import_guarded(
-    module_names: Union[str, Sequence[str]], *, code: str
-):
-    candidates = (module_names,) if isinstance(module_names, str) else tuple(module_names)
+def _import_guarded(module_names: Union[str, Sequence[str]], *, code: str):
+    candidates = (
+        (module_names,) if isinstance(module_names, str) else tuple(module_names)
+    )
     last_exc: Optional[ModuleNotFoundError] = None
     for module_name in candidates:
         try:
@@ -764,9 +774,7 @@ def _persist_asset(
 
     raw_kind = metadata_payload.get("asset_kind")
     asset_kind = (
-        normalize_optional_string(str(raw_kind))
-        if raw_kind is not None
-        else None
+        normalize_optional_string(str(raw_kind)) if raw_kind is not None else None
     )
 
     origin_uri = None
@@ -781,7 +789,9 @@ def _persist_asset(
                 if not isinstance(entry, Sequence) or len(entry) != 2:
                     continue
                 raw_source, raw_text = entry
-                source = normalize_string(str(raw_source)) if raw_source is not None else ""
+                source = (
+                    normalize_string(str(raw_source)) if raw_source is not None else ""
+                )
                 if not source:
                     continue
                 if raw_text is None:
@@ -808,9 +818,7 @@ def _persist_asset(
         raw_text = metadata_payload.get("caption_text")
         source = normalize_string(str(raw_source)) if raw_source is not None else ""
         text = (
-            normalize_optional_string(str(raw_text))
-            if raw_text is not None
-            else None
+            normalize_optional_string(str(raw_text)) if raw_text is not None else None
         )
         if source and text:
             caption_source = source
@@ -830,9 +838,7 @@ def _persist_asset(
     if parsed_asset.content is not None:
         payload = bytes(parsed_asset.content)
         checksum = hashlib.sha256(payload).hexdigest()
-        existing = repository.get_asset(
-            tenant_id, asset_id, workflow_id=workflow_id
-        )
+        existing = repository.get_asset(tenant_id, asset_id, workflow_id=workflow_id)
         if existing is not None and existing.checksum == checksum:
             return existing
         perceptual_hash = (
@@ -1041,12 +1047,16 @@ class DocumentProcessingOrchestrator:
 
         with log_context(
             tenant=metadata.tenant_id,
-            collection_id=str(metadata.collection_id) if metadata.collection_id else None,
+            collection_id=(
+                str(metadata.collection_id) if metadata.collection_id else None
+            ),
             workflow_id=workflow_id,
         ):
             log_extra_entry(**document_log_fields(document), state=current_state.value)
             try:
-                chunk_done = _state_rank(current_state) >= _state_rank(ProcessingState.CHUNKED)
+                chunk_done = _state_rank(current_state) >= _state_rank(
+                    ProcessingState.CHUNKED
+                )
                 assets_done = _state_rank(current_state) >= _state_rank(
                     ProcessingState.ASSETS_EXTRACTED
                 )
@@ -1104,12 +1114,15 @@ class DocumentProcessingOrchestrator:
                         getattr(current_document.meta, "parse_stats", {}) or {}
                     )
                 else:
-                    current_document = self.repository.get(
-                        metadata.tenant_id,
-                        metadata.document_id,
-                        version=metadata.version,
-                        workflow_id=workflow_id,
-                    ) or current_document
+                    current_document = (
+                        self.repository.get(
+                            metadata.tenant_id,
+                            metadata.document_id,
+                            version=metadata.version,
+                            workflow_id=workflow_id,
+                        )
+                        or current_document
+                    )
 
                 caption_done = _state_rank(current_state) >= _state_rank(
                     ProcessingState.CAPTIONED
@@ -1119,7 +1132,9 @@ class DocumentProcessingOrchestrator:
 
                     def _caption_action() -> Any:
                         log_extra_entry(phase="caption")
-                        result = self._caption_pipeline.process_document(current_document)
+                        result = self._caption_pipeline.process_document(
+                            current_document
+                        )
                         log_extra_exit(asset_count=len(result.assets))
                         return result
 
@@ -1138,10 +1153,14 @@ class DocumentProcessingOrchestrator:
                     ]
                     attempts = len(image_assets)
                     hits = sum(
-                        1 for asset in image_assets if asset.caption_method == "vlm_caption"
+                        1
+                        for asset in image_assets
+                        if asset.caption_method == "vlm_caption"
                     )
                     ocr_fallbacks = sum(
-                        1 for asset in image_assets if asset.caption_method == "ocr_only"
+                        1
+                        for asset in image_assets
+                        if asset.caption_method == "ocr_only"
                     )
                     hit_rate = hits / attempts if attempts else 0.0
                     updates = {
@@ -1180,7 +1199,9 @@ class DocumentProcessingOrchestrator:
                     context = context.transition(ProcessingState.CAPTIONED)
                     current_state = context.state
 
-                chunk_done = _state_rank(current_state) >= _state_rank(ProcessingState.CHUNKED)
+                chunk_done = _state_rank(current_state) >= _state_rank(
+                    ProcessingState.CHUNKED
+                )
 
                 if not chunk_done:
                     if parsed_result is None:
@@ -1206,7 +1227,9 @@ class DocumentProcessingOrchestrator:
                             action=_parse_refresh,
                         )
 
-                    def _chunk_action() -> Tuple[Sequence[Mapping[str, Any]], Mapping[str, Any]]:
+                    def _chunk_action() -> (
+                        Tuple[Sequence[Mapping[str, Any]], Mapping[str, Any]]
+                    ):
                         log_extra_entry(phase="chunk")
                         result = self.chunker.chunk(
                             current_document,

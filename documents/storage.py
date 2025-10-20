@@ -63,4 +63,3 @@ class InMemoryStorage(Storage):
 
 
 __all__ = ["Storage", "InMemoryStorage"]
-

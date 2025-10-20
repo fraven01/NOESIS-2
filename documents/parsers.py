@@ -16,9 +16,7 @@ _CONTEXT_TRUNCATION_BYTES = 512
 _MAX_SECTION_PATH_LENGTH = 10
 _MAX_SECTION_SEGMENT_LENGTH = 128
 
-_BCP47_PATTERN = re.compile(
-    r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$"
-)
+_BCP47_PATTERN = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 
 
 _TEXT_BLOCK_KINDS: Tuple[str, ...] = (
@@ -41,7 +39,9 @@ def _ensure_non_empty_string(value: str, code: str) -> str:
     return value
 
 
-def _normalise_section_path(section_path: Optional[Iterable[str]]) -> Optional[Tuple[str, ...]]:
+def _normalise_section_path(
+    section_path: Optional[Iterable[str]],
+) -> Optional[Tuple[str, ...]]:
     if section_path is None:
         return None
     values: list[str] = []
@@ -103,7 +103,9 @@ def _ensure_optional_uri(value: Optional[str]) -> Optional[str]:
     return value
 
 
-def _ensure_optional_bbox(value: Optional[Sequence[float]]) -> Optional[Tuple[float, ...]]:
+def _ensure_optional_bbox(
+    value: Optional[Sequence[float]],
+) -> Optional[Tuple[float, ...]]:
     """Validate an optional bounding box constrained to the unit square."""
     if value is None:
         return None
@@ -173,7 +175,9 @@ class ParsedTextBlock:
     language: Optional[str] = None
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
-        object.__setattr__(self, "text", _ensure_non_empty_string(self.text, "parsed_text_block_text"))
+        object.__setattr__(
+            self, "text", _ensure_non_empty_string(self.text, "parsed_text_block_text")
+        )
         if self.kind not in _TEXT_BLOCK_KINDS:
             raise ValueError("parsed_text_block_kind")
         object.__setattr__(
@@ -222,7 +226,11 @@ class ParsedAsset:
     context_after: Optional[str] = None
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
-        object.__setattr__(self, "media_type", _ensure_non_empty_string(self.media_type, "parsed_asset_media_type"))
+        object.__setattr__(
+            self,
+            "media_type",
+            _ensure_non_empty_string(self.media_type, "parsed_asset_media_type"),
+        )
         object.__setattr__(self, "content", _ensure_optional_bytes(self.content))
         object.__setattr__(self, "file_uri", _ensure_optional_uri(self.file_uri))
         if self.content is None and self.file_uri is None:
@@ -236,7 +244,9 @@ class ParsedAsset:
         object.__setattr__(
             self,
             "context_before",
-            _ensure_optional_context(self.context_before, "parsed_asset_context_before"),
+            _ensure_optional_context(
+                self.context_before, "parsed_asset_context_before"
+            ),
         )
         object.__setattr__(
             self,
@@ -350,4 +360,3 @@ class ParserDispatcher:
 
     def parse(self, document: Any, config: Any) -> ParsedResult:
         return self._registry.dispatch(document, config)
-

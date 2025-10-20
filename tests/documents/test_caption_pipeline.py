@@ -523,9 +523,7 @@ def test_process_collection_updates_missing_captions():
     assert updated
     assert updated[0].caption_method == "vlm_caption"
 
-    stored = repo.get(
-        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
-    )
+    stored = repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
     assert stored is not None
     assert stored.assets[0].caption_method == "vlm_caption"
 
@@ -561,4 +559,3 @@ def test_process_collection_skips_when_no_caption_needed():
 
     assert updated == []
     assert next_cursor is None
-

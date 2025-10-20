@@ -87,4 +87,3 @@ def test_policy_rejects_non_mapping_overrides():
     WORKFLOW_OVERRIDES[("tenant-a", "wf")] = "invalid"  # type: ignore[assignment]
     with pytest.raises(PolicyError):
         get_policy("tenant-a", None, "wf")
-

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable, Dict, Mapping, MutableMapping, Optional, Tuple
+from typing import Callable, Dict, Mapping, Optional, Tuple
 from uuid import UUID
 
 
@@ -68,7 +68,9 @@ def _normalise_pdf_mode(value: object) -> str:
     raise PolicyError("policy_invalid_pdf_mode")
 
 
-def _normalise_override_mapping(mapping: Mapping[str, object], scope: str) -> Dict[str, object]:
+def _normalise_override_mapping(
+    mapping: Mapping[str, object], scope: str
+) -> Dict[str, object]:
     normalised: Dict[str, object] = {}
     for key, value in mapping.items():
         if key not in _POLICY_KEYS:
@@ -138,4 +140,3 @@ __all__ = [
     "WORKFLOW_OVERRIDES",
     "get_policy",
 ]
-

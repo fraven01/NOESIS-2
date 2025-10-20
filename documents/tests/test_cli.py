@@ -9,8 +9,19 @@ import pytest
 
 from documents.captioning import DeterministicCaptioner
 from documents.cli import CLIContext, SimpleDocumentChunker, main
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
-from documents.parsers import ParsedAsset, ParsedResult, ParsedTextBlock, ParserDispatcher, ParserRegistry
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
+from documents.parsers import (
+    ParsedAsset,
+    ParsedResult,
+    ParsedTextBlock,
+    ParserDispatcher,
+    ParserRegistry,
+)
 from documents.pipeline import DocumentPipelineConfig, ProcessingState
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
@@ -106,24 +117,23 @@ def test_cli_parse_caption_chunk_smoke(capsys, json_output: bool) -> None:
     document = _repository_document(context)
 
     common_args = ["--json"] if json_output else []
-    parse_args = (
-        common_args
-        + [
-            "parse",
-            "--tenant",
-            document.ref.tenant_id,
-            "--doc-id",
-            str(document.ref.document_id),
-            "--workflow-id",
-            document.ref.workflow_id,
-        ]
-    )
+    parse_args = common_args + [
+        "parse",
+        "--tenant",
+        document.ref.tenant_id,
+        "--doc-id",
+        str(document.ref.document_id),
+        "--workflow-id",
+        document.ref.workflow_id,
+    ]
     exit_code = main(parse_args, context=context)
     capture = capsys.readouterr()
     assert exit_code == 0
     payload = json.loads(capture.out)
     assert payload["statistics"]["parse.state"] == ProcessingState.PARSED_TEXT.value
-    assert payload["statistics"]["assets.state"] == ProcessingState.ASSETS_EXTRACTED.value
+    assert (
+        payload["statistics"]["assets.state"] == ProcessingState.ASSETS_EXTRACTED.value
+    )
     stored_after_parse = context.repository.get(
         document.ref.tenant_id,
         document.ref.document_id,
@@ -134,18 +144,15 @@ def test_cli_parse_caption_chunk_smoke(capsys, json_output: bool) -> None:
     assert len(stored_after_parse.assets) == 1
     assert parser.calls == 1
 
-    caption_args = (
-        common_args
-        + [
-            "caption",
-            "--tenant",
-            document.ref.tenant_id,
-            "--doc-id",
-            str(document.ref.document_id),
-            "--workflow-id",
-            document.ref.workflow_id,
-        ]
-    )
+    caption_args = common_args + [
+        "caption",
+        "--tenant",
+        document.ref.tenant_id,
+        "--doc-id",
+        str(document.ref.document_id),
+        "--workflow-id",
+        document.ref.workflow_id,
+    ]
     exit_code = main(caption_args, context=context)
     capture = capsys.readouterr()
     assert exit_code == 0
@@ -168,18 +175,15 @@ def test_cli_parse_caption_chunk_smoke(capsys, json_output: bool) -> None:
         expected_caption["confidence"]
     )
 
-    chunk_args = (
-        common_args
-        + [
-            "chunk",
-            "--tenant",
-            document.ref.tenant_id,
-            "--doc-id",
-            str(document.ref.document_id),
-            "--workflow-id",
-            document.ref.workflow_id,
-        ]
-    )
+    chunk_args = common_args + [
+        "chunk",
+        "--tenant",
+        document.ref.tenant_id,
+        "--doc-id",
+        str(document.ref.document_id),
+        "--workflow-id",
+        document.ref.workflow_id,
+    ]
     exit_code = main(chunk_args, context=context)
     capture = capsys.readouterr()
     assert exit_code == 0

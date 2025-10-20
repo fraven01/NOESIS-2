@@ -79,13 +79,13 @@ class AssetExtractionPipeline:
         """Caption eligible assets and persist the updated document."""
 
         ref = document.ref
-        with log_context(tenant=ref.tenant_id, collection_id=str(ref.collection_id) if ref.collection_id else None):
+        with log_context(
+            tenant=ref.tenant_id,
+            collection_id=str(ref.collection_id) if ref.collection_id else None,
+        ):
             log_extra_entry(**document_log_fields(document))
             doc_copy = document.model_copy(deep=True)
-            processed_assets = [
-                self._process_asset(asset)
-                for asset in doc_copy.assets
-            ]
+            processed_assets = [self._process_asset(asset) for asset in doc_copy.assets]
             doc_copy.assets = processed_assets
             log_extra_exit(processed_assets=len(processed_assets))
             return self.repository.upsert(doc_copy)
@@ -269,7 +269,9 @@ class AssetExtractionPipeline:
                     previous = before_assets.get(asset.ref.asset_id)
                     if previous is None and asset.text_description:
                         updated.append(asset)
-                    elif previous and previous.text_description != asset.text_description:
+                    elif (
+                        previous and previous.text_description != asset.text_description
+                    ):
                         updated.append(asset)
 
             log_extra_exit(
@@ -320,4 +322,3 @@ __all__ = [
     "DeterministicCaptioner",
     "MultimodalCaptioner",
 ]
-

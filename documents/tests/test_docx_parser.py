@@ -13,9 +13,7 @@ from documents.contracts import InlineBlob
 from documents.parsers_docx import DocxDocumentParser
 
 
-_PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAwMCAO+X8a0AAAAASUVORK5CYII="
-)
+_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/w8AAwMCAO+X8a0AAAAASUVORK5CYII="
 
 _NS = {
     "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
@@ -147,8 +145,8 @@ def _build_docx_payload_with_generic_image_type() -> bytes:
             if info.filename == "[Content_Types].xml":
                 text = data.decode("utf-8")
                 text = text.replace(
-                    "ContentType=\"image/png\"",
-                    "ContentType=\"application/octet-stream\"",
+                    'ContentType="image/png"',
+                    'ContentType="application/octet-stream"',
                 )
                 dst.writestr(info, text)
             else:
@@ -170,9 +168,13 @@ def test_docx_parser_extracts_text_blocks_and_assets() -> None:
     result = parser.parse(document, config={})
 
     heading_blocks = [block for block in result.text_blocks if block.kind == "heading"]
-    paragraph_blocks = [block for block in result.text_blocks if block.kind == "paragraph"]
+    paragraph_blocks = [
+        block for block in result.text_blocks if block.kind == "paragraph"
+    ]
     list_blocks = [block for block in result.text_blocks if block.kind == "list"]
-    table_blocks = [block for block in result.text_blocks if block.kind == "table_summary"]
+    table_blocks = [
+        block for block in result.text_blocks if block.kind == "table_summary"
+    ]
 
     assert heading_blocks and heading_blocks[0].text == "Project Plan"
     assert heading_blocks[0].section_path == ("Project Plan",)

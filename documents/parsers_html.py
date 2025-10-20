@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, List, Mapping, MutableSequence, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from lxml import html
@@ -337,9 +337,11 @@ def _strip_boilerplate(root: html.HtmlElement) -> None:
     for tag in drop_tags:
         for node in list(root.findall(f".//{tag}")):
             node.drop_tree()
-    for node in list(root.xpath(
-        ".//*[self::header or self::footer or self::aside or self::nav or @role='navigation' or @role='banner' or @role='contentinfo']"
-    )):
+    for node in list(
+        root.xpath(
+            ".//*[self::header or self::footer or self::aside or self::nav or @role='navigation' or @role='banner' or @role='contentinfo']"
+        )
+    ):
         if node is root:
             continue
         node.drop_tree()
@@ -426,9 +428,13 @@ def _render_block(
         if len(parts) != 2:
             continue
         before_raw, after_raw = parts
-        before_clean = _collapse_whitespace(_strip_placeholders(before_raw, [p for p, _, _ in assets]))
+        before_clean = _collapse_whitespace(
+            _strip_placeholders(before_raw, [p for p, _, _ in assets])
+        )
         after_clean = _collapse_whitespace(
-            _strip_placeholders(after_raw, [p for p, _, _ in assets if p != placeholder])
+            _strip_placeholders(
+                after_raw, [p for p, _, _ in assets if p != placeholder]
+            )
         )
         state.add_asset(
             file_uri=src,
@@ -440,7 +446,9 @@ def _render_block(
     return raw_text
 
 
-def _summarise_table(node: html.HtmlElement) -> Tuple[Optional[str], Optional[Mapping[str, Any]]]:
+def _summarise_table(
+    node: html.HtmlElement,
+) -> Tuple[Optional[str], Optional[Mapping[str, Any]]]:
     rows: List[List[str]] = []
     for tr in node.xpath(".//tr"):
         cells = tr.xpath("./th|./td")
@@ -458,7 +466,9 @@ def _summarise_table(node: html.HtmlElement) -> Tuple[Optional[str], Optional[Ma
     header_rows = node.xpath(".//thead//tr")
     header_candidates = node.xpath(".//thead//th") or node.xpath(".//tr[1]//th")
     if header_candidates:
-        headers = [_collapse_whitespace("".join(cell.itertext())) for cell in header_candidates]
+        headers = [
+            _collapse_whitespace("".join(cell.itertext())) for cell in header_candidates
+        ]
         header_count = len(header_rows) if header_rows else 1
         data_rows = rows[header_count:]
     else:
@@ -467,12 +477,16 @@ def _summarise_table(node: html.HtmlElement) -> Tuple[Optional[str], Optional[Ma
     data_rows = data_rows or []
     column_count = max(len(row) for row in ([headers] + data_rows) if row)
     headers = headers[:column_count]
-    sample_rows = [row[:column_count] for row in data_rows[:5] if any(cell for cell in row)]
+    sample_rows = [
+        row[:column_count] for row in data_rows[:5] if any(cell for cell in row)
+    ]
     preview_rows: List[List[str]] = []
     if headers:
         preview_rows.append(headers)
     preview_rows.extend(sample_rows)
-    preview_lines = ["\t".join(row) for row in preview_rows if any(cell for cell in row)]
+    preview_lines = [
+        "\t".join(row) for row in preview_rows if any(cell for cell in row)
+    ]
     preview_text = "\n".join(preview_lines)
     preview_text = truncate_text(preview_text, _TABLE_PREVIEW_LIMIT) or ""
     summary = f"Table rows={len(data_rows)} columns={column_count}"
@@ -540,7 +554,9 @@ class HtmlDocumentParser(DocumentParser):
         blob_media = _extract_media_type(blob)
         if blob_media in _HTML_MEDIA_TYPES:
             return True
-        filename = _extract_candidate(document, "file_name") or _extract_candidate(document, "filename")
+        filename = _extract_candidate(document, "file_name") or _extract_candidate(
+            document, "filename"
+        )
         if not filename and isinstance(document, Mapping):
             filename = document.get("name")
         if filename:
@@ -562,9 +578,7 @@ class HtmlDocumentParser(DocumentParser):
             tree = html.fromstring(text)
         except (ParserError, TypeError) as exc:
             raise ValueError("html_parse_failed") from exc
-        use_readability = _config_flag(
-            config, "use_readability_html_extraction", False
-        )
+        use_readability = _config_flag(config, "use_readability_html_extraction", False)
         content_root = None
         if use_readability:
             content_root = self._extract_main_content_with_readability(text)
@@ -663,7 +677,9 @@ class HtmlDocumentParser(DocumentParser):
         if tag == "table":
             summary_text, table_meta = _summarise_table(element)
             if summary_text and table_meta:
-                state.add_text_block(text=summary_text, kind="table_summary", table_meta=table_meta)
+                state.add_text_block(
+                    text=summary_text, kind="table_summary", table_meta=table_meta
+                )
             return
         if tag == "figure":
             for img in element.xpath(".//img"):
@@ -673,7 +689,9 @@ class HtmlDocumentParser(DocumentParser):
                 alt_text = normalize_optional_string(img.get("alt"))
                 caption_el = element.find(".//figcaption")
                 caption_text = (
-                    _collapse_whitespace("".join(caption_el.itertext())) if caption_el is not None else None
+                    _collapse_whitespace("".join(caption_el.itertext()))
+                    if caption_el is not None
+                    else None
                 )
                 state.add_asset(
                     file_uri=src,
@@ -683,7 +701,9 @@ class HtmlDocumentParser(DocumentParser):
                 )
             caption_el = element.find(".//figcaption")
             if caption_el is not None:
-                caption_text = _render_block(caption_el, state, allow_inline_assets=False)
+                caption_text = _render_block(
+                    caption_el, state, allow_inline_assets=False
+                )
                 state.add_text_block(text=caption_text, kind="paragraph")
             return
         if tag == "img":

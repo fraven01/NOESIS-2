@@ -154,7 +154,9 @@ def _inline_asset(
     )
 
 
-def _json_events(caplog: pytest.LogCaptureFixture, event: str) -> list[dict[str, object]]:
+def _json_events(
+    caplog: pytest.LogCaptureFixture, event: str
+) -> list[dict[str, object]]:
     records: list[dict[str, object]] = []
     for record in caplog.records:
         message = record.getMessage()
@@ -358,7 +360,9 @@ def test_caption_pipeline_emits_caption_run(
     )
     inline_bytes = b"caption-image"
     doc_id = uuid4()
-    asset = _inline_asset(tenant_id="cap-tenant", document_id=doc_id, payload=inline_bytes)
+    asset = _inline_asset(
+        tenant_id="cap-tenant", document_id=doc_id, payload=inline_bytes
+    )
     doc = _make_document(tenant_id="cap-tenant", document_id=doc_id, assets=[asset])
 
     pipeline.process_document(doc)

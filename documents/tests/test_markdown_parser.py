@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 
-import pytest
 
 from typing import Optional
 
@@ -72,7 +71,10 @@ First paragraph.
     assert result.statistics["front_matter.language"] == "en-US"
     assert result.statistics["front_matter.author"] == "Jane Doe"
     assert result.statistics["front_matter.date"] == "2024-05-01"
-    assert any(block.kind == "heading" and block.text == "Overview" for block in result.text_blocks)
+    assert any(
+        block.kind == "heading" and block.text == "Overview"
+        for block in result.text_blocks
+    )
     assert all("Sample Doc" not in block.text for block in result.text_blocks)
 
 
@@ -97,7 +99,9 @@ Intro paragraph with footnote[^1].
 
     heading_blocks = [block for block in result.text_blocks if block.kind == "heading"]
     list_blocks = [block for block in result.text_blocks if block.kind == "list"]
-    paragraph_blocks = [block for block in result.text_blocks if block.kind == "paragraph"]
+    paragraph_blocks = [
+        block for block in result.text_blocks if block.kind == "paragraph"
+    ]
 
     assert heading_blocks[0].text == "Title"
     assert heading_blocks[0].section_path == ("Title",)
@@ -133,7 +137,9 @@ graph TD
 
     result = parser.parse(document, config={})
 
-    table_blocks = [block for block in result.text_blocks if block.kind == "table_summary"]
+    table_blocks = [
+        block for block in result.text_blocks if block.kind == "table_summary"
+    ]
     code_blocks = [block for block in result.text_blocks if block.kind == "code"]
 
     assert table_blocks, "expected a table summary block"
@@ -192,7 +198,9 @@ More text after image.
             assert "Source: https://example.com/docs/sample.md" in asset.context_after
 
     origins = result.statistics["assets.origins"]
-    assert all(value == "https://example.com/docs/sample.md" for value in origins.values())
+    assert all(
+        value == "https://example.com/docs/sample.md" for value in origins.values()
+    )
 
     assert any(
         block.kind == "paragraph" and block.text == "Figure caption text."
@@ -221,7 +229,9 @@ Final    line.
 
     result = parser.parse(document, config={})
 
-    paragraphs = [block.text for block in result.text_blocks if block.kind == "paragraph"]
+    paragraphs = [
+        block.text for block in result.text_blocks if block.kind == "paragraph"
+    ]
     assert any("multiple spaces and line breaks." in text for text in paragraphs)
     assert all("  " not in text for text in paragraphs)
 

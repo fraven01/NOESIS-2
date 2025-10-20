@@ -37,9 +37,7 @@ from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
 
 
-_PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFElEQVR4nGOsfq7LgA0wYRUdtBIAO/8Bn565mEEAAAAASUVORK5CYII="
-)
+_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFElEQVR4nGOsfq7LgA0wYRUdtBIAO/8Bn565mEEAAAAASUVORK5CYII="
 _PNG_BYTES = base64.b64decode(_PNG_BASE64)
 
 
@@ -586,16 +584,36 @@ def test_orchestrator_executes_full_pipeline():
     assert chunker.calls == 1
 
     workflow_label = outcome.context.metadata.workflow_id
-    assert metrics.counter_value(metrics.PIPELINE_BLOCKS_TOTAL, workflow_id=workflow_label) == 1.0
-    assert metrics.counter_value(metrics.PIPELINE_ASSETS_TOTAL, workflow_id=workflow_label) == 1.0
-    assert metrics.counter_value(metrics.PIPELINE_OCR_TRIGGER_TOTAL, workflow_id=workflow_label) == 1.0
-    assert metrics.counter_value(metrics.PIPELINE_CAPTION_HITS_TOTAL, workflow_id=workflow_label) == 1.0
     assert (
-        metrics.counter_value(metrics.PIPELINE_CAPTION_ATTEMPTS_TOTAL, workflow_id=workflow_label)
+        metrics.counter_value(metrics.PIPELINE_BLOCKS_TOTAL, workflow_id=workflow_label)
         == 1.0
     )
     assert (
-        metrics.histogram_count(metrics.PIPELINE_CAPTION_HIT_RATIO, workflow_id=workflow_label)
+        metrics.counter_value(metrics.PIPELINE_ASSETS_TOTAL, workflow_id=workflow_label)
+        == 1.0
+    )
+    assert (
+        metrics.counter_value(
+            metrics.PIPELINE_OCR_TRIGGER_TOTAL, workflow_id=workflow_label
+        )
+        == 1.0
+    )
+    assert (
+        metrics.counter_value(
+            metrics.PIPELINE_CAPTION_HITS_TOTAL, workflow_id=workflow_label
+        )
+        == 1.0
+    )
+    assert (
+        metrics.counter_value(
+            metrics.PIPELINE_CAPTION_ATTEMPTS_TOTAL, workflow_id=workflow_label
+        )
+        == 1.0
+    )
+    assert (
+        metrics.histogram_count(
+            metrics.PIPELINE_CAPTION_HIT_RATIO, workflow_id=workflow_label
+        )
         == 1.0
     )
 

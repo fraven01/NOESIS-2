@@ -46,7 +46,9 @@ def _make_document(
         title="Sample",
         tags=["alpha"],
     )
-    doc_blob = blob or FileBlob(type="file", uri="s3://bucket/doc", sha256=checksum, size=10)
+    doc_blob = blob or FileBlob(
+        type="file", uri="s3://bucket/doc", sha256=checksum, size=10
+    )
     return NormalizedDocument(
         ref=ref,
         meta=meta,
@@ -76,7 +78,9 @@ def _make_asset(
         asset_id=asset_uuid,
         document_id=document_id,
     )
-    asset_blob = blob or FileBlob(type="file", uri="s3://bucket/asset", sha256=checksum, size=5)
+    asset_blob = blob or FileBlob(
+        type="file", uri="s3://bucket/asset", sha256=checksum, size=5
+    )
     return Asset(
         ref=ref,
         media_type="image/png",
@@ -230,7 +234,10 @@ def test_list_by_collection_orders_by_created_at_desc():
 
     refs, cursor = repo.list_by_collection(tenant_id, collection_id, limit=10)
     assert cursor is None
-    assert [ref.document_id for ref in refs] == [newer.ref.document_id, older.ref.document_id]
+    assert [ref.document_id for ref in refs] == [
+        newer.ref.document_id,
+        older.ref.document_id,
+    ]
 
 
 def test_list_by_collection_latest_only_flag():
@@ -344,9 +351,7 @@ def test_delete_document_soft_and_hard():
     repo.upsert(doc)
 
     assert repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is True
-    assert (
-        repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
-    )
+    assert repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
     assert (
         repo.get_asset(
             "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
@@ -358,9 +363,7 @@ def test_delete_document_soft_and_hard():
         repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id, hard=True)
         is True
     )
-    assert (
-        repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
-    )
+    assert repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
 
 
 def test_delete_document_returns_false_for_missing():
@@ -485,7 +488,9 @@ def test_delete_asset_soft_and_hard():
 
     assert repo.delete_asset("tenant-a", asset.ref.asset_id) is True
     assert (
-        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        repo.get_asset(
+            "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
+        )
         is None
     )
     assert repo.delete_asset("tenant-a", asset.ref.asset_id) is False
@@ -508,7 +513,9 @@ def test_assets_follow_document_deletion_modes():
 
     repo.delete("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
     assert (
-        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        repo.get_asset(
+            "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
+        )
         is None
     )
 
@@ -516,7 +523,9 @@ def test_assets_follow_document_deletion_modes():
         "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id, hard=True
     )
     assert (
-        repo.get_asset("tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id)
+        repo.get_asset(
+            "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
+        )
         is None
     )
 
@@ -701,4 +710,6 @@ def test_assets_are_isolated_per_workflow():
 
     repo.delete_asset(tenant_id, shared_asset_id, workflow_id="workflow-a")
     assert repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-a") is None
-    assert repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-b") is not None
+    assert (
+        repo.get_asset(tenant_id, shared_asset_id, workflow_id="workflow-b") is not None
+    )

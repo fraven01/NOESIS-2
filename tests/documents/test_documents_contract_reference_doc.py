@@ -67,7 +67,12 @@ def test_error_codes_documented() -> None:
 
 def test_invalid_examples_cover_core_constraints() -> None:
     text = _load()
-    for marker in ["version_invalid", "sha256_invalid", "language_invalid", "bbox_invalid"]:
+    for marker in [
+        "version_invalid",
+        "sha256_invalid",
+        "language_invalid",
+        "bbox_invalid",
+    ]:
         assert marker in text, f"invalid example for {marker} missing"
 
 

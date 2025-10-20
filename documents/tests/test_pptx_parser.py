@@ -18,9 +18,7 @@ from documents.contracts import InlineBlob
 from documents.parsers_pptx import PptxDocumentParser
 from documents.pipeline import DocumentPipelineConfig
 
-_PNG_BASE64 = (
-    "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFElEQVR4nGOsfq7LgA0wYRUdtBIAO/8Bn565mEEAAAAASUVORK5CYII="
-)
+_PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFElEQVR4nGOsfq7LgA0wYRUdtBIAO/8Bn565mEEAAAAASUVORK5CYII="
 _PNG_BYTES = base64.b64decode(_PNG_BASE64)
 
 _NOTES_RELATIONSHIP = (
@@ -136,14 +134,19 @@ def _add_additional_note(payload: bytes, text: str) -> bytes:
     </p:spTree>
   </p:cSld>
 </p:notes>
-""".encode("utf-8")
+""".encode(
+        "utf-8"
+    )
     parts[new_part_name] = note_xml
 
     content_ns = "http://schemas.openxmlformats.org/package/2006/content-types"
     override_tag = f"{{{content_ns}}}Override"
     content_root = ET.fromstring(parts["[Content_Types].xml"])
     part_name_attr = f"/{new_part_name}"
-    if not any(elem.get("PartName") == part_name_attr for elem in content_root.findall(override_tag)):
+    if not any(
+        elem.get("PartName") == part_name_attr
+        for elem in content_root.findall(override_tag)
+    ):
         ET.SubElement(
             content_root,
             override_tag,
@@ -210,7 +213,10 @@ def test_pptx_parser_extracts_slides_notes_and_assets():
     second_asset = result.assets[1]
     assert second_asset.metadata.get("parent_ref") == "slide:2"
     second_candidates = second_asset.metadata.get("caption_candidates", [])
-    assert second_candidates and second_candidates[0] == ("alt_text", "Roadmap illustration")
+    assert second_candidates and second_candidates[0] == (
+        "alt_text",
+        "Roadmap illustration",
+    )
     assert result.statistics["parser.slides"] == 2
     assert result.statistics["parser.notes"] == 2
     assert result.statistics["assets.images"] == 2
@@ -243,9 +249,7 @@ def test_pptx_parser_concatenates_multiple_notes():
         for block in result.text_blocks
         if block.kind == "note" and block.page_index == 0
     ]
-    assert note_texts == [
-        "Discuss quarterly growth narrative\n\nSecond note payload"
-    ]
+    assert note_texts == ["Discuss quarterly growth narrative\n\nSecond note payload"]
 
 
 def test_pptx_parser_empty_slide_handling():
@@ -305,9 +309,7 @@ def test_pptx_parser_alt_text_context_when_notes_disabled():
     payload = _build_presentation_bytes(builder)
     document = _make_document(payload)
 
-    result = parser.parse(
-        document, DocumentPipelineConfig(enable_notes_in_pptx=False)
-    )
+    result = parser.parse(document, DocumentPipelineConfig(enable_notes_in_pptx=False))
 
     assert len(result.assets) == 1
     asset = result.assets[0]
@@ -341,7 +343,9 @@ def test_pptx_parser_emits_chart_source_assets():
     result = parser.parse(document, DocumentPipelineConfig())
 
     chart_assets = [
-        asset for asset in result.assets if asset.metadata.get("asset_kind") == "chart_source"
+        asset
+        for asset in result.assets
+        if asset.metadata.get("asset_kind") == "chart_source"
     ]
     assert chart_assets
     chart_asset = chart_assets[0]

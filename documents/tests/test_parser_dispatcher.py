@@ -34,7 +34,9 @@ class _FakeParser:
 
 def test_dispatcher_selects_first_matching_parser() -> None:
     pdf_parser = _FakeParser("application/pdf")
-    docx_parser = _FakeParser("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+    docx_parser = _FakeParser(
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    )
     registry = ParserRegistry([docx_parser, pdf_parser])
     dispatcher = ParserDispatcher(registry)
 
@@ -157,7 +159,9 @@ def test_parser_registry_rejects_invalid_parsers() -> None:
     registry = ParserRegistry()
 
     class _MissingCanHandle:
-        def parse(self, document: object, config: object) -> ParsedResult:  # pragma: no cover - invalid
+        def parse(
+            self, document: object, config: object
+        ) -> ParsedResult:  # pragma: no cover - invalid
             raise AssertionError
 
     class _MissingParse:
@@ -175,4 +179,3 @@ def test_parser_registry_rejects_invalid_parsers() -> None:
 
     with pytest.raises(TypeError, match="parser_invalid"):
         registry.register(None)  # type: ignore[arg-type]
-

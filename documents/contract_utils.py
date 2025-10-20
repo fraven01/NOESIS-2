@@ -16,7 +16,9 @@ _BCP47_SEGMENT_RE = re.compile(r"^[A-Za-z0-9]{1,8}$", re.ASCII)
 
 
 def _strip_invisible(value: str) -> str:
-    return "".join(ch for ch in value if unicodedata.category(ch) not in _INVISIBLE_CATEGORIES)
+    return "".join(
+        ch for ch in value if unicodedata.category(ch) not in _INVISIBLE_CATEGORIES
+    )
 
 
 def normalize_string(value: str) -> str:
@@ -159,5 +161,4 @@ def truncate_text(value: Optional[str], limit: int) -> Optional[str]:
         except UnicodeDecodeError as exc:
             if exc.start == 0:
                 return ""
-            truncated = truncated[:exc.start]
-
+            truncated = truncated[: exc.start]

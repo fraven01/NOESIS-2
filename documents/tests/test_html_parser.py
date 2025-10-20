@@ -140,10 +140,16 @@ def test_html_parser_extracts_reader_content() -> None:
             assert len(asset.context_before) <= 512
         if asset.context_after:
             assert len(asset.context_after) <= 512
-            assert "Source: https://example.com/articles/sample.html" in asset.context_after
+            assert (
+                "Source: https://example.com/articles/sample.html"
+                in asset.context_after
+            )
         assert asset.metadata.get("parent_ref")
         assert asset.metadata.get("locator")
-        assert asset.metadata.get("origin_uri") == "https://example.com/articles/sample.html"
+        assert (
+            asset.metadata.get("origin_uri")
+            == "https://example.com/articles/sample.html"
+        )
         candidates = asset.metadata.get("caption_candidates", [])
         if asset.file_uri == "images/chart.png":
             assert candidates and candidates[0] == ("alt_text", "Chart showing growth")
@@ -167,7 +173,9 @@ def test_html_parser_can_handle_variants() -> None:
 
     ext_doc = _DocumentStub(
         media_type="text/plain",
-        blob=_inline_blob_from_text("<!DOCTYPE html><html><body>Hi</body></html>", media_type="text/plain"),
+        blob=_inline_blob_from_text(
+            "<!DOCTYPE html><html><body>Hi</body></html>", media_type="text/plain"
+        ),
         name="report.htm",
     )
     assert parser.can_handle(ext_doc)
@@ -201,9 +209,7 @@ def test_html_parser_readability_mode_reduces_boilerplate() -> None:
     parser = HtmlDocumentParser()
 
     default_result = parser.parse(document, config={})
-    readability_config = DocumentPipelineConfig(
-        use_readability_html_extraction=True
-    )
+    readability_config = DocumentPipelineConfig(use_readability_html_extraction=True)
     readability_result = parser.parse(document, config=readability_config)
 
     assert any(

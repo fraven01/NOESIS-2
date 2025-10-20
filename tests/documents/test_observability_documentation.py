@@ -100,4 +100,3 @@ def test_runbook_sections_cover_required_scenarios() -> None:
     text = _load_doc()
     assert "Storage nicht erreichbar" in text
     assert "Captioner-Timeout" in text
-

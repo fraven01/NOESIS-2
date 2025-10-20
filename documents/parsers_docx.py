@@ -182,7 +182,9 @@ def _load_app_properties(archive: zipfile.ZipFile) -> Mapping[str, int]:
     except KeyError:
         return {}
     properties: Dict[str, int] = {}
-    namespace = "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+    namespace = (
+        "http://schemas.openxmlformats.org/officeDocument/2006/extended-properties"
+    )
     for child in root:
         if child.tag.startswith(f"{{{namespace}}}") and child.text:
             name = child.tag.split("}", 1)[1]
@@ -359,7 +361,9 @@ def _table_summary(table: Table) -> Tuple[Optional[str], Mapping[str, Any]]:
     if rows:
         first = rows[0]
         header = tuple(first)
-    samples = ["\t".join(filter(None, row)) for row in data_rows if any(cell for cell in row)]
+    samples = [
+        "\t".join(filter(None, row)) for row in data_rows if any(cell for cell in row)
+    ]
     sample_rows = [list(row) for row in data_rows[:5] if any(cell for cell in row)]
     sample_text = "\n".join(samples[:5])
     summary_parts = [f"rows={row_count}", f"columns={column_count}"]
@@ -551,13 +555,17 @@ class DocxDocumentParser(DocumentParser):
                             content_type = _normalise_media_type(fallback)
                     content_type = content_type or "image/unknown"
                     before_fragments = [
-                        val for kind2, val in normalized_items[:index] if kind2 == "text"
+                        val
+                        for kind2, val in normalized_items[:index]
+                        if kind2 == "text"
                     ]
                     before_text = " ".join(before_fragments).strip()
                     if not before_text:
                         before_text = last_text_block or ""
                     after_fragments = [
-                        val for kind2, val in normalized_items[index + 1 :] if kind2 == "text"
+                        val
+                        for kind2, val in normalized_items[index + 1 :]
+                        if kind2 == "text"
                     ]
                     after_text = " ".join(after_fragments).strip()
                     if not after_text and alt_text:
@@ -657,12 +665,8 @@ class DocxDocumentParser(DocumentParser):
         statistics = {
             "parser.pages": app_props.get("pages", 0),
             "parser.words": max(app_props.get("words", 0), word_count),
-            "parser.tables": max(
-                app_props.get("tables", tables_count), tables_count
-            ),
-            "assets.images": max(
-                app_props.get("images", images_count), images_count
-            ),
+            "parser.tables": max(app_props.get("tables", tables_count), tables_count),
+            "assets.images": max(app_props.get("images", images_count), images_count),
         }
 
         return ParsedResult(
@@ -670,4 +674,3 @@ class DocxDocumentParser(DocumentParser):
             assets=tuple(parsed_assets),
             statistics=statistics,
         )
-

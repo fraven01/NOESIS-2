@@ -179,7 +179,9 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     PIPELINE_CAPTION_ATTEMPTS_TOTAL = _FallbackCounterVec()
 
 
-if _PromHistogram is not None:  # pragma: no cover - exercised in integration environments
+if (
+    _PromHistogram is not None
+):  # pragma: no cover - exercised in integration environments
     DOCUMENT_OPERATION_DURATION_MS = _PromHistogram(
         "documents_operation_duration_ms",
         "Duration of document repository operations in milliseconds.",
@@ -256,9 +258,9 @@ def observe_event(
         PIPELINE_OPERATION_DURATION_MS.labels(**labels).observe(duration_ms)
         if event == "pipeline.assets_caption":
             CAPTION_RUNS_TOTAL.labels(status=status, workflow_id=workflow_label).inc()
-            CAPTION_DURATION_MS.labels(status=status, workflow_id=workflow_label).observe(
-                duration_ms
-            )
+            CAPTION_DURATION_MS.labels(
+                status=status, workflow_id=workflow_label
+            ).observe(duration_ms)
     elif event.startswith("cli."):
         CLI_OPERATION_TOTAL.labels(**labels).inc()
         CLI_OPERATION_DURATION_MS.labels(**labels).observe(duration_ms)
@@ -371,4 +373,3 @@ __all__ = [
     "observe_event",
     "reset_metrics",
 ]
-

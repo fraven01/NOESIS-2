@@ -33,7 +33,11 @@ from .contracts import (
     asset_ref_schema,
     asset_schema,
 )
-from .captioning import AssetExtractionPipeline, DeterministicCaptioner, MultimodalCaptioner
+from .captioning import (
+    AssetExtractionPipeline,
+    DeterministicCaptioner,
+    MultimodalCaptioner,
+)
 from .logging_utils import (
     asset_log_fields,
     document_log_fields,
@@ -116,7 +120,9 @@ def _load_document(args: argparse.Namespace, context: CLIContext):
     return document
 
 
-def _build_pipeline_config(args: argparse.Namespace, context: CLIContext) -> DocumentPipelineConfig:
+def _build_pipeline_config(
+    args: argparse.Namespace, context: CLIContext
+) -> DocumentPipelineConfig:
     base = context.config
     mapping = dict(base.caption_min_confidence_by_collection)
     kwargs = dict(
@@ -224,7 +230,9 @@ def _caption_stats(document: Any) -> tuple[int, int, int, float]:
     ]
     attempts = len(image_assets)
     hits = sum(1 for asset in image_assets if asset.caption_method == "vlm_caption")
-    ocr_fallbacks = sum(1 for asset in image_assets if asset.caption_method == "ocr_only")
+    ocr_fallbacks = sum(
+        1 for asset in image_assets if asset.caption_method == "ocr_only"
+    )
     hit_rate = hits / attempts if attempts else 0.0
     return attempts, hits, ocr_fallbacks, hit_rate
 
@@ -306,12 +314,15 @@ def _handle_pipeline_chunk(args: argparse.Namespace) -> int:
             storage=context.storage,
         )
         processing_context = artefact.asset_context
-        document = context.repository.get(
-            processing_context.metadata.tenant_id,
-            processing_context.metadata.document_id,
-            version=processing_context.metadata.version,
-            workflow_id=processing_context.metadata.workflow_id,
-        ) or document
+        document = (
+            context.repository.get(
+                processing_context.metadata.tenant_id,
+                processing_context.metadata.document_id,
+                version=processing_context.metadata.version,
+                workflow_id=processing_context.metadata.workflow_id,
+            )
+            or document
+        )
     if parsed is None:
         parsed = context.parser.parse(document, config)
     chunks, chunk_stats = context.chunker.chunk(
@@ -710,9 +721,7 @@ def _handle_docs_delete(args: argparse.Namespace) -> int:
             log_extra_exit(status="error", error_code="document_not_found")
             return _print_error(args, "document_not_found")
         log_extra_exit(deleted=True)
-        return _print_success(
-            args, {"deleted": True, "workflow_id": workflow_id}
-        )
+        return _print_success(args, {"deleted": True, "workflow_id": workflow_id})
 
 
 @log_call("cli.assets.add")
@@ -839,9 +848,7 @@ def _handle_assets_delete(args: argparse.Namespace) -> int:
             log_extra_exit(status="error", error_code="asset_not_found")
             return _print_error(args, "asset_not_found")
         log_extra_exit(deleted=True)
-        return _print_success(
-            args, {"deleted": True, "workflow_id": workflow_id}
-        )
+        return _print_success(args, {"deleted": True, "workflow_id": workflow_id})
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -982,9 +989,7 @@ def _build_parser() -> argparse.ArgumentParser:
     assets_get.add_argument("--workflow-id")
     assets_get.set_defaults(func=_handle_assets_get)
 
-    assets_list = assets_sub.add_parser(
-        "list", help="List assets for a document"
-    )
+    assets_list = assets_sub.add_parser("list", help="List assets for a document")
     assets_list.add_argument("--tenant", required=True)
     assets_list.add_argument("--document", required=True)
     assets_list.add_argument("--limit", type=int, default=100)
@@ -1046,7 +1051,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 @log_call("cli.main")
-def main(argv: Optional[Iterable[str]] = None, *, context: Optional[CLIContext] = None) -> int:
+def main(
+    argv: Optional[Iterable[str]] = None, *, context: Optional[CLIContext] = None
+) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     active_context = context or _default_context()

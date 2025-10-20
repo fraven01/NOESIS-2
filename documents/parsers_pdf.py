@@ -6,15 +6,28 @@ import io
 import re
 from contextlib import ExitStack, closing
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 import fitz  # type: ignore[import-untyped]
 import pdfplumber  # type: ignore[import-untyped]
 import pikepdf  # type: ignore[import-untyped]
-from fitz import Document as _FitzDocument
 from fitz import Page as _FitzPage
 
-from documents.contract_utils import is_bcp47_like, normalize_media_type, normalize_string
+from documents.contract_utils import (
+    is_bcp47_like,
+    normalize_media_type,
+    normalize_string,
+)
 from documents.parsers import DocumentParser, ParsedAsset, ParsedResult, ParsedTextBlock
 
 try:  # pragma: no cover - optional dependency exercised in integration environments
@@ -30,7 +43,9 @@ except Exception:  # pragma: no cover - deterministic fallback for minimal envir
 _PDF_MEDIA_TYPES = {"application/pdf"}
 _PDF_MAX_ASSET_SIZE = 25 * 1024 * 1024
 _PDF_MAX_TOTAL_ASSET_SIZE = 200 * 1024 * 1024
-_HEADING_FONT_THRESHOLD = 18.0  # chosen to catch large headings while ignoring body text fonts
+_HEADING_FONT_THRESHOLD = (
+    18.0  # chosen to catch large headings while ignoring body text fonts
+)
 _TABLE_SAMPLE_LIMIT = 5
 
 
@@ -92,7 +107,8 @@ class PdfDocumentParser(DocumentParser):
                     page = pdf_document.load_page(page_index)
                     plumber_page = (
                         plumber_document.pages[page_index]
-                        if plumber_document is not None and page_index < len(plumber_document.pages)
+                        if plumber_document is not None
+                        and page_index < len(plumber_document.pages)
                         else None
                     )
                     page_blocks = _safe_page_blocks(page)
@@ -116,19 +132,29 @@ class PdfDocumentParser(DocumentParser):
                             if not block_text:
                                 continue
                             normalized = (
-                                normalize_string(block_text) if pdf_safe_mode else block_text.strip()
+                                normalize_string(block_text)
+                                if pdf_safe_mode
+                                else block_text.strip()
                             )
                             if not normalized:
                                 continue
 
-                            candidate = _match_table_candidate(block.get("bbox"), table_candidates)
-                            fallback_table = None if candidate is not None else _detect_text_table(block_text)
+                            candidate = _match_table_candidate(
+                                block.get("bbox"), table_candidates
+                            )
+                            fallback_table = (
+                                None
+                                if candidate is not None
+                                else _detect_text_table(block_text)
+                            )
                             if candidate is not None:
                                 tables += 1
                                 text_block = ParsedTextBlock(
                                     text=candidate.summary_text,
                                     kind="table_summary",
-                                    section_path=tuple(section_path) if section_path else None,
+                                    section_path=(
+                                        tuple(section_path) if section_path else None
+                                    ),
                                     page_index=page_index,
                                     table_meta=candidate.summary_meta,
                                     language=page_language,
@@ -138,7 +164,9 @@ class PdfDocumentParser(DocumentParser):
                                 text_block = ParsedTextBlock(
                                     text=fallback_table[0],
                                     kind="table_summary",
-                                    section_path=tuple(section_path) if section_path else None,
+                                    section_path=(
+                                        tuple(section_path) if section_path else None
+                                    ),
                                     page_index=page_index,
                                     table_meta=fallback_table[1],
                                     language=page_language,
@@ -150,7 +178,9 @@ class PdfDocumentParser(DocumentParser):
                                 text_block = ParsedTextBlock(
                                     text=normalized,
                                     kind=kind,  # type: ignore[arg-type]
-                                    section_path=tuple(section_path) if section_path else None,
+                                    section_path=(
+                                        tuple(section_path) if section_path else None
+                                    ),
                                     page_index=page_index,
                                     language=page_language,
                                 )
@@ -182,7 +212,10 @@ class PdfDocumentParser(DocumentParser):
                             )
                             if asset is None:
                                 continue
-                            if asset.content is not None and len(asset.content) > _PDF_MAX_ASSET_SIZE:
+                            if (
+                                asset.content is not None
+                                and len(asset.content) > _PDF_MAX_ASSET_SIZE
+                            ):
                                 raise ValueError("pdf_asset_too_large")
                             asset_size = len(asset.content or b"")
                             total_asset_bytes += asset_size
@@ -197,15 +230,17 @@ class PdfDocumentParser(DocumentParser):
                             continue
                         tables += 1
                         text_blocks.append(
-                                    ParsedTextBlock(
-                                        text=candidate.summary_text,
-                                        kind="table_summary",
-                                        section_path=tuple(section_path) if section_path else None,
-                                        page_index=page_index,
-                                        table_meta=candidate.summary_meta,
-                                        language=page_language,
-                                    )
-                                )
+                            ParsedTextBlock(
+                                text=candidate.summary_text,
+                                kind="table_summary",
+                                section_path=(
+                                    tuple(section_path) if section_path else None
+                                ),
+                                page_index=page_index,
+                                table_meta=candidate.summary_meta,
+                                language=page_language,
+                            )
+                        )
 
                 statistics: Dict[str, Any] = {
                     "parser.pages": page_count,
@@ -220,7 +255,9 @@ class PdfDocumentParser(DocumentParser):
                 if ocr_errors:
                     statistics["ocr.errors"] = ocr_errors
 
-                return ParsedResult(text_blocks=text_blocks, assets=assets, statistics=statistics)
+                return ParsedResult(
+                    text_blocks=text_blocks, assets=assets, statistics=statistics
+                )
         except fitz.fitz.FileDataError as exc:  # type: ignore[attr-defined]
             message = str(exc).lower()
             if "password" in message or "encrypt" in message:
@@ -392,7 +429,9 @@ def _looks_like_list(text: str) -> bool:
     return False
 
 
-def _extract_tables(plumber_page: Optional[pdfplumber.page.Page]) -> Iterable[_TableCandidate]:
+def _extract_tables(
+    plumber_page: Optional[pdfplumber.page.Page],
+) -> Iterable[_TableCandidate]:
     if plumber_page is None:
         return []
     candidates: List[_TableCandidate] = []
@@ -448,7 +487,9 @@ def _detect_text_table(text: str) -> Optional[Tuple[str, Mapping[str, Any]]]:
     rows: List[List[str]] = []
     expected_width: Optional[int] = None
     for line in lines:
-        parts = [normalize_string(part) for part in delimiter.split(line) if part.strip()]
+        parts = [
+            normalize_string(part) for part in delimiter.split(line) if part.strip()
+        ]
         if len(parts) < 2:
             return None
         if expected_width is None:
@@ -461,7 +502,9 @@ def _detect_text_table(text: str) -> Optional[Tuple[str, Mapping[str, Any]]]:
     return _summarize_table(rows)
 
 
-def _summarize_table(rows: Optional[Sequence[Sequence[str]]]) -> Optional[Tuple[str, Mapping[str, Any]]]:
+def _summarize_table(
+    rows: Optional[Sequence[Sequence[str]]],
+) -> Optional[Tuple[str, Mapping[str, Any]]]:
     if not rows:
         return None
     cleaned: List[List[str]] = []

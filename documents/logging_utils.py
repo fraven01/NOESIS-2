@@ -36,7 +36,11 @@ def log_extra_exit(**fields: Any) -> None:
     _merge_context(_EXIT_EXTRA, fields)
 
 
-def log_extra(*, entry: Optional[Mapping[str, Any]] = None, exit: Optional[Mapping[str, Any]] = None) -> None:
+def log_extra(
+    *,
+    entry: Optional[Mapping[str, Any]] = None,
+    exit: Optional[Mapping[str, Any]] = None,
+) -> None:
     """Attach metadata to both entry and exit logs in a single call."""
 
     if entry:
@@ -82,7 +86,9 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         span.set_attribute("error.message", error_message)
                         span.record_exception(exc)
                         span.set_status(Status(StatusCode.ERROR, error_message))
-                        metrics.observe_event(event, "error", duration_ms, workflow_id=workflow)
+                        metrics.observe_event(
+                            event, "error", duration_ms, workflow_id=workflow
+                        )
                         logger.error(
                             event,
                             status="error",
@@ -107,7 +113,9 @@ def log_call(event: str) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
                         )
                         _set_span_attributes(span, exit_fields)
                         span.set_status(Status(StatusCode.OK))
-                        metrics.observe_event(event, status, duration_ms, workflow_id=workflow)
+                        metrics.observe_event(
+                            event, status, duration_ms, workflow_id=workflow
+                        )
                         return result
             finally:
                 _ENTRY_EXTRA.reset(entry_token)
@@ -142,7 +150,9 @@ def document_log_fields(document: Any) -> dict[str, Any]:
         try:
             fields["asset_count"] = len(assets)  # type: ignore[arg-type]
         except TypeError:
-            fields["asset_count"] = len(list(assets if isinstance(assets, Iterable) else []))
+            fields["asset_count"] = len(
+                list(assets if isinstance(assets, Iterable) else [])
+            )
     return fields
 
 
