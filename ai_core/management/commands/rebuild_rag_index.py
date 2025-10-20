@@ -192,6 +192,8 @@ class Command(BaseCommand):
                 CREATE TABLE IF NOT EXISTS {documents} (
                     id UUID PRIMARY KEY,
                     tenant_id UUID NOT NULL,
+                    collection_id UUID,
+                    workflow_id TEXT,
                     source TEXT NOT NULL,
                     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                     hash TEXT NOT NULL,
@@ -199,6 +201,15 @@ class Command(BaseCommand):
                     deleted_at TIMESTAMP WITH TIME ZONE,
                     external_id TEXT
                 )
+                """
+            ).format(documents=documents)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {documents}
+                    ADD COLUMN IF NOT EXISTS workflow_id TEXT
                 """
             ).format(documents=documents)
         )
