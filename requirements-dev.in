@@ -10,4 +10,13 @@ factory-boy
 ruff
 black
 pip-tools
+PyMuPDF
+pdfplumber
+pikepdf
+langdetect>=1.0.9,<2.0
+markdown-it-py<4
+mdit-py-plugins
+python-docx
+python-pptx
+readability-lxml
 openapi-python-client

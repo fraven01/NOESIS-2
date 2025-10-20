@@ -139,6 +139,31 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration envi
         "Number of caption pipeline runs by status.",
         ["status", "workflow_id"],
     )
+    PIPELINE_BLOCKS_TOTAL = _PromCounter(
+        "documents_pipeline_blocks_total",
+        "Number of text blocks emitted by parser executions.",
+        ["workflow_id"],
+    )
+    PIPELINE_ASSETS_TOTAL = _PromCounter(
+        "documents_pipeline_assets_total",
+        "Number of assets extracted during parser executions.",
+        ["workflow_id"],
+    )
+    PIPELINE_OCR_TRIGGER_TOTAL = _PromCounter(
+        "documents_pipeline_ocr_trigger_total",
+        "Number of pages flagged for OCR follow-up during parsing.",
+        ["workflow_id"],
+    )
+    PIPELINE_CAPTION_HITS_TOTAL = _PromCounter(
+        "documents_pipeline_caption_hits_total",
+        "Number of captions accepted from VLM results.",
+        ["workflow_id"],
+    )
+    PIPELINE_CAPTION_ATTEMPTS_TOTAL = _PromCounter(
+        "documents_pipeline_caption_attempts_total",
+        "Number of caption attempts evaluated for acceptance.",
+        ["workflow_id"],
+    )
 else:  # pragma: no cover - exercised through direct inspection in unit tests
     DOCUMENT_OPERATION_TOTAL = _FallbackCounterVec()
     ASSET_OPERATION_TOTAL = _FallbackCounterVec()
@@ -147,6 +172,11 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     CLI_OPERATION_TOTAL = _FallbackCounterVec()
     OTHER_OPERATION_TOTAL = _FallbackCounterVec()
     CAPTION_RUNS_TOTAL = _FallbackCounterVec()
+    PIPELINE_BLOCKS_TOTAL = _FallbackCounterVec()
+    PIPELINE_ASSETS_TOTAL = _FallbackCounterVec()
+    PIPELINE_OCR_TRIGGER_TOTAL = _FallbackCounterVec()
+    PIPELINE_CAPTION_HITS_TOTAL = _FallbackCounterVec()
+    PIPELINE_CAPTION_ATTEMPTS_TOTAL = _FallbackCounterVec()
 
 
 if _PromHistogram is not None:  # pragma: no cover - exercised in integration environments
@@ -185,6 +215,11 @@ if _PromHistogram is not None:  # pragma: no cover - exercised in integration en
         "Duration of caption pipeline runs in milliseconds.",
         ["status", "workflow_id"],
     )
+    PIPELINE_CAPTION_HIT_RATIO = _PromHistogram(
+        "documents_pipeline_caption_hit_ratio",
+        "Distribution of caption hit rates produced by the captioning pipeline.",
+        ["workflow_id"],
+    )
 else:  # pragma: no cover - exercised through direct inspection in unit tests
     DOCUMENT_OPERATION_DURATION_MS = _FallbackHistogramVec()
     ASSET_OPERATION_DURATION_MS = _FallbackHistogramVec()
@@ -193,6 +228,7 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     CLI_OPERATION_DURATION_MS = _FallbackHistogramVec()
     OTHER_OPERATION_DURATION_MS = _FallbackHistogramVec()
     CAPTION_DURATION_MS = _FallbackHistogramVec()
+    PIPELINE_CAPTION_HIT_RATIO = _FallbackHistogramVec()
 
 
 def observe_event(
@@ -242,6 +278,11 @@ def reset_metrics() -> None:
         CLI_OPERATION_TOTAL,
         OTHER_OPERATION_TOTAL,
         CAPTION_RUNS_TOTAL,
+        PIPELINE_BLOCKS_TOTAL,
+        PIPELINE_ASSETS_TOTAL,
+        PIPELINE_OCR_TRIGGER_TOTAL,
+        PIPELINE_CAPTION_HITS_TOTAL,
+        PIPELINE_CAPTION_ATTEMPTS_TOTAL,
     ):
         reset = getattr(metric, "reset", None)
         if callable(reset):
@@ -255,6 +296,7 @@ def reset_metrics() -> None:
         CLI_OPERATION_DURATION_MS,
         OTHER_OPERATION_DURATION_MS,
         CAPTION_DURATION_MS,
+        PIPELINE_CAPTION_HIT_RATIO,
     ):
         reset = getattr(metric, "reset", None)
         if callable(reset):
@@ -316,6 +358,12 @@ __all__ = [
     "OTHER_OPERATION_TOTAL",
     "PIPELINE_OPERATION_DURATION_MS",
     "PIPELINE_OPERATION_TOTAL",
+    "PIPELINE_BLOCKS_TOTAL",
+    "PIPELINE_ASSETS_TOTAL",
+    "PIPELINE_OCR_TRIGGER_TOTAL",
+    "PIPELINE_CAPTION_HITS_TOTAL",
+    "PIPELINE_CAPTION_ATTEMPTS_TOTAL",
+    "PIPELINE_CAPTION_HIT_RATIO",
     "STORAGE_OPERATION_DURATION_MS",
     "STORAGE_OPERATION_TOTAL",
     "counter_value",

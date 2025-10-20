@@ -12,6 +12,15 @@ requests
 litellm
 gunicorn
 structlog>=24.1.0
+PyMuPDF
+pdfplumber
+pikepdf
+langdetect>=1.0.9,<2.0
+markdown-it-py<4
+mdit-py-plugins
+python-docx
+python-pptx
+readability-lxml
 opentelemetry-api
 opentelemetry-sdk
 opentelemetry-exporter-otlp
