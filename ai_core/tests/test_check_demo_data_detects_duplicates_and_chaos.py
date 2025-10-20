@@ -43,6 +43,8 @@ def test_documents_cli_roundtrip_uses_inmemory_repository(capsys):
             "add",
             "--tenant",
             tenant_id,
+            "--workflow-id",
+            "workflow-ai-core",
             "--collection",
             collection_id,
             "--title",
@@ -67,6 +69,8 @@ def test_documents_cli_roundtrip_uses_inmemory_repository(capsys):
             "add",
             "--tenant",
             tenant_id,
+            "--workflow-id",
+            "workflow-ai-core",
             "--document",
             document_id,
             "--media-type",
@@ -84,7 +88,10 @@ def test_documents_cli_roundtrip_uses_inmemory_repository(capsys):
     asset_id = asset_payload["ref"]["asset_id"]
 
     stored = context.repository.get(
-        tenant_id, UUID(document_id), prefer_latest=True
+        tenant_id,
+        UUID(document_id),
+        prefer_latest=True,
+        workflow_id="workflow-ai-core",
     )
     assert stored is not None
     assert stored.ref.tenant_id == tenant_id
@@ -94,7 +101,7 @@ def test_documents_cli_roundtrip_uses_inmemory_repository(capsys):
     assert str(stored.assets[0].ref.asset_id) == asset_id
 
     asset_refs, cursor = context.repository.list_assets_by_document(
-        tenant_id, UUID(document_id)
+        tenant_id, UUID(document_id), workflow_id="workflow-ai-core"
     )
     assert cursor is None
     assert len(asset_refs) == 1

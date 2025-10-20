@@ -61,6 +61,7 @@ def span_exporter() -> InMemorySpanExporter:
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID | None = None,
     collection_id: UUID | None = None,
     version: str | None = None,
@@ -71,11 +72,17 @@ def _make_document(
     doc_uuid = document_id or uuid4()
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=doc_uuid,
         collection_id=collection_id,
         version=version,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="Log Sample", tags=["alpha"])
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title="Log Sample",
+        tags=["alpha"],
+    )
     blob = blob or FileBlob(type="file", uri="memory://doc", sha256=checksum, size=16)
     return NormalizedDocument(
         ref=ref,
@@ -91,6 +98,7 @@ def _make_document(
 def _make_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     asset_id: UUID | None = None,
     checksum: str = "b" * 64,
@@ -98,7 +106,12 @@ def _make_asset(
     caption_method: str = "none",
 ) -> Asset:
     asset_uuid = asset_id or uuid4()
-    ref = AssetRef(tenant_id=tenant_id, asset_id=asset_uuid, document_id=document_id)
+    ref = AssetRef(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        asset_id=asset_uuid,
+        document_id=document_id,
+    )
     blob = blob or FileBlob(type="file", uri="memory://asset", sha256=checksum, size=8)
     return Asset(
         ref=ref,
@@ -113,6 +126,7 @@ def _make_asset(
 def _inline_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     payload: bytes,
 ) -> Asset:
@@ -126,7 +140,12 @@ def _inline_asset(
         size=len(payload),
     )
     return Asset(
-        ref=AssetRef(tenant_id=tenant_id, asset_id=uuid4(), document_id=document_id),
+        ref=AssetRef(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            asset_id=uuid4(),
+            document_id=document_id,
+        ),
         media_type="image/png",
         blob=encoded,
         caption_method="none",
@@ -180,7 +199,10 @@ def test_repository_upsert_emits_structured_logs(
     assert exit_events, "expected exit log with status ok"
     exit_event = exit_events[-1]
     assert exit_event["tenant_id"] == "tenant-log"
-    assert exit_event["document_id"] == str(doc.ref.document_id)
+    assert exit_event["workflow_id"] == doc.ref.workflow_id
+    doc_id = str(doc.ref.document_id)
+    logged_id = exit_event["document_id"]
+    assert doc_id[:8] in logged_id and doc_id[-12:] in logged_id
     assert exit_event["sha256_prefix"] == doc.blob.sha256[:8]
     assert "duration_ms" in exit_event
     _assert_no_base64(events)
@@ -190,6 +212,7 @@ def test_repository_upsert_emits_structured_logs(
     assert upsert_span.status.status_code is StatusCode.OK
     assert upsert_span.attributes["noesis.tenant_id"] == "tenant-log"
     assert upsert_span.attributes["noesis.document_id"] == str(doc.ref.document_id)
+    assert upsert_span.attributes["noesis.workflow_id"] == doc.ref.workflow_id
     assert upsert_span.attributes["noesis.size_bytes"] == doc.blob.size
     span_context = upsert_span.context
     assert exit_event["trace_id"] == format_trace_id(span_context.trace_id)
@@ -209,11 +232,12 @@ def test_repository_add_asset_logs_sha_prefix(
     repo.upsert(doc)
     asset = _make_asset(tenant_id="tenant-asset", document_id=doc.ref.document_id)
 
-    repo.add_asset(asset)
+    repo.add_asset(asset, workflow_id=asset.ref.workflow_id)
 
     events = _json_events(caplog, "assets.add")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["asset_id"] == str(asset.ref.asset_id)
+    assert exit_event["workflow_id"] == asset.ref.workflow_id
     assert exit_event["sha256_prefix"] == asset.blob.sha256[:8]
     assert exit_event["uri_kind"] == "memory"
     _assert_no_base64(events)
@@ -224,6 +248,7 @@ def test_repository_add_asset_logs_sha_prefix(
     assert asset_span.attributes["noesis.asset_id"] == str(asset.ref.asset_id)
     assert asset_span.attributes["noesis.uri_kind"] == "memory"
     assert asset_span.attributes["noesis.size_bytes"] == asset.blob.size
+    assert asset_span.attributes["noesis.workflow_id"] == asset.ref.workflow_id
     span_exporter.clear()
 
 
@@ -285,6 +310,7 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
     repo = InMemoryDocumentsRepository(storage=storage)
     context = CLIContext(repository=repo, storage=storage)
     inline_payload = "aGVsbG8="
+    workflow_id = "workflow-1"
 
     exit_code = cli_main(
         [
@@ -292,6 +318,8 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
             "add",
             "--tenant",
             "cli-tenant",
+            "--workflow-id",
+            workflow_id,
             "--collection",
             str(uuid4()),
             "--inline",
@@ -308,6 +336,7 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
     events = _json_events(caplog, "cli.docs.add")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["tenant_id"] == "cli-tenant"
+    assert exit_event["workflow_id"] == workflow_id
     assert exit_event["status"] == "ok"
     assert "duration_ms" in exit_event
     _assert_no_base64(events)
@@ -337,6 +366,7 @@ def test_caption_pipeline_emits_caption_run(
     events = _json_events(caplog, "pipeline.assets_caption.item")
     exit_event = [event for event in events if event.get("status") == "ok"][-1]
     assert exit_event["tenant_id"] == "cap-tenant"
+    assert exit_event["workflow_id"] == doc.ref.workflow_id
     assert exit_event["model"]
     assert 0.0 <= exit_event["caption_confidence"] <= 1.0
     _assert_no_base64(events)
@@ -345,6 +375,7 @@ def test_caption_pipeline_emits_caption_run(
     doc_span = next(span for span in spans if span.name == "pipeline.assets_caption")
     assert doc_span.status.status_code is StatusCode.OK
     assert doc_span.attributes["noesis.tenant_id"] == "cap-tenant"
+    assert doc_span.attributes["noesis.workflow_id"] == doc.ref.workflow_id
 
     item_span = next(
         span for span in spans if span.name == "pipeline.assets_caption.item"
@@ -353,4 +384,5 @@ def test_caption_pipeline_emits_caption_run(
     assert item_span.attributes["noesis.caption.method"] == "vlm_caption"
     assert item_span.attributes["noesis.caption.model"]
     assert 0.0 <= item_span.attributes["noesis.caption.confidence"] <= 1.0
+    assert item_span.attributes["noesis.workflow_id"] == asset.ref.workflow_id
     span_exporter.clear()

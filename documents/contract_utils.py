@@ -9,6 +9,8 @@ from typing import Iterable, List, Optional
 
 _INVISIBLE_CATEGORIES = {"Cf", "Cc", "Cs"}
 _TAG_RE = re.compile(r"^[A-Za-z0-9._-]+$", re.ASCII)
+_WORKFLOW_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$", re.ASCII)
+_WORKFLOW_ID_MAX_LENGTH = 128
 _MEDIA_TYPE_RE = re.compile(r"^[\w.+-]+/[\w.+-]+$", re.ASCII)
 _BCP47_SEGMENT_RE = re.compile(r"^[A-Za-z0-9]{1,8}$", re.ASCII)
 
@@ -42,6 +44,19 @@ def normalize_tenant(value: str) -> str:
         raise ValueError("tenant_empty")
     if len(normalized) > 128:
         raise ValueError("tenant_too_long")
+    return normalized
+
+
+def normalize_workflow_id(value: str) -> str:
+    """Normalize and validate workflow identifiers."""
+
+    normalized = normalize_string(value)
+    if not normalized:
+        raise ValueError("workflow_empty")
+    if len(normalized) > _WORKFLOW_ID_MAX_LENGTH:
+        raise ValueError("workflow_too_long")
+    if not _WORKFLOW_ID_RE.fullmatch(normalized):
+        raise ValueError("workflow_invalid_char")
     return normalized
 
 

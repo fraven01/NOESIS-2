@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -22,6 +22,8 @@ from .logging_utils import (
     log_extra_entry,
     log_extra_exit,
 )
+from .pipeline import DocumentPipelineConfig
+from .policies import DocumentPolicy, PolicyProvider, get_policy
 from .repository import DocumentsRepository
 from .storage import Storage
 
@@ -66,9 +68,11 @@ class AssetExtractionPipeline:
     repository: DocumentsRepository
     storage: Storage
     captioner: MultimodalCaptioner
-    context_separator: str = "\n---\n"
+    config: DocumentPipelineConfig = field(default_factory=DocumentPipelineConfig)
+    context_separator: str = " \u2026 "
     context_limit: int = 512
     strict_caption_validation: bool = False
+    policy_provider: PolicyProvider = get_policy
 
     @log_call("pipeline.assets_caption")
     def process_document(self, document: NormalizedDocument) -> NormalizedDocument:
@@ -116,7 +120,7 @@ class AssetExtractionPipeline:
     @log_call("pipeline.assets_caption.item")
     def _process_asset(self, asset: Asset) -> Asset:
         ref = asset.ref
-        with log_context(tenant=ref.tenant_id):
+        with log_context(tenant=ref.tenant_id, workflow_id=ref.workflow_id):
             log_extra_entry(**asset_log_fields(asset))
             description = normalize_optional_string(asset.text_description)
             if description:
@@ -148,6 +152,19 @@ class AssetExtractionPipeline:
                     confidence_value = float(confidence)
                     if confidence_value < 0 or confidence_value > 1:
                         error = ValueError("caption_confidence_range")
+                policy: Optional[DocumentPolicy] = None
+                threshold = self.config.caption_min_confidence(ref.collection_id)
+                if not error:
+                    policy = self.policy_provider(
+                        ref.tenant_id,
+                        ref.collection_id,
+                        ref.workflow_id,
+                    )
+                    assert policy is not None
+                    threshold = max(threshold, policy.caption_min_confidence)
+                    assert confidence_value is not None
+                    if confidence_value < threshold:
+                        error = ValueError("caption_confidence_policy")
                 if not error and not model:
                     error = ValueError("caption_model_missing")
 
@@ -172,6 +189,7 @@ class AssetExtractionPipeline:
                             "caption_method": "vlm_caption",
                             "caption_model": model,
                             "caption_confidence": confidence_value,
+                            "caption_source": "vlm",
                         }
                     )
 
@@ -184,7 +202,8 @@ class AssetExtractionPipeline:
                             "text_description": fallback,
                             "caption_method": "ocr_only",
                             "caption_model": None,
-                            "caption_confidence": None,
+                            "caption_confidence": self.config.ocr_fallback_confidence,
+                            "caption_source": "ocr",
                         }
                     )
 
@@ -239,6 +258,7 @@ class AssetExtractionPipeline:
                     tenant_id,
                     ref_doc.document_id,
                     ref_doc.version,
+                    workflow_id=ref_doc.workflow_id,
                 )
                 if document is None:
                     continue

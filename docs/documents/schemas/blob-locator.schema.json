@@ -1,0 +1,146 @@
+{
+  "$defs": {
+    "ExternalBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "description": "Type of external storage backend for the blob (http/https for web URLs).",
+          "enum": [
+            "s3",
+            "gcs",
+            "http",
+            "https"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "sha256": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional checksum when provided by the external source.",
+          "title": "Sha256"
+        },
+        "type": {
+          "const": "external",
+          "description": "Discriminator identifying an external blob reference.",
+          "title": "Type",
+          "type": "string"
+        },
+        "uri": {
+          "description": "External URI or object identifier.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "kind",
+        "uri"
+      ],
+      "title": "ExternalBlob",
+      "type": "object"
+    },
+    "FileBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "sha256": {
+          "description": "Hex encoded SHA-256 checksum of the blob contents.",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "description": "Blob size in bytes.",
+          "title": "Size",
+          "type": "integer"
+        },
+        "type": {
+          "const": "file",
+          "description": "Discriminator identifying a file blob.",
+          "title": "Type",
+          "type": "string"
+        },
+        "uri": {
+          "description": "URI for fetching the blob from storage.",
+          "title": "Uri",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "uri",
+        "sha256",
+        "size"
+      ],
+      "title": "FileBlob",
+      "type": "object"
+    },
+    "InlineBlob": {
+      "additionalProperties": false,
+      "properties": {
+        "base64": {
+          "description": "Base64 encoded payload contents.",
+          "title": "Base64",
+          "type": "string"
+        },
+        "media_type": {
+          "description": "RFC compliant media type without parameters (type/subtype lowercase).",
+          "title": "Media Type",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "Hex encoded SHA-256 checksum of the payload.",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "description": "Payload size in bytes.",
+          "title": "Size",
+          "type": "integer"
+        },
+        "type": {
+          "const": "inline",
+          "description": "Discriminator identifying inline data blobs.",
+          "title": "Type",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type",
+        "media_type",
+        "base64",
+        "sha256",
+        "size"
+      ],
+      "title": "InlineBlob",
+      "type": "object"
+    }
+  },
+  "description": "Discriminated union pointing to stored or external blobs.",
+  "discriminator": {
+    "mapping": {
+      "external": "#/$defs/ExternalBlob",
+      "file": "#/$defs/FileBlob",
+      "inline": "#/$defs/InlineBlob"
+    },
+    "propertyName": "type"
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/FileBlob"
+    },
+    {
+      "$ref": "#/$defs/InlineBlob"
+    },
+    {
+      "$ref": "#/$defs/ExternalBlob"
+    }
+  ],
+  "title": "Blob Locator"
+}

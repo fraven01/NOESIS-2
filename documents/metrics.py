@@ -96,41 +96,73 @@ class _FallbackHistogramVec:
         self._values.clear()
 
 
+def _normalize_workflow_label(workflow_id: str | None) -> str:
+    """Return a stable label value for ``workflow_id``."""
+
+    value = (workflow_id or "").strip()
+    return value or "unknown"
+
+
 if _PromCounter is not None:  # pragma: no cover - exercised in integration environments
     DOCUMENT_OPERATION_TOTAL = _PromCounter(
         "documents_operation_total",
         "Number of document repository operations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     ASSET_OPERATION_TOTAL = _PromCounter(
         "documents_asset_operation_total",
         "Number of asset repository operations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     STORAGE_OPERATION_TOTAL = _PromCounter(
         "documents_storage_operation_total",
         "Number of storage adapter operations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     PIPELINE_OPERATION_TOTAL = _PromCounter(
         "documents_pipeline_operation_total",
         "Number of caption pipeline operations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     CLI_OPERATION_TOTAL = _PromCounter(
         "documents_cli_operation_total",
         "Number of CLI invocations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     OTHER_OPERATION_TOTAL = _PromCounter(
         "documents_other_operation_total",
         "Number of uncategorised document operations by event and status.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     CAPTION_RUNS_TOTAL = _PromCounter(
         "documents_caption_runs_total",
         "Number of caption pipeline runs by status.",
-        ["status"],
+        ["status", "workflow_id"],
+    )
+    PIPELINE_BLOCKS_TOTAL = _PromCounter(
+        "documents_pipeline_blocks_total",
+        "Number of text blocks emitted by parser executions.",
+        ["workflow_id"],
+    )
+    PIPELINE_ASSETS_TOTAL = _PromCounter(
+        "documents_pipeline_assets_total",
+        "Number of assets extracted during parser executions.",
+        ["workflow_id"],
+    )
+    PIPELINE_OCR_TRIGGER_TOTAL = _PromCounter(
+        "documents_pipeline_ocr_trigger_total",
+        "Number of pages flagged for OCR follow-up during parsing.",
+        ["workflow_id"],
+    )
+    PIPELINE_CAPTION_HITS_TOTAL = _PromCounter(
+        "documents_pipeline_caption_hits_total",
+        "Number of captions accepted from VLM results.",
+        ["workflow_id"],
+    )
+    PIPELINE_CAPTION_ATTEMPTS_TOTAL = _PromCounter(
+        "documents_pipeline_caption_attempts_total",
+        "Number of caption attempts evaluated for acceptance.",
+        ["workflow_id"],
     )
 else:  # pragma: no cover - exercised through direct inspection in unit tests
     DOCUMENT_OPERATION_TOTAL = _FallbackCounterVec()
@@ -140,43 +172,53 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     CLI_OPERATION_TOTAL = _FallbackCounterVec()
     OTHER_OPERATION_TOTAL = _FallbackCounterVec()
     CAPTION_RUNS_TOTAL = _FallbackCounterVec()
+    PIPELINE_BLOCKS_TOTAL = _FallbackCounterVec()
+    PIPELINE_ASSETS_TOTAL = _FallbackCounterVec()
+    PIPELINE_OCR_TRIGGER_TOTAL = _FallbackCounterVec()
+    PIPELINE_CAPTION_HITS_TOTAL = _FallbackCounterVec()
+    PIPELINE_CAPTION_ATTEMPTS_TOTAL = _FallbackCounterVec()
 
 
 if _PromHistogram is not None:  # pragma: no cover - exercised in integration environments
     DOCUMENT_OPERATION_DURATION_MS = _PromHistogram(
         "documents_operation_duration_ms",
         "Duration of document repository operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     ASSET_OPERATION_DURATION_MS = _PromHistogram(
         "documents_asset_operation_duration_ms",
         "Duration of asset repository operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     STORAGE_OPERATION_DURATION_MS = _PromHistogram(
         "documents_storage_operation_duration_ms",
         "Duration of storage adapter operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     PIPELINE_OPERATION_DURATION_MS = _PromHistogram(
         "documents_pipeline_operation_duration_ms",
         "Duration of caption pipeline operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     CLI_OPERATION_DURATION_MS = _PromHistogram(
         "documents_cli_operation_duration_ms",
         "Duration of CLI operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     OTHER_OPERATION_DURATION_MS = _PromHistogram(
         "documents_other_operation_duration_ms",
         "Duration of uncategorised document operations in milliseconds.",
-        ["event", "status"],
+        ["event", "status", "workflow_id"],
     )
     CAPTION_DURATION_MS = _PromHistogram(
         "documents_caption_duration_ms",
         "Duration of caption pipeline runs in milliseconds.",
-        ["status"],
+        ["status", "workflow_id"],
+    )
+    PIPELINE_CAPTION_HIT_RATIO = _PromHistogram(
+        "documents_pipeline_caption_hit_ratio",
+        "Distribution of caption hit rates produced by the captioning pipeline.",
+        ["workflow_id"],
     )
 else:  # pragma: no cover - exercised through direct inspection in unit tests
     DOCUMENT_OPERATION_DURATION_MS = _FallbackHistogramVec()
@@ -186,12 +228,20 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     CLI_OPERATION_DURATION_MS = _FallbackHistogramVec()
     OTHER_OPERATION_DURATION_MS = _FallbackHistogramVec()
     CAPTION_DURATION_MS = _FallbackHistogramVec()
+    PIPELINE_CAPTION_HIT_RATIO = _FallbackHistogramVec()
 
 
-def observe_event(event: str, status: str, duration_ms: float) -> None:
+def observe_event(
+    event: str,
+    status: str,
+    duration_ms: float,
+    *,
+    workflow_id: str | None = None,
+) -> None:
     """Record metrics for the given event, status, and duration."""
 
-    labels = {"event": event, "status": status}
+    workflow_label = _normalize_workflow_label(workflow_id)
+    labels = {"event": event, "status": status, "workflow_id": workflow_label}
     if event.startswith("docs."):
         DOCUMENT_OPERATION_TOTAL.labels(**labels).inc()
         DOCUMENT_OPERATION_DURATION_MS.labels(**labels).observe(duration_ms)
@@ -205,8 +255,10 @@ def observe_event(event: str, status: str, duration_ms: float) -> None:
         PIPELINE_OPERATION_TOTAL.labels(**labels).inc()
         PIPELINE_OPERATION_DURATION_MS.labels(**labels).observe(duration_ms)
         if event == "pipeline.assets_caption":
-            CAPTION_RUNS_TOTAL.labels(status=status).inc()
-            CAPTION_DURATION_MS.labels(status=status).observe(duration_ms)
+            CAPTION_RUNS_TOTAL.labels(status=status, workflow_id=workflow_label).inc()
+            CAPTION_DURATION_MS.labels(status=status, workflow_id=workflow_label).observe(
+                duration_ms
+            )
     elif event.startswith("cli."):
         CLI_OPERATION_TOTAL.labels(**labels).inc()
         CLI_OPERATION_DURATION_MS.labels(**labels).observe(duration_ms)
@@ -226,6 +278,11 @@ def reset_metrics() -> None:
         CLI_OPERATION_TOTAL,
         OTHER_OPERATION_TOTAL,
         CAPTION_RUNS_TOTAL,
+        PIPELINE_BLOCKS_TOTAL,
+        PIPELINE_ASSETS_TOTAL,
+        PIPELINE_OCR_TRIGGER_TOTAL,
+        PIPELINE_CAPTION_HITS_TOTAL,
+        PIPELINE_CAPTION_ATTEMPTS_TOTAL,
     ):
         reset = getattr(metric, "reset", None)
         if callable(reset):
@@ -239,6 +296,7 @@ def reset_metrics() -> None:
         CLI_OPERATION_DURATION_MS,
         OTHER_OPERATION_DURATION_MS,
         CAPTION_DURATION_MS,
+        PIPELINE_CAPTION_HIT_RATIO,
     ):
         reset = getattr(metric, "reset", None)
         if callable(reset):
@@ -300,6 +358,12 @@ __all__ = [
     "OTHER_OPERATION_TOTAL",
     "PIPELINE_OPERATION_DURATION_MS",
     "PIPELINE_OPERATION_TOTAL",
+    "PIPELINE_BLOCKS_TOTAL",
+    "PIPELINE_ASSETS_TOTAL",
+    "PIPELINE_OCR_TRIGGER_TOTAL",
+    "PIPELINE_CAPTION_HITS_TOTAL",
+    "PIPELINE_CAPTION_ATTEMPTS_TOTAL",
+    "PIPELINE_CAPTION_HIT_RATIO",
     "STORAGE_OPERATION_DURATION_MS",
     "STORAGE_OPERATION_TOTAL",
     "counter_value",

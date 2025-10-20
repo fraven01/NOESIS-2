@@ -1,0 +1,50 @@
+{
+  "additionalProperties": false,
+  "description": "Reference to an extracted asset belonging to a document.",
+  "properties": {
+    "asset_id": {
+      "description": "Unique identifier of the asset.",
+      "format": "uuid",
+      "title": "Asset Id",
+      "type": "string"
+    },
+    "collection_id": {
+      "anyOf": [
+        {
+          "format": "uuid",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Optional collection identifier for the asset.",
+      "title": "Collection Id"
+    },
+    "document_id": {
+      "description": "Identifier of the parent document.",
+      "format": "uuid",
+      "title": "Document Id",
+      "type": "string"
+    },
+    "tenant_id": {
+      "description": "Tenant identifier owning the asset.",
+      "title": "Tenant Id",
+      "type": "string"
+    },
+    "workflow_id": {
+      "description": "Workflow identifier linking the asset to its document workflow.",
+      "title": "Workflow Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "tenant_id",
+    "workflow_id",
+    "asset_id",
+    "document_id"
+  ],
+  "title": "Asset Reference",
+  "type": "object"
+}

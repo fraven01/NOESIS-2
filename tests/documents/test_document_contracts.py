@@ -6,7 +6,7 @@ from uuid import uuid4
 import jsonschema
 import pytest
 
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from documents.contracts import (
     Asset,
@@ -37,6 +37,7 @@ from documents.contract_utils import (
 
 
 BLOB_LOCATOR_ADAPTER = TypeAdapter(BlobLocator)
+DEFAULT_WORKFLOW = "workflow-1"
 
 
 @pytest.fixture(autouse=True)
@@ -52,10 +53,12 @@ def test_document_ref_normalization():
     doc_id = uuid4()
     ref = DocumentRef(
         tenant_id="  tenant\u200b ",
+        workflow_id="  workflow-01  ",
         document_id=doc_id,
         version=" v1.2 ",
     )
     assert ref.tenant_id == "tenant"
+    assert ref.workflow_id == "workflow-01"
     assert ref.version == "v1.2"
     assert ref.document_id is doc_id
 
@@ -66,6 +69,7 @@ def test_document_and_asset_ref_accept_string_ids():
     asset_id = uuid4()
     doc_ref = DocumentRef(
         tenant_id="tenant",
+        workflow_id="flow-1",
         document_id=str(doc_id),
         collection_id=str(collection_id),
     )
@@ -74,6 +78,7 @@ def test_document_and_asset_ref_accept_string_ids():
 
     asset_ref = AssetRef(
         tenant_id="tenant",
+        workflow_id="flow-1",
         asset_id=str(asset_id),
         document_id=str(doc_id),
         collection_id=str(collection_id),
@@ -89,53 +94,68 @@ def test_document_and_asset_ref_accept_string_ids():
 )
 def test_document_ref_rejects_empty_tenant(tenant_id):
     with pytest.raises(ValueError):
-        DocumentRef(tenant_id=tenant_id, document_id=uuid4())
+        DocumentRef(tenant_id=tenant_id, workflow_id="wf", document_id=uuid4())
 
 
 def test_document_ref_version_regex():
-    ref = DocumentRef(tenant_id="acme", document_id=uuid4(), version="")
+    ref = DocumentRef(
+        tenant_id="acme", workflow_id="wf", document_id=uuid4(), version=""
+    )
     assert ref.version is None
     with pytest.raises(ValueError):
-        DocumentRef(tenant_id="acme", document_id=uuid4(), version="bad version")
+        DocumentRef(
+            tenant_id="acme",
+            workflow_id="wf",
+            document_id=uuid4(),
+            version="bad version",
+        )
 
 
 def test_document_meta_tags_and_language():
     meta = DocumentMeta(
         tenant_id=" acme ",
+        workflow_id=" Workflow-Id ",
         title="  Example Title  ",
         language="en-US",
         tags=[" alpha ", "beta"],
     )
     assert meta.tenant_id == "acme"
+    assert meta.workflow_id == "Workflow-Id"
     assert meta.title == "Example Title"
     assert meta.tags == ["alpha", "beta"]
     assert meta.language == "en-US"
 
 
 def test_document_meta_tags_deduplicate_and_strip_invisibles():
-    meta = DocumentMeta(tenant_id="acme", tags=["  foo  ", "foo", "bar\u200b"])
+    meta = DocumentMeta(
+        tenant_id="acme",
+        workflow_id="wf",
+        tags=["  foo  ", "foo", "bar\u200b"],
+    )
     assert meta.tags == ["bar", "foo"]
 
 
 @pytest.mark.parametrize("tags", [["bad tag"], ["a" * 65], ["value!"], ["white space"]])
 def test_document_meta_invalid_tags(tags):
     with pytest.raises(ValueError):
-        DocumentMeta(tenant_id="acme", tags=tags)
+        DocumentMeta(tenant_id="acme", workflow_id="wf", tags=tags)
 
 
 def test_document_meta_empty_tags_are_removed():
-    meta = DocumentMeta(tenant_id="acme", tags=["", "  ", "value"])
+    meta = DocumentMeta(
+        tenant_id="acme", workflow_id="wf", tags=["", "  ", "value"]
+    )
     assert meta.tags == ["value"]
 
 
 def test_document_meta_external_ref_entry_limit():
     valid = {f"key{i}": f"value{i}" for i in range(16)}
-    meta = DocumentMeta(tenant_id="acme", external_ref=valid)
+    meta = DocumentMeta(tenant_id="acme", workflow_id="wf", external_ref=valid)
     assert len(meta.external_ref or {}) == 16
 
     too_many = {f"key{i}": "value" for i in range(17)}
     with pytest.raises(ValueError):
-        DocumentMeta(tenant_id="acme", external_ref=too_many)
+        DocumentMeta(tenant_id="acme", workflow_id="wf", external_ref=too_many)
 
 
 def test_contract_utils_tag_helper_sorting_and_deduplication():
@@ -190,7 +210,7 @@ def test_contract_utils_truncate_text_utf8_safe():
 )
 def test_document_meta_invalid_language(language):
     with pytest.raises(ValueError):
-        DocumentMeta(tenant_id="acme", language=language)
+        DocumentMeta(tenant_id="acme", workflow_id="wf", language=language)
 
 
 def make_inline_blob(media_type: str = "image/png", payload: bytes = b"payload") -> BlobLocator:
@@ -272,11 +292,14 @@ def test_blob_locator_validation_errors():
     assert "file" in str(exc.value)
 
 
-def build_asset(media_type: str = "image/png") -> Asset:
+def build_asset(
+    media_type: str = "image/png", workflow_id: str = DEFAULT_WORKFLOW
+) -> Asset:
     blob = BLOB_LOCATOR_ADAPTER.validate_python(make_inline_blob(media_type))
     return Asset(
         ref=AssetRef(
             tenant_id="acme",
+            workflow_id=workflow_id,
             asset_id=uuid4(),
             document_id=uuid4(),
         ),
@@ -296,6 +319,11 @@ def test_asset_bbox_and_limits():
     asset.ocr_text = "ocr"
     asset.text_description = "desc"
     assert asset.bbox == [0.1, 0.2, 0.9, 0.95]
+
+
+def test_asset_workflow_id_property():
+    asset = build_asset()
+    assert asset.workflow_id == asset.ref.workflow_id
 
 
 def test_asset_invalid_bbox():
@@ -326,6 +354,7 @@ def test_asset_media_type_case_insensitive_acceptance():
         {
             "ref": {
                 "tenant_id": "acme",
+                "workflow_id": DEFAULT_WORKFLOW,
                 "asset_id": str(uuid4()),
                 "document_id": str(uuid4()),
             },
@@ -353,6 +382,7 @@ def test_asset_media_guard_rejects_mismatched_prefix():
                 {
                     "ref": {
                         "tenant_id": "acme",
+                        "workflow_id": DEFAULT_WORKFLOW,
                         "asset_id": str(uuid4()),
                         "document_id": str(uuid4()),
                     },
@@ -374,12 +404,13 @@ def test_asset_media_guard_allows_matching_prefix():
     }
     with asset_media_guard(["image/"]):
         asset = Asset.model_validate(
-            {
-                "ref": {
-                    "tenant_id": "acme",
-                    "asset_id": str(uuid4()),
-                    "document_id": str(uuid4()),
-                },
+                {
+                    "ref": {
+                        "tenant_id": "acme",
+                        "workflow_id": DEFAULT_WORKFLOW,
+                        "asset_id": str(uuid4()),
+                        "document_id": str(uuid4()),
+                    },
                 "media_type": "image/png",
                 "blob": file_blob,
                 "caption_method": "manual",
@@ -399,12 +430,13 @@ def test_asset_media_guard_supports_multiple_prefixes():
     }
     with asset_media_guard(["image/", "video/"]):
         asset = Asset.model_validate(
-            {
-                "ref": {
-                    "tenant_id": "acme",
-                    "asset_id": str(uuid4()),
-                    "document_id": str(uuid4()),
-                },
+                {
+                    "ref": {
+                        "tenant_id": "acme",
+                        "workflow_id": DEFAULT_WORKFLOW,
+                        "asset_id": str(uuid4()),
+                        "document_id": str(uuid4()),
+                    },
                 "media_type": "video/mp4",
                 "blob": file_blob,
                 "caption_method": "manual",
@@ -501,12 +533,13 @@ def test_asset_text_fields_truncate_utf8_boundaries():
     assert len(validated.ocr_text.encode("utf-8")) <= 8192
 
 
-def build_document() -> NormalizedDocument:
+def build_document(workflow_id: str = DEFAULT_WORKFLOW) -> NormalizedDocument:
     doc_id = uuid4()
     blob = BLOB_LOCATOR_ADAPTER.validate_python(make_inline_blob())
     asset = Asset(
         ref=AssetRef(
             tenant_id="acme",
+            workflow_id=workflow_id,
             asset_id=uuid4(),
             document_id=doc_id,
         ),
@@ -525,8 +558,8 @@ def build_document() -> NormalizedDocument:
         }
     )
     return NormalizedDocument(
-        ref=DocumentRef(tenant_id="acme", document_id=doc_id),
-        meta=DocumentMeta(tenant_id="acme"),
+        ref=DocumentRef(tenant_id="acme", workflow_id=workflow_id, document_id=doc_id),
+        meta=DocumentMeta(tenant_id="acme", workflow_id=workflow_id),
         blob=doc_blob,
         checksum=doc_blob.sha256,
         created_at=datetime.now(timezone.utc),
@@ -539,11 +572,34 @@ def test_normalized_document_relationships():
     assert doc.assets[0].ref.document_id == doc.ref.document_id
 
 
+def test_normalized_document_meta_workflow_mismatch():
+    doc = build_document()
+    data = doc.model_dump(mode="python")
+    data["meta"]["workflow_id"] = "other-flow"
+    with pytest.raises(ValidationError) as exc:
+        NormalizedDocument.model_validate(data)
+    assert any("meta_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors())
+
+
+def test_normalized_document_asset_workflow_mismatch():
+    doc = build_document()
+    data = doc.model_dump(mode="python")
+    data["assets"][0]["ref"]["workflow_id"] = "other-flow"
+    with pytest.raises(ValidationError) as exc:
+        NormalizedDocument.model_validate(data)
+    assert any("asset_workflow_mismatch" in err.get("msg", "") for err in exc.value.errors())
+
+
 def test_normalized_document_invalid_tenant():
     doc_id = uuid4()
     blob = BLOB_LOCATOR_ADAPTER.validate_python(make_inline_blob())
     asset = Asset(
-        ref=AssetRef(tenant_id="other", asset_id=uuid4(), document_id=doc_id),
+        ref=AssetRef(
+            tenant_id="other",
+            workflow_id=DEFAULT_WORKFLOW,
+            asset_id=uuid4(),
+            document_id=doc_id,
+        ),
         media_type="image/png",
         blob=blob,
         caption_method="none",
@@ -560,8 +616,12 @@ def test_normalized_document_invalid_tenant():
     )
     with pytest.raises(ValueError):
         NormalizedDocument(
-            ref=DocumentRef(tenant_id="acme", document_id=doc_id),
-            meta=DocumentMeta(tenant_id="acme"),
+            ref=DocumentRef(
+                tenant_id="acme",
+                workflow_id=DEFAULT_WORKFLOW,
+                document_id=doc_id,
+            ),
+            meta=DocumentMeta(tenant_id="acme", workflow_id=DEFAULT_WORKFLOW),
             blob=doc_blob,
             checksum=doc_blob.sha256,
             created_at=datetime.now(timezone.utc),
@@ -580,8 +640,10 @@ def test_normalized_document_requires_utc():
             }
         )
         NormalizedDocument(
-            ref=DocumentRef(tenant_id="acme", document_id=uuid4()),
-            meta=DocumentMeta(tenant_id="acme"),
+            ref=DocumentRef(
+                tenant_id="acme", workflow_id=DEFAULT_WORKFLOW, document_id=uuid4()
+            ),
+            meta=DocumentMeta(tenant_id="acme", workflow_id=DEFAULT_WORKFLOW),
             blob=doc_blob,
             checksum=doc_blob.sha256,
             created_at=datetime.now(),
@@ -594,6 +656,7 @@ def test_normalized_document_collection_mismatch():
     asset = Asset(
         ref=AssetRef(
             tenant_id="acme",
+            workflow_id=DEFAULT_WORKFLOW,
             asset_id=uuid4(),
             document_id=doc_id,
             collection_id=None,
@@ -614,8 +677,13 @@ def test_normalized_document_collection_mismatch():
     )
     with pytest.raises(ValueError):
         NormalizedDocument(
-            ref=DocumentRef(tenant_id="acme", document_id=doc_id, collection_id=uuid4()),
-            meta=DocumentMeta(tenant_id="acme"),
+            ref=DocumentRef(
+                tenant_id="acme",
+                workflow_id=DEFAULT_WORKFLOW,
+                document_id=doc_id,
+                collection_id=uuid4(),
+            ),
+            meta=DocumentMeta(tenant_id="acme", workflow_id=DEFAULT_WORKFLOW),
             blob=doc_blob,
             checksum=doc_blob.sha256,
             created_at=datetime.now(timezone.utc),
@@ -681,12 +749,20 @@ def assert_document_roundtrip(doc: NormalizedDocument) -> None:
 
 def test_source_upload_examples_roundtrip():
     tenant = "tenant-upload"
+    workflow_id = "upload-flow"
     doc_without_assets_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_file_blob("memory://upload/doc.pdf", b"upload-document")
     )
     doc_without_assets = NormalizedDocument(
-        ref=DocumentRef(tenant_id=tenant, document_id=uuid4()),
-        meta=DocumentMeta(tenant_id=tenant, title="Upload Document", tags=["upload"]),
+        ref=DocumentRef(
+            tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()
+        ),
+        meta=DocumentMeta(
+            tenant_id=tenant,
+            workflow_id=workflow_id,
+            title="Upload Document",
+            tags=["upload"],
+        ),
         blob=doc_without_assets_blob,
         checksum=doc_without_assets_blob.sha256,
         created_at=datetime(2024, 1, 1, 8, tzinfo=timezone.utc),
@@ -705,6 +781,7 @@ def test_source_upload_examples_roundtrip():
     asset = Asset(
         ref=AssetRef(
             tenant_id=tenant,
+            workflow_id=workflow_id,
             asset_id=uuid4(),
             document_id=doc_with_asset_id,
         ),
@@ -716,8 +793,16 @@ def test_source_upload_examples_roundtrip():
         checksum=asset_blob.sha256,
     )
     doc_with_asset = NormalizedDocument(
-        ref=DocumentRef(tenant_id=tenant, document_id=doc_with_asset_id),
-        meta=DocumentMeta(tenant_id=tenant, title="Upload With Asset"),
+        ref=DocumentRef(
+            tenant_id=tenant,
+            workflow_id=workflow_id,
+            document_id=doc_with_asset_id,
+        ),
+        meta=DocumentMeta(
+            tenant_id=tenant,
+            workflow_id=workflow_id,
+            title="Upload With Asset",
+        ),
         blob=doc_with_asset_blob,
         checksum=doc_with_asset_blob.sha256,
         created_at=datetime(2024, 1, 1, 8, tzinfo=timezone.utc),
@@ -729,6 +814,7 @@ def test_source_upload_examples_roundtrip():
 
 def test_source_crawler_example_roundtrip():
     tenant = "tenant-crawler"
+    workflow_id = "crawler-flow"
     doc_id = uuid4()
     doc_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_file_blob("memory://crawler/doc.html", b"<html>Crawled Content</html>")
@@ -739,6 +825,7 @@ def test_source_crawler_example_roundtrip():
     asset = Asset(
         ref=AssetRef(
             tenant_id=tenant,
+            workflow_id=workflow_id,
             asset_id=uuid4(),
             document_id=doc_id,
             collection_id=uuid4(),
@@ -756,9 +843,15 @@ def test_source_crawler_example_roundtrip():
         checksum=asset_blob.sha256,
     )
     crawler_doc = NormalizedDocument(
-        ref=DocumentRef(tenant_id=tenant, document_id=doc_id, collection_id=asset.ref.collection_id),
+        ref=DocumentRef(
+            tenant_id=tenant,
+            workflow_id=workflow_id,
+            document_id=doc_id,
+            collection_id=asset.ref.collection_id,
+        ),
         meta=DocumentMeta(
             tenant_id=tenant,
+            workflow_id=workflow_id,
             tags=["crawler", "example"],
             origin_uri="https://example.com/docs/123",
             crawl_timestamp=datetime(2024, 5, 1, 11, tzinfo=timezone.utc),
@@ -774,6 +867,7 @@ def test_source_crawler_example_roundtrip():
 
 def test_source_integration_example_roundtrip():
     tenant = "tenant-integration"
+    workflow_id = "integration-flow"
     doc_id = uuid4()
     doc_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_file_blob("memory://integration/page.html", b"Integration content")
@@ -782,7 +876,12 @@ def test_source_integration_example_roundtrip():
         make_inline_blob("image/png", payload=b"integration-screenshot")
     )
     asset = Asset(
-        ref=AssetRef(tenant_id=tenant, asset_id=uuid4(), document_id=doc_id),
+        ref=AssetRef(
+            tenant_id=tenant,
+            workflow_id=workflow_id,
+            asset_id=uuid4(),
+            document_id=doc_id,
+        ),
         media_type="image/png",
         blob=asset_blob,
         origin_uri="https://confluence.example.com/page#attachment",
@@ -792,9 +891,12 @@ def test_source_integration_example_roundtrip():
         checksum=asset_blob.sha256,
     )
     integration_doc = NormalizedDocument(
-        ref=DocumentRef(tenant_id=tenant, document_id=doc_id),
+        ref=DocumentRef(
+            tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id
+        ),
         meta=DocumentMeta(
             tenant_id=tenant,
+            workflow_id=workflow_id,
             tags=["integration"],
             origin_uri="https://confluence.example.com/page",
             external_ref={"provider": "confluence", "id": "XYZ"},
@@ -810,15 +912,19 @@ def test_source_integration_example_roundtrip():
 
 def test_source_integration_llm_context_example_roundtrip():
     tenant = "tenant-llm"
+    workflow_id = "llm-flow"
     doc_id = uuid4()
     payload = b"# Release Notes\nGenerated summary"
     inline_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_inline_blob("text/markdown", payload=payload)
     )
     llm_doc = NormalizedDocument(
-        ref=DocumentRef(tenant_id=tenant, document_id=doc_id),
+        ref=DocumentRef(
+            tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id
+        ),
         meta=DocumentMeta(
             tenant_id=tenant,
+            workflow_id=workflow_id,
             tags=["llm", "summary"],
             external_ref={
                 "provider": "noesis-llm",
@@ -846,6 +952,7 @@ def test_source_integration_llm_context_example_roundtrip():
 @pytest.mark.parametrize("missing_key", ["provider", "model", "generated_at", "topic"])
 def test_source_integration_llm_context_requires_external_ref_keys(missing_key: str):
     tenant = "tenant-llm"
+    workflow_id = "llm-flow"
     doc_id = uuid4()
     payload = b"# Title\nBody"
     inline_blob = BLOB_LOCATOR_ADAPTER.validate_python(
@@ -860,8 +967,14 @@ def test_source_integration_llm_context_requires_external_ref_keys(missing_key: 
     external_ref.pop(missing_key)
     with pytest.raises(ValueError) as exc_info:
         NormalizedDocument(
-            ref=DocumentRef(tenant_id=tenant, document_id=doc_id),
-            meta=DocumentMeta(tenant_id=tenant, external_ref=external_ref),
+            ref=DocumentRef(
+                tenant_id=tenant, workflow_id=workflow_id, document_id=doc_id
+            ),
+            meta=DocumentMeta(
+                tenant_id=tenant,
+                workflow_id=workflow_id,
+                external_ref=external_ref,
+            ),
             blob=inline_blob,
             checksum=inline_blob.sha256,
             created_at=datetime(2024, 6, 1, 12, 5, tzinfo=timezone.utc),
@@ -872,6 +985,7 @@ def test_source_integration_llm_context_requires_external_ref_keys(missing_key: 
 
 def test_source_integration_llm_context_rejects_origin_and_crawl_timestamp():
     tenant = "tenant-llm"
+    workflow_id = "llm-flow"
     payload = b"Body"
     inline_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_inline_blob("text/markdown", payload=payload)
@@ -884,9 +998,12 @@ def test_source_integration_llm_context_rejects_origin_and_crawl_timestamp():
     }
     with pytest.raises(ValueError) as exc_info:
         NormalizedDocument(
-            ref=DocumentRef(tenant_id=tenant, document_id=uuid4()),
+            ref=DocumentRef(
+                tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()
+            ),
             meta=DocumentMeta(
                 tenant_id=tenant,
+                workflow_id=workflow_id,
                 origin_uri="https://example.com/llm",
                 external_ref=base_ref,
             ),
@@ -899,9 +1016,12 @@ def test_source_integration_llm_context_rejects_origin_and_crawl_timestamp():
 
     with pytest.raises(ValueError) as exc_info:
         NormalizedDocument(
-            ref=DocumentRef(tenant_id=tenant, document_id=uuid4()),
+            ref=DocumentRef(
+                tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()
+            ),
             meta=DocumentMeta(
                 tenant_id=tenant,
+                workflow_id=workflow_id,
                 crawl_timestamp=datetime(2024, 6, 1, 13, tzinfo=timezone.utc),
                 external_ref=base_ref,
             ),
@@ -915,14 +1035,18 @@ def test_source_integration_llm_context_rejects_origin_and_crawl_timestamp():
 
 def test_source_integration_llm_context_generated_at_must_be_iso8601():
     tenant = "tenant-llm"
+    workflow_id = "llm-flow"
     inline_blob = BLOB_LOCATOR_ADAPTER.validate_python(
         make_inline_blob("text/markdown", payload=b"Body")
     )
     with pytest.raises(ValueError) as exc_info:
         NormalizedDocument(
-            ref=DocumentRef(tenant_id=tenant, document_id=uuid4()),
+            ref=DocumentRef(
+                tenant_id=tenant, workflow_id=workflow_id, document_id=uuid4()
+            ),
             meta=DocumentMeta(
                 tenant_id=tenant,
+                workflow_id=workflow_id,
                 external_ref={
                     "provider": "noesis-llm",
                     "model": "gpt-4o-mini",

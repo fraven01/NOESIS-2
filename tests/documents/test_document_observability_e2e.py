@@ -103,6 +103,7 @@ def _inline_blob(payload: bytes, media_type: str) -> InlineBlob:
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     collection_id: UUID | None = None,
     document_id: UUID | None = None,
     blob: InlineBlob | FileBlob,
@@ -110,10 +111,16 @@ def _make_document(
 ) -> NormalizedDocument:
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=document_id or uuid4(),
         collection_id=collection_id,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="E2E", tags=["obs"])
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title="E2E",
+        tags=["obs"],
+    )
     return NormalizedDocument(
         ref=ref,
         meta=meta,
@@ -128,12 +135,18 @@ def _make_document(
 def _make_inline_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     payload: bytes,
 ) -> Asset:
     blob = _inline_blob(payload, "image/png")
     return Asset(
-        ref=AssetRef(tenant_id=tenant_id, asset_id=uuid4(), document_id=document_id),
+        ref=AssetRef(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            asset_id=uuid4(),
+            document_id=document_id,
+        ),
         media_type="image/png",
         blob=blob,
         caption_method="none",
@@ -163,29 +176,37 @@ def test_document_repository_observability(
         blob=blob,
         checksum=checksum,
     )
+    workflow_id = document.ref.workflow_id
 
     stored = repo.upsert(document)
     assert isinstance(stored.blob, FileBlob)
 
-    fetched = repo.get(tenant_id, stored.ref.document_id)
+    fetched = repo.get(
+        tenant_id, stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
     assert fetched is not None
     assert isinstance(fetched.blob, FileBlob)
 
-    deleted = repo.delete(tenant_id, stored.ref.document_id)
+    deleted = repo.delete(
+        tenant_id, stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
     assert deleted is True
 
     upsert_events = _json_events(caplog, "docs.upsert")
     assert any(event.get("phase") == "start" for event in upsert_events)
     upsert_exit = [event for event in upsert_events if event.get("status") == "ok"][-1]
     assert upsert_exit["tenant_id"] == tenant_id
+    assert upsert_exit["workflow_id"] == workflow_id
     assert "duration_ms" in upsert_exit
     _assert_no_base64(upsert_events)
 
     get_exit = [event for event in _json_events(caplog, "docs.get") if event.get("status") == "ok"][-1]
     assert get_exit["document_id"] == str(stored.ref.document_id)
+    assert get_exit["workflow_id"] == workflow_id
 
     delete_exit = [event for event in _json_events(caplog, "docs.delete") if event.get("status") == "ok"][-1]
     assert delete_exit["deleted"] is True
+    assert delete_exit["workflow_id"] == workflow_id
 
     storage_events = _json_events(caplog, "storage.put")
     storage_exit = [event for event in storage_events if event.get("status") == "ok"][-1]
@@ -194,36 +215,85 @@ def test_document_repository_observability(
     spans = span_exporter.get_finished_spans()
     span_names = {span.name: span for span in spans}
     assert span_names["docs.upsert"].status.status_code is StatusCode.OK
+    assert span_names["docs.upsert"].attributes["noesis.workflow_id"] == workflow_id
     assert span_names["docs.get"].status.status_code is StatusCode.OK
+    assert span_names["docs.get"].attributes["noesis.workflow_id"] == workflow_id
     assert span_names["docs.delete"].status.status_code is StatusCode.OK
+    assert span_names["docs.delete"].attributes["noesis.workflow_id"] == workflow_id
     assert span_names["storage.put"].status.status_code is StatusCode.OK
 
     assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.upsert", status="ok")
+        metrics.counter_value(
+            metrics.DOCUMENT_OPERATION_TOTAL,
+            event="docs.upsert",
+            status="ok",
+            workflow_id=workflow_id,
+        )
         or 0.0
     ) >= 1.0
     assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.get", status="ok") or 0.0
+        metrics.counter_value(
+            metrics.DOCUMENT_OPERATION_TOTAL,
+            event="docs.get",
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
     ) >= 1.0
     assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.delete", status="ok") or 0.0
+        metrics.counter_value(
+            metrics.DOCUMENT_OPERATION_TOTAL,
+            event="docs.delete",
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
     ) >= 1.0
     assert (
-        metrics.counter_value(metrics.STORAGE_OPERATION_TOTAL, event="storage.put", status="ok") or 0.0
+        metrics.counter_value(
+            metrics.STORAGE_OPERATION_TOTAL,
+            event="storage.put",
+            status="ok",
+            workflow_id="unknown",
+        )
+        or 0.0
     ) >= 1.0
 
     assert (
-        metrics.histogram_count(metrics.DOCUMENT_OPERATION_DURATION_MS, event="docs.upsert", status="ok")
+        metrics.histogram_count(
+            metrics.DOCUMENT_OPERATION_DURATION_MS,
+            event="docs.upsert",
+            status="ok",
+            workflow_id=workflow_id,
+        )
         or 0.0
     ) >= 1.0
     assert (
-        metrics.histogram_count(metrics.DOCUMENT_OPERATION_DURATION_MS, event="docs.get", status="ok") or 0.0
+        metrics.histogram_count(
+            metrics.DOCUMENT_OPERATION_DURATION_MS,
+            event="docs.get",
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
     ) >= 1.0
     assert (
-        metrics.histogram_count(metrics.DOCUMENT_OPERATION_DURATION_MS, event="docs.delete", status="ok") or 0.0
+        metrics.histogram_count(
+            metrics.DOCUMENT_OPERATION_DURATION_MS,
+            event="docs.delete",
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
     ) >= 1.0
     assert (
-        metrics.histogram_count(metrics.STORAGE_OPERATION_DURATION_MS, event="storage.put", status="ok") or 0.0
+        metrics.histogram_count(
+            metrics.STORAGE_OPERATION_DURATION_MS,
+            event="storage.put",
+            status="ok",
+            workflow_id="unknown",
+        )
+        or 0.0
     ) >= 1.0
 
     span_exporter.clear()
@@ -252,6 +322,7 @@ def test_caption_pipeline_observability(
         blob=doc_blob,
         checksum=checksum,
     )
+    workflow_id = document.ref.workflow_id
 
     repo.upsert(document)
     metrics.reset_metrics()
@@ -260,11 +331,13 @@ def test_caption_pipeline_observability(
     asset = _make_inline_asset(tenant_id=tenant_id, document_id=doc_id, payload=asset_payload)
     stored_asset = repo.add_asset(asset)
 
-    stored_document = repo.get(tenant_id, doc_id)
+    stored_document = repo.get(tenant_id, doc_id, workflow_id=document.ref.workflow_id)
     assert stored_document is not None
     pipeline.process_document(stored_document)
 
-    updated_asset = repo.get_asset(tenant_id, stored_asset.ref.asset_id)
+    updated_asset = repo.get_asset(
+        tenant_id, stored_asset.ref.asset_id, workflow_id=stored_asset.ref.workflow_id
+    )
     assert updated_asset is not None
     assert updated_asset.text_description
     assert updated_asset.caption_method == "vlm_caption"
@@ -272,41 +345,80 @@ def test_caption_pipeline_observability(
     asset_events = _json_events(caplog, "assets.add")
     asset_exit = [event for event in asset_events if event.get("status") == "ok"][-1]
     assert asset_exit["asset_id"] == str(stored_asset.ref.asset_id)
+    assert asset_exit["workflow_id"] == stored_asset.ref.workflow_id
 
     pipeline_events = _json_events(caplog, "pipeline.assets_caption")
     pipeline_exit = [event for event in pipeline_events if event.get("status") == "ok"][-1]
     assert pipeline_exit["processed_assets"] >= 1
+    assert pipeline_exit["workflow_id"] == workflow_id
     _assert_no_base64(asset_events + pipeline_events)
 
     spans = span_exporter.get_finished_spans()
     span_names = {span.name: span for span in spans}
     assert span_names["assets.add"].status.status_code is StatusCode.OK
+    assert span_names["assets.add"].attributes["noesis.workflow_id"] == stored_asset.ref.workflow_id
     assert span_names["pipeline.assets_caption"].status.status_code is StatusCode.OK
+    assert span_names["pipeline.assets_caption"].attributes["noesis.workflow_id"] == workflow_id
     assert span_names["pipeline.assets_caption.item"].status.status_code is StatusCode.OK
+    assert (
+        span_names["pipeline.assets_caption.item"].attributes["noesis.workflow_id"]
+        == stored_asset.ref.workflow_id
+    )
     assert span_names["assets.caption.run"].status.status_code is StatusCode.OK
 
     assert (
-        metrics.counter_value(metrics.ASSET_OPERATION_TOTAL, event="assets.add", status="ok") or 0.0
-    ) >= 1.0
-    assert (
         metrics.counter_value(
-            metrics.PIPELINE_OPERATION_TOTAL, event="pipeline.assets_caption", status="ok"
+            metrics.ASSET_OPERATION_TOTAL,
+            event="assets.add",
+            status="ok",
+            workflow_id=stored_asset.ref.workflow_id,
         )
         or 0.0
     ) >= 1.0
-    assert (metrics.counter_value(metrics.CAPTION_RUNS_TOTAL, status="ok") or 0.0) >= 1.0
+    assert (
+        metrics.counter_value(
+            metrics.PIPELINE_OPERATION_TOTAL,
+            event="pipeline.assets_caption",
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
+    ) >= 1.0
+    assert (
+        metrics.counter_value(
+            metrics.CAPTION_RUNS_TOTAL,
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
+    ) >= 1.0
 
     assert (
-        metrics.histogram_count(metrics.ASSET_OPERATION_DURATION_MS, event="assets.add", status="ok")
+        metrics.histogram_count(
+            metrics.ASSET_OPERATION_DURATION_MS,
+            event="assets.add",
+            status="ok",
+            workflow_id=stored_asset.ref.workflow_id,
+        )
         or 0.0
     ) >= 1.0
     assert (
         metrics.histogram_count(
-            metrics.PIPELINE_OPERATION_DURATION_MS, event="pipeline.assets_caption", status="ok"
+            metrics.PIPELINE_OPERATION_DURATION_MS,
+            event="pipeline.assets_caption",
+            status="ok",
+            workflow_id=workflow_id,
         )
         or 0.0
     ) >= 1.0
-    assert (metrics.histogram_count(metrics.CAPTION_DURATION_MS, status="ok") or 0.0) >= 1.0
+    assert (
+        metrics.histogram_count(
+            metrics.CAPTION_DURATION_MS,
+            status="ok",
+            workflow_id=workflow_id,
+        )
+        or 0.0
+    ) >= 1.0
 
     span_exporter.clear()
 
@@ -334,11 +446,20 @@ def test_storage_error_observability(
     assert error_span.status.status_code is StatusCode.ERROR
 
     assert (
-        metrics.counter_value(metrics.STORAGE_OPERATION_TOTAL, event="storage.get", status="error") or 0.0
+        metrics.counter_value(
+            metrics.STORAGE_OPERATION_TOTAL,
+            event="storage.get",
+            status="error",
+            workflow_id="unknown",
+        )
+        or 0.0
     ) >= 1.0
     assert (
         metrics.histogram_count(
-            metrics.STORAGE_OPERATION_DURATION_MS, event="storage.get", status="error"
+            metrics.STORAGE_OPERATION_DURATION_MS,
+            event="storage.get",
+            status="error",
+            workflow_id="unknown",
         )
         or 0.0
     ) >= 1.0
@@ -362,6 +483,31 @@ def test_cli_observability(
     tenant_id = "tenant-cli"
     collection_id = uuid4()
     inline_payload = base64.b64encode(b"cli-document").decode("ascii")
+    workflow_id = "workflow-1"
+
+    def _counter_total(metric_obj, event: str, status: str = "ok") -> float:
+        return sum(
+            metrics.counter_value(
+                metric_obj,
+                event=event,
+                status=status,
+                workflow_id=label,
+            )
+            or 0.0
+            for label in {workflow_id, "unknown"}
+        )
+
+    def _hist_total(metric_obj, event: str, status: str = "ok") -> float:
+        return sum(
+            metrics.histogram_count(
+                metric_obj,
+                event=event,
+                status=status,
+                workflow_id=label,
+            )
+            or 0.0
+            for label in {workflow_id, "unknown"}
+        )
 
     exit_code = cli_main(
         [
@@ -370,6 +516,8 @@ def test_cli_observability(
             "add",
             "--tenant",
             tenant_id,
+            "--workflow-id",
+            workflow_id,
             "--collection",
             str(collection_id),
             "--inline",
@@ -437,6 +585,9 @@ def test_cli_observability(
         tenant_value = exit_event.get("tenant_id")
         if tenant_value is not None:
             assert tenant_value == tenant_id
+        workflow_value = exit_event.get("workflow_id")
+        if workflow_value is not None:
+            assert workflow_value == workflow_id
         assert "duration_ms" in exit_event
         _assert_no_base64(events)
 
@@ -447,44 +598,20 @@ def test_cli_observability(
     assert span_names["cli.docs.list"].status.status_code is StatusCode.OK
     assert span_names["cli.docs.delete"].status.status_code is StatusCode.OK
 
-    assert (
-        metrics.counter_value(metrics.CLI_OPERATION_TOTAL, event="cli.docs.add", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.CLI_OPERATION_TOTAL, event="cli.docs.get", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.CLI_OPERATION_TOTAL, event="cli.docs.list", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.CLI_OPERATION_TOTAL, event="cli.docs.delete", status="ok") or 0.0
-    ) >= 1.0
+    assert _counter_total(metrics.CLI_OPERATION_TOTAL, event="cli.docs.add") >= 1.0
+    assert _counter_total(metrics.CLI_OPERATION_TOTAL, event="cli.docs.get") >= 1.0
+    assert _counter_total(metrics.CLI_OPERATION_TOTAL, event="cli.docs.list") >= 1.0
+    assert _counter_total(metrics.CLI_OPERATION_TOTAL, event="cli.docs.delete") >= 1.0
 
-    assert (
-        metrics.histogram_count(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.add", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.histogram_count(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.get", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.histogram_count(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.list", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.histogram_count(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.delete", status="ok") or 0.0
-    ) >= 1.0
+    assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.add") >= 1.0
+    assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.get") >= 1.0
+    assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.list") >= 1.0
+    assert _hist_total(metrics.CLI_OPERATION_DURATION_MS, event="cli.docs.delete") >= 1.0
 
-    assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.upsert", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.get", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.list", status="ok") or 0.0
-    ) >= 1.0
-    assert (
-        metrics.counter_value(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.delete", status="ok") or 0.0
-    ) >= 1.0
+    assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.upsert") >= 1.0
+    assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.get") >= 1.0
+    assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.list") >= 1.0
+    assert _counter_total(metrics.DOCUMENT_OPERATION_TOTAL, event="docs.delete") >= 1.0
 
     span_exporter.clear()
 

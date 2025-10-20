@@ -55,6 +55,11 @@ def test_error_codes_documented() -> None:
         "checksum_invalid",
         "bbox_invalid",
         "caption_confidence_range",
+        "workflow_empty",
+        "workflow_invalid_char",
+        "workflow_too_long",
+        "meta_workflow_mismatch",
+        "asset_workflow_mismatch",
     ]
     for code in expected_codes:
         assert f"`{code}`" in text, f"error code `{code}` missing"

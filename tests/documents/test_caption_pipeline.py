@@ -20,6 +20,8 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
+from documents.pipeline import DocumentPipelineConfig
+from documents.policies import DocumentPolicy
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
 
@@ -57,6 +59,28 @@ class _MissingConfidenceCaptioner(MultimodalCaptioner):
         }
 
 
+class _LowConfidenceCaptioner(MultimodalCaptioner):
+    def caption(self, image: bytes, context: Optional[str] = None):
+        return {
+            "text_description": "low confidence caption",
+            "confidence": 0.2,
+            "model": "stub-low",
+        }
+
+
+class _FixedCaptioner(MultimodalCaptioner):
+    def __init__(self, *, text: str, confidence: float) -> None:
+        self._text = text
+        self._confidence = confidence
+
+    def caption(self, image: bytes, context: Optional[str] = None):
+        return {
+            "text_description": self._text,
+            "confidence": self._confidence,
+            "model": "fixed-stub",
+        }
+
+
 def _make_inline_blob(payload: bytes, media_type: str = "image/png") -> InlineBlob:
     encoded = base64.b64encode(payload).decode("ascii")
     digest = hashlib.sha256(payload).hexdigest()
@@ -72,6 +96,7 @@ def _make_inline_blob(payload: bytes, media_type: str = "image/png") -> InlineBl
 def _make_document(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: Optional[UUID] = None,
     collection_id: Optional[UUID] = None,
     assets: Optional[list[Asset]] = None,
@@ -80,10 +105,11 @@ def _make_document(
     doc_id = document_id or uuid4()
     ref = DocumentRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         document_id=doc_id,
         collection_id=collection_id,
     )
-    meta = DocumentMeta(tenant_id=tenant_id, title="Demo")
+    meta = DocumentMeta(tenant_id=tenant_id, workflow_id=workflow_id, title="Demo")
     blob = FileBlob(type="file", uri="memory://doc", sha256=checksum, size=1)
     return NormalizedDocument(
         ref=ref,
@@ -99,6 +125,7 @@ def _make_document(
 def _make_asset(
     *,
     tenant_id: str,
+    workflow_id: str = "workflow-1",
     document_id: UUID,
     collection_id: Optional[UUID] = None,
     blob: FileBlob | InlineBlob,
@@ -110,6 +137,7 @@ def _make_asset(
 ) -> Asset:
     ref = AssetRef(
         tenant_id=tenant_id,
+        workflow_id=workflow_id,
         asset_id=uuid4(),
         document_id=document_id,
         collection_id=collection_id,
@@ -150,13 +178,72 @@ def test_pipeline_generates_caption_for_missing_description():
     )
 
     stored = pipeline.process_document(doc)
-    fetched = repo.get("tenant-a", stored.ref.document_id)
+    fetched = repo.get(
+        "tenant-a", stored.ref.document_id, workflow_id=stored.ref.workflow_id
+    )
 
     assert fetched is not None
     assert fetched.assets[0].text_description
     assert fetched.assets[0].caption_method == "vlm_caption"
     assert fetched.assets[0].caption_model == "stub-det"
     assert 0 <= fetched.assets[0].caption_confidence <= 1
+
+
+def test_pipeline_enforces_policy_threshold():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = _LowConfidenceCaptioner()
+    policy = DocumentPolicy(
+        caption_min_confidence=0.9,
+        pdf_ocr_enabled=True,
+        pdf_mode="fast",
+        include_pptx_notes=True,
+    )
+    pipeline = AssetExtractionPipeline(
+        repo,
+        storage,
+        captioner,
+        strict_caption_validation=True,
+        policy_provider=lambda *_args: policy,
+    )
+
+    inline = _make_inline_blob(b"policy-bytes")
+    doc_id = uuid4()
+    doc = _make_document(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        assets=[
+            _make_asset(
+                tenant_id="tenant-a",
+                document_id=doc_id,
+                blob=inline,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="caption_confidence_policy"):
+        pipeline.process_document(doc)
+
+
+def test_process_assets_rejects_workflow_mismatch():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = DeterministicCaptioner()
+    pipeline = AssetExtractionPipeline(repo, storage, captioner)
+
+    doc = _make_document(tenant_id="tenant-a", workflow_id="workflow-1")
+    repo.upsert(doc)
+
+    inline = _make_inline_blob(b"workflow-mismatch")
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        workflow_id="workflow-2",
+        document_id=doc.ref.document_id,
+        blob=inline,
+    )
+
+    with pytest.raises(ValueError, match="asset_workflow_mismatch"):
+        pipeline.process_assets("tenant-a", doc.ref.document_id, [asset])
 
 
 def test_pipeline_skips_assets_with_existing_description():
@@ -234,6 +321,32 @@ def test_pipeline_falls_back_when_caption_metadata_missing():
     assert stored_asset.caption_confidence is None
 
 
+def test_pipeline_uses_ocr_fallback_when_caption_below_threshold():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = _FixedCaptioner(text="too low", confidence=0.2)
+    config = DocumentPipelineConfig(caption_min_confidence_default=0.8)
+    pipeline = AssetExtractionPipeline(repo, storage, captioner, config=config)
+
+    inline = _make_inline_blob(b"threshold-bytes")
+    doc_id = uuid4()
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        blob=inline,
+        ocr_text="ocr-threshold-fallback",
+    )
+    doc = _make_document(tenant_id="tenant-a", document_id=doc_id, assets=[asset])
+
+    stored = pipeline.process_document(doc)
+    stored_asset = stored.assets[0]
+
+    assert stored_asset.caption_method == "ocr_only"
+    assert stored_asset.text_description == "ocr-threshold-fallback"
+    assert stored_asset.caption_model is None
+    assert stored_asset.caption_confidence is None
+
+
 def test_pipeline_strict_mode_raises_on_caption_metadata_missing():
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
@@ -258,7 +371,44 @@ def test_pipeline_strict_mode_raises_on_caption_metadata_missing():
     with pytest.raises(ValueError, match="caption_confidence_missing"):
         pipeline.process_document(doc)
 
-    assert repo.get("tenant-a", doc.ref.document_id) is None
+    assert (
+        repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
+        is None
+    )
+
+
+def test_pipeline_respects_collection_specific_threshold_override():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    collection_id = uuid4()
+    captioner = _FixedCaptioner(text="collection caption", confidence=0.5)
+    config = DocumentPipelineConfig(
+        caption_min_confidence_default=0.8,
+        caption_min_confidence_by_collection={collection_id: 0.3},
+    )
+    pipeline = AssetExtractionPipeline(repo, storage, captioner, config=config)
+
+    inline = _make_inline_blob(b"collection-override")
+    doc_id = uuid4()
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        collection_id=collection_id,
+        blob=inline,
+    )
+    doc = _make_document(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        collection_id=collection_id,
+        assets=[asset],
+    )
+
+    stored = pipeline.process_document(doc)
+    stored_asset = stored.assets[0]
+
+    assert stored_asset.caption_method == "vlm_caption"
+    assert stored_asset.text_description == "collection caption"
+    assert stored_asset.caption_confidence == pytest.approx(0.5)
 
 
 def test_pipeline_raises_for_missing_blob():
@@ -279,7 +429,10 @@ def test_pipeline_raises_for_missing_blob():
     with pytest.raises(ValueError, match="blob_missing"):
         pipeline.process_document(doc)
 
-    assert repo.get("tenant-a", doc.ref.document_id) is None
+    assert (
+        repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
+        is None
+    )
 
 
 def test_pipeline_process_assets_persists_new_assets():
@@ -302,7 +455,9 @@ def test_pipeline_process_assets_persists_new_assets():
     assert stored_assets[0].caption_method == "vlm_caption"
     assert stored_assets[0].caption_model == "stub-det"
 
-    refs, _ = repo.list_assets_by_document("tenant-a", doc.ref.document_id)
+    refs, _ = repo.list_assets_by_document(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert len(refs) == 1
 
 
@@ -368,7 +523,9 @@ def test_process_collection_updates_missing_captions():
     assert updated
     assert updated[0].caption_method == "vlm_caption"
 
-    stored = repo.get("tenant-a", doc.ref.document_id)
+    stored = repo.get(
+        "tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id
+    )
     assert stored is not None
     assert stored.assets[0].caption_method == "vlm_caption"
 
