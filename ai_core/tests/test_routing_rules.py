@@ -134,7 +134,9 @@ def test_resolve_prefers_collection_specific_rule(
     )
 
 
-def test_rules_are_case_insensitive(tmp_path, settings, enable_collection_routing) -> None:
+def test_rules_are_case_insensitive(
+    tmp_path, settings, enable_collection_routing
+) -> None:
     _configure_embeddings(settings)
     settings.RAG_ROUTING_FLAGS["rag.use_collection_routing"] = True
     rules_file = tmp_path / "routing.yaml"

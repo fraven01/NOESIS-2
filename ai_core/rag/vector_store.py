@@ -659,9 +659,7 @@ class VectorStoreRouter:
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
                 "collection_id": sanitized_collection,
-                "collection_id_source": validation_context.get(
-                    "collection_id_source"
-                ),
+                "collection_id_source": validation_context.get("collection_id_source"),
                 "workflow_id": sanitized_workflow,
                 "collection_ids_filter": validation_context.get(
                     "collection_ids_filter"
@@ -811,9 +809,7 @@ class VectorStoreRouter:
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
                 "collection_id": sanitized_collection,
-                "collection_id_source": validation_context.get(
-                    "collection_id_source"
-                ),
+                "collection_id_source": validation_context.get("collection_id_source"),
                 "collection_ids_filter": validation_context.get(
                     "collection_ids_filter"
                 ),
