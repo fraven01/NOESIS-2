@@ -759,6 +759,14 @@ class PgVectorClient:
         sanitized.pop("collection_id", None)
         return sanitized
 
+    @staticmethod
+    def _workflow_predicate_clause(
+        workflow_id: str | None,
+    ) -> tuple[sql.SQL, tuple[str, ...]]:
+        if workflow_id is None:
+            return sql.SQL("workflow_id IS NULL"), ()
+        return sql.SQL("workflow_id = %s"), (workflow_id,)
+
     @contextmanager
     def _connection(self):  # type: ignore[no-untyped-def]
         conn = self._pool.getconn()
@@ -3415,17 +3423,31 @@ class PgVectorClient:
                     )
                 except (TypeError, ValueError):
                     collection_uuid = None
+            workflow_raw = doc.get("workflow_id")
+            workflow_text: str | None = None
+            if workflow_raw not in {None, "", "None"}:
+                try:
+                    candidate_workflow = str(workflow_raw).strip()
+                except Exception:
+                    candidate_workflow = ""
+                workflow_text = candidate_workflow or None
+            doc["workflow_id"] = workflow_text
             storage_hash = self._compute_storage_hash(
                 cur,
                 tenant_uuid,
                 content_hash,
                 external_id,
+                workflow_id=workflow_text,
                 collection_uuid=collection_uuid,
             )
             doc["hash"] = storage_hash
             doc["content_hash"] = content_hash
             metadata_dict = self._strip_collection_scope(doc.get("metadata"))
             metadata_dict.setdefault("hash", content_hash)
+            if workflow_text is not None:
+                metadata_dict["workflow_id"] = workflow_text
+            elif "workflow_id" in metadata_dict:
+                metadata_dict.pop("workflow_id", None)
 
             if self._near_duplicate_enabled:
                 index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
@@ -3479,6 +3501,7 @@ class PgVectorClient:
                                 source = %s,
                                 hash = %s,
                                 metadata = %s,
+                                workflow_id = %s,
                                 deleted_at = NULL
                             WHERE id = %s
                             """
@@ -3488,6 +3511,7 @@ class PgVectorClient:
                             doc["source"],
                             storage_hash,
                             metadata,
+                            workflow_text,
                             existing_id,
                         ),
                     )
@@ -3513,35 +3537,39 @@ class PgVectorClient:
             collection_text = (
                 str(collection_uuid) if collection_uuid is not None else None
             )
+            workflow_clause, workflow_params = self._workflow_predicate_clause(
+                workflow_text
+            )
             existing: tuple | None
             if collection_text is None:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        SELECT id, hash, metadata, source, deleted_at
-                        FROM {}
-                        WHERE tenant_id = %s
-                          AND collection_id IS NULL
-                          AND external_id = %s
-                        LIMIT 1
-                        """
-                    ).format(documents_table),
-                    (tenant_value, external_id),
-                )
+                select_sql = sql.SQL(
+                    """
+                    SELECT id, hash, metadata, source, deleted_at
+                    FROM {}
+                    WHERE tenant_id = %s
+                      AND collection_id IS NULL
+                      AND {}
+                      AND external_id = %s
+                    LIMIT 1
+                    """
+                ).format(documents_table, workflow_clause)
+                params: list[object] = [tenant_value]
             else:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        SELECT id, hash, metadata, source, deleted_at
-                        FROM {}
-                        WHERE tenant_id = %s
-                          AND collection_id = %s
-                          AND external_id = %s
-                        LIMIT 1
-                        """
-                    ).format(documents_table),
-                    (tenant_value, collection_text, external_id),
-                )
+                select_sql = sql.SQL(
+                    """
+                    SELECT id, hash, metadata, source, deleted_at
+                    FROM {}
+                    WHERE tenant_id = %s
+                      AND collection_id = %s
+                      AND {}
+                      AND external_id = %s
+                    LIMIT 1
+                    """
+                ).format(documents_table, workflow_clause)
+                params = [tenant_value, collection_text]
+            params.extend(workflow_params)
+            params.append(external_id)
+            cur.execute(select_sql, tuple(params))
             existing = cur.fetchone()
             try:
                 if existing:
@@ -3565,6 +3593,7 @@ class PgVectorClient:
                                     hash = %s,
                                     metadata = %s,
                                     collection_id = %s,
+                                    workflow_id = %s,
                                     deleted_at = NULL
                                 WHERE id = %s
                                 """
@@ -3574,6 +3603,7 @@ class PgVectorClient:
                                 storage_hash,
                                 metadata,
                                 collection_text,
+                                workflow_text,
                                 existing_id,
                             ),
                         )
@@ -3593,18 +3623,20 @@ class PgVectorClient:
                             id,
                             tenant_id,
                             collection_id,
+                            workflow_id,
                             external_id,
                             source,
                             hash,
                             metadata
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                         """
                     ).format(documents_table),
                     (
                         document_id,
                         tenant_value,
                         collection_text,
+                        workflow_text,
                         external_id,
                         doc["source"],
                         storage_hash,
@@ -3627,33 +3659,34 @@ class PgVectorClient:
                     except Exception:
                         pass
                     if collection_text is None:
-                        retry_cur.execute(
-                            sql.SQL(
-                                """
-                                SELECT id, hash, metadata, source, deleted_at
-                                FROM {}
-                                WHERE tenant_id = %s
-                                  AND collection_id IS NULL
-                                  AND external_id = %s
-                                LIMIT 1
-                                """
-                            ).format(documents_table),
-                            (tenant_value, external_id),
-                        )
+                        retry_sql = sql.SQL(
+                            """
+                            SELECT id, hash, metadata, source, deleted_at
+                            FROM {}
+                            WHERE tenant_id = %s
+                              AND collection_id IS NULL
+                              AND {}
+                              AND external_id = %s
+                            LIMIT 1
+                            """
+                        ).format(documents_table, workflow_clause)
+                        retry_params: list[object] = [tenant_value]
                     else:
-                        retry_cur.execute(
-                            sql.SQL(
-                                """
-                                SELECT id, hash, metadata, source, deleted_at
-                                FROM {}
-                                WHERE tenant_id = %s
-                                  AND collection_id = %s
-                                  AND external_id = %s
-                                LIMIT 1
-                                """
-                            ).format(documents_table),
-                            (tenant_value, collection_text, external_id),
-                        )
+                        retry_sql = sql.SQL(
+                            """
+                            SELECT id, hash, metadata, source, deleted_at
+                            FROM {}
+                            WHERE tenant_id = %s
+                              AND collection_id = %s
+                              AND {}
+                              AND external_id = %s
+                            LIMIT 1
+                            """
+                        ).format(documents_table, workflow_clause)
+                        retry_params = [tenant_value, collection_text]
+                    retry_params.extend(workflow_params)
+                    retry_params.append(external_id)
+                    retry_cur.execute(retry_sql, tuple(retry_params))
                     duplicate = retry_cur.fetchone()
                     if not duplicate:
                         raise
@@ -3678,6 +3711,7 @@ class PgVectorClient:
                                     hash = %s,
                                     metadata = %s,
                                     collection_id = %s,
+                                    workflow_id = %s,
                                     deleted_at = NULL
                                 WHERE id = %s
                                 """
@@ -3687,6 +3721,7 @@ class PgVectorClient:
                                 storage_hash,
                                 metadata,
                                 collection_text,
+                                workflow_text,
                                 dup_id,
                             ),
                         )
@@ -3705,6 +3740,7 @@ class PgVectorClient:
                     doc["id"] = dup_id
                     doc["metadata"] = metadata_dict
                     doc["collection_id"] = collection_text
+                    doc["workflow_id"] = workflow_text
         return document_ids, actions
 
     def _ensure_collection_scope(
@@ -3738,6 +3774,7 @@ class PgVectorClient:
         tenant_uuid: uuid.UUID,
         content_hash: str,
         external_id: str,
+        workflow_id: str | None = None,
         *,
         collection_uuid: uuid.UUID | None = None,
     ) -> str:
@@ -3745,34 +3782,36 @@ class PgVectorClient:
             return content_hash
         tenant_value = str(tenant_uuid)
         documents_table = self._table("documents")
+        workflow_clause, workflow_params = self._workflow_predicate_clause(workflow_id)
         if collection_uuid is None:
-            cur.execute(
-                sql.SQL(
-                    """
-                    SELECT external_id
-                    FROM {}
-                    WHERE tenant_id = %s
-                      AND collection_id IS NULL
-                      AND hash = %s
-                    LIMIT 1
-                    """
-                ).format(documents_table),
-                (tenant_value, content_hash),
-            )
+            lookup_sql = sql.SQL(
+                """
+                SELECT external_id
+                FROM {}
+                WHERE tenant_id = %s
+                  AND collection_id IS NULL
+                  AND {}
+                  AND hash = %s
+                LIMIT 1
+                """
+            ).format(documents_table, workflow_clause)
+            params: list[object] = [tenant_value]
         else:
-            cur.execute(
-                sql.SQL(
-                    """
-                    SELECT external_id
-                    FROM {}
-                    WHERE tenant_id = %s
-                      AND collection_id = %s
-                      AND hash = %s
-                    LIMIT 1
-                    """
-                ).format(documents_table),
-                (tenant_value, str(collection_uuid), content_hash),
-            )
+            lookup_sql = sql.SQL(
+                """
+                SELECT external_id
+                FROM {}
+                WHERE tenant_id = %s
+                  AND collection_id = %s
+                  AND {}
+                  AND hash = %s
+                LIMIT 1
+                """
+            ).format(documents_table, workflow_clause)
+            params = [tenant_value, str(collection_uuid)]
+        params.extend(workflow_params)
+        params.append(content_hash)
+        cur.execute(lookup_sql, tuple(params))
         existing = cur.fetchone()
         if existing:
             existing_external_id = existing[0]
