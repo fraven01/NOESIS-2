@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import math
 import re
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Annotated, Dict, Iterable, List, Literal, Optional, Tuple, Union, Any
+from typing import Annotated, Dict, Iterable, List, Literal, Optional, Tuple, Union, Any, Mapping
 from uuid import UUID
 
 from pydantic import (
@@ -37,6 +38,32 @@ from .contract_utils import (
 
 _HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
 _VERSION_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+_CAPTION_SOURCES = {
+    "none",
+    "alt_text",
+    "figure_caption",
+    "context_before",
+    "context_after",
+    "notes",
+    "origin",
+    "vlm",
+    "ocr",
+    "manual",
+}
+
+CaptionSource = Literal[
+    "none",
+    "alt_text",
+    "figure_caption",
+    "context_before",
+    "context_after",
+    "notes",
+    "origin",
+    "vlm",
+    "ocr",
+    "manual",
+]
 
 
 _STRICT_CHECKSUMS: ContextVar[bool] = ContextVar("STRICT_CHECKSUMS", default=False)
@@ -342,6 +369,15 @@ class DocumentMeta(BaseModel):
             "(<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced)."
         ),
     )
+    parse_stats: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional parser statistics captured during ingestion (string keyed, "
+            "JSON-serialisable values). Recommended namespaces: `parser.*` for "
+            "text metrics, `assets.*` for media metrics, and `parse.*` for "
+            "framework-provided counters."
+        ),
+    )
 
     @field_validator("tenant_id", mode="before")
     @classmethod
@@ -420,6 +456,49 @@ class DocumentMeta(BaseModel):
             raise ValueError("crawl_timestamp_naive")
         return value.astimezone(timezone.utc)
 
+    @field_validator("parse_stats", mode="before")
+    @classmethod
+    def _normalize_parse_stats(
+        cls, value: Optional[Mapping[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise TypeError("parse_stats_type")
+        normalized: Dict[str, Any] = {}
+        for key, raw in value.items():
+            key_str = normalize_string(str(key))
+            if not key_str:
+                raise ValueError("parse_stats_key")
+            normalized[key_str] = cls._coerce_parse_stat_value(raw)
+        return normalized
+
+    @classmethod
+    def _coerce_parse_stat_value(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int):
+            return int(value)
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise ValueError("parse_stats_value")
+            return float(value)
+        if isinstance(value, str):
+            return normalize_string(value)
+        if isinstance(value, (list, tuple)):
+            return [cls._coerce_parse_stat_value(item) for item in value]
+        if isinstance(value, Mapping):
+            nested: Dict[str, Any] = {}
+            for key, raw in value.items():
+                key_str = normalize_string(str(key))
+                if not key_str:
+                    raise ValueError("parse_stats_key")
+                nested[key_str] = cls._coerce_parse_stat_value(raw)
+            return nested
+        raise ValueError("parse_stats_value")
+
 
 class AssetRef(BaseModel):
     """Reference to an extracted asset belonging to a document."""
@@ -491,6 +570,10 @@ class Asset(BaseModel):
         default=None,
         description="Optional textual context following the asset (<= 2048 bytes).",
     )
+    parent_ref: Optional[str] = Field(
+        default=None,
+        description="Logical reference to the parent block within the source document.",
+    )
     ocr_text: Optional[str] = Field(
         default=None,
         description="Optional OCR extracted text for the asset (<= 8192 bytes).",
@@ -498,6 +581,10 @@ class Asset(BaseModel):
     text_description: Optional[str] = Field(
         default=None,
         description="Optional textual description for the asset (<= 2048 bytes).",
+    )
+    caption_source: CaptionSource = Field(
+        default="none",
+        description="Source that produced the current text description (alt_text, vlm, ocr, …).",
     )
     caption_method: Literal["vlm_caption", "ocr_only", "manual", "none"] = Field(
         description="Method used to derive the text description or caption."
@@ -508,6 +595,14 @@ class Asset(BaseModel):
     caption_confidence: Optional[float] = Field(
         default=None,
         description="Confidence for model generated captions (0.0-1.0).",
+    )
+    perceptual_hash: Optional[str] = Field(
+        default=None,
+        description="Optional 64-bit perceptual hash for image deduplication.",
+    )
+    asset_kind: Optional[str] = Field(
+        default=None,
+        description="Optional semantic classification of the asset (e.g. chart_source).",
     )
     created_at: datetime = Field(
         description="UTC timestamp when the asset was generated or ingested."
@@ -547,6 +642,11 @@ class Asset(BaseModel):
     def _limit_context_after(cls, value: Optional[str]) -> Optional[str]:
         return truncate_text(value, 2048)
 
+    @field_validator("parent_ref", mode="before")
+    @classmethod
+    def _normalize_parent_ref(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
+
     @field_validator("ocr_text")
     @classmethod
     def _limit_ocr_text(cls, value: Optional[str]) -> Optional[str]:
@@ -556,6 +656,15 @@ class Asset(BaseModel):
     @classmethod
     def _limit_text_description(cls, value: Optional[str]) -> Optional[str]:
         return truncate_text(value, 2048)
+
+    @field_validator("caption_source", mode="before")
+    @classmethod
+    def _normalize_caption_source(cls, value: Optional[str]) -> str:
+        candidate = normalize_optional_string(value) or "none"
+        candidate = candidate.lower()
+        if candidate not in _CAPTION_SOURCES:
+            raise ValueError("caption_source_invalid")
+        return candidate
 
     @field_validator("caption_model", mode="before")
     @classmethod
@@ -570,6 +679,24 @@ class Asset(BaseModel):
         if value < 0.0 or value > 1.0:
             raise ValueError("caption_confidence_range")
         return value
+
+    @field_validator("perceptual_hash", mode="before")
+    @classmethod
+    def _validate_perceptual_hash(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        candidate = normalize_optional_string(value)
+        if candidate is None:
+            return None
+        lowered = candidate.lower()
+        if len(lowered) != 16 or any(ch not in "0123456789abcdef" for ch in lowered):
+            raise ValueError("perceptual_hash_invalid")
+        return lowered
+
+    @field_validator("asset_kind", mode="before")
+    @classmethod
+    def _normalize_asset_kind(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
 
     @field_validator("page_index")
     @classmethod

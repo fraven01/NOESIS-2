@@ -7,11 +7,11 @@ import base64
 import hashlib
 import json
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Iterable, Optional
-from uuid import UUID, uuid4
+from typing import Any, Iterable, Mapping, Optional, Sequence
+from uuid import UUID, uuid4, uuid5
 
 from pydantic import ValidationError
 
@@ -33,6 +33,7 @@ from .contracts import (
     asset_ref_schema,
     asset_schema,
 )
+from .captioning import AssetExtractionPipeline, DeterministicCaptioner, MultimodalCaptioner
 from .logging_utils import (
     asset_log_fields,
     document_log_fields,
@@ -40,22 +41,309 @@ from .logging_utils import (
     log_extra_entry,
     log_extra_exit,
 )
+from .parsers import ParsedResult, ParsedTextBlock, ParserDispatcher, ParserRegistry
+from .parsers_docx import DocxDocumentParser
+from .parsers_html import HtmlDocumentParser
+from .parsers_markdown import MarkdownDocumentParser
+from .parsers_pdf import PdfDocumentParser
+from .parsers_pptx import PptxDocumentParser
+from .pipeline import (
+    DocumentChunker,
+    DocumentPipelineConfig,
+    DocumentProcessingContext,
+    ProcessingState,
+    persist_parsed_document,
+)
+from .pipeline import _update_document_stats  # type: ignore
 from .repository import DocumentsRepository, InMemoryDocumentsRepository
 from .storage import InMemoryStorage, Storage
+from .contract_utils import is_image_mediatype, normalize_optional_string, truncate_text
 
 
 @dataclass
 class CLIContext:
-    """Holds repository and storage instances for CLI operations."""
+    """Holds pipeline dependencies used by CLI operations."""
 
     repository: DocumentsRepository
     storage: Storage
+    parser_registry: ParserRegistry
+    parser: ParserDispatcher
+    captioner: MultimodalCaptioner
+    chunker: DocumentChunker
+    config: DocumentPipelineConfig = field(default_factory=DocumentPipelineConfig)
 
 
 def _default_context() -> CLIContext:
     storage = InMemoryStorage()
     repository = InMemoryDocumentsRepository(storage=storage)
-    return CLIContext(repository=repository, storage=storage)
+    registry = ParserRegistry(
+        [
+            MarkdownDocumentParser(),
+            HtmlDocumentParser(),
+            DocxDocumentParser(),
+            PptxDocumentParser(),
+            PdfDocumentParser(),
+        ]
+    )
+    dispatcher = ParserDispatcher(registry)
+    captioner = DeterministicCaptioner()
+    chunker = SimpleDocumentChunker()
+    config = DocumentPipelineConfig()
+    return CLIContext(
+        repository=repository,
+        storage=storage,
+        parser_registry=registry,
+        parser=dispatcher,
+        captioner=captioner,
+        chunker=chunker,
+        config=config,
+    )
+
+
+def _load_document(args: argparse.Namespace, context: CLIContext):
+    document_id = UUID(getattr(args, "doc_id"))
+    version = getattr(args, "version", None)
+    workflow_id = _optional_workflow_id(args)
+    document = context.repository.get(
+        getattr(args, "tenant"),
+        document_id,
+        version=version,
+        prefer_latest=version is None,
+        workflow_id=workflow_id,
+    )
+    if document is None:
+        raise ValueError("document_not_found")
+    return document
+
+
+def _build_pipeline_config(args: argparse.Namespace, context: CLIContext) -> DocumentPipelineConfig:
+    base = context.config
+    mapping = dict(base.caption_min_confidence_by_collection)
+    kwargs = dict(
+        pdf_safe_mode=base.pdf_safe_mode,
+        caption_min_confidence_default=base.caption_min_confidence_default,
+        caption_min_confidence_by_collection=mapping,
+        enable_ocr=base.enable_ocr,
+        enable_notes_in_pptx=base.enable_notes_in_pptx,
+        emit_empty_slides=base.emit_empty_slides,
+        enable_asset_captions=base.enable_asset_captions,
+        ocr_fallback_confidence=base.ocr_fallback_confidence,
+        use_readability_html_extraction=base.use_readability_html_extraction,
+        ocr_renderer=base.ocr_renderer,
+    )
+    if getattr(args, "enable_ocr", None):
+        kwargs["enable_ocr"] = True
+    if getattr(args, "disable_notes", False):
+        kwargs["enable_notes_in_pptx"] = False
+    if getattr(args, "disable_empty_slides", False):
+        kwargs["emit_empty_slides"] = False
+    if getattr(args, "use_readability", False):
+        kwargs["use_readability_html_extraction"] = True
+    if getattr(args, "disable_captions", False):
+        kwargs["enable_asset_captions"] = False
+    return DocumentPipelineConfig(**kwargs)
+
+
+def _context_from_document(document: Any) -> DocumentProcessingContext:
+    stats = dict(getattr(document.meta, "parse_stats", {}) or {})
+    state = ProcessingState.INGESTED
+    if stats.get("chunk.state") == ProcessingState.CHUNKED.value:
+        state = ProcessingState.CHUNKED
+    elif stats.get("caption.state") == ProcessingState.CAPTIONED.value:
+        state = ProcessingState.CAPTIONED
+    elif stats.get("assets.state") == ProcessingState.ASSETS_EXTRACTED.value:
+        state = ProcessingState.ASSETS_EXTRACTED
+    elif stats.get("parse.state") == ProcessingState.PARSED_TEXT.value:
+        state = ProcessingState.PARSED_TEXT
+    return DocumentProcessingContext.from_document(document, initial_state=state)
+
+
+def _preview_blocks(
+    blocks: Sequence[ParsedTextBlock],
+    *,
+    limit: int,
+    preview_bytes: int,
+) -> list[Mapping[str, Any]]:
+    previews: list[Mapping[str, Any]] = []
+    for block in list(blocks)[:limit]:
+        preview: dict[str, Any] = {
+            "kind": block.kind,
+            "text": truncate_text(block.text, preview_bytes),
+        }
+        if block.section_path:
+            preview["section_path"] = list(block.section_path)
+        if block.page_index is not None:
+            preview["page_index"] = block.page_index
+        previews.append(preview)
+    return previews
+
+
+@log_call("cli.pipeline.parse")
+def _handle_pipeline_parse(args: argparse.Namespace) -> int:
+    context: CLIContext = args.context
+    document = _load_document(args, context)
+    config = _build_pipeline_config(args, context)
+    parsed = context.parser.parse(document, config)
+    parse_context = _context_from_document(document)
+    artefact = persist_parsed_document(
+        parse_context,
+        document,
+        parsed,
+        repository=context.repository,
+        storage=context.storage,
+    )
+    preview_blocks = getattr(args, "preview_blocks", 3)
+    preview_bytes = getattr(args, "preview_bytes", 200)
+    preview = _preview_blocks(
+        parsed.text_blocks,
+        limit=max(preview_blocks, 0),
+        preview_bytes=max(preview_bytes, 0),
+    )
+    metadata = artefact.asset_context.metadata
+    payload = {
+        "tenant_id": metadata.tenant_id,
+        "workflow_id": metadata.workflow_id,
+        "document_id": str(metadata.document_id),
+        "state": artefact.asset_context.state.value,
+        "text_preview": preview,
+        "asset_refs": artefact.asset_refs,
+        "statistics": dict(artefact.statistics),
+        "counts": {
+            "text_blocks": len(parsed.text_blocks),
+            "assets": len(parsed.assets),
+        },
+    }
+    return _print_success(args, payload)
+
+
+def _caption_stats(document: Any) -> tuple[int, int, int, float]:
+    image_assets = [
+        asset
+        for asset in getattr(document, "assets", [])
+        if is_image_mediatype(getattr(asset, "media_type", ""))
+    ]
+    attempts = len(image_assets)
+    hits = sum(1 for asset in image_assets if asset.caption_method == "vlm_caption")
+    ocr_fallbacks = sum(1 for asset in image_assets if asset.caption_method == "ocr_only")
+    hit_rate = hits / attempts if attempts else 0.0
+    return attempts, hits, ocr_fallbacks, hit_rate
+
+
+@log_call("cli.pipeline.caption")
+def _handle_pipeline_caption(args: argparse.Namespace) -> int:
+    context: CLIContext = args.context
+    document = _load_document(args, context)
+    config = _build_pipeline_config(args, context)
+    before_descriptions = {
+        asset.ref.asset_id: normalize_optional_string(asset.text_description)
+        for asset in getattr(document, "assets", [])
+    }
+    pipeline = AssetExtractionPipeline(
+        repository=context.repository,
+        storage=context.storage,
+        captioner=context.captioner,
+        config=config,
+    )
+    updated = pipeline.process_document(document)
+    attempts, hits, ocr_fallbacks, hit_rate = _caption_stats(updated)
+    updated_stats = {
+        "caption.state": ProcessingState.CAPTIONED.value,
+        "caption.total_assets": attempts,
+        "caption.vlm_hits": hits,
+        "caption.ocr_fallbacks": ocr_fallbacks,
+        "caption.hit_rate": hit_rate,
+    }
+    stored = _update_document_stats(
+        updated,
+        updated_stats,
+        repository=context.repository,
+        workflow_id=updated.ref.workflow_id,
+    )
+    after_descriptions = {
+        asset.ref.asset_id: normalize_optional_string(asset.text_description)
+        for asset in getattr(stored, "assets", [])
+    }
+    captioned = sum(
+        1
+        for asset_id, description in after_descriptions.items()
+        if description and description != before_descriptions.get(asset_id)
+    )
+    payload = {
+        "tenant_id": stored.ref.tenant_id,
+        "workflow_id": stored.ref.workflow_id,
+        "document_id": str(stored.ref.document_id),
+        "captioned_assets": captioned,
+        "statistics": dict(stored.meta.parse_stats or {}),
+    }
+    return _print_success(args, payload)
+
+
+def _truncate_chunk_preview(chunk: Mapping[str, Any], limit: int) -> Mapping[str, Any]:
+    text = truncate_text(str(chunk.get("text", "")), limit)
+    preview = dict(chunk)
+    preview["text"] = text
+    return preview
+
+
+@log_call("cli.pipeline.chunk")
+def _handle_pipeline_chunk(args: argparse.Namespace) -> int:
+    context: CLIContext = args.context
+    document = _load_document(args, context)
+    config = _build_pipeline_config(args, context)
+    processing_context = _context_from_document(document)
+    parsed: Optional[ParsedResult] = None
+    if processing_context.state not in (
+        ProcessingState.ASSETS_EXTRACTED,
+        ProcessingState.CAPTIONED,
+        ProcessingState.CHUNKED,
+    ):
+        parsed = context.parser.parse(document, config)
+        artefact = persist_parsed_document(
+            processing_context,
+            document,
+            parsed,
+            repository=context.repository,
+            storage=context.storage,
+        )
+        processing_context = artefact.asset_context
+        document = context.repository.get(
+            processing_context.metadata.tenant_id,
+            processing_context.metadata.document_id,
+            version=processing_context.metadata.version,
+            workflow_id=processing_context.metadata.workflow_id,
+        ) or document
+    if parsed is None:
+        parsed = context.parser.parse(document, config)
+    chunks, chunk_stats = context.chunker.chunk(
+        document,
+        parsed,
+        context=processing_context,
+        config=config,
+    )
+    stats_update = dict(chunk_stats or {})
+    stats_update["chunk.state"] = ProcessingState.CHUNKED.value
+    stats_update.setdefault("chunk.count", len(chunks))
+    stored = _update_document_stats(
+        document,
+        stats_update,
+        repository=context.repository,
+        workflow_id=processing_context.metadata.workflow_id,
+    )
+    preview_chunks = getattr(args, "preview_chunks", 3)
+    preview_bytes = getattr(args, "preview_bytes", 200)
+    preview = [
+        _truncate_chunk_preview(chunk, max(preview_bytes, 0))
+        for chunk in list(chunks)[: max(preview_chunks, 0)]
+    ]
+    payload = {
+        "tenant_id": stored.ref.tenant_id,
+        "workflow_id": stored.ref.workflow_id,
+        "document_id": str(stored.ref.document_id),
+        "chunk_count": len(chunks),
+        "statistics": dict(stored.meta.parse_stats or {}),
+        "preview": preview,
+    }
+    return _print_success(args, payload)
 
 
 def _serialize(obj: Any) -> Any:
@@ -200,6 +488,67 @@ def _parse_bbox(raw: Optional[str]) -> Optional[list[float]]:
         raise ValueError("bbox_invalid")
     # Further range validation for bounding boxes occurs within the model layer.
     return [float(item) for item in data]
+
+
+@dataclass
+class SimpleDocumentChunker:
+    """Minimal chunker producing one chunk per parsed text block."""
+
+    max_chunk_bytes: int = 2048
+
+    def chunk(
+        self,
+        document: Any,  # noqa: ARG002 - part of the protocol signature
+        parsed: ParsedResult,
+        *,
+        context: DocumentProcessingContext,
+        config: DocumentPipelineConfig,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Return per-block chunks suitable for smoke testing."""
+
+        _ = (document, context, config)  # unused but part of the interface
+        chunks: list[dict[str, Any]] = []
+        document_id = context.metadata.document_id
+        for index, block in enumerate(parsed.text_blocks):
+            chunk: dict[str, Any] = {
+                "index": index,
+                "kind": block.kind,
+                "text": truncate_text(block.text, self.max_chunk_bytes),
+            }
+            if block.section_path:
+                chunk["section_path"] = list(block.section_path)
+            if block.page_index is not None:
+                chunk["page_index"] = block.page_index
+            metadata = getattr(block, "metadata", None)
+            parent_ref: Optional[str] = None
+            locator: Optional[str] = None
+            if isinstance(metadata, Mapping):
+                parent_ref = metadata.get("parent_ref")
+                locator = metadata.get("locator")
+            if parent_ref is None:
+                if block.kind == "slide":
+                    number = (block.page_index or index) + 1
+                    parent_ref = f"slide:{number}"
+                elif block.kind == "note":
+                    number = (block.page_index or index) + 1
+                    parent_ref = f"slide:{number}:notes"
+                elif block.section_path:
+                    parent_ref = ">".join(block.section_path)
+                else:
+                    parent_ref = f"{block.kind}:{index}"
+            if locator is None:
+                locator_parts = [block.kind, str(index)]
+                if block.page_index is not None:
+                    locator_parts.append(f"page:{block.page_index}")
+                if block.section_path:
+                    locator_parts.append(">".join(block.section_path))
+                locator = ":".join(locator_parts)
+            chunk_id = str(uuid5(document_id, f"chunk:{locator}"))
+            chunk["chunk_id"] = chunk_id
+            chunk["parent_ref"] = parent_ref
+            chunks.append(chunk)
+        stats = {"chunk.count": len(chunks)}
+        return chunks, stats
 
 
 def _schema_payload(kind: str) -> Any:
@@ -653,6 +1002,45 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Workflow identifier for the asset (required)",
     )
     assets_delete.set_defaults(func=_handle_assets_delete)
+
+    pipeline_parse = subparsers.add_parser(
+        "parse", help="Parse a document, persist assets, and show statistics"
+    )
+    pipeline_parse.add_argument("--tenant", required=True)
+    pipeline_parse.add_argument("--doc-id", required=True)
+    pipeline_parse.add_argument("--version")
+    pipeline_parse.add_argument("--workflow-id")
+    pipeline_parse.add_argument("--enable-ocr", action="store_true")
+    pipeline_parse.add_argument("--disable-notes", action="store_true")
+    pipeline_parse.add_argument("--disable-empty-slides", action="store_true")
+    pipeline_parse.add_argument("--use-readability", action="store_true")
+    pipeline_parse.add_argument("--preview-blocks", type=int, default=3)
+    pipeline_parse.add_argument("--preview-bytes", type=int, default=200)
+    pipeline_parse.set_defaults(func=_handle_pipeline_parse)
+
+    pipeline_caption = subparsers.add_parser(
+        "caption", help="Generate captions for uncaptured image assets"
+    )
+    pipeline_caption.add_argument("--tenant", required=True)
+    pipeline_caption.add_argument("--doc-id", required=True)
+    pipeline_caption.add_argument("--version")
+    pipeline_caption.add_argument("--workflow-id")
+    pipeline_caption.set_defaults(func=_handle_pipeline_caption)
+
+    pipeline_chunk = subparsers.add_parser(
+        "chunk", help="Generate chunk previews for a parsed document"
+    )
+    pipeline_chunk.add_argument("--tenant", required=True)
+    pipeline_chunk.add_argument("--doc-id", required=True)
+    pipeline_chunk.add_argument("--version")
+    pipeline_chunk.add_argument("--workflow-id")
+    pipeline_chunk.add_argument("--enable-ocr", action="store_true")
+    pipeline_chunk.add_argument("--disable-notes", action="store_true")
+    pipeline_chunk.add_argument("--disable-empty-slides", action="store_true")
+    pipeline_chunk.add_argument("--use-readability", action="store_true")
+    pipeline_chunk.add_argument("--preview-chunks", type=int, default=3)
+    pipeline_chunk.add_argument("--preview-bytes", type=int, default=200)
+    pipeline_chunk.set_defaults(func=_handle_pipeline_chunk)
 
     return parser
 

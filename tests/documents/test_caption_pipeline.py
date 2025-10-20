@@ -20,6 +20,7 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
+from documents.pipeline import DocumentPipelineConfig
 from documents.policies import DocumentPolicy
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
@@ -64,6 +65,19 @@ class _LowConfidenceCaptioner(MultimodalCaptioner):
             "text_description": "low confidence caption",
             "confidence": 0.2,
             "model": "stub-low",
+        }
+
+
+class _FixedCaptioner(MultimodalCaptioner):
+    def __init__(self, *, text: str, confidence: float) -> None:
+        self._text = text
+        self._confidence = confidence
+
+    def caption(self, image: bytes, context: Optional[str] = None):
+        return {
+            "text_description": self._text,
+            "confidence": self._confidence,
+            "model": "fixed-stub",
         }
 
 
@@ -307,6 +321,32 @@ def test_pipeline_falls_back_when_caption_metadata_missing():
     assert stored_asset.caption_confidence is None
 
 
+def test_pipeline_uses_ocr_fallback_when_caption_below_threshold():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    captioner = _FixedCaptioner(text="too low", confidence=0.2)
+    config = DocumentPipelineConfig(caption_min_confidence_default=0.8)
+    pipeline = AssetExtractionPipeline(repo, storage, captioner, config=config)
+
+    inline = _make_inline_blob(b"threshold-bytes")
+    doc_id = uuid4()
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        blob=inline,
+        ocr_text="ocr-threshold-fallback",
+    )
+    doc = _make_document(tenant_id="tenant-a", document_id=doc_id, assets=[asset])
+
+    stored = pipeline.process_document(doc)
+    stored_asset = stored.assets[0]
+
+    assert stored_asset.caption_method == "ocr_only"
+    assert stored_asset.text_description == "ocr-threshold-fallback"
+    assert stored_asset.caption_model is None
+    assert stored_asset.caption_confidence is None
+
+
 def test_pipeline_strict_mode_raises_on_caption_metadata_missing():
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
@@ -335,6 +375,40 @@ def test_pipeline_strict_mode_raises_on_caption_metadata_missing():
         repo.get("tenant-a", doc.ref.document_id, workflow_id=doc.ref.workflow_id)
         is None
     )
+
+
+def test_pipeline_respects_collection_specific_threshold_override():
+    storage = InMemoryStorage()
+    repo = InMemoryDocumentsRepository(storage=storage)
+    collection_id = uuid4()
+    captioner = _FixedCaptioner(text="collection caption", confidence=0.5)
+    config = DocumentPipelineConfig(
+        caption_min_confidence_default=0.8,
+        caption_min_confidence_by_collection={collection_id: 0.3},
+    )
+    pipeline = AssetExtractionPipeline(repo, storage, captioner, config=config)
+
+    inline = _make_inline_blob(b"collection-override")
+    doc_id = uuid4()
+    asset = _make_asset(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        collection_id=collection_id,
+        blob=inline,
+    )
+    doc = _make_document(
+        tenant_id="tenant-a",
+        document_id=doc_id,
+        collection_id=collection_id,
+        assets=[asset],
+    )
+
+    stored = pipeline.process_document(doc)
+    stored_asset = stored.assets[0]
+
+    assert stored_asset.caption_method == "vlm_caption"
+    assert stored_asset.text_description == "collection caption"
+    assert stored_asset.caption_confidence == pytest.approx(0.5)
 
 
 def test_pipeline_raises_for_missing_blob():
