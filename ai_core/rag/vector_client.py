@@ -37,6 +37,7 @@ from ai_core.rag.vector_store import VectorStore
 from .embeddings import EmbeddingClientError, get_embedding_client
 from .normalization import normalise_text, normalise_text_db
 from .parents import limit_parent_payload
+from .routing_rules import is_collection_routing_enabled
 
 from . import metrics
 from .filters import strict_match
@@ -431,7 +432,7 @@ def _get_bool_setting(name: str, default: bool) -> bool:
     return default
 
 
-DocumentKey = Tuple[str, str, str | None]
+DocumentKey = Tuple[str, str | None, str, str | None]
 GroupedDocuments = Dict[DocumentKey, Dict[str, object]]
 T = TypeVar("T")
 
@@ -936,7 +937,7 @@ class PgVectorClient:
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
         for key, doc in grouped.items():
-            tenant_id, external_id, collection_id = key
+            tenant_id, workflow_id, external_id, collection_id = key
             action = doc_actions.get(key, "inserted")
             stats = per_doc_timings.get(
                 key,
@@ -949,12 +950,15 @@ class PgVectorClient:
             duration = float(stats.get("duration_ms", 0.0))
             doc_payload = {
                 "tenant_id": tenant_id,
+                "workflow_id": workflow_id,
                 "external_id": external_id,
                 "content_hash": doc.get("content_hash"),
                 "action": action,
                 "chunk_count": chunk_count,
                 "duration_ms": duration,
             }
+            if workflow_id is None:
+                doc_payload.pop("workflow_id", None)
             if collection_id is not None:
                 doc_payload["collection_id"] = collection_id
             near_info = doc.get("near_duplicate_info")
@@ -1086,6 +1090,7 @@ class PgVectorClient:
         if case_value:
             case_filter_value = self._normalise_filter_value(case_value)
         effective_collection_filter: list[str] | None = None
+        legacy_doc_class_filter: list[str] | None = None
         if collection_ids_filter:
             effective_collection_filter = [
                 self._normalise_filter_value(item) for item in collection_ids_filter
@@ -1094,6 +1099,8 @@ class PgVectorClient:
             effective_collection_filter = [
                 self._normalise_filter_value(single_collection_value)
             ]
+        if is_collection_routing_enabled() and effective_collection_filter:
+            legacy_doc_class_filter = list(effective_collection_filter)
         collection_scope = "none"
         if effective_collection_filter:
             try:
@@ -1235,16 +1242,30 @@ class PgVectorClient:
                 where_clauses.append("d.external_id = %s")
                 where_params.append(normalised)
         if case_filter_value is not None and effective_collection_filter:
-            where_clauses.append(
-                "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))"
-            )
-            where_params.extend([case_filter_value, effective_collection_filter])
+            if legacy_doc_class_filter:
+                where_clauses.append(
+                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+                )
+                where_params.extend(
+                    [case_filter_value, effective_collection_filter, legacy_doc_class_filter]
+                )
+            else:
+                where_clauses.append(
+                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))"
+                )
+                where_params.extend([case_filter_value, effective_collection_filter])
         elif case_filter_value is not None:
             where_clauses.append("c.metadata ->> 'case_id' = %s")
             where_params.append(case_filter_value)
         elif effective_collection_filter:
-            where_clauses.append("c.collection_id = ANY(%s)")
-            where_params.append(effective_collection_filter)
+            if legacy_doc_class_filter:
+                where_clauses.append(
+                    "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+                )
+                where_params.extend([effective_collection_filter, legacy_doc_class_filter])
+            else:
+                where_clauses.append("c.collection_id = ANY(%s)")
+                where_params.append(effective_collection_filter)
         where_sql = "\n          AND ".join(where_clauses)
         where_sql_without_deleted: str | None = None
         distance_operator_value: Optional[str] = None
@@ -2923,6 +2944,13 @@ class PgVectorClient:
             source = chunk.meta.get("source", "")
             external_id = chunk.meta.get("external_id")
             raw_collection_id = chunk.meta.get("collection_id")
+            raw_doc_class = chunk.meta.get("doc_class")
+            if raw_collection_id in {None, "", "None"} and raw_doc_class not in {
+                None,
+                "",
+                "None",
+            }:
+                raw_collection_id = raw_doc_class
             collection_id: str | None = None
             if raw_collection_id not in {None, "", "None"}:
                 try:
@@ -2933,6 +2961,14 @@ class PgVectorClient:
                     except Exception:
                         candidate = ""
                     collection_id = candidate or None
+            raw_workflow_id = chunk.meta.get("workflow_id")
+            workflow_id: str | None = None
+            if raw_workflow_id not in {None, "", "None"}:
+                try:
+                    candidate_workflow = str(raw_workflow_id).strip()
+                except Exception:
+                    candidate_workflow = ""
+                workflow_id = candidate_workflow or None
             if tenant_value in {None, "", "None"}:
                 raise ValueError("Chunk metadata must include tenant_id")
             if not doc_hash or doc_hash == "None":
@@ -2946,11 +2982,12 @@ class PgVectorClient:
             tenant_uuid = self._coerce_tenant_uuid(tenant_value)
             tenant = str(tenant_uuid)
             external_id_str = str(external_id)
-            key = (tenant, external_id_str, collection_id)
+            key = (tenant, workflow_id, external_id_str, collection_id)
             if key not in grouped:
                 grouped[key] = {
                     "id": uuid.uuid4(),
                     "tenant_id": tenant,
+                    "workflow_id": workflow_id,
                     "external_id": external_id_str,
                     "hash": doc_hash,
                     "content_hash": doc_hash,
@@ -2959,7 +2996,7 @@ class PgVectorClient:
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
-                        if k not in {"tenant_id", "tenant", "hash", "source"}
+                        if k not in {"tenant_id", "tenant", "hash", "source", "doc_class"}
                     },
                     "chunks": [],
                     "parents": {},
@@ -2968,6 +3005,8 @@ class PgVectorClient:
                 doc_collection = grouped[key].get("collection_id")
                 if doc_collection is None and collection_id is not None:
                     grouped[key]["collection_id"] = collection_id
+                if grouped[key].get("workflow_id") is None and workflow_id is not None:
+                    grouped[key]["workflow_id"] = workflow_id
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
@@ -2975,6 +3014,11 @@ class PgVectorClient:
                 chunk_meta["collection_id"] = collection_id
             elif "collection_id" in chunk_meta:
                 chunk_meta.pop("collection_id", None)
+            chunk_meta.pop("doc_class", None)
+            if workflow_id is not None:
+                chunk_meta["workflow_id"] = workflow_id
+            elif "workflow_id" in chunk_meta:
+                chunk_meta.pop("workflow_id", None)
             parents_map = grouped[key].get("parents")
             chunk_parents = chunk.parents
             if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):

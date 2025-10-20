@@ -62,7 +62,7 @@ class ChunkMeta(BaseModel):
     embedding_profile: str | None = None
     vector_space_id: str | None = None
     process: str | None = None
-    doc_class: str | None = None
+    workflow_id: str | None = None
     parent_ids: list[str] | None = None
     collection_id: str | None = None
 
@@ -135,7 +135,7 @@ def ensure_embedding_dimensions(
     *,
     tenant_id: str | None = None,
     process: str | None = None,
-    doc_class: str | None = None,
+    workflow_id: str | None = None,
     embedding_profile: str | None = None,
     vector_space_id: str | None = None,
 ) -> None:
@@ -153,7 +153,7 @@ def ensure_embedding_dimensions(
             context = {
                 "tenant": tenant_id,
                 "process": process,
-                "doc_class": doc_class,
+                "workflow_id": workflow_id,
                 "embedding_profile": embedding_profile,
                 "vector_space_id": vector_space_id,
                 "expected_dimension": expected_dimension,

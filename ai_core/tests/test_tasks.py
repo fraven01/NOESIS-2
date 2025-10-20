@@ -185,9 +185,9 @@ def test_chunk_dynamic_overlap_varies_by_document_style(monkeypatch) -> None:
         "tenant_id": "tenant-dynamic",
         "case_id": "case-dynamic",
         "external_id": "story-1",
-        "doc_class": "narrative",
+        "collection_id": "narrative",
     }
-    faq_meta = {**narrative_meta, "external_id": "faq-1", "doc_class": "faq"}
+    faq_meta = {**narrative_meta, "external_id": "faq-1", "collection_id": "faq"}
 
     narrative_text = (
         "Ich ging gestern durch den Park und erinnerte mich daran, "
@@ -549,7 +549,7 @@ def test_upsert_raises_on_dimension_mismatch(monkeypatch):
         "vector_space_id": "global",
         "vector_space_dimension": 2,
         "process": "review",
-        "doc_class": "manual",
+        "workflow_id": "flow-a",
     }
     embeddings = [
         {
@@ -578,7 +578,7 @@ def test_upsert_raises_on_dimension_mismatch(monkeypatch):
     error = excinfo.value
     assert error.code == IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH
     assert error.context["process"] == "review"
-    assert error.context["doc_class"] == "manual"
+    assert error.context["workflow_id"] == "flow-a"
     assert error.context["embedding_profile"] == "standard"
     assert error.context["vector_space_id"] == "global"
     assert error.context["observed_dimension"] == 1
