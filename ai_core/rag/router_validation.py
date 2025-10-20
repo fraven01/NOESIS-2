@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import Any, Mapping
+from uuid import UUID
 
 from common.logging import get_log_context
 
@@ -18,6 +19,7 @@ from ai_core.rag.limits import (
 )
 from ai_core.rag.selector_utils import normalise_selector_value
 from ai_core.rag.visibility import Visibility, normalize_visibility
+from ai_core.rag.routing_rules import is_collection_routing_enabled
 
 _ROUTER_DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
 
@@ -52,6 +54,7 @@ class RouterInputErrorCode:
     MAX_CANDIDATES_INVALID = "ROUTER_MAX_CANDIDATES_INVALID"
     MAX_CANDIDATES_LT_TOP_K = "ROUTER_MAX_CANDIDATES_LT_TOP_K"
     VISIBILITY_INVALID = "ROUTER_VISIBILITY_INVALID"
+    COLLECTION_ID_INVALID = "ROUTER_COLLECTION_ID_INVALID"
 
 
 def map_router_error_to_status(code: str) -> int:
@@ -62,10 +65,14 @@ def map_router_error_to_status(code: str) -> int:
         RouterInputErrorCode.TOP_K_INVALID,
         RouterInputErrorCode.MAX_CANDIDATES_INVALID,
         RouterInputErrorCode.MAX_CANDIDATES_LT_TOP_K,
+        RouterInputErrorCode.COLLECTION_ID_INVALID,
     }
     if code in client_error_codes:
         return 400
     return 400
+
+
+_DOC_CLASS_COLLECTION_CACHE: dict[str, str] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +82,8 @@ class SearchValidationResult:
     tenant_id: str
     process: str | None
     doc_class: str | None
+    collection_id: str | None
+    workflow_id: str | None
     top_k: int | None
     max_candidates: int | None
     effective_top_k: int
@@ -93,6 +102,17 @@ def _normalise_optional_text(value: object | None) -> str | None:
         text = value.strip()
         return text or None
     return str(value).strip() or None
+
+
+def _normalise_optional_uuid(value: object | None) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return str(value)
+    text = str(value).strip()
+    if not text:
+        return None
+    return str(UUID(text))
 
 
 def _coerce_positive_int(
@@ -155,6 +175,8 @@ def validate_search_inputs(
     tenant_id: object | None,
     process: str | None = None,
     doc_class: str | None = None,
+    collection_id: object | None = None,
+    workflow_id: object | None = None,
     top_k: object | None = None,
     max_candidates: object | None = None,
     visibility: object | None = None,
@@ -164,11 +186,54 @@ def validate_search_inputs(
     tenant = _normalise_optional_text(tenant_id)
     sanitized_process = normalise_selector_value(process)
     sanitized_doc_class = normalise_selector_value(doc_class)
+    try:
+        sanitized_collection = _normalise_optional_uuid(collection_id)
+    except (TypeError, ValueError) as exc:
+        raise RouterInputError(
+            RouterInputErrorCode.COLLECTION_ID_INVALID,
+            "collection_id must be a valid UUID string",
+            field="collection_id",
+            context={
+                "tenant_id": tenant,
+                "process": sanitized_process,
+                "doc_class": sanitized_doc_class,
+                "collection_id": collection_id,
+            },
+        ) from exc
+    sanitized_workflow = normalise_selector_value(workflow_id)
+    use_collection_routing = is_collection_routing_enabled()
     context = {
         "tenant_id": tenant,
         "process": sanitized_process,
         "doc_class": sanitized_doc_class,
+        "collection_id": sanitized_collection,
+        "workflow_id": sanitized_workflow,
     }
+
+    collection_source = "missing"
+    if sanitized_collection:
+        collection_source = "input"
+    alias_applied = False
+
+    if sanitized_doc_class and sanitized_collection:
+        if not use_collection_routing:
+            _DOC_CLASS_COLLECTION_CACHE[sanitized_doc_class] = sanitized_collection
+    elif sanitized_doc_class and not sanitized_collection:
+        if use_collection_routing:
+            sanitized_collection = sanitized_doc_class
+            alias_applied = True
+            collection_source = "doc_class"
+        else:
+            cached = _DOC_CLASS_COLLECTION_CACHE.get(sanitized_doc_class)
+            if cached:
+                sanitized_collection = cached
+                alias_applied = True
+                collection_source = "doc_class_cache"
+
+    context["collection_id"] = sanitized_collection
+    context["collection_id_source"] = collection_source
+    if alias_applied:
+        context["collection_alias"] = sanitized_doc_class
     policy = resolve_candidate_pool_policy()
     context["candidate_policy"] = policy.value
     if not tenant:
@@ -247,6 +312,7 @@ def validate_search_inputs(
                         "tenant": tenant,
                         "routing_process": sanitized_process,
                         "routing_doc_class": sanitized_doc_class,
+                        "collection_id": sanitized_collection,
                         "requested": requested,
                         "top_k": normalized_top_k,
                     },
@@ -295,6 +361,8 @@ def validate_search_inputs(
         tenant_id=tenant,
         process=sanitized_process,
         doc_class=sanitized_doc_class,
+        collection_id=sanitized_collection,
+        workflow_id=sanitized_workflow,
         top_k=sanitized_top_k,
         max_candidates=normalized_max_for_result,
         effective_top_k=normalized_top_k,
@@ -315,6 +383,9 @@ def emit_router_validation_failure(error: RouterInputError) -> None:
         "tenant_id": context.get("tenant_id"),
         "process": context.get("process"),
         "doc_class": context.get("doc_class"),
+        "collection_id": context.get("collection_id"),
+        "collection_id_source": context.get("collection_id_source"),
+        "workflow_id": context.get("workflow_id"),
         "top_k": context.get("top_k"),
         "max_candidates": context.get("max_candidates"),
         "error_code": error.code,

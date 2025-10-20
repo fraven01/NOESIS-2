@@ -6,6 +6,7 @@ import atexit
 import inspect
 import logging
 from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING, Any
+from uuid import UUID
 
 from psycopg2 import OperationalError
 
@@ -73,6 +74,8 @@ class NullVectorStore:
         max_candidates: int | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
         visibility: object | None = None,
         visibility_override_allowed: bool = False,
     ) -> "HybridSearchResult":
@@ -193,6 +196,88 @@ def _coerce_float(value: object | None) -> float | None:
         return None
 
 
+def _normalise_collection_id_filter(value: object | None) -> list[str]:
+    if value is None:
+        return []
+    candidates: Iterable[object]
+    if isinstance(value, (list, tuple, set)):
+        candidates = value
+    else:
+        candidates = (value,)
+
+    normalised: list[str] = []
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        text = str(candidate).strip()
+        if not text:
+            continue
+        try:
+            coerced = str(UUID(text))
+        except (TypeError, ValueError):
+            continue
+        if coerced not in normalised:
+            normalised.append(coerced)
+    return normalised
+
+
+def _prepare_filters(
+    filters: Mapping[str, object | None] | None,
+    *,
+    visibility: str,
+    collection_id: str | None,
+    workflow_id: str | None,
+    doc_class: str | None,
+    context: dict[str, object | None],
+) -> dict[str, object | None]:
+    normalised: dict[str, object | None] = {}
+    if filters is not None:
+        for key, value in filters.items():
+            if isinstance(value, str):
+                normalised[key] = value.strip() or None
+            else:
+                normalised[key] = value
+
+    normalised["visibility"] = visibility
+
+    if doc_class and normalised.get("doc_class") is None:
+        normalised["doc_class"] = doc_class
+
+    if workflow_id:
+        normalised["workflow_id"] = workflow_id
+
+    existing_collection_ids = _normalise_collection_id_filter(
+        normalised.get("collection_ids")
+    )
+
+    filter_collection = normalised.get("collection_id")
+    if filter_collection is not None:
+        try:
+            normalised_filter = str(UUID(str(filter_collection).strip()))
+        except (TypeError, ValueError):
+            normalised_filter = None
+        if normalised_filter:
+            normalised["collection_id"] = normalised_filter
+            if normalised_filter not in existing_collection_ids:
+                existing_collection_ids.append(normalised_filter)
+        else:
+            normalised.pop("collection_id", None)
+
+    if collection_id:
+        normalised["collection_id"] = collection_id
+        if collection_id not in existing_collection_ids:
+            existing_collection_ids.insert(0, collection_id)
+
+    if existing_collection_ids:
+        normalised["collection_ids"] = existing_collection_ids
+    else:
+        normalised.pop("collection_ids", None)
+
+    context["collection_ids_filter"] = existing_collection_ids or None
+
+    return normalised
+
+
 def _emit_retrieval_span(
     *,
     tenant_id: str,
@@ -211,6 +296,12 @@ def _emit_retrieval_span(
         "case_id": case_id,
         "process": context.get("process"),
         "doc_class": context.get("doc_class"),
+        "collection_id": context.get("collection_id"),
+        "collection_id_source": context.get("collection_id_source"),
+        "collection_id_effective": context.get("collection_id_effective"),
+        "collection_ids_filter": context.get("collection_ids_filter"),
+        "workflow_id": context.get("workflow_id"),
+        "workflow_id_effective": context.get("workflow_id_effective"),
         "visibility_requested": context.get("visibility_requested"),
         "visibility_source": context.get("visibility_source"),
         "visibility_effective": context.get("visibility_effective"),
@@ -346,6 +437,8 @@ class VectorStore(Protocol):
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid semantic/lexical search."""
 
@@ -394,6 +487,8 @@ class TenantScopedVectorStore(Protocol):
         trgm_limit: float | None = None,
         trgm_threshold: float | None = None,
         max_candidates: int | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> "HybridSearchResult":
         """Execute a hybrid search within the tenant scope."""
 
@@ -504,6 +599,8 @@ class VectorStoreRouter:
         scope: str = "global",
         process: str | None = None,
         doc_class: str | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
         visibility: object | None = None,
         visibility_override_allowed: bool = False,
     ) -> list[Chunk]:
@@ -519,6 +616,8 @@ class VectorStoreRouter:
                 tenant_id=tenant_id,
                 process=process,
                 doc_class=doc_class,
+                collection_id=collection_id,
+                workflow_id=workflow_id,
                 top_k=top_k,
                 visibility=visibility,
             )
@@ -535,21 +634,22 @@ class VectorStoreRouter:
         )
         validation_context = validation.context
 
-        requested_top_k = validation.top_k
+        sanitized_collection = validation.collection_id
+        sanitized_workflow = validation.workflow_id
+        validation_context["collection_id_effective"] = sanitized_collection
+        validation_context["workflow_id_effective"] = sanitized_workflow
+
         requested_top_k = validation.top_k
         capped_top_k = validation.effective_top_k
         top_k_source = validation.top_k_source
-        normalised_filters: dict[str, object | None] | None = None
-        if filters is not None:
-            normalised_filters = {}
-            for key, value in filters.items():
-                if isinstance(value, str):
-                    normalised_filters[key] = value or None
-                else:
-                    normalised_filters[key] = value
-        if normalised_filters is None:
-            normalised_filters = {}
-        normalised_filters["visibility"] = effective_visibility.value
+        normalised_filters = _prepare_filters(
+            filters,
+            visibility=effective_visibility.value,
+            collection_id=sanitized_collection,
+            workflow_id=sanitized_workflow,
+            doc_class=validation.doc_class,
+            context=validation_context,
+        )
 
         logger.debug(
             "Vector search",
@@ -558,6 +658,14 @@ class VectorStoreRouter:
                 "scope": scope,
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
+                "collection_id": sanitized_collection,
+                "collection_id_source": validation_context.get(
+                    "collection_id_source"
+                ),
+                "workflow_id": sanitized_workflow,
+                "collection_ids_filter": validation_context.get(
+                    "collection_ids_filter"
+                ),
                 "top_k_requested": (
                     requested_top_k if requested_top_k is not None else capped_top_k
                 ),
@@ -570,13 +678,29 @@ class VectorStoreRouter:
         store = self._get_store(scope)
         hybrid = getattr(store, "hybrid_search", None)
         if callable(hybrid):
-            result = hybrid(
-                query,
-                tenant,
-                case_id=case_id,
-                top_k=capped_top_k,
-                filters=normalised_filters,
-            )
+            keyword_args = {
+                "case_id": case_id,
+                "top_k": capped_top_k,
+                "filters": normalised_filters,
+            }
+            if sanitized_collection is not None:
+                keyword_args["collection_id"] = sanitized_collection
+            if sanitized_workflow is not None:
+                keyword_args["workflow_id"] = sanitized_workflow
+            try:
+                result = hybrid(
+                    query,
+                    tenant,
+                    **keyword_args,
+                )
+            except TypeError:
+                keyword_args.pop("collection_id", None)
+                keyword_args.pop("workflow_id", None)
+                result = hybrid(
+                    query,
+                    tenant,
+                    **keyword_args,
+                )
             if result is not None:
                 setattr(result, "visibility", effective_visibility.value)
                 return list(getattr(result, "chunks", result))
@@ -606,6 +730,8 @@ class VectorStoreRouter:
         max_candidates: int | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
         visibility: object | None = None,
         visibility_override_allowed: bool = False,
     ) -> "HybridSearchResult":
@@ -614,6 +740,8 @@ class VectorStoreRouter:
                 tenant_id=tenant_id,
                 process=process,
                 doc_class=doc_class,
+                collection_id=collection_id,
+                workflow_id=workflow_id,
                 top_k=top_k,
                 max_candidates=max_candidates,
                 visibility=visibility,
@@ -634,6 +762,11 @@ class VectorStoreRouter:
         validation_context["visibility_effective"] = effective_visibility.value
         validation_context["top_k_requested"] = validation.top_k
 
+        sanitized_collection = validation.collection_id
+        sanitized_workflow = validation.workflow_id
+        validation_context["collection_id_effective"] = sanitized_collection
+        validation_context["workflow_id_effective"] = sanitized_workflow
+
         normalized_top_k = validation.effective_top_k
         top_k_source = validation.top_k_source
         max_candidates_value = validation.effective_max_candidates
@@ -642,17 +775,14 @@ class VectorStoreRouter:
         validation_context["top_k_source"] = top_k_source
         validation_context["max_candidates_effective"] = max_candidates_value
         validation_context["max_candidates_source"] = max_candidates_source
-        normalised_filters: dict[str, object | None] | None = None
-        if filters is not None:
-            normalised_filters = {}
-            for key, value in filters.items():
-                if isinstance(value, str):
-                    normalised_filters[key] = value or None
-                else:
-                    normalised_filters[key] = value
-        if normalised_filters is None:
-            normalised_filters = {}
-        normalised_filters["visibility"] = effective_visibility.value
+        normalised_filters = _prepare_filters(
+            filters,
+            visibility=effective_visibility.value,
+            collection_id=sanitized_collection,
+            workflow_id=sanitized_workflow,
+            doc_class=validation.doc_class,
+            context=validation_context,
+        )
 
         alpha_default = float(get_limit_setting("RAG_HYBRID_ALPHA", 0.7))
         min_sim_default = float(get_limit_setting("RAG_MIN_SIM", 0.15))
@@ -680,6 +810,14 @@ class VectorStoreRouter:
                 "scope": scope,
                 "process": validation_context.get("process"),
                 "doc_class": validation_context.get("doc_class"),
+                "collection_id": sanitized_collection,
+                "collection_id_source": validation_context.get(
+                    "collection_id_source"
+                ),
+                "collection_ids_filter": validation_context.get(
+                    "collection_ids_filter"
+                ),
+                "workflow_id": sanitized_workflow,
                 "case_id": case_id,
                 "top_k": normalized_top_k,
                 "top_k_source": top_k_source,
@@ -714,6 +852,8 @@ class VectorStoreRouter:
                 "max_candidates": max_candidates_value,
                 "visibility": effective_visibility.value,
                 "visibility_override_allowed": override_allowed,
+                "collection_id": sanitized_collection,
+                "workflow_id": sanitized_workflow,
             }
             try:
                 signature = inspect.signature(hybrid)
@@ -738,7 +878,12 @@ class VectorStoreRouter:
                     # even if older implementations haven't been updated yet. keep
                     # these keys so PgVectorClient.hybrid_search can consume them.
                     allowed_keywords.update(
-                        {"visibility", "visibility_override_allowed"}
+                        {
+                            "visibility",
+                            "visibility_override_allowed",
+                            "collection_id",
+                            "workflow_id",
+                        }
                     )
                     hybrid_kwargs = {
                         key: value

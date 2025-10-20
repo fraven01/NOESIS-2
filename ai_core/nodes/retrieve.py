@@ -14,6 +14,7 @@ from ai_core.rag.embedding_config import get_embedding_configuration
 from ai_core.rag.profile_resolver import resolve_embedding_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter, get_default_router
+from ai_core.rag.selector_utils import normalise_selector_value
 from ai_core.rag.visibility import coerce_bool_flag
 from ai_core.tool_contracts import (
     ContextError,
@@ -32,6 +33,8 @@ class RetrieveInput(BaseModel):
     filters: Mapping[str, Any] | None = None
     process: str | None = None
     doc_class: str | None = None
+    collection_id: str | None = None
+    workflow_id: str | None = None
     visibility: str | None = None
     visibility_override_allowed: bool | None = None
     hybrid: Mapping[str, Any] | None = None
@@ -50,6 +53,8 @@ class RetrieveInput(BaseModel):
             "filters": state.get("filters"),
             "process": state.get("process"),
             "doc_class": state.get("doc_class"),
+            "collection_id": state.get("collection_id"),
+            "workflow_id": state.get("workflow_id"),
             "visibility": state.get("visibility"),
             "visibility_override_allowed": state.get("visibility_override_allowed"),
             "hybrid": state.get("hybrid"),
@@ -74,6 +79,10 @@ class RetrieveRouting(BaseModel):
 
     profile: str
     vector_space_id: str
+    process: str | None = None
+    doc_class: str | None = None
+    collection_id: str | None = None
+    workflow_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -528,15 +537,32 @@ def _resolve_routing_metadata(
     tenant_id: str,
     process: str | None,
     doc_class: str | None,
+    collection_id: str | None,
+    workflow_id: str | None,
 ) -> Dict[str, str | None]:
+    sanitized_process = normalise_selector_value(process)
+    sanitized_doc_class = normalise_selector_value(doc_class)
+    sanitized_workflow = normalise_selector_value(workflow_id)
+    sanitized_collection = None
+    if collection_id is not None:
+        text = str(collection_id).strip()
+        sanitized_collection = text or None
     profile_id = resolve_embedding_profile(
-        tenant_id=tenant_id, process=process, doc_class=doc_class
+        tenant_id=tenant_id,
+        process=process,
+        doc_class=doc_class,
+        collection_id=sanitized_collection,
+        workflow_id=workflow_id,
     )
     configuration = get_embedding_configuration()
     profile_config = configuration.embedding_profiles[profile_id]
     return {
         "profile": profile_id,
         "vector_space_id": profile_config.vector_space,
+        "process": sanitized_process,
+        "doc_class": sanitized_doc_class,
+        "collection_id": sanitized_collection,
+        "workflow_id": sanitized_workflow,
     }
 
 
@@ -559,6 +585,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     filters = _ensure_mapping(params.filters, field="filters")
     process = params.process
     doc_class = params.doc_class
+    collection_id = params.collection_id
+    workflow_id = params.workflow_id
     requested_visibility = params.visibility
 
     hybrid_mapping = _ensure_mapping(params.hybrid, field="hybrid")
@@ -597,6 +625,10 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         extra={
             "tenant_id": tenant_id,
             "case_id": case_id,
+            "process": process,
+            "doc_class": doc_class,
+            "collection_id": collection_id,
+            "workflow_id": workflow_id,
             "top_k": hybrid_config.top_k,
             "alpha": hybrid_config.alpha,
             "min_sim": hybrid_config.min_sim,
@@ -616,6 +648,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         max_candidates=hybrid_config.max_candidates,
         process=process,
         doc_class=doc_class,
+        collection_id=collection_id,
+        workflow_id=workflow_id,
         visibility=requested_visibility,
         visibility_override_allowed=visibility_override_allowed,
     )
@@ -742,7 +776,11 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
                 meta_section["parent_ids"] = ordered_ids
 
     routing_meta = _resolve_routing_metadata(
-        tenant_id=tenant_id, process=process, doc_class=doc_class
+        tenant_id=tenant_id,
+        process=process,
+        doc_class=doc_class,
+        collection_id=collection_id,
+        workflow_id=workflow_id,
     )
 
     alpha_value = _coerce_float_value(
