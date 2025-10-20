@@ -9,10 +9,10 @@ from django.urls import reverse
         for mw in settings.MIDDLEWARE
         if mw
         not in {
-            'django_tenants.middleware.main.TenantMainMiddleware',
-            'common.middleware.HeaderTenantRoutingMiddleware',
-            'common.middleware.TenantSchemaMiddleware',
-            'ai_core.middleware.PIISessionScopeMiddleware',
+            "django_tenants.middleware.main.TenantMainMiddleware",
+            "common.middleware.HeaderTenantRoutingMiddleware",
+            "common.middleware.TenantSchemaMiddleware",
+            "ai_core.middleware.PIISessionScopeMiddleware",
         }
     ]
 )

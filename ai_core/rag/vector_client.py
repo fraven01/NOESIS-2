@@ -1255,7 +1255,11 @@ class PgVectorClient:
                     "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
                 )
                 where_params.extend(
-                    [case_filter_value, effective_collection_filter, legacy_doc_class_filter]
+                    [
+                        case_filter_value,
+                        effective_collection_filter,
+                        legacy_doc_class_filter,
+                    ]
                 )
             else:
                 where_clauses.append(
@@ -1270,7 +1274,9 @@ class PgVectorClient:
                 where_clauses.append(
                     "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
                 )
-                where_params.extend([effective_collection_filter, legacy_doc_class_filter])
+                where_params.extend(
+                    [effective_collection_filter, legacy_doc_class_filter]
+                )
             else:
                 where_clauses.append("c.collection_id = ANY(%s)")
                 where_params.append(effective_collection_filter)
@@ -3004,7 +3010,8 @@ class PgVectorClient:
                     "metadata": {
                         k: v
                         for k, v in chunk.meta.items()
-                        if k not in {"tenant_id", "tenant", "hash", "source", "doc_class"}
+                        if k
+                        not in {"tenant_id", "tenant", "hash", "source", "doc_class"}
                     },
                     "chunks": [],
                     "parents": {},

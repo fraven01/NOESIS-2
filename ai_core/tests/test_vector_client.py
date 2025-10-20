@@ -173,7 +173,8 @@ def test_hybrid_search_where_clause_collection_only(
 
     where_clauses = _extract_where_clauses(executed)
     assert any(
-        "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))" in clause
+        "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+        in clause
         for clause in where_clauses
     )
     assert all(
@@ -267,8 +268,6 @@ def test_group_by_document_includes_workflow_scope() -> None:
     doc_id = "doc-99"
     workflow_a = "flow-a"
     workflow_b = "flow-b"
-
-    tenant_key = str(client._coerce_tenant_uuid(tenant))
 
     chunks = [
         Chunk(
@@ -507,7 +506,7 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
     content_hash = hashlib.sha256(b"workflow-specific").hexdigest()
 
     chunk_a = Chunk(
-        content="first", 
+        content="first",
         meta={
             "tenant_id": tenant,
             "hash": content_hash,
