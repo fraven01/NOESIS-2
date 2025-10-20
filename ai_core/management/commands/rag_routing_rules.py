@@ -32,6 +32,16 @@ class Command(BaseCommand):
             help="Process label for dry-run profile resolution",
         )
         parser.add_argument(
+            "--collection-id",
+            dest="collection_id",
+            help="Collection identifier for dry-run profile resolution",
+        )
+        parser.add_argument(
+            "--workflow-id",
+            dest="workflow_id",
+            help="Workflow identifier for dry-run profile resolution",
+        )
+        parser.add_argument(
             "--doc-class",
             help="Document class label for dry-run profile resolution",
         )
@@ -56,22 +66,38 @@ class Command(BaseCommand):
             for rule in table.rules:
                 tenant = rule.tenant or "*"
                 process = rule.process or "*"
+                workflow_id = rule.workflow_id or "*"
+                collection_id = rule.collection_id or "*"
                 doc_class = rule.doc_class or "*"
                 self.stdout.write(
-                    "  - tenant=%s, process=%s, doc_class=%s -> %s"
-                    % (tenant, process, doc_class, rule.profile)
+                    "  - tenant=%s, process=%s, workflow_id=%s, collection_id=%s, doc_class=%s -> %s"
+                    % (
+                        tenant,
+                        process,
+                        workflow_id,
+                        collection_id,
+                        doc_class,
+                        rule.profile,
+                    )
                 )
         else:
             self.stdout.write("No override rules configured.")
 
         tenant_option = options.get("tenant")
         process_option = options.get("process")
+        collection_option = options.get("collection_id")
+        workflow_option = options.get("workflow_id")
         doc_class_option = options.get("doc_class")
 
         if tenant_option is None:
-            if process_option is not None or doc_class_option is not None:
+            if (
+                process_option is not None
+                or collection_option is not None
+                or workflow_option is not None
+                or doc_class_option is not None
+            ):
                 raise CommandError(
-                    "--tenant is required when using --process or --doc-class"
+                    "--tenant is required when using --process, --collection-id, --workflow-id or --doc-class"
                 )
             return
 
@@ -80,6 +106,8 @@ class Command(BaseCommand):
             raise CommandError("--tenant must be a non-empty string")
 
         sanitized_process = normalise_selector_value(process_option)
+        sanitized_collection = normalise_selector_value(collection_option)
+        sanitized_workflow = normalise_selector_value(workflow_option)
         sanitized_doc_class = normalise_selector_value(doc_class_option)
 
         try:
@@ -87,6 +115,8 @@ class Command(BaseCommand):
                 tenant_id=tenant,
                 process=process_option,
                 doc_class=doc_class_option,
+                collection_id=collection_option,
+                workflow_id=workflow_option,
             )
         except ProfileResolverError as exc:
             raise CommandError(str(exc)) from exc
@@ -94,10 +124,12 @@ class Command(BaseCommand):
         self.stdout.write("")
         self.stdout.write(
             self.style.SUCCESS(
-                "Resolved selector tenant=%s, process=%s, doc_class=%s -> %s"
+                "Resolved selector tenant=%s, process=%s, workflow_id=%s, collection_id=%s, doc_class=%s -> %s"
                 % (
                     tenant,
                     sanitized_process or "*",
+                    sanitized_workflow or "*",
+                    sanitized_collection or "*",
                     sanitized_doc_class or "*",
                     profile_id,
                 )

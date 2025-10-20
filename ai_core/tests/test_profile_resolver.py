@@ -21,12 +21,14 @@ from common.logging import log_context
 
 
 @pytest.fixture(autouse=True)
-def _reset_caches() -> None:
+def _reset_caches(settings) -> None:
     reset_embedding_configuration_cache()
     reset_routing_rules_cache()
+    settings.RAG_ROUTING_FLAGS = {}
     yield
     reset_routing_rules_cache()
     reset_embedding_configuration_cache()
+    settings.RAG_ROUTING_FLAGS = {}
 
 
 def _write_routing_rules(path: Path, content: str) -> None:
@@ -60,6 +62,13 @@ def _configure_embeddings(settings) -> None:
             "chunk_hard_limit": 400,
         },
     }
+
+
+@pytest.fixture
+def enable_collection_routing(settings):
+    settings.RAG_ROUTING_FLAGS = {"rag.use_collection_routing": True}
+    yield
+    settings.RAG_ROUTING_FLAGS = {}
 
 
 def test_requires_tenant_id(tmp_path, settings) -> None:
@@ -137,6 +146,37 @@ def test_resolver_is_case_insensitive(tmp_path, settings) -> None:
     )
 
 
+def test_resolver_maps_doc_class_to_collection_when_flag_enabled(
+    tmp_path, settings, enable_collection_routing
+) -> None:
+    _configure_embeddings(settings)
+    rules_file = tmp_path / "routing.yaml"
+    _write_routing_rules(
+        rules_file,
+        """
+        default_profile: standard
+        rules:
+          - profile: legacy
+            tenant: tenant-a
+            doc_class: Manual
+        """,
+    )
+    settings.RAG_ROUTING_RULES_PATH = rules_file
+
+    assert (
+        resolve_embedding_profile(
+            tenant_id="tenant-a", process=None, doc_class="manual"
+        )
+        == "legacy"
+    )
+    assert (
+        resolve_embedding_profile(
+            tenant_id="tenant-a", process=None, collection_id="manual"
+        )
+        == "legacy"
+    )
+
+
 def test_resolved_profile_must_exist(tmp_path, settings, monkeypatch) -> None:
     _configure_embeddings(settings)
     rules_file = tmp_path / "routing.yaml"
@@ -204,7 +244,13 @@ def test_profile_resolution_emits_trace_metadata(
     with log_context(trace_id="trace-profile", tenant="tenant-a"):
         assert (
             resolve_embedding_profile(
-                tenant_id="tenant-a", process=None, doc_class=None
+                tenant_id="tenant-a",
+                process=None,
+                doc_class=None,
+                collection_id="Docs",
+                workflow_id="FlowA",
+                language="DE",
+                size="Large",
             )
             == "legacy"
         )
@@ -216,3 +262,52 @@ def test_profile_resolution_emits_trace_metadata(
     metadata = span["metadata"]
     assert metadata["embedding_profile"] == "legacy"
     assert metadata["tenant_id"] == "tenant-a"
+    assert metadata["collection_id"] == "docs"
+    assert metadata["workflow_id"] == "flowa"
+    assert metadata["language"] == "de"
+    assert metadata["size"] == "large"
+    assert metadata["resolver_path"] == "rules[0]"
+    assert metadata["chosen_profile"] == "legacy"
+    assert metadata["fallback_used"] is False
+
+
+def test_profile_resolution_marks_default_fallback(
+    tmp_path, settings, monkeypatch
+) -> None:
+    _configure_embeddings(settings)
+    rules_file = tmp_path / "routing.yaml"
+    _write_routing_rules(
+        rules_file,
+        """
+        default_profile: standard
+        rules:
+          - profile: legacy
+            tenant: other-tenant
+        """,
+    )
+    settings.RAG_ROUTING_RULES_PATH = rules_file
+
+    spans: list[dict[str, object]] = []
+
+    from ai_core.rag import profile_resolver as resolver_module
+
+    monkeypatch.setattr(
+        resolver_module.tracing,
+        "emit_span",
+        lambda **kwargs: spans.append(kwargs),
+    )
+
+    with log_context(trace_id="trace-default", tenant="tenant-a"):
+        assert (
+            resolve_embedding_profile(
+                tenant_id="tenant-a",
+                process=None,
+                collection_id=None,
+                workflow_id=None,
+            )
+            == "standard"
+        )
+
+    metadata = spans[0]["metadata"]
+    assert metadata["resolver_path"] == "default_profile"
+    assert metadata["fallback_used"] is True

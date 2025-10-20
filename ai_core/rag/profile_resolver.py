@@ -7,7 +7,7 @@ from common.logging import get_log_context, get_logger
 from ai_core.infra import tracing
 
 from .embedding_config import get_embedding_configuration
-from .routing_rules import get_routing_table
+from .routing_rules import get_routing_table, is_collection_routing_enabled
 from .selector_utils import normalise_selector_value
 
 
@@ -39,6 +39,10 @@ def resolve_embedding_profile(
     tenant_id: str,
     process: str | None = None,
     doc_class: str | None = None,
+    collection_id: str | None = None,
+    workflow_id: str | None = None,
+    language: str | None = None,
+    size: str | None = None,
 ) -> str:
     """Return the embedding profile identifier for the provided context."""
 
@@ -51,27 +55,45 @@ def resolve_embedding_profile(
 
     sanitized_process = _normalise_optional(process)
     sanitized_doc_class = _normalise_optional(doc_class)
-    profile_id = get_routing_table().resolve(
+    sanitized_collection_id = _normalise_optional(collection_id)
+    sanitized_workflow_id = _normalise_optional(workflow_id)
+    sanitized_language = _normalise_optional(language)
+    sanitized_size = _normalise_optional(size)
+
+    if sanitized_collection_id is None and sanitized_doc_class is not None:
+        if is_collection_routing_enabled():
+            sanitized_collection_id = sanitized_doc_class
+
+    table = get_routing_table()
+    resolution = table.resolve_with_metadata(
         tenant=tenant,
         process=sanitized_process,
+        collection_id=sanitized_collection_id,
+        workflow_id=sanitized_workflow_id,
         doc_class=sanitized_doc_class,
     )
 
     configuration = get_embedding_configuration().embedding_profiles
-    if profile_id not in configuration:
+    if resolution.profile not in configuration:
         raise ProfileResolverError(
             ProfileResolverErrorCode.UNKNOWN_PROFILE,
-            f"Resolved profile '{profile_id}' is not configured",
+            f"Resolved profile '{resolution.profile}' is not configured",
         )
 
     _emit_profile_resolution(
         tenant_id=tenant,
         process=sanitized_process,
         doc_class=sanitized_doc_class,
-        profile_id=profile_id,
+        collection_id=sanitized_collection_id,
+        workflow_id=sanitized_workflow_id,
+        language=sanitized_language,
+        size=sanitized_size,
+        profile_id=resolution.profile,
+        resolver_path=resolution.resolver_path,
+        fallback_used=resolution.fallback_used,
     )
 
-    return profile_id
+    return resolution.profile
 
 
 def _emit_profile_resolution(
@@ -79,7 +101,13 @@ def _emit_profile_resolution(
     tenant_id: str,
     process: str | None,
     doc_class: str | None,
+    collection_id: str | None,
+    workflow_id: str | None,
+    language: str | None,
+    size: str | None,
     profile_id: str,
+    resolver_path: str,
+    fallback_used: bool,
 ) -> None:
     """Emit trace metadata for successful profile resolution."""
 
@@ -88,6 +116,13 @@ def _emit_profile_resolution(
         "process": process,
         "doc_class": doc_class,
         "embedding_profile": profile_id,
+        "collection_id": collection_id,
+        "workflow_id": workflow_id,
+        "language": language,
+        "size": size,
+        "resolver_path": resolver_path,
+        "chosen_profile": profile_id,
+        "fallback_used": fallback_used,
     }
     logger.debug("rag.profile.resolve", extra=metadata)
     log_context = get_log_context()

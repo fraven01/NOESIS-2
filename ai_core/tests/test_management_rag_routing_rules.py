@@ -57,6 +57,7 @@ def routing_config(tmp_path, settings):
             "chunk_hard_limit": 768,
         },
     }
+    settings.RAG_ROUTING_FLAGS = {}
     return rules
 
 
@@ -67,7 +68,10 @@ def test_command_lists_routing_rules(routing_config):
 
     output = buffer.getvalue()
     assert "Default profile: standard" in output
-    assert "tenant=acme, process=review, doc_class=* -> premium" in output
+    assert (
+        "tenant=acme, process=review, workflow_id=*, collection_id=*, doc_class=* -> premium"
+        in output
+    )
 
 
 def test_command_resolves_selector(routing_config):
@@ -82,7 +86,7 @@ def test_command_resolves_selector(routing_config):
 
     output = buffer.getvalue()
     assert (
-        "Resolved selector tenant=acme, process=review, doc_class=* -> premium"
+        "Resolved selector tenant=acme, process=review, workflow_id=*, collection_id=*, doc_class=* -> premium"
         in output
     )
 
