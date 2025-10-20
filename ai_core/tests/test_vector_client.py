@@ -160,8 +160,9 @@ def test_hybrid_search_where_clause_case_only(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_hybrid_search_where_clause_collection_only(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings
 ) -> None:
+    settings.RAG_ROUTING_FLAGS = {"rag.use_collection_routing": True}
     client, executed = _make_vector_client(monkeypatch)
 
     client.hybrid_search(
@@ -171,15 +172,19 @@ def test_hybrid_search_where_clause_collection_only(
     )
 
     where_clauses = _extract_where_clauses(executed)
-    assert any("c.collection_id = ANY" in clause for clause in where_clauses)
+    assert any(
+        "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))" in clause
+        for clause in where_clauses
+    )
     assert all(
         "c.metadata ->> 'case_id' = %s" not in clause for clause in where_clauses
     )
 
 
 def test_hybrid_search_where_clause_unions_case_and_collections(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings
 ) -> None:
+    settings.RAG_ROUTING_FLAGS = {"rag.use_collection_routing": True}
     client, executed = _make_vector_client(monkeypatch)
 
     client.hybrid_search(
@@ -191,7 +196,8 @@ def test_hybrid_search_where_clause_unions_case_and_collections(
 
     where_clauses = _extract_where_clauses(executed)
     assert any(
-        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))" in clause
+        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+        in clause
         for clause in where_clauses
     )
 
@@ -243,10 +249,294 @@ def test_group_by_document_isolates_collections() -> None:
     grouped = client._group_by_document(chunks)
 
     assert len(grouped) == 2
-    scoped_keys = {(key[1], key[2]) for key in grouped}
+    scoped_keys = {(key[2], key[3]) for key in grouped}
     assert scoped_keys == {(doc_id, collection_a), (doc_id, collection_b)}
-    assert len(grouped[(tenant_key, doc_id, collection_a)]["chunks"]) == 2
-    assert len(grouped[(tenant_key, doc_id, collection_b)]["chunks"]) == 1
+    assert len(grouped[(tenant_key, None, doc_id, collection_a)]["chunks"]) == 2
+    assert len(grouped[(tenant_key, None, doc_id, collection_b)]["chunks"]) == 1
+
+
+def test_group_by_document_includes_workflow_scope() -> None:
+    client = object.__new__(vector_client.PgVectorClient)
+    client._coerce_tenant_uuid = (
+        vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+            client, vector_client.PgVectorClient
+        )
+    )
+    tenant = str(uuid.uuid4())
+    collection = str(uuid.uuid4())
+    doc_id = "doc-99"
+    workflow_a = "flow-a"
+    workflow_b = "flow-b"
+
+    tenant_key = str(client._coerce_tenant_uuid(tenant))
+
+    chunks = [
+        Chunk(
+            content="alpha",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection,
+                "workflow_id": workflow_a,
+            },
+        ),
+        Chunk(
+            content="beta",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection,
+                "workflow_id": workflow_b,
+            },
+        ),
+    ]
+
+    grouped = client._group_by_document(chunks)
+
+    assert len(grouped) == 2
+    scoped_keys = {(key[1], key[2]) for key in grouped}
+    assert scoped_keys == {(workflow_a, doc_id), (workflow_b, doc_id)}
+
+
+def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _make_vector_client(monkeypatch)
+
+    class _WorkflowTrackingCursor:
+        def __init__(self, connection: "_WorkflowTrackingConnection") -> None:
+            self.connection = connection
+            self._fetchone: tuple | None = None
+            self._fetchall: list[tuple] = []
+
+        def __enter__(self) -> "_WorkflowTrackingCursor":
+            return self
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+        def execute(self, sql, params=None) -> None:  # type: ignore[no-untyped-def]
+            text = str(sql)
+            normalised = " ".join(text.split())
+            lowered = normalised.lower()
+            self.connection.statements.append((normalised, params))
+            self._fetchone = None
+            if "select external_id" in lowered and "hash = %s" in lowered:
+                tenant = params[0] if params else None
+                index = 1
+                collection = None
+                if "collection_id = %s" in lowered:
+                    collection = params[index]
+                    index += 1
+                elif "collection_id is null" in lowered:
+                    collection = None
+                workflow = None
+                if "workflow_id = %s" in lowered:
+                    workflow = params[index]
+                    index += 1
+                elif "workflow_id is null" in lowered:
+                    workflow = None
+                hash_value = params[index]
+                for row in self.connection.documents:
+                    if (
+                        row["tenant_id"] == tenant
+                        and row["collection_id"] == collection
+                        and row["workflow_id"] == workflow
+                        and row["hash"] == hash_value
+                    ):
+                        self._fetchone = (row["external_id"],)
+                        break
+                return
+
+            if "select id, hash, metadata, source, deleted_at" in lowered:
+                tenant = params[0] if params else None
+                index = 1
+                collection = None
+                if "collection_id = %s" in lowered:
+                    collection = params[index]
+                    index += 1
+                elif "collection_id is null" in lowered:
+                    collection = None
+                workflow = None
+                if "workflow_id = %s" in lowered:
+                    workflow = params[index]
+                    index += 1
+                elif "workflow_id is null" in lowered:
+                    workflow = None
+                external_id = params[index]
+                for row in self.connection.documents:
+                    if (
+                        row["tenant_id"] == tenant
+                        and row["collection_id"] == collection
+                        and row["workflow_id"] == workflow
+                        and row["external_id"] == external_id
+                    ):
+                        self._fetchone = (
+                            row["id"],
+                            row["hash"],
+                            row["metadata"],
+                            row["source"],
+                            row.get("deleted_at"),
+                        )
+                        break
+                return
+
+            if "insert into" in lowered and "documents" in lowered:
+                (
+                    doc_id,
+                    tenant_id,
+                    collection_id,
+                    workflow_id,
+                    external_id,
+                    source,
+                    hash_value,
+                    metadata,
+                ) = params
+                if hasattr(metadata, "adapted"):
+                    stored_metadata = metadata.adapted  # type: ignore[attr-defined]
+                else:
+                    stored_metadata = metadata
+                self.connection.documents.append(
+                    {
+                        "id": doc_id,
+                        "tenant_id": tenant_id,
+                        "collection_id": collection_id,
+                        "workflow_id": workflow_id,
+                        "external_id": external_id,
+                        "source": source,
+                        "hash": hash_value,
+                        "metadata": stored_metadata,
+                        "deleted_at": None,
+                    }
+                )
+                return
+
+            if "update" in lowered and "documents" in lowered:
+                params = list(params or [])
+                external_id = None
+                collection_id = None
+                if "set external_id = %s" in lowered:
+                    (
+                        external_id,
+                        source,
+                        hash_value,
+                        metadata,
+                        workflow_id,
+                        doc_id,
+                    ) = params
+                else:
+                    (
+                        source,
+                        hash_value,
+                        metadata,
+                        collection_id,
+                        workflow_id,
+                        doc_id,
+                    ) = params
+                if hasattr(metadata, "adapted"):
+                    stored_metadata = metadata.adapted  # type: ignore[attr-defined]
+                else:
+                    stored_metadata = metadata
+                for row in self.connection.documents:
+                    if row["id"] == doc_id:
+                        row["source"] = source
+                        row["hash"] = hash_value
+                        row["metadata"] = stored_metadata
+                        row["workflow_id"] = workflow_id
+                        row["deleted_at"] = None
+                        if collection_id is not None:
+                            row["collection_id"] = collection_id
+                        if external_id is not None:
+                            row["external_id"] = external_id
+                        break
+                return
+
+            self._fetchone = None
+
+        def fetchone(self):
+            result = self._fetchone
+            self._fetchone = None
+            return result
+
+        def fetchall(self) -> list[tuple]:
+            result = list(self._fetchall)
+            self._fetchall = []
+            return result
+
+    class _WorkflowTrackingConnection:
+        def __init__(self) -> None:
+            self.documents: list[dict[str, object]] = []
+            self.statements: list[tuple[str, tuple | None]] = []
+
+        def cursor(self) -> _WorkflowTrackingCursor:
+            return _WorkflowTrackingCursor(self)
+
+        def commit(self) -> None:
+            return None
+
+        def rollback(self) -> None:
+            return None
+
+    class _ConnectionContext:
+        def __init__(self, connection: _WorkflowTrackingConnection) -> None:
+            self._connection = connection
+
+        def __enter__(self) -> _WorkflowTrackingConnection:
+            return self._connection
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
+
+    tracking_conn = _WorkflowTrackingConnection()
+
+    def _fake_connection(self):  # type: ignore[no-untyped-def]
+        return _ConnectionContext(tracking_conn)
+
+    client._connection = _fake_connection.__get__(client, type(client))
+
+    def _fake_replace(
+        self, cur, grouped, document_ids, doc_actions
+    ):  # type: ignore[no-untyped-def]
+        chunk_total = sum(len(doc.get("chunks", [])) for doc in grouped.values())
+        return chunk_total, {}
+
+    client._replace_chunks = _fake_replace.__get__(client, type(client))
+
+    tenant = str(uuid.uuid4())
+    external_id = "shared-doc"
+    content_hash = hashlib.sha256(b"workflow-specific").hexdigest()
+
+    chunk_a = Chunk(
+        content="first", 
+        meta={
+            "tenant_id": tenant,
+            "hash": content_hash,
+            "external_id": external_id,
+            "source": "unit-test",
+            "workflow_id": "flow-a",
+        },
+        embedding=[0.1, 0.2],
+    )
+    chunk_b = Chunk(
+        content="second",
+        meta={
+            "tenant_id": tenant,
+            "hash": content_hash,
+            "external_id": external_id,
+            "source": "unit-test",
+            "workflow_id": "flow-b",
+        },
+        embedding=[0.3, 0.4],
+    )
+
+    written = client.upsert_chunks([chunk_a, chunk_b])
+
+    assert written == 2
+    assert len(tracking_conn.documents) == 2
+    stored_workflows = {row["workflow_id"] for row in tracking_conn.documents}
+    assert stored_workflows == {"flow-a", "flow-b"}
+    stored_external_ids = {row["external_id"] for row in tracking_conn.documents}
+    assert stored_external_ids == {external_id}
 
 
 @pytest.mark.usefixtures("rag_database")

@@ -337,7 +337,8 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     assert dead_letter_payload["run_id"] == "run-timeout"
     assert dead_letter_payload["trace_id"] == "trace-timeout"
     assert dead_letter_payload["process"] is None
-    assert dead_letter_payload["doc_class"] is None
+    assert dead_letter_payload["workflow_id"] is None
+    assert "doc_class" not in dead_letter_payload
     expected_resolution = _expected_ingestion_resolution()
     for key, value in expected_resolution.items():
         assert dead_letter_payload[key] == value
@@ -427,7 +428,8 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     assert dead_letter_payload["run_id"] == "run-exc"
     assert dead_letter_payload["trace_id"] == "trace-exc"
     assert dead_letter_payload["process"] is None
-    assert dead_letter_payload["doc_class"] is None
+    assert dead_letter_payload["workflow_id"] is None
+    assert "doc_class" not in dead_letter_payload
     expected_resolution = _expected_ingestion_resolution()
     for key, value in expected_resolution.items():
         assert dead_letter_payload[key] == value
@@ -465,7 +467,7 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
         "dimension mismatch",
         context={
             "process": "review",
-            "doc_class": "legal",
+            "workflow_id": "flow-legal",
             "expected_dimension": 2,
             "observed_dimension": 1,
             "chunk_index": 0,
@@ -490,7 +492,8 @@ def test_run_ingestion_contract_error_includes_context(monkeypatch):
     assert len(apply_async_calls) == 1
     dead_letter_payload = apply_async_calls[0]["kwargs"]["args"][0]
     assert dead_letter_payload["process"] == "review"
-    assert dead_letter_payload["doc_class"] == "legal"
+    assert dead_letter_payload["workflow_id"] == "flow-legal"
+    assert "doc_class" not in dead_letter_payload
     assert dead_letter_payload["expected_dimension"] == 2
     assert dead_letter_payload["observed_dimension"] == 1
     assert dead_letter_payload["chunk_index"] == 0
