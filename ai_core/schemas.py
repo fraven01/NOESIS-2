@@ -290,7 +290,7 @@ class RagQueryRequest(_GraphStateBase):
     visibility: str | None = None
     visibility_override_allowed: bool | None = None
     hybrid: dict[str, Any] | None = None
-    collection_id: str | None = None
+    collection_id: str
 
     @field_validator(
         "question", "query", "process", "doc_class", "visibility", mode="before"
@@ -325,8 +325,14 @@ class RagQueryRequest(_GraphStateBase):
 
     @field_validator("collection_id", mode="before")
     @classmethod
-    def _normalise_collection_id(cls, value: object) -> str | None:
-        return _normalise_optional_uuid(value, "collection_id")
+    def _normalise_collection_id(cls, value: object) -> str:
+        normalised = _normalise_optional_uuid(value, "collection_id")
+        if normalised is None:
+            raise PydanticCustomError(
+                "invalid_collection_id",
+                "collection_id must be provided as a UUID string.",
+            )
+        return normalised
 
     @model_validator(mode="after")
     def _apply_collection_scope(self) -> "RagQueryRequest":
@@ -334,30 +340,30 @@ class RagQueryRequest(_GraphStateBase):
         if self.filters is not None:
             filters = dict(self.filters)
 
-        collection_ids: list[str] | None = None
-        if filters is not None and "collection_ids" in filters:
-            collection_ids = _normalise_collection_id_list(filters["collection_ids"])
-            if collection_ids:
-                filters["collection_ids"] = collection_ids
-            else:
-                filters.pop("collection_ids", None)
+        if filters is None:
+            filters = {}
 
-        if filters is not None and "collection_id" in filters:
-            filter_value = _normalise_optional_uuid(
-                filters["collection_id"], "collection_id"
+        existing_collection_ids = _normalise_collection_id_list(
+            filters.get("collection_ids")
+        )
+        if existing_collection_ids is None:
+            existing_collection_ids = []
+
+        filter_collection_id = filters.get("collection_id")
+        if filter_collection_id is not None:
+            normalised_filter_id = _normalise_optional_uuid(
+                filter_collection_id, "collection_id"
             )
-            if filter_value:
-                filters["collection_id"] = filter_value
-            else:
-                filters.pop("collection_id", None)
+            if normalised_filter_id:
+                if normalised_filter_id not in existing_collection_ids:
+                    existing_collection_ids.insert(0, normalised_filter_id)
+            filters.pop("collection_id", None)
 
-        if collection_ids:
-            self.collection_id = None
-        elif self.collection_id:
-            if filters is None:
-                filters = {}
-            if "collection_id" not in filters:
-                filters["collection_id"] = self.collection_id
+        if self.collection_id not in existing_collection_ids:
+            existing_collection_ids.insert(0, self.collection_id)
+
+        filters["collection_id"] = self.collection_id
+        filters["collection_ids"] = existing_collection_ids
 
         if filters:
             self.filters = filters

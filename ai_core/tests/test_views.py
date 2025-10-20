@@ -835,8 +835,11 @@ def test_rag_query_request_collection_list_overrides_body():
         filters={"collection_ids": [list_id_one, list_id_two]},
     )
 
-    assert request_model.collection_id is None
-    assert request_model.filters == {"collection_ids": [list_id_one, list_id_two]}
+    assert request_model.collection_id == body_collection
+    assert request_model.filters == {
+        "collection_id": body_collection,
+        "collection_ids": [body_collection, list_id_one, list_id_two],
+    }
 
 
 def test_rag_query_request_applies_body_collection_when_no_list():
@@ -850,7 +853,10 @@ def test_rag_query_request_applies_body_collection_when_no_list():
     )
 
     assert request_model.collection_id == collection_value
-    assert request_model.filters == {"collection_id": collection_value}
+    assert request_model.filters == {
+        "collection_id": collection_value,
+        "collection_ids": [collection_value],
+    }
 
 
 def test_collection_header_bridge_respects_priority():
@@ -908,8 +914,11 @@ def test_collection_scope_priority_end_to_end():
     bridged_payload = services._apply_collection_header_bridge(request, payload)
     request_model = RagQueryRequest(**bridged_payload)
 
-    assert request_model.collection_id is None
-    assert request_model.filters == {"collection_ids": list_value}
+    assert request_model.collection_id == body_value
+    assert request_model.filters == {
+        "collection_id": body_value,
+        "collection_ids": [body_value, *list_value],
+    }
 
 
 def test_collection_header_bridge_accepts_candidate_headers():
