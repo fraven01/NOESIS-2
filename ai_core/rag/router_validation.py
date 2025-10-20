@@ -72,7 +72,7 @@ def map_router_error_to_status(code: str) -> int:
     return 400
 
 
-_DOC_CLASS_COLLECTION_CACHE: dict[str, str] = {}
+_DOC_CLASS_COLLECTION_CACHE: dict[tuple[str, str], str] = {}
 
 
 @dataclass(frozen=True, slots=True)
@@ -215,16 +215,20 @@ def validate_search_inputs(
         collection_source = "input"
     alias_applied = False
 
-    if sanitized_doc_class and sanitized_collection:
+    cache_key: tuple[str, str] | None = None
+    if sanitized_doc_class and tenant:
+        cache_key = (tenant, sanitized_doc_class)
+
+    if cache_key and sanitized_collection:
         if not use_collection_routing:
-            _DOC_CLASS_COLLECTION_CACHE[sanitized_doc_class] = sanitized_collection
+            _DOC_CLASS_COLLECTION_CACHE[cache_key] = sanitized_collection
     elif sanitized_doc_class and not sanitized_collection:
         if use_collection_routing:
             sanitized_collection = sanitized_doc_class
             alias_applied = True
             collection_source = "doc_class"
         else:
-            cached = _DOC_CLASS_COLLECTION_CACHE.get(sanitized_doc_class)
+            cached = _DOC_CLASS_COLLECTION_CACHE.get(cache_key) if cache_key else None
             if cached:
                 sanitized_collection = cached
                 alias_applied = True
