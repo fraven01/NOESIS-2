@@ -1,13 +1,15 @@
 # Routing table for embedding profiles used by the RAG vector store.
 #
-# The router selects a profile deterministically based on tenant, process
-# context and document class. The default profile must always be defined and
+# The router selects a profile deterministically based on tenant, process,
+# workflow or collection scope. The default profile must always be defined and
 # every override must reference an existing embedding profile identifier.
 #
 # Duplicate selectors that point to the same profile are tolerated and will
 # emit a `ROUTE_DUP_SAME_TARGET` warning to highlight redundant entries.
 # Selectors are normalised to lowercase during validation and routing so
-# `review`, `Review` and `REVIEW` are treated identically.
+# `review`, `Review` and `REVIEW` are treated identically. When the feature
+# flag `rag.use_collection_routing` is active, legacy `doc_class` selectors are
+# automatically mapped to the `collection_id` dimension for compatibility.
 #
 # Operators can override this file via the RAG_ROUTING_RULES_PATH setting.
 
@@ -16,4 +18,8 @@ rules:
   - tenant: dev
     profile: standard
   - tenant: demo
+    workflow_id: onboarding
+    profile: demo
+  - tenant: demo
+    collection_id: support-faq
     profile: demo

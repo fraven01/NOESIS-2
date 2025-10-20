@@ -6,7 +6,9 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 import logging
+import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 from django.conf import settings
@@ -53,8 +55,16 @@ def _format_error(code: str, message: str) -> str:
 def _format_selector(rule: RoutingRule) -> str:
     tenant = rule.tenant or "*"
     process = rule.process or "*"
+    workflow_id = rule.workflow_id or "*"
+    collection_id = rule.collection_id or "*"
     doc_class = rule.doc_class or "*"
-    return f"tenant={tenant}, process={process}, doc_class={doc_class}"
+    return (
+        f"tenant={tenant}, "
+        f"process={process}, "
+        f"workflow_id={workflow_id}, "
+        f"collection_id={collection_id}, "
+        f"doc_class={doc_class}"
+    )
 
 
 LOGGER = logging.getLogger(__name__)
@@ -65,8 +75,11 @@ class RoutingRule:
     """A single routing rule describing an override for a profile."""
 
     profile: str
+    index: int
     tenant: str | None = None
     process: str | None = None
+    collection_id: str | None = None
+    workflow_id: str | None = None
     doc_class: str | None = None
 
     def matches(
@@ -74,9 +87,15 @@ class RoutingRule:
         *,
         tenant: str,
         process: str | None,
+        collection_id: str | None,
+        workflow_id: str | None,
         doc_class: str | None,
     ) -> bool:
         if self.tenant is not None and tenant != self.tenant:
+            return False
+        if self.collection_id is not None and collection_id != self.collection_id:
+            return False
+        if self.workflow_id is not None and workflow_id != self.workflow_id:
             return False
         if self.process is not None and process != self.process:
             return False
@@ -87,8 +106,62 @@ class RoutingRule:
     @property
     def specificity(self) -> int:
         return sum(
-            value is not None for value in (self.tenant, self.process, self.doc_class)
+            value is not None
+            for value in (
+                self.tenant,
+                self.process,
+                self.collection_id,
+                self.workflow_id,
+                self.doc_class,
+            )
         )
+
+    @property
+    def priority_key(self) -> tuple[int, int, int, int, int, int]:
+        tenant_flag = int(self.tenant is not None)
+        process_flag = int(self.process is not None)
+        collection_flag = int(self.collection_id is not None)
+        workflow_flag = int(self.workflow_id is not None)
+        doc_class_flag = int(self.doc_class is not None)
+        selector_count = self.specificity
+        return (
+            collection_flag,
+            workflow_flag,
+            process_flag,
+            doc_class_flag,
+            tenant_flag,
+            selector_count,
+        )
+
+    @property
+    def selector_tuple(
+        self,
+    ) -> tuple[str | None, str | None, str | None, str | None, str | None]:
+        return (
+            self.tenant,
+            self.process,
+            self.collection_id,
+            self.workflow_id,
+            self.doc_class,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class RoutingResolution:
+    """Result metadata for routing table lookups."""
+
+    profile: str
+    rule: RoutingRule | None
+
+    @property
+    def resolver_path(self) -> str:
+        if self.rule is None:
+            return "default_profile"
+        return f"rules[{self.rule.index}]"
+
+    @property
+    def fallback_used(self) -> bool:
+        return self.rule is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,21 +176,65 @@ class RoutingTable:
         *,
         tenant: str,
         process: str | None,
+        collection_id: str | None,
+        workflow_id: str | None,
         doc_class: str | None,
     ) -> str:
+        return self._resolve_internal(
+            tenant=tenant,
+            process=process,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
+            doc_class=doc_class,
+        ).profile
+
+    def resolve_with_metadata(
+        self,
+        *,
+        tenant: str,
+        process: str | None,
+        collection_id: str | None,
+        workflow_id: str | None,
+        doc_class: str | None,
+    ) -> RoutingResolution:
+        return self._resolve_internal(
+            tenant=tenant,
+            process=process,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
+            doc_class=doc_class,
+        )
+
+    def _resolve_internal(
+        self,
+        *,
+        tenant: str,
+        process: str | None,
+        collection_id: str | None,
+        workflow_id: str | None,
+        doc_class: str | None,
+    ) -> RoutingResolution:
         best_rule: RoutingRule | None = None
-        highest_specificity = -1
+        best_priority: tuple[int, int, int, int, int, int] | None = None
 
         for rule in self.rules:
-            if not rule.matches(tenant=tenant, process=process, doc_class=doc_class):
+            if not rule.matches(
+                tenant=tenant,
+                process=process,
+                collection_id=collection_id,
+                workflow_id=workflow_id,
+                doc_class=doc_class,
+            ):
                 continue
 
-            if rule.specificity > highest_specificity:
+            priority = rule.priority_key
+
+            if best_priority is None or priority > best_priority:
                 best_rule = rule
-                highest_specificity = rule.specificity
+                best_priority = priority
                 continue
 
-            if rule.specificity == highest_specificity and best_rule is not None:
+            if priority == best_priority and best_rule is not None:
                 if rule.profile != best_rule.profile:
                     raise RoutingConfigurationError(
                         _format_error(
@@ -127,7 +244,7 @@ class RoutingTable:
                     )
 
         if best_rule is not None:
-            return best_rule.profile
+            return RoutingResolution(profile=best_rule.profile, rule=best_rule)
 
         if not self.default_profile:
             raise RoutingConfigurationError(
@@ -137,7 +254,7 @@ class RoutingTable:
                 )
             )
 
-        return self.default_profile
+        return RoutingResolution(profile=self.default_profile, rule=None)
 
 
 def _routing_rules_path() -> Path:
@@ -203,8 +320,35 @@ def _normalise_optional(value: object | None, *, field: str) -> str | None:
     return normalized
 
 
+def _use_collection_routing() -> bool:
+    flags: Mapping[str, Any] | None = getattr(settings, "RAG_ROUTING_FLAGS", None)
+    if isinstance(flags, Mapping):
+        flag_value = flags.get("rag.use_collection_routing")
+        if isinstance(flag_value, bool):
+            return flag_value
+        if isinstance(flag_value, str):
+            lowered = flag_value.strip().lower()
+            if lowered in {"1", "true", "yes", "on"}:
+                return True
+            if lowered in {"0", "false", "no", "off"}:
+                return False
+
+    env_override = os.getenv("RAG_USE_COLLECTION_ROUTING")
+    if env_override is not None:
+        return env_override.strip().lower() in {"1", "true", "yes", "on"}
+
+    return False
+
+
+def is_collection_routing_enabled() -> bool:
+    """Return whether collection-based routing is enabled."""
+
+    return _use_collection_routing()
+
+
 def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
     rules: list[RoutingRule] = []
+    use_collection_routing = _use_collection_routing()
     for index, raw in enumerate(raw_rules):
         if not isinstance(raw, Mapping):
             raise RoutingConfigurationError(
@@ -223,11 +367,26 @@ def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
                 )
             )
 
+        tenant = _normalise_optional(raw.get("tenant"), field="tenant")
+        process = _normalise_optional(raw.get("process"), field="process")
+        collection_id = _normalise_optional(
+            raw.get("collection_id"), field="collection_id"
+        )
+        workflow_id = _normalise_optional(raw.get("workflow_id"), field="workflow_id")
+        doc_class = _normalise_optional(raw.get("doc_class"), field="doc_class")
+
+        if use_collection_routing and collection_id is None and doc_class is not None:
+            collection_id = doc_class
+            doc_class = None
+
         rule = RoutingRule(
             profile=profile,
-            tenant=_normalise_optional(raw.get("tenant"), field="tenant"),
-            process=_normalise_optional(raw.get("process"), field="process"),
-            doc_class=_normalise_optional(raw.get("doc_class"), field="doc_class"),
+            index=index,
+            tenant=tenant,
+            process=process,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
+            doc_class=doc_class,
         )
 
         rules.append(rule)
@@ -260,14 +419,16 @@ def _ensure_profiles_exist(
 
 
 def _validate_rule_uniqueness(rules: Sequence[RoutingRule]) -> None:
-    seen_selectors: dict[tuple[str | None, str | None, str | None], RoutingRule] = {}
+    seen_selectors: dict[
+        tuple[str | None, str | None, str | None, str | None, str | None], RoutingRule
+    ] = {}
     duplicate_same_target: dict[
-        tuple[str | None, str | None, str | None], RoutingRule
+        tuple[str | None, str | None, str | None, str | None, str | None], RoutingRule
     ] = {}
     unique_rules: list[RoutingRule] = []
 
     for rule in rules:
-        selector = (rule.tenant, rule.process, rule.doc_class)
+        selector = rule.selector_tuple
         if selector in seen_selectors:
             previous_rule = seen_selectors[selector]
             if previous_rule.profile != rule.profile:
@@ -293,7 +454,7 @@ def _validate_rule_uniqueness(rules: Sequence[RoutingRule]) -> None:
 
     for i, left in enumerate(unique_rules):
         for right in unique_rules[i + 1 :]:
-            if left.specificity != right.specificity:
+            if left.priority_key != right.priority_key:
                 continue
 
             if not _selectors_overlap(left, right):
@@ -312,6 +473,18 @@ def _selectors_overlap(left: RoutingRule, right: RoutingRule) -> bool:
         left.tenant is not None
         and right.tenant is not None
         and left.tenant != right.tenant
+    ):
+        return False
+    if (
+        left.collection_id is not None
+        and right.collection_id is not None
+        and left.collection_id != right.collection_id
+    ):
+        return False
+    if (
+        left.workflow_id is not None
+        and right.workflow_id is not None
+        and left.workflow_id != right.workflow_id
     ):
         return False
     if (
@@ -378,7 +551,14 @@ def get_routing_table() -> RoutingTable:
 
 
 def resolve_embedding_profile_id(
-    *, tenant: str, process: str | None = None, doc_class: str | None = None
+    *,
+    tenant: str,
+    process: str | None = None,
+    doc_class: str | None = None,
+    collection_id: str | None = None,
+    workflow_id: str | None = None,
+    language: str | None = None,
+    size: str | None = None,
 ) -> str:
     from .profile_resolver import resolve_embedding_profile
 
@@ -386,6 +566,10 @@ def resolve_embedding_profile_id(
         tenant_id=tenant,
         process=process,
         doc_class=doc_class,
+        collection_id=collection_id,
+        workflow_id=workflow_id,
+        language=language,
+        size=size,
     )
 
 
@@ -405,8 +589,10 @@ __all__ = [
     "RoutingConfigurationError",
     "RoutingRule",
     "RoutingTable",
+    "RoutingResolution",
     "RoutingErrorCode",
     "get_routing_table",
+    "is_collection_routing_enabled",
     "resolve_embedding_profile_id",
     "reset_routing_rules_cache",
     "validate_routing_rules",
