@@ -28,3 +28,4 @@ opentelemetry-instrumentation-logging
 whitenoise
 faker>=19,<38
 pydantic>=2.0,<3.0
+Pillow

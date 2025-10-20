@@ -1042,7 +1042,7 @@
           return;
         }
 
-        const collectionScope = requireCollection({ allowResolverFallback: true });
+        const collectionScope = requireCollection({ allowResolverFallback: false });
         if (!collectionScope) {
           renderJson(uploadResponseTarget, 'Bitte zuerst eine Collection auswählen.');
           return;
