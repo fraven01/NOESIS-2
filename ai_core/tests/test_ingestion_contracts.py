@@ -91,7 +91,7 @@ def test_ensure_embedding_dimensions_allows_matching_vectors() -> None:
         2,
         tenant_id="tenant-a",
         process="review",
-        doc_class="manual",
+        workflow_id="flow-a",
         embedding_profile="standard",
         vector_space_id="global",
     )
@@ -106,7 +106,7 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
             2,
             tenant_id="tenant-a",
             process="review",
-            doc_class="manual",
+            workflow_id="flow-a",
             embedding_profile="standard",
             vector_space_id="global",
         )
@@ -115,7 +115,7 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
     assert error.code == IngestionContractErrorCode.VECTOR_DIMENSION_MISMATCH
     assert error.context["tenant"] == "tenant-a"
     assert error.context["process"] == "review"
-    assert error.context["doc_class"] == "manual"
+    assert error.context["workflow_id"] == "flow-a"
     assert error.context["embedding_profile"] == "standard"
     assert error.context["vector_space_id"] == "global"
     assert error.context["expected_dimension"] == 2

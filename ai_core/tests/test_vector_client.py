@@ -160,8 +160,9 @@ def test_hybrid_search_where_clause_case_only(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_hybrid_search_where_clause_collection_only(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings
 ) -> None:
+    settings.RAG_ROUTING_FLAGS = {"rag.use_collection_routing": True}
     client, executed = _make_vector_client(monkeypatch)
 
     client.hybrid_search(
@@ -171,15 +172,19 @@ def test_hybrid_search_where_clause_collection_only(
     )
 
     where_clauses = _extract_where_clauses(executed)
-    assert any("c.collection_id = ANY" in clause for clause in where_clauses)
+    assert any(
+        "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))" in clause
+        for clause in where_clauses
+    )
     assert all(
         "c.metadata ->> 'case_id' = %s" not in clause for clause in where_clauses
     )
 
 
 def test_hybrid_search_where_clause_unions_case_and_collections(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, settings
 ) -> None:
+    settings.RAG_ROUTING_FLAGS = {"rag.use_collection_routing": True}
     client, executed = _make_vector_client(monkeypatch)
 
     client.hybrid_search(
@@ -191,7 +196,8 @@ def test_hybrid_search_where_clause_unions_case_and_collections(
 
     where_clauses = _extract_where_clauses(executed)
     assert any(
-        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))" in clause
+        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+        in clause
         for clause in where_clauses
     )
 
@@ -243,10 +249,57 @@ def test_group_by_document_isolates_collections() -> None:
     grouped = client._group_by_document(chunks)
 
     assert len(grouped) == 2
-    scoped_keys = {(key[1], key[2]) for key in grouped}
+    scoped_keys = {(key[2], key[3]) for key in grouped}
     assert scoped_keys == {(doc_id, collection_a), (doc_id, collection_b)}
-    assert len(grouped[(tenant_key, doc_id, collection_a)]["chunks"]) == 2
-    assert len(grouped[(tenant_key, doc_id, collection_b)]["chunks"]) == 1
+    assert len(grouped[(tenant_key, None, doc_id, collection_a)]["chunks"]) == 2
+    assert len(grouped[(tenant_key, None, doc_id, collection_b)]["chunks"]) == 1
+
+
+def test_group_by_document_includes_workflow_scope() -> None:
+    client = object.__new__(vector_client.PgVectorClient)
+    client._coerce_tenant_uuid = (
+        vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+            client, vector_client.PgVectorClient
+        )
+    )
+    tenant = str(uuid.uuid4())
+    collection = str(uuid.uuid4())
+    doc_id = "doc-99"
+    workflow_a = "flow-a"
+    workflow_b = "flow-b"
+
+    tenant_key = str(client._coerce_tenant_uuid(tenant))
+
+    chunks = [
+        Chunk(
+            content="alpha",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection,
+                "workflow_id": workflow_a,
+            },
+        ),
+        Chunk(
+            content="beta",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": doc_id,
+                "collection_id": collection,
+                "workflow_id": workflow_b,
+            },
+        ),
+    ]
+
+    grouped = client._group_by_document(chunks)
+
+    assert len(grouped) == 2
+    scoped_keys = {(key[1], key[2]) for key in grouped}
+    assert scoped_keys == {(workflow_a, doc_id), (workflow_b, doc_id)}
+    assert len(grouped[(tenant_key, workflow_a, doc_id, collection)]["chunks"]) == 1
+    assert len(grouped[(tenant_key, workflow_b, doc_id, collection)]["chunks"]) == 1
 
 
 @pytest.mark.usefixtures("rag_database")

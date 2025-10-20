@@ -364,7 +364,11 @@ def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
 
     ratio = 0.15
     doc_type = str(
-        meta.get("doc_class") or meta.get("document_type") or meta.get("type") or ""
+        meta.get("doc_class")
+        or meta.get("collection_id")
+        or meta.get("document_type")
+        or meta.get("type")
+        or ""
     ).lower()
     if doc_type:
         if any(keyword in doc_type for keyword in _LIST_LIKE_KEYWORDS):
@@ -761,12 +765,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             chunk_meta["embedding_profile"] = meta["embedding_profile"]
         if meta.get("vector_space_id"):
             chunk_meta["vector_space_id"] = meta["vector_space_id"]
-        if meta.get("process"):
-            chunk_meta["process"] = meta["process"]
-        if meta.get("doc_class"):
-            chunk_meta["doc_class"] = meta["doc_class"]
         if meta.get("collection_id"):
             chunk_meta["collection_id"] = meta["collection_id"]
+        if meta.get("workflow_id"):
+            chunk_meta["workflow_id"] = meta["workflow_id"]
         chunks.append(
             {
                 "content": chunk_text,
@@ -943,8 +945,8 @@ def upsert(
                     "embedding_profile",
                     "vector_space_id",
                     "process",
-                    "doc_class",
                     "collection_id",
+                    "workflow_id",
                 ):
                     if raw_meta.get(key) is not None:
                         fallback_meta[key] = raw_meta.get(key)
@@ -1006,7 +1008,7 @@ def upsert(
         expected_dimension,
         tenant_id=tenant_id,
         process=meta.get("process") if meta else None,
-        doc_class=meta.get("doc_class") if meta else None,
+        workflow_id=meta.get("workflow_id") if meta else None,
         embedding_profile=meta.get("embedding_profile") if meta else None,
         vector_space_id=meta.get("vector_space_id") if meta else None,
     )
