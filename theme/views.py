@@ -17,22 +17,32 @@ def home(request):
     return render(request, "theme/home.html")
 
 
+def _tenant_context_from_request(request) -> tuple[str, str]:
+    """Return the tenant identifier and schema for the current request."""
+
+    tenant = getattr(request, "tenant", None)
+    default_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
+
+    tenant_id: str | None = None
+    tenant_schema: str | None = None
+
+    if tenant is not None:
+        tenant_id = getattr(tenant, "tenant_id", None)
+        tenant_schema = getattr(tenant, "schema_name", None)
+
+    if not tenant_schema:
+        tenant_schema = default_schema
+
+    if not tenant_id:
+        tenant_id = tenant_schema
+
+    return tenant_id, tenant_schema
+
+
 def rag_tools(request):
     """Render a minimal interface to exercise the RAG endpoints manually."""
 
-    host = request.get_host() or ""
-    hostname = host.split(":", maxsplit=1)[0]
-
-    tenant_id = hostname or "dev.localhost"
-
-    tenant_schema = None
-    if hostname and "." in hostname:
-        candidate_schema = hostname.split(".", maxsplit=1)[0] or None
-        if candidate_schema and any(char.isalpha() for char in candidate_schema):
-            tenant_schema = candidate_schema
-
-    if not tenant_schema:
-        tenant_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
+    tenant_id, tenant_schema = _tenant_context_from_request(request)
 
     collection_options: list[str] = []
     resolver_profile_hint: str | None = None

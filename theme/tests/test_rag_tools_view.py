@@ -1,25 +1,26 @@
-from django.conf import settings
-from django.test.utils import override_settings
+from types import SimpleNamespace
+
+from django.test import RequestFactory
 from django.urls import reverse
+from django.utils.html import escapejs
+
+from theme.views import rag_tools
 
 
-@override_settings(
-    MIDDLEWARE=[
-        mw
-        for mw in settings.MIDDLEWARE
-        if mw
-        not in {
-            "django_tenants.middleware.main.TenantMainMiddleware",
-            "common.middleware.HeaderTenantRoutingMiddleware",
-            "common.middleware.TenantSchemaMiddleware",
-            "ai_core.middleware.PIISessionScopeMiddleware",
-        }
-    ]
-)
-def test_rag_tools_page_is_accessible(client):
-    response = client.get(reverse("rag-tools"))
+def test_rag_tools_page_is_accessible():
+    tenant_id = "tenant-workbench"
+    tenant_schema = "workbench"
+
+    factory = RequestFactory()
+    request = factory.get(reverse("rag-tools"))
+    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant_schema = tenant_schema
+
+    response = rag_tools(request)
+
     assert response.status_code == 200
     content = response.content.decode()
+
     assert "RAG Manual Testing" in content
     assert "Upload Document" in content
     assert "Ingestion Control" in content
@@ -27,11 +28,10 @@ def test_rag_tools_page_is_accessible(client):
     assert "Query" in content
     assert "Aktive Collection" in content
     assert "query-collection-options" in content
-    assert "X-Tenant-ID: testserver" in content
-    default_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
-    assert f"X-Tenant-Schema: {default_schema}" in content
-    assert 'const derivedTenantId = "testserver"' in content
-    assert f'const derivedTenantSchema = "{default_schema}"' in content
+    assert f"X-Tenant-ID: {tenant_id}" in content
+    assert f"X-Tenant-Schema: {tenant_schema}" in content
+    assert f'const derivedTenantId = "{escapejs(tenant_id)}"' in content
+    assert f'const derivedTenantSchema = "{escapejs(tenant_schema)}"' in content
     assert "const defaultEmbeddingProfile" in content
     assert "const allowDocClassAlias" in content
     assert "function requireCollection" in content
