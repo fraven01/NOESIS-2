@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from importlib import import_module
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
 
 from celery import group, shared_task
@@ -12,6 +14,19 @@ from common.celery import ScopedTask
 from common.logging import get_logger
 from django.utils import timezone
 from django.conf import settings
+
+from documents import (
+    DocumentPipelineConfig,
+    DocxDocumentParser,
+    HtmlDocumentParser,
+    MarkdownDocumentParser,
+    ParserDispatcher,
+    ParserRegistry,
+    PdfDocumentParser,
+    PptxDocumentParser,
+    ParsedResult,
+    ParsedTextBlock,
+)
 
 from . import tasks as pipe
 from .infra import object_store
@@ -24,19 +39,61 @@ from ai_core.tools import InputError
 
 from .rag.ingestion_contracts import resolve_ingestion_profile
 from .rag.vector_schema import ensure_vector_space_schema
-from .rag.selector_utils import normalise_selector_value
-from .rag.routing_rules import is_collection_routing_enabled
 
 log = get_logger(__name__)
 
 
-def _upload_dir(tenant: str, case: str) -> Path:
-    return (
-        object_store.BASE_PATH
-        / object_store.sanitize_identifier(tenant)
-        / object_store.sanitize_identifier(case)
-        / "uploads"
-    )
+class TextDocumentParser:
+    """Fallback parser decoding UTF-8 payloads for plain text blobs."""
+
+    _SUPPORTED_MEDIA_TYPE = "text/plain"
+
+    def can_handle(self, document: object) -> bool:
+        blob = getattr(document, "blob", None)
+        media_type = getattr(blob, "media_type", None)
+        if isinstance(media_type, str):
+            if media_type.split(";")[0].strip().lower() == self._SUPPORTED_MEDIA_TYPE:
+                return True
+        candidate = getattr(document, "media_type", None)
+        if isinstance(candidate, str):
+            return candidate.split(";")[0].strip().lower() == self._SUPPORTED_MEDIA_TYPE
+        return False
+
+    def parse(self, document: object, config: object) -> ParsedResult:  # noqa: ARG002
+        blob = getattr(document, "blob", None)
+        payload: bytes | None = None
+        if hasattr(blob, "decoded_payload"):
+            try:
+                payload = blob.decoded_payload()
+            except Exception:  # pragma: no cover - defensive guard
+                payload = None
+        if payload is None and hasattr(blob, "content"):
+            content = getattr(blob, "content")
+            if isinstance(content, (bytes, bytearray)):
+                payload = bytes(content)
+            elif isinstance(content, str):
+                payload = content.encode("utf-8")
+        text = ""
+        if payload:
+            text = payload.decode("utf-8", errors="replace")
+        text = text.lstrip("\ufeff")
+        normalised = text.replace("\r\n", "\n").replace("\r", "\n")
+        parts = [part.strip() for part in re.split(r"\n\s*\n", normalised) if part.strip()]
+        blocks: List[ParsedTextBlock] = []
+        if parts:
+            if len(parts) == 1:
+                blocks.append(ParsedTextBlock(text=parts[0], kind="paragraph"))
+            else:
+                blocks.extend(
+                    ParsedTextBlock(text=part, kind="paragraph") for part in parts
+                )
+        elif normalised.strip():
+            blocks.append(ParsedTextBlock(text=normalised.strip(), kind="paragraph"))
+        statistics = {
+            "parser.kind": "text/plain",
+            "parser.characters": len(normalised),
+        }
+        return ParsedResult(text_blocks=tuple(blocks), statistics=statistics)
 
 
 def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
@@ -48,50 +105,6 @@ def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
             f"{document_id}.meta.json",
         )
     )
-
-
-def _resolve_upload(
-    tenant: str, case: str, document_id: str
-) -> tuple[Path, Dict[str, object]]:
-    updir = _upload_dir(tenant, case)
-
-    meta_path = updir / f"{document_id}.meta.json"
-    if not meta_path.exists():
-        raise FileNotFoundError(f"metadata for {document_id} not found")
-
-    metadata_raw = json.loads(meta_path.read_text())
-    if not isinstance(metadata_raw, dict):
-        metadata = {}
-    else:
-        metadata = dict(metadata_raw)
-
-    matches = list(updir.glob(f"{document_id}_*"))
-    if not matches:
-        raise FileNotFoundError(f"file for {document_id} not found")
-
-    file_path = matches[0]
-    external_id = metadata.get("external_id")
-    if not (isinstance(external_id, str) and external_id.strip()):
-        try:
-            stat = file_path.stat()
-            with file_path.open("rb") as handle:
-                prefix = handle.read(64 * 1024)
-        except FileNotFoundError:
-            raise
-        fallback = make_fallback_external_id(file_path.name, stat.st_size, prefix)
-        metadata["external_id"] = fallback
-        sanitized_metadata = dict(metadata)
-        sanitized_metadata.pop("tenant", None)
-        sanitized_metadata.pop("case", None)
-        object_store.write_json(
-            _meta_store_path(tenant, case, document_id), sanitized_metadata
-        )
-        metadata = sanitized_metadata
-
-    metadata.pop("tenant", None)
-    metadata.pop("case", None)
-
-    return file_path, metadata
 
 
 def _status_store_path(tenant: str, case: str, document_id: str) -> str:
@@ -234,6 +247,192 @@ def _mark_cleaned(
         _write_pipeline_state(tenant, case, document_id, state)
 
 
+_CONFIG_FIELD_NAMES = {
+    "pdf_safe_mode",
+    "caption_min_confidence_default",
+    "caption_min_confidence_by_collection",
+    "enable_ocr",
+    "enable_notes_in_pptx",
+    "emit_empty_slides",
+    "enable_asset_captions",
+    "ocr_fallback_confidence",
+    "use_readability_html_extraction",
+    "ocr_renderer",
+}
+
+
+def _build_document_pipeline_config() -> DocumentPipelineConfig:
+    """Build a pipeline config instance honouring Django settings overrides."""
+
+    config_kwargs: Dict[str, object] = {}
+
+    mapping = {
+        "pdf_safe_mode": "DOCUMENT_PIPELINE_PDF_SAFE_MODE",
+        "caption_min_confidence_default": "DOCUMENT_PIPELINE_CAPTION_MIN_CONFIDENCE_DEFAULT",
+        "caption_min_confidence_by_collection": "DOCUMENT_PIPELINE_CAPTION_MIN_CONFIDENCE_BY_COLLECTION",
+        "enable_ocr": "DOCUMENT_PIPELINE_ENABLE_OCR",
+        "enable_notes_in_pptx": "DOCUMENT_PIPELINE_ENABLE_NOTES_IN_PPTX",
+        "emit_empty_slides": "DOCUMENT_PIPELINE_EMIT_EMPTY_SLIDES",
+        "enable_asset_captions": "DOCUMENT_PIPELINE_ENABLE_ASSET_CAPTIONS",
+        "ocr_fallback_confidence": "DOCUMENT_PIPELINE_OCR_FALLBACK_CONFIDENCE",
+        "use_readability_html_extraction": "DOCUMENT_PIPELINE_USE_READABILITY_HTML_EXTRACTION",
+        "ocr_renderer": "DOCUMENT_PIPELINE_OCR_RENDERER",
+    }
+
+    for field, setting_name in mapping.items():
+        if hasattr(settings, setting_name):
+            value = getattr(settings, setting_name)
+            if value is not None:
+                config_kwargs[field] = value
+
+    overrides = getattr(settings, "DOCUMENT_PIPELINE_CONFIG", None)
+    if isinstance(overrides, Mapping):
+        for field in _CONFIG_FIELD_NAMES:
+            if field in overrides:
+                config_kwargs[field] = overrides[field]
+
+    return DocumentPipelineConfig(**config_kwargs)
+
+
+def _build_parser_dispatcher() -> ParserDispatcher:
+    """Return a dispatcher with the configured parser order."""
+
+    registry = ParserRegistry()
+    registry.register(MarkdownDocumentParser())
+    registry.register(HtmlDocumentParser())
+    registry.register(DocxDocumentParser())
+    registry.register(PptxDocumentParser())
+    registry.register(PdfDocumentParser())
+    registry.register(TextDocumentParser())
+    return ParserDispatcher(registry)
+
+
+def _render_parsed_text(parsed: ParsedResult) -> str:
+    """Flatten parsed text blocks into a single string for downstream tasks."""
+
+    if parsed.text_blocks:
+        return "\n\n".join(block.text for block in parsed.text_blocks)
+    return ""
+
+
+def _parsed_text_path(tenant: str, case: str, document_identifier: UUID) -> str:
+    tenant_segment = object_store.sanitize_identifier(str(tenant))
+    case_segment = object_store.sanitize_identifier(str(case))
+    document_segment = object_store.sanitize_identifier(str(document_identifier))
+    return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"])
+
+
+def _parsed_blocks_path(tenant: str, case: str, document_identifier: UUID) -> str:
+    tenant_segment = object_store.sanitize_identifier(str(tenant))
+    case_segment = object_store.sanitize_identifier(str(case))
+    document_segment = object_store.sanitize_identifier(str(document_identifier))
+    return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"])
+
+
+def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "text": block.text,
+        "kind": str(block.kind),
+        "section_path": list(block.section_path) if block.section_path else None,
+        "page_index": block.page_index,
+        "table_meta": dict(block.table_meta) if block.table_meta is not None else None,
+        "language": block.language,
+    }
+    metadata = getattr(block, "metadata", None)
+    if isinstance(metadata, Mapping):
+        parent_ref = metadata.get("parent_ref")
+        if parent_ref:
+            payload["parent_ref"] = parent_ref
+        locator = metadata.get("locator")
+        if locator:
+            payload["locator"] = locator
+    return payload
+
+
+def _persist_parsed_text(
+    tenant: str,
+    case: str,
+    document_identifier: UUID,
+    parsed: ParsedResult,
+) -> Dict[str, object]:
+    text_content = _render_parsed_text(parsed)
+    text_path = _parsed_text_path(tenant, case, document_identifier)
+    object_store.put_bytes(text_path, text_content.encode("utf-8"))
+
+    blocks_path = _parsed_blocks_path(tenant, case, document_identifier)
+    serialised_blocks = [
+        {"index": index, **_serialise_text_block(block)}
+        for index, block in enumerate(parsed.text_blocks)
+    ]
+    payload = {
+        "blocks": serialised_blocks,
+        "statistics": dict(parsed.statistics),
+        "text": text_content,
+    }
+    object_store.write_json(blocks_path, payload)
+
+    return {
+        "path": text_path,
+        "text_path": text_path,
+        "blocks_path": blocks_path,
+        "statistics": dict(parsed.statistics),
+    }
+
+
+def _extract_blob_payload_bytes(document: object) -> bytes | None:
+    blob = getattr(document, "blob", None)
+    if hasattr(blob, "decoded_payload"):
+        try:
+            payload = blob.decoded_payload()
+        except Exception:  # pragma: no cover - defensive guard
+            return None
+        if isinstance(payload, (bytes, bytearray)):
+            return bytes(payload)
+    payload_attr = getattr(blob, "payload", None)
+    if isinstance(payload_attr, (bytes, bytearray)):
+        return bytes(payload_attr)
+    return None
+
+
+def _extract_external_id(document: object) -> str | None:
+    meta = getattr(document, "meta", None)
+    external_ref = getattr(meta, "external_ref", None)
+    if isinstance(external_ref, Mapping):
+        candidate = external_ref.get("external_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return None
+
+
+def _extract_meta_media_type(document: object) -> str | None:
+    meta = getattr(document, "meta", None)
+    external_ref = getattr(meta, "external_ref", None)
+    if isinstance(external_ref, Mapping):
+        candidate = external_ref.get("media_type")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip().lower()
+    return None
+
+
+def _hydrate_blob_payload(repository: object, document: object) -> bytes | None:
+    blob = getattr(document, "blob", None)
+    if blob is None:
+        return None
+    payload = _extract_blob_payload_bytes(document)
+    if payload is not None:
+        return payload
+    uri = getattr(blob, "uri", None)
+    storage = getattr(repository, "_storage", None)
+    if uri and storage is not None:
+        try:
+            payload = storage.get(uri)  # type: ignore[call-arg]
+        except Exception:
+            return None
+        object.__setattr__(blob, "payload", payload)
+        return payload
+    return None
+
+
 def partition_document_ids(
     tenant: str, case: str, document_ids: Iterable[str]
 ) -> Tuple[List[str], List[str]]:
@@ -242,10 +441,18 @@ def partition_document_ids(
     existing: List[str] = []
     missing: List[str] = []
 
+    services = import_module("ai_core.services")
+    repository = services._get_documents_repository()  # type: ignore[attr-defined]
+
     for document_id in document_ids:
         try:
-            _resolve_upload(tenant, case, document_id)
-        except FileNotFoundError:
+            document_uuid = UUID(str(document_id))
+        except (TypeError, ValueError, AttributeError):
+            missing.append(document_id)
+            continue
+
+        document = repository.get(tenant, document_uuid, prefer_latest=True)
+        if document is None:
             missing.append(document_id)
         else:
             existing.append(document_id)
@@ -290,57 +497,91 @@ def process_document(
         vector_space_backend = vector_space.backend
         vector_space_dimension = vector_space.dimension
 
-        fpath, meta_json = _resolve_upload(tenant, case, document_id)
-        file_bytes = fpath.read_bytes()
-        external_id = meta_json.get("external_id")
-        if not (isinstance(external_id, str) and external_id.strip()):
-            external_id = make_fallback_external_id(
-                fpath.name,
-                len(file_bytes),
-                file_bytes,
+        services = import_module("ai_core.services")
+        repository = services._get_documents_repository()  # type: ignore[attr-defined]
+        try:
+            document_uuid = UUID(str(document_id))
+        except (TypeError, ValueError, AttributeError) as exc:
+            error = InputError(
+                "invalid_document_id",
+                "Document identifier is not a valid UUID.",
+                context={"document_id": document_id},
             )
-            meta_json["external_id"] = external_id
-            object_store.write_json(
-                _meta_store_path(tenant, case, document_id), meta_json
-            )
+            state["last_error"] = {
+                "step": current_step,
+                "message": str(error),
+                "retry": getattr(self.request, "retries", 0),
+                "failed_at": time.time(),
+            }
+            _write_pipeline_state(tenant, case, document_id, state)
+            raise error from exc
 
-        meta_json["embedding_profile"] = resolved_profile_id
-        if vector_space_id:
-            meta_json["vector_space_id"] = vector_space_id
-        sanitized_meta_json = dict(meta_json)
-        sanitized_meta_json.pop("tenant", None)
-        sanitized_meta_json.pop("case", None)
-        raw_collection_id = meta_json.get("collection_id")
-        normalized_collection_id: str | None = None
-        if raw_collection_id is not None:
-            try:
-                normalized_collection_id = str(UUID(str(raw_collection_id).strip()))
-            except (TypeError, ValueError, AttributeError):
-                normalized_collection_id = None
-        normalized_process = normalise_selector_value(meta_json.get("process"))
-        normalized_workflow = normalise_selector_value(meta_json.get("workflow_id"))
-        raw_doc_class = meta_json.get("doc_class")
-        normalized_doc_class = normalise_selector_value(raw_doc_class)
-        use_collection_routing = is_collection_routing_enabled()
-        if normalized_process is not None:
-            sanitized_meta_json["process"] = normalized_process
-        else:
-            sanitized_meta_json.pop("process", None)
-        if normalized_collection_id is None and use_collection_routing:
-            normalized_collection_id = normalized_doc_class
-        if normalized_collection_id is not None:
-            sanitized_meta_json["collection_id"] = normalized_collection_id
-        elif "collection_id" in sanitized_meta_json:
-            sanitized_meta_json.pop("collection_id", None)
-        sanitized_meta_json.pop("doc_class", None)
-        if normalized_workflow is not None:
-            sanitized_meta_json["workflow_id"] = normalized_workflow
-        elif "workflow_id" in sanitized_meta_json:
-            sanitized_meta_json.pop("workflow_id", None)
-        # Normalize meta keys to the new contract: tenant_id/case_id
-        meta = {**sanitized_meta_json, "tenant_id": tenant, "case_id": case}
+        normalized_document = repository.get(
+            tenant, document_uuid, prefer_latest=True
+        )
+        if normalized_document is None:
+            error = InputError(
+                "document_not_found",
+                "Document payload unavailable for ingestion.",
+                context={"document_id": document_id},
+            )
+            state["last_error"] = {
+                "step": current_step,
+                "message": str(error),
+                "retry": getattr(self.request, "retries", 0),
+                "failed_at": time.time(),
+            }
+            _write_pipeline_state(tenant, case, document_id, state)
+            raise error
+
+        blob_payload = _hydrate_blob_payload(repository, normalized_document)
+        blob_media_type = getattr(normalized_document.blob, "media_type", None)
+        meta_media_type = _extract_meta_media_type(normalized_document)
+        if not blob_media_type and meta_media_type:
+            object.__setattr__(normalized_document.blob, "media_type", meta_media_type)
+            blob_media_type = meta_media_type
+
+        meta: Dict[str, object] = {
+            "tenant_id": tenant,
+            "case_id": case,
+            "workflow_id": normalized_document.ref.workflow_id,
+            "content_hash": normalized_document.checksum,
+        }
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
+        if normalized_document.ref.collection_id is not None:
+            meta["collection_id"] = str(normalized_document.ref.collection_id)
+
+        title = getattr(normalized_document.meta, "title", None)
+        if title:
+            meta["title"] = title
+        language = getattr(normalized_document.meta, "language", None)
+        if language:
+            meta["language"] = language
+        tags = list(getattr(normalized_document.meta, "tags", []) or [])
+        if tags:
+            meta["tags"] = tags
+        origin_uri = getattr(normalized_document.meta, "origin_uri", None)
+        if origin_uri:
+            meta["origin_uri"] = origin_uri
+        if blob_media_type:
+            meta["media_type"] = blob_media_type
+
+        external_id = _extract_external_id(normalized_document)
+        if not external_id:
+            blob_size = getattr(normalized_document.blob, "size", None)
+            size_hint = int(blob_size) if isinstance(blob_size, int) else None
+            external_id = make_fallback_external_id(
+                str(normalized_document.ref.document_id),
+                size_hint,
+                blob_payload,
+            )
+        meta["external_id"] = external_id
+
+        parse_stats_existing = getattr(normalized_document.meta, "parse_stats", None)
+        if isinstance(parse_stats_existing, Mapping):
+            meta["parse_stats"] = dict(parse_stats_existing)
+
         if resolved_profile_id:
             meta["embedding_profile"] = resolved_profile_id
         if vector_space_id:
@@ -351,64 +592,81 @@ def process_document(
             meta["vector_space_backend"] = vector_space_backend
         if vector_space_dimension is not None:
             meta["vector_space_dimension"] = vector_space_dimension
-        if normalized_process is not None:
-            meta["process"] = normalized_process
-        if normalized_collection_id is not None:
-            meta["collection_id"] = normalized_collection_id
-        if normalized_workflow is not None:
-            meta["workflow_id"] = normalized_workflow
-        state["meta"] = {
-            "external_id": meta.get("external_id"),
-            "file": fpath.name,
-            "embedding_profile": resolved_profile_id,
-            "vector_space_id": vector_space_id,
+
+        sanitized_meta_json: Dict[str, object] = {
+            "external_id": external_id,
+            "workflow_id": normalized_document.ref.workflow_id,
         }
-        if normalized_process is not None:
-            state["meta"]["process"] = normalized_process
-        if normalized_collection_id is not None:
-            state["meta"]["collection_id"] = normalized_collection_id
-        if normalized_workflow is not None:
-            state["meta"]["workflow_id"] = normalized_workflow
+        if resolved_profile_id:
+            sanitized_meta_json["embedding_profile"] = resolved_profile_id
+        if vector_space_id:
+            sanitized_meta_json["vector_space_id"] = vector_space_id
+        if vector_space_schema:
+            sanitized_meta_json["vector_space_schema"] = vector_space_schema
+        if meta.get("collection_id"):
+            sanitized_meta_json["collection_id"] = meta["collection_id"]
+        if title:
+            sanitized_meta_json["title"] = title
+        if language:
+            sanitized_meta_json["language"] = language
+        if origin_uri:
+            sanitized_meta_json["origin_uri"] = origin_uri
+        if blob_media_type:
+            sanitized_meta_json["media_type"] = blob_media_type
         object_store.write_json(
             _meta_store_path(tenant, case, document_id), sanitized_meta_json
         )
+
+        state["meta"] = {
+            "external_id": external_id,
+            "embedding_profile": resolved_profile_id,
+            "vector_space_id": vector_space_id,
+            "workflow_id": normalized_document.ref.workflow_id,
+            "collection_id": meta.get("collection_id"),
+            "content_hash": normalized_document.checksum,
+        }
         _write_pipeline_state(tenant, case, document_id, state)
 
-        current_step = "ingest_raw"
-        raw, reused = _ensure_step(
-            tenant,
-            case,
-            document_id,
-            state,
-            current_step,
-            lambda: pipe.ingest_raw(meta, fpath.name, file_bytes),
-        )
-        if not reused and raw.get("path"):
-            created_artifacts.append((current_step, str(raw["path"])))
-        if "content_hash" in raw:
-            meta["content_hash"] = raw["content_hash"]
-            state.setdefault("meta", {})["content_hash"] = raw["content_hash"]
+        pipeline_config = _build_document_pipeline_config()
+        dispatcher = _build_parser_dispatcher()
+        parsed_result = dispatcher.parse(normalized_document, pipeline_config)
+        if parsed_result.statistics:
+            meta["parse_stats"] = dict(parsed_result.statistics)
+            state.setdefault("meta", {})["parse_stats"] = dict(parsed_result.statistics)
             _write_pipeline_state(tenant, case, document_id, state)
 
-        current_step = "extract_text"
-        text, reused = _ensure_step(
+        current_step = "parse"
+        parse_artifact, reused = _ensure_step(
             tenant,
             case,
             document_id,
             state,
             current_step,
-            lambda: pipe.extract_text(meta, raw["path"]),
+            lambda: _persist_parsed_text(
+                tenant, case, normalized_document.ref.document_id, parsed_result
+            ),
         )
-        if not reused and text.get("path"):
-            created_artifacts.append((current_step, str(text["path"])))
+        if not reused and parse_artifact.get("path"):
+            created_artifacts.append((current_step, str(parse_artifact["path"])))
+        parse_path = parse_artifact.get("path")
+        blocks_path = parse_artifact.get("blocks_path")
+        if blocks_path:
+            meta["parsed_blocks_path"] = str(blocks_path)
+            state.setdefault("meta", {})["parsed_blocks_path"] = str(blocks_path)
+        if not parse_path:
+            raise InputError(
+                "parse_missing_text",
+                "Parsed document did not yield textual content.",
+                context={"document_id": document_id},
+            )
 
         current_step = "pii_mask"
         if not getattr(settings, "INGESTION_PII_MASK_ENABLED", True):
-            masked = {"path": text["path"]}
+            masked = {"path": parse_path}
             reused = True
             # Mark step as skipped in state for traceability
             state.setdefault("steps", {})[current_step] = {
-                "path": text.get("path"),
+                "path": parse_path,
                 "skipped": True,
                 "completed_at": time.time(),
                 "cleaned": True,
@@ -421,7 +679,7 @@ def process_document(
                 document_id,
                 state,
                 current_step,
-                lambda: pipe.pii_mask(meta, text["path"]),
+                lambda: pipe.pii_mask(meta, parse_path),
             )
             if not reused and masked.get("path"):
                 created_artifacts.append((current_step, str(masked["path"])))
@@ -540,7 +798,7 @@ def process_document(
             "tenant": tenant,
             "case": case,
             "document_id": document_id,
-            "file": fpath.name,
+            "document_label": meta.get("external_id"),
             "written_chunks": written,
             "action": action,
             "chunk_count": chunk_count,

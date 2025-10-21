@@ -573,7 +573,47 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     )
     prefix = _build_chunk_prefix(meta)
 
-    structured_blocks = segment_markdown_blocks(text)
+    blocks_path_value = meta.get("parsed_blocks_path")
+    structured_blocks: List[Dict[str, object]] = []
+    if blocks_path_value:
+        try:
+            payload = object_store.read_json(str(blocks_path_value))
+        except FileNotFoundError:
+            payload = None
+        except Exception:  # pragma: no cover - defensive guard
+            logger.warning(
+                "ingestion.chunk.blocks_read_failed",
+                extra={
+                    "tenant_id": meta.get("tenant_id"),
+                    "case_id": meta.get("case_id"),
+                    "path": blocks_path_value,
+                },
+            )
+            payload = None
+        if isinstance(payload, dict):
+            raw_blocks = payload.get("blocks") or []
+            if isinstance(raw_blocks, list):
+                structured_blocks = [
+                    entry for entry in raw_blocks if isinstance(entry, dict)
+                ]
+
+    mask_enabled = bool(getattr(settings, "INGESTION_PII_MASK_ENABLED", True))
+
+    def _mask_for_chunk(value: str) -> str:
+        if not mask_enabled:
+            return value
+        masked_value = pii.mask(value)
+        if masked_value == value:
+            config = get_pii_config()
+            mode = str(config.get("mode", "")).lower()
+            policy = str(config.get("policy", "")).lower()
+            if mode != "off" and policy != "off":
+                masked_value = re.sub(r"\d", "X", value)
+        return masked_value
+
+    fallback_segments: List[str] = []
+    if not structured_blocks:
+        fallback_segments = segment_markdown_blocks(text)
     parent_nodes: Dict[str, Dict[str, object]] = {}
     parent_contents: Dict[str, List[str]] = {}
     parent_content_bytes: Dict[str, int] = {}
@@ -666,7 +706,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             return
         _append_parent_text(root_id, text, level)
 
-    def _register_section(title: str, level: int) -> Dict[str, object]:
+    def _register_section(
+        title: str, level: int, path: Optional[Tuple[str, ...]] = None
+    ) -> Dict[str, object]:
         nonlocal section_counter, order_counter
         section_counter += 1
         order_counter += 1
@@ -678,59 +720,146 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             "level": level,
             "order": order_counter,
         }
+        if path is not None:
+            info["path"] = path
         parent_nodes[parent_id] = info
         parent_contents[parent_id] = []
         parent_content_bytes[parent_id] = 0
         return info
 
-    chunk_candidates: List[Tuple[str, List[str]]] = []
-    heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+    chunk_candidates: List[Tuple[str, List[str], str]] = []
 
-    for block in structured_blocks:
-        stripped_block = block.strip()
-        if not stripped_block:
-            continue
-        heading_match = heading_pattern.match(stripped_block)
-        if heading_match:
-            hashes, heading_title = heading_match.groups()
-            level = len(hashes)
-            while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
-                parent_stack.pop()
-            section_info = _register_section(heading_title.strip(), level)
-            parent_stack.append(section_info)
-            _append_parent_text_with_root(section_info["id"], stripped_block, level)
-            continue
+    if structured_blocks:
+        section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
 
-        block_pieces = [block]
-        if _token_count(block) > hard_limit:
-            block_pieces = _split_by_limit(block, hard_limit)
-        for piece in block_pieces:
-            piece_text = piece.strip()
-            if not piece_text:
-                continue
-            if parent_stack:
-                target_info = parent_stack[-1]
-                target_level = int(target_info.get("level") or 0)
-                _append_parent_text_with_root(
-                    target_info["id"], piece_text, target_level
+        for block in structured_blocks:
+            text_value = str(block.get("text") or "")
+            kind = str(block.get("kind") or "").lower()
+            section_path_raw = block.get("section_path")
+            path_tuple: Tuple[str, ...] = ()
+            if isinstance(section_path_raw, (list, tuple)):
+                path_tuple = tuple(
+                    str(part).strip()
+                    for part in section_path_raw
+                    if isinstance(part, str) and str(part).strip()
                 )
+            masked_text = _mask_for_chunk(text_value)
+            if kind == "heading":
+                level = len(path_tuple) if path_tuple else 1
+                while parent_stack and len(parent_stack[-1].get("path", ())) >= level:
+                    parent_stack.pop()
+                title_candidate = path_tuple[-1] if path_tuple else text_value.strip()
+                section_info = _register_section(
+                    title_candidate or text_value.strip(), level, path_tuple or None
+                )
+                section_registry[path_tuple] = section_info
+                parent_stack.append(section_info)
+                if masked_text.strip():
+                    _append_parent_text_with_root(
+                        section_info["id"], masked_text.strip(), level
+                    )
+                continue
+
+            normalised_text = masked_text.strip()
+            if not normalised_text:
+                continue
+
+            if path_tuple:
+                desired_stack: List[Dict[str, object]] = []
+                for depth in range(1, len(path_tuple) + 1):
+                    prefix_tuple = path_tuple[:depth]
+                    info = section_registry.get(prefix_tuple)
+                    if info is None:
+                        title_candidate = prefix_tuple[-1] if prefix_tuple else ""
+                        info = _register_section(title_candidate, depth, prefix_tuple)
+                        section_registry[prefix_tuple] = info
+                    desired_stack.append(info)
+                parent_stack = desired_stack
             else:
-                _append_parent_text(root_id, piece_text, 0)
-            sentences = _split_sentences(piece)
-            if not sentences:
+                parent_stack = []
+
+            block_pieces = [normalised_text]
+            if _token_count(normalised_text) > hard_limit:
+                block_pieces = _split_by_limit(normalised_text, hard_limit)
+
+            for piece in block_pieces:
+                piece_text = piece.strip()
+                if not piece_text:
+                    continue
+                if parent_stack:
+                    target_info = parent_stack[-1]
+                    target_level = int(target_info.get("level") or 0)
+                    _append_parent_text_with_root(
+                        target_info["id"], piece_text, target_level
+                    )
+                else:
+                    _append_parent_text(root_id, piece_text, 0)
+                sentences = _split_sentences(piece_text)
+                if not sentences:
+                    continue
+                bodies = _chunkify(
+                    sentences,
+                    target_tokens=target_tokens,
+                    overlap_tokens=overlap_tokens,
+                    hard_limit=hard_limit,
+                )
+                if not bodies:
+                    continue
+                parent_ids = [root_id] + [info["id"] for info in parent_stack]
+                unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+                heading_prefix = " / ".join(path_tuple) if path_tuple else ""
+                for body in bodies:
+                    chunk_candidates.append((body, unique_parent_ids, heading_prefix))
+    else:
+        heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
+
+        for block in fallback_segments:
+            stripped_block = block.strip()
+            if not stripped_block:
                 continue
-            bodies = _chunkify(
-                sentences,
-                target_tokens=target_tokens,
-                overlap_tokens=overlap_tokens,
-                hard_limit=hard_limit,
-            )
-            if not bodies:
+            heading_match = heading_pattern.match(stripped_block)
+            if heading_match:
+                hashes, heading_title = heading_match.groups()
+                level = len(hashes)
+                while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
+                    parent_stack.pop()
+                section_info = _register_section(heading_title.strip(), level)
+                parent_stack.append(section_info)
+                _append_parent_text_with_root(
+                    section_info["id"], stripped_block, level
+                )
                 continue
-            parent_ids = [root_id] + [info["id"] for info in parent_stack]
-            unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
-            for body in bodies:
-                chunk_candidates.append((body, unique_parent_ids))
+
+            block_pieces = [block]
+            if _token_count(block) > hard_limit:
+                block_pieces = _split_by_limit(block, hard_limit)
+            for piece in block_pieces:
+                piece_text = piece.strip()
+                if not piece_text:
+                    continue
+                if parent_stack:
+                    target_info = parent_stack[-1]
+                    target_level = int(target_info.get("level") or 0)
+                    _append_parent_text_with_root(
+                        target_info["id"], piece_text, target_level
+                    )
+                else:
+                    _append_parent_text(root_id, piece_text, 0)
+                sentences = _split_sentences(piece)
+                if not sentences:
+                    continue
+                bodies = _chunkify(
+                    sentences,
+                    target_tokens=target_tokens,
+                    overlap_tokens=overlap_tokens,
+                    hard_limit=hard_limit,
+                )
+                if not bodies:
+                    continue
+                parent_ids = [root_id] + [info["id"] for info in parent_stack]
+                unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+                for body in bodies:
+                    chunk_candidates.append((body, unique_parent_ids, ""))
 
     if not chunk_candidates:
         fallback_ids = [root_id] + [info["id"] for info in parent_stack]
@@ -745,38 +874,70 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 )
             else:
                 _append_parent_text(root_id, fallback_text, 0)
-        chunk_candidates.append((text, unique_fallback_ids or [root_id]))
+        chunk_candidates.append((text, unique_fallback_ids or [root_id], ""))
 
     chunks: List[Dict[str, object]] = []
-    for body, parent_ids in chunk_candidates:
-        chunk_text = body
+    for body, parent_ids, heading_prefix in chunk_candidates:
+        prefix_parts: List[str] = []
         if prefix:
-            chunk_text = f"{prefix}\n\n{body}" if body else prefix
-        normalised = normalise_text(chunk_text)
-        chunk_meta = {
-            "tenant_id": meta["tenant_id"],
-            "case_id": meta.get("case_id"),
-            "source": text_path,
-            "hash": content_hash,
-            "external_id": external_id,
-            "content_hash": content_hash,
-            "parent_ids": parent_ids,
-        }
-        if meta.get("embedding_profile"):
-            chunk_meta["embedding_profile"] = meta["embedding_profile"]
-        if meta.get("vector_space_id"):
-            chunk_meta["vector_space_id"] = meta["vector_space_id"]
-        if meta.get("collection_id"):
-            chunk_meta["collection_id"] = meta["collection_id"]
-        if meta.get("workflow_id"):
-            chunk_meta["workflow_id"] = meta["workflow_id"]
-        chunks.append(
-            {
-                "content": chunk_text,
-                "normalized": normalised,
-                "meta": chunk_meta,
+            prefix_parts.append(prefix)
+        if heading_prefix:
+            prefix_parts.append(heading_prefix)
+        prefix_token_count = sum(_token_count(part) for part in prefix_parts if part)
+        if prefix_token_count >= hard_limit:
+            body_limit = 0
+        else:
+            body_limit = hard_limit - prefix_token_count
+
+        body_segments: List[str] = [body]
+        if body_limit > 0:
+            adjusted_segments: List[str] = []
+            for segment in body_segments:
+                if _token_count(segment) > body_limit:
+                    adjusted_segments.extend(_split_by_limit(segment, body_limit))
+                else:
+                    adjusted_segments.append(segment)
+            body_segments = adjusted_segments or [""]
+        elif not body:
+            body_segments = [""]
+
+        for segment in body_segments:
+            chunk_text = segment
+            if prefix_parts:
+                combined_prefix = "\n\n".join(
+                    str(part).strip() for part in prefix_parts if str(part).strip()
+                )
+                if combined_prefix:
+                    chunk_text = (
+                        f"{combined_prefix}\n\n{chunk_text}"
+                        if chunk_text
+                        else combined_prefix
+                    )
+            normalised = normalise_text(chunk_text)
+            chunk_meta = {
+                "tenant_id": meta["tenant_id"],
+                "case_id": meta.get("case_id"),
+                "source": text_path,
+                "hash": content_hash,
+                "external_id": external_id,
+                "content_hash": content_hash,
+                "parent_ids": parent_ids,
             }
-        )
+            if meta.get("embedding_profile"):
+                chunk_meta["embedding_profile"] = meta["embedding_profile"]
+            if meta.get("vector_space_id"):
+                chunk_meta["vector_space_id"] = meta["vector_space_id"]
+            if meta.get("collection_id"):
+                chunk_meta["collection_id"] = meta["collection_id"]
+            if meta.get("workflow_id"):
+                chunk_meta["workflow_id"] = meta["workflow_id"]
+            chunks.append(
+                {
+                    "content": chunk_text,
+                    "normalized": normalised,
+                    "meta": chunk_meta,
+                }
+            )
 
     for parent_id, info in parent_nodes.items():
         content_parts = parent_contents.get(parent_id) or []
