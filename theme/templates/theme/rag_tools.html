@@ -1,1314 +1,359 @@
 {% extends 'theme/base.html' %}
-{% load static %}
 
-{% block title %}RAG Tools · NOESIS 2{% endblock %}
-
-{% block head %}
-{{ block.super }}
-<script src="{% static 'theme/rag-tools-support.js' %}"></script>
-{% endblock %}
+{% block title %}RAG Workbench · NOESIS 2{% endblock %}
 
 {% block content %}
 <div class="space-y-10">
-  <header class="space-y-2">
-    <h1 class="text-3xl font-semibold tracking-tight text-slate-900">RAG Manual Testing</h1>
-    <p class="max-w-2xl text-sm text-slate-600">
-      Nutze diese Werkbank, um Dateien hochzuladen und Queries gegen die bestehenden RAG-Endpunkte abzufeuern.
-      Alle Requests senden automatisch die aus der aktuellen Domain abgeleiteten Header
-      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Tenant-ID: {{ tenant_id }}</code>,
-      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Tenant-Schema: {{ tenant_schema }}</code>,
-      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-User-ID: local</code>
-      und
-      <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Case-ID: local</code>.
+  <header class="space-y-3">
+    <p class="text-xs uppercase tracking-wider text-slate-500">Architecture-aligned tooling</p>
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900">RAG Operations Workbench</h1>
+    <p class="max-w-3xl text-sm text-slate-600">
+      Alle Aktionen laufen serverseitig über die produktiven Services von NOESIS 2. Die Werkbank
+      verpackt Upload, Ingestion und Retrieval in geprüfte Django-Workflows – inklusive Tenancy-Headern,
+      Idempotenz und Resolver-Hints. Nutze sie für Smoke-Tests oder manuelle Backfills, ohne die
+      Architekturleitlinien zu verletzen.
     </p>
   </header>
 
-  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
-    <div class="space-y-2">
-      <h2 class="text-xl font-semibold text-slate-900">Upload Document</h2>
-      <p class="text-sm text-slate-600">
-        Lade eine Datei hoch, registriere sie im Dokumentenspeicher und starte automatisch eine Ingestion.
-        Der Resolver empfiehlt das Profil <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">{{ resolver_profile_hint|default:"–" }}</code>
-        und weist Uploads der Collection <code class="rounded bg-slate-100 px-1 py-0.5 text-xs" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code> zu.
-        Die Antwort enthält weiterhin die <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>
-        sowie den zugehörigen <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">ingestion_run_id</code>.
-      </p>
-    </div>
-
-    <div class="rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600 space-y-2">
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <span class="font-medium text-slate-700">Aktive Collection (Resolver)</span>
-        <code class="rounded bg-slate-200 px-2 py-0.5 text-xs font-mono" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>
-      </div>
-      <p class="text-xs text-slate-500">
-        Uploads und Ingestion verwenden diese Collection. Passe das Scope über das Feld
-        „Collection“ im Query-Formular an; ohne Auswahl wird der Vorgang abgebrochen.
-      </p>
-    </div>
-
-    <form id="upload-form" class="space-y-4">
-      <div class="space-y-1">
-        <label class="block text-sm font-medium text-slate-700" for="upload-file">Datei</label>
-        <input
-          class="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="upload-file"
-          name="file"
-          type="file"
-          required
-        />
-      </div>
-      <div class="space-y-1">
-        <div class="flex items-center justify-between gap-2">
-          <label class="text-sm font-medium text-slate-700" for="upload-metadata">Metadata (optional)</label>
-          <span class="text-xs text-slate-500">JSON-Struktur, z.&nbsp;B. {"case": "abc"}</span>
-        </div>
-        <textarea
-          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="upload-metadata"
-          name="metadata"
-          rows="4"
-        ></textarea>
-      </div>
-      <button
-        class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-        type="submit"
-      >
-        Upload starten
-      </button>
-    </form>
-    <div class="space-y-2">
-      <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Upload Response</h3>
-      <pre class="max-h-64 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="upload-response"></pre>
-    </div>
-  </section>
-
-  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
-    <div class="space-y-2">
-      <h2 class="text-xl font-semibold text-slate-900">Ingestion Control</h2>
-      <p class="text-sm text-slate-600">
-        Steuere den Ingestion-Workflow Schritt für Schritt: Starte Runs für bestehende Dokumente und überwache den Status
-        des letzten Durchlaufs im aktuellen Tenant- und Case-Kontext. Alle Aktionen verwenden die aktive Collection
-        <code class="rounded bg-slate-100 px-1 py-0.5 text-xs" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>.
-      </p>
-    </div>
-
-    <div class="grid gap-8 lg:grid-cols-2">
-      <div class="space-y-4">
-        <div class="space-y-1">
-          <h3 class="text-lg font-semibold text-slate-900">Ingestion Run starten</h3>
-          <p class="text-sm text-slate-600">
-            Übermittle eine oder mehrere <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">document_id</code>-Werte (Komma oder Zeilenumbruch)
-            und wähle das gewünschte Embedding-Profil.
-          </p>
-        </div>
-        <div class="rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-600">
-          <p>
-            Aktuelle Collection: <code class="rounded bg-slate-200 px-1 py-0.5 text-xs font-mono" data-collection-display>{{ resolver_collection_hint|default:"–" }}</code>.
-            Legacy-Parameter <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">doc_class</code> aus URLs werden – sofern die
-            Collection-Routing-Flag aktiv ist – automatisch als Collection übernommen.
-          </p>
-        </div>
-        <form id="ingestion-form" class="space-y-4">
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-slate-700" for="ingestion-document-ids">Document IDs</label>
-            <textarea
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="ingestion-document-ids"
-              name="document_ids"
-              rows="3"
-              placeholder="doc-123, doc-456"
-              required
-            ></textarea>
-          </div>
-          <div class="space-y-1">
-            <label class="block text-sm font-medium text-slate-700" for="ingestion-profile">Embedding Profile</label>
-            <select
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="ingestion-profile"
-              name="embedding_profile"
-            >
-              <option value="{{ default_embedding_profile }}">{{ default_embedding_profile }}</option>
-              <option value="demo">demo</option>
-            </select>
-          </div>
-          <button
-            class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-            type="submit"
-          >
-            Ingestion starten
-          </button>
-        </form>
-        <div class="space-y-2">
-          <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Ingestion Response</h4>
-          <pre class="max-h-56 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="ingestion-response"></pre>
-        </div>
-      </div>
-
-      <div class="space-y-4">
-        <div class="space-y-1">
-          <h3 class="text-lg font-semibold text-slate-900">Ingestion Status</h3>
-          <p class="text-sm text-slate-600">
-            Lies den Status des letzten Ingestion-Runs aus. Der aktuell bekannte Run wird hier angezeigt und kann über
-            den Button aktualisiert werden.
-          </p>
-        </div>
-        <div class="rounded-md border border-dashed border-slate-300 bg-slate-50 p-4 text-sm text-slate-600">
-          <p>
-            Letzter Run: <code class="rounded bg-slate-200 px-1 py-0.5 text-xs" id="last-run-id">–</code>
-          </p>
-        </div>
-        <div class="flex items-center gap-3">
-          <button
-            class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-            type="button"
-            id="status-refresh"
-          >
-            Status aktualisieren
-          </button>
-          <span class="text-xs text-slate-500">Antwort wird unten angezeigt.</span>
-        </div>
-        <div class="space-y-2">
-          <h4 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Status Response</h4>
-          <pre class="max-h-56 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="status-response"></pre>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-    <div class="space-y-2">
-      <h2 class="text-xl font-semibold text-slate-900">Query</h2>
-      <p class="text-sm text-slate-600">
-        Führe Queries gegen den Wissensspeicher aus. Über optionale Felder kannst du Routing und Hybrid-Search Feintuning testen.
-      </p>
-    </div>
-    <form id="query-form" class="mt-6 grid gap-6 md:grid-cols-2">
-      <div class="md:col-span-2 space-y-1">
-        <div class="flex items-center justify-between gap-2">
-          <label class="text-sm font-medium text-slate-700" for="query-text">Query</label>
-          <span class="text-xs text-slate-500">Wird zusätzlich als <code>question</code> gesendet.</span>
-        </div>
-        <textarea
-          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="query-text"
-          name="query"
-          rows="3"
-          required
-        ></textarea>
-      </div>
-      <div class="space-y-1">
-        <label class="text-sm font-medium text-slate-700" for="query-process">Process</label>
-        <input
-          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="query-process"
-          name="process"
-          type="text"
-          placeholder="z. B. classification"
-        />
-        <p class="text-xs text-slate-500">Optional: Erzwingt einen konkreten Prozess-Flow.</p>
-      </div>
-      <div class="space-y-1">
-        <label class="text-sm font-medium text-slate-700" for="query-collection">Collection</label>
-        <input
-          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="query-collection"
-          name="collection_id"
-          type="search"
-          list="query-collection-options"
-          placeholder="z. B. support-faq"
-          autocomplete="off"
-        />
-        <datalist id="query-collection-options">
-          {% for option in collection_options %}
-          <option value="{{ option }}"></option>
-          {% endfor %}
-        </datalist>
-        <p class="text-xs text-slate-500">
-          Wähle die Collection für Uploads, Ingestion und Queries. Legacy-Parameter <code>doc_class</code> aus URLs werden bei
-          aktivem Collection-Routing automatisch als Collection verwendet.
-        </p>
-      </div>
-      <div class="space-y-1">
-        <label class="text-sm font-medium text-slate-700" for="query-visibility">Visibility</label>
-        <select
-          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-          id="query-visibility"
-          name="visibility"
-        >
-          <option value="">Default</option>
-          <option value="active">active</option>
-          <option value="all">all</option>
-          <option value="deleted">deleted</option>
-        </select>
-        <p class="text-xs text-slate-500">Steuert, welche Dokument-Zustände durchsucht werden.</p>
-      </div>
-      <fieldset class="md:col-span-2 space-y-4 rounded-md border border-dashed border-slate-300 p-4">
-        <legend class="px-1 text-sm font-semibold uppercase tracking-wide text-slate-600">Hybrid Parameter</legend>
-        <p class="text-xs text-slate-500">
-          Mit diesen Werten kannst du die Balance zwischen Vektor- und Lexikal-Suche steuern. Leere Felder werden nicht gesendet.
-        </p>
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-alpha">alpha</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-alpha"
-              name="alpha"
-              type="number"
-              step="0.01"
-              min="0"
-              max="1"
-              placeholder="0–1"
-            />
-            <p class="text-xs text-slate-500">Mischverhältnis Hybrid-Suche (0 = rein lexikalisch, 1 = rein vektorbasiert).</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-min-sim">min_sim</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-min-sim"
-              name="min_sim"
-              type="number"
-              step="0.01"
-              min="0"
-              max="1"
-              placeholder="z. B. 0.35"
-            />
-            <p class="text-xs text-slate-500">Mindestsimilarität für Treffer im Vektorraum.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-top-k">top_k</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-top-k"
-              name="top_k"
-              type="number"
-              min="1"
-              placeholder="Standard 5"
-            />
-            <p class="text-xs text-slate-500">Anzahl der kombinierten Kandidaten aus beiden Retrieval-Wege.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-vec-limit">vec_limit</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-vec-limit"
-              name="vec_limit"
-              type="number"
-              min="1"
-              placeholder="Vektor-Kandidaten"
-            />
-            <p class="text-xs text-slate-500">Maximale Treffer aus dem Vektorindex.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-lex-limit">lex_limit</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-lex-limit"
-              name="lex_limit"
-              type="number"
-              min="1"
-              placeholder="Lexikal-Kandidaten"
-            />
-            <p class="text-xs text-slate-500">Maximale Treffer aus der BM25/Trigram Suche.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-max-candidates">max_candidates</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-max-candidates"
-              name="max_candidates"
-              type="number"
-              min="1"
-              placeholder="Gesamtkandidaten"
-            />
-            <p class="text-xs text-slate-500">Deckel für gemergte Treffer vor Re-Ranking.</p>
-          </div>
-          <div class="space-y-1">
-            <label class="text-sm font-medium text-slate-700" for="hybrid-trgm-limit">trgm_limit</label>
-            <input
-              class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
-              id="hybrid-trgm-limit"
-              name="trgm_limit"
-              type="number"
-              step="0.01"
-              min="0"
-              max="1"
-              placeholder="0–1"
-            />
-            <p class="text-xs text-slate-500">Grenze für trigram-basierte Recall-Erweiterung.</p>
-          </div>
-        </div>
-      </fieldset>
-      <div class="md:col-span-2">
-        <button
-          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-          type="submit"
-        >
-          Query starten
-        </button>
-      </div>
-    </form>
-    <div class="mt-6 space-y-6" id="rag-output">
-      <div id="rag-error" class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
-
-      <section class="space-y-3">
+  <section class="grid gap-6 lg:grid-cols-3">
+    <div class="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-700">Mandantenkontext</h2>
+      <dl class="mt-3 space-y-2 text-sm text-slate-600">
         <div class="flex items-center justify-between">
-          <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Answer</h3>
-          <button
-            type="button"
-            id="rag-answer-copy"
-            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-          >
-            Copy
-          </button>
+          <dt class="font-medium text-slate-700">X-Tenant-ID</dt>
+          <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs font-mono">{{ tenant_id }}</code></dd>
         </div>
-        <div
-          id="rag-answer"
-          class="whitespace-pre-wrap rounded-md border border-slate-200 bg-slate-50 p-4 text-sm text-slate-900"
-        >
-          –
+        <div class="flex items-center justify-between">
+          <dt class="font-medium text-slate-700">X-Tenant-Schema</dt>
+          <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs font-mono">{{ tenant_schema }}</code></dd>
         </div>
-      </section>
-
-      <section class="space-y-2">
-        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Prompt Version</h3>
-        <code
-          id="rag-prompt-version"
-          class="inline-block rounded bg-slate-900 px-2 py-1 text-xs font-medium text-white"
-        >
-          –
-        </code>
-      </section>
-
-      <section class="space-y-3">
-        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Retrieval Diagnostics</h3>
-        <div class="overflow-x-auto">
-          <table id="rag-diagnostics" class="min-w-full divide-y divide-slate-200 text-sm">
-            <tbody class="divide-y divide-slate-200">
-              <tr data-field="alpha">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">alpha</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="min_sim">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">min_sim</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="top_k_effective">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">top_k_effective</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="matches_returned">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">matches_returned</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="max_candidates_effective">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">max_candidates_effective</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="vector_candidates">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">vector_candidates</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="lexical_candidates">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">lexical_candidates</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="deleted_matches_blocked">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">deleted_matches_blocked</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="visibility_effective">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">visibility_effective</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="took_ms">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">took_ms</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="routing.profile">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">routing.profile</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-              <tr data-field="routing.vector_space_id">
-                <th class="whitespace-nowrap bg-slate-50 px-3 py-2 text-left font-medium text-slate-600">routing.vector_space_id</th>
-                <td class="px-3 py-2 font-mono text-slate-900">–</td>
-              </tr>
-            </tbody>
-          </table>
+        <div class="flex items-center justify-between">
+          <dt class="font-medium text-slate-700">Default Profil</dt>
+          <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs font-mono">{{ default_embedding_profile }}</code></dd>
         </div>
-      </section>
-
-      <section class="space-y-3">
-        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Snippets</h3>
-        <div id="rag-snippets" class="space-y-3">
-          <p class="text-sm text-slate-500">Keine Snippets geladen.</p>
-        </div>
-      </section>
-
-      <section class="space-y-2">
-        <div class="flex flex-wrap items-center gap-3">
-          <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="rag-raw-toggle">
-            <input
-              type="checkbox"
-              id="rag-raw-toggle"
-              class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
-            />
-            Raw JSON anzeigen
-          </label>
-          <button
-            type="button"
-            id="rag-raw-copy"
-            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-          >
-            Copy JSON
-          </button>
-        </div>
-        <pre class="hidden max-h-96 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="rag-raw"></pre>
-      </section>
+      </dl>
+      <p class="mt-4 text-xs text-slate-500">
+        Die Werte werden aus der Domain abgeleitet und mit jedem Request als Service-Header gesetzt.
+      </p>
     </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-700">Resolver Empfehlung</h2>
+      <dl class="mt-3 space-y-2 text-sm text-slate-600">
+        <div class="flex items-center justify-between">
+          <dt class="font-medium text-slate-700">Embedding Profil</dt>
+          <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs font-mono">{{ resolver_profile_hint|default:"–" }}</code></dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="font-medium text-slate-700">Collection Scope</dt>
+          <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs font-mono">{{ resolver_collection_hint|default:"–" }}</code></dd>
+        </div>
+        <div class="flex items-center justify-between">
+          <dt class="font-medium text-slate-700">Alias Bridge</dt>
+          <dd>
+            {% if collection_alias_enabled %}
+              <span class="inline-flex items-center rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">aktiv</span>
+            {% else %}
+              <span class="inline-flex items-center rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600">deaktiviert</span>
+            {% endif %}
+          </dd>
+        </div>
+      </dl>
+      <p class="mt-4 text-xs text-slate-500">
+        Resolver-Hints definieren Defaults für Collection und Profil. Alle Formulare erlauben Overrides pro Lauf.
+      </p>
+    </div>
+    <div class="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+      <h2 class="text-sm font-semibold text-slate-700">Hinweise</h2>
+      <ul class="mt-3 space-y-2 text-sm text-slate-600">
+        <li>Requests sind idempotent und erzeugen Trace-IDs auf Server-Seite.</li>
+        <li>Upload &amp; Ingestion persistieren Status im Object Store für spätere Auswertungen.</li>
+        <li>Queries laufen über <code class="font-mono">rag.default</code> und geben das produktive Antwortschema zurück.</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">1. Dokument hochladen</h2>
+      <p class="text-sm text-slate-600">
+        Datei wird im Object Store abgelegt, Metadaten validiert und anschließend ein Ingestion-Run via Celery angestoßen.
+        Collection-Overrides landen sowohl im Upload-Metadata als auch im Queue-Request.
+      </p>
+    </div>
+    <form method="post" enctype="multipart/form-data" class="space-y-4">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="upload" />
+      {% if upload_form.non_field_errors %}
+      <div class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+        {{ upload_form.non_field_errors|join:" " }}
+      </div>
+      {% endif %}
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ upload_form.case_id.id_for_label }}">Case ID</label>
+          {{ upload_form.case_id }}
+          <p class="text-xs text-slate-500">Wird als <code>X-Case-ID</code> in Upload &amp; Ingestion verwendet.</p>
+          {% if upload_form.case_id.errors %}
+          <p class="text-xs text-red-600">{{ upload_form.case_id.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ upload_form.collection_id.id_for_label }}">Collection (optional)</label>
+          {{ upload_form.collection_id }}
+          <p class="text-xs text-slate-500">Leer lassen, um Resolver-Default zu verwenden.</p>
+          {% if upload_form.collection_id.errors %}
+          <p class="text-xs text-red-600">{{ upload_form.collection_id.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ upload_form.file.id_for_label }}">Datei</label>
+          {{ upload_form.file }}
+          {% if upload_form.file.errors %}
+          <p class="text-xs text-red-600">{{ upload_form.file.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1 md:col-span-2">
+          <label class="block text-sm font-medium text-slate-700" for="{{ upload_form.metadata.id_for_label }}">Metadata (JSON)</label>
+          {{ upload_form.metadata }}
+          <p class="text-xs text-slate-500">Optionales JSON-Objekt. Collection wird automatisch ergänzt.</p>
+          {% if upload_form.metadata.errors %}
+          <p class="text-xs text-red-600">{{ upload_form.metadata.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+      </div>
+      <div>
+        <button type="submit" class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">Upload &amp; Queue</button>
+      </div>
+    </form>
+    {% if upload_result %}
+    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+      <div class="flex items-center justify-between">
+        <p class="font-semibold text-slate-700">Upload Response</p>
+        <span class="text-xs font-mono text-slate-500">Status: {{ upload_result.status|default:"–" }}</span>
+      </div>
+      <pre class="mt-3 max-h-72 overflow-auto rounded bg-slate-900 p-4 text-xs text-slate-100">{{ upload_result.formatted }}</pre>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="grid gap-6 lg:grid-cols-2">
+    <div class="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div class="space-y-2">
+        <h2 class="text-xl font-semibold text-slate-900">2. Ingestion Run starten</h2>
+        <p class="text-sm text-slate-600">Queue einen Ingestion-Lauf für vorhandene Dokument-IDs mit dem gewünschten Embedding-Profil.</p>
+      </div>
+      <form method="post" class="space-y-4">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="ingestion" />
+        {% if ingestion_form.non_field_errors %}
+        <div class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ ingestion_form.non_field_errors|join:" " }}</div>
+        {% endif %}
+        <div class="grid gap-4">
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="{{ ingestion_form.case_id.id_for_label }}">Case ID</label>
+            {{ ingestion_form.case_id }}
+            {% if ingestion_form.case_id.errors %}
+            <p class="text-xs text-red-600">{{ ingestion_form.case_id.errors|join:", " }}</p>
+            {% endif %}
+          </div>
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="{{ ingestion_form.collection_id.id_for_label }}">Collection (optional)</label>
+            {{ ingestion_form.collection_id }}
+            {% if ingestion_form.collection_id.errors %}
+            <p class="text-xs text-red-600">{{ ingestion_form.collection_id.errors|join:", " }}</p>
+            {% endif %}
+          </div>
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="{{ ingestion_form.embedding_profile.id_for_label }}">Embedding Profil</label>
+            {{ ingestion_form.embedding_profile }}
+            {% if ingestion_form.embedding_profile.errors %}
+            <p class="text-xs text-red-600">{{ ingestion_form.embedding_profile.errors|join:", " }}</p>
+            {% endif %}
+          </div>
+          <div class="space-y-1">
+            <label class="block text-sm font-medium text-slate-700" for="{{ ingestion_form.document_ids.id_for_label }}">Document IDs</label>
+            {{ ingestion_form.document_ids }}
+            <p class="text-xs text-slate-500">Kommagetrennt oder zeilenweise angeben.</p>
+            {% if ingestion_form.document_ids.errors %}
+            <p class="text-xs text-red-600">{{ ingestion_form.document_ids.errors|join:", " }}</p>
+            {% endif %}
+          </div>
+        </div>
+        <button type="submit" class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">Ingestion queue</button>
+      </form>
+      {% if ingestion_result %}
+      <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+        <div class="flex items-center justify-between">
+          <p class="font-semibold text-slate-700">Ingestion Response</p>
+          <span class="text-xs font-mono text-slate-500">Status: {{ ingestion_result.status|default:"–" }}</span>
+        </div>
+        <pre class="mt-3 max-h-60 overflow-auto rounded bg-slate-900 p-4 text-xs text-slate-100">{{ ingestion_result.formatted }}</pre>
+      </div>
+      {% endif %}
+    </div>
+    <div class="space-y-4 rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div class="space-y-2">
+        <h2 class="text-xl font-semibold text-slate-900">3. Ingestion Status prüfen</h2>
+        <p class="text-sm text-slate-600">Liest den zuletzt persistierten Ingestion-Status aus dem Object Store.</p>
+      </div>
+      <form method="post" class="space-y-4">
+        {% csrf_token %}
+        <input type="hidden" name="action" value="status" />
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ status_form.case_id.id_for_label }}">Case ID</label>
+          {{ status_form.case_id }}
+          {% if status_form.case_id.errors %}
+          <p class="text-xs text-red-600">{{ status_form.case_id.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <button type="submit" class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">Status abrufen</button>
+      </form>
+      {% if status_result %}
+      <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+        <div class="flex items-center justify-between">
+          <p class="font-semibold text-slate-700">Letzter Ingestion-Run</p>
+          <span class="text-xs font-mono text-slate-500">Status: {{ status_result.status|default:"–" }}</span>
+        </div>
+        <pre class="mt-3 max-h-60 overflow-auto rounded bg-slate-900 p-4 text-xs text-slate-100">{{ status_result.formatted }}</pre>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">4. RAG Query ausführen</h2>
+      <p class="text-sm text-slate-600">
+        Anfrage wird über den produktiven Graph <code class="font-mono">rag.default</code> geroutet.
+        Optional lassen sich Collection, Visibility und Hybrid-Parameter überschreiben.
+      </p>
+    </div>
+    <form method="post" class="space-y-4">
+      {% csrf_token %}
+      <input type="hidden" name="action" value="query" />
+      {% if query_form.non_field_errors %}
+      <div class="rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700">{{ query_form.non_field_errors|join:" " }}</div>
+      {% endif %}
+      <div class="grid gap-4 md:grid-cols-2">
+        <div class="space-y-1 md:col-span-2">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.query.id_for_label }}">Query</label>
+          {{ query_form.query }}
+          {% if query_form.query.errors %}
+          <p class="text-xs text-red-600">{{ query_form.query.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.case_id.id_for_label }}">Case ID</label>
+          {{ query_form.case_id }}
+          {% if query_form.case_id.errors %}
+          <p class="text-xs text-red-600">{{ query_form.case_id.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.process.id_for_label }}">Process (optional)</label>
+          {{ query_form.process }}
+          {% if query_form.process.errors %}
+          <p class="text-xs text-red-600">{{ query_form.process.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.collection_id.id_for_label }}">Collection</label>
+          {{ query_form.collection_id }}
+          <datalist id="query-collection-options">
+            {% for option in collection_options %}
+            <option value="{{ option }}"></option>
+            {% endfor %}
+          </datalist>
+          {% if query_form.collection_id.errors %}
+          <p class="text-xs text-red-600">{{ query_form.collection_id.errors|join:", " }}</p>
+          {% endif %}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.visibility.id_for_label }}">Visibility</label>
+          {{ query_form.visibility }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.alpha.id_for_label }}">alpha</label>
+          {{ query_form.alpha }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.min_sim.id_for_label }}">min_sim</label>
+          {{ query_form.min_sim }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.top_k.id_for_label }}">top_k</label>
+          {{ query_form.top_k }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.vec_limit.id_for_label }}">vec_limit</label>
+          {{ query_form.vec_limit }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.lex_limit.id_for_label }}">lex_limit</label>
+          {{ query_form.lex_limit }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.max_candidates.id_for_label }}">max_candidates</label>
+          {{ query_form.max_candidates }}
+        </div>
+        <div class="space-y-1">
+          <label class="block text-sm font-medium text-slate-700" for="{{ query_form.trgm_limit.id_for_label }}">trgm_limit</label>
+          {{ query_form.trgm_limit }}
+        </div>
+      </div>
+      <div>
+        <button type="submit" class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">Query ausführen</button>
+      </div>
+    </form>
+    {% if query_summary %}
+    <div class="grid gap-4 lg:grid-cols-3">
+      <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-600">Antwort</h3>
+        <p class="mt-2 whitespace-pre-wrap text-sm text-slate-800">{{ query_summary.answer|default:"Keine Antwort" }}</p>
+      </div>
+      <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-600">Prompt Version</h3>
+        <p class="mt-2 text-sm font-mono text-slate-800">{{ query_summary.prompt_version|default:"–" }}</p>
+        {% if query_summary.retrieval %}
+        <dl class="mt-3 space-y-1 text-xs text-slate-600">
+          {% for key, value in query_summary.retrieval.items %}
+          <div class="flex items-center justify-between gap-4">
+            <dt class="font-medium text-slate-700">{{ key }}</dt>
+            <dd class="font-mono">{{ value }}</dd>
+          </div>
+          {% endfor %}
+        </dl>
+        {% endif %}
+      </div>
+      <div class="rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-600">Snippets</h3>
+        {% if query_summary.snippets %}
+        <ul class="mt-2 space-y-2 text-xs text-slate-700">
+          {% for snippet in query_summary.snippets %}
+          <li class="rounded border border-slate-200 bg-white p-2">
+            {% if snippet.title %}
+            <p class="text-sm font-semibold text-slate-800">{{ snippet.title }}</p>
+            {% endif %}
+            <p class="mt-1 text-xs text-slate-600 whitespace-pre-wrap">{{ snippet.content|default:snippet.text|default:"–" }}</p>
+            <p class="mt-2 text-[11px] uppercase tracking-wide text-slate-400">{{ snippet.document_id|default:"" }}</p>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="mt-2 text-sm text-slate-600">Keine Snippets gefunden.</p>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
+    {% if query_result %}
+    <div class="rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm">
+      <div class="flex items-center justify-between">
+        <p class="font-semibold text-slate-700">Query Response</p>
+        <span class="text-xs font-mono text-slate-500">Status: {{ query_result.status|default:"–" }}</span>
+      </div>
+      <pre class="mt-3 max-h-96 overflow-auto rounded bg-slate-900 p-4 text-xs text-slate-100">{{ query_result.formatted }}</pre>
+    </div>
+    {% endif %}
   </section>
 </div>
-
-<script>
-  (function () {
-    const derivedTenantId = "{{ tenant_id|escapejs }}";
-    const derivedTenantSchema = "{{ tenant_schema|escapejs }}";
-    const tenantId = derivedTenantId || window.location.hostname || "dev.localhost";
-    const tenantSchema =
-      derivedTenantSchema ||
-      (tenantId && tenantId.includes(".") ? tenantId.split(".", 1)[0] : tenantId) ||
-      "dev";
-    const defaultEmbeddingProfile = "{{ default_embedding_profile|escapejs }}" || "standard";
-    const allowDocClassAlias = {{ collection_alias_enabled|yesno:'true,false' }};
-    const resolverProfileHint = "{{ resolver_profile_hint|default_if_none:''|escapejs }}";
-    const resolverCollectionHint = "{{ resolver_collection_hint|default_if_none:''|escapejs }}";
-    const support = window.RagToolsSupport || {};
-    const normalizeCollectionInput =
-      typeof support.normalizeCollectionInput === 'function'
-        ? support.normalizeCollectionInput
-        : function (value) {
-            if (typeof value !== 'string') {
-              return '';
-            }
-            const trimmed = value.trim();
-            return trimmed || '';
-          };
-    const resolveEffectiveCollectionId =
-      typeof support.resolveEffectiveCollectionId === 'function'
-        ? support.resolveEffectiveCollectionId
-        : function (options) {
-            const opts = options || {};
-            const direct = normalizeCollectionInput(opts.collectionInput);
-            if (direct) {
-              return direct;
-            }
-            if (!opts.allowLegacy) {
-              return '';
-            }
-            return normalizeCollectionInput(opts.legacyDocClass);
-          };
-    const formatCollectionDisplay =
-      typeof support.formatCollectionDisplay === 'function'
-        ? support.formatCollectionDisplay
-        : function (value) {
-            const normalized = normalizeCollectionInput(value);
-            return normalized || '–';
-          };
-    const sanitizeKnownCollections =
-      typeof support.sanitizeKnownCollections === 'function'
-        ? support.sanitizeKnownCollections
-        : function (values) {
-            if (!Array.isArray(values)) {
-              return [];
-            }
-            const seen = new Set();
-            return values.reduce(function (acc, entry) {
-              const normalized = normalizeCollectionInput(entry);
-              if (!normalized || seen.has(normalized)) {
-                return acc;
-              }
-              seen.add(normalized);
-              acc.push(normalized);
-              return acc;
-            }, []);
-          };
-    const baseIsKnownCollection =
-      typeof support.isKnownCollection === 'function'
-        ? support.isKnownCollection
-        : function (value, list) {
-            if (!Array.isArray(list) || list.length === 0) {
-              return false;
-            }
-            const normalizedValue = normalizeCollectionInput(value);
-            if (!normalizedValue) {
-              return false;
-            }
-            return list.includes(normalizedValue);
-          };
-
-    const staticHeaders = {
-      'X-Tenant-ID': tenantId,
-      'X-Tenant-Schema': tenantSchema,
-      'X-User-ID': 'local',
-      'X-Case-ID': 'local'
-    };
-    const searchParams = new URLSearchParams(window.location.search || '');
-    const initialCollectionParam = searchParams.get('collection_id');
-    const legacyDocClassParam = allowDocClassAlias ? searchParams.get('doc_class') : null;
-    const resolverCollectionHintNormalized = normalizeCollectionInput(resolverCollectionHint);
-    const collectionOptions = Array.from(
-      document.querySelectorAll('#query-collection-options option')
-    ).map(function (option) {
-      return option.value;
-    });
-    const knownCollections = sanitizeKnownCollections(collectionOptions);
-    const isKnownCollection = function (value) {
-      return baseIsKnownCollection(value, knownCollections);
-    };
-
-    let currentCollectionId = resolveEffectiveCollectionId({
-      collectionInput: initialCollectionParam,
-      legacyDocClass: legacyDocClassParam,
-      allowLegacy: allowDocClassAlias,
-    });
-    if (!currentCollectionId) {
-      currentCollectionId = resolverCollectionHintNormalized;
-    }
-
-    function updateCollectionDisplays(value) {
-      const formatted = formatCollectionDisplay(value);
-      const targets = document.querySelectorAll('[data-collection-display]');
-      targets.forEach(function (element) {
-        element.textContent = formatted;
-        if (value && isKnownCollection(value)) {
-          element.setAttribute('data-known', 'true');
-        } else {
-          element.setAttribute('data-known', 'false');
-        }
-      });
-    }
-
-    function buildHeaders(additional) {
-      const headers = { ...staticHeaders };
-      if (additional && typeof additional === 'object') {
-        Object.keys(additional).forEach(function (key) {
-          headers[key] = additional[key];
-        });
-      }
-      if (currentCollectionId) {
-        headers['X-Collection-ID'] = currentCollectionId;
-      }
-      return headers;
-    }
-
-    function determineCollection(rawValue, options) {
-      const opts = options || {};
-      const resolved = resolveEffectiveCollectionId({
-        collectionInput: rawValue,
-        legacyDocClass: legacyDocClassParam,
-        allowLegacy: allowDocClassAlias,
-      });
-      if (resolved) {
-        return resolved;
-      }
-      if (opts.allowResolverFallback && resolverCollectionHintNormalized) {
-        return resolverCollectionHintNormalized;
-      }
-      return '';
-    }
-
-    function requireCollection(scope) {
-      const opts = scope || {};
-      const rawValue =
-        opts.rawValue !== undefined
-          ? opts.rawValue
-          : collectionInput && collectionInput instanceof HTMLInputElement
-          ? collectionInput.value
-          : currentCollectionId;
-      const resolved = determineCollection(rawValue, {
-        allowResolverFallback: opts.allowResolverFallback !== false,
-      });
-      if (!resolved) {
-        currentCollectionId = '';
-        updateCollectionDisplays('');
-        return null;
-      }
-      currentCollectionId = resolved;
-      if (collectionInput && collectionInput instanceof HTMLInputElement) {
-        collectionInput.value = currentCollectionId;
-      }
-      updateCollectionDisplays(currentCollectionId);
-      return currentCollectionId;
-    }
-
-    const collectionInput = document.getElementById('query-collection');
-    updateCollectionDisplays(currentCollectionId);
-    if (collectionInput && collectionInput instanceof HTMLInputElement) {
-      if (currentCollectionId) {
-        collectionInput.value = currentCollectionId;
-      }
-      collectionInput.addEventListener('change', function (event) {
-        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
-        if (!resolved) {
-          updateCollectionDisplays('');
-        }
-      });
-      collectionInput.addEventListener('blur', function (event) {
-        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
-        if (!resolved) {
-          updateCollectionDisplays('');
-        }
-      });
-    }
-
-    let lastRunId = null;
-
-    function getCsrfToken() {
-      const match = document.cookie.match(/(?:^|; )csrftoken=([^;]+)/);
-      return match ? decodeURIComponent(match[1]) : null;
-    }
-
-    function renderJson(target, value) {
-      const element = document.getElementById(target);
-      if (!element) return;
-      element.textContent = value;
-    }
-
-    function prettyPrint(target, data) {
-      renderJson(target, JSON.stringify(data, null, 2));
-    }
-
-    function updateLastRunId(runId) {
-      if (!runId) {
-        return;
-      }
-      lastRunId = runId;
-      const display = document.getElementById('last-run-id');
-      if (display) {
-        display.textContent = runId;
-      }
-    }
-
-    async function parseJsonOrText(res) {
-      const text = await res.text();
-      try {
-        return [res, JSON.parse(text)];
-      } catch (err) {
-        return [res, { __raw: text }];
-      }
-    }
-
-    function showError(message) {
-      const element = document.getElementById('rag-error');
-      if (!element) {
-        return;
-      }
-      element.textContent = message;
-      element.classList.remove('hidden');
-    }
-
-    function clearError() {
-      const element = document.getElementById('rag-error');
-      if (!element) {
-        return;
-      }
-      element.textContent = '';
-      element.classList.add('hidden');
-    }
-
-    function resetDiagnostics() {
-      const rows = document.querySelectorAll('#rag-diagnostics tr');
-      rows.forEach(function (row) {
-        const valueCell = row.querySelector('td');
-        if (valueCell) {
-          valueCell.textContent = '–';
-        }
-      });
-    }
-
-    function resetSnippets(message) {
-      const container = document.getElementById('rag-snippets');
-      if (!container) {
-        return;
-      }
-      container.innerHTML = '';
-      const placeholder = document.createElement('p');
-      placeholder.className = 'text-sm text-slate-500';
-      placeholder.textContent = message || 'Keine Snippets geladen.';
-      container.appendChild(placeholder);
-    }
-
-    function resetRagView() {
-      const answer = document.getElementById('rag-answer');
-      if (answer) {
-        answer.textContent = '–';
-      }
-      const prompt = document.getElementById('rag-prompt-version');
-      if (prompt) {
-        prompt.textContent = '–';
-      }
-      resetDiagnostics();
-      resetSnippets();
-      const raw = document.getElementById('rag-raw');
-      if (raw) {
-        raw.textContent = '';
-        const rawToggle = document.getElementById('rag-raw-toggle');
-        if (rawToggle && rawToggle instanceof HTMLInputElement) {
-          if (rawToggle.checked) {
-            raw.classList.remove('hidden');
-          } else {
-            raw.classList.add('hidden');
-          }
-        } else {
-          raw.classList.add('hidden');
-        }
-      }
-    }
-
-    function setRaw(data) {
-      const target = document.getElementById('rag-raw');
-      if (!target) {
-        return;
-      }
-      if (data === null || data === undefined) {
-        target.textContent = '';
-        return;
-      }
-      target.textContent = JSON.stringify(data, null, 2);
-    }
-
-    function fmtFloat(value) {
-      if (!Number.isFinite(value)) {
-        return '–';
-      }
-      return Number(value).toFixed(3);
-    }
-
-    function fmtNumber(value) {
-      if (Number.isFinite(value)) {
-        return String(value);
-      }
-      if (typeof value === 'boolean') {
-        return value ? 'true' : 'false';
-      }
-      return '–';
-    }
-
-    function fmtString(value) {
-      if (value === null || value === undefined) {
-        return '–';
-      }
-      const stringValue = String(value);
-      return stringValue.trim() === '' ? '–' : stringValue;
-    }
-
-    function truncate(text, limit) {
-      const maxLength = typeof limit === 'number' && limit > 0 ? limit : 280;
-      if (typeof text !== 'string') {
-        return '';
-      }
-      if (text.length <= maxLength) {
-        return text;
-      }
-      return text.slice(0, maxLength) + '…';
-    }
-
-    function renderRagV2(data) {
-      if (!data || typeof data !== 'object') {
-        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-        return false;
-      }
-
-      const requiredTopLevel = ['answer', 'prompt_version', 'retrieval', 'snippets'];
-      for (let i = 0; i < requiredTopLevel.length; i += 1) {
-        const key = requiredTopLevel[i];
-        if (!(key in data)) {
-          showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-          return false;
-        }
-      }
-
-      const retrieval = data.retrieval;
-      if (!retrieval || typeof retrieval !== 'object') {
-        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-        return false;
-      }
-
-      const requiredRetrieval = [
-        'alpha',
-        'min_sim',
-        'top_k_effective',
-        'matches_returned',
-        'max_candidates_effective',
-        'vector_candidates',
-        'lexical_candidates',
-        'deleted_matches_blocked',
-        'visibility_effective',
-        'took_ms',
-        'routing'
-      ];
-
-      for (let i = 0; i < requiredRetrieval.length; i += 1) {
-        const key = requiredRetrieval[i];
-        if (!(key in retrieval)) {
-          showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-          return false;
-        }
-      }
-
-      const routing = retrieval.routing;
-      if (!routing || typeof routing !== 'object') {
-        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-        return false;
-      }
-
-      if (!('profile' in routing) || !('vector_space_id' in routing)) {
-        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-        return false;
-      }
-
-      if (!Array.isArray(data.snippets)) {
-        showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
-        return false;
-      }
-
-      const answer = document.getElementById('rag-answer');
-      if (answer) {
-        if (typeof data.answer === 'string') {
-          answer.textContent = data.answer;
-        } else if (data.answer == null) {
-          answer.textContent = '–';
-        } else {
-          answer.textContent = String(data.answer);
-        }
-      }
-
-      const prompt = document.getElementById('rag-prompt-version');
-      if (prompt) {
-        if (typeof data.prompt_version === 'string') {
-          prompt.textContent = data.prompt_version;
-        } else if (data.prompt_version == null) {
-          prompt.textContent = '–';
-        } else {
-          prompt.textContent = String(data.prompt_version);
-        }
-      }
-
-      const diagnostics = [
-        ['alpha', fmtFloat(retrieval.alpha)],
-        ['min_sim', fmtFloat(retrieval.min_sim)],
-        ['top_k_effective', fmtNumber(retrieval.top_k_effective)],
-        ['matches_returned', fmtNumber(retrieval.matches_returned)],
-        ['max_candidates_effective', fmtNumber(retrieval.max_candidates_effective)],
-        ['vector_candidates', fmtNumber(retrieval.vector_candidates)],
-        ['lexical_candidates', fmtNumber(retrieval.lexical_candidates)],
-        ['deleted_matches_blocked', fmtNumber(retrieval.deleted_matches_blocked)],
-        ['visibility_effective', fmtString(retrieval.visibility_effective)],
-        ['took_ms', fmtNumber(retrieval.took_ms)],
-        ['routing.profile', fmtString(routing.profile)],
-        ['routing.vector_space_id', fmtString(routing.vector_space_id)]
-      ];
-
-      diagnostics.forEach(function (entry) {
-        const field = entry[0];
-        const value = entry[1];
-        const row = document.querySelector('#rag-diagnostics tr[data-field="' + field + '"] td');
-        if (row) {
-          row.textContent = value;
-        }
-      });
-
-      const snippetContainer = document.getElementById('rag-snippets');
-      if (snippetContainer) {
-        snippetContainer.innerHTML = '';
-        if (Array.isArray(data.snippets) && data.snippets.length) {
-          data.snippets.forEach(function (snippet) {
-            const card = document.createElement('article');
-            card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
-
-            const header = document.createElement('div');
-            header.className = 'flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600';
-
-            const score = document.createElement('span');
-            const scoreValue = Number.isFinite(snippet && snippet.score) ? Number(snippet.score).toFixed(3) : '–';
-            score.textContent = 'Score: ' + scoreValue;
-
-            const source = document.createElement('span');
-            const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '';
-            const citationValue = snippet && typeof snippet.citation === 'string' && snippet.citation.trim()
-              ? snippet.citation.trim()
-              : sourceValue || '–';
-            source.textContent = 'Fundstelle: ' + citationValue;
-
-            header.appendChild(score);
-            header.appendChild(source);
-
-            const body = document.createElement('div');
-            body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
-            const snippetText = snippet && typeof snippet.text === 'string' ? snippet.text : '';
-            body.textContent = truncate(snippetText, 280);
-
-            card.appendChild(header);
-            card.appendChild(body);
-            snippetContainer.appendChild(card);
-          });
-        } else {
-          const placeholder = document.createElement('p');
-          placeholder.className = 'text-sm text-slate-500';
-          placeholder.textContent = 'Keine Snippets gefunden.';
-          snippetContainer.appendChild(placeholder);
-        }
-      }
-
-      return true;
-    }
-
-    async function copyText(selector) {
-      const element = typeof selector === 'string' ? document.querySelector(selector) : selector;
-      if (!element) {
-        return;
-      }
-      const value = element.textContent || '';
-      if (!value) {
-        return;
-      }
-      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
-        try {
-          await navigator.clipboard.writeText(value);
-          return;
-        } catch (err) {
-          // Fallback below
-        }
-      }
-
-      const textarea = document.createElement('textarea');
-      textarea.value = value;
-      textarea.setAttribute('readonly', '');
-      textarea.style.position = 'absolute';
-      textarea.style.left = '-9999px';
-      document.body.appendChild(textarea);
-      textarea.select();
-      try {
-        document.execCommand('copy');
-      } catch (err) {
-        console.warn('Copy failed', err);
-      }
-      document.body.removeChild(textarea);
-    }
-
-    async function copyTextJSON(selector) {
-      await copyText(selector);
-    }
-
-    const answerCopyButton = document.getElementById('rag-answer-copy');
-    if (answerCopyButton) {
-      answerCopyButton.addEventListener('click', function () {
-        copyText('#rag-answer');
-      });
-    }
-
-    const rawCopyButton = document.getElementById('rag-raw-copy');
-    if (rawCopyButton) {
-      rawCopyButton.addEventListener('click', function () {
-        copyTextJSON('#rag-raw');
-      });
-    }
-
-    const rawToggleControl = document.getElementById('rag-raw-toggle');
-    if (rawToggleControl && rawToggleControl instanceof HTMLInputElement) {
-      rawToggleControl.addEventListener('change', function (event) {
-        const rawElement = document.getElementById('rag-raw');
-        if (!rawElement) {
-          return;
-        }
-        if (event.target.checked) {
-          rawElement.classList.remove('hidden');
-        } else {
-          rawElement.classList.add('hidden');
-        }
-      });
-    }
-
-    const uploadForm = document.getElementById('upload-form');
-    const uploadResponseTarget = 'upload-response';
-    if (uploadForm) {
-      uploadForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        const fileInput = document.getElementById('upload-file');
-        const metadataInput = document.getElementById('upload-metadata');
-        if (!fileInput || !(fileInput instanceof HTMLInputElement) || !fileInput.files?.length) {
-          renderJson(uploadResponseTarget, 'Please choose a file to upload.');
-          return;
-        }
-
-        const collectionScope = requireCollection({ allowResolverFallback: false });
-        if (!collectionScope) {
-          renderJson(uploadResponseTarget, 'Bitte zuerst eine Collection auswählen.');
-          return;
-        }
-
-        const formData = new FormData();
-        formData.append('file', fileInput.files[0]);
-        if (metadataInput && metadataInput.value.trim()) {
-          formData.append('metadata', metadataInput.value.trim());
-        }
-
-        const headers = buildHeaders();
-        const csrfToken = getCsrfToken();
-        if (csrfToken) {
-          headers['X-CSRFToken'] = csrfToken;
-        }
-
-        try {
-          const response = await fetch('/ai/rag/documents/upload/', {
-            method: 'POST',
-            headers,
-            body: formData,
-            credentials: 'include'
-          });
-          const text = await response.text();
-          try {
-            const data = JSON.parse(text);
-            prettyPrint(uploadResponseTarget, data);
-            if (data && typeof data === 'object' && data.ingestion_run_id) {
-              updateLastRunId(data.ingestion_run_id);
-            }
-          } catch (err) {
-            renderJson(uploadResponseTarget, text);
-          }
-        } catch (error) {
-          renderJson(uploadResponseTarget, String(error));
-        }
-      });
-    }
-
-    const ingestionForm = document.getElementById('ingestion-form');
-    const ingestionResponseTarget = 'ingestion-response';
-    if (ingestionForm) {
-      ingestionForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        const docInput = document.getElementById('ingestion-document-ids');
-        if (!docInput || !(docInput instanceof HTMLTextAreaElement)) {
-          renderJson(ingestionResponseTarget, 'Document input not found.');
-          return;
-        }
-        const rawValue = docInput.value.trim();
-        if (!rawValue) {
-          renderJson(ingestionResponseTarget, 'Bitte mindestens eine document_id angeben.');
-          return;
-        }
-        const docs = rawValue
-          .split(/[\n,]/)
-          .map(function (entry) { return entry.trim(); })
-          .filter(function (entry) { return Boolean(entry); });
-        if (!docs.length) {
-          renderJson(ingestionResponseTarget, 'Bitte gültige document_ids angeben.');
-          return;
-        }
-
-        const profileSelect = document.getElementById('ingestion-profile');
-        const selectedProfile =
-          profileSelect && profileSelect instanceof HTMLSelectElement && profileSelect.value.trim()
-            ? profileSelect.value.trim()
-            : defaultEmbeddingProfile;
-
-        const collectionScope = requireCollection({ allowResolverFallback: true });
-        if (!collectionScope) {
-          renderJson(ingestionResponseTarget, 'Bitte zuerst eine Collection auswählen.');
-          return;
-        }
-
-        const payload = {
-          document_ids: docs,
-          embedding_profile: selectedProfile,
-          collection_id: collectionScope,
-        };
-
-        const headers = buildHeaders({
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        });
-        const csrfToken = getCsrfToken();
-        if (csrfToken) {
-          headers['X-CSRFToken'] = csrfToken;
-        }
-
-        try {
-          const response = await fetch('/ai/rag/ingestion/run/', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload),
-            credentials: 'include'
-          });
-          const text = await response.text();
-          try {
-            const data = JSON.parse(text);
-            prettyPrint(ingestionResponseTarget, data);
-            if (data && typeof data === 'object' && data.ingestion_run_id) {
-              updateLastRunId(data.ingestion_run_id);
-            }
-          } catch (err) {
-            renderJson(ingestionResponseTarget, text);
-          }
-        } catch (error) {
-          renderJson(ingestionResponseTarget, String(error));
-        }
-      });
-    }
-
-    const statusResponseTarget = 'status-response';
-
-    async function refreshStatus() {
-      requireCollection({ allowResolverFallback: true });
-      const headers = buildHeaders({
-        Accept: 'application/json'
-      });
-      const csrfToken = getCsrfToken();
-      if (csrfToken) {
-        headers['X-CSRFToken'] = csrfToken;
-      }
-
-      try {
-        const response = await fetch('/ai/rag/ingestion/status/', {
-          method: 'GET',
-          headers,
-          credentials: 'include'
-        });
-        const text = await response.text();
-        try {
-          const data = JSON.parse(text);
-          prettyPrint(statusResponseTarget, data);
-          if (data && typeof data === 'object' && data.run_id) {
-            updateLastRunId(data.run_id);
-          }
-        } catch (err) {
-          renderJson(statusResponseTarget, text);
-        }
-      } catch (error) {
-        renderJson(statusResponseTarget, String(error));
-      }
-    }
-
-    const statusButton = document.getElementById('status-refresh');
-    if (statusButton) {
-      statusButton.addEventListener('click', refreshStatus);
-    }
-
-    const queryForm = document.getElementById('query-form');
-    if (queryForm) {
-      queryForm.addEventListener('submit', async function (event) {
-        event.preventDefault();
-        clearError();
-        resetRagView();
-        const queryText = document.getElementById('query-text');
-        if (!queryText || !(queryText instanceof HTMLTextAreaElement)) {
-          showError('Query input not found.');
-          return;
-        }
-        const queryValue = queryText.value.trim();
-        if (!queryValue) {
-          showError('Please enter a query.');
-          return;
-        }
-
-        const payload = {
-          query: queryValue,
-          question: queryValue,
-          hybrid: {}
-        };
-
-        const processInput = document.getElementById('query-process');
-        if (processInput && processInput.value.trim()) {
-          payload.process = processInput.value.trim();
-        }
-        const collectionScope = requireCollection({ allowResolverFallback: true });
-        if (!collectionScope) {
-          showError('Bitte eine Collection auswählen.');
-          return;
-        }
-        payload.collection_id = collectionScope;
-        const visibilitySelect = document.getElementById('query-visibility');
-        if (visibilitySelect && visibilitySelect.value) {
-          payload.visibility = visibilitySelect.value;
-        }
-
-        const hybridFields = [
-          { id: 'hybrid-alpha', key: 'alpha', parse: parseFloat },
-          { id: 'hybrid-min-sim', key: 'min_sim', parse: parseFloat },
-          { id: 'hybrid-top-k', key: 'top_k', parse: function (value) { return parseInt(value, 10); } },
-          { id: 'hybrid-vec-limit', key: 'vec_limit', parse: function (value) { return parseInt(value, 10); } },
-          { id: 'hybrid-lex-limit', key: 'lex_limit', parse: function (value) { return parseInt(value, 10); } },
-          { id: 'hybrid-max-candidates', key: 'max_candidates', parse: function (value) { return parseInt(value, 10); } },
-          { id: 'hybrid-trgm-limit', key: 'trgm_limit', parse: parseFloat }
-        ];
-
-        hybridFields.forEach(function (field) {
-          const input = document.getElementById(field.id);
-          if (!input || !(input instanceof HTMLInputElement)) {
-            return;
-          }
-          const value = input.value.trim();
-          if (!value) {
-            return;
-          }
-          const numberValue = field.parse(value);
-          if (!Number.isFinite(numberValue)) {
-            return;
-          }
-          payload.hybrid[field.key] = numberValue;
-        });
-
-        const headers = buildHeaders({
-          'Content-Type': 'application/json',
-          Accept: 'application/json'
-        });
-        const csrfToken = getCsrfToken();
-        if (csrfToken) {
-          headers['X-CSRFToken'] = csrfToken;
-        }
-
-        try {
-          const response = await fetch('/v1/ai/rag/query/', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(payload),
-            credentials: 'include'
-          });
-          const parsed = await parseJsonOrText(response);
-          const res = parsed[0];
-          const obj = parsed[1];
-          const rawPayload = obj && typeof obj === 'object' && '__raw' in obj ? { __raw: obj.__raw } : obj;
-
-          if (res.ok) {
-            if (obj && typeof obj === 'object' && '__raw' in obj) {
-              setRaw(rawPayload);
-              showError('Antwort ist kein JSON.');
-              return;
-            }
-            const rendered = renderRagV2(obj);
-            setRaw(obj);
-            if (rendered) {
-              clearError();
-            }
-            return;
-          }
-
-          if (res.status === 422 && obj && obj.code === 'retrieval_inconsistent_metadata') {
-            setRaw(rawPayload);
-            showError('Re-Index erforderlich: Chunks ohne tenant_id/case_id.');
-            return;
-          }
-
-          setRaw(rawPayload);
-          const statusText = res.statusText || 'Unbekannter Fehler';
-          showError('Fehler ' + res.status + ': ' + statusText + '. Details im Raw-Tab.');
-        } catch (error) {
-          setRaw({ error: String(error) });
-          showError('Netzwerkfehler: ' + String(error));
-        }
-      });
-    }
-  })();
-</script>
 {% endblock %}
