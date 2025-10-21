@@ -3,11 +3,13 @@ from uuid import UUID
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
+from psycopg2 import sql
 from types import SimpleNamespace
 
 from ai_core import ingestion
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
+from ai_core.rag import vector_client as rag_vector_client
 from ai_core.views import make_fallback_external_id
 from common.constants import (
     META_CASE_ID_KEY,
@@ -96,8 +98,44 @@ def test_upload_ingest_query_end2end(
     )
     assert zebra_chunk is not None
     parent_ids = zebra_chunk["meta"].get("parent_ids", [])
-    assert any(parent_id.endswith("#doc") for parent_id in parent_ids)
+    assert f"{doc_id}#doc" in parent_ids
     assert any(parent_id.endswith("#sec-1") for parent_id in parent_ids)
+    assert zebra_chunk["meta"]["document_id"] == doc_id
+    assert zebra_chunk["meta"]["doc_id"] == doc_id
+
+    client = rag_vector_client.get_default_client()
+    documents_table = client._table("documents")
+    chunks_table = client._table("chunks")
+    with client._connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("SELECT id::text, metadata FROM {} WHERE id = %s").format(
+                    documents_table
+                ),
+                (doc_id,),
+            )
+            stored = cur.fetchone()
+            assert stored is not None
+            stored_id, metadata = stored
+            assert str(stored_id) == doc_id
+            parent_nodes = dict((metadata or {}).get("parent_nodes") or {})
+            assert f"{doc_id}#doc" in parent_nodes
+            root_parent = parent_nodes[f"{doc_id}#doc"]
+            assert isinstance(root_parent, dict)
+            assert root_parent.get("document_id") == doc_id
+
+            cur.execute(
+                sql.SQL("SELECT metadata FROM {} WHERE document_id = %s").format(
+                    chunks_table
+                ),
+                (doc_id,),
+            )
+            chunk_rows = cur.fetchall()
+    assert chunk_rows
+    for (chunk_meta,) in chunk_rows:
+        assert isinstance(chunk_meta, dict)
+        assert chunk_meta.get("document_id") == doc_id
+        assert chunk_meta.get("doc_id") == doc_id
 
     # Query (Demo-Endpunkt wurde entfernt und meldet HTTP 410)
     resp = client.post(

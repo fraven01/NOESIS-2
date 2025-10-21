@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import textwrap
+import uuid
 
 import pytest
 
@@ -27,7 +28,13 @@ def test_chunk_parent_contents_are_direct(settings, configured_store):
     settings.RAG_PARENT_CAPTURE_MAX_BYTES = 0
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
 
-    meta = {"tenant_id": "tenant", "case_id": "case", "external_id": "doc-direct"}
+    doc_id = str(uuid.uuid4())
+    meta = {
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc-direct",
+        "document_id": doc_id,
+    }
     markdown = textwrap.dedent(
         """
         Document introduction outside sections.
@@ -50,7 +57,7 @@ def test_chunk_parent_contents_are_direct(settings, configured_store):
     payload = object_store.read_json(result["path"])
     parents = payload["parents"]
 
-    root_id = f"{meta['external_id']}#doc"
+    root_id = f"{doc_id}#doc"
     root_parent = parents[root_id]
     expected_root_content = textwrap.dedent(
         """
@@ -74,6 +81,7 @@ def test_chunk_parent_contents_are_direct(settings, configured_store):
         """
     ).strip()
     assert root_parent["content"] == expected_root_content
+    assert root_parent.get("document_id") == doc_id
 
     def _parent_by_title(title: str) -> dict[str, object]:
         for node in parents.values():
@@ -104,7 +112,13 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
     settings.RAG_PARENT_CAPTURE_MAX_BYTES = 120
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 2
 
-    meta = {"tenant_id": "tenant", "case_id": "case", "external_id": "doc-limits"}
+    doc_id = str(uuid.uuid4())
+    meta = {
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc-limits",
+        "document_id": doc_id,
+    }
     level_one_body = " ".join(["Level one text"] * 40)
     level_two_body = " ".join(["Level two text"] * 40)
     level_three_body = " ".join(["Level three text"] * 40)
@@ -125,7 +139,7 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
     payload = object_store.read_json(result["path"])
     parents = payload["parents"]
 
-    root_parent = parents[f"{meta['external_id']}#doc"]
+    root_parent = parents[f"{doc_id}#doc"]
     expected_root_content = textwrap.dedent(
         f"""
         # Level One
@@ -143,6 +157,7 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
     ).strip()
     assert root_parent["content"] == expected_root_content
     assert root_parent.get("capture_limited") is not True
+    assert root_parent.get("document_id") == doc_id
 
     def _parent_by_title(title: str) -> dict[str, object]:
         for node in parents.values():

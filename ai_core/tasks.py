@@ -5,6 +5,7 @@ import math
 import os
 import re
 import time
+import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
@@ -623,8 +624,26 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     section_counter = 0
     order_counter = 0
 
+    document_id_value = meta.get("document_id") or meta.get("doc_id")
+    document_id: Optional[str] = None
+    if document_id_value not in {None, "", "None"}:
+        try:
+            candidate_uuid = (
+                document_id_value
+                if isinstance(document_id_value, uuid.UUID)
+                else uuid.UUID(str(document_id_value).strip())
+            )
+            document_id = str(candidate_uuid)
+        except (ValueError, TypeError, AttributeError):
+            try:
+                candidate_text = str(document_id_value).strip()
+            except Exception:
+                candidate_text = ""
+            document_id = candidate_text or None
+
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
-    root_id = f"{external_id}#doc"
+    parent_prefix = document_id or str(external_id)
+    root_id = f"{parent_prefix}#doc"
     parent_nodes[root_id] = {
         "id": root_id,
         "type": "document",
@@ -632,6 +651,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         "level": 0,
         "order": order_counter,
     }
+    if document_id:
+        parent_nodes[root_id]["document_id"] = document_id
     parent_contents[root_id] = []
     parent_content_bytes[root_id] = 0
 
@@ -712,7 +733,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         nonlocal section_counter, order_counter
         section_counter += 1
         order_counter += 1
-        parent_id = f"{external_id}#sec-{section_counter}"
+        parent_id = f"{parent_prefix}#sec-{section_counter}"
         info = {
             "id": parent_id,
             "type": "section",
@@ -722,6 +743,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         }
         if path is not None:
             info["path"] = path
+        if document_id:
+            info["document_id"] = document_id
         parent_nodes[parent_id] = info
         parent_contents[parent_id] = []
         parent_content_bytes[parent_id] = 0
@@ -925,6 +948,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 "content_hash": content_hash,
                 "parent_ids": parent_ids,
             }
+            if document_id:
+                chunk_meta["document_id"] = document_id
+                chunk_meta["doc_id"] = document_id
             if meta.get("embedding_profile"):
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
             if meta.get("vector_space_id"):

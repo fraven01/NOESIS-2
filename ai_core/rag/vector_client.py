@@ -2962,6 +2962,17 @@ class PgVectorClient:
             external_id = chunk.meta.get("external_id")
             raw_collection_id = chunk.meta.get("collection_id")
             raw_doc_class = chunk.meta.get("doc_class")
+            raw_document_id = chunk.meta.get("document_id") or chunk.meta.get("doc_id")
+            provided_document_uuid: uuid.UUID | None = None
+            if raw_document_id not in {None, "", "None"}:
+                try:
+                    provided_document_uuid = (
+                        raw_document_id
+                        if isinstance(raw_document_id, uuid.UUID)
+                        else uuid.UUID(str(raw_document_id).strip())
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    provided_document_uuid = None
             if raw_collection_id in {None, "", "None"} and raw_doc_class not in {
                 None,
                 "",
@@ -3001,8 +3012,9 @@ class PgVectorClient:
             external_id_str = str(external_id)
             key = (tenant, workflow_id, external_id_str, collection_id)
             if key not in grouped:
+                document_uuid = provided_document_uuid or uuid.uuid4()
                 grouped[key] = {
-                    "id": uuid.uuid4(),
+                    "id": document_uuid,
                     "tenant_id": tenant,
                     "workflow_id": workflow_id,
                     "external_id": external_id_str,
@@ -3019,15 +3031,38 @@ class PgVectorClient:
                     "chunks": [],
                     "parents": {},
                 }
+                grouped_metadata = grouped[key]["metadata"]
+                grouped_metadata["document_id"] = str(grouped[key]["id"])
+                grouped_metadata["doc_id"] = str(grouped[key]["id"])
             else:
                 doc_collection = grouped[key].get("collection_id")
                 if doc_collection is None and collection_id is not None:
                     grouped[key]["collection_id"] = collection_id
                 if grouped[key].get("workflow_id") is None and workflow_id is not None:
                     grouped[key]["workflow_id"] = workflow_id
+                if (
+                    provided_document_uuid is not None
+                    and grouped[key].get("id") != provided_document_uuid
+                ):
+                    logger.warning(
+                        "ingestion.doc.document_id_mismatch",
+                        extra={
+                            "tenant_id": tenant,
+                            "external_id": external_id_str,
+                            "existing_id": str(grouped[key].get("id")),
+                            "provided_id": str(provided_document_uuid),
+                        },
+                    )
+                metadata_block = grouped[key].get("metadata")
+                if isinstance(metadata_block, dict):
+                    metadata_block["document_id"] = str(grouped[key]["id"])
+                    metadata_block["doc_id"] = str(grouped[key]["id"])
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
+            document_identifier = str(grouped[key]["id"])
+            chunk_meta["document_id"] = document_identifier
+            chunk_meta["doc_id"] = document_identifier
             if collection_id is not None:
                 chunk_meta["collection_id"] = collection_id
             elif "collection_id" in chunk_meta:
@@ -3042,8 +3077,14 @@ class PgVectorClient:
             if isinstance(parents_map, dict) and isinstance(chunk_parents, Mapping):
                 limited_chunk_parents = limit_parent_payload(chunk_parents)
                 for parent_id, parent_meta in limited_chunk_parents.items():
-                    if parent_id not in parents_map:
-                        parents_map[parent_id] = parent_meta
+                    if isinstance(parent_meta, Mapping):
+                        parent_payload = dict(parent_meta)
+                        parent_payload.setdefault(
+                            "document_id", document_identifier
+                        )
+                    else:
+                        parent_payload = parent_meta
+                    parents_map[parent_id] = parent_payload
             grouped[key]["chunks"].append(
                 Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)
             )
@@ -3458,6 +3499,21 @@ class PgVectorClient:
                 metadata_dict["workflow_id"] = workflow_text
             elif "workflow_id" in metadata_dict:
                 metadata_dict.pop("workflow_id", None)
+            document_uuid_value = doc.get("id")
+            document_id_text: str | None = None
+            if isinstance(document_uuid_value, uuid.UUID):
+                document_id_text = str(document_uuid_value)
+            elif document_uuid_value not in {None, "", "None"}:
+                try:
+                    document_id_text = str(uuid.UUID(str(document_uuid_value)))
+                except (TypeError, ValueError, AttributeError):
+                    try:
+                        document_id_text = str(document_uuid_value).strip()
+                    except Exception:
+                        document_id_text = None
+            if document_id_text:
+                metadata_dict["document_id"] = document_id_text
+                metadata_dict["doc_id"] = document_id_text
 
             if self._near_duplicate_enabled:
                 index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()

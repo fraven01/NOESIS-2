@@ -284,11 +284,13 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
     }
     reset_embedding_configuration_cache()
 
+    doc_uuid = uuid.uuid4()
     meta = {
         "tenant_id": "tenant",
         "case_id": "case",
         "external_id": "doc",
         "embedding_profile": "standard",
+        "document_id": str(doc_uuid),
     }
     document = (
         "# Titel\n\nEin Absatz.\n\n- Punkt eins\n- Punkt zwei\n\n"
@@ -349,10 +351,11 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         contents = [entry["content"] for entry in chunks]
 
         parents = dict(chunk_payload.get("parents", {}))
-        root_id = f"{meta['external_id']}#doc"
+        root_id = f"{meta['document_id']}#doc"
         assert root_id in parents
         root_content = parents[root_id].get("content", "") if parents[root_id] else ""
         assert "Titel" in root_content
+        assert parents[root_id].get("document_id") == str(doc_uuid)
 
         assert any("print('x')" in content for content in contents)
         assert any("Punkt eins" in content for content in contents)
@@ -372,6 +375,8 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
             parent_id in section_ids
             for parent_id in first_chunk["meta"].get("parent_ids", [])
         )
+        assert first_chunk["meta"]["document_id"] == str(doc_uuid)
+        assert first_chunk["meta"]["doc_id"] == str(doc_uuid)
 
         long_chunks = [
             entry["content"] for entry in chunks if "wort" in entry["content"]
