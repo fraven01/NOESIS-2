@@ -29,3 +29,4 @@ whitenoise
 faker>=19,<38
 pydantic>=2.0,<3.0
 Pillow
+charset-normalizer==3.4.4  # unify with dev to avoid pip resolution conflict

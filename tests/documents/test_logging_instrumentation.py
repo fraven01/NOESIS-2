@@ -30,7 +30,14 @@ from documents.contracts import (
 )
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
-from documents.cli import CLIContext, main as cli_main
+from documents.cli import CLIContext, main as cli_main, SimpleDocumentChunker
+from documents.parsers import ParserRegistry, ParserDispatcher
+from documents.parsers_markdown import MarkdownDocumentParser
+from documents.parsers_html import HtmlDocumentParser
+from documents.parsers_docx import DocxDocumentParser
+from documents.parsers_pptx import PptxDocumentParser
+from documents.parsers_pdf import PdfDocumentParser
+from documents.captioning import DeterministicCaptioner
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -310,7 +317,26 @@ def test_cli_command_logs_context(caplog: pytest.LogCaptureFixture) -> None:
     caplog.set_level("INFO")
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
-    context = CLIContext(repository=repo, storage=storage)
+    captioner = DeterministicCaptioner()
+    registry = ParserRegistry(
+        [
+            MarkdownDocumentParser(),
+            HtmlDocumentParser(),
+            DocxDocumentParser(),
+            PptxDocumentParser(),
+            PdfDocumentParser(),
+        ]
+    )
+    dispatcher = ParserDispatcher(registry)
+    chunker = SimpleDocumentChunker()
+    context = CLIContext(
+        repository=repo,
+        storage=storage,
+        parser_registry=registry,
+        parser=dispatcher,
+        captioner=captioner,
+        chunker=chunker,
+    )
     inline_payload = "aGVsbG8="
     workflow_id = "workflow-1"
 

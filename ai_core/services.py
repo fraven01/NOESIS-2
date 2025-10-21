@@ -44,6 +44,7 @@ from ai_core.tool_contracts import NotFoundError as ToolNotFoundError
 from ai_core.tool_contracts import RateLimitedError as ToolRateLimitedError
 from ai_core.tool_contracts import TimeoutError as ToolTimeoutError
 from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceError
+from ai_core.tool_contracts import ContextError as ToolContextError
 from ai_core.tools import InputError
 
 from .infra import object_store
@@ -405,6 +406,10 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         new_state, result = graph_runner.run(merged_state, runner_meta)
     except InputError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+    except ToolContextError as exc:
+        # Invalid execution context (e.g., router/tenant/case issues) should be
+        # surfaced to clients as a 400 rather than a transient 503.
+        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ValueError as exc:
         return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
     except ToolNotFoundError as exc:
@@ -476,6 +481,18 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         detail = getattr(exc, "detail", None) or "Upstream LLM error."
         return _error_response(detail, "llm_error", status_code)
     except Exception:
+        # Log unexpected exceptions with execution context for diagnostics.
+        try:
+            logger.exception(
+                "graph.execution_failed",
+                extra={
+                    "graph": context.graph_name,
+                    "tenant_id": context.tenant_id,
+                    "case_id": context.case_id,
+                },
+            )
+        except Exception:
+            pass
         return _error_response(
             "Service temporarily unavailable.",
             "service_unavailable",

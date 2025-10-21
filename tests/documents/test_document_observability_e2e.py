@@ -15,7 +15,14 @@ from opentelemetry.trace import ProxyTracerProvider, StatusCode
 from common.logging import configure_logging
 from documents import metrics
 from documents.captioning import AssetExtractionPipeline, DeterministicCaptioner
-from documents.cli import CLIContext, main as cli_main
+from documents.pipeline import DocumentPipelineConfig
+from documents.cli import CLIContext, main as cli_main, SimpleDocumentChunker
+from documents.parsers import ParserRegistry, ParserDispatcher
+from documents.parsers_markdown import MarkdownDocumentParser
+from documents.parsers_html import HtmlDocumentParser
+from documents.parsers_docx import DocxDocumentParser
+from documents.parsers_pptx import PptxDocumentParser
+from documents.parsers_pdf import PdfDocumentParser
 from documents.contracts import (
     Asset,
     AssetRef,
@@ -321,8 +328,9 @@ def test_caption_pipeline_observability(
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
     captioner = DeterministicCaptioner()
+    cfg = DocumentPipelineConfig(caption_min_confidence_default=0.0)
     pipeline = AssetExtractionPipeline(
-        repository=repo, storage=storage, captioner=captioner
+        repository=repo, storage=storage, captioner=captioner, config=cfg
     )
 
     tenant_id = "tenant-cap"
@@ -504,7 +512,26 @@ def test_cli_observability(
 
     storage = InMemoryStorage()
     repo = InMemoryDocumentsRepository(storage=storage)
-    context = CLIContext(repository=repo, storage=storage)
+    captioner = DeterministicCaptioner()
+    registry = ParserRegistry(
+        [
+            MarkdownDocumentParser(),
+            HtmlDocumentParser(),
+            DocxDocumentParser(),
+            PptxDocumentParser(),
+            PdfDocumentParser(),
+        ]
+    )
+    dispatcher = ParserDispatcher(registry)
+    chunker = SimpleDocumentChunker()
+    context = CLIContext(
+        repository=repo,
+        storage=storage,
+        parser_registry=registry,
+        parser=dispatcher,
+        captioner=captioner,
+        chunker=chunker,
+    )
 
     tenant_id = "tenant-cli"
     collection_id = uuid4()
@@ -599,6 +626,8 @@ def test_cli_observability(
             tenant_id,
             "--doc-id",
             document_id,
+            "--workflow-id",
+            workflow_id,
         ],
         context=context,
     )

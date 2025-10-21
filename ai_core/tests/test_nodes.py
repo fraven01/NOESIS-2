@@ -43,7 +43,7 @@ class _DummyConfig:
 def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.resolve_embedding_profile",
-        lambda *, tenant_id, process=None, doc_class=None: profile,
+        lambda *, tenant_id, process=None, doc_class=None, collection_id=None, workflow_id=None: profile,
     )
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.get_embedding_configuration",

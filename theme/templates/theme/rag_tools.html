@@ -46,6 +46,19 @@
       </p>
     </div>
 
+    <div class="space-y-1">
+      <label class="text-sm font-medium text-slate-700" for="upload-collection">Collection</label>
+      <input
+        class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+        id="upload-collection"
+        type="search"
+        list="query-collection-options"
+        placeholder="z. B. 123e4567-e89b-12d3-a456-426614174000"
+        autocomplete="off"
+      />
+      <p class="text-xs text-slate-500">Tipp: Dieses Feld steuert auch Uploads. Alternativ das Collection-Feld im Query‑Abschnitt verwenden.</p>
+    </div>
+
     <form id="upload-form" class="space-y-4">
       <div class="space-y-1">
         <label class="block text-sm font-medium text-slate-700" for="upload-file">Datei</label>
@@ -218,6 +231,7 @@
           placeholder="z. B. support-faq"
           autocomplete="off"
         />
+        <p class="text-xs text-slate-500">Hinweis: Erwartet wird eine UUID (8-4-4-4-12).</p>
         <datalist id="query-collection-options">
           {% for option in collection_options %}
           <option value="{{ option }}"></option>
@@ -537,15 +551,22 @@
       typeof support.isKnownCollection === 'function'
         ? support.isKnownCollection
         : function (value, list) {
-            if (!Array.isArray(list) || list.length === 0) {
-              return false;
-            }
-            const normalizedValue = normalizeCollectionInput(value);
-            if (!normalizedValue) {
-              return false;
-            }
-            return list.includes(normalizedValue);
-          };
+          if (!Array.isArray(list) || list.length === 0) {
+            return false;
+          }
+          const normalizedValue = normalizeCollectionInput(value);
+          if (!normalizedValue) {
+            return false;
+          }
+          return list.includes(normalizedValue);
+        };
+
+    // Simple UUID v4-like check (case-insensitive)
+    function isUuidLike(value) {
+      if (!value || typeof value !== 'string') return false;
+      const text = value.trim();
+      return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text);
+    }
 
     const staticHeaders = {
       'X-Tenant-ID': tenantId,
@@ -596,7 +617,7 @@
           headers[key] = additional[key];
         });
       }
-      if (currentCollectionId) {
+      if (currentCollectionId && isUuidLike(currentCollectionId)) {
         headers['X-Collection-ID'] = currentCollectionId;
       }
       return headers;
@@ -638,11 +659,15 @@
       if (collectionInput && collectionInput instanceof HTMLInputElement) {
         collectionInput.value = currentCollectionId;
       }
+      if (uploadCollectionInput && uploadCollectionInput instanceof HTMLInputElement) {
+        uploadCollectionInput.value = currentCollectionId;
+      }
       updateCollectionDisplays(currentCollectionId);
       return currentCollectionId;
     }
 
     const collectionInput = document.getElementById('query-collection');
+    const uploadCollectionInput = document.getElementById('upload-collection');
     updateCollectionDisplays(currentCollectionId);
     if (collectionInput && collectionInput instanceof HTMLInputElement) {
       if (currentCollectionId) {
@@ -655,6 +680,23 @@
         }
       });
       collectionInput.addEventListener('blur', function (event) {
+        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
+        if (!resolved) {
+          updateCollectionDisplays('');
+        }
+      });
+    }
+    if (uploadCollectionInput && uploadCollectionInput instanceof HTMLInputElement) {
+      if (currentCollectionId) {
+        uploadCollectionInput.value = currentCollectionId;
+      }
+      uploadCollectionInput.addEventListener('change', function (event) {
+        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
+        if (!resolved) {
+          updateCollectionDisplays('');
+        }
+      });
+      uploadCollectionInput.addEventListener('blur', function (event) {
         const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
         if (!resolved) {
           updateCollectionDisplays('');

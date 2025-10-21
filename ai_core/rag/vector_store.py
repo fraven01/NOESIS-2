@@ -1102,6 +1102,8 @@ class _TenantScopedClient:
         max_candidates: int | None = None,
         process: str | None = None,
         doc_class: str | None = None,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
         visibility: object | None = None,
         visibility_override_allowed: bool = False,
     ) -> "HybridSearchResult":
@@ -1121,6 +1123,8 @@ class _TenantScopedClient:
             max_candidates=max_candidates,
             process=process,
             doc_class=doc_class,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
             visibility=visibility,
             visibility_override_allowed=visibility_override_allowed,
         )

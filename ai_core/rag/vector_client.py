@@ -1046,6 +1046,9 @@ class PgVectorClient:
         max_candidates: int | None = None,
         visibility: str | None = None,
         visibility_override_allowed: bool = False,
+        # Compatibility with VectorStoreRouter keyword passthrough
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
     ) -> HybridSearchResult:
         """Execute hybrid vector/lexical retrieval for ``query``.
 
@@ -1252,7 +1255,7 @@ class PgVectorClient:
         if case_filter_value is not None and effective_collection_filter:
             if legacy_doc_class_filter:
                 where_clauses.append(
-                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s::uuid[])) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
                 )
                 where_params.extend(
                     [
@@ -1263,7 +1266,7 @@ class PgVectorClient:
                 )
             else:
                 where_clauses.append(
-                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)))"
+                    "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s::uuid[])))"
                 )
                 where_params.extend([case_filter_value, effective_collection_filter])
         elif case_filter_value is not None:
@@ -1272,13 +1275,13 @@ class PgVectorClient:
         elif effective_collection_filter:
             if legacy_doc_class_filter:
                 where_clauses.append(
-                    "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
+                    "((c.collection_id = ANY(%s::uuid[])) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
                 )
                 where_params.extend(
                     [effective_collection_filter, legacy_doc_class_filter]
                 )
             else:
-                where_clauses.append("c.collection_id = ANY(%s)")
+                where_clauses.append("c.collection_id = ANY(%s::uuid[])")
                 where_params.append(effective_collection_filter)
         where_sql = "\n          AND ".join(where_clauses)
         where_sql_without_deleted: str | None = None

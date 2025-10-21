@@ -86,6 +86,16 @@ class AssetExtractionPipeline:
             log_extra_entry(**document_log_fields(document))
             doc_copy = document.model_copy(deep=True)
             processed_assets = [self._process_asset(asset) for asset in doc_copy.assets]
+            # Persist updated assets to the repository to keep the document's
+            # asset view and the asset store in sync.
+            for asset in processed_assets:
+                try:
+                    self.repository.add_asset(asset)
+                except Exception:
+                    # Best-effort: if persistence fails for an asset, continue
+                    # to upsert the document itself; detailed errors are logged
+                    # within the repository layer.
+                    pass
             doc_copy.assets = processed_assets
             log_extra_exit(processed_assets=len(processed_assets))
             return self.repository.upsert(doc_copy)
@@ -202,7 +212,9 @@ class AssetExtractionPipeline:
                             "text_description": fallback,
                             "caption_method": "ocr_only",
                             "caption_model": None,
-                            "caption_confidence": self.config.ocr_fallback_confidence,
+                            # For OCR-only fallback, do not report a model confidence
+                            # to avoid conflating OCR presence with caption quality.
+                            "caption_confidence": None,
                             "caption_source": "ocr",
                         }
                     )

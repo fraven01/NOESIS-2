@@ -112,6 +112,9 @@ class HybridEnabledStore(VectorStore):
         max_candidates: int | None = None,
         visibility: str | None = None,
         visibility_override_allowed: bool = False,
+        collection_id: str | None = None,
+        workflow_id: str | None = None,
+        **_kwargs,
     ) -> HybridSearchResult:
         self.hybrid_calls.append(
             {
@@ -128,6 +131,8 @@ class HybridEnabledStore(VectorStore):
                 "max_candidates": max_candidates,
                 "visibility": visibility,
                 "visibility_override_allowed": visibility_override_allowed,
+                "collection_id": collection_id,
+                "workflow_id": workflow_id,
             }
         )
         return self._result
@@ -757,6 +762,9 @@ def test_router_logs_warning_when_hybrid_returns_none(
             max_candidates: int | None = None,
             visibility: str | None = None,
             visibility_override_allowed: bool = False,
+            collection_id: str | None = None,
+            workflow_id: str | None = None,
+            **_kwargs,
         ) -> HybridSearchResult | None:
             # Simulate a store that supports hybrid_search but returns no result.
             return None

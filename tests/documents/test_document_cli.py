@@ -4,7 +4,14 @@ from pathlib import Path
 from uuid import uuid4
 
 
-from documents.cli import CLIContext, main
+from documents.cli import CLIContext, main, SimpleDocumentChunker
+from documents.parsers import ParserRegistry, ParserDispatcher
+from documents.parsers_markdown import MarkdownDocumentParser
+from documents.parsers_html import HtmlDocumentParser
+from documents.parsers_docx import DocxDocumentParser
+from documents.parsers_pptx import PptxDocumentParser
+from documents.parsers_pdf import PdfDocumentParser
+from documents.captioning import DeterministicCaptioner
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
 
@@ -15,7 +22,26 @@ WORKFLOW_ID = "workflow-1"
 def _context() -> CLIContext:
     storage = InMemoryStorage()
     repository = InMemoryDocumentsRepository(storage=storage)
-    return CLIContext(repository=repository, storage=storage)
+    registry = ParserRegistry(
+        [
+            MarkdownDocumentParser(),
+            HtmlDocumentParser(),
+            DocxDocumentParser(),
+            PptxDocumentParser(),
+            PdfDocumentParser(),
+        ]
+    )
+    dispatcher = ParserDispatcher(registry)
+    captioner = DeterministicCaptioner()
+    chunker = SimpleDocumentChunker()
+    return CLIContext(
+        repository=repository,
+        storage=storage,
+        parser_registry=registry,
+        parser=dispatcher,
+        captioner=captioner,
+        chunker=chunker,
+    )
 
 
 def _run(args: list[str], context: CLIContext, capsys) -> tuple[int, str, str]:

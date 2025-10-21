@@ -1112,7 +1112,7 @@ def test_upsert_retries_operational_error_once(monkeypatch):
             "external_id": "doc-retry",
         },
     )
-    key = (tenant, "doc-retry", None)
+    key = (tenant, None, "doc-retry", None)
     grouped_doc = {
         key: {
             "id": uuid.uuid4(),

@@ -20,3 +20,4 @@ python-docx
 python-pptx
 readability-lxml
 openapi-python-client
+charset-normalizer==3.4.4 # unify with prod to avoid pip resolution conflict
