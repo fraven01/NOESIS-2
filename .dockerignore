@@ -40,3 +40,4 @@ logs
 staticfiles
 k8s
 .storybook
+#.venv-tools/
