@@ -13,15 +13,18 @@ Pattern:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
 from collections.abc import Iterable, Mapping
-from uuid import uuid4
 from importlib import import_module
+from uuid import uuid4
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
+from django.utils.module_loading import import_string
 from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
@@ -46,6 +49,9 @@ from ai_core.tool_contracts import TimeoutError as ToolTimeoutError
 from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceError
 from ai_core.tools import InputError
 
+from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+
 from .infra import object_store
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_status import record_ingestion_run_queued
@@ -69,6 +75,9 @@ logger = logging.getLogger(__name__)
 
 
 CHECKPOINTER = FileCheckpointer()
+
+
+_DOCUMENTS_REPOSITORY: DocumentsRepository | None = None
 
 
 # Helper: make arbitrary payloads JSON-serialisable (UUIDs → strings)
@@ -129,6 +138,48 @@ def _get_checkpointer():  # type: ignore[no-untyped-def]
     except Exception:
         pass
     return CHECKPOINTER
+
+
+def _build_documents_repository() -> DocumentsRepository:
+    repository_setting = getattr(settings, "DOCUMENTS_REPOSITORY", None)
+    if isinstance(repository_setting, DocumentsRepository):
+        return repository_setting
+    if callable(repository_setting):
+        candidate = repository_setting()
+        if isinstance(candidate, DocumentsRepository):
+            return candidate
+
+    repository_class_setting = getattr(settings, "DOCUMENTS_REPOSITORY_CLASS", None)
+    if repository_class_setting:
+        try:
+            repository_class = import_string(repository_class_setting)
+        except Exception as exc:  # pragma: no cover - defensive guard
+            raise RuntimeError("invalid_documents_repository_class") from exc
+        candidate = repository_class()
+        if not isinstance(candidate, DocumentsRepository):
+            raise TypeError("documents_repository_invalid_instance")
+        return candidate
+
+    return InMemoryDocumentsRepository()
+
+
+def _get_documents_repository() -> DocumentsRepository:
+    try:
+        views = import_module("ai_core.views")
+        repo = getattr(views, "DOCUMENTS_REPOSITORY", None)
+        if isinstance(repo, DocumentsRepository):
+            return repo
+        if callable(repo):
+            candidate = repo()
+            if isinstance(candidate, DocumentsRepository):
+                return candidate
+    except Exception:
+        pass
+
+    global _DOCUMENTS_REPOSITORY
+    if _DOCUMENTS_REPOSITORY is None:
+        _DOCUMENTS_REPOSITORY = _build_documents_repository()
+    return _DOCUMENTS_REPOSITORY
 
 
 def _normalize_meta(request):  # type: ignore[no-untyped-def]
@@ -608,6 +659,61 @@ def start_ingestion_run(
     return Response(response_payload, status=status.HTTP_202_ACCEPTED)
 
 
+def _derive_workflow_id(meta: Mapping[str, object], metadata: Mapping[str, object]) -> str:
+    candidate = metadata.get("workflow_id")
+    if isinstance(candidate, str):
+        candidate = candidate.strip()
+        if candidate:
+            return candidate.replace(":", "_")
+
+    case_id = str(meta.get("case_id") or "").strip()
+    if not case_id:
+        return "upload"
+    return case_id.replace(":", "_")
+
+
+def _infer_media_type(upload: UploadedFile) -> str:
+    content_type = getattr(upload, "content_type", None)
+    if isinstance(content_type, str):
+        content_type = content_type.split(";")[0].strip().lower()
+    if not content_type:
+        return "application/octet-stream"
+    return content_type
+
+
+def _build_document_meta(
+    meta: Mapping[str, object],
+    metadata_obj: Mapping[str, object],
+    external_id: str,
+) -> DocumentMeta:
+    workflow_id = _derive_workflow_id(meta, metadata_obj)
+    payload: dict[str, object] = {
+        "tenant_id": str(meta["tenant_id"]),
+        "workflow_id": workflow_id,
+    }
+
+    optional_fields = (
+        "title",
+        "language",
+        "tags",
+        "origin_uri",
+        "crawl_timestamp",
+        "external_ref",
+        "parse_stats",
+    )
+    for field in optional_fields:
+        if field in metadata_obj:
+            payload[field] = metadata_obj[field]
+
+    external_ref = dict(payload.get("external_ref") or {})
+    if external_id:
+        external_ref.setdefault("external_id", external_id)
+    if external_ref:
+        payload["external_ref"] = external_ref
+
+    return DocumentMeta(**payload)
+
+
 def handle_document_upload(
     upload: UploadedFile,
     metadata_raw: str | bytes | None,
@@ -667,36 +773,13 @@ def handle_document_upload(
         )
 
     metadata_obj = metadata_model.model_dump()
-    if metadata_obj.get("external_id") is None:
-        metadata_obj.pop("external_id")
-    if metadata_obj.get("collection_id") is None:
-        metadata_obj.pop("collection_id", None)
-
-    original_name = getattr(upload, "name", "") or "upload.bin"
-    try:
-        safe_name = object_store.safe_filename(original_name)
-    except ValueError:
-        safe_name = object_store.safe_filename("upload.bin")
-
-    try:
-        tenant_segment = object_store.sanitize_identifier(meta["tenant_id"])
-        case_segment = object_store.sanitize_identifier(meta["case_id"])
-    except ValueError:
-        return _error_response(
-            "Request metadata was invalid.",
-            "invalid_request",
-            status.HTTP_400_BAD_REQUEST,
-        )
-
-    document_id = uuid4().hex
-    storage_prefix = f"{tenant_segment}/{case_segment}/uploads"
-    object_path = f"{storage_prefix}/{document_id}_{safe_name}"
+    document_uuid = uuid4()
 
     file_bytes = upload.read()
     if not isinstance(file_bytes, (bytes, bytearray)):
         file_bytes = bytes(file_bytes)
 
-    object_store.write_bytes(object_path, file_bytes)
+    original_name = getattr(upload, "name", "") or "upload.bin"
 
     supplied_external = metadata_obj.get("external_id")
     if isinstance(supplied_external, str):
@@ -715,7 +798,53 @@ def handle_document_upload(
 
     metadata_obj["external_id"] = external_id
 
-    object_store.write_json(f"{storage_prefix}/{document_id}.meta.json", metadata_obj)
+    checksum = hashlib.sha256(file_bytes).hexdigest()
+    encoded_blob = base64.b64encode(file_bytes).decode("ascii")
+
+    document_meta = _build_document_meta(meta, metadata_obj, external_id)
+
+    ref_payload: dict[str, object] = {
+        "tenant_id": document_meta.tenant_id,
+        "workflow_id": document_meta.workflow_id,
+        "document_id": document_uuid,
+        "collection_id": metadata_obj.get("collection_id"),
+        "version": metadata_obj.get("version"),
+    }
+    document_ref = DocumentRef(**ref_payload)
+
+    blob = InlineBlob(
+        type="inline",
+        media_type=_infer_media_type(upload),
+        base64=encoded_blob,
+        sha256=checksum,
+        size=len(file_bytes),
+    )
+
+    normalized_document = NormalizedDocument(
+        ref=document_ref,
+        meta=document_meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=timezone.now(),
+        source="upload",
+    )
+
+    try:
+        repository = _get_documents_repository()
+        repository.upsert(normalized_document)
+    except Exception:
+        logger.exception(
+            "Failed to persist uploaded document via repository",
+            extra={
+                "tenant_id": meta.get("tenant_id"),
+                "case_id": meta.get("case_id"),
+            },
+        )
+        return _error_response(
+            "Failed to persist uploaded document.",
+            "document_persistence_failed",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
 
     try:
         profile_binding = _resolve_ingestion_profile(
@@ -740,6 +869,7 @@ def handle_document_upload(
     resolved_profile_id = profile_binding.profile_id
     ingestion_run_id = uuid4().hex
     queued_at = timezone.now().isoformat()
+    document_id = document_uuid.hex
     document_ids = [document_id]
 
     try:
