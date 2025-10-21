@@ -1,11 +1,16 @@
-import json
+import base64
+import hashlib
+from datetime import datetime, timezone
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from ai_core import ingestion
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store
+from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.repository import InMemoryDocumentsRepository
 
 
 class DummyRetryError(Exception):
@@ -15,34 +20,60 @@ class DummyRetryError(Exception):
 def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     tenant = "tenant-retry"
     case = "case-retry"
-    document_id = "doc-retry"
     tenant_schema = "tenant-schema"
+    document_uuid = uuid4()
+    document_id = str(document_uuid)
 
     store_path = tmp_path / "store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
 
-    upload_dir = ingestion._upload_dir(tenant, case)
-    upload_dir.mkdir(parents=True, exist_ok=True)
-
-    file_bytes = b"payload for fallback external id"
-    (upload_dir / f"{document_id}_source.txt").write_bytes(file_bytes)
-    (upload_dir / f"{document_id}.meta.json").write_text(
-        json.dumps({"tenant": tenant, "case": case, "label": "example"})
+    repository = InMemoryDocumentsRepository()
+    workflow_id = case.replace(":", "_")
+    payload = b"payload for fallback external id"
+    encoded = base64.b64encode(payload).decode("ascii")
+    checksum = hashlib.sha256(payload).hexdigest()
+    blob = InlineBlob(
+        type="inline",
+        media_type="text/plain",
+        base64=encoded,
+        sha256=checksum,
+        size=len(payload),
     )
+    document_ref = DocumentRef(
+        tenant_id=tenant,
+        workflow_id=workflow_id,
+        document_id=document_uuid,
+    )
+    document_meta = DocumentMeta(
+        tenant_id=tenant,
+        workflow_id=workflow_id,
+        title="Example",
+        external_ref={"external_id": "external-123", "media_type": "text/plain"},
+    )
+    normalized_document = NormalizedDocument(
+        ref=document_ref,
+        meta=document_meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=datetime.now(timezone.utc),
+        source="upload",
+    )
+    repository.upsert(normalized_document)
+
+    import ai_core.services as services_module
+
+    monkeypatch.setattr(
+        services_module,
+        "_get_documents_repository",
+        lambda: repository,
+        raising=False,
+    )
+    monkeypatch.setattr(services_module, "_DOCUMENTS_REPOSITORY", repository, raising=False)
 
     tenant_key = object_store.sanitize_identifier(tenant)
     case_key = object_store.sanitize_identifier(case)
 
-    counts = {
-        step: 0
-        for step in [
-            "ingest_raw",
-            "extract_text",
-            "pii_mask",
-            "chunk",
-            "embed",
-        ]
-    }
+    counts = {step: 0 for step in ["pii_mask", "chunk", "embed"]}
 
     profile_id = "standard"
 
@@ -51,7 +82,7 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
         for step in counts
     }
 
-    content_hash_value = "hash-abc123"
+    content_hash_value = checksum
 
     def make_step_stub(step_name):
         def _stub(meta, *args, **kwargs):
@@ -92,8 +123,6 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
             tenant_schema=tenant_schema,
         )
 
-    assert all(counts[step] == 1 for step in counts)
-
     status_path = ingestion._status_store_path(tenant, case, document_id)
     status_state = object_store.read_json(status_path)
 
@@ -101,6 +130,9 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     assert "upsert failed" in status_state["last_error"]["message"]
     assert status_state["last_error"]["retry"] == 0
 
+    parse_state = status_state["steps"]["parse"]
+    assert parse_state["cleaned"] is False
+    assert (object_store.BASE_PATH / parse_state["path"]).exists()
     for step_name, path in artifact_paths.items():
         step_state = status_state["steps"][step_name]
         assert step_state["path"] == path
@@ -145,12 +177,13 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
     assert result["embedding_profile"] == profile_id
     assert result["vector_space_id"] == "global"
 
+    assert not (object_store.BASE_PATH / parse_state["path"]).exists()
     for path in artifact_paths.values():
         assert not (object_store.BASE_PATH / path).exists()
 
     status_state = object_store.read_json(status_path)
     assert status_state["last_error"] is None
-    for step_name in artifact_paths:
+    for step_name in ["parse", *artifact_paths.keys()]:
         step_state = status_state["steps"][step_name]
         assert step_state["cleaned"] is True
         assert step_state.get("path") is None

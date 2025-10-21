@@ -702,6 +702,8 @@ def _build_document_meta(
     meta: Mapping[str, object],
     metadata_obj: Mapping[str, object],
     external_id: str,
+    *,
+    media_type: str | None = None,
 ) -> DocumentMeta:
     workflow_id = _derive_workflow_id(meta, metadata_obj)
     payload: dict[str, object] = {
@@ -725,6 +727,8 @@ def _build_document_meta(
     external_ref = dict(payload.get("external_ref") or {})
     if external_id:
         external_ref.setdefault("external_id", external_id)
+    if media_type:
+        external_ref.setdefault("media_type", media_type)
     if external_ref:
         payload["external_ref"] = external_ref
 
@@ -818,7 +822,9 @@ def handle_document_upload(
     checksum = hashlib.sha256(file_bytes).hexdigest()
     encoded_blob = base64.b64encode(file_bytes).decode("ascii")
 
-    document_meta = _build_document_meta(meta, metadata_obj, external_id)
+    document_meta = _build_document_meta(
+        meta, metadata_obj, external_id, media_type=_infer_media_type(upload)
+    )
 
     ref_payload: dict[str, object] = {
         "tenant_id": document_meta.tenant_id,
