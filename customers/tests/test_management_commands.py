@@ -378,6 +378,22 @@ def test_add_domain_ensures_existing_domain_and_normalizes_input():
 
 
 @pytest.mark.django_db
+def test_add_domain_normalises_credentials_and_trailing_dot():
+    tenant = TenantFactory(schema_name="tenant-normalize-creds")
+
+    call_command(
+        "add_domain",
+        "--schema",
+        tenant.schema_name,
+        "--domain",
+        "https://user:pass@Example.Com.:8443/path",
+    )
+
+    domain = Domain.objects.get(domain="example.com")
+    assert domain.tenant_id == tenant.id
+
+
+@pytest.mark.django_db
 def test_add_domain_missing_tenant():
     with pytest.raises(CommandError) as excinfo:
         call_command(
