@@ -1,0 +1,11 @@
+[tool.black]
+# Füge den problematischen Ordner zur 'exclude'-Liste hinzu
+exclude = '''
+/(
+    \.git
+  | \.venv
+  | \.venv-tools  # <--- Diesen Ordner hinzufügen
+  | \.mypy_cache
+  | \.pytest_cache
+)/
+'''

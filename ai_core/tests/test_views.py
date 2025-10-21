@@ -1127,7 +1127,11 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": "Was gilt?", "hybrid": {"alpha": 0.3}, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": "Was gilt?",
+            "hybrid": {"alpha": 0.3},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1201,7 +1205,11 @@ def test_rag_query_endpoint_allows_blank_answer(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": "Was gilt?", "hybrid": {"alpha": 0.3}, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": "Was gilt?",
+            "hybrid": {"alpha": 0.3},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1276,7 +1284,11 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": "Was gilt?", "hybrid": {"alpha": 0.3}, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": "Was gilt?",
+            "hybrid": {"alpha": 0.3},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1350,7 +1362,11 @@ def test_rag_query_endpoint_normalises_numeric_types(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": "Was gilt?", "hybrid": {"alpha": 0.5}, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": "Was gilt?",
+            "hybrid": {"alpha": 0.5},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1472,7 +1488,12 @@ def test_rag_query_endpoint_applies_top_k_override(
 
     monkeypatch.setattr(views, "_run_graph", _run_graph)
 
-    payload = {"question": "Welche Richtlinien gelten?", "top_k": 5, "hybrid": {}, "collection_id": str(uuid.uuid4())}
+    payload = {
+        "question": "Welche Richtlinien gelten?",
+        "top_k": 5,
+        "hybrid": {},
+        "collection_id": str(uuid.uuid4()),
+    }
 
     response = client.post(
         "/v1/ai/rag/query/",
@@ -1558,7 +1579,11 @@ def test_rag_query_endpoint_surfaces_diagnostics(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": "Was gilt?", "hybrid": {"alpha": 0.5}, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": "Was gilt?",
+            "hybrid": {"alpha": 0.5},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1720,7 +1745,11 @@ def test_rag_query_endpoint_populates_query_from_question(
     hybrid_config = {"alpha": 0.5}
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"question": question_text, "hybrid": hybrid_config, "collection_id": str(uuid.uuid4())},
+        data={
+            "question": question_text,
+            "hybrid": hybrid_config,
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1783,7 +1812,11 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"query": "no hits", "hybrid": {"alpha": 0.5}, "collection_id": str(uuid.uuid4())},
+        data={
+            "query": "no hits",
+            "hybrid": {"alpha": 0.5},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -1825,7 +1858,11 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
 
     response = client.post(
         "/v1/ai/rag/query/",
-        data={"query": "bad meta", "hybrid": {"alpha": 0.5}, "collection_id": str(uuid.uuid4())},
+        data={
+            "query": "bad meta",
+            "hybrid": {"alpha": 0.5},
+            "collection_id": str(uuid.uuid4()),
+        },
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,

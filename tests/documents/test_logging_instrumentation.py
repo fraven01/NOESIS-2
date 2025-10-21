@@ -37,7 +37,6 @@ from documents.parsers_html import HtmlDocumentParser
 from documents.parsers_docx import DocxDocumentParser
 from documents.parsers_pptx import PptxDocumentParser
 from documents.parsers_pdf import PdfDocumentParser
-from documents.captioning import DeterministicCaptioner
 
 
 @pytest.fixture(scope="module", autouse=True)
