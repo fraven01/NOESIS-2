@@ -30,8 +30,20 @@ class Command(BaseCommand):
         raw = options["domain"].strip()
         # Normalize: strip scheme and path, keep host only, lowercase
         parsed = urlparse(raw if "://" in raw else f"//{raw}", scheme="")
-        host = (parsed.netloc or parsed.path).split("/")[0]
-        domain_value = host.split(":")[0].lower()
+
+        host = parsed.hostname
+        if host is None:
+            # Fall back to removing any credentials/port information manually.
+            candidate = parsed.netloc or parsed.path
+            if candidate:
+                host = candidate.split("@")[-1].split("/")[0]
+
+        if not host:
+            raise CommandError(f"Unable to determine domain from '{raw}'")
+
+        domain_value = host.rstrip(".").lower()
+        if not domain_value:
+            raise CommandError(f"Unable to determine domain from '{raw}'")
         make_primary = options["primary"]
         force = options["force_reassign"]
 
