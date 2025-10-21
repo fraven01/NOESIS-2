@@ -1,9 +1,11 @@
 import json
+from uuid import UUID
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
 from types import SimpleNamespace
 
+from ai_core import ingestion
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
 from ai_core.views import make_fallback_external_id
@@ -30,10 +32,13 @@ def test_upload_ingest_query_end2end(
     monkeypatch.setattr(
         "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
     )
+    monkeypatch.setattr(ingestion, "_cleanup_artifacts", lambda paths: [])
 
     # Upload
     upload = SimpleUploadedFile(
-        "note.txt", b"hello ZEBRAGURKE world", content_type="text/plain"
+        "note.txt",
+        b"# Heading\n\nhello ZEBRAGURKE world",
+        content_type="text/markdown",
     )
     payload = {
         "file": upload,
@@ -65,6 +70,30 @@ def test_upload_ingest_query_end2end(
     assert result["written"] >= 1
     assert result["embedding_profile"] == "standard"
     assert result["vector_space_id"] == "global"
+
+    parsed_path = ingestion._parsed_blocks_path(tenant, case, UUID(doc_id))
+    parsed_payload = object_store.read_json(parsed_path)
+    blocks = parsed_payload.get("blocks", [])
+    assert blocks, "expected parsed blocks to be persisted"
+    first_block = blocks[0]
+    assert first_block.get("kind") == "heading"
+    assert first_block.get("section_path")
+    assert first_block.get("page_index") is None
+
+    status_state = object_store.read_json(
+        ingestion._status_store_path(tenant, case, doc_id)
+    )
+    chunk_step = status_state["steps"]["chunk"]
+    chunk_path = chunk_step["path"]
+    chunk_payload = object_store.read_json(chunk_path)
+    zebra_chunk = next(
+        (entry for entry in chunk_payload.get("chunks", []) if "ZEBRAGURKE" in entry["content"]),
+        None,
+    )
+    assert zebra_chunk is not None
+    parent_ids = zebra_chunk["meta"].get("parent_ids", [])
+    assert any(parent_id.endswith("#doc") for parent_id in parent_ids)
+    assert any(parent_id.endswith("#sec-1") for parent_id in parent_ids)
 
     # Query (Demo-Endpunkt wurde entfernt und meldet HTTP 410)
     resp = client.post(

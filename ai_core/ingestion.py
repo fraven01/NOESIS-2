@@ -322,6 +322,33 @@ def _parsed_text_path(tenant: str, case: str, document_identifier: UUID) -> str:
     return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"])
 
 
+def _parsed_blocks_path(tenant: str, case: str, document_identifier: UUID) -> str:
+    tenant_segment = object_store.sanitize_identifier(str(tenant))
+    case_segment = object_store.sanitize_identifier(str(case))
+    document_segment = object_store.sanitize_identifier(str(document_identifier))
+    return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"])
+
+
+def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
+    payload: Dict[str, object] = {
+        "text": block.text,
+        "kind": str(block.kind),
+        "section_path": list(block.section_path) if block.section_path else None,
+        "page_index": block.page_index,
+        "table_meta": dict(block.table_meta) if block.table_meta is not None else None,
+        "language": block.language,
+    }
+    metadata = getattr(block, "metadata", None)
+    if isinstance(metadata, Mapping):
+        parent_ref = metadata.get("parent_ref")
+        if parent_ref:
+            payload["parent_ref"] = parent_ref
+        locator = metadata.get("locator")
+        if locator:
+            payload["locator"] = locator
+    return payload
+
+
 def _persist_parsed_text(
     tenant: str,
     case: str,
@@ -329,9 +356,27 @@ def _persist_parsed_text(
     parsed: ParsedResult,
 ) -> Dict[str, object]:
     text_content = _render_parsed_text(parsed)
-    path = _parsed_text_path(tenant, case, document_identifier)
-    object_store.put_bytes(path, text_content.encode("utf-8"))
-    return {"path": path, "statistics": dict(parsed.statistics)}
+    text_path = _parsed_text_path(tenant, case, document_identifier)
+    object_store.put_bytes(text_path, text_content.encode("utf-8"))
+
+    blocks_path = _parsed_blocks_path(tenant, case, document_identifier)
+    serialised_blocks = [
+        {"index": index, **_serialise_text_block(block)}
+        for index, block in enumerate(parsed.text_blocks)
+    ]
+    payload = {
+        "blocks": serialised_blocks,
+        "statistics": dict(parsed.statistics),
+        "text": text_content,
+    }
+    object_store.write_json(blocks_path, payload)
+
+    return {
+        "path": text_path,
+        "text_path": text_path,
+        "blocks_path": blocks_path,
+        "statistics": dict(parsed.statistics),
+    }
 
 
 def _extract_blob_payload_bytes(document: object) -> bytes | None:
@@ -604,6 +649,10 @@ def process_document(
         if not reused and parse_artifact.get("path"):
             created_artifacts.append((current_step, str(parse_artifact["path"])))
         parse_path = parse_artifact.get("path")
+        blocks_path = parse_artifact.get("blocks_path")
+        if blocks_path:
+            meta["parsed_blocks_path"] = str(blocks_path)
+            state.setdefault("meta", {})["parsed_blocks_path"] = str(blocks_path)
         if not parse_path:
             raise InputError(
                 "parse_missing_text",
