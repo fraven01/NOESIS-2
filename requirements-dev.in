@@ -21,3 +21,4 @@ python-pptx
 readability-lxml
 openapi-python-client
 charset-normalizer==3.4.4 # unify with prod to avoid pip resolution conflict
+langfuse>=2.0.0 # optional SDK for local tracing

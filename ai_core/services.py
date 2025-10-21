@@ -26,6 +26,7 @@ from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
+from ai_core.infra.observability import observe_span, update_observation
 
 from common.constants import (
     COLLECTION_ID_HEADER_CANDIDATES,
@@ -307,6 +308,7 @@ def _format_validation_error(error: ValidationError) -> str:
     return "; ".join(messages)
 
 
+@observe_span(name="graph.execute")
 def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
     """
     Orchestrates the execution of a graph, handling context, state, and errors.
@@ -340,6 +342,21 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         graph_name=normalized_meta["graph_name"],
         graph_version=normalized_meta["graph_version"],
     )
+
+    # Attach graph context to observation (no request body content)
+    try:
+        update_observation(
+            tags=[
+                "graph",
+                f"graph:{context.graph_name}",
+                f"version:{context.graph_version}",
+            ],
+            user_id=str(context.tenant_id),
+            session_id=str(context.case_id),
+            metadata={"trace_id": context.trace_id},
+        )
+    except Exception:
+        pass
 
     try:
         state = _get_checkpointer().load(context)

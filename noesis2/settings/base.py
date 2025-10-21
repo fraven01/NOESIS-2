@@ -444,6 +444,22 @@ API_DEPRECATIONS = {
 # LiteLLM / AI Core
 LITELLM_BASE_URL = env("LITELLM_BASE_URL", default="http://localhost:4000")
 LITELLM_MASTER_KEY = env("LITELLM_MASTER_KEY", default="")
+DEPLOYMENT_ENV = env("DEPLOYMENT_ENV", default="development").lower()
+LANGFUSE_HOST = env("LANGFUSE_HOST", default="http://localhost:3100")
 LANGFUSE_PUBLIC_KEY = env("LANGFUSE_PUBLIC_KEY", default="")
 LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
+LANGFUSE_SAMPLE_RATE = float(env("LANGFUSE_SAMPLE_RATE", default=1.0))
 AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
+
+# Guard: prevent accidental use of production Langfuse keys in non-prod environments
+if DEPLOYMENT_ENV in {"development", "dev", "staging", "test", "testing"}:
+    lf_pk = (LANGFUSE_PUBLIC_KEY or "").lower()
+    lf_sk = (LANGFUSE_SECRET_KEY or "").lower()
+    suspicious_tokens = ("prod", "pk_prod_", "sk_prod_", "pk-live", "sk-live", "live_")
+    if any(tok in lf_pk for tok in suspicious_tokens) or any(
+        tok in lf_sk for tok in suspicious_tokens
+    ):
+        raise RuntimeError(
+            "Refusing to start with production Langfuse keys in non-production environment. "
+            "Set DEPLOYMENT_ENV=production explicitly if this is intentional, or swap keys to dev/staging."
+        )

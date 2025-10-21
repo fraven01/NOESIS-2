@@ -59,6 +59,10 @@ services:
       - UI_PASSWORD=${DB_PASSWORD:-noesis2}
       - CONFIG_FILE_PATH=/config/config.yaml
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST:-http://host.docker.internal:3100}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_SAMPLE_RATE=${LANGFUSE_SAMPLE_RATE:-1.0}
     entrypoint: ["litellm"]
     command:
       - "--config"

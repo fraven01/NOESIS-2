@@ -55,7 +55,13 @@
     "storybook": "storybook dev -p 6006",
     "storybook:build": "storybook build",
     "chromatic": "echo \"Add Chromatic or Percy command here\"",
-    "e2e": "playwright test -c playwright-ct.config.ts"
+    "e2e": "playwright test -c playwright-ct.config.ts",
+    "dev:langfuse:up": "docker compose -f docker/docker-compose.langfuse.yml up -d",
+    "dev:langfuse:down": "docker compose -f docker/docker-compose.langfuse.yml down -v",
+    "dev:langfuse:logs": "docker compose -f docker/docker-compose.langfuse.yml logs -f langfuse",
+    "win:dev:langfuse:up": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"docker compose -f .\\docker\\docker-compose.langfuse.yml up -d\"",
+    "win:dev:langfuse:down": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"docker compose -f .\\docker\\docker-compose.langfuse.yml down -v\"",
+    "win:dev:langfuse:logs": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"docker compose -f .\\docker\\docker-compose.langfuse.yml logs -f langfuse\""
   },
   "keywords": [],
   "author": "",

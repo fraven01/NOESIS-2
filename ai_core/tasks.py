@@ -15,6 +15,7 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
+from ai_core.infra.observability import observe_span, update_observation
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
@@ -793,6 +794,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
 
 @shared_task(base=ScopedTask, accepts_scope=True)
+@observe_span(name="ingestion.embed")
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Generate embedding vectors for chunks via LiteLLM."""
 
@@ -805,6 +807,21 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             parents = parent_payload
     else:
         chunks = list(raw_chunks or [])
+    # Attach task context early for tracing
+    try:
+        update_observation(
+            tags=["ingestion", "embed"],
+            user_id=str(meta.get("tenant_id")) if meta.get("tenant_id") else None,
+            session_id=str(meta.get("case_id")) if meta.get("case_id") else None,
+            metadata={
+                "embedding_profile": meta.get("embedding_profile"),
+                "vector_space_id": meta.get("vector_space_id"),
+                "collection_id": meta.get("collection_id"),
+            },
+        )
+    except Exception:
+        pass
+
     client = get_embedding_client()
     batch_size = max(
         1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size))

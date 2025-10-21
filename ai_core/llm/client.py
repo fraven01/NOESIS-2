@@ -10,6 +10,7 @@ from typing import Any, Dict
 import requests
 
 from ai_core.infra.config import get_config
+from ai_core.infra.observability import observe_span, update_observation
 from ai_core.infra import ledger
 from common.logging import get_logger, mask_value
 from common.constants import (
@@ -75,6 +76,7 @@ def _safe_text(resp: requests.Response | None) -> str | None:
     return resp_text.strip()
 
 
+@observe_span(name="llm.call")
 def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
 
@@ -121,6 +123,20 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "tenant": mask_value(tenant_value),
         "key_alias": mask_value(metadata.get("key_alias")),
     }
+    # Attach lightweight context to the current observation (no PII payloads)
+    try:
+        update_observation(
+            tags=["llm", "litellm", f"label:{label}", f"model:{model_id}"],
+            user_id=str(tenant_value) if tenant_value else None,
+            session_id=str(case_value) if case_value else None,
+            metadata={
+                "trace_id": metadata.get("trace_id"),
+                "prompt_version": prompt_version,
+            },
+        )
+    except Exception:
+        pass
+
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()
