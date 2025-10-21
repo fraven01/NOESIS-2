@@ -51,7 +51,12 @@ from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceEr
 from ai_core.tool_contracts import ContextError as ToolContextError
 from ai_core.tools import InputError
 
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
 from .infra import object_store
@@ -693,7 +698,9 @@ def start_ingestion_run(
     return Response(response_payload, status=status.HTTP_202_ACCEPTED)
 
 
-def _derive_workflow_id(meta: Mapping[str, object], metadata: Mapping[str, object]) -> str:
+def _derive_workflow_id(
+    meta: Mapping[str, object], metadata: Mapping[str, object]
+) -> str:
     candidate = metadata.get("workflow_id")
     if isinstance(candidate, str):
         candidate = candidate.strip()

@@ -358,7 +358,9 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         assert any("Punkt eins" in content for content in contents)
 
         section_ids = {
-            key for key in parents.keys() if key.endswith("#sec-1") or key.endswith("#sec-2")
+            key
+            for key in parents.keys()
+            if key.endswith("#sec-1") or key.endswith("#sec-2")
         }
         assert section_ids, "expected section parent entries"
         first_chunk = next(
@@ -367,7 +369,8 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         )
         assert first_chunk is not None
         assert any(
-            parent_id in section_ids for parent_id in first_chunk["meta"].get("parent_ids", [])
+            parent_id in section_ids
+            for parent_id in first_chunk["meta"].get("parent_ids", [])
         )
 
         long_chunks = [

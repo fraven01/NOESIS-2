@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import re
 import time
 from importlib import import_module
@@ -78,7 +77,9 @@ class TextDocumentParser:
             text = payload.decode("utf-8", errors="replace")
         text = text.lstrip("\ufeff")
         normalised = text.replace("\r\n", "\n").replace("\r", "\n")
-        parts = [part.strip() for part in re.split(r"\n\s*\n", normalised) if part.strip()]
+        parts = [
+            part.strip() for part in re.split(r"\n\s*\n", normalised) if part.strip()
+        ]
         blocks: List[ParsedTextBlock] = []
         if parts:
             if len(parts) == 1:
@@ -319,14 +320,18 @@ def _parsed_text_path(tenant: str, case: str, document_identifier: UUID) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
     case_segment = object_store.sanitize_identifier(str(case))
     document_segment = object_store.sanitize_identifier(str(document_identifier))
-    return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"])
+    return "/".join(
+        [tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"]
+    )
 
 
 def _parsed_blocks_path(tenant: str, case: str, document_identifier: UUID) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
     case_segment = object_store.sanitize_identifier(str(case))
     document_segment = object_store.sanitize_identifier(str(document_identifier))
-    return "/".join([tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"])
+    return "/".join(
+        [tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"]
+    )
 
 
 def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
@@ -516,9 +521,7 @@ def process_document(
             _write_pipeline_state(tenant, case, document_id, state)
             raise error from exc
 
-        normalized_document = repository.get(
-            tenant, document_uuid, prefer_latest=True
-        )
+        normalized_document = repository.get(tenant, document_uuid, prefer_latest=True)
         if normalized_document is None:
             error = InputError(
                 "document_not_found",

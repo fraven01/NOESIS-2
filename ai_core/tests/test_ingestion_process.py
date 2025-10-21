@@ -9,7 +9,12 @@ import pytest
 from ai_core import ingestion
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
 from documents.repository import InMemoryDocumentsRepository
 
 
@@ -68,7 +73,9 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
         lambda: repository,
         raising=False,
     )
-    monkeypatch.setattr(services_module, "_DOCUMENTS_REPOSITORY", repository, raising=False)
+    monkeypatch.setattr(
+        services_module, "_DOCUMENTS_REPOSITORY", repository, raising=False
+    )
 
     tenant_key = object_store.sanitize_identifier(tenant)
     case_key = object_store.sanitize_identifier(case)

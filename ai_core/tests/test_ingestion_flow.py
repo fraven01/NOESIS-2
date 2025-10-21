@@ -87,7 +87,11 @@ def test_upload_ingest_query_end2end(
     chunk_path = chunk_step["path"]
     chunk_payload = object_store.read_json(chunk_path)
     zebra_chunk = next(
-        (entry for entry in chunk_payload.get("chunks", []) if "ZEBRAGURKE" in entry["content"]),
+        (
+            entry
+            for entry in chunk_payload.get("chunks", [])
+            if "ZEBRAGURKE" in entry["content"]
+        ),
         None,
     )
     assert zebra_chunk is not None

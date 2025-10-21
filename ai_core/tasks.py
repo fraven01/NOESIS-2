@@ -806,7 +806,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 if not bodies:
                     continue
                 parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+                unique_parent_ids = list(
+                    dict.fromkeys(pid for pid in parent_ids if pid)
+                )
                 heading_prefix = " / ".join(path_tuple) if path_tuple else ""
                 for body in bodies:
                     chunk_candidates.append((body, unique_parent_ids, heading_prefix))
@@ -825,9 +827,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                     parent_stack.pop()
                 section_info = _register_section(heading_title.strip(), level)
                 parent_stack.append(section_info)
-                _append_parent_text_with_root(
-                    section_info["id"], stripped_block, level
-                )
+                _append_parent_text_with_root(section_info["id"], stripped_block, level)
                 continue
 
             block_pieces = [block]
@@ -857,7 +857,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 if not bodies:
                     continue
                 parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
+                unique_parent_ids = list(
+                    dict.fromkeys(pid for pid in parent_ids if pid)
+                )
                 for body in bodies:
                     chunk_candidates.append((body, unique_parent_ids, ""))
 
