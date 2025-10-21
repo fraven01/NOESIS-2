@@ -256,6 +256,51 @@ def test_group_by_document_isolates_collections() -> None:
     assert len(grouped[(tenant_key, None, doc_id, collection_b)]["chunks"]) == 1
 
 
+def test_group_by_document_reuses_provided_document_id() -> None:
+    client = object.__new__(vector_client.PgVectorClient)
+    client._coerce_tenant_uuid = (
+        vector_client.PgVectorClient._coerce_tenant_uuid.__get__(
+            client, vector_client.PgVectorClient
+        )
+    )
+    tenant = str(uuid.uuid4())
+    external_id = "external-1"
+    document_uuid = uuid.uuid4()
+
+    chunks = [
+        Chunk(
+            content="hello",
+            meta={
+                "tenant_id": tenant,
+                "hash": "hash-1",
+                "external_id": external_id,
+                "document_id": str(document_uuid),
+            },
+            parents={
+                f"{document_uuid}#doc": {
+                    "id": f"{document_uuid}#doc",
+                    "title": "Root",
+                    "document_id": str(document_uuid),
+                }
+            },
+        )
+    ]
+
+    grouped = client._group_by_document(chunks)
+    key = next(iter(grouped))
+    entry = grouped[key]
+    assert entry["id"] == document_uuid
+    assert entry["metadata"]["document_id"] == str(document_uuid)
+    assert entry["metadata"]["doc_id"] == str(document_uuid)
+    assert entry["chunks"], "expected chunk list"
+    chunk_meta = entry["chunks"][0].meta
+    assert chunk_meta["document_id"] == str(document_uuid)
+    assert chunk_meta["doc_id"] == str(document_uuid)
+    parents = entry["parents"]
+    assert f"{document_uuid}#doc" in parents
+    assert parents[f"{document_uuid}#doc"]["document_id"] == str(document_uuid)
+
+
 def test_group_by_document_includes_workflow_scope() -> None:
     client = object.__new__(vector_client.PgVectorClient)
     client._coerce_tenant_uuid = (

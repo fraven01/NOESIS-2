@@ -546,6 +546,7 @@ def process_document(
             "case_id": case,
             "workflow_id": normalized_document.ref.workflow_id,
             "content_hash": normalized_document.checksum,
+            "document_id": str(normalized_document.ref.document_id),
         }
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
@@ -596,6 +597,7 @@ def process_document(
         sanitized_meta_json: Dict[str, object] = {
             "external_id": external_id,
             "workflow_id": normalized_document.ref.workflow_id,
+            "document_id": str(normalized_document.ref.document_id),
         }
         if resolved_profile_id:
             sanitized_meta_json["embedding_profile"] = resolved_profile_id
@@ -624,6 +626,7 @@ def process_document(
             "workflow_id": normalized_document.ref.workflow_id,
             "collection_id": meta.get("collection_id"),
             "content_hash": normalized_document.checksum,
+            "document_id": str(normalized_document.ref.document_id),
         }
         _write_pipeline_state(tenant, case, document_id, state)
 
