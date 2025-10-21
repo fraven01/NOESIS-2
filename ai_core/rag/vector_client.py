@@ -3079,9 +3079,7 @@ class PgVectorClient:
                 for parent_id, parent_meta in limited_chunk_parents.items():
                     if isinstance(parent_meta, Mapping):
                         parent_payload = dict(parent_meta)
-                        parent_payload.setdefault(
-                            "document_id", document_identifier
-                        )
+                        parent_payload.setdefault("document_id", document_identifier)
                     else:
                         parent_payload = parent_meta
                     parents_map[parent_id] = parent_payload

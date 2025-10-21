@@ -62,6 +62,7 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
                 if d.ref.version == version:
                     return d
             return None
+
         # Choose latest by created_at, then by version string (None -> "")
         def _order_key(d: NormalizedDocument):
             return (d.created_at, d.ref.version or "")
