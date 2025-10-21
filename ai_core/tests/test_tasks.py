@@ -297,6 +297,49 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
     text_path = tasks._build_path(meta, "text", "doc.txt")
     object_store.put_bytes(text_path, document.encode("utf-8"))
 
+    blocks_path = tasks._build_path(meta, "text", "doc.parsed.json")
+    object_store.write_json(
+        blocks_path,
+        {
+            "text": document,
+            "statistics": {"parser.kind": "markdown"},
+            "blocks": [
+                {
+                    "index": 0,
+                    "text": "Titel",
+                    "kind": "heading",
+                    "section_path": ["Titel"],
+                    "page_index": 0,
+                },
+                {
+                    "index": 1,
+                    "text": "Ein Absatz.",
+                    "kind": "paragraph",
+                    "section_path": ["Titel"],
+                },
+                {
+                    "index": 2,
+                    "text": "- Punkt eins\n- Punkt zwei",
+                    "kind": "paragraph",
+                    "section_path": ["Titel"],
+                },
+                {
+                    "index": 3,
+                    "text": "print('x')",
+                    "kind": "code",
+                    "section_path": ["Titel"],
+                },
+                {
+                    "index": 4,
+                    "text": " ".join(f"wort{i}" for i in range(600)),
+                    "kind": "paragraph",
+                    "section_path": ["Titel"],
+                },
+            ],
+        },
+    )
+    meta["parsed_blocks_path"] = blocks_path
+
     try:
         with tasks.force_whitespace_tokenizer():
             result = tasks.chunk(meta, text_path)
@@ -309,10 +352,23 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         root_id = f"{meta['external_id']}#doc"
         assert root_id in parents
         root_content = parents[root_id].get("content", "") if parents[root_id] else ""
-        assert "# Titel" in root_content
+        assert "Titel" in root_content
 
-        assert any("```python" in content for content in contents)
+        assert any("print('x')" in content for content in contents)
         assert any("Punkt eins" in content for content in contents)
+
+        section_ids = {
+            key for key in parents.keys() if key.endswith("#sec-1") or key.endswith("#sec-2")
+        }
+        assert section_ids, "expected section parent entries"
+        first_chunk = next(
+            (entry for entry in chunks if "Ein Absatz." in entry["content"]),
+            None,
+        )
+        assert first_chunk is not None
+        assert any(
+            parent_id in section_ids for parent_id in first_chunk["meta"].get("parent_ids", [])
+        )
 
         long_chunks = [
             entry["content"] for entry in chunks if "wort" in entry["content"]
