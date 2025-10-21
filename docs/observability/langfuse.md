@@ -69,7 +69,8 @@ flowchart LR
 ### Troubleshooting
 - Meldung „CLICKHOUSE_URL is not configured“: Stelle sicher, dass der ClickHouse-Container läuft (im Compose enthalten) und `CLICKHOUSE_URL` für den `langfuse`-Service gesetzt ist. In unserem Compose ist dies bereits auf `http://default:@clickhouse:8123` vorkonfiguriert.
 - Meldung „CLICKHOUSE_MIGRATION_URL is not configured“: Ab Langfuse v3 muss zusätzlich `CLICKHOUSE_MIGRATION_URL` gesetzt sein (kann identisch zu `CLICKHOUSE_URL` sein). In unserem Compose ist dies entsprechend ergänzt.
-- Fehler „unknown driver http (forgotten import?)“ bei ClickHouse-Migrationen: Setze `CLICKHOUSE_MIGRATION_URL` mit dem nativen ClickHouse‑Schema (`clickhouse://user:pass@clickhouse:9000/<db>`). Die Runtime‑URL bleibt HTTP (`http://...:8123/<db>`), die Migrationen benötigen jedoch den nativen Treiber.
+- Fehler „unknown driver http (forgotten import?)“ bei ClickHouse‑Migrationen: Stelle sicher, dass `CLICKHOUSE_MIGRATION_URL` das native Schema nutzt (`clickhouse://user:pass@clickhouse:9000`).
+- Fehler „Unknown table expression identifier 'traces'/'scores'“ nach Projekt‑Erstellung: Verwende für Dev die Standard‑DB `default` (keine DB im URL‑Pfad). Dadurch landen Migrationen und Queries in derselben DB.
 - Unerwarteter `ZodError` beim Start (ENV-Validation): Stelle sicher, dass Redis- und S3/Minio-Variablen gesetzt sind. In unserem Compose sind Defaults hinterlegt (`REDIS_*`, `LANGFUSE_S3_*`, `LANGFUSE_USE_AZURE_BLOB=false`).
 - ClickHouse bleibt im Zustand „waiting“: Der Healthcheck nutzt `clickhouse-client SELECT 1`. Stelle sicher, dass der Container diese Binary enthält (im offiziellen Image vorhanden) und dass die Credentials mit der Compose-Umgebung übereinstimmen.
 - Fehler „CLICKHOUSE_USER is not set“: Abhilfe durch Setzen von `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` auch für den `langfuse`-Service (bereits in unserem Compose ergänzt).

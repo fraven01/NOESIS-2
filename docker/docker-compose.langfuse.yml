@@ -20,9 +20,9 @@ services:
     image: clickhouse/clickhouse-server:24.8-alpine
     container_name: noesis2_clickhouse
     environment:
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
-      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-langfuse}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB:-default}
     volumes:
       - clickhouse_data:/var/lib/clickhouse
     healthcheck:
@@ -56,12 +56,11 @@ services:
       DATABASE_URL: postgresql://${LANGFUSE_DB_USER:-langfuse}:${LANGFUSE_DB_PASSWORD:-langfuse}@langfuse-db:5432/${LANGFUSE_DB_NAME:-langfuse}
       # ClickHouse for analytics (v3+ requirement)
       # Runtime (HTTP) and migrations (native TCP) require different schemes.
-      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://${CLICKHOUSE_USER:-langfuse}:${CLICKHOUSE_PASSWORD:-langfuse}@clickhouse:8123/${CLICKHOUSE_DATABASE:-langfuse}}
-      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://${CLICKHOUSE_USER:-langfuse}:${CLICKHOUSE_PASSWORD:-langfuse}@clickhouse:9000/${CLICKHOUSE_DATABASE:-langfuse}}
+      CLICKHOUSE_URL: ${CLICKHOUSE_URL:-http://${CLICKHOUSE_USER:-clickhouse}:${CLICKHOUSE_PASSWORD:-clickhouse}@clickhouse:8123}
+      CLICKHOUSE_MIGRATION_URL: ${CLICKHOUSE_MIGRATION_URL:-clickhouse://${CLICKHOUSE_USER:-clickhouse}:${CLICKHOUSE_PASSWORD:-clickhouse}@clickhouse:9000}
       CLICKHOUSE_CLUSTER_ENABLED: ${CLICKHOUSE_CLUSTER_ENABLED:-false}
-      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-langfuse}
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-langfuse}
-      CLICKHOUSE_DATABASE: ${CLICKHOUSE_DATABASE:-langfuse}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER:-clickhouse}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-clickhouse}
       # Redis (ingestion queue, caching)
       REDIS_HOST: ${REDIS_HOST:-redis}
       REDIS_PORT: ${REDIS_PORT:-6379}

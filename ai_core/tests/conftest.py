@@ -1,5 +1,6 @@
 import base64
 from typing import Any
+from uuid import UUID
 
 import pytest
 
@@ -32,6 +33,41 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
         )
         return doc
 
+    def get(
+        self,
+        tenant_id: str,
+        document_id: UUID,
+        version: str | None = None,
+        *,
+        prefer_latest: bool = False,
+        workflow_id: str | None = None,
+    ) -> NormalizedDocument | None:
+        """Return a matching saved document or None.
+
+        - If ``version`` is provided, return that exact version when present.
+        - Otherwise return the most recent by ``created_at`` then ``version``.
+        - When ``workflow_id`` is set, restrict to that workflow.
+        """
+        candidates = [
+            d
+            for d in self.saved
+            if d.ref.tenant_id == tenant_id
+            and d.ref.document_id == document_id
+            and (workflow_id is None or d.ref.workflow_id == workflow_id)
+        ]
+        if not candidates:
+            return None
+        if version is not None:
+            for d in candidates:
+                if d.ref.version == version:
+                    return d
+            return None
+        # Choose latest by created_at, then by version string (None -> "")
+        def _order_key(d: NormalizedDocument):
+            return (d.created_at, d.ref.version or "")
+
+        return max(candidates, key=_order_key)
+
 
 def _extract_payload(blob: Any) -> bytes:
     if isinstance(blob, InlineBlob):
@@ -43,25 +79,22 @@ def _extract_payload(blob: Any) -> bytes:
 
 
 def _build_metadata_snapshot(doc: NormalizedDocument) -> dict[str, Any]:
-    metadata = doc.meta.model_dump(mode="json", exclude_none=True)
-    metadata.pop("tenant_id", None)
-    metadata.pop("workflow_id", None)
+    # The upload metadata persisted for tests is intentionally minimal.
+    # Only expose keys that are consumed by the endpoints and assertions.
+    payload: dict[str, Any] = {}
 
-    external_ref = metadata.pop("external_ref", None) or {}
+    external_ref = doc.meta.external_ref or {}
     external_id = external_ref.get("external_id")
-    for key, value in external_ref.items():
-        if key == "external_id":
-            continue
-        metadata.setdefault(key, value)
     if external_id:
-        metadata["external_id"] = external_id
+        payload["external_id"] = external_id
 
     if doc.ref.collection_id is not None:
-        metadata["collection_id"] = str(doc.ref.collection_id)
-    if doc.ref.version is not None:
-        metadata["version"] = doc.ref.version
+        payload["collection_id"] = str(doc.ref.collection_id)
 
-    return metadata
+    if doc.ref.version is not None:
+        payload["version"] = doc.ref.version
+
+    return payload
 
 
 @pytest.fixture
