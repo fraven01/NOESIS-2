@@ -19,7 +19,11 @@ from types import SimpleNamespace
 
 @pytest.mark.django_db
 def test_rag_upload_persists_file_and_metadata(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    client,
+    monkeypatch,
+    tmp_path,
+    test_tenant_schema_name,
+    documents_repository_stub,
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -102,10 +106,14 @@ def test_rag_upload_persists_file_and_metadata(
     metadata_path = uploads_dir / f"{document_id}.meta.json"
     assert metadata_path.exists()
     stored_metadata = json.loads(metadata_path.read_text())
-    assert stored_metadata["source"] == "unit-test"
-    assert isinstance(stored_metadata.get("external_id"), str)
-    assert stored_metadata["external_id"]
-    assert set(stored_metadata) == {"source", "external_id"}
+    assert stored_metadata["external_id"] == body["external_id"]
+    assert "source" not in stored_metadata
+
+    assert len(documents_repository_stub.saved) == 1
+    saved_document = documents_repository_stub.saved[0]
+    assert saved_document.ref.document_id.hex == document_id
+    assert saved_document.meta.external_ref and saved_document.meta.external_ref["external_id"] == body["external_id"]
+    assert saved_document.blob.media_type == "text/plain"
 
     status_path = (
         Path(tmp_path) / tenant_segment / case_segment / "ingestion" / "run_status.json"
