@@ -47,9 +47,7 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
 
         # Persist minimal metadata used by ingestion
         metadata = _build_metadata_snapshot(doc, checksum)
-        object_store.write_json(
-            f"{uploads_prefix}/{filename_base}.meta.json", metadata
-        )
+        object_store.write_json(f"{uploads_prefix}/{filename_base}.meta.json", metadata)
 
         # Return the original model (no mutation)
         return doc
@@ -95,7 +93,9 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
             # Select exact version if available
             for meta, path in candidates:
                 if str(meta.get("version") or "") == version:
-                    return _rebuild_document_from_meta(tenant_id, document_id, meta, path)
+                    return _rebuild_document_from_meta(
+                        tenant_id, document_id, meta, path
+                    )
             return None
 
         # Choose latest by created_at in meta, fallback to file mtime
@@ -240,4 +240,3 @@ def _maybe_uuid(value: object) -> bool:
 
 
 __all__ = ["ObjectStoreDocumentsRepository"]
-
