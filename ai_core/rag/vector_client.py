@@ -109,16 +109,17 @@ def _is_dev_environment() -> bool:
     """Return ``True`` when the current deployment resembles a dev setup."""
 
     env_value = (
-        os.getenv("DEPLOY_ENV")
-        or os.getenv("DEPLOYMENT_ENVIRONMENT")
-        or ""
+        os.getenv("DEPLOY_ENV") or os.getenv("DEPLOYMENT_ENVIRONMENT") or ""
     ).strip()
     env_normalised = env_value.lower()
     if not env_normalised:
         return True
-    return env_normalised in {"dev", "development", "local", "unknown"} or env_normalised.startswith(
-        "dev"
-    )
+    return env_normalised in {
+        "dev",
+        "development",
+        "local",
+        "unknown",
+    } or env_normalised.startswith("dev")
 
 
 def _metadata_identity_needs_repair(
@@ -3706,7 +3707,9 @@ class PgVectorClient:
                     )
                     document_ids[key] = existing_document_id
                     actions[key] = "near_duplicate_replaced"
-                    doc["collection_id"] = collection_text
+                    doc["collection_id"] = (
+                        str(collection_uuid) if collection_uuid is not None else None
+                    )
                     doc["workflow_id"] = workflow_text
                     logger.info(
                         "ingestion.doc.near_duplicate_replaced",
@@ -3980,9 +3983,7 @@ class PgVectorClient:
     ) -> None:
         canonical_id = str(document_id)
         existing_map = (
-            dict(existing_metadata)
-            if isinstance(existing_metadata, Mapping)
-            else {}
+            dict(existing_metadata) if isinstance(existing_metadata, Mapping) else {}
         )
         if not _metadata_identity_needs_repair(existing_map, canonical_id):
             return
@@ -3992,12 +3993,14 @@ class PgVectorClient:
         extra = {
             "tenant_id": str(tenant_uuid),
             "document_id": canonical_id,
-            "stored_document_id": str(stored_document_id)
-            if stored_document_id not in {None, ""}
-            else None,
-            "stored_doc_id": str(stored_doc_id)
-            if stored_doc_id not in {None, ""}
-            else None,
+            "stored_document_id": (
+                str(stored_document_id)
+                if stored_document_id not in {None, ""}
+                else None
+            ),
+            "stored_doc_id": (
+                str(stored_doc_id) if stored_doc_id not in {None, ""} else None
+            ),
         }
 
         if _is_dev_environment():

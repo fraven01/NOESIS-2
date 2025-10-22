@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple, List
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from ai_core.infra import object_store
 from documents.contracts import (
