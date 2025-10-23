@@ -1,20 +1,27 @@
 import json
-import threading
+from typing import Any
 
 import pytest
 from django.http import HttpResponse
 
+import ai_core.infra.observability as observability
 from ai_core.infra import object_store, pii
 from ai_core.infra.config import get_config
 from ai_core.infra.resp import apply_std_headers
-from ai_core.infra.tracing import trace
+from ai_core.infra.observability import (
+    emit_event,
+    end_trace,
+    observe_span,
+    record_span,
+    start_trace,
+    update_observation,
+)
 from common.constants import (
     X_CASE_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )
-from common.logging import log_context
 
 
 def test_get_config_reads_env(monkeypatch):
@@ -115,148 +122,162 @@ def test_sanitize_identifier_rejects_unsafe_sequences():
         object_store.sanitize_identifier("tenant/abc")
 
 
-def test_trace_logs_locally_when_no_keys(monkeypatch, capsys):
-    @trace("node1")
-    def sample(state, meta):
-        return "ok"
+def test_observe_span_uses_tracer(monkeypatch):
+    calls: list[tuple[str, str]] = []
 
-    sample(
-        {},
-        {
-            "tenant_id": "t1",
-            "case_id": "c1",
-            "trace_id": "tid",
-            "prompt_version": "v1",
-            "collection_id": "col-123",
-        },
-    )
-    lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
-    assert len(lines) == 2
-    start, end = map(json.loads, lines)
-    assert start["event"] == "node.start"
-    assert end["event"] == "node.end"
-    assert end["duration_ms"] >= 0
-    assert start["collection_id"] == "col-123"
-    assert end["collection_id"] == "col-123"
+    class FakeContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
 
+        def __enter__(self) -> None:
+            calls.append(("enter", self.name))
+            return None
 
-def test_trace_logs_include_empty_collection_when_missing(capsys):
-    @trace("node-without-collection")
-    def sample(state, meta):
-        return "ok"
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            calls.append(("exit", self.name))
+            return False
 
-    sample(
-        {},
-        {
-            "tenant_id": "t1",
-            "case_id": "c1",
-            "trace_id": "tid",
-            "prompt_version": "v1",
-        },
-    )
+    class FakeTracer:
+        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+            calls.append(("start", name))
+            return FakeContext(name)
 
-    lines = [line for line in capsys.readouterr().out.strip().splitlines() if line]
-    assert len(lines) == 2
-    start, end = map(json.loads, lines)
-    assert start["collection_id"] == ""
-    assert end["collection_id"] == ""
+    monkeypatch.setattr(observability, "tracing_enabled", lambda: True)
+    monkeypatch.setattr(observability, "_get_tracer", lambda: FakeTracer())
+
+    @observe_span(name="unit.test")
+    def sample(value: int) -> int:
+        return value + 1
+
+    assert sample(1) == 2
+    assert calls[0] == ("start", "unit.test")
+    assert calls[1] == ("enter", "unit.test")
+    assert calls[-1] == ("exit", "unit.test")
 
 
-def test_trace_sends_to_langfuse(monkeypatch):
-    dispatched = []
+def test_observe_span_no_tracer_noop(monkeypatch):
+    monkeypatch.setattr(observability, "tracing_enabled", lambda: True)
+    monkeypatch.setattr(observability, "_get_tracer", lambda: None)
 
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
-    monkeypatch.setattr(
-        "ai_core.infra.tracing.emit_span",
-        lambda trace_id, node_name, metadata: dispatched.append(
-            {"traceId": trace_id, "name": node_name, "metadata": metadata}
-        ),
-    )
+    @observe_span(name="noop")
+    def sample(counter: list[int]) -> None:
+        counter.append(1)
 
-    @trace("node2")
-    def sample(state, meta):
-        return "ok"
-
-    sample(
-        {},
-        {
-            "tenant_id": "t1",
-            "case_id": "c1",
-            "trace_id": "tid",
-            "prompt_version": "v1",
-            "collection_id": "col-123",
-        },
-    )
-    assert dispatched[0]["traceId"] == "tid"
-    assert dispatched[0]["name"] == "node2"
-    assert dispatched[0]["metadata"]["tenant_id"] == "t1"
-    assert dispatched[0]["metadata"]["collection_id"] == "col-123"
+    bucket: list[int] = []
+    sample(bucket)
+    assert bucket == [1]
 
 
-def test_trace_skips_langfuse_without_trace_id(monkeypatch):
-    dispatched = []
+def test_update_observation_sets_attributes(monkeypatch):
+    recorded: dict[str, Any] = {}
 
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
-    monkeypatch.setattr(
-        "ai_core.infra.tracing.emit_span",
-        lambda trace_id, node_name, metadata: dispatched.append(
-            {"traceId": trace_id, "name": node_name, "metadata": metadata}
-        ),
+    class FakeSpan:
+        def set_attribute(self, key: str, value: Any) -> None:  # noqa: D401
+            recorded[key] = value
+
+    monkeypatch.setattr(observability, "_get_current_span", lambda: FakeSpan())
+
+    update_observation(
+        user_id="tenant-1",
+        session_id="case-1",
+        tags=["a", "b"],
+        metadata={"foo": "bar"},
     )
 
-    @trace("node-missing-trace")
-    def sample(state, meta):
-        return "ok"
-
-    sample({}, {"tenant_id": "t1", "case_id": "c1"})
-
-    assert dispatched == []
+    assert recorded["user.id"] == "tenant-1"
+    assert recorded["session.id"] == "case-1"
+    assert recorded["tags"] == ["a", "b"]
+    assert recorded["meta.foo"] == "bar"
 
 
-def test_langfuse_dispatch_uses_shared_executor(monkeypatch):
-    from ai_core.infra import tracing
+def test_record_span_invokes_tracer(monkeypatch):
+    spans: list[tuple[str, dict[str, Any]]] = []
 
-    if tracing._LANGFUSE_EXECUTOR is not None:
-        tracing._LANGFUSE_EXECUTOR.shutdown(wait=True)
-        tracing._LANGFUSE_EXECUTOR = None
+    class FakeSpan:
+        def __init__(self, attrs: dict[str, Any]) -> None:
+            self.attrs = attrs
 
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pub")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sec")
-    monkeypatch.setenv("LANGFUSE_MAX_WORKERS", "1")
+        def set_attribute(self, key: str, value: Any) -> None:  # noqa: D401
+            self.attrs[key] = value
 
-    calls = []
-    done = threading.Event()
+    class FakeContext:
+        def __init__(self, name: str, attrs: dict[str, Any]) -> None:
+            self.name = name
+            self.attrs = attrs
 
-    def fake_post(url, json, headers, timeout):
-        calls.append(
-            {
-                "url": url,
-                "json": json,
-                "headers": headers,
-                "timeout": timeout,
-                "thread": threading.current_thread().name,
-            }
-        )
-        done.set()
+        def __enter__(self) -> FakeSpan:
+            spans.append((self.name, dict(self.attrs)))
+            return FakeSpan(self.attrs)
 
-    monkeypatch.setattr(tracing.requests, "post", fake_post)
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            return False
 
-    with log_context(collection_id="ctx-col"):
-        tracing.emit_span("tid", "node", {"foo": "bar"})
+    class FakeTracer:
+        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+            return FakeContext(name, dict(attributes or {}))
 
-    assert done.wait(1), "langfuse dispatch did not complete"
+    monkeypatch.setattr(observability, "tracing_enabled", lambda: True)
+    monkeypatch.setattr(observability, "_get_tracer", lambda: FakeTracer())
+    monkeypatch.setattr(observability, "_get_current_span", lambda: FakeSpan({}))
 
-    executor = tracing._get_langfuse_executor()
-    try:
-        assert getattr(executor, "_max_workers") == 1
-    finally:
-        executor.shutdown(wait=True)
-        tracing._LANGFUSE_EXECUTOR = None
+    record_span(
+        "unit.record",
+        trace_id="abc",
+        attributes={"value": 1, "flag": True},
+    )
 
-    assert calls
-    assert calls[0]["json"]["traceId"] == "tid"
-    assert calls[0]["json"]["name"] == "node"
-    assert calls[0]["json"]["metadata"] == {"foo": "bar", "collection_id": "ctx-col"}
-    assert calls[0]["thread"].startswith("langfuse")
+    name, attrs = spans[0]
+    assert name == "unit.record"
+    assert attrs["value"] == 1
+    assert attrs["flag"] is True
+    assert attrs["legacy.trace_id"] == "abc"
+
+
+def test_emit_event_attaches_to_span(monkeypatch):
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeSpan:
+        def add_event(self, name: str, attributes=None) -> None:  # noqa: D401
+            events.append((name, dict(attributes or {})))
+
+    monkeypatch.setattr(observability, "_get_current_span", lambda: FakeSpan())
+
+    emit_event({"event": "node.start", "foo": "bar"})
+
+    assert events == [("node.start", {"foo": "bar"})]
+
+
+def test_emit_event_prints_without_span(monkeypatch, capsys):
+    monkeypatch.setattr(observability, "_get_current_span", lambda: None)
+
+    emit_event({"event": "node.start", "foo": "bar"})
+
+    out = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(out[0]) == {"event": "node.start", "foo": "bar"}
+
+
+def test_start_and_end_trace_manage_context(monkeypatch):
+    seen: list[str] = []
+
+    class FakeContext:
+        def __enter__(self) -> None:  # noqa: D401
+            seen.append("enter")
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> bool:  # noqa: D401
+            seen.append("exit")
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+            seen.append(name)
+            return FakeContext()
+
+    monkeypatch.setattr(observability, "tracing_enabled", lambda: True)
+    monkeypatch.setattr(observability, "_get_tracer", lambda: FakeTracer())
+
+    start_trace(name="root", user_id="user", session_id="case", metadata={"k": "v"})
+    end_trace()
+
+    assert seen[0] == "root"
+    assert seen[1:] == ["enter", "exit"]

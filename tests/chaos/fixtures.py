@@ -135,20 +135,23 @@ def chaos_env(
 def langfuse_mock(monkeypatch: pytest.MonkeyPatch) -> MockLangfuseClient:
     """Provide a mock Langfuse client capturing spans and events during tests."""
 
-    from ai_core.infra import tracing
+    import ai_core.infra.observability as observability
 
     client = MockLangfuseClient()
 
     def _capture_dispatch(
-        trace_id: str, node_name: str, metadata: Dict[str, Any]
+        name: str,
+        *,
+        attributes: Dict[str, Any] | None = None,
+        trace_id: str | None = None,
     ) -> None:
-        client.record_span(trace_id, node_name, metadata)
+        client.record_span(trace_id or "", name, attributes or {})
 
     def _capture_log(payload: Dict[str, Any]) -> None:
         client.record_event(payload)
 
-    monkeypatch.setattr(tracing, "emit_span", _capture_dispatch)
-    monkeypatch.setattr(tracing, "emit_event", _capture_log)
+    monkeypatch.setattr(observability, "record_span", _capture_dispatch)
+    monkeypatch.setattr(observability, "emit_event", _capture_log)
     monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "test-public-key")
     monkeypatch.setenv("LANGFUSE_SECRET_KEY", "test-secret-key")
     monkeypatch.setenv("LANGFUSE_SAMPLE_RATE", "1.0")

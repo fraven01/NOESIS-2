@@ -7,7 +7,7 @@ from typing import Iterable
 
 from common.logging import get_log_context, get_logger
 
-from ai_core.infra import tracing
+from ai_core.infra.observability import record_span
 from ai_core.tools import InputError
 
 from pydantic import BaseModel, ConfigDict
@@ -120,10 +120,10 @@ def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolut
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
-        tracing.emit_span(
-            trace_id=trace_id,
-            node_name="rag.ingestion.profile.resolve",
-            metadata=metadata,
+        record_span(
+            "rag.ingestion.profile.resolve",
+            trace_id=str(trace_id),
+            attributes=metadata,
         )
 
     return IngestionProfileResolution(profile_id=profile_key, resolution=resolution)

@@ -8,8 +8,8 @@ import uuid
 import pytest
 from celery.exceptions import Retry
 
+import ai_core.infra.observability as observability
 from ai_core import tasks
-from ai_core.infra import tracing
 from ai_core.llm import client as llm_client
 from ai_core.rag import vector_client
 
@@ -50,7 +50,7 @@ def test_ingestion_embed_retry_profile_and_dead_letter(monkeypatch):
     def _record_event(payload: dict[str, object]) -> None:
         observed_events.append(payload)
 
-    monkeypatch.setattr(tracing, "emit_event", _record_event)
+    monkeypatch.setattr(observability, "emit_event", _record_event)
 
     for attempt, expected in enumerate(expected_delays):
         request.retries = attempt
