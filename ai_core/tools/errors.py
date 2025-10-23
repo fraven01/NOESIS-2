@@ -27,6 +27,7 @@ class ToolErrorType(StrEnum):
     RETRYABLE = "RETRYABLE"
     FATAL = "FATAL"
 
+
 _DOC_HINT = "See README.md (Fehlercodes Abschnitt) for remediation guidance."
 
 

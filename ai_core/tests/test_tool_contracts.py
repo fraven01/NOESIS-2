@@ -45,7 +45,9 @@ def test_tool_result_roundtrip() -> None:
     )
 
     json_payload = result.model_dump_json()
-    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(json_payload)
+    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(
+        json_payload
+    )
 
     assert parsed.status == "ok"
     assert isinstance(parsed, ToolResult)
@@ -64,7 +66,9 @@ def test_tool_error_validation_roundtrip() -> None:
     )
 
     json_payload = error.model_dump_json()
-    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(json_payload)
+    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(
+        json_payload
+    )
 
     assert parsed.status == "error"
     assert isinstance(parsed, ToolError)
@@ -90,7 +94,9 @@ def test_tool_error_upstream_roundtrip() -> None:
     assert parsed_json["error"]["type"] == "UPSTREAM"
     assert parsed_json["error"]["upstream_status"] == 503
 
-    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(json_payload)
+    parsed = TypeAdapter(ToolOutput[_TestInput, _TestOutput]).validate_json(
+        json_payload
+    )
 
     assert parsed.status == "error"
     assert parsed.error.upstream_status == 503

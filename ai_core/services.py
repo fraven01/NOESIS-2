@@ -427,7 +427,10 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 name=f"graph:{context.graph_name}",
                 user_id=str(context.tenant_id),
                 session_id=str(context.case_id),
-                metadata={"trace_id": context.trace_id, "version": context.graph_version},
+                metadata={
+                    "trace_id": context.trace_id,
+                    "version": context.graph_version,
+                },
             )
         except Exception:
             pass
@@ -451,7 +454,9 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         try:
             state = _get_checkpointer().load(context)
         except (TypeError, ValueError) as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
 
         raw_body = getattr(request, "body", b"")
         if not raw_body and hasattr(request, "_request"):
@@ -539,13 +544,19 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             except Exception:
                 pass
         except InputError as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
         except ToolContextError as exc:
             # Invalid execution context (e.g., router/tenant/case issues) should be
             # surfaced to clients as a 400 rather than a transient 503.
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
         except ValueError as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
         except ToolNotFoundError as exc:
             logger.info("tool.not_found")
             detail = str(exc) or "No matching documents were found."
@@ -561,11 +572,15 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 payload["context"] = context
             return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
         except ToolInputError as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
         except ToolRateLimitedError as _exc:
             logger.warning("tool.rate_limited")
             return _error_response(
-                "Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS
+                "Tool rate limited.",
+                "llm_rate_limited",
+                status.HTTP_429_TOO_MANY_REQUESTS,
             )
         except ToolTimeoutError as _exc:
             logger.warning("tool.timeout")
@@ -636,7 +651,9 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         try:
             _get_checkpointer().save(context, _make_json_safe(new_state))
         except (TypeError, ValueError) as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
 
         try:
             _log_graph_response_payload(result, context)

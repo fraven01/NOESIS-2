@@ -113,6 +113,7 @@ def observe_span(
 
         # Prefer OTel span if available
         if _otel_get_tracer is not None:
+
             def _wrapped(*args: Any, **kwargs: Any):  # type: ignore[misc]
                 try:
                     tracer = _otel_get_tracer("noesis2")  # type: ignore[misc]
@@ -261,7 +262,11 @@ def get_langchain_callbacks() -> Iterable[Any]:
 
 # -------- Root trace helpers (optional SDK) --------
 def start_trace(
-    *, name: str, user_id: Optional[str] = None, session_id: Optional[str] = None, metadata: Optional[dict] = None
+    *,
+    name: str,
+    user_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    metadata: Optional[dict] = None,
 ) -> None:
     """Start a root trace compatible with Langfuse v3.
 
@@ -319,7 +324,10 @@ def start_trace(
     if _lf_context is not None:  # pragma: no cover - optional dependency
         try:
             _lf_context.start_trace(  # type: ignore[attr-defined]
-                name=name, user_id=user_id, session_id=session_id, metadata=metadata or {}
+                name=name,
+                user_id=user_id,
+                session_id=session_id,
+                metadata=metadata or {},
             )
         except Exception:
             return
@@ -356,6 +364,7 @@ def end_trace() -> None:
                 flush = getattr(client, "flush", None)
                 if callable(flush):
                     import threading
+
                     timeout_ms_raw = os.getenv("LANGFUSE_FLUSH_TIMEOUT_MS", "200")
                     try:
                         timeout_ms = max(0, int(timeout_ms_raw))
@@ -368,7 +377,9 @@ def end_trace() -> None:
                         except Exception:
                             pass
 
-                    t = threading.Thread(target=_do_flush, name="langfuse-flush", daemon=True)
+                    t = threading.Thread(
+                        target=_do_flush, name="langfuse-flush", daemon=True
+                    )
                     t.start()
                     # Wait briefly, then continue even if flush is still ongoing
                     t.join(timeout=timeout_ms / 1000.0)

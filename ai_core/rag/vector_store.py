@@ -381,6 +381,7 @@ def _emit_retrieval_span(
 
     # Emit SDK-backed span when available (no-op if SDK missing)
     try:  # best-effort observability; never break retrieval
+
         @observe_span(name="rag.hybrid.search")
         def _emit_obs() -> None:
             update_observation(tags=["rag", "retrieval"], metadata=metadata)
