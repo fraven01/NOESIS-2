@@ -15,7 +15,8 @@ from redis.exceptions import ConnectionError as RedisConnectionError
 from redis.exceptions import TimeoutError as RedisTimeoutError
 from structlog.testing import capture_logs
 
-from ai_core.infra import rate_limit, tracing
+import ai_core.infra.observability as observability
+from ai_core.infra import rate_limit
 from common import logging as common_logging
 from common.celery import with_scope_apply_async
 from common.constants import (
@@ -143,7 +144,7 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
     try:
         pipeline = chain(signature("ai_core.tasks.ingest_raw"))
         with_scope_apply_async(pipeline, scope)
-        tracing.emit_event(  # pragma: no cover - defensive success path
+        observability.emit_event(  # pragma: no cover - defensive success path
             {
                 "event": "agents.queue.scheduled",
                 "tenant": scope.get("tenant_id"),
@@ -153,7 +154,7 @@ def _produce_agents_task(scope: dict[str, str]) -> bool:
         )
         return True
     except (OperationalError, RedisConnectionError, RedisTimeoutError) as exc:
-        tracing.emit_event(
+        observability.emit_event(
             {
                 "event": "agents.queue.backoff",
                 "tenant": scope.get("tenant_id"),
@@ -191,7 +192,7 @@ def test_task_producer_backoff_logs_metrics(
     def _record(payload: dict[str, object]) -> None:
         captured_events.append(payload)
 
-    monkeypatch.setattr(tracing, "emit_event", _record)
+    monkeypatch.setattr(observability, "emit_event", _record)
 
     scope = {
         "tenant_id": test_tenant_schema_name,

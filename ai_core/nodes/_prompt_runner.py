@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from ai_core.infra.mask_prompt import mask_prompt, mask_response
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.prompts import load
-from ai_core.infra.tracing import trace
+from ai_core.infra.observability import observe_span
 from ai_core.llm import client
 
 
@@ -30,7 +30,7 @@ def run_prompt_node(
     meta["prompt_version"] = prompt["version"]
     meta_with_version = dict(meta)
 
-    @trace(trace_name)
+    @observe_span(name=trace_name)
     def _execute(
         current_state: Dict[str, Any], *, meta: Dict[str, str]
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:

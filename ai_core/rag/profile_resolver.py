@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from common.logging import get_log_context, get_logger
 
-from ai_core.infra import tracing
+from ai_core.infra.observability import record_span
 
 from .embedding_config import get_embedding_configuration
 from .routing_rules import get_routing_table, is_collection_routing_enabled
@@ -128,10 +128,10 @@ def _emit_profile_resolution(
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
-        tracing.emit_span(
-            trace_id=trace_id,
-            node_name="rag.profile.resolve",
-            metadata=metadata,
+        record_span(
+            "rag.profile.resolve",
+            trace_id=str(trace_id),
+            attributes=metadata,
         )
 
 

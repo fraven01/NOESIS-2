@@ -16,14 +16,14 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
-from ai_core.infra.observability import observe_span, update_observation
+from ai_core.infra.observability import observe_span, record_span, update_observation
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
 from django.utils import timezone
 from pydantic import ValidationError
 
-from .infra import object_store, pii, tracing
+from .infra import object_store, pii
 from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
@@ -109,10 +109,10 @@ def log_ingestion_run_start(
         extra["vector_space_id"] = vector_space_id
     logger.info("ingestion.start", extra=extra)
     if trace_id:
-        tracing.emit_span(
+        record_span(
+            "rag.ingestion.run.start",
             trace_id=trace_id,
-            node_name="rag.ingestion.run.start",
-            metadata={**extra},
+            attributes={**extra},
         )
 
 
@@ -154,10 +154,10 @@ def log_ingestion_run_end(
     logger.info("ingestion.end", extra=extra)
     metrics.INGESTION_RUN_MS.observe(float(duration_ms))
     if trace_id:
-        tracing.emit_span(
+        record_span(
+            "rag.ingestion.run.end",
             trace_id=trace_id,
-            node_name="rag.ingestion.run.end",
-            metadata={**extra},
+            attributes={**extra},
         )
 
 

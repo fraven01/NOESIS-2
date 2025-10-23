@@ -505,16 +505,34 @@ def test_needs_mapping():
 
 
 def test_tracing_called(monkeypatch):
-    payloads = []
-    monkeypatch.setattr("ai_core.infra.tracing.emit_span", lambda *a, **k: None)
+    spans: list[str] = []
+
+    class FakeContext:
+        def __init__(self, name: str) -> None:
+            self.name = name
+
+        def __enter__(self) -> None:
+            spans.append(f"enter:{self.name}")
+            return None
+
+        def __exit__(self, exc_type, exc, tb) -> bool:
+            spans.append(f"exit:{self.name}")
+            return False
+
+    class FakeTracer:
+        def start_as_current_span(self, name: str, attributes=None):  # noqa: D401
+            spans.append(name)
+            return FakeContext(name)
+
     monkeypatch.setattr(
-        "ai_core.infra.tracing.emit_event", lambda p: payloads.append(p)
+        "ai_core.infra.observability.tracing_enabled", lambda: True
     )
+    monkeypatch.setattr("ai_core.infra.observability._get_tracer", lambda: FakeTracer())
+    monkeypatch.setattr("ai_core.infra.observability.update_observation", lambda **_: None)
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
     state = {"question": "Q?", "snippets": []}
     compose.run(state, META.copy())
-    assert payloads[0]["event"] == "node.start"
-    assert payloads[0]["node"] == "compose"
-    assert payloads[0]["tenant_id"] == "t1"
-    assert payloads[0]["prompt_version"] == "v1"
+    assert spans[0] == "compose"
+    assert spans[1] == "enter:compose"
+    assert spans[-1] == "exit:compose"

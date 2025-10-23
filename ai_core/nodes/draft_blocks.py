@@ -5,7 +5,7 @@ from typing import Any, Dict, Tuple
 from ai_core.infra.mask_prompt import mask_prompt, mask_response
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.prompts import load
-from ai_core.infra.tracing import trace
+from ai_core.infra.observability import observe_span
 from ai_core.llm import client
 
 
@@ -21,7 +21,7 @@ def run(
     return _run(system, functions, clause, state, meta=meta_with_version)
 
 
-@trace("draft_blocks")
+@observe_span(name="draft_blocks")
 def _run(
     system: Dict[str, str],
     functions: Dict[str, str],

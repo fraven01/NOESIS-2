@@ -118,23 +118,25 @@ def test_missing_vector_space_is_guarded(settings, monkeypatch) -> None:
 def test_vector_space_resolution_emits_trace_metadata(settings, monkeypatch) -> None:
     _configure_embeddings(settings)
 
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
     from ai_core.rag import vector_space_resolver as resolver_module
 
     monkeypatch.setattr(
-        resolver_module.tracing,
-        "emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        resolver_module,
+        "record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-space", tenant="tenant-a"):
         resolution = resolve_vector_space_full("standard")
 
     assert resolution.vector_space.id == "global"
-    assert spans, "expected vector space resolver to emit a Langfuse span"
-    span = spans[0]
-    assert span["trace_id"] == "trace-space"
-    assert span["node_name"] == "rag.vector_space.resolve"
-    metadata = span["metadata"]
+    assert spans, "expected vector space resolver to emit a span"
+    name, metadata, trace_id = spans[0]
+    assert name == "rag.vector_space.resolve"
+    assert trace_id == "trace-space"
+    assert metadata is not None
     assert metadata["vector_space_id"] == "global"
     assert metadata["embedding_profile"] == "standard"

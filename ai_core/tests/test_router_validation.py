@@ -161,23 +161,25 @@ def test_emit_router_validation_failure_emits_span(monkeypatch) -> None:
         },
     )
 
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
     from ai_core.rag import router_validation as router_validation_module
 
     monkeypatch.setattr(
-        router_validation_module.tracing,
-        "emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        router_validation_module,
+        "record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-router"):
         emit_router_validation_failure(error)
 
     assert spans, "expected router validation failure to emit span"
-    span = spans[0]
-    assert span["trace_id"] == "trace-router"
-    assert span["node_name"] == "rag.router.validation_failed"
-    metadata = span["metadata"]
+    name, metadata, trace_id = spans[0]
+    assert trace_id == "trace-router"
+    assert name == "rag.router.validation_failed"
+    assert metadata is not None
     assert metadata["error_code"] == RouterInputErrorCode.TOP_K_INVALID
     assert metadata["tenant_id"] == "tenant-1"
     assert metadata["process"] == "draft"
