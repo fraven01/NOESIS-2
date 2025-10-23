@@ -9,7 +9,7 @@ from uuid import UUID
 
 from common.logging import get_log_context
 
-from ai_core.infra import tracing
+from ai_core.infra.observability import record_span
 from ai_core.rag.limits import (
     CandidatePoolPolicy,
     get_limit_setting,
@@ -398,10 +398,10 @@ def emit_router_validation_failure(error: RouterInputError) -> None:
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
-        tracing.emit_span(
-            trace_id=trace_id,
-            node_name="rag.router.validation_failed",
-            metadata=metadata,
+        record_span(
+            "rag.router.validation_failed",
+            trace_id=str(trace_id),
+            attributes=metadata,
         )
 
 

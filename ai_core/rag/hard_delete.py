@@ -15,7 +15,7 @@ from django.utils import timezone
 from psycopg2 import sql
 
 from ai_core.authz.visibility import Visibility
-from ai_core.infra import tracing
+from ai_core.infra.observability import record_span
 from ai_core.rag.vector_store import get_default_router, reset_default_router
 from ai_core.rag import vector_client
 from common.celery import ScopedTask
@@ -343,10 +343,10 @@ def _emit_span(
 ) -> None:
     if not trace_id:
         return
-    tracing.emit_span(
+    record_span(
+        "rag.hard_delete",
         trace_id=str(trace_id),
-        node_name="rag.hard_delete",
-        metadata=dict(metadata),
+        attributes=dict(metadata),
     )
 
 

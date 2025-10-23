@@ -231,14 +231,16 @@ def test_profile_resolution_emits_trace_metadata(
     )
     settings.RAG_ROUTING_RULES_PATH = rules_file
 
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
 
     from ai_core.rag import profile_resolver as resolver_module
 
     monkeypatch.setattr(
-        resolver_module.tracing,
-        "emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        resolver_module,
+        "record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-profile", tenant="tenant-a"):
@@ -255,11 +257,11 @@ def test_profile_resolution_emits_trace_metadata(
             == "legacy"
         )
 
-    assert spans, "expected resolver to emit a Langfuse span"
-    span = spans[0]
-    assert span["trace_id"] == "trace-profile"
-    assert span["node_name"] == "rag.profile.resolve"
-    metadata = span["metadata"]
+    assert spans, "expected resolver to emit a span"
+    name, metadata, trace_id = spans[0]
+    assert name == "rag.profile.resolve"
+    assert trace_id == "trace-profile"
+    assert metadata is not None
     assert metadata["embedding_profile"] == "legacy"
     assert metadata["tenant_id"] == "tenant-a"
     assert metadata["collection_id"] == "docs"
@@ -287,14 +289,16 @@ def test_profile_resolution_marks_default_fallback(
     )
     settings.RAG_ROUTING_RULES_PATH = rules_file
 
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
 
     from ai_core.rag import profile_resolver as resolver_module
 
     monkeypatch.setattr(
-        resolver_module.tracing,
-        "emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        resolver_module,
+        "record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-default", tenant="tenant-a"):
@@ -308,6 +312,7 @@ def test_profile_resolution_marks_default_fallback(
             == "standard"
         )
 
-    metadata = spans[0]["metadata"]
+    _, metadata, _ = spans[0]
+    assert metadata is not None
     assert metadata["resolver_path"] == "default_profile"
     assert metadata["fallback_used"] is True

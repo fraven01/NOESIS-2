@@ -5,7 +5,7 @@ from typing import Any, Dict, Iterable, Mapping, Tuple
 from ai_core.infra.mask_prompt import mask_prompt, mask_response
 from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.prompts import load
-from ai_core.infra.tracing import trace
+from ai_core.infra.observability import observe_span
 from ai_core.llm import client
 from ai_core.tool_contracts import (
     RateLimitedError as ToolRateLimitedError,
@@ -50,7 +50,7 @@ def _format_snippet_context(snippets: Iterable[Mapping[str, Any]]) -> str:
     return "\n".join(formatted)
 
 
-@trace("compose")
+@observe_span(name="compose")
 def _run(
     prompt: Dict[str, str], state: Dict[str, Any], *, meta: Dict[str, str]
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:

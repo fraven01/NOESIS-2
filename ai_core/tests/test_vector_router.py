@@ -160,14 +160,16 @@ def test_router_requires_tenant_id(
     router_and_stores: tuple[VectorStoreRouter, FakeStore, FakeStore],
 ) -> None:
     router, _, _ = router_and_stores
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
     from ai_core.rag import router_validation as router_validation_module
 
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr(
-        router_validation_module.tracing,
-        "emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        router_validation_module,
+        "record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-router-test"):
@@ -178,7 +180,10 @@ def test_router_requires_tenant_id(
 
     assert excinfo.value.code == RouterInputErrorCode.TENANT_REQUIRED
     assert spans, "expected router validation failure to emit span"
-    metadata = spans[0]["metadata"]
+    name, metadata, trace_id = spans[0]
+    assert name == "rag.router.validation_failed"
+    assert metadata is not None
+    assert trace_id == "trace-router-test"
     assert metadata["error_code"] == RouterInputErrorCode.TENANT_REQUIRED
 
 
@@ -623,10 +628,12 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
     store = HybridEnabledStore("global", hybrid_result)
     router = VectorStoreRouter({"global": store})
 
-    spans: list[dict[str, object]] = []
+    spans: list[tuple[str, dict[str, object] | None, str | None]] = []
     monkeypatch.setattr(
-        "ai_core.rag.vector_store.tracing.emit_span",
-        lambda **kwargs: spans.append(kwargs),
+        "ai_core.rag.vector_store.record_span",
+        lambda name, *, attributes=None, trace_id=None: spans.append(
+            (name, attributes, trace_id)
+        ),
     )
 
     with log_context(trace_id="trace-span"):
@@ -638,10 +645,10 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
         )
 
     assert spans, "expected retrieval span to be emitted"
-    span = spans[-1]
-    assert span["trace_id"] == "trace-span"
-    assert span["node_name"] == "rag.hybrid.search"
-    metadata = span["metadata"]
+    name, metadata, trace_id = spans[-1]
+    assert trace_id == "trace-span"
+    assert name == "rag.hybrid.search"
+    assert metadata is not None
     assert metadata["visibility_effective"] == "deleted"
     assert metadata["deleted_matches_blocked"] == 5
 

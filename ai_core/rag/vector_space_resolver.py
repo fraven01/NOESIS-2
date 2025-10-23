@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from common.logging import get_log_context, get_logger
 
-from ai_core.infra import tracing
+from ai_core.infra.observability import record_span
 
 from .embedding_config import (
     EmbeddingConfiguration,
@@ -104,10 +104,10 @@ def _emit_vector_space_resolution(resolution: VectorSpaceResolution) -> None:
     log_context = get_log_context()
     trace_id = log_context.get("trace_id")
     if trace_id:
-        tracing.emit_span(
-            trace_id=trace_id,
-            node_name="rag.vector_space.resolve",
-            metadata=metadata,
+        record_span(
+            "rag.vector_space.resolve",
+            trace_id=str(trace_id),
+            attributes=metadata,
         )
 
 
