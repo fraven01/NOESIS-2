@@ -15,6 +15,7 @@ from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from ai_core.rag.visibility import DEFAULT_VISIBILITY, Visibility
 from common.logging import get_log_context
 from ai_core.infra import tracing
+from ai_core.infra.observability import observe_span, update_observation, sdk_active
 from . import metrics
 from .router_validation import (
     RouterInputError,
@@ -378,11 +379,23 @@ def _emit_retrieval_span(
     if isinstance(query_embedding_empty, bool):
         metadata["query_embedding_empty"] = query_embedding_empty
 
-    tracing.emit_span(
-        trace_id=trace_id,
-        node_name="rag.hybrid.search",
-        metadata=metadata,
-    )
+    # Emit SDK-backed span when available (no-op if SDK missing)
+    try:  # best-effort observability; never break retrieval
+        @observe_span(name="rag.hybrid.search")
+        def _emit_obs() -> None:
+            update_observation(tags=["rag", "retrieval"], metadata=metadata)
+
+        _emit_obs()
+    except Exception:
+        pass
+
+    # Fallback lightweight emitter (HTTP ingest) only when SDK is not active
+    if not sdk_active():
+        tracing.emit_span(
+            trace_id=trace_id,
+            node_name="rag.hybrid.search",
+            metadata=metadata,
+        )
 
 
 def _raise_router_error(error: RouterInputError) -> NoReturn:

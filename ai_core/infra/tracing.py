@@ -19,6 +19,15 @@ F = TypeVar("F", bound=Callable[..., Any])
 
 logger = get_logger(__name__)
 
+# Optional Langfuse SDK support (used to create real spans when available)
+try:  # pragma: no cover - optional dependency (SDK v2+)
+    from langfuse.decorators import observe as _lf_observe  # type: ignore
+except Exception:  # pragma: no cover - compatibility for newer SDKs
+    try:
+        from langfuse import observe as _lf_observe  # type: ignore
+    except Exception:
+        _lf_observe = None  # type: ignore
+
 
 def _normalise_collection_value(value: object) -> str | None:
     """Return a trimmed collection identifier or ``None`` when absent."""
@@ -108,10 +117,16 @@ def _dispatch_langfuse(trace_id: str, node_name: str, metadata: dict[str, Any]) 
     if not public or not secret:
         return
 
-    url = os.getenv(
-        "LANGFUSE_BASE_URL",
-        "https://cloud.langfuse.com/api/public/ingest",
-    )
+    # Prefer explicit ingest URL; otherwise derive from LANGFUSE_HOST when set
+    base_url = os.getenv("LANGFUSE_BASE_URL")
+    if base_url:
+        url = base_url
+    else:
+        host = os.getenv("LANGFUSE_HOST")
+        if host:
+            url = host.rstrip("/") + "/api/public/ingest"
+        else:
+            url = "https://cloud.langfuse.com/api/public/ingest"
 
     payload = {"traceId": trace_id, "name": node_name, "metadata": metadata}
     headers = {"X-Langfuse-Public-Key": public, "X-Langfuse-Secret-Key": secret}
@@ -184,7 +199,11 @@ def trace(node_name: str) -> Callable[[F], F]:
             start_payload["collection_id"] = collection_payload
             emit_event(start_payload)
 
+            # Execute target, optionally wrapped with Langfuse SDK span
             try:
+                if _lf_observe is not None:  # SDK present: create a nested span
+                    observed = _lf_observe(name=f"node:{node_name}")(func)  # type: ignore[misc]
+                    return observed(*args, **kwargs)
                 return func(*args, **kwargs)
             finally:
                 end_ts = time.time()

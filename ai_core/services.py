@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import logging
+import time
 from collections.abc import Iterable, Mapping
 from importlib import import_module
 from uuid import uuid4
@@ -29,7 +30,13 @@ from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
-from ai_core.infra.observability import observe_span, update_observation
+from ai_core.infra.observability import (
+    observe_span,
+    update_observation,
+    start_trace as lf_start_trace,
+    end_trace as lf_end_trace,
+    tracing_enabled as lf_tracing_enabled,
+)
 
 from common.constants import (
     COLLECTION_ID_HEADER_CANDIDATES,
@@ -399,213 +406,285 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         graph_version=normalized_meta["graph_version"],
     )
 
-    # Attach graph context to observation (no request body content)
+    req_started = time.monotonic()
     try:
-        update_observation(
-            tags=[
-                "graph",
-                f"graph:{context.graph_name}",
-                f"version:{context.graph_version}",
-            ],
-            user_id=str(context.tenant_id),
-            session_id=str(context.case_id),
-            metadata={"trace_id": context.trace_id},
+        logger.info(
+            "graph.request.start",
+            extra={
+                "graph": context.graph_name,
+                "tenant_id": context.tenant_id,
+                "case_id": context.case_id,
+                "trace_id": context.trace_id,
+            },
         )
     except Exception:
         pass
 
-    try:
-        state = _get_checkpointer().load(context)
-    except (TypeError, ValueError) as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-
-    raw_body = getattr(request, "body", b"")
-    if not raw_body and hasattr(request, "_request"):
-        raw_body = getattr(request._request, "body", b"")
-
-    content_type_header = request.headers.get("Content-Type")
-    normalized_content_type = ""
-    if content_type_header:
-        normalized_content_type = content_type_header.split(";")[0].strip().lower()
-
-    incoming_state = None
-
-    if raw_body:
-        if normalized_content_type and not (
-            normalized_content_type == "application/json"
-            or normalized_content_type.endswith("+json")
-        ):
-            return _error_response(
-                "Request payload must be encoded as application/json.",
-                "unsupported_media_type",
-                status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            )
+    # Start a root trace (best-effort) only when tracing is enabled
+    if lf_tracing_enabled():
         try:
-            payload = json.loads(raw_body)
-            if isinstance(payload, dict):
-                incoming_state = payload
-        except json.JSONDecodeError:
-            return _error_response(
-                "Request payload contained invalid JSON.",
-                "invalid_json",
-                status.HTTP_400_BAD_REQUEST,
+            lf_start_trace(
+                name=f"graph:{context.graph_name}",
+                user_id=str(context.tenant_id),
+                session_id=str(context.case_id),
+                metadata={"trace_id": context.trace_id, "version": context.graph_version},
             )
-
-    data = _apply_collection_header_bridge(request, incoming_state)
-
-    request_model = GRAPH_REQUEST_MODELS.get(context.graph_name)
-    if request_model is not None:
-        try:
-            validated = request_model.model_validate(data)
-        except ValidationError as exc:
-            return _error_response(
-                _format_validation_error(exc),
-                "invalid_request",
-                status.HTTP_400_BAD_REQUEST,
-            )
-        incoming_state = validated.model_dump(exclude_none=True)
-    else:
-        incoming_state = data
-
-    merged_state = merge_state(state, incoming_state)
-
-    runner_meta = dict(normalized_meta)
-    if normalized_meta.get("tenant_schema"):
-        runner_meta["tenant_schema"] = normalized_meta["tenant_schema"]
-    if normalized_meta.get("key_alias"):
-        runner_meta["key_alias"] = normalized_meta["key_alias"]
+        except Exception:
+            pass
 
     try:
-        new_state, result = graph_runner.run(merged_state, runner_meta)
-    except InputError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ToolContextError as exc:
-        # Invalid execution context (e.g., router/tenant/case issues) should be
-        # surfaced to clients as a 400 rather than a transient 503.
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ValueError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ToolNotFoundError as exc:
-        logger.info("tool.not_found")
-        detail = str(exc) or "No matching documents were found."
-        return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
-    except ToolInconsistentMetadataError as exc:
-        logger.warning("tool.inconsistent_metadata")
-        payload = {
-            "detail": str(exc) or "reindex required",
-            "code": "retrieval_inconsistent_metadata",
-        }
-        context = getattr(exc, "context", None)
-        if context:
-            payload["context"] = context
-        return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
-    except ToolInputError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-    except ToolRateLimitedError as _exc:
-        logger.warning("tool.rate_limited")
-        return _error_response(
-            "Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS
-        )
-    except ToolTimeoutError as _exc:
-        logger.warning("tool.timeout")
-        return _error_response(
-            "Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT
-        )
-    except ToolUpstreamServiceError as _exc:
-        logger.warning("tool.upstream_error")
-        return _error_response(
-            "Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY
-        )
-    except RateLimitError as exc:  # LLM proxy signalled rate limiting
+        # Attach graph context to observation (no request body content)
         try:
-            extra = {
-                "status": getattr(exc, "status", None),
-                "code": getattr(exc, "code", None),
+            update_observation(
+                tags=[
+                    "graph",
+                    f"graph:{context.graph_name}",
+                    f"version:{context.graph_version}",
+                ],
+                user_id=str(context.tenant_id),
+                session_id=str(context.case_id),
+                metadata={"trace_id": context.trace_id},
+            )
+        except Exception:
+            pass
+
+        try:
+            state = _get_checkpointer().load(context)
+        except (TypeError, ValueError) as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+        raw_body = getattr(request, "body", b"")
+        if not raw_body and hasattr(request, "_request"):
+            raw_body = getattr(request._request, "body", b"")
+
+        content_type_header = request.headers.get("Content-Type")
+        normalized_content_type = ""
+        if content_type_header:
+            normalized_content_type = content_type_header.split(";")[0].strip().lower()
+
+        incoming_state = None
+
+        if raw_body:
+            if normalized_content_type and not (
+                normalized_content_type == "application/json"
+                or normalized_content_type.endswith("+json")
+            ):
+                return _error_response(
+                    "Request payload must be encoded as application/json.",
+                    "unsupported_media_type",
+                    status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+                )
+            try:
+                payload = json.loads(raw_body)
+                if isinstance(payload, dict):
+                    incoming_state = payload
+            except json.JSONDecodeError:
+                return _error_response(
+                    "Request payload contained invalid JSON.",
+                    "invalid_json",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+
+        data = _apply_collection_header_bridge(request, incoming_state)
+
+        request_model = GRAPH_REQUEST_MODELS.get(context.graph_name)
+        if request_model is not None:
+            try:
+                validated = request_model.model_validate(data)
+            except ValidationError as exc:
+                return _error_response(
+                    _format_validation_error(exc),
+                    "invalid_request",
+                    status.HTTP_400_BAD_REQUEST,
+                )
+            incoming_state = validated.model_dump(exclude_none=True)
+        else:
+            incoming_state = data
+
+        merged_state = merge_state(state, incoming_state)
+
+        runner_meta = dict(normalized_meta)
+        if normalized_meta.get("tenant_schema"):
+            runner_meta["tenant_schema"] = normalized_meta["tenant_schema"]
+        if normalized_meta.get("key_alias"):
+            runner_meta["key_alias"] = normalized_meta["key_alias"]
+
+        try:
+            t0 = time.monotonic()
+            try:
+                logger.info(
+                    "graph.run.start",
+                    extra={
+                        "graph": context.graph_name,
+                        "tenant_id": context.tenant_id,
+                        "case_id": context.case_id,
+                    },
+                )
+            except Exception:
+                pass
+
+            new_state, result = graph_runner.run(merged_state, runner_meta)
+
+            try:
+                dt_ms = int((time.monotonic() - t0) * 1000)
+                logger.info(
+                    "graph.run.end",
+                    extra={
+                        "graph": context.graph_name,
+                        "tenant_id": context.tenant_id,
+                        "case_id": context.case_id,
+                        "duration_ms": dt_ms,
+                    },
+                )
+            except Exception:
+                pass
+        except InputError as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+        except ToolContextError as exc:
+            # Invalid execution context (e.g., router/tenant/case issues) should be
+            # surfaced to clients as a 400 rather than a transient 503.
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+        except ValueError as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+        except ToolNotFoundError as exc:
+            logger.info("tool.not_found")
+            detail = str(exc) or "No matching documents were found."
+            return _error_response(detail, "rag_no_matches", status.HTTP_404_NOT_FOUND)
+        except ToolInconsistentMetadataError as exc:
+            logger.warning("tool.inconsistent_metadata")
+            payload = {
+                "detail": str(exc) or "reindex required",
+                "code": "retrieval_inconsistent_metadata",
             }
-            logger.warning("llm.rate_limited", extra=extra)
+            context = getattr(exc, "context", None)
+            if context:
+                payload["context"] = context
+            return Response(payload, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+        except ToolInputError as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+        except ToolRateLimitedError as _exc:
+            logger.warning("tool.rate_limited")
+            return _error_response(
+                "Tool rate limited.", "llm_rate_limited", status.HTTP_429_TOO_MANY_REQUESTS
+            )
+        except ToolTimeoutError as _exc:
+            logger.warning("tool.timeout")
+            return _error_response(
+                "Upstream tool timeout.", "llm_timeout", status.HTTP_504_GATEWAY_TIMEOUT
+            )
+        except ToolUpstreamServiceError as _exc:
+            logger.warning("tool.upstream_error")
+            return _error_response(
+                "Upstream tool error.", "llm_error", status.HTTP_502_BAD_GATEWAY
+            )
+        except RateLimitError as exc:  # LLM proxy signalled rate limiting
+            try:
+                extra = {
+                    "status": getattr(exc, "status", None),
+                    "code": getattr(exc, "code", None),
+                }
+                logger.warning("llm.rate_limited", extra=extra)
+            except Exception:
+                pass
+            status_code = (
+                int(getattr(exc, "status", 429))
+                if str(getattr(exc, "status", "")).isdigit()
+                else status.HTTP_429_TOO_MANY_REQUESTS
+            )
+            detail = getattr(exc, "detail", None) or "LLM rate limited."
+            return _error_response(detail, "llm_rate_limited", status_code)
+        except LlmClientError as exc:  # Upstream LLM error (4xx/5xx)
+            try:
+                extra = {
+                    "status": getattr(exc, "status", None),
+                    "code": getattr(exc, "code", None),
+                }
+                logger.warning("llm.client_error", extra=extra)
+            except Exception:
+                pass
+            raw_status = getattr(exc, "status", None)
+            # Map all upstream client/provider errors to Bad Gateway to avoid
+            # suggesting a client input error for consumers of this API.
+            status_code = status.HTTP_502_BAD_GATEWAY
+            # Preserve a 429 if it slipped through without specific type
+            try:
+                if isinstance(raw_status, int) and raw_status == 429:
+                    status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            except Exception:
+                pass
+            detail = getattr(exc, "detail", None) or "Upstream LLM error."
+            return _error_response(detail, "llm_error", status_code)
         except Exception:
-            pass
-        status_code = (
-            int(getattr(exc, "status", 429))
-            if str(getattr(exc, "status", "")).isdigit()
-            else status.HTTP_429_TOO_MANY_REQUESTS
-        )
-        detail = getattr(exc, "detail", None) or "LLM rate limited."
-        return _error_response(detail, "llm_rate_limited", status_code)
-    except LlmClientError as exc:  # Upstream LLM error (4xx/5xx)
+            # Log unexpected exceptions with execution context for diagnostics.
+            try:
+                logger.exception(
+                    "graph.execution_failed",
+                    extra={
+                        "graph": context.graph_name,
+                        "tenant_id": context.tenant_id,
+                        "case_id": context.case_id,
+                    },
+                )
+            except Exception:
+                pass
+            return _error_response(
+                "Service temporarily unavailable.",
+                "service_unavailable",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
         try:
-            extra = {
-                "status": getattr(exc, "status", None),
-                "code": getattr(exc, "code", None),
-            }
-            logger.warning("llm.client_error", extra=extra)
+            _get_checkpointer().save(context, _make_json_safe(new_state))
+        except (TypeError, ValueError) as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+        try:
+            _log_graph_response_payload(result, context)
+        except TypeError:
+            raise
         except Exception:
-            pass
-        raw_status = getattr(exc, "status", None)
-        # Map all upstream client/provider errors to Bad Gateway to avoid
-        # suggesting a client input error for consumers of this API.
-        status_code = status.HTTP_502_BAD_GATEWAY
-        # Preserve a 429 if it slipped through without specific type
-        try:
-            if isinstance(raw_status, int) and raw_status == 429:
-                status_code = status.HTTP_429_TOO_MANY_REQUESTS
-        except Exception:
-            pass
-        detail = getattr(exc, "detail", None) or "Upstream LLM error."
-        return _error_response(detail, "llm_error", status_code)
-    except Exception:
-        # Log unexpected exceptions with execution context for diagnostics.
-        try:
             logger.exception(
-                "graph.execution_failed",
+                "graph.response_payload_logging_failed",
                 extra={
                     "graph": context.graph_name,
                     "tenant_id": context.tenant_id,
                     "case_id": context.case_id,
                 },
             )
+
+        try:
+            response = Response(result)
+        except TypeError:
+            logger.exception(
+                "graph.response_serialization_error",
+                extra={
+                    "graph": context.graph_name,
+                    "tenant_id": context.tenant_id,
+                    "case_id": context.case_id,
+                    "payload_type": type(result).__name__,
+                },
+            )
+            raise
+
+        return response
+    finally:
+        try:
+            lf_end_trace()
         except Exception:
             pass
-        return _error_response(
-            "Service temporarily unavailable.",
-            "service_unavailable",
-            status.HTTP_503_SERVICE_UNAVAILABLE,
-        )
-
-    try:
-        _get_checkpointer().save(context, _make_json_safe(new_state))
-    except (TypeError, ValueError) as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
-
-    try:
-        _log_graph_response_payload(result, context)
-    except TypeError:
-        raise
-    except Exception:
-        logger.exception(
-            "graph.response_payload_logging_failed",
-            extra={
-                "graph": context.graph_name,
-                "tenant_id": context.tenant_id,
-                "case_id": context.case_id,
-            },
-        )
-
-    try:
-        response = Response(result)
-    except TypeError:
-        logger.exception(
-            "graph.response_serialization_error",
-            extra={
-                "graph": context.graph_name,
-                "tenant_id": context.tenant_id,
-                "case_id": context.case_id,
-                "payload_type": type(result).__name__,
-            },
-        )
-        raise
-
-    return response
+        try:
+            dt_total_ms = int((time.monotonic() - req_started) * 1000)
+            logger.info(
+                "graph.request.end",
+                extra={
+                    "graph": context.graph_name,
+                    "tenant_id": context.tenant_id,
+                    "case_id": context.case_id,
+                    "duration_ms": dt_total_ms,
+                },
+            )
+        except Exception:
+            pass
 
 
 def start_ingestion_run(

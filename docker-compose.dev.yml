@@ -72,7 +72,7 @@ services:
       - "--port"
       - "4000"
       - "--num_workers"
-      - "1"
+      - "2"
     volumes:
       - ./config/litellm-config.yaml:/config/config.yaml:ro
     ports:

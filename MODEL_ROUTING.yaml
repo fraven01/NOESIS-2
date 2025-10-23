@@ -1,5 +1,15 @@
 labels:
   default: openai/gpt-5-nano
+  #fast: gemini-2.5-flash
+  #simple-query: gemini-2.5-flash
+  #synthesize: gemini-2.5-flash
+  #extract: gemini-2.5-flash
+  #classify: gemini-2.5-flash
+  #analyze: gemini-2.5-flash
+  #reasoning: gemini-2.5-pro
+  draft: gemini-2.5-pro
+  embedding: openai/oai-embed-large
+  #embedding: vertex_ai/text-embedding-004
   fast: vertex_ai/gemini-2.5-flash
   simple-query: vertex_ai/gemini-2.5-flash
   synthesize: openai/gpt-5-nano
@@ -8,6 +18,3 @@ labels:
   analyze: vertex_ai/gemini-2.5-flash
   reasoning: vertex_ai/gemini-2.5-pro
   draft: vertex_ai/gemini-2.5-pro
-  embedding: openai/oai-embed-large
-  #embedding: vertex_ai/text-embedding-004
-

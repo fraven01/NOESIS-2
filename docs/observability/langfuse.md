@@ -56,7 +56,8 @@ flowchart LR
   - ClickHouse Credentials (lokal): `CLICKHOUSE_USER=langfuse`, `CLICKHOUSE_PASSWORD=langfuse` (im Compose voreingestellt); `CLICKHOUSE_URL` ist entsprechend gesetzt.
 - Start/Stop per NPM:
   - `npm run dev:langfuse:up`
-  - `npm run dev:langfuse:down`
+  - `npm run dev:langfuse:down` (beendet Container, behält Daten-Volumes)
+  - `npm run dev:langfuse:reset` (stoppt und entfernt Container inkl. Volumes)
   - `npm run dev:langfuse:logs`
 - ENV (lokal):
   - `LANGFUSE_HOST=http://localhost:3100` (aus Host-Sicht)
@@ -67,6 +68,7 @@ flowchart LR
 - ELK: Leite Container-Logs optional in ELK (`docs/observability/elk.md`); Traces/Kosten verbleiben in Langfuse.
 
 ### Troubleshooting
+- Langfuse verliert Projekte/Nutzer nach Neustart: Verwende `dev:langfuse:down` statt `down -v`. Nur `dev:langfuse:reset` entfernt Volumes (`langfuse_pg_data`, `clickhouse_data`).
 - Meldung „CLICKHOUSE_URL is not configured“: Stelle sicher, dass der ClickHouse-Container läuft (im Compose enthalten) und `CLICKHOUSE_URL` für den `langfuse`-Service gesetzt ist. In unserem Compose ist dies bereits auf `http://default:@clickhouse:8123` vorkonfiguriert.
 - Meldung „CLICKHOUSE_MIGRATION_URL is not configured“: Ab Langfuse v3 muss zusätzlich `CLICKHOUSE_MIGRATION_URL` gesetzt sein (kann identisch zu `CLICKHOUSE_URL` sein). In unserem Compose ist dies entsprechend ergänzt.
 - Fehler „unknown driver http (forgotten import?)“ bei ClickHouse‑Migrationen: Stelle sicher, dass `CLICKHOUSE_MIGRATION_URL` das native Schema nutzt (`clickhouse://user:pass@clickhouse:9000`).
@@ -84,3 +86,34 @@ flowchart LR
 - Kontextfelder: `user_id=tenant_id`, `session_id=case_id`, `metadata.trace_id=<X-Trace-ID>`; keine PII-Payloads werden an Langfuse gesendet.
 - LangChain (bei Einsatz): Verwende `ai_core/infra/observability.get_langchain_callbacks()` um den Langfuse-Callback-Handler an LangChain-LLMs zu übergeben.
 - Fehlermeldung „Invalid environment variables: SALT“: Setze `SALT` (beliebige, aber starke Zeichenkette) und `ENCRYPTION_KEY` (64 Hex-Zeichen, z. B. via `openssl rand -hex 32`). In unserem Compose ist beides mit Dev-Defaults hinterlegt; überschreibe sie in deiner `.env`.
+
+## OTel Export (Langfuse v3)
+Ab Langfuse v3 empfiehlt sich der Export von Spans via OpenTelemetry (OTLP HTTP) direkt an Langfuse. Setze folgende ENV-Variablen für Web/Worker/Jobs:
+
+- OTEL_TRACES_EXPORTER=otlp
+- OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+- OTEL_RESOURCE_ATTRIBUTES="service.name=noesis2,service.version=dev"
+
+SaaS (cloud.langfuse.com):
+
+- OTEL_EXPORTER_OTLP_ENDPOINT=https://cloud.langfuse.com
+- OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://cloud.langfuse.com/api/public/otel/v1/traces
+- OTEL_EXPORTER_OTLP_HEADERS="X-Langfuse-Public-Key=$LANGFUSE_PUBLIC_KEY,X-Langfuse-Secret-Key=$LANGFUSE_SECRET_KEY"
+
+Self-Hosted:
+
+- OTEL_EXPORTER_OTLP_ENDPOINT=$LANGFUSE_HOST
+- OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${LANGFUSE_HOST%/}/api/public/otel/v1/traces
+- OTEL_EXPORTER_OTLP_HEADERS="X-Langfuse-Public-Key=$LANGFUSE_PUBLIC_KEY,X-Langfuse-Secret-Key=$LANGFUSE_SECRET_KEY"
+
+Hinweise:
+- Der SDK-Client (`langfuse.get_client()`) kann zusätzlich genutzt werden (z. B. für explizites `flush()`), ist aber nicht erforderlich, wenn OTel korrekt konfiguriert ist.
+- Unsere `start_trace`/`end_trace`-Helfer legen Root-Traces an (v3-Client oder OTel) und schließen/fluschen sie robust via `try/finally`.
+
+### Verifikation (Smoke)
+- Linux/Mac: `scripts/smoke-langfuse.sh` ausführen
+- Windows: `scripts/smoke-langfuse.ps1` ausführen
+
+Die Skripte prüfen Umgebungsvariablen, rufen den Health-Endpoint auf und erzeugen zwei Smokes:
+- SDK+OTel (Kind-Observation via Decorator, Root-Span via OTel, anschließendes `flush()` des v3-Clients)
+- OTel-only Export (nur OTel-Span, keine SDK-Flush-Pfade)

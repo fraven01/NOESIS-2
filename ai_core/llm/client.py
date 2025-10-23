@@ -6,6 +6,7 @@ import random
 import time
 from email.utils import parsedate_to_datetime
 from typing import Any, Dict
+import os
 
 import requests
 
@@ -26,7 +27,9 @@ from .routing import resolve
 logger = get_logger(__name__)
 
 
-DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 45}
+# Conservative defaults to avoid web worker timeouts in dev/prod.
+# Projects can override via LITELLM_TIMEOUTS env (see ai_core.infra.config).
+DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 20}
 
 
 class LlmClientError(Exception):
@@ -110,8 +113,32 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "model": model_id,
         "messages": [{"role": "user", "content": prompt}],
     }
+    # Optional generation controls via ENV to keep latency predictable
+    try:
+        max_tokens_env = os.getenv("LITELLM_MAX_TOKENS")
+        if max_tokens_env is not None:
+            max_tokens_val = int(max_tokens_env)
+            if max_tokens_val > 0:
+                payload["max_tokens"] = max_tokens_val
+    except Exception:
+        pass
+    try:
+        temperature_env = os.getenv("LITELLM_TEMPERATURE")
+        if temperature_env is not None:
+            payload["temperature"] = float(temperature_env)
+    except Exception:
+        pass
 
+    # Allow env override to fail fast during dev
     max_retries = 3
+    try:
+        env_retries = os.getenv("LITELLM_MAX_RETRIES")
+        if env_retries is not None:
+            env_retries_i = int(env_retries)
+            if env_retries_i >= 0:
+                max_retries = env_retries_i
+    except Exception:
+        pass
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"

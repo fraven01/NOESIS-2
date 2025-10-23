@@ -356,6 +356,7 @@
       </fieldset>
       <div class="md:col-span-2">
         <button
+          id="query-submit"
           class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
           type="submit"
         >
@@ -1238,6 +1239,27 @@
     }
 
     const queryForm = document.getElementById('query-form');
+    const querySubmitBtn = document.getElementById('query-submit');
+    // Ensure clicking the button triggers the submit handler across browsers
+    if (queryForm && querySubmitBtn) {
+      querySubmitBtn.addEventListener('click', function (e) {
+        try {
+          if (typeof queryForm.requestSubmit === 'function') {
+            e.preventDefault();
+            queryForm.requestSubmit();
+            return;
+          }
+        } catch (_) {}
+        // Fallback: dispatch a cancellable submit event
+        try {
+          const evt = new Event('submit', { bubbles: true, cancelable: true });
+          const cancelled = !queryForm.dispatchEvent(evt);
+          if (cancelled) {
+            e.preventDefault();
+          }
+        } catch (_) {}
+      });
+    }
     if (queryForm) {
       queryForm.addEventListener('submit', async function (event) {
         event.preventDefault();

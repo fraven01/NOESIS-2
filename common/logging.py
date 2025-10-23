@@ -615,11 +615,24 @@ def _configure_stdlib_logging(
 
 
 def _instrument_logging() -> None:
+    """Optionally enable OpenTelemetry logging instrumentation.
+
+    Disabled by default to avoid background exporter overhead in dev/WSL.
+    Enable by setting LOGGING_OTEL_INSTRUMENT=true.
+    """
+
     if LoggingInstrumentor is None:
         return
+
+    flag = os.getenv("LOGGING_OTEL_INSTRUMENT", "").strip().lower()
+    enabled = flag in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+
     try:  # pragma: no cover - depends on optional instrumentation
         LoggingInstrumentor().instrument(set_logging_format=False)
     except Exception:
+        # Never fail app startup due to optional instrumentation
         pass
 
 

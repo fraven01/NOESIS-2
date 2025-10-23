@@ -29,7 +29,8 @@ FROM python:3.12-slim-bookworm AS builder
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
-    PIP_DEFAULT_TIMEOUT=60
+    PIP_DEFAULT_TIMEOUT=60 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
 WORKDIR /app
 
@@ -46,8 +47,8 @@ COPY requirements*.txt ./
 # Use BuildKit cache for pip wheels to accelerate rebuilds
 RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_NO_CACHE_DIR=0 \
-    python -m pip install --upgrade pip setuptools wheel \
-    && python -m pip install --retries 5 -r requirements.txt
+    python -m pip install --upgrade 'pip<24.3' setuptools wheel \
+    && python -m pip install --retries 10 --timeout 60 -r requirements.txt
 
 # Smoke test TLS path to PyPI to surface trust store issues early
 RUN python - <<'PY'

@@ -45,6 +45,8 @@ services:
       minio:
         condition: service_healthy
     environment:
+      # Increase verbosity for troubleshooting
+      LOG_LEVEL: debug
       # App URL for NextAuth
       NEXTAUTH_URL: ${LANGFUSE_NEXTAUTH_URL:-http://localhost:3100}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:-dev-nextauth-secret}
