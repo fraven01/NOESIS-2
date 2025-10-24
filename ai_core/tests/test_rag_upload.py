@@ -111,7 +111,7 @@ def test_rag_upload_persists_file_and_metadata(
 
     assert len(documents_repository_stub.saved) == 1
     saved_document = documents_repository_stub.saved[0]
-    assert saved_document.ref.document_id.hex == document_id
+    assert str(saved_document.ref.document_id) == document_id
     assert (
         saved_document.meta.external_ref
         and saved_document.meta.external_ref["external_id"] == body["external_id"]

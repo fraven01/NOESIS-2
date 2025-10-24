@@ -101,7 +101,6 @@ def test_upload_ingest_query_end2end(
     assert f"{doc_id}#doc" in parent_ids
     assert any(parent_id.endswith("#sec-1") for parent_id in parent_ids)
     assert zebra_chunk["meta"]["document_id"] == doc_id
-    assert zebra_chunk["meta"]["doc_id"] == doc_id
 
     client = rag_vector_client.get_default_client()
     documents_table = client._table("documents")
@@ -135,7 +134,6 @@ def test_upload_ingest_query_end2end(
     for (chunk_meta,) in chunk_rows:
         assert isinstance(chunk_meta, dict)
         assert chunk_meta.get("document_id") == doc_id
-        assert chunk_meta.get("doc_id") == doc_id
 
     # Query (Demo-Endpunkt wurde entfernt und meldet HTTP 410)
     resp = client.post(

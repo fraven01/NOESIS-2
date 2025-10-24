@@ -38,7 +38,7 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
 
         payload = _extract_payload(doc)
         checksum = hashlib.sha256(payload).hexdigest()
-        filename_base = f"{doc.ref.document_id.hex}"
+        filename_base = str(doc.ref.document_id)
 
         # Persist raw upload
         object_store.write_bytes(
@@ -77,7 +77,7 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
                 workflow_id
             ):
                 continue
-            meta_path = wf_dir / "uploads" / f"{document_id.hex}.meta.json"
+            meta_path = wf_dir / "uploads" / f"{document_id}.meta.json"
             if not meta_path.exists():
                 continue
             try:
@@ -137,7 +137,7 @@ def _extract_payload(doc: NormalizedDocument) -> bytes:
 def _build_metadata_snapshot(doc: NormalizedDocument, checksum: str) -> dict:
     payload: dict = {
         "workflow_id": doc.ref.workflow_id,
-        "document_id": doc.ref.document_id.hex,
+        "document_id": str(doc.ref.document_id),
         "created_at": (doc.created_at.isoformat() if doc.created_at else None),
         "checksum": checksum,
         "media_type": getattr(doc.blob, "media_type", None),
@@ -179,7 +179,7 @@ def _rebuild_document_from_meta(
     external_id = meta.get("external_id")
 
     # Blob
-    upload_path = meta_path.with_name(f"{document_id.hex}_upload.bin")
+    upload_path = meta_path.with_name(f"{document_id}_upload.bin")
     payload = upload_path.read_bytes()
     computed_sha = hashlib.sha256(payload).hexdigest()
     # Prefer recorded checksum if present and correct; otherwise use computed

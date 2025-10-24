@@ -624,7 +624,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     section_counter = 0
     order_counter = 0
 
-    document_id_value = meta.get("document_id") or meta.get("doc_id")
+    document_id_value = meta.get("document_id")
     document_id: Optional[str] = None
     if document_id_value not in {None, "", "None"}:
         try:
@@ -643,7 +643,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
     # Use compact UUIDs for parent identifiers to align with external document_id formatting
-    parent_prefix = document_id.replace("-", "") if document_id else str(external_id)
+    parent_prefix = document_id if document_id else str(external_id)
     root_id = f"{parent_prefix}#doc"
     parent_nodes[root_id] = {
         "id": root_id,
@@ -949,13 +949,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 "content_hash": content_hash,
                 "parent_ids": parent_ids,
             }
-            if document_id:
-                # Ensure canonical dashed UUID format for document_id in chunk meta
-                try:
-                    chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
-                except Exception:
-                    chunk_meta["document_id"] = document_id
-                chunk_meta["doc_id"] = document_id
+
             if meta.get("embedding_profile"):
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
             if meta.get("vector_space_id"):
@@ -964,6 +958,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 chunk_meta["collection_id"] = meta["collection_id"]
             if meta.get("workflow_id"):
                 chunk_meta["workflow_id"] = meta["workflow_id"]
+
+            if document_id:
+                # Ensure canonical dashed UUID format for document_id in chunk meta
+                try:
+                    chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
+                except Exception:
+                    chunk_meta["document_id"] = document_id
             chunks.append(
                 {
                     "content": chunk_text,

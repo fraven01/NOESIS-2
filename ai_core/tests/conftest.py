@@ -24,12 +24,15 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
         tenant_segment = object_store.sanitize_identifier(doc.ref.tenant_id)
         workflow_segment = object_store.sanitize_identifier(doc.ref.workflow_id)
         storage_prefix = f"{tenant_segment}/{workflow_segment}/uploads"
-        filename = f"{doc.ref.document_id.hex}_upload.bin"
+        filename = f"{doc.ref.document_id}_upload.bin"
+        upload_path = f"{storage_prefix}/{filename}"
         payload = _extract_payload(doc.blob)
-        object_store.write_bytes(f"{storage_prefix}/{filename}", payload)
+        object_store.put_bytes(upload_path, payload)
+        object.__setattr__(doc.blob, "uri", upload_path)
+
         metadata = _build_metadata_snapshot(doc)
         object_store.write_json(
-            f"{storage_prefix}/{doc.ref.document_id.hex}.meta.json", metadata
+            f"{storage_prefix}/{doc.ref.document_id}.meta.json", metadata
         )
         return doc
 

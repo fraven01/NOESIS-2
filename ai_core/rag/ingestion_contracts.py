@@ -65,6 +65,7 @@ class ChunkMeta(BaseModel):
     workflow_id: str | None = None
     parent_ids: list[str] | None = None
     collection_id: str | None = None
+    document_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

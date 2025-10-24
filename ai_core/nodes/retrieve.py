@@ -309,7 +309,7 @@ def _build_citation(metadata: Mapping[str, object]) -> str | None:
 
     if not location_parts:
         chunk_id = _coerce_str(metadata.get("chunk_id"))
-        doc_id = _coerce_str(metadata.get("doc_id"))
+        doc_id = _coerce_str(metadata.get("document_id"))
         external_id = _coerce_str(metadata.get("external_id"))
         hash_id = _coerce_str(metadata.get("hash"))
         if chunk_id:
@@ -665,7 +665,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     parent_requests: Dict[str, set[str]] = {}
     for chunk in chunks:
         meta_map = chunk.meta or {}
-        doc_identifier = _coerce_str(meta_map.get("doc_id"))
+        doc_identifier = _coerce_str(meta_map.get("document_id"))
         if not doc_identifier:
             continue
         parent_candidates = meta_map.get("parent_ids")
@@ -748,7 +748,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
                 except Exception:
                     meta_section = {}
                 match["meta"] = meta_section
-            doc_identifier = _coerce_str(meta_section.get("doc_id"))
+            doc_identifier = _coerce_str(meta_section.get("document_id"))
             if not doc_identifier:
                 continue
             parent_candidates = meta_section.get("parent_ids")

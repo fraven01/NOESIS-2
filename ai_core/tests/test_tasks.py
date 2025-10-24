@@ -376,7 +376,6 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
             for parent_id in first_chunk["meta"].get("parent_ids", [])
         )
         assert first_chunk["meta"]["document_id"] == str(doc_uuid)
-        assert first_chunk["meta"]["doc_id"] == str(doc_uuid)
 
         long_chunks = [
             entry["content"] for entry in chunks if "wort" in entry["content"]

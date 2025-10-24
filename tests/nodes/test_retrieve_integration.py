@@ -332,7 +332,7 @@ def test_retrieve_includes_parent_context(monkeypatch):
         "Parented chunk",
         {
             "id": "doc-parent",
-            "doc_id": doc_uuid,
+            "document_id": doc_uuid,
             "score": 0.9,
             "source": "vector",
             "tenant_id": tenant,

@@ -130,23 +130,16 @@ def _metadata_identity_needs_repair(
     if not isinstance(metadata, Mapping):
         return True
 
-    needs_repair = False
-    for key in ("document_id", "doc_id"):
-        value = metadata.get(key)
-        if value in {None, ""}:
-            needs_repair = True
-            continue
-        try:
-            value_text = str(value).strip()
-        except Exception:
-            needs_repair = True
-            continue
-        if not value_text:
-            needs_repair = True
-            continue
-        if value_text != canonical_id:
-            needs_repair = True
-    return needs_repair
+    value = metadata.get("document_id")
+    if value in {None, ""}:
+        return True
+    try:
+        value_text = str(value).strip()
+    except Exception:
+        return True
+    if not value_text:
+        return True
+    return value_text != canonical_id
 
 
 def _normalise_document_identity(
@@ -163,7 +156,6 @@ def _normalise_document_identity(
     else:
         metadata_dict = {}
     metadata_dict["document_id"] = canonical_id
-    metadata_dict["doc_id"] = canonical_id
     doc["metadata"] = metadata_dict
 
     chunks = doc.get("chunks")
@@ -173,15 +165,12 @@ def _normalise_document_identity(
                 chunk_meta = chunk.meta
                 if isinstance(chunk_meta, MutableMapping):
                     chunk_meta["document_id"] = canonical_id
-                    chunk_meta["doc_id"] = canonical_id
                 elif isinstance(chunk_meta, Mapping):
                     new_meta = dict(chunk_meta)
                     new_meta["document_id"] = canonical_id
-                    new_meta["doc_id"] = canonical_id
                     chunk.meta = new_meta
             elif isinstance(chunk, MutableMapping):
                 chunk["document_id"] = canonical_id
-                chunk["doc_id"] = canonical_id
 
     for parent_key in ("parents", "parent_nodes"):
         parent_map = doc.get(parent_key)
@@ -192,11 +181,26 @@ def _normalise_document_identity(
             if isinstance(payload, Mapping):
                 parent_payload = dict(payload)
                 parent_payload["document_id"] = canonical_id
-                parent_payload["doc_id"] = canonical_id
             else:
                 parent_payload = payload
             normalised_parents[parent_id] = parent_payload
         doc[parent_key] = normalised_parents
+
+    # Ensure parent_nodes are present in metadata when parent mappings exist
+    try:
+        from .parents import (
+            limit_parent_payload as _limit_parent_payload,
+        )  # local import
+    except Exception:
+        _limit_parent_payload = None  # type: ignore[assignment]
+    if isinstance(doc.get("parents"), Mapping) and doc.get("parents"):
+        if _limit_parent_payload is not None:
+            try:
+                metadata_dict.setdefault(
+                    "parent_nodes", _limit_parent_payload(doc.get("parents"))
+                )
+            except Exception:
+                pass
 
     return metadata_dict
 
@@ -727,13 +731,13 @@ class PgVectorClient:
         from typing import Mapping as _Mapping  # local alias to avoid confusion
 
         if isinstance(row, _Mapping):
-            # Expected keys: id, text, metadata, hash, doc_id and either
+            # Expected keys: id, text, metadata, hash, document_id and either
             # distance (vector) or lscore (lexical)
             chunk_id = row.get("id")
             text_value = row.get("text")
             metadata_value = row.get("metadata")
             doc_hash = row.get("hash")
-            doc_id = row.get("doc_id")
+            doc_id = row.get("document_id")
             score_candidate = PgVectorClient._extract_score_from_row(row, kind=kind)
             fallback = 1.0 if kind == "vector" else 0.0
             try:
@@ -828,7 +832,7 @@ class PgVectorClient:
         case_id: str | None,
         filters: Mapping[str, object | None] | None,
         chunk_id: object,
-        doc_id: object,
+        document_id: object,
     ) -> Dict[str, object]:
         enriched = PgVectorClient._strip_collection_scope(meta)
         if "tenant_id" not in enriched and tenant_id:
@@ -836,7 +840,7 @@ class PgVectorClient:
         filter_case_value = (filters or {}).get("case_id", case_id)
         if "case_id" not in enriched:
             enriched["case_id"] = filter_case_value
-        enriched.setdefault("doc_id", doc_id)
+        enriched.setdefault("document_id", document_id)
         enriched.setdefault("chunk_id", chunk_id)
         return enriched
 
@@ -2430,7 +2434,7 @@ class PgVectorClient:
                 text_value,
                 metadata,
                 doc_hash,
-                doc_id,
+                document_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
             text_value = text_value or ""
@@ -2446,7 +2450,7 @@ class PgVectorClient:
                     "content": text_value,
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
-                    "doc_id": doc_id,
+                    "document_id": document_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
                     "_allow_below_cutoff": False,
@@ -2455,8 +2459,8 @@ class PgVectorClient:
             entry["chunk_id"] = chunk_identifier
             if not entry.get("metadata"):
                 entry["metadata"] = metadata_dict
-            if entry.get("doc_id") is None and doc_id is not None:
-                entry["doc_id"] = doc_id
+            if entry.get("document_id") is None and document_id is not None:
+                entry["document_id"] = document_id
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
             if vector_score_missing:
@@ -2493,7 +2497,7 @@ class PgVectorClient:
                 text_value,
                 metadata,
                 doc_hash,
-                doc_id,
+                document_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
             text_value = text_value or ""
@@ -2508,7 +2512,7 @@ class PgVectorClient:
                     "content": text_value,
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
-                    "doc_id": doc_id,
+                    "document_id": document_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
                     "_allow_below_cutoff": False,
@@ -2518,8 +2522,8 @@ class PgVectorClient:
 
             if not entry.get("metadata"):
                 entry["metadata"] = metadata_dict
-            if entry.get("doc_id") is None and doc_id is not None:
-                entry["doc_id"] = doc_id
+            if entry.get("document_id") is None and document_id is not None:
+                entry["document_id"] = document_id
             if entry.get("doc_hash") is None and doc_hash is not None:
                 entry["doc_hash"] = doc_hash
 
@@ -2644,7 +2648,7 @@ class PgVectorClient:
                     candidate_tenant_id=candidate_tenant,
                     candidate_case_id=candidate_case,
                     doc_hash=entry.get("doc_hash"),
-                    doc_id=entry.get("doc_id"),
+                    document_id=entry.get("document_id"),
                     chunk_id=entry.get("chunk_id"),
                     reasons=reasons or ["unknown"],
                     vector_score=vector_preview,
@@ -2655,19 +2659,19 @@ class PgVectorClient:
                 continue
 
             doc_hash = entry.get("doc_hash")
-            doc_id = entry.get("doc_id")
+            document_id = entry.get("document_id")
             meta = self._ensure_chunk_metadata_contract(
                 raw_meta,
                 tenant_id=tenant,
                 case_id=case_value,
                 filters=normalized_filters,
                 chunk_id=entry.get("chunk_id"),
-                doc_id=doc_id,
+                document_id=document_id,
             )
             if doc_hash and not meta.get("hash"):
                 meta["hash"] = doc_hash
-            if doc_id is not None and "id" not in meta:
-                meta["id"] = str(doc_id)
+            if document_id is not None and "id" not in meta:
+                meta["id"] = str(document_id)
             try:
                 vscore = float(entry.get("vscore", 0.0))
             except (TypeError, ValueError):
@@ -3059,7 +3063,7 @@ class PgVectorClient:
             external_id = chunk.meta.get("external_id")
             raw_collection_id = chunk.meta.get("collection_id")
             raw_doc_class = chunk.meta.get("doc_class")
-            raw_document_id = chunk.meta.get("document_id") or chunk.meta.get("doc_id")
+            raw_document_id = chunk.meta.get("document_id")
             provided_document_uuid: uuid.UUID | None = None
             if raw_document_id not in {None, "", "None"}:
                 try:
@@ -3130,7 +3134,7 @@ class PgVectorClient:
                 }
                 grouped_metadata = grouped[key]["metadata"]
                 grouped_metadata["document_id"] = str(grouped[key]["id"])
-                grouped_metadata["doc_id"] = str(grouped[key]["id"])
+                grouped_metadata["document_id"] = str(grouped[key]["id"])
             else:
                 doc_collection = grouped[key].get("collection_id")
                 if doc_collection is None and collection_id is not None:
@@ -3153,13 +3157,13 @@ class PgVectorClient:
                 metadata_block = grouped[key].get("metadata")
                 if isinstance(metadata_block, dict):
                     metadata_block["document_id"] = str(grouped[key]["id"])
-                    metadata_block["doc_id"] = str(grouped[key]["id"])
+                    metadata_block["document_id"] = str(grouped[key]["id"])
             chunk_meta = dict(chunk.meta)
             chunk_meta["tenant_id"] = tenant
             chunk_meta["external_id"] = external_id_str
             document_identifier = str(grouped[key]["id"])
             chunk_meta["document_id"] = document_identifier
-            chunk_meta["doc_id"] = document_identifier
+            chunk_meta["document_id"] = document_identifier
             if collection_id is not None:
                 chunk_meta["collection_id"] = collection_id
             elif "collection_id" in chunk_meta:
@@ -3608,7 +3612,7 @@ class PgVectorClient:
                         document_id_text = None
             if document_id_text:
                 metadata_dict["document_id"] = document_id_text
-                metadata_dict["doc_id"] = document_id_text
+                metadata_dict["document_id"] = document_id_text
 
             canonical_document_uuid: uuid.UUID | None = None
             if isinstance(document_uuid_value, uuid.UUID):
@@ -3728,10 +3732,6 @@ class PgVectorClient:
                     continue
 
             metadata_dict = doc["metadata"]
-
-            parents_map = doc.get("parents")
-            if isinstance(parents_map, Mapping) and parents_map:
-                metadata_dict["parent_nodes"] = limit_parent_payload(parents_map)
 
             raw_document_id = doc.get("id")
             if isinstance(raw_document_id, uuid.UUID):
@@ -3989,7 +3989,6 @@ class PgVectorClient:
             return
 
         stored_document_id = existing_map.get("document_id")
-        stored_doc_id = existing_map.get("doc_id")
         extra = {
             "tenant_id": str(tenant_uuid),
             "document_id": canonical_id,
@@ -3998,9 +3997,6 @@ class PgVectorClient:
                 if stored_document_id not in {None, ""}
                 else None
             ),
-            "stored_doc_id": (
-                str(stored_doc_id) if stored_doc_id not in {None, ""} else None
-            ),
         }
 
         if _is_dev_environment():
@@ -4008,7 +4004,6 @@ class PgVectorClient:
             if isinstance(desired_metadata, Mapping):
                 payload.update(desired_metadata)
             payload["document_id"] = canonical_id
-            payload["doc_id"] = canonical_id
             try:
                 cur.execute(
                     sql.SQL(
@@ -4219,7 +4214,7 @@ class PgVectorClient:
                         "embedding.empty",
                         extra={
                             "tenant_id": doc["tenant_id"],
-                            "doc_id": str(document_id),
+                            "document_id": str(document_id),
                             "chunk_id": str(chunk_id),
                             "source": doc.get("source"),
                         },

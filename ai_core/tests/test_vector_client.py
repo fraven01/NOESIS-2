@@ -298,11 +298,9 @@ def test_group_by_document_reuses_provided_document_id() -> None:
     entry = grouped[key]
     assert entry["id"] == document_uuid
     assert entry["metadata"]["document_id"] == str(document_uuid)
-    assert entry["metadata"]["doc_id"] == str(document_uuid)
     assert entry["chunks"], "expected chunk list"
     chunk_meta = entry["chunks"][0].meta
     assert chunk_meta["document_id"] == str(document_uuid)
-    assert chunk_meta["doc_id"] == str(document_uuid)
     parents = entry["parents"]
     assert f"{document_uuid}#doc" in parents
     assert parents[f"{document_uuid}#doc"]["document_id"] == str(document_uuid)
@@ -2873,10 +2871,10 @@ class TestPgVectorClient:
             "metadata": {
                 "tenant_id": tenant,
                 "case_id": "case-mapping",
-                "doc_id": str(doc_id),
+                "document_id": str(doc_id),
             },
             "hash": doc_hash,
-            "doc_id": doc_id,
+            "document_id": doc_id,
             "lscore": 0.62,
         }
 

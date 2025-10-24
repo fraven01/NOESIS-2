@@ -26,9 +26,9 @@ def test_hybrid_search_skips_malformed_lexical_rows():
         {
             "id": "vec-1",
             "text": "Vector candidate",
-            "metadata": {"tenant_id": tenant_id, "doc_id": "doc-1"},
+            "metadata": {"tenant_id": tenant_id, "document_id": "doc-1"},
             "hash": "hash-1",
-            "doc_id": "doc-1",
+            "document_id": "doc-1",
             "distance": 0.1,
         }
     ]

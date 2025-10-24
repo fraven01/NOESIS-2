@@ -1012,7 +1012,7 @@ def handle_document_upload(
     resolved_profile_id = profile_binding.profile_id
     ingestion_run_id = uuid4().hex
     queued_at = timezone.now().isoformat()
-    document_id = document_uuid.hex
+    document_id = str(document_uuid)
     document_ids = [document_id]
 
     try:
