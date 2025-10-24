@@ -154,6 +154,52 @@ def _metadata_parent_nodes_differ(
     ) != _normalise_parent_nodes_value(desired_value)
 
 
+def _normalise_hash_value(value: object | None) -> str | None:
+    """Return a canonical string representation for hash-like values."""
+
+    if value in {None, ""}:
+        return None
+    try:
+        text = str(value).strip()
+    except Exception:
+        return None
+    return text or None
+
+
+def _metadata_content_hash(
+    metadata: Mapping[str, object] | None,
+) -> str | None:
+    """Extract the ``content_hash``/``hash`` value from *metadata* if present."""
+
+    if not isinstance(metadata, Mapping):
+        return None
+    for key in ("content_hash", "hash"):
+        candidate = _normalise_hash_value(metadata.get(key))
+        if candidate:
+            return candidate
+    return None
+
+
+def _content_hash_matches(
+    existing: Mapping[str, object] | None,
+    desired: Mapping[str, object] | None,
+    *,
+    existing_fallback: object | None = None,
+    desired_fallback: object | None = None,
+) -> bool:
+    """Return ``True`` when both metadata maps reference the same content hash."""
+
+    existing_hash = _metadata_content_hash(existing)
+    desired_hash = _metadata_content_hash(desired)
+    if existing_hash is None:
+        existing_hash = _normalise_hash_value(existing_fallback)
+    if desired_hash is None:
+        desired_hash = _normalise_hash_value(desired_fallback)
+    if not existing_hash or not desired_hash:
+        return False
+    return existing_hash == desired_hash
+
+
 def _is_dev_environment() -> bool:
     """Return ``True`` when the current deployment resembles a dev setup."""
 
@@ -4021,6 +4067,13 @@ class PgVectorClient:
                     metadata_mismatch = _metadata_parent_nodes_differ(
                         existing_metadata_map, metadata_dict
                     )
+                    if metadata_mismatch and _content_hash_matches(
+                        existing_metadata_map,
+                        metadata_dict,
+                        existing_fallback=existing_hash,
+                        desired_fallback=storage_hash,
+                    ):
+                        metadata_mismatch = False
                     needs_update = (
                         str(existing_hash) != storage_hash
                         or existing_deleted is not None
