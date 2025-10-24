@@ -1,5 +1,6 @@
 import json
 import uuid
+import uuid
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -747,9 +748,10 @@ def test_ingestion_run_rejects_empty_embedding_profile(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
+    valid_document_id = str(uuid.uuid4())
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data=json.dumps({"document_ids": ["doc-1"], "embedding_profile": "   "}),
+        data=json.dumps({"document_ids": [valid_document_id], "embedding_profile": "   "}),
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
@@ -799,11 +801,12 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     monkeypatch.setattr(views, "resolve_ingestion_profile", _fake_resolve)
     monkeypatch.setattr(views.run_ingestion, "delay", _fake_delay)
 
+    raw_id = str(uuid.uuid4())
     response = client.post(
         "/ai/rag/ingestion/run/",
         data=json.dumps(
             {
-                "document_ids": [" doc-trimmed "],
+                "document_ids": [f" {raw_id} "],
                 "embedding_profile": " standard ",
             }
         ),
@@ -817,8 +820,8 @@ def test_ingestion_run_normalises_payload_before_dispatch(
 
     assert response.status_code == 202
     assert captured["resolved_profile_input"] == "standard"
-    assert captured["partition_args"][2] == ["doc-trimmed"]
-    assert dispatched["args"][2] == ["doc-trimmed"]
+    assert captured["partition_args"][2] == [raw_id]
+    assert dispatched["args"][2] == [raw_id]
     assert dispatched["args"][3] == "standard"
     assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
 
