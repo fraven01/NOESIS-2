@@ -153,7 +153,9 @@ def _normalise_document_identity(
     doc["id"] = resolved_id
 
     raw_metadata = metadata if isinstance(metadata, Mapping) else doc.get("metadata")
-    if isinstance(raw_metadata, Mapping):
+    if isinstance(raw_metadata, MutableMapping):
+        metadata_dict = raw_metadata
+    elif isinstance(raw_metadata, Mapping):
         metadata_dict = dict(raw_metadata)
     else:
         metadata_dict = {}
