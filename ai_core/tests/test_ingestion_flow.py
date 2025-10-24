@@ -1,4 +1,5 @@
 import json
+import uuid
 from uuid import UUID
 
 import pytest
@@ -201,8 +202,9 @@ def test_ingestion_run_reports_missing_documents(
 
     monkeypatch.setattr("ai_core.views.run_ingestion", DummyTask())
 
+    missing_id = str(uuid.uuid4())
     run_payload = {
-        "document_ids": [doc_id, "missing-document"],
+        "document_ids": [doc_id, missing_id],
         "priority": "normal",
         "embedding_profile": "standard",
     }
@@ -220,7 +222,7 @@ def test_ingestion_run_reports_missing_documents(
 
     assert resp.status_code == 202
     body = resp.json()
-    assert body["invalid_ids"] == ["missing-document"]
+    assert body["invalid_ids"] == [missing_id]
 
     assert len(calls) == 1
     args, kwargs = calls[0]

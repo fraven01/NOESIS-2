@@ -241,10 +241,12 @@ def test_rag_ingestion_run_with_invalid_document_id_returns_400(
 
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data={
-            "document_ids": ["not-a-uuid"],
-            "embedding_profile": "standard",
-        },
+        data=json.dumps(
+            {
+                "document_ids": ["not-a-uuid"],
+                "embedding_profile": "standard",
+            }
+        ),
         content_type="application/json",
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,

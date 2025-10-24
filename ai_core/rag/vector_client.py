@@ -143,14 +143,16 @@ def _metadata_identity_needs_repair(
 
 
 def _normalise_document_identity(
-    doc: MutableMapping[str, object], resolved_id: uuid.UUID
+    doc: MutableMapping[str, object],
+    resolved_id: uuid.UUID,
+    metadata: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Ensure ``doc`` and its nested structures reference ``resolved_id``."""
 
     canonical_id = str(resolved_id)
     doc["id"] = resolved_id
 
-    raw_metadata = doc.get("metadata")
+    raw_metadata = metadata if isinstance(metadata, Mapping) else doc.get("metadata")
     if isinstance(raw_metadata, Mapping):
         metadata_dict = dict(raw_metadata)
     else:
@@ -187,20 +189,28 @@ def _normalise_document_identity(
         doc[parent_key] = normalised_parents
 
     # Ensure parent_nodes are present in metadata when parent mappings exist
-    try:
-        from .parents import (
-            limit_parent_payload as _limit_parent_payload,
-        )  # local import
-    except Exception:
-        _limit_parent_payload = None  # type: ignore[assignment]
-    if isinstance(doc.get("parents"), Mapping) and doc.get("parents"):
+    parents_map = doc.get("parents")
+    if isinstance(parents_map, Mapping) and parents_map:
+        limited_parents: Mapping[str, object] | None = None
+        try:
+            from .parents import (  # local import
+                limit_parent_payload as _limit_parent_payload,
+            )
+        except Exception:
+            _limit_parent_payload = None  # type: ignore[assignment]
         if _limit_parent_payload is not None:
             try:
-                metadata_dict.setdefault(
-                    "parent_nodes", _limit_parent_payload(doc.get("parents"))
-                )
+                limited_parents = _limit_parent_payload(parents_map)
             except Exception:
-                pass
+                limited_parents = None
+        if limited_parents is None:
+            limited_parents = {
+                parent_id: (
+                    dict(payload) if isinstance(payload, Mapping) else payload
+                )
+                for parent_id, payload in parents_map.items()
+            }
+        metadata_dict["parent_nodes"] = dict(limited_parents)
 
     return metadata_dict
 
@@ -3622,10 +3632,23 @@ class PgVectorClient:
                     canonical_document_uuid = uuid.UUID(document_id_text)
                 except (TypeError, ValueError, AttributeError):
                     canonical_document_uuid = None
+            provisional_document_id: uuid.UUID
             if canonical_document_uuid is not None:
+                provisional_document_id = canonical_document_uuid
                 doc["id"] = canonical_document_uuid
+            else:
+                if isinstance(document_uuid_value, uuid.UUID):
+                    provisional_document_id = document_uuid_value
+                else:
+                    try:
+                        provisional_document_id = uuid.UUID(str(document_uuid_value))
+                    except (TypeError, ValueError, AttributeError):
+                        provisional_document_id = uuid.uuid4()
+                        doc["id"] = provisional_document_id
 
-            doc["metadata"] = metadata_dict
+            metadata_dict = _normalise_document_identity(
+                doc, provisional_document_id, metadata_dict
+            )
 
             if self._near_duplicate_enabled:
                 index_kind = str(_get_setting("RAG_INDEX_KIND", "HNSW")).upper()
@@ -3673,7 +3696,9 @@ class PgVectorClient:
                         existing_document_id = None
                 if self._near_duplicate_strategy == "skip":
                     if existing_document_id is not None:
-                        _normalise_document_identity(doc, existing_document_id)
+                        metadata_dict = _normalise_document_identity(
+                            doc, existing_document_id, metadata_dict
+                        )
                     actions[key] = "near_duplicate_skipped"
                     logger.info("ingestion.doc.near_duplicate_skipped", extra=log_extra)
                     continue
@@ -3685,8 +3710,10 @@ class PgVectorClient:
                         near_duplicate_details.get("external_id")
                     )
                     metadata_dict["near_duplicate_similarity"] = similarity
-                    _normalise_document_identity(doc, existing_document_id)
-                    metadata = Json(doc["metadata"])
+                    metadata_dict = _normalise_document_identity(
+                        doc, existing_document_id, metadata_dict
+                    )
+                    metadata = Json(metadata_dict)
                     cur.execute(
                         sql.SQL(
                             """
@@ -3730,8 +3757,6 @@ class PgVectorClient:
                     )
                     actions[key] = "near_duplicate_skipped"
                     continue
-
-            metadata_dict = doc["metadata"]
 
             raw_document_id = doc.get("id")
             if isinstance(raw_document_id, uuid.UUID):
@@ -3791,13 +3816,15 @@ class PgVectorClient:
                         existing_source,
                         existing_deleted,
                     ) = existing
-                    _normalise_document_identity(doc, existing_id)
+                    metadata_dict = _normalise_document_identity(
+                        doc, existing_id, metadata_dict
+                    )
                     needs_update = (
                         str(existing_hash) != storage_hash
                         or existing_deleted is not None
                     )
                     if needs_update:
-                        metadata = Json(doc["metadata"])
+                        metadata = Json(metadata_dict)
                         cur.execute(
                             sql.SQL(
                                 """
@@ -3829,15 +3856,17 @@ class PgVectorClient:
                             tenant_uuid=tenant_uuid,
                             document_id=existing_id,
                             existing_metadata=existing_metadata,
-                            desired_metadata=doc["metadata"],
+                            desired_metadata=metadata_dict,
                         )
                     document_ids[key] = existing_id
                     doc["collection_id"] = collection_text
                     doc["workflow_id"] = workflow_text
                     continue
 
-                _normalise_document_identity(doc, document_id)
-                metadata = Json(doc["metadata"])
+                metadata_dict = _normalise_document_identity(
+                    doc, document_id, metadata_dict
+                )
+                metadata = Json(metadata_dict)
                 cur.execute(
                     sql.SQL(
                         """
@@ -3919,8 +3948,10 @@ class PgVectorClient:
                         dup_source,
                         dup_deleted,
                     ) = duplicate
-                    _normalise_document_identity(doc, dup_id)
-                    metadata_payload = Json(doc["metadata"])
+                    metadata_dict = _normalise_document_identity(
+                        doc, dup_id, metadata_dict
+                    )
+                    metadata_payload = Json(metadata_dict)
                     needs_update = (
                         str(dup_hash) != storage_hash or dup_deleted is not None
                     )
@@ -3963,7 +3994,7 @@ class PgVectorClient:
                             tenant_uuid=tenant_uuid,
                             document_id=dup_id,
                             existing_metadata=dup_metadata,
-                            desired_metadata=doc["metadata"],
+                            desired_metadata=metadata_dict,
                         )
 
                     document_ids[key] = dup_id
