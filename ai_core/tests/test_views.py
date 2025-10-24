@@ -1,6 +1,5 @@
 import json
 import uuid
-import uuid
 from types import ModuleType, SimpleNamespace
 from typing import Any
 
@@ -751,7 +750,9 @@ def test_ingestion_run_rejects_empty_embedding_profile(
     valid_document_id = str(uuid.uuid4())
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data=json.dumps({"document_ids": [valid_document_id], "embedding_profile": "   "}),
+        data=json.dumps(
+            {"document_ids": [valid_document_id], "embedding_profile": "   "}
+        ),
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,

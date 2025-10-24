@@ -205,9 +205,7 @@ def _normalise_document_identity(
                 limited_parents = None
         if limited_parents is None:
             limited_parents = {
-                parent_id: (
-                    dict(payload) if isinstance(payload, Mapping) else payload
-                )
+                parent_id: (dict(payload) if isinstance(payload, Mapping) else payload)
                 for parent_id, payload in parents_map.items()
             }
         metadata_dict["parent_nodes"] = dict(limited_parents)
