@@ -74,18 +74,27 @@ class RagIngestionRunRequest(BaseModel):
     def _normalise_document_ids(cls, value: list[object]) -> list[str]:
         normalized: list[str] = []
         for raw in value:
+            if isinstance(raw, UUID):
+                normalized.append(str(raw))
+                continue
             if not isinstance(raw, str):
                 raise PydanticCustomError(
                     "invalid_document_ids",
-                    "document_ids must contain non-empty document identifiers.",
+                    "document_ids must contain valid UUID strings.",
                 )
             trimmed = raw.strip()
             if not trimmed:
                 raise PydanticCustomError(
                     "invalid_document_ids",
-                    "document_ids must contain non-empty document identifiers.",
+                    "document_ids must contain valid UUID strings.",
                 )
-            normalized.append(trimmed)
+            try:
+                normalized.append(str(UUID(trimmed)))
+            except (TypeError, ValueError):
+                raise PydanticCustomError(
+                    "invalid_document_ids",
+                    "document_ids must contain valid UUID strings.",
+                )
         return normalized
 
     @field_validator("embedding_profile", mode="before")
@@ -153,18 +162,27 @@ class RagHardDeleteAdminRequest(BaseModel):
     def _normalize_document_ids(cls, value: list[object]) -> list[str]:
         normalised: list[str] = []
         for raw in value:
+            if isinstance(raw, UUID):
+                normalised.append(str(raw))
+                continue
             if not isinstance(raw, str):
                 raise PydanticCustomError(
                     "invalid_document_ids",
-                    "document_ids must contain non-empty UUID strings.",
+                    "document_ids must contain valid UUID strings.",
                 )
             trimmed = raw.strip()
             if not trimmed:
                 raise PydanticCustomError(
                     "invalid_document_ids",
-                    "document_ids must contain non-empty UUID strings.",
+                    "document_ids must contain valid UUID strings.",
                 )
-            normalised.append(trimmed)
+            try:
+                normalised.append(str(UUID(trimmed)))
+            except (TypeError, ValueError):
+                raise PydanticCustomError(
+                    "invalid_document_ids",
+                    "document_ids must contain valid UUID strings.",
+                )
         return normalised
 
     @field_validator("reason", "ticket_ref", mode="before")

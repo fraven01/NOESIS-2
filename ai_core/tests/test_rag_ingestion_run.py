@@ -24,6 +24,7 @@ def test_rag_ingestion_run_queues_task(
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     captured = {}
+    document_id = uuid.uuid4()
 
     def fake_delay(
         tenant_id,
@@ -59,7 +60,7 @@ def test_rag_ingestion_run_queues_task(
     response = client.post(
         "/ai/rag/ingestion/run/",
         data={
-            "document_ids": ["abc123"],
+            "document_ids": [str(document_id)],
             "priority": "high",
             "embedding_profile": "standard",
         },
@@ -82,7 +83,7 @@ def test_rag_ingestion_run_queues_task(
     assert captured == {
         "tenant_id": test_tenant_schema_name,
         "case_id": "case-123",
-        "document_ids": ["abc123"],
+        "document_ids": [str(document_id)],
         "embedding_profile": "standard",
         "trace_id": body["trace_id"],
         "run_id": body["ingestion_run_id"],
@@ -100,7 +101,7 @@ def test_rag_ingestion_run_persists_collection_header_scope(
 
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
     case_segment = object_store.sanitize_identifier("case-collection-run")
-    document_id = "doc-collection"
+    document_id = str(uuid.uuid4())
 
     meta_path = (
         Path(tmp_path)
@@ -184,9 +185,11 @@ def test_rag_ingestion_run_without_profile_returns_400(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
+    document_id = str(uuid.uuid4())
+
     response = client.post(
         "/ai/rag/ingestion/run/",
-        data={"document_ids": ["abc123"]},
+        data={"document_ids": [document_id]},
         content_type="application/json",
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
@@ -207,10 +210,12 @@ def test_rag_ingestion_run_with_invalid_priority_returns_400(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
+    document_id = str(uuid.uuid4())
+
     response = client.post(
         "/ai/rag/ingestion/run/",
         data={
-            "document_ids": ["abc123"],
+            "document_ids": [document_id],
             "priority": "urgent",
             "embedding_profile": "standard",
         },
@@ -226,3 +231,29 @@ def test_rag_ingestion_run_with_invalid_priority_returns_400(
     body = response.json()
     assert body["code"] == "validation_error"
     assert "priority" in body["detail"]
+
+
+@pytest.mark.django_db
+def test_rag_ingestion_run_with_invalid_document_id_returns_400(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/ingestion/run/",
+        data={
+            "document_ids": ["not-a-uuid"],
+            "embedding_profile": "standard",
+        },
+        content_type="application/json",
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-uuid-check",
+        },
+    )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "validation_error"
+    assert "document_ids" in body["detail"]
