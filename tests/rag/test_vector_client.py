@@ -1608,6 +1608,66 @@ def test_upsert_strips_collection_scope_from_metadata() -> None:
             assert "collection_id" not in chunk_metadata
 
 
+def test_upsert_persists_parent_nodes_metadata() -> None:
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    external_id = "doc-parent-metadata"
+    shared_hash = "hash-parent-metadata"
+    parent_reference = str(uuid.uuid4())
+
+    initial_chunk = Chunk(
+        content="parent baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": external_id,
+            "hash": shared_hash,
+            "source": "unit-test",
+        },
+    )
+    assert client.upsert_chunks([initial_chunk]) == 1
+
+    parent_payload = {
+        "external_id": "parent-ext",
+        "relationship": "derivation",
+        "content": "Parent context",
+    }
+    updated_chunk = Chunk(
+        content="parent baseline",
+        meta={
+            "tenant_id": tenant,
+            "external_id": external_id,
+            "hash": shared_hash,
+            "source": "unit-test",
+        },
+        parents={parent_reference: parent_payload},
+    )
+
+    # Metadata-only updates should not require additional chunk inserts
+    assert client.upsert_chunks([updated_chunk]) in {0, 1}
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, metadata -> 'parent_nodes'
+                FROM documents
+                WHERE tenant_id = %s AND external_id = %s
+                """,
+                (tenant, external_id),
+            )
+            row = cur.fetchone()
+            assert row is not None
+            document_id, parent_nodes = row
+
+    assert isinstance(parent_nodes, dict)
+    assert parent_reference in parent_nodes
+    stored_parent = parent_nodes[parent_reference]
+    assert stored_parent.get("external_id") == "parent-ext"
+    assert stored_parent.get("relationship") == "derivation"
+    assert stored_parent.get("document_id") == str(document_id)
+
+
 def test_near_duplicate_respects_collection_scope(monkeypatch):
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.95")
