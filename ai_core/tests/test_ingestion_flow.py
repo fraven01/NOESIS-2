@@ -29,6 +29,7 @@ def test_upload_ingest_query_end2end(
 ):
     tenant = test_tenant_schema_name
     case = "case-e2e"
+    http_client = client
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -48,7 +49,7 @@ def test_upload_ingest_query_end2end(
         "metadata": json.dumps({"label": "e2e", "external_id": "doc-e2e"}),
     }
 
-    resp = client.post(
+    resp = http_client.post(
         "/ai/rag/documents/upload/",
         data=payload,
         **{
@@ -103,10 +104,10 @@ def test_upload_ingest_query_end2end(
     assert any(parent_id.endswith("#sec-1") for parent_id in parent_ids)
     assert zebra_chunk["meta"]["document_id"] == doc_id
 
-    client = rag_vector_client.get_default_client()
-    documents_table = client._table("documents")
-    chunks_table = client._table("chunks")
-    with client._connection() as conn:
+    vector_client = rag_vector_client.get_default_client()
+    documents_table = vector_client._table("documents")
+    chunks_table = vector_client._table("chunks")
+    with vector_client._connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL("SELECT id::text, metadata FROM {} WHERE id = %s").format(
@@ -137,7 +138,7 @@ def test_upload_ingest_query_end2end(
         assert chunk_meta.get("document_id") == doc_id
 
     # Query (Demo-Endpunkt wurde entfernt und meldet HTTP 410)
-    resp = client.post(
+    resp = http_client.post(
         "/ai/v1/rag-demo/",
         data=json.dumps({"query": "zebragurke", "top_k": 3}),
         content_type="application/json",

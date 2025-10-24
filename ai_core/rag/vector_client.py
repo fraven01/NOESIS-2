@@ -225,13 +225,57 @@ def _normalise_document_identity(
             for chunk in chunks_for_parents:
                 chunk_parents = getattr(chunk, "parents", None)
                 if not isinstance(chunk_parents, Mapping):
+                    # No structured parents on the chunk; try deriving
+                    # a minimal root parent entry from parent_ids in meta.
+                    try:
+                        chunk_meta = getattr(chunk, "meta", None)
+                        parent_ids = None
+                        if isinstance(chunk_meta, Mapping):
+                            candidate = chunk_meta.get("parent_ids")
+                            if isinstance(candidate, Sequence) and not isinstance(
+                                candidate, (str, bytes, bytearray)
+                            ):
+                                parent_ids = [str(pid) for pid in candidate if pid]
+                        if parent_ids and any(
+                            isinstance(pid, str) and pid.endswith("#doc")
+                            for pid in parent_ids
+                        ):
+                            root_key = f"{canonical_id}#doc"
+                            derived_parents[root_key] = {"document_id": canonical_id}
+                    except Exception:
+                        pass
                     continue
                 for parent_id, payload in chunk_parents.items():
                     if isinstance(payload, Mapping):
                         derived_parents[str(parent_id)] = dict(payload)
                     else:
                         derived_parents[str(parent_id)] = payload
+
         if derived_parents:
+            root_key = f"{canonical_id}#doc"
+            alt_root_payload: object | None = None
+            canonical_present = False
+            for existing_key in list(derived_parents.keys()):
+                key_text = str(existing_key)
+                if not key_text.endswith("#doc"):
+                    continue
+                if key_text == root_key:
+                    canonical_present = True
+                    continue
+                if alt_root_payload is None:
+                    alt_root_payload = derived_parents[existing_key]
+                derived_parents.pop(existing_key, None)
+
+            if not canonical_present:
+                if isinstance(alt_root_payload, Mapping):
+                    root_payload = dict(alt_root_payload)
+                else:
+                    root_payload = {}
+                root_payload.setdefault("document_id", canonical_id)
+                derived_parents[root_key] = root_payload
+            elif root_key not in derived_parents:
+                derived_parents[root_key] = {"document_id": canonical_id}
+
             doc["parents"] = derived_parents
 
     chunks = doc.get("chunks")
@@ -264,6 +308,32 @@ def _normalise_document_identity(
 
     # Ensure parent_nodes are present in metadata when parent mappings exist
     parents_map = doc.get("parents") or doc.get("parent_nodes")
+    if not (isinstance(parents_map, Mapping) and parents_map):
+        # As a last resort, derive a minimal parent_nodes map containing
+        # the document root from chunk meta's parent_ids if available.
+        try:
+            chunks_for_parents = doc.get("chunks")
+            root_detected = False
+            if isinstance(chunks_for_parents, Sequence):
+                for chunk in chunks_for_parents:
+                    chunk_meta = getattr(chunk, "meta", None)
+                    if not isinstance(chunk_meta, Mapping):
+                        continue
+                    ids_value = chunk_meta.get("parent_ids")
+                    if isinstance(ids_value, Sequence) and not isinstance(
+                        ids_value, (str, bytes, bytearray)
+                    ):
+                        if any(
+                            isinstance(pid, str) and pid.endswith("#doc")
+                            for pid in ids_value
+                        ):
+                            root_detected = True
+                            break
+            if root_detected:
+                root_key = f"{canonical_id}#doc"
+                parents_map = {root_key: {"document_id": canonical_id}}
+        except Exception:
+            parents_map = parents_map
     if isinstance(parents_map, Mapping) and parents_map:
         limited_parents: Mapping[str, object] | None = None
         if _limit_parent_payload is not None:
