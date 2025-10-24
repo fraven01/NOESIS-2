@@ -245,6 +245,7 @@ def _service_processor(
         raw_payload = event_dict.get("payload")
         if isinstance(raw_payload, str) and "{" in raw_payload and '":' in raw_payload:
             from ai_core.infra.pii_flags import get_pii_config  # lazy
+
             cfg = get_pii_config() or {}
             deterministic = bool(cfg.get("deterministic", False))
             hmac_secret = cfg.get("hmac_secret") if deterministic else None
@@ -402,9 +403,11 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
 
             # Always try structured masking for JSON-like strings to ensure keys such as
             # "access_token" are redacted, independent of the fast-path heuristic.
-            is_jsonish = ("{" in raw_value and '":' in raw_value)
+            is_jsonish = "{" in raw_value and '":' in raw_value
 
-            if not is_jsonish and (not name_detection and not _looks_interesting(raw_value)):
+            if not is_jsonish and (
+                not name_detection and not _looks_interesting(raw_value)
+            ):
                 continue
 
             structured_limit = (
@@ -461,7 +464,7 @@ def _jsonish_redaction_processor(
     for key, raw_value in list(event_dict.items()):
         if not isinstance(raw_value, str):
             continue
-        is_jsonish = ("{" in raw_value and '":' in raw_value)
+        is_jsonish = "{" in raw_value and '":' in raw_value
         if not is_jsonish:
             continue
         try:
@@ -651,7 +654,9 @@ def _configure_stdlib_logging(
     if pii_processor is not None:
         foreign_pre_chain.append(pii_processor)
     # Also include JSON string redaction in stdlib pre-chain
-    foreign_pre_chain.extend([_jsonish_redaction_processor, redactor, _stringify_ids_for_payload])
+    foreign_pre_chain.extend(
+        [_jsonish_redaction_processor, redactor, _stringify_ids_for_payload]
+    )
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processor=_JSON_RENDERER,

@@ -643,9 +643,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
     # Use compact UUIDs for parent identifiers to align with external document_id formatting
-    parent_prefix = (
-        document_id.replace("-", "") if document_id else str(external_id)
-    )
+    parent_prefix = document_id.replace("-", "") if document_id else str(external_id)
     root_id = f"{parent_prefix}#doc"
     parent_nodes[root_id] = {
         "id": root_id,
