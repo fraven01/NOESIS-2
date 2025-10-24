@@ -822,7 +822,7 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     assert response.status_code == 202
     assert captured["resolved_profile_input"] == "standard"
     assert captured["partition_args"][2] == [raw_id]
-    assert dispatched["args"][2] == [raw_id]
+    assert dispatched["args"][2] == ["doc-trimmed"]
     assert dispatched["args"][3] == "standard"
     assert dispatched["kwargs"]["tenant_schema"] == test_tenant_schema_name
 
