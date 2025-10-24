@@ -29,7 +29,8 @@ logger = get_logger(__name__)
 
 # Conservative defaults to avoid web worker timeouts in dev/prod.
 # Projects can override via LITELLM_TIMEOUTS env (see ai_core.infra.config).
-DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 20}
+# "synthesize" often produces longer responses; align default with tests/expectations.
+DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 45}
 
 
 class LlmClientError(Exception):

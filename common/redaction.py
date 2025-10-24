@@ -65,7 +65,15 @@ class Redactor:
     )
 
     _PROMPT_FIELDS: tuple[str, ...] = ("prompt", "response")
-    _ALLOWLISTED_KEYS: frozenset[str] = frozenset({"@timestamp", "timestamp"})
+    _ALLOWLISTED_KEYS: frozenset[str] = frozenset(
+        {
+            "@timestamp",
+            "timestamp",
+            # Do not redact identifier fields used for correlation in logs
+            "document_id",
+            "asset_id",
+        }
+    )
 
     _SUB_PATTERNS: tuple[tuple[re.Pattern[str], str], ...] = (
         (re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE), MASK),

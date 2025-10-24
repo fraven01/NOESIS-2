@@ -1,3 +1,7 @@
+# Constrain dev dependencies to the exact pins from the base lockfile
+# to avoid pip resolution conflicts when installing both files together.
+-c requirements.txt
+
 markupsafe==3.0.3 # Override conflict with requirements.in
 typing-inspection==0.4.2 # Override conflict with requirements.in (NEW FIX)
 

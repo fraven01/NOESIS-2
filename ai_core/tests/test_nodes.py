@@ -524,11 +524,11 @@ def test_tracing_called(monkeypatch):
             spans.append(name)
             return FakeContext(name)
 
-    monkeypatch.setattr(
-        "ai_core.infra.observability.tracing_enabled", lambda: True
-    )
+    monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: True)
     monkeypatch.setattr("ai_core.infra.observability._get_tracer", lambda: FakeTracer())
-    monkeypatch.setattr("ai_core.infra.observability.update_observation", lambda **_: None)
+    monkeypatch.setattr(
+        "ai_core.infra.observability.update_observation", lambda **_: None
+    )
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
     state = {"question": "Q?", "snippets": []}

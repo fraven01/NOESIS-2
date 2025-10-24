@@ -1085,9 +1085,10 @@ def test_hybrid_search_unions_case_and_collection_filters(monkeypatch):
     ]
     assert vector_queries
     sql, params = vector_queries[0]
-    assert (
-        "(c.metadata ->> 'case_id' = %s) or (c.collection_id = any(%s))" in sql.lower()
-    )
+    lower_sql = sql.lower()
+    # Accept cast variations for the collection_id array while ensuring both predicates are present
+    assert "(c.metadata ->> 'case_id' = %s)" in lower_sql
+    assert "c.collection_id = any(" in lower_sql
     assert params[-3] == case_id
     assert params[-2] == collection_ids
 

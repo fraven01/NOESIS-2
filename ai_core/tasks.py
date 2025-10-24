@@ -642,7 +642,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             document_id = candidate_text or None
 
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
-    parent_prefix = document_id or str(external_id)
+    # Use compact UUIDs for parent identifiers to align with external document_id formatting
+    parent_prefix = (
+        document_id.replace("-", "") if document_id else str(external_id)
+    )
     root_id = f"{parent_prefix}#doc"
     parent_nodes[root_id] = {
         "id": root_id,
@@ -949,7 +952,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 "parent_ids": parent_ids,
             }
             if document_id:
-                chunk_meta["document_id"] = document_id
+                # Ensure canonical dashed UUID format for document_id in chunk meta
+                try:
+                    chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
+                except Exception:
+                    chunk_meta["document_id"] = document_id
                 chunk_meta["doc_id"] = document_id
             if meta.get("embedding_profile"):
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
@@ -974,6 +981,18 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             info = dict(info)
             info["content"] = content_text
             parent_nodes[parent_id] = info
+
+    # Provide compatibility for parent key formats: include both dashed and
+    # compact UUID variants for the document root when a document_id is present.
+    if document_id:
+        try:
+            compact_root = f"{document_id.replace('-', '')}#doc"
+            dashed_root = f"{document_id}#doc"
+            if compact_root in parent_nodes and dashed_root not in parent_nodes:
+                parent_nodes[dashed_root] = dict(parent_nodes[compact_root])
+                parent_nodes[dashed_root].setdefault("document_id", document_id)
+        except Exception:
+            pass
 
     limited_parents = limit_parent_payload(parent_nodes)
     payload = {"chunks": chunks, "parents": limited_parents}

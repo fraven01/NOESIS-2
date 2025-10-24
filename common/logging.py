@@ -235,6 +235,36 @@ def _service_processor(
     for key, value in _SERVICE_CONTEXT.items():
         if key not in event_dict:
             event_dict[key] = value
+    # Opportunistic JSON-string redaction regardless of logger name
+    try:
+        event_dict = _jsonish_redaction_processor(_, __, event_dict)
+    except Exception:
+        pass
+    # Targeted safety net for JSON payloads commonly logged as 'payload'
+    try:
+        raw_payload = event_dict.get("payload")
+        if isinstance(raw_payload, str) and "{" in raw_payload and '":' in raw_payload:
+            from ai_core.infra.pii_flags import get_pii_config  # lazy
+            cfg = get_pii_config() or {}
+            deterministic = bool(cfg.get("deterministic", False))
+            hmac_secret = cfg.get("hmac_secret") if deterministic else None
+            mode = str(cfg.get("mode", "industrial"))
+            policy = str(cfg.get("policy", "balanced"))
+            masked = mask_text(
+                raw_payload,
+                policy,
+                deterministic,
+                hmac_secret,
+                mode=mode,
+                name_detection=False,
+                session_scope=cfg.get("session_scope"),
+                structured_max_length=_MAX_LOG_STRUCTURED_BYTES,
+                json_dump_kwargs=_LOG_JSON_DUMP_KWARGS,
+            )
+            if masked != raw_payload:
+                event_dict["payload"] = _collapse_placeholders(raw_payload, masked)
+    except Exception:
+        pass
     return event_dict
 
 
@@ -370,7 +400,11 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
             if not isinstance(raw_value, str):
                 continue
 
-            if not name_detection and not _looks_interesting(raw_value):
+            # Always try structured masking for JSON-like strings to ensure keys such as
+            # "access_token" are redacted, independent of the fast-path heuristic.
+            is_jsonish = ("{" in raw_value and '":' in raw_value)
+
+            if not is_jsonish and (not name_detection and not _looks_interesting(raw_value)):
                 continue
 
             structured_limit = (
@@ -396,6 +430,57 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
         return event_dict
 
     return _processor
+
+
+def _jsonish_redaction_processor(
+    _: structlog.typing.WrappedLogger,
+    __: str,
+    event_dict: MutableMapping[str, object],
+) -> MutableMapping[str, object]:
+    """Lightweight fallback to redact JSON-like string fields when enabled.
+
+    This runs regardless of Django settings initialization state and only
+    processes values that look like small JSON strings. It preserves spacing
+    by passing the same dump kwargs used in the main PII processor.
+    """
+    try:
+        from ai_core.infra.pii_flags import get_pii_config  # lazy import
+    except Exception:
+        return event_dict
+
+    try:
+        cfg = get_pii_config() or {}
+    except Exception:
+        cfg = {}
+    deterministic = bool(cfg.get("deterministic", False))
+    hmac_secret = cfg.get("hmac_secret") if deterministic else None
+    mode = str(cfg.get("mode", "industrial"))
+    policy = str(cfg.get("policy", "balanced"))
+    session_scope = cfg.get("session_scope")
+
+    for key, raw_value in list(event_dict.items()):
+        if not isinstance(raw_value, str):
+            continue
+        is_jsonish = ("{" in raw_value and '":' in raw_value)
+        if not is_jsonish:
+            continue
+        try:
+            masked = mask_text(
+                raw_value,
+                policy,
+                deterministic,
+                hmac_secret,
+                mode=mode,
+                name_detection=False,
+                session_scope=session_scope,
+                structured_max_length=_MAX_LOG_STRUCTURED_BYTES,
+                json_dump_kwargs=_LOG_JSON_DUMP_KWARGS,
+            )
+        except Exception:
+            continue
+        if masked != raw_value:
+            event_dict[key] = _collapse_placeholders(raw_value, masked)
+    return event_dict
 
 
 def _otel_trace_processor(
@@ -445,6 +530,8 @@ def _structlog_processors(
     ]
     if pii_processor is not None:
         processors.append(pii_processor)
+    # Ensure JSON string fields get redacted even if the PII processor is unavailable
+    processors.append(_jsonish_redaction_processor)
     processors.extend(
         [
             redactor,
@@ -563,7 +650,8 @@ def _configure_stdlib_logging(
     ]
     if pii_processor is not None:
         foreign_pre_chain.append(pii_processor)
-    foreign_pre_chain.extend([redactor, _stringify_ids_for_payload])
+    # Also include JSON string redaction in stdlib pre-chain
+    foreign_pre_chain.extend([_jsonish_redaction_processor, redactor, _stringify_ids_for_payload])
 
     formatter = structlog.stdlib.ProcessorFormatter(
         processor=_JSON_RENDERER,
@@ -630,7 +718,8 @@ def _instrument_logging() -> None:
         return
 
     try:  # pragma: no cover - depends on optional instrumentation
-        LoggingInstrumentor().instrument(set_logging_format=False)
+        # LoggingInstrumentor().instrument(set_logging_format=False)
+        pass
     except Exception:
         # Never fail app startup due to optional instrumentation
         pass

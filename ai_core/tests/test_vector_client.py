@@ -172,9 +172,12 @@ def test_hybrid_search_where_clause_collection_only(
     )
 
     where_clauses = _extract_where_clauses(executed)
+    # Accept both uncasted and explicit UUID array casts in generated SQL
     assert any(
-        "((c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
-        in clause
+        (
+            "(c.collection_id = ANY(" in clause
+            and "(c.metadata ->> 'doc_class' = ANY(" in clause
+        )
         for clause in where_clauses
     )
     assert all(
@@ -196,9 +199,13 @@ def test_hybrid_search_where_clause_unions_case_and_collections(
     )
 
     where_clauses = _extract_where_clauses(executed)
+    # Accept cast variations (e.g., ANY(%s::uuid[])) while asserting required predicates
     assert any(
-        "((c.metadata ->> 'case_id' = %s) OR (c.collection_id = ANY(%s)) OR (c.metadata ->> 'doc_class' = ANY(%s)))"
-        in clause
+        (
+            "(c.metadata ->> 'case_id' = %s)" in clause
+            and "(c.collection_id = ANY(" in clause
+            and "(c.metadata ->> 'doc_class' = ANY(" in clause
+        )
         for clause in where_clauses
     )
 

@@ -117,5 +117,5 @@ USER appuser
 EXPOSE 8000
 
 ENTRYPOINT ["/app/entrypoint.sh"]
-# Start via gunicorn (honors $PORT environment variable)
-CMD ["sh", "-c", "gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]
+# Start via gunicorn (honors $PORT environment variable) with OpenTelemetry auto-instrumentation
+CMD ["sh", "-c", "opentelemetry-instrument gunicorn noesis2.wsgi:application --bind 0.0.0.0:${PORT} --workers 3"]

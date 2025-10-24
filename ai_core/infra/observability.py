@@ -278,7 +278,17 @@ def emit_event(payload: dict[str, Any]) -> None:
 
 
 def get_langchain_callbacks() -> Iterable[Any]:
-    """Return LangChain callbacks; empty when no dedicated integration exists."""
+    """Return LangChain callbacks; fall back to empty tuple.
 
-    return ()
+    Prefer the Langfuse callback handler when available. This integrates
+    LangChain runs with the same Langfuse project configured via ENV
+    (LANGFUSE_*). If the dependency is missing, return an empty iterable.
+    """
 
+    try:  # pragma: no cover - optional dependency
+        from langfuse.callback import CallbackHandler as LangfuseCallbackHandler  # type: ignore
+
+        handler = LangfuseCallbackHandler()
+        return (handler,)
+    except Exception:
+        return ()

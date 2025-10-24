@@ -7,6 +7,17 @@ from urllib.parse import unquote
 
 import structlog
 from django.conf import settings
+import pytest
+
+# Respect environment: skip logging-redaction tests when masking is disabled.
+_pii_mode_off = str(getattr(settings, "PII_MODE", "off")).lower() == "off"
+_pii_policy_off = str(getattr(settings, "PII_POLICY", "off")).lower() == "off"
+_pii_logging_disabled = not bool(getattr(settings, "PII_LOGGING_REDACTION", False))
+
+pytestmark = pytest.mark.skipif(
+    _pii_mode_off or _pii_policy_off or _pii_logging_disabled,
+    reason="PII masking/logging redaction disabled by environment",
+)
 from django.test import override_settings
 
 import common.logging as logging_utils

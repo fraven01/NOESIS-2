@@ -31,3 +31,7 @@ pydantic>=2.0,<3.0
 Pillow
 charset-normalizer==3.4.4  # unify with dev to avoid pip resolution conflict
 langfuse>=2.0.0  # optional SDK; code degrades to no-op if absent
+opentelemetry-instrumentation-django
+opentelemetry-instrumentation-langchain
+opentelemetry-instrumentation-httpx
+opentelemetry-instrumentation-psycopg2
