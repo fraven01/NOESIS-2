@@ -947,6 +947,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 "hash": content_hash,
                 "external_id": external_id,
                 "content_hash": content_hash,
+                # Provide per-chunk parent lineage for compatibility with existing tests
                 "parent_ids": parent_ids,
             }
 
@@ -1105,6 +1106,19 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         "ingestion.embed.summary",
         extra={"chunks": total_chunks, "batches": batches},
     )
+    # Debug visibility for propagated parents block
+    try:
+        logger.warning(
+            "ingestion.embed.parents",
+            extra={
+                "event": "DEBUG.TASKS.EMBED.PARENTS",
+                "tenant_id": meta.get("tenant_id"),
+                "case_id": meta.get("case_id"),
+                "parents_count": (len(parents) if isinstance(parents, dict) else None),
+            },
+        )
+    except Exception:
+        pass
     payload = {"chunks": embeddings, "parents": parents}
     out_path = _build_path(meta, "embeddings", "vectors.json")
     object_store.write_json(out_path, payload)
@@ -1127,6 +1141,20 @@ def upsert(
             parents = parents_payload
     else:
         data = list(raw_data or [])
+    # Debug visibility for parents presence in upsert input and parsed payload
+    try:
+        logger.warning(
+            "ingestion.upsert.parents_loaded",
+            extra={
+                "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
+                "tenant_id": meta.get("tenant_id") if meta else None,
+                "case_id": meta.get("case_id") if meta else None,
+                "parents_present": bool(parents),
+                "parents_count": (len(parents) if isinstance(parents, dict) else None),
+            },
+        )
+    except Exception:
+        pass
     chunk_objs = []
     for index, ch in enumerate(data):
         vector = ch.get("embedding")

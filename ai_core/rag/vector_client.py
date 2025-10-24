@@ -197,6 +197,11 @@ def _normalise_document_identity(
     metadata: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
     """Ensure ``doc`` and its nested structures reference ``resolved_id``."""
+    # Local, fault-tolerant import to support partial runtimes and tests
+    try:  # pragma: no cover - exercised indirectly via tests
+        from .parents import limit_parent_payload as _limit_parent_payload  # type: ignore
+    except Exception:  # pragma: no cover - defensive fallback
+        _limit_parent_payload = None  # type: ignore[assignment]
 
     canonical_id = str(resolved_id)
     doc["id"] = resolved_id
@@ -210,6 +215,24 @@ def _normalise_document_identity(
         metadata_dict = {}
     metadata_dict["document_id"] = canonical_id
     doc["metadata"] = metadata_dict
+
+    # Ensure a parents map is available even when upstream calls omit doc-level parents.
+    parents_map = doc.get("parents")
+    if not isinstance(parents_map, Mapping) or not parents_map:
+        derived_parents: dict[str, object] = {}
+        chunks_for_parents = doc.get("chunks")
+        if isinstance(chunks_for_parents, Sequence):
+            for chunk in chunks_for_parents:
+                chunk_parents = getattr(chunk, "parents", None)
+                if not isinstance(chunk_parents, Mapping):
+                    continue
+                for parent_id, payload in chunk_parents.items():
+                    if isinstance(payload, Mapping):
+                        derived_parents[str(parent_id)] = dict(payload)
+                    else:
+                        derived_parents[str(parent_id)] = payload
+        if derived_parents:
+            doc["parents"] = derived_parents
 
     chunks = doc.get("chunks")
     if isinstance(chunks, Sequence):
@@ -240,21 +263,15 @@ def _normalise_document_identity(
         doc[parent_key] = normalised_parents
 
     # Ensure parent_nodes are present in metadata when parent mappings exist
-    parents_map = doc.get("parents")
+    parents_map = doc.get("parents") or doc.get("parent_nodes")
     if isinstance(parents_map, Mapping) and parents_map:
         limited_parents: Mapping[str, object] | None = None
-        try:
-            from .parents import (  # local import
-                limit_parent_payload as _limit_parent_payload,
-            )
-        except Exception:
-            _limit_parent_payload = None  # type: ignore[assignment]
         if _limit_parent_payload is not None:
             try:
                 limited_parents = _limit_parent_payload(parents_map)
             except Exception:
                 limited_parents = None
-        if limited_parents is None:
+        if not limited_parents:
             limited_parents = {
                 parent_id: (dict(payload) if isinstance(payload, Mapping) else payload)
                 for parent_id, payload in parents_map.items()
@@ -1105,6 +1122,26 @@ class PgVectorClient:
         metrics.RAG_UPSERT_CHUNKS.inc(inserted_chunks)
         documents_info: List[Dict[str, object]] = []
         for key, doc in grouped.items():
+            # DEBUG.1.initial_doc – capture initial state for this document candidate
+            try:
+                logger.warning(
+                    "vector_client.ensure_documents",
+                    extra={
+                        "event": "DEBUG.1.initial_doc",
+                        "tenant_id": str(doc.get("tenant_id")),
+                        "external_id": str(doc.get("external_id")),
+                        "workflow_id": str(doc.get("workflow_id")),
+                        "collection_id": str(doc.get("collection_id")),
+                        "initial_metadata": json.dumps(
+                            doc.get("metadata"), default=str, ensure_ascii=False
+                        ),
+                        "initial_parents": json.dumps(
+                            doc.get("parents"), default=str, ensure_ascii=False
+                        ),
+                    },
+                )
+            except Exception:
+                pass
             tenant_id, workflow_id, external_id, collection_id = key
             action = doc_actions.get(key, "inserted")
             stats = per_doc_timings.get(
@@ -3244,7 +3281,12 @@ class PgVectorClient:
                         parent_payload = parent_meta
                     parents_map[parent_id] = parent_payload
             grouped[key]["chunks"].append(
-                Chunk(content=chunk.content, meta=chunk_meta, embedding=chunk.embedding)
+                Chunk(
+                    content=chunk.content,
+                    meta=chunk_meta,
+                    embedding=chunk.embedding,
+                    parents=chunk_parents,
+                )
             )
         return grouped
 
@@ -3868,7 +3910,44 @@ class PgVectorClient:
                     metadata_dict = _normalise_document_identity(
                         doc, existing_id, metadata_dict
                     )
+                    # DEBUG.2.after_normalise – show metadata after identity normalisation
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.2.after_normalise",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(existing_id),
+                                "metadata_after_normalise": json.dumps(
+                                    metadata_dict, default=str, ensure_ascii=False
+                                ),
+                            },
+                        )
+                    except Exception:
+                        pass
                     existing_metadata_map = _coerce_metadata_map(existing_metadata)
+                    # DEBUG.3.pre_diff – inputs to parent_nodes diff
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.3.pre_diff",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(existing_id),
+                                "existing_metadata": json.dumps(
+                                    existing_metadata_map,
+                                    default=str,
+                                    ensure_ascii=False,
+                                ),
+                                "desired_metadata": json.dumps(
+                                    metadata_dict, default=str, ensure_ascii=False
+                                ),
+                            },
+                        )
+                    except Exception:
+                        pass
                     metadata_mismatch = _metadata_parent_nodes_differ(
                         existing_metadata_map, metadata_dict
                     )
@@ -3877,7 +3956,38 @@ class PgVectorClient:
                         or existing_deleted is not None
                         or metadata_mismatch
                     )
+                    # DEBUG.4.post_diff – outcome of diff and final decision flags
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.4.post_diff",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(existing_id),
+                                "metadata_mismatch": bool(metadata_mismatch),
+                                "needs_update": bool(needs_update),
+                            },
+                        )
+                    except Exception:
+                        pass
                     if needs_update:
+                        # DEBUG.5.pre_update – metadata that will be persisted via UPDATE
+                        try:
+                            logger.warning(
+                                "vector_client.ensure_documents",
+                                extra={
+                                    "event": "DEBUG.5.pre_update",
+                                    "tenant_id": str(tenant_uuid),
+                                    "external_id": external_id,
+                                    "document_id": str(existing_id),
+                                    "metadata_to_update": json.dumps(
+                                        metadata_dict, default=str, ensure_ascii=False
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
                         metadata = Json(metadata_dict)
                         cur.execute(
                             sql.SQL(
@@ -3904,6 +4014,22 @@ class PgVectorClient:
                         actions[key] = "replaced"
                     else:
                         actions[key] = "skipped"
+                        # DEBUG.6.update_skipped – show final state when skipping UPDATE
+                        try:
+                            logger.warning(
+                                "vector_client.ensure_documents",
+                                extra={
+                                    "event": "DEBUG.6.update_skipped",
+                                    "tenant_id": str(tenant_uuid),
+                                    "external_id": external_id,
+                                    "document_id": str(existing_id),
+                                    "metadata_skipped": json.dumps(
+                                        metadata_dict, default=str, ensure_ascii=False
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
                         self._maybe_repair_persisted_metadata(
                             cur,
                             documents_table=documents_table,
@@ -4005,8 +4131,45 @@ class PgVectorClient:
                     metadata_dict = _normalise_document_identity(
                         doc, dup_id, metadata_dict
                     )
+                    # DEBUG.2.after_normalise (retry path)
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.2.after_normalise.retry",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(dup_id),
+                                "metadata_after_normalise": json.dumps(
+                                    metadata_dict, default=str, ensure_ascii=False
+                                ),
+                            },
+                        )
+                    except Exception:
+                        pass
                     metadata_payload = Json(metadata_dict)
                     existing_metadata_map = _coerce_metadata_map(dup_metadata)
+                    # DEBUG.3.pre_diff (retry path)
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.3.pre_diff.retry",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(dup_id),
+                                "existing_metadata": json.dumps(
+                                    existing_metadata_map,
+                                    default=str,
+                                    ensure_ascii=False,
+                                ),
+                                "desired_metadata": json.dumps(
+                                    metadata_dict, default=str, ensure_ascii=False
+                                ),
+                            },
+                        )
+                    except Exception:
+                        pass
                     metadata_mismatch = _metadata_parent_nodes_differ(
                         existing_metadata_map, metadata_dict
                     )
@@ -4015,7 +4178,38 @@ class PgVectorClient:
                         or dup_deleted is not None
                         or metadata_mismatch
                     )
+                    # DEBUG.4.post_diff (retry path)
+                    try:
+                        logger.warning(
+                            "vector_client.ensure_documents",
+                            extra={
+                                "event": "DEBUG.4.post_diff.retry",
+                                "tenant_id": str(tenant_uuid),
+                                "external_id": external_id,
+                                "document_id": str(dup_id),
+                                "metadata_mismatch": bool(metadata_mismatch),
+                                "needs_update": bool(needs_update),
+                            },
+                        )
+                    except Exception:
+                        pass
                     if needs_update:
+                        # DEBUG.5.pre_update (retry path)
+                        try:
+                            logger.warning(
+                                "vector_client.ensure_documents",
+                                extra={
+                                    "event": "DEBUG.5.pre_update.retry",
+                                    "tenant_id": str(tenant_uuid),
+                                    "external_id": external_id,
+                                    "document_id": str(dup_id),
+                                    "metadata_to_update": json.dumps(
+                                        metadata_dict, default=str, ensure_ascii=False
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
                         retry_cur.execute(
                             sql.SQL(
                                 """
@@ -4048,6 +4242,22 @@ class PgVectorClient:
                                 "external_id": external_id,
                             },
                         )
+                        # DEBUG.6.update_skipped (retry path)
+                        try:
+                            logger.warning(
+                                "vector_client.ensure_documents",
+                                extra={
+                                    "event": "DEBUG.6.update_skipped.retry",
+                                    "tenant_id": str(tenant_uuid),
+                                    "external_id": external_id,
+                                    "document_id": str(dup_id),
+                                    "metadata_skipped": json.dumps(
+                                        metadata_dict, default=str, ensure_ascii=False
+                                    ),
+                                },
+                            )
+                        except Exception:
+                            pass
                         self._maybe_repair_persisted_metadata(
                             retry_cur,
                             documents_table=documents_table,
@@ -4076,7 +4286,17 @@ class PgVectorClient:
         existing_map = (
             dict(existing_metadata) if isinstance(existing_metadata, Mapping) else {}
         )
-        if not _metadata_identity_needs_repair(existing_map, canonical_id):
+
+        # Decide whether identity or parent_nodes require repair
+        needs_identity_fix = _metadata_identity_needs_repair(existing_map, canonical_id)
+        desired_map = (
+            dict(desired_metadata) if isinstance(desired_metadata, Mapping) else {}
+        )
+        needs_parent_nodes_fix = _metadata_parent_nodes_differ(
+            existing_map, desired_map
+        )
+
+        if not needs_identity_fix and not needs_parent_nodes_fix:
             return
 
         stored_document_id = existing_map.get("document_id")
@@ -4088,12 +4308,16 @@ class PgVectorClient:
                 if stored_document_id not in {None, ""}
                 else None
             ),
+            "parent_nodes_repair": bool(needs_parent_nodes_fix),
         }
 
+        # In dev/test environments, proactively repair persisted metadata to reduce flakiness
         if _is_dev_environment():
             payload: dict[str, object] = dict(existing_map)
-            if isinstance(desired_metadata, Mapping):
-                payload.update(desired_metadata)
+            if desired_map:
+                # Merge desired fields but keep existing keys unless overwritten
+                payload.update(desired_map)
+            # Always enforce the canonical document identifier
             payload["document_id"] = canonical_id
             try:
                 cur.execute(

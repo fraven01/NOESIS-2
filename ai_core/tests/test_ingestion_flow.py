@@ -203,8 +203,10 @@ def test_ingestion_run_reports_missing_documents(
     monkeypatch.setattr("ai_core.views.run_ingestion", DummyTask())
 
     missing_id = str(uuid.uuid4())
+    # Simuliere Nutzereingaben mit führenden/nachgestellten Leerzeichen –
+    # der Service trimmt diese vor dem Task-Dispatch.
     run_payload = {
-        "document_ids": [doc_id, missing_id],
+        "document_ids": [f"  {doc_id}  ", f"  {missing_id}  "],
         "priority": "normal",
         "embedding_profile": "standard",
     }
@@ -222,10 +224,12 @@ def test_ingestion_run_reports_missing_documents(
 
     assert resp.status_code == 202
     body = resp.json()
+    # Erwartet: normalisierte (getrimmte) UUID in der Invalid-Liste
     assert body["invalid_ids"] == [missing_id]
 
     assert len(calls) == 1
     args, kwargs = calls[0]
+    # Erwartet: Task erhält getrimmte document_ids
     assert list(args[2]) == [doc_id]
     assert args[3] == "standard"
     assert kwargs["tenant_schema"] == tenant
