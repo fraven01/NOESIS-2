@@ -122,7 +122,9 @@ def _normalise_parent_nodes_value(value: object) -> object:
         return None
     if isinstance(value, Mapping):
         items = sorted(value.items(), key=lambda item: str(item[0]))
-        return {str(key): _normalise_parent_nodes_value(payload) for key, payload in items}
+        return {
+            str(key): _normalise_parent_nodes_value(payload) for key, payload in items
+        }
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [_normalise_parent_nodes_value(item) for item in value]
     if isinstance(value, uuid.UUID):
@@ -147,9 +149,9 @@ def _metadata_parent_nodes_differ(
         existing_value = existing.get("parent_nodes")
     if isinstance(desired, Mapping):
         desired_value = desired.get("parent_nodes")
-    return _normalise_parent_nodes_value(existing_value) != _normalise_parent_nodes_value(
-        desired_value
-    )
+    return _normalise_parent_nodes_value(
+        existing_value
+    ) != _normalise_parent_nodes_value(desired_value)
 
 
 def _is_dev_environment() -> bool:
@@ -4009,7 +4011,8 @@ class PgVectorClient:
                         existing_metadata_map, metadata_dict
                     )
                     needs_update = (
-                        str(dup_hash) != storage_hash or dup_deleted is not None
+                        str(dup_hash) != storage_hash
+                        or dup_deleted is not None
                         or metadata_mismatch
                     )
                     if needs_update:
