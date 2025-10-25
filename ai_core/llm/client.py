@@ -561,7 +561,9 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "cache_hit": cache_hit,
     }
 
-    ledger_logger = metadata.get("ledger_logger") if isinstance(metadata, Mapping) else None
+    ledger_logger = (
+        metadata.get("ledger_logger") if isinstance(metadata, Mapping) else None
+    )
     if callable(ledger_logger):
         try:
             ledger_logger(ledger_payload)

@@ -173,9 +173,7 @@ PII_HMAC_SECRET = os.getenv("PII_HMAC_SECRET", "")
 PII_NAME_DETECTION = os.getenv("PII_NAME_DETECTION", "false").lower() == "true"
 
 # Guardrail observability sampling allowlist (rule identifiers)
-AI_GUARDRAIL_SAMPLE_ALLOWLIST = env.list(
-    "AI_GUARDRAIL_SAMPLE_ALLOWLIST", default=[]
-)
+AI_GUARDRAIL_SAMPLE_ALLOWLIST = env.list("AI_GUARDRAIL_SAMPLE_ALLOWLIST", default=[])
 
 # Ingestion pipeline flags
 INGESTION_PII_MASK_ENABLED = (

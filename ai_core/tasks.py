@@ -130,9 +130,7 @@ def _observed_embed_section(name: str) -> Iterator[_EmbedSpanMetrics]:
                 tracer = None
         if tracer is not None:
             try:
-                candidate = tracer.start_as_current_span(
-                    f"ingestion.embed.{name}"
-                )
+                candidate = tracer.start_as_current_span(f"ingestion.embed.{name}")
             except Exception:
                 candidate = None
             else:
@@ -1200,7 +1198,9 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 
         with _observed_embed_section("chunk") as chunk_metrics:
             for ch in chunks:
-                normalised = ch.get("normalized") or normalise_text(ch.get("content", ""))
+                normalised = ch.get("normalized") or normalise_text(
+                    ch.get("content", "")
+                )
                 text = normalised or ""
                 prepared.append({**ch, "normalized": text})
                 token_count = _token_count(text)
@@ -1262,7 +1262,9 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
 
                 embedding_model = result.model
 
-                batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
+                batch_dim: Optional[int] = (
+                    len(result.vectors[0]) if result.vectors else None
+                )
                 current_dim = batch_dim
                 try:
                     current_dim = client.dim()
@@ -1313,7 +1315,9 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                     "event": "DEBUG.TASKS.EMBED.PARENTS",
                     "tenant_id": meta.get("tenant_id"),
                     "case_id": meta.get("case_id"),
-                    "parents_count": (len(parents) if isinstance(parents, dict) else None),
+                    "parents_count": (
+                        len(parents) if isinstance(parents, dict) else None
+                    ),
                 },
             )
         except Exception:

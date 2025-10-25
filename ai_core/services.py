@@ -47,7 +47,6 @@ from common.constants import (
 )
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
-from ai_core.infra import ledger
 from ai_core.graph.schemas import ToolContext, merge_state
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.llm.client import LlmClientError, RateLimitError
@@ -269,7 +268,9 @@ class _GraphCostTracker:
         for key, value in extra.items():
             if value is None:
                 continue
-            component[key] = value if isinstance(value, (str, int, float, bool)) else str(value)
+            component[key] = (
+                value if isinstance(value, (str, int, float, bool)) else str(value)
+            )
         ledger_entry_id = component.get("ledger_entry_id")
         if ledger_entry_id:
             self._reconciliation_ids.add(str(ledger_entry_id))

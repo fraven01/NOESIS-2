@@ -90,9 +90,7 @@ def test_embed_emits_span_metadata(monkeypatch):
 
     monkeypatch.setattr(tasks, "calculate_embedding_cost", fake_cost)
 
-    monkeypatch.setattr(
-        "ai_core.infra.observability.tracing_enabled", lambda: False
-    )
+    monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: False)
 
     result = tasks.embed(meta, "chunks.json")
 
@@ -178,9 +176,7 @@ def test_embed_error_updates_observation(monkeypatch):
 
     monkeypatch.setattr(tasks, "update_observation", fake_update_observation)
 
-    monkeypatch.setattr(
-        "ai_core.infra.observability.tracing_enabled", lambda: False
-    )
+    monkeypatch.setattr("ai_core.infra.observability.tracing_enabled", lambda: False)
 
     with pytest.raises(RuntimeError):
         tasks.embed(meta, "chunks.json")

@@ -9,7 +9,16 @@ import logging
 import math
 import statistics
 from collections import deque
-from typing import Any, Dict, Iterable, Mapping, NoReturn, Protocol, Sequence, TYPE_CHECKING
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Mapping,
+    NoReturn,
+    Protocol,
+    Sequence,
+    TYPE_CHECKING,
+)
 from uuid import UUID
 
 from psycopg2 import OperationalError
@@ -398,8 +407,8 @@ def _emit_retrieval_span(
         metadata["fused_candidates"] = fused_candidates
 
     if vector_candidates is not None or lexical_candidates is not None:
-        metadata["candidates_total"] = (
-            (vector_candidates or 0) + (lexical_candidates or 0)
+        metadata["candidates_total"] = (vector_candidates or 0) + (
+            lexical_candidates or 0
         )
 
     duration_ms = _coerce_float(getattr(result, "duration_ms", None))

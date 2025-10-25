@@ -502,16 +502,12 @@ def test_prompt_runner_guardrail_emits_event(monkeypatch, settings):
     events = []
     observations = []
 
-    monkeypatch.setattr(
-        "ai_core.nodes._prompt_runner.emit_event", events.append
-    )
+    monkeypatch.setattr("ai_core.nodes._prompt_runner.emit_event", events.append)
     monkeypatch.setattr(
         "ai_core.nodes._prompt_runner.update_observation",
         lambda **fields: observations.append(fields),
     )
-    monkeypatch.setattr(
-        "ai_core.nodes._prompt_runner.random.random", lambda: 0.1
-    )
+    monkeypatch.setattr("ai_core.nodes._prompt_runner.random.random", lambda: 0.1)
 
     _, _ = run_prompt_node(
         trace_name="unit",
@@ -528,7 +524,7 @@ def test_prompt_runner_guardrail_emits_event(monkeypatch, settings):
                     "outcome": "blocked",
                     "tool_blocked": True,
                     "reason_code": "PII",
-                    "redactions": ["[REDACTED: email]"]
+                    "redactions": ["[REDACTED: email]"],
                 }
             },
         ),
@@ -568,16 +564,12 @@ def test_prompt_runner_guardrail_sampling_skips_event(monkeypatch, settings):
     events = []
     observations = []
 
-    monkeypatch.setattr(
-        "ai_core.nodes._prompt_runner.emit_event", events.append
-    )
+    monkeypatch.setattr("ai_core.nodes._prompt_runner.emit_event", events.append)
     monkeypatch.setattr(
         "ai_core.nodes._prompt_runner.update_observation",
         lambda **fields: observations.append(fields),
     )
-    monkeypatch.setattr(
-        "ai_core.nodes._prompt_runner.random.random", lambda: 0.9
-    )
+    monkeypatch.setattr("ai_core.nodes._prompt_runner.random.random", lambda: 0.9)
 
     meta = META.copy()
     meta["guardrail"] = {

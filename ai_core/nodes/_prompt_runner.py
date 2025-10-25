@@ -31,7 +31,13 @@ def _normalise_guardrail_payload(
             return
         candidate = source.get("guardrail")
         if isinstance(candidate, dict):
-            for key in ("rule_id", "outcome", "redactions", "tool_blocked", "reason_code"):
+            for key in (
+                "rule_id",
+                "outcome",
+                "redactions",
+                "tool_blocked",
+                "reason_code",
+            ):
                 if key in candidate and key not in guard and candidate[key] is not None:
                     guard[key] = candidate[key]
         for key in ("rule_id", "outcome", "redactions", "tool_blocked", "reason_code"):
@@ -58,9 +64,7 @@ def _normalise_guardrail_payload(
         redactions = guard["redactions"]
         if isinstance(redactions, (list, tuple)):
             guard["redactions"] = [
-                str(value)
-                for value in redactions
-                if value is not None
+                str(value) for value in redactions if value is not None
             ]
         elif redactions is None:
             guard.pop("redactions", None)
