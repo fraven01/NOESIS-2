@@ -42,6 +42,7 @@ class EmbeddingBatchResult:
     model_used: str
     attempts: int
     timeout_s: float | None
+    retry_delays: Tuple[float, ...] | None = None
 
 
 class EmbeddingClient:

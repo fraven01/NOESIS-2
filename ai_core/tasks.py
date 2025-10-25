@@ -6,9 +6,9 @@ import os
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 try:
     import tiktoken  # type: ignore
@@ -16,7 +16,13 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
-from ai_core.infra.observability import observe_span, record_span, update_observation
+from ai_core.infra import observability as observability_helpers
+from ai_core.infra.observability import (
+    observe_span,
+    record_span,
+    tracing_enabled,
+    update_observation,
+)
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
@@ -37,9 +43,11 @@ from .rag.embeddings import (
     EmbeddingClientError,
     get_embedding_client,
 )
+from .rag.pricing import calculate_embedding_cost
 from .rag.vector_store import get_default_router
 
 _ZERO_EPSILON = 1e-12
+_FAILED_CHUNK_ID_LIMIT = 10
 
 
 def _should_normalise_embeddings() -> bool:
@@ -80,6 +88,83 @@ def _build_path(meta: Dict[str, str], *parts: str) -> str:
     tenant = object_store.sanitize_identifier(meta["tenant_id"])
     case = object_store.sanitize_identifier(meta["case_id"])
     return "/".join([tenant, case, *parts])
+
+
+class _EmbedSpanMetrics:
+    """Accumulate Langfuse span metadata for embedding phases."""
+
+    def __init__(self) -> None:
+        self.metadata: Dict[str, Any] = {}
+
+    def set(self, key: str, value: Any) -> None:
+        if value is None:
+            return
+        self.metadata[key] = value
+
+    def add(self, key: str, value: float | int) -> None:
+        if value is None:
+            return
+        current = self.metadata.get(key, 0.0)
+        try:
+            current_value = float(current)
+        except (TypeError, ValueError):
+            current_value = 0.0
+        self.metadata[key] = current_value + float(value)
+
+    def finalise(self) -> None:
+        if self.metadata:
+            update_observation(metadata=self.metadata)
+
+
+def _observed_embed_section(name: str) -> Iterator[_EmbedSpanMetrics]:
+    metrics = _EmbedSpanMetrics()
+
+    span_cm = nullcontext()
+    if tracing_enabled():
+        get_tracer = getattr(observability_helpers, "_get_tracer", None)
+        tracer = None
+        if callable(get_tracer):
+            try:
+                tracer = get_tracer()
+            except Exception:
+                tracer = None
+        if tracer is not None:
+            try:
+                candidate = tracer.start_as_current_span(
+                    f"ingestion.embed.{name}"
+                )
+            except Exception:
+                candidate = None
+            else:
+                if candidate is not None:
+                    span_cm = candidate
+
+    @contextmanager
+    def _span() -> Iterator[_EmbedSpanMetrics]:
+        try:
+            with span_cm:
+                try:
+                    yield metrics
+                except Exception:
+                    metrics.set("status", "error")
+                    raise
+        finally:
+            metrics.finalise()
+
+    return _span()
+
+
+def _extract_chunk_identifier(entry: Dict[str, Any]) -> Optional[str]:
+    meta = entry.get("meta")
+    if isinstance(meta, dict):
+        for key in ("chunk_id", "hash", "document_id", "external_id"):
+            value = meta.get(key)
+            if value:
+                return str(value)
+    value = entry.get("id")
+    if value:
+        return str(value)
+    return None
 
 
 def log_ingestion_run_start(
@@ -1072,123 +1157,192 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
     """Generate embedding vectors for chunks via LiteLLM."""
 
-    raw_chunks = object_store.read_json(chunks_path)
-    parents: Dict[str, object] = {}
-    if isinstance(raw_chunks, dict):
-        chunks = list(raw_chunks.get("chunks", []) or [])
-        parent_payload = raw_chunks.get("parents") or {}
-        if isinstance(parent_payload, dict):
-            parents = parent_payload
-    else:
-        chunks = list(raw_chunks or [])
-    # Attach task context early for tracing
+    chunks: List[Dict[str, Any]] = []
+    parents: Dict[str, Any] = {}
+    prepared: List[Dict[str, Any]] = []
+    token_counts: List[int] = []
+    chunk_identifiers: List[str] = []
+    embeddings: List[Dict[str, Any]] = []
+    total_chunks = 0
+
     try:
-        update_observation(
-            tags=["ingestion", "embed"],
-            user_id=str(meta.get("tenant_id")) if meta.get("tenant_id") else None,
-            session_id=str(meta.get("case_id")) if meta.get("case_id") else None,
-            metadata={
-                "embedding_profile": meta.get("embedding_profile"),
-                "vector_space_id": meta.get("vector_space_id"),
-                "collection_id": meta.get("collection_id"),
-            },
-        )
-    except Exception:
-        pass
+        with _observed_embed_section("load") as load_metrics:
+            raw_chunks = object_store.read_json(chunks_path)
+            if isinstance(raw_chunks, dict):
+                chunks = list(raw_chunks.get("chunks", []) or [])
+                parent_payload = raw_chunks.get("parents") or {}
+                if isinstance(parent_payload, dict):
+                    parents = parent_payload
+            else:
+                chunks = list(raw_chunks or [])
+            load_metrics.set("chunks_count", len(chunks))
+            if isinstance(parents, dict) and parents:
+                load_metrics.set("parents_count", len(parents))
 
-    client = get_embedding_client()
-    batch_size = max(
-        1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size))
-    )
-
-    prepared: List[Dict[str, object]] = []
-    for ch in chunks:
-        normalised = ch.get("normalized") or normalise_text(ch.get("content", ""))
-        prepared.append({**ch, "normalized": normalised or ""})
-
-    total_chunks = len(prepared)
-    embeddings: List[Dict[str, object]] = []
-    expected_dim: Optional[int] = None
-    batches = 0
-
-    for start in range(0, total_chunks, batch_size):
-        batch = prepared[start : start + batch_size]
-        if not batch:
-            continue
-        batches += 1
-        inputs = [str(entry.get("normalized", "")) for entry in batch]
-        batch_started = time.perf_counter()
-        result: EmbeddingBatchResult = client.embed(inputs)
-        duration_ms = (time.perf_counter() - batch_started) * 1000
-        extra = {
-            "batch": batches,
-            "chunks": len(batch),
-            "duration_ms": duration_ms,
-            "model": result.model,
-            "model_name": result.model,
-            "model_used": result.model_used,
-            "attempts": result.attempts,
-        }
-        if result.timeout_s is not None:
-            extra["timeout_s"] = result.timeout_s
-        key_alias = meta.get("key_alias")
-        if key_alias:
-            extra["key_alias"] = key_alias
-        logger.info("ingestion.embed.batch", extra=extra)
-        batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
-        current_dim = batch_dim
         try:
-            current_dim = client.dim()
-        except EmbeddingClientError:
-            current_dim = batch_dim
-        if current_dim is not None:
-            if expected_dim is None:
-                expected_dim = current_dim
-            elif expected_dim != current_dim:
-                logger.info(
-                    "ingestion.embed.dimension_changed",
-                    extra={
-                        "previous": expected_dim,
-                        "current": current_dim,
-                        "model": result.model,
-                    },
-                )
-                expected_dim = current_dim
-        if len(result.vectors) != len(batch):
-            raise ValueError("Embedding batch size mismatch")
+            update_observation(
+                tags=["ingestion", "embed"],
+                user_id=str(meta.get("tenant_id")) if meta.get("tenant_id") else None,
+                session_id=str(meta.get("case_id")) if meta.get("case_id") else None,
+                metadata={
+                    "embedding_profile": meta.get("embedding_profile"),
+                    "vector_space_id": meta.get("vector_space_id"),
+                    "collection_id": meta.get("collection_id"),
+                },
+            )
+        except Exception:
+            pass
 
-        for entry, vector in zip(batch, result.vectors):
-            if expected_dim is not None and len(vector) != expected_dim:
-                raise ValueError("Embedding dimension mismatch")
-            embeddings.append(
-                {
-                    **entry,
-                    "embedding": list(vector),
-                    "vector_dim": len(vector),
+        client = get_embedding_client()
+        batch_size = max(
+            1, int(getattr(settings, "EMBEDDINGS_BATCH_SIZE", client.batch_size))
+        )
+
+        with _observed_embed_section("chunk") as chunk_metrics:
+            for ch in chunks:
+                normalised = ch.get("normalized") or normalise_text(ch.get("content", ""))
+                text = normalised or ""
+                prepared.append({**ch, "normalized": text})
+                token_count = _token_count(text)
+                token_counts.append(token_count)
+                identifier = _extract_chunk_identifier(ch)
+                if identifier:
+                    chunk_identifiers.append(identifier)
+            chunk_metrics.set("chunks_count", len(prepared))
+            chunk_metrics.set("token_count", sum(token_counts))
+
+        total_chunks = len(prepared)
+        expected_dim: Optional[int] = None
+        batches = 0
+        total_retry_count = 0
+        total_backoff_ms = 0.0
+        total_cost = 0.0
+        embedding_model: Optional[str] = None
+
+        with _observed_embed_section("embed") as embed_metrics:
+            embed_metrics.set("batch_size", batch_size)
+            for start in range(0, total_chunks, batch_size):
+                batch = prepared[start : start + batch_size]
+                if not batch:
+                    continue
+                batches += 1
+                inputs = [str(entry.get("normalized", "")) for entry in batch]
+                batch_started = time.perf_counter()
+                result: EmbeddingBatchResult = client.embed(inputs)
+                duration_ms = (time.perf_counter() - batch_started) * 1000
+                extra = {
+                    "batch": batches,
+                    "chunks": len(batch),
+                    "duration_ms": duration_ms,
+                    "model": result.model,
+                    "model_name": result.model,
+                    "model_used": result.model_used,
+                    "attempts": result.attempts,
+                }
+                if result.timeout_s is not None:
+                    extra["timeout_s"] = result.timeout_s
+                key_alias = meta.get("key_alias")
+                if key_alias:
+                    extra["key_alias"] = key_alias
+                logger.info("ingestion.embed.batch", extra=extra)
+
+                retries = max(0, int(result.attempts) - 1)
+                total_retry_count += retries
+                retry_delays = result.retry_delays or ()
+                if retry_delays:
+                    total_backoff_ms += float(sum(retry_delays)) * 1000.0
+
+                batch_token_count = sum(
+                    token_counts[start + index] for index in range(len(batch))
+                )
+                if batch_token_count:
+                    total_cost += calculate_embedding_cost(
+                        result.model, batch_token_count
+                    )
+
+                embedding_model = result.model
+
+                batch_dim: Optional[int] = len(result.vectors[0]) if result.vectors else None
+                current_dim = batch_dim
+                try:
+                    current_dim = client.dim()
+                except EmbeddingClientError:
+                    current_dim = batch_dim
+                if current_dim is not None:
+                    if expected_dim is None:
+                        expected_dim = current_dim
+                    elif expected_dim != current_dim:
+                        logger.info(
+                            "ingestion.embed.dimension_changed",
+                            extra={
+                                "previous": expected_dim,
+                                "current": current_dim,
+                                "model": result.model,
+                            },
+                        )
+                        expected_dim = current_dim
+                if len(result.vectors) != len(batch):
+                    raise ValueError("Embedding batch size mismatch")
+
+                for entry, vector in zip(batch, result.vectors):
+                    if expected_dim is not None and len(vector) != expected_dim:
+                        raise ValueError("Embedding dimension mismatch")
+                    embeddings.append(
+                        {
+                            **entry,
+                            "embedding": list(vector),
+                            "vector_dim": len(vector),
+                        }
+                    )
+
+            embed_metrics.set("chunks_count", len(embeddings))
+            if embedding_model:
+                embed_metrics.set("embedding_model", embedding_model)
+            embed_metrics.set("retry.count", total_retry_count)
+            embed_metrics.set("retry.backoff_ms", total_backoff_ms)
+            embed_metrics.set("cost.usd_embedding", total_cost)
+
+        logger.info(
+            "ingestion.embed.summary",
+            extra={"chunks": total_chunks, "batches": batches},
+        )
+        try:
+            logger.warning(
+                "ingestion.embed.parents",
+                extra={
+                    "event": "DEBUG.TASKS.EMBED.PARENTS",
+                    "tenant_id": meta.get("tenant_id"),
+                    "case_id": meta.get("case_id"),
+                    "parents_count": (len(parents) if isinstance(parents, dict) else None),
+                },
+            )
+        except Exception:
+            pass
+
+        payload = {"chunks": embeddings, "parents": parents}
+        out_path = _build_path(meta, "embeddings", "vectors.json")
+        with _observed_embed_section("write") as write_metrics:
+            object_store.write_json(out_path, payload)
+            write_metrics.set("chunks_count", len(embeddings))
+            if isinstance(parents, dict) and parents:
+                write_metrics.set("parents_count", len(parents))
+        return {"path": out_path}
+    except Exception:
+        failed_chunks_count = len(prepared) if prepared else len(chunks)
+        if not failed_chunks_count:
+            failed_chunks_count = len(embeddings)
+        truncated_ids = chunk_identifiers[:_FAILED_CHUNK_ID_LIMIT]
+        try:
+            update_observation(
+                metadata={
+                    "status": "error",
+                    "failed_chunks_count": failed_chunks_count,
+                    "failed_chunk_ids": truncated_ids,
                 }
             )
-
-    logger.info(
-        "ingestion.embed.summary",
-        extra={"chunks": total_chunks, "batches": batches},
-    )
-    # Debug visibility for propagated parents block
-    try:
-        logger.warning(
-            "ingestion.embed.parents",
-            extra={
-                "event": "DEBUG.TASKS.EMBED.PARENTS",
-                "tenant_id": meta.get("tenant_id"),
-                "case_id": meta.get("case_id"),
-                "parents_count": (len(parents) if isinstance(parents, dict) else None),
-            },
-        )
-    except Exception:
-        pass
-    payload = {"chunks": embeddings, "parents": parents}
-    out_path = _build_path(meta, "embeddings", "vectors.json")
-    object_store.write_json(out_path, payload)
-    return {"path": out_path}
+        except Exception:
+            pass
+        raise
 
 
 @shared_task(base=ScopedTask, accepts_scope=True)
