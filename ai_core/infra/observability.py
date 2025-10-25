@@ -367,23 +367,25 @@ def record_span(
             pass
 
 
-def emit_event(payload: dict[str, Any]) -> None:
+def emit_event(event: Any, attributes: Optional[dict[str, Any]] = None) -> None:
     """Emit an observability event attached to the current span when possible."""
 
-    if not isinstance(payload, dict):
-        return
-    event_name = str(payload.get("event") or "event")
-    attributes = {k: v for k, v in payload.items() if k != "event"}
+    if isinstance(event, dict):
+        event_name = str(event.get("event") or "event")
+        attrs = {k: v for k, v in event.items() if k != "event"}
+    else:
+        event_name = str(event or "event")
+        attrs = dict(attributes or {})
     span = _get_current_span()
     if span is not None:
         add_event = getattr(span, "add_event", None)
         if callable(add_event):
             try:
-                add_event(event_name, attributes=_normalise_attributes(attributes))
+                add_event(event_name, attributes=_normalise_attributes(attrs))
                 return
             except Exception:
                 pass
-    output_payload = {"event": event_name, **attributes}
+    output_payload = {"event": event_name, **attrs}
     try:
         print(json.dumps(output_payload))
     except Exception:
