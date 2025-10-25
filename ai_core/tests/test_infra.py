@@ -247,6 +247,20 @@ def test_emit_event_attaches_to_span(monkeypatch):
     assert events == [("node.start", {"foo": "bar"})]
 
 
+def test_emit_event_accepts_event_name_signature(monkeypatch):
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeSpan:
+        def add_event(self, name: str, attributes=None) -> None:  # noqa: D401
+            events.append((name, dict(attributes or {})))
+
+    monkeypatch.setattr(observability, "_get_current_span", lambda: FakeSpan())
+
+    emit_event("node.start", {"foo": "bar"})
+
+    assert events == [("node.start", {"foo": "bar"})]
+
+
 def test_emit_event_prints_without_span(monkeypatch, capsys):
     monkeypatch.setattr(observability, "_get_current_span", lambda: None)
 
