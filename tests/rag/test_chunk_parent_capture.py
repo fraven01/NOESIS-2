@@ -22,6 +22,24 @@ def _run_chunk(meta: dict[str, str], markdown: str) -> dict[str, str]:
     return tasks.chunk(meta, text["path"])
 
 
+def _run_chunk_with_blocks(
+    meta: dict[str, str], markdown: str, blocks: list[dict[str, object]]
+) -> dict[str, str]:
+    raw = tasks.ingest_raw(meta, "doc.md", markdown.encode("utf-8"))
+    text = tasks.extract_text(meta, raw["path"])
+    blocks_path = tasks._build_path(meta, "text", "doc.parsed.json")
+    object_store.write_json(
+        blocks_path,
+        {
+            "text": markdown,
+            "statistics": {"parser.kind": "markdown"},
+            "blocks": blocks,
+        },
+    )
+    meta["parsed_blocks_path"] = blocks_path
+    return tasks.chunk(meta, text["path"])
+
+
 def test_chunk_parent_contents_are_direct(settings, configured_store):
     del configured_store
     settings.RAG_PARENT_MAX_BYTES = 0
@@ -175,3 +193,184 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
 
     level_three_parent = _parent_by_title("Level Three")
     assert "content" not in level_three_parent or not level_three_parent["content"]
+
+
+def test_structured_chunk_flushes_when_heading_changes(settings, configured_store):
+    del configured_store
+    settings.RAG_PARENT_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
+
+    doc_id = str(uuid.uuid4())
+    meta = {
+        "tenant_id": "tenant", 
+        "case_id": "case", 
+        "external_id": "doc-structured-heading", 
+        "document_id": doc_id,
+    }
+    markdown = textwrap.dedent(
+        """
+        # Section One
+
+        First section body.
+
+        # Section Two
+
+        Second section body.
+        """
+    ).strip()
+
+    blocks: list[dict[str, object]] = [
+        {
+            "index": 0,
+            "kind": "heading",
+            "text": "Section One",
+            "section_path": ["Section One"],
+        },
+        {
+            "index": 1,
+            "kind": "paragraph",
+            "text": "First section body.",
+            "section_path": ["Section One"],
+        },
+        {
+            "index": 2,
+            "kind": "heading",
+            "text": "Section Two",
+            "section_path": ["Section Two"],
+        },
+        {
+            "index": 3,
+            "kind": "paragraph",
+            "text": "Second section body.",
+            "section_path": ["Section Two"],
+        },
+    ]
+
+    result = _run_chunk_with_blocks(meta, markdown, blocks)
+    payload = object_store.read_json(result["path"])
+    chunks = payload["chunks"]
+    parents = payload["parents"]
+
+    def _parent_id(title: str) -> str:
+        for identifier, info in parents.items():
+            if info and info.get("title") == title:
+                return identifier
+        raise AssertionError(f"Missing parent with title {title!r}")
+
+    section_one_parent = _parent_id("Section One")
+    section_two_parent = _parent_id("Section Two")
+
+    section_one_chunk = next(
+        chunk for chunk in chunks if "First section body." in chunk["content"]
+    )
+    assert section_one_parent in section_one_chunk["meta"]["parent_ids"]
+    assert "Second section body." not in section_one_chunk["content"]
+    assert section_one_chunk["content"].splitlines()[0] == "Section One"
+
+    section_two_chunk = next(
+        chunk for chunk in chunks if "Second section body." in chunk["content"]
+    )
+    assert section_two_parent in section_two_chunk["meta"]["parent_ids"]
+    assert "First section body." not in section_two_chunk["content"]
+    assert section_two_chunk["content"].splitlines()[0] == "Section Two"
+
+
+def test_structured_chunk_flushes_when_section_path_changes(
+    settings, configured_store
+):
+    del configured_store
+    settings.RAG_PARENT_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
+
+    doc_id = str(uuid.uuid4())
+    meta = {
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc-section-path",
+        "document_id": doc_id,
+    }
+    markdown = textwrap.dedent(
+        """
+        # Section Alpha
+
+        Alpha body.
+
+        Beta body.
+        """
+    ).strip()
+
+    blocks: list[dict[str, object]] = [
+        {
+            "index": 0,
+            "kind": "heading",
+            "text": "Section Alpha",
+            "section_path": ["Section Alpha"],
+        },
+        {
+            "index": 1,
+            "kind": "paragraph",
+            "text": "Alpha body.",
+            "section_path": ["Section Alpha"],
+        },
+        {
+            "index": 2,
+            "kind": "paragraph",
+            "text": "Beta body.",
+            "section_path": ["Section Beta"],
+        },
+    ]
+
+    result = _run_chunk_with_blocks(meta, markdown, blocks)
+    payload = object_store.read_json(result["path"])
+    chunks = payload["chunks"]
+    parents = payload["parents"]
+
+    def _parent_id(title: str) -> str:
+        for identifier, info in parents.items():
+            if info and info.get("title") == title:
+                return identifier
+        raise AssertionError(f"Missing parent with title {title!r}")
+
+    alpha_parent = _parent_id("Section Alpha")
+    beta_parent = _parent_id("Section Beta")
+
+    alpha_chunk = next(chunk for chunk in chunks if "Alpha body." in chunk["content"])
+    assert alpha_parent in alpha_chunk["meta"]["parent_ids"]
+    assert "Beta body." not in alpha_chunk["content"]
+
+    beta_chunk = next(chunk for chunk in chunks if "Beta body." in chunk["content"])
+    assert beta_parent in beta_chunk["meta"]["parent_ids"]
+    assert "Alpha body." not in beta_chunk["content"]
+
+
+def test_fallback_flushes_pending_text_at_document_end(settings, configured_store):
+    del configured_store
+    settings.RAG_PARENT_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_BYTES = 0
+    settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
+
+    doc_id = str(uuid.uuid4())
+    meta = {
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc-fallback-flush",
+        "document_id": doc_id,
+    }
+    markdown = textwrap.dedent(
+        """
+        Paragraph one without headings.
+
+        Paragraph two closing the document.
+        """
+    ).strip()
+
+    result = _run_chunk(meta, markdown)
+    payload = object_store.read_json(result["path"])
+    chunks = payload["chunks"]
+
+    assert chunks, "expected at least one chunk from fallback path"
+    combined_content = "\n\n".join(chunk["content"] for chunk in chunks)
+    assert "Paragraph one without headings." in combined_content
+    assert "Paragraph two closing the document." in combined_content
