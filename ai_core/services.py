@@ -327,20 +327,7 @@ class _GraphCostTracker:
 @contextmanager
 def _track_ledger_costs(initial_total: float | None = None):  # type: ignore[no-untyped-def]
     tracker = _GraphCostTracker(initial_total)
-    record = getattr(ledger, "record", None)
-    if not callable(record):
-        yield tracker
-        return
-
-    def wrapped(meta):  # type: ignore[no-untyped-def]
-        tracker.record_ledger_meta(meta)
-        return record(meta)
-
-    try:
-        setattr(ledger, "record", wrapped)
-        yield tracker
-    finally:
-        setattr(ledger, "record", record)
+    yield tracker
 
 
 def _normalize_meta(request):  # type: ignore[no-untyped-def]
@@ -699,7 +686,11 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 pass
 
             with _track_ledger_costs(initial_cost_total) as tracker:
-                new_state, result = graph_runner.run(merged_state, runner_meta)
+                runner_meta["ledger_logger"] = tracker.record_ledger_meta
+                try:
+                    new_state, result = graph_runner.run(merged_state, runner_meta)
+                finally:
+                    runner_meta.pop("ledger_logger", None)
 
             cost_summary = tracker.summary(ledger_identifier)
 

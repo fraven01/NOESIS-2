@@ -26,6 +26,9 @@ class _DummyRunner:
         self.ledger_meta = ledger_meta
 
     def run(self, state, meta):  # type: ignore[no-untyped-def]
+        logger = meta.get("ledger_logger") if isinstance(meta, dict) else None
+        if callable(logger):
+            logger(dict(self.ledger_meta))
         services.ledger.record(dict(self.ledger_meta))
         return {"state": "updated"}, {"ok": True}
 
