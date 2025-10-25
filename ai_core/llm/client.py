@@ -552,19 +552,26 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "cache_hit": cache_hit,
     }
 
-    ledger.record(
-        {
-            "tenant": tenant_value,
-            "case": case_value,
-            "trace_id": metadata.get("trace_id"),
-            "label": label,
-            "model": model_id,
-            "usage": usage,
-            "ts": time.time(),
-            "latency_ms": latency_ms,
-            "cache_hit": cache_hit,
-        }
-    )
+    ledger_payload = {
+        "tenant": tenant_value,
+        "case": case_value,
+        "trace_id": metadata.get("trace_id"),
+        "label": label,
+        "model": model_id,
+        "usage": usage,
+        "ts": time.time(),
+        "latency_ms": latency_ms,
+        "cache_hit": cache_hit,
+    }
+
+    ledger_logger = metadata.get("ledger_logger") if isinstance(metadata, Mapping) else None
+    if callable(ledger_logger):
+        try:
+            ledger_logger(ledger_payload)
+        except Exception:
+            logger.debug("ledger_logger failed", exc_info=True)
+
+    ledger.record(ledger_payload)
 
     _safe_update_observation(
         metadata={
