@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from typing import Iterable, Mapping
 
@@ -612,7 +613,13 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
         chunks=[
             Chunk(
                 content="doc",
-                meta={"tenant_id": tenant, "case_id": "case"},
+                meta={
+                    "tenant_id": tenant,
+                    "case_id": "case",
+                    "fused": 0.91,
+                    "vscore": 0.95,
+                    "lscore": 0.88,
+                },
             )
         ],
         vector_candidates=2,
@@ -623,17 +630,31 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
         min_sim=0.2,
         vec_limit=4,
         lex_limit=4,
+        index_latency_ms=0.1,
+        rerank_latency_ms=0.2,
+        cached_total_candidates=7,
+        scores=[{"fused": 0.91, "vector": 0.95, "lexical": 0.88}],
     )
     hybrid_result.deleted_matches_blocked = 5
     store = HybridEnabledStore("global", hybrid_result)
     router = VectorStoreRouter({"global": store})
 
     spans: list[tuple[str, dict[str, object] | None, str | None]] = []
+    events: list[dict[str, object]] = []
+
+    from ai_core.rag import vector_store as vector_store_module
+
+    vector_store_module._TOP1_HISTORY.clear()
+
     monkeypatch.setattr(
         "ai_core.rag.vector_store.record_span",
         lambda name, *, attributes=None, trace_id=None: spans.append(
             (name, attributes, trace_id)
         ),
+    )
+    monkeypatch.setattr(
+        "ai_core.rag.vector_store.emit_event",
+        lambda payload: events.append(payload),
     )
 
     with log_context(trace_id="trace-span"):
@@ -651,6 +672,28 @@ def test_router_hybrid_search_emits_retrieval_span(monkeypatch) -> None:
     assert metadata is not None
     assert metadata["visibility_effective"] == "deleted"
     assert metadata["deleted_matches_blocked"] == 5
+    assert metadata["candidates_total"] == 2
+    assert metadata["topk"] == 1
+    assert metadata["scores_top3"] == [pytest.approx(0.91, rel=1e-6)]
+    assert metadata["filters_applied"]["visibility"] == "deleted"
+    assert metadata["index_latency_ms"] == pytest.approx(0.1)
+    assert metadata["rerank_latency_ms"] == pytest.approx(0.2)
+    assert metadata["cached_total_candidates"] == 7
+    expected_hash = hashlib.sha256("frage".encode("utf-8")).hexdigest()[:12]
+    assert metadata["query_hash"] == expected_hash
+    assert metadata["scores"][0]["fused"] == pytest.approx(0.91)
+    assert metadata["scores"][0]["vector"] == pytest.approx(0.95)
+    assert metadata["scores"][0]["lexical"] == pytest.approx(0.88)
+
+    assert events, "expected drift event to be emitted"
+    event = events[-1]
+    assert event["event"] == "rag.drift.top1"
+    assert event["tenant_id"] == tenant
+    assert event["scope"] == "global"
+    assert event["top1_score"] == pytest.approx(0.91)
+    assert event["median_score"] == pytest.approx(0.91)
+    assert event["delta"] == pytest.approx(0.0)
+    assert event["query_hash"] == expected_hash
 
 
 def test_router_hybrid_search_falls_back_when_not_supported() -> None:
