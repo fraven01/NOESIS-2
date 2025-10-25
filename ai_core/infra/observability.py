@@ -13,6 +13,7 @@ import importlib.util
 import json
 import logging
 import os
+import base64
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional, TypeVar, cast
 
@@ -26,8 +27,117 @@ _OTEL_TRACE = (
 )
 
 _OTEL_ROOT_CM: ContextVar[Any | None] = ContextVar("OTEL_ROOT_CM", default=None)
+_OTEL_CONFIGURED: bool = False
 
 F = TypeVar("F", bound=Callable[..., Any])
+
+
+def _parse_key_value_pairs(raw: str) -> dict[str, str]:
+    """Parse comma separated key=value pairs into a dictionary."""
+
+    result: dict[str, str] = {}
+    if not raw:
+        return result
+    for chunk in raw.split(","):
+        if not chunk:
+            continue
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        key = key.strip()
+        if not key:
+            continue
+        result[key] = value.strip()
+    return result
+
+
+def _ensure_tracer_provider_configured() -> None:
+    """Initialise an OTLP trace exporter wired to Langfuse when possible."""
+
+    global _OTEL_CONFIGURED
+
+    if _OTEL_CONFIGURED:
+        return
+    if _OTEL_TRACE is None:
+        return
+
+    try:
+        from opentelemetry import trace as otel_trace_api  # type: ignore
+        from opentelemetry.sdk.trace import TracerProvider  # type: ignore
+        from opentelemetry.sdk.trace.export import (  # type: ignore
+            BatchSpanProcessor,
+        )
+        from opentelemetry.exporter.otlp.proto.http.trace_exporter import (  # type: ignore
+            OTLPSpanExporter,
+        )
+        from opentelemetry.sdk.resources import Resource  # type: ignore
+    except Exception as exc:  # pragma: no cover - optional dependency
+        LOGGER.debug("OpenTelemetry SDK not available: %s", exc)
+        return
+
+    current_provider = otel_trace_api.get_tracer_provider()
+    if isinstance(current_provider, TracerProvider):
+        _OTEL_CONFIGURED = True
+        return
+
+    endpoint = (os.getenv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT") or "").strip()
+    if not endpoint:
+        langfuse_host = (os.getenv("LANGFUSE_HOST") or "").strip()
+        if langfuse_host:
+            endpoint = f"{langfuse_host.rstrip('/')}/api/public/otel/v1/traces"
+    if not endpoint:
+        LOGGER.debug("OTLP traces endpoint not configured; skipping tracer setup")
+        return
+
+    headers = _parse_key_value_pairs(os.getenv("OTEL_EXPORTER_OTLP_HEADERS") or "")
+    public_key = (os.getenv("LANGFUSE_PUBLIC_KEY") or "").strip()
+    secret_key = (os.getenv("LANGFUSE_SECRET_KEY") or "").strip()
+    if public_key and "X-Langfuse-Public-Key" not in headers:
+        headers["X-Langfuse-Public-Key"] = public_key
+    if secret_key and "X-Langfuse-Secret-Key" not in headers:
+        headers["X-Langfuse-Secret-Key"] = secret_key
+    if (
+        public_key
+        and secret_key
+        and "authorization" not in {key.lower(): key for key in headers}
+    ):
+        token = base64.b64encode(f"{public_key}:{secret_key}".encode("utf-8")).decode(
+            "ascii"
+        )
+        headers.setdefault("Authorization", f"Basic {token}")
+    if not headers.get("X-Langfuse-Public-Key") or not headers.get(
+        "X-Langfuse-Secret-Key"
+    ):
+        LOGGER.debug("Langfuse OTLP headers missing; skipping tracer setup")
+        return
+
+    resource_attrs = _parse_key_value_pairs(os.getenv("OTEL_RESOURCE_ATTRIBUTES") or "")
+    resource_attrs.setdefault("service.name", os.getenv("SERVICE_NAME", "noesis2"))
+    resource_attrs.setdefault(
+        "service.version", os.getenv("SERVICE_VERSION", "unknown")
+    )
+    deployment_env = (
+        os.getenv("DEPLOY_ENV") or os.getenv("DEPLOYMENT_ENVIRONMENT") or ""
+    ).strip()
+    if deployment_env:
+        resource_attrs.setdefault("deployment.environment", deployment_env)
+
+    try:
+        exporter = OTLPSpanExporter(endpoint=endpoint, headers=headers or None)
+        provider = TracerProvider(resource=Resource.create(resource_attrs))
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        otel_trace_api.set_tracer_provider(provider)
+        _OTEL_CONFIGURED = True
+        LOGGER.info(
+            "configured_otlp_exporter",
+            extra={
+                "endpoint": endpoint,
+                "service_name": resource_attrs.get("service.name"),
+                "deployment_environment": resource_attrs.get("deployment.environment"),
+            },
+        )
+    except Exception:  # pragma: no cover - defensive
+        LOGGER.exception("Failed to configure Langfuse OTLP exporter")
 
 
 def _get_tracer() -> Any | None:
@@ -73,6 +183,9 @@ def tracing_enabled() -> bool:
         return False
     exporter = (os.getenv("OTEL_TRACES_EXPORTER") or "").strip().lower()
     if exporter == "none":
+        return False
+    _ensure_tracer_provider_configured()
+    if not _OTEL_CONFIGURED:
         return False
     return _get_tracer() is not None
 

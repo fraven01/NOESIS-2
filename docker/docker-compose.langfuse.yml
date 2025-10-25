@@ -33,9 +33,9 @@ services:
       start_period: 20s
 
   langfuse:
-    image: ghcr.io/langfuse/langfuse:latest
+    image: ghcr.io/langfuse/langfuse:3
     container_name: noesis2_langfuse
-    depends_on:
+    depends_on: &langfuse_depends_on
       langfuse-db:
         condition: service_healthy
       clickhouse:
@@ -44,7 +44,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    environment:
+    environment: &langfuse_env
       # Increase verbosity for troubleshooting
       LOG_LEVEL: debug
       # App URL for NextAuth
@@ -96,6 +96,15 @@ services:
       retries: 10
       start_period: 15s
     restart: unless-stopped
+
+  langfuse-worker:
+    image: ghcr.io/langfuse/langfuse-worker:3
+    container_name: noesis2_langfuse_worker
+    depends_on: *langfuse_depends_on
+    environment: *langfuse_env
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
 
   redis:
     image: redis:7
