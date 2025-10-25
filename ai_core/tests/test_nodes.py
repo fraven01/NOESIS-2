@@ -481,6 +481,124 @@ def test_prompt_runner_with_result_shaper(monkeypatch):
     assert shaped_meta["prompt_version"] == "v1"
 
 
+def test_prompt_runner_guardrail_emits_event(monkeypatch, settings):
+    settings.AI_GUARDRAIL_SAMPLE_ALLOWLIST = ["rule-allow"]
+
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.load",
+        lambda alias: {"text": "Prompt", "version": "v1"},
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.mask_prompt", lambda value, **kwargs: value
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.mask_response", lambda value, **kwargs: value
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.client.call",
+        lambda label, prompt, metadata: {"text": "resp"},
+    )
+
+    events = []
+    observations = []
+
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.emit_event", events.append
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.update_observation",
+        lambda **fields: observations.append(fields),
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.random.random", lambda: 0.1
+    )
+
+    _, _ = run_prompt_node(
+        trace_name="unit",
+        prompt_alias="alias",
+        llm_label="label",
+        state_key="value",
+        state={},
+        meta=META.copy(),
+        result_shaper=lambda result: (
+            result["text"],
+            {
+                "guardrail": {
+                    "rule_id": "rule-allow",
+                    "outcome": "blocked",
+                    "tool_blocked": True,
+                    "reason_code": "PII",
+                    "redactions": ["[REDACTED: email]"]
+                }
+            },
+        ),
+    )
+
+    assert observations == [{"metadata": {"node.branch_taken": "blocked"}}]
+    assert events == [
+        {
+            "event": "guardrail.result",
+            "rule_id": "rule-allow",
+            "outcome": "blocked",
+            "tool_blocked": True,
+            "reason_code": "PII",
+            "redactions": ["[REDACTED: email]"],
+        }
+    ]
+
+
+def test_prompt_runner_guardrail_sampling_skips_event(monkeypatch, settings):
+    settings.AI_GUARDRAIL_SAMPLE_ALLOWLIST = ["rule-allow"]
+
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.load",
+        lambda alias: {"text": "Prompt", "version": "v1"},
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.mask_prompt", lambda value, **kwargs: value
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.mask_response", lambda value, **kwargs: value
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.client.call",
+        lambda label, prompt, metadata: {"text": "resp"},
+    )
+
+    events = []
+    observations = []
+
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.emit_event", events.append
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.update_observation",
+        lambda **fields: observations.append(fields),
+    )
+    monkeypatch.setattr(
+        "ai_core.nodes._prompt_runner.random.random", lambda: 0.9
+    )
+
+    meta = META.copy()
+    meta["guardrail"] = {
+        "rule_id": "rule-allow",
+        "outcome": "allow",
+        "tool_blocked": False,
+    }
+
+    _, _ = run_prompt_node(
+        trace_name="unit",
+        prompt_alias="alias",
+        llm_label="label",
+        state_key="value",
+        state={},
+        meta=meta,
+    )
+
+    assert observations == [{"metadata": {"node.branch_taken": "allow"}}]
+    assert events == []
+
+
 def test_draft_blocks(monkeypatch):
     called = {}
     monkeypatch.setattr("ai_core.llm.client.call", _mock_call(called))
