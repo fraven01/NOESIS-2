@@ -65,9 +65,6 @@ class RateLimitError(LlmClientError):
 def _safe_json(resp: requests.Response) -> Dict[str, Any]:
     try:
         data = resp.json()
-        cache_hit = _detect_cache_hit(
-            resp, data if isinstance(data, Mapping) else {}
-        )
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -161,7 +158,9 @@ def _interpret_bool(value: Any) -> bool | None:
     return None
 
 
-def _detect_cache_hit(resp: requests.Response | None, data: Mapping[str, Any]) -> bool | None:
+def _detect_cache_hit(
+    resp: requests.Response | None, data: Mapping[str, Any]
+) -> bool | None:
     cache_hit: bool | None = None
     headers = getattr(resp, "headers", {}) or {}
     if isinstance(headers, Mapping):
@@ -446,9 +445,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         data = resp.json()
-        cache_hit = _detect_cache_hit(
-            resp, data if isinstance(data, Mapping) else {}
-        )
+        cache_hit = _detect_cache_hit(resp, data if isinstance(data, Mapping) else {})
         choices = data.get("choices") or []
         if choices and isinstance(choices[0], Mapping):
             raw_finish = choices[0].get("finish_reason")

@@ -1035,7 +1035,9 @@ def test_llm_client_updates_observation_on_success(monkeypatch):
                 "usage": {"prompt_tokens": 20, "completion_tokens": 40},
             }
 
-    monkeypatch.setattr("ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp())
+    monkeypatch.setattr(
+        "ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp()
+    )
     _prepare_env(monkeypatch)
 
     prompt = "x" * 600
@@ -1083,7 +1085,9 @@ def test_llm_client_updates_observation_on_error(monkeypatch):
         def json(self):
             return {"detail": "bad request", "status": 400, "code": "invalid"}
 
-    monkeypatch.setattr("ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp())
+    monkeypatch.setattr(
+        "ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp()
+    )
     _prepare_env(monkeypatch)
 
     prompt = "prompt-preview"
