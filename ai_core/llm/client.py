@@ -13,6 +13,7 @@ import requests
 from ai_core.infra.config import get_config
 from ai_core.infra.observability import observe_span, update_observation
 from ai_core.infra import ledger
+from ai_core.llm.pricing import calculate_chat_completion_cost
 from common.logging import get_logger, mask_value
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -64,6 +65,9 @@ class RateLimitError(LlmClientError):
 def _safe_json(resp: requests.Response) -> Dict[str, Any]:
     try:
         data = resp.json()
+        cache_hit = _detect_cache_hit(
+            resp, data if isinstance(data, Mapping) else {}
+        )
     except ValueError:
         return {}
     return data if isinstance(data, dict) else {}
@@ -134,6 +138,63 @@ def _coerce_choice_text(choice: Mapping[str, Any]) -> str:
     if not text:
         raise KeyError("content")
     return text
+
+
+def _safe_update_observation(**fields: Any) -> None:
+    try:
+        update_observation(**fields)
+    except Exception:
+        pass
+
+
+def _interpret_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "y", "hit"}:
+            return True
+        if lowered in {"0", "false", "no", "n", "miss"}:
+            return False
+    return None
+
+
+def _detect_cache_hit(resp: requests.Response | None, data: Mapping[str, Any]) -> bool | None:
+    cache_hit: bool | None = None
+    headers = getattr(resp, "headers", {}) or {}
+    if isinstance(headers, Mapping):
+        for key in ("x-litellm-cache-hit", "x-cache-hit", "x-cache"):
+            if key in headers:
+                cache_hit = _interpret_bool(headers.get(key))
+                if cache_hit is not None:
+                    break
+
+    if cache_hit is not None:
+        return cache_hit
+
+    for key in ("cache_hit", "cacheHit"):
+        if key in data:
+            cache_hit = _interpret_bool(data.get(key))
+            if cache_hit is not None:
+                return cache_hit
+
+    cache_section = data.get("cache")
+    if isinstance(cache_section, Mapping):
+        for key in ("hit", "cache_hit"):
+            if key in cache_section:
+                cache_hit = _interpret_bool(cache_section.get(key))
+                if cache_hit is not None:
+                    return cache_hit
+
+    return None
+
+
+def _truncate(text: str | None, limit: int) -> str | None:
+    if text is None:
+        return None
+    return text[:limit]
 
 
 @observe_span(name="llm.call")
@@ -210,24 +271,24 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "key_alias": mask_value(metadata.get("key_alias")),
     }
     # Attach lightweight context to the current observation (no PII payloads)
-    try:
-        update_observation(
-            tags=["llm", "litellm", f"label:{label}", f"model:{model_id}"],
-            user_id=str(tenant_value) if tenant_value else None,
-            session_id=str(case_value) if case_value else None,
-            metadata={
-                "trace_id": metadata.get("trace_id"),
-                "prompt_version": prompt_version,
-            },
-        )
-    except Exception:
-        pass
+    _safe_update_observation(
+        tags=["llm", "litellm", f"label:{label}", f"model:{model_id}"],
+        user_id=str(tenant_value) if tenant_value else None,
+        session_id=str(case_value) if case_value else None,
+        metadata={
+            "trace_id": metadata.get("trace_id"),
+            "prompt_version": prompt_version,
+        },
+    )
 
     status: int | None = None
     extended_for_length = False
     text: str | None = None
     data: Dict[str, Any] | None = None
     finish_reason: str | None = None
+    latency_ms: float | None = None
+    cache_hit: bool | None = None
+    masked_prompt_preview = _truncate(prompt, 512)
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()
@@ -235,10 +296,13 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if attempt > 0:
             attempt_headers[X_RETRY_ATTEMPT_HEADER] = str(attempt + 1)
         try:
+            start_ts = time.perf_counter()
             resp = requests.post(
                 url, headers=attempt_headers, json=payload, timeout=timeout
             )
+            latency_ms = (time.perf_counter() - start_ts) * 1000.0
         except requests.RequestException as exc:
+            latency_ms = (time.perf_counter() - start_ts) * 1000.0
             status = None
             err = exc
         else:
@@ -252,9 +316,24 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                     "llm retries exhausted", extra={**log_extra, "status": status}
                 )
                 payload = _safe_json(resp)
+                cache_hit = _detect_cache_hit(
+                    resp, payload if isinstance(payload, Mapping) else {}
+                )
                 detail = payload.get("detail") or _safe_text(resp)
                 status_val = payload.get("status") or status
                 code = payload.get("code")
+                _safe_update_observation(
+                    metadata={
+                        "status": "error",
+                        "model.id": model_id,
+                        "latency_ms": latency_ms,
+                        "cache_hit": cache_hit,
+                        "input.masked_prompt": masked_prompt_preview,
+                        "error.type": "LlmClientError",
+                        "error.message": _truncate(detail or "LLM client error", 256),
+                        "provider.http_status": status_val,
+                    }
+                )
                 raise LlmClientError(
                     detail or "LLM client error", status=status_val, code=code
                 ) from None
@@ -271,6 +350,18 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 logger.warning(
                     "llm retries exhausted", extra={**log_extra, "status": status}
                 )
+                _safe_update_observation(
+                    metadata={
+                        "status": "error",
+                        "model.id": model_id,
+                        "latency_ms": latency_ms,
+                        "cache_hit": cache_hit,
+                        "input.masked_prompt": masked_prompt_preview,
+                        "error.type": type(err).__name__,
+                        "error.message": _truncate(str(err) or "LLM client error", 256),
+                        "provider.http_status": status,
+                    }
+                )
                 raise LlmClientError(str(err) or "LLM client error") from err
             time.sleep(min(5, 2**attempt))
             continue
@@ -282,9 +373,24 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                     "llm retries exhausted", extra={**log_extra, "status": status}
                 )
                 payload = _safe_json(resp)
+                cache_hit = _detect_cache_hit(
+                    resp, payload if isinstance(payload, Mapping) else {}
+                )
                 detail = payload.get("detail") or _safe_text(resp)
                 status_val = payload.get("status") or status
                 code = payload.get("code")
+                _safe_update_observation(
+                    metadata={
+                        "status": "error",
+                        "model.id": model_id,
+                        "latency_ms": latency_ms,
+                        "cache_hit": cache_hit,
+                        "input.masked_prompt": masked_prompt_preview,
+                        "error.type": "RateLimitError",
+                        "error.message": _truncate(detail or "LLM client error", 256),
+                        "provider.http_status": status_val,
+                    }
+                )
                 raise RateLimitError(
                     detail or "LLM client error", status=status_val, code=code
                 ) from None
@@ -317,14 +423,32 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if status and 400 <= status < 500:
             logger.warning("llm 4xx response", extra={**log_extra, "status": status})
             payload = _safe_json(resp)
+            cache_hit = _detect_cache_hit(
+                resp, payload if isinstance(payload, Mapping) else {}
+            )
             detail = payload.get("detail") or _safe_text(resp)
             status_val = payload.get("status") or status
             code = payload.get("code")
+            _safe_update_observation(
+                metadata={
+                    "status": "error",
+                    "model.id": model_id,
+                    "latency_ms": latency_ms,
+                    "cache_hit": cache_hit,
+                    "input.masked_prompt": masked_prompt_preview,
+                    "error.type": "LlmClientError",
+                    "error.message": _truncate(detail or "LLM client error", 256),
+                    "provider.http_status": status_val,
+                }
+            )
             raise LlmClientError(
                 detail or "LLM client error", status=status_val, code=code
             )
 
         data = resp.json()
+        cache_hit = _detect_cache_hit(
+            resp, data if isinstance(data, Mapping) else {}
+        )
         choices = data.get("choices") or []
         if choices and isinstance(choices[0], Mapping):
             raw_finish = choices[0].get("finish_reason")
@@ -356,9 +480,33 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             if finish_reason:
                 message = f"{message} (finish_reason={finish_reason})"
             logger.warning("llm.response_missing_content", extra=log_extra)
+            _safe_update_observation(
+                metadata={
+                    "status": "error",
+                    "model.id": model_id,
+                    "latency_ms": latency_ms,
+                    "cache_hit": cache_hit,
+                    "input.masked_prompt": masked_prompt_preview,
+                    "error.type": "LlmClientError",
+                    "error.message": _truncate(message, 256),
+                    "provider.http_status": status,
+                }
+            )
             raise LlmClientError(message, status=status) from None
         break
     else:
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmClientError",
+                "error.message": "LLM client error",
+                "provider.http_status": status,
+            }
+        )
         raise LlmClientError("LLM client error", status=status)
 
     choices = data.get("choices") or []
@@ -369,18 +517,39 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         if finish_reason:
             message = f"{message} (finish_reason={finish_reason})"
         logger.warning("llm.response_missing_content", extra=log_extra)
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmClientError",
+                "error.message": _truncate(message, 256),
+                "provider.http_status": status,
+            }
+        )
         raise LlmClientError(message, status=status) from None
     usage_raw = data.get("usage", {})
+    prompt_tokens = usage_raw.get("prompt_tokens", 0) or 0
+    completion_tokens = usage_raw.get("completion_tokens", 0) or 0
+    total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+    cost_usd = calculate_chat_completion_cost(
+        model_id, prompt_tokens, completion_tokens
+    )
     usage = {
-        "in_tokens": usage_raw.get("prompt_tokens", 0),
-        "out_tokens": usage_raw.get("completion_tokens", 0),
-        "cost": 0.0,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "cost": {"usd": cost_usd},
     }
     result = {
         "text": text,
         "usage": usage,
         "model": model_id,
         "prompt_version": metadata.get("prompt_version"),
+        "latency_ms": latency_ms,
+        "cache_hit": cache_hit,
     }
 
     ledger.record(
@@ -392,6 +561,22 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             "model": model_id,
             "usage": usage,
             "ts": time.time(),
+            "latency_ms": latency_ms,
+            "cache_hit": cache_hit,
+        }
+    )
+
+    _safe_update_observation(
+        metadata={
+            "status": "success",
+            "model.id": model_id,
+            "usage.prompt_tokens": prompt_tokens,
+            "usage.completion_tokens": completion_tokens,
+            "usage.total_tokens": total_tokens,
+            "cost.usd": cost_usd,
+            "latency_ms": latency_ms,
+            "cache_hit": cache_hit,
+            "input.masked_prompt": masked_prompt_preview,
         }
     )
 

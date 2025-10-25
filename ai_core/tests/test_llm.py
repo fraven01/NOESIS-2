@@ -10,6 +10,7 @@ import requests
 
 from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.llm import routing
+from ai_core.llm.pricing import calculate_chat_completion_cost
 from ai_core.llm.client import LlmClientError, RateLimitError, call
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -38,6 +39,15 @@ def test_resolve_merges_base_and_override(tmp_path, monkeypatch):
     assert routing.resolve("default") == "override-default"
     with pytest.raises(ValueError):
         routing.resolve("missing")
+
+
+def test_calculate_chat_completion_cost_known_model():
+    cost = calculate_chat_completion_cost("vertex_ai/gemini-2.5-flash", 1000, 2000)
+    assert cost == pytest.approx(0.001575)
+
+
+def test_calculate_chat_completion_cost_unknown_model():
+    assert calculate_chat_completion_cost("unknown/model", 123, 456) == 0.0
 
 
 def test_llm_client_masks_records_and_retries(monkeypatch):
@@ -74,6 +84,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
 
                 class Resp:
                     status_code = 500
+                    headers: dict[str, str] = {}
 
                     def json(self):
                         return {}
@@ -83,6 +94,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
 
                 class Resp:
                     status_code = 200
+                    headers: dict[str, str] = {}
 
                     def json(self):
                         return {
@@ -103,17 +115,23 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     monkeypatch.setattr("ai_core.llm.client.ledger.record", mock_record)
     monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("LITELLM_API_KEY", "token")
+    monkeypatch.setenv("LITELLM_MAX_TOKENS", "1024")
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "none")
 
     from ai_core.infra import config as conf
 
     conf.get_config.cache_clear()
+    routing.load_map.cache_clear()
 
     res = call("simple-query", sanitized_prompt, metadata)
     assert res["model"]
     assert res["prompt_version"] == "v1"
     assert ledger_calls["meta"]["label"] == "simple-query"
     assert ledger_calls["meta"]["tenant"] == "t1"
-    assert ledger_calls["meta"]["usage"]["in_tokens"] == 1
+    assert ledger_calls["meta"]["usage"]["prompt_tokens"] == 1
+    assert ledger_calls["meta"]["usage"]["completion_tokens"] == 1
+    assert ledger_calls["meta"]["usage"]["total_tokens"] == 2
+    assert ledger_calls["meta"]["usage"]["cost"]["usd"] == pytest.approx(0.000001)
     assert "text" not in ledger_calls["meta"]
     assert fail_once.calls == 2
     assert fail_once.idempotency_headers == ["c1:simple-query:v1", "c1:simple-query:v1"]
@@ -632,9 +650,12 @@ def test_llm_retry_counter_increments(monkeypatch):
 def _prepare_env(monkeypatch):
     monkeypatch.setenv("LITELLM_BASE_URL", "https://example.com")
     monkeypatch.setenv("LITELLM_API_KEY", "token")
+    monkeypatch.setenv("LITELLM_MAX_TOKENS", "1024")
+    monkeypatch.setenv("OTEL_TRACES_EXPORTER", "none")
     from ai_core.infra import config as conf
 
     conf.get_config.cache_clear()
+    routing.load_map.cache_clear()
 
 
 def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
@@ -984,3 +1005,97 @@ def test_llm_client_raises_rate_limit_error_with_text_body(monkeypatch):
     assert err.status == 429
     assert str(err) == "too many (status=429)"
     assert sleep_calls == [1.0, 2.0]
+
+
+def test_llm_client_updates_observation_on_success(monkeypatch):
+    metadata = {
+        "tenant": "tenant-1",
+        "case": "case-1",
+        "trace_id": "trace-1",
+        "prompt_version": "v1",
+    }
+
+    observation_calls: list[dict[str, Any]] = []
+
+    def fake_update_observation(**fields: Any) -> None:
+        observation_calls.append(fields)
+
+    monkeypatch.setattr(
+        "ai_core.llm.client.update_observation", fake_update_observation
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class Resp:
+        status_code = 200
+        headers: dict[str, str] = {"x-litellm-cache-hit": "true"}
+
+        def json(self):
+            return {
+                "choices": [{"message": {"content": "ok"}}],
+                "usage": {"prompt_tokens": 20, "completion_tokens": 40},
+            }
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp())
+    _prepare_env(monkeypatch)
+
+    prompt = "x" * 600
+    result = call("simple-query", prompt, metadata)
+
+    assert result["usage"]["total_tokens"] == 60
+    assert result["cache_hit"] is True
+    assert result["latency_ms"] is not None
+
+    success_call = observation_calls[-1]
+    success_meta = success_call["metadata"]
+    assert success_meta["status"] == "success"
+    assert success_meta["model.id"] == "vertex_ai/gemini-2.5-flash"
+    assert success_meta["usage.prompt_tokens"] == 20
+    assert success_meta["usage.completion_tokens"] == 40
+    assert success_meta["usage.total_tokens"] == 60
+    assert success_meta["cost.usd"] == pytest.approx(0.000032)
+    assert success_meta["cache_hit"] is True
+    assert len(success_meta["input.masked_prompt"]) == 512
+    assert success_meta["input.masked_prompt"] == "x" * 512
+
+
+def test_llm_client_updates_observation_on_error(monkeypatch):
+    metadata = {
+        "tenant": "tenant-2",
+        "case": "case-2",
+        "trace_id": "trace-2",
+        "prompt_version": "v2",
+    }
+
+    observation_calls: list[dict[str, Any]] = []
+
+    def fake_update_observation(**fields: Any) -> None:
+        observation_calls.append(fields)
+
+    monkeypatch.setattr(
+        "ai_core.llm.client.update_observation", fake_update_observation
+    )
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+
+    class Resp:
+        status_code = 400
+        headers: dict[str, str] = {"x-litellm-cache-hit": "false"}
+
+        def json(self):
+            return {"detail": "bad request", "status": 400, "code": "invalid"}
+
+    monkeypatch.setattr("ai_core.llm.client.requests.post", lambda *args, **kwargs: Resp())
+    _prepare_env(monkeypatch)
+
+    prompt = "prompt-preview"
+    with pytest.raises(LlmClientError):
+        call("simple-query", prompt, metadata)
+
+    error_call = observation_calls[-1]
+    error_meta = error_call["metadata"]
+    assert error_meta["status"] == "error"
+    assert error_meta["model.id"] == "vertex_ai/gemini-2.5-flash"
+    assert error_meta["error.type"] == "LlmClientError"
+    assert error_meta["error.message"] == "bad request"
+    assert error_meta["provider.http_status"] == 400
+    assert error_meta["cache_hit"] is False
+    assert error_meta["input.masked_prompt"] == prompt
