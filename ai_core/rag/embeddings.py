@@ -4,6 +4,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import Callable, List, Sequence, Tuple, TypeVar
+import os
 
 from django.conf import settings
 
@@ -203,7 +204,7 @@ class EmbeddingClient:
             "model": model,
             "input": list(inputs),
             "api_base": api_base,
-            "api_key": cfg.litellm_api_key,
+            "api_key": os.environ.get("LITELLM_MASTER_KEY"),
         }
         if timeout_s is not None and timeout_s > 0:
             kwargs["timeout"] = timeout_s

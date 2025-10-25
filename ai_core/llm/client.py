@@ -5,7 +5,7 @@ import math
 import random
 import time
 from email.utils import parsedate_to_datetime
-from typing import Any, Dict
+from typing import Any, Dict, Mapping, Sequence
 import os
 
 import requests
@@ -80,6 +80,62 @@ def _safe_text(resp: requests.Response | None) -> str | None:
     return resp_text.strip()
 
 
+def _normalise_text_parts(value: object) -> str | None:
+    """Best-effort conversion of nested content structures into plain text."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or ""
+    if isinstance(value, Mapping):
+        # Providers may nest text under various keys; try common variants.
+        for key in ("text", "content", "output_text", "value"):
+            if key in value:
+                candidate = _normalise_text_parts(value[key])
+                if candidate:
+                    return candidate
+        if "parts" in value:
+            candidate = _normalise_text_parts(value["parts"])
+            if candidate:
+                return candidate
+        return None
+    if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+        parts: list[str] = []
+        for item in value:
+            candidate = _normalise_text_parts(item)
+            if candidate:
+                parts.append(candidate)
+        if parts:
+            return "\n".join(parts)
+        return None
+    try:
+        return str(value).strip()
+    except Exception:
+        return None
+
+
+def _coerce_choice_text(choice: Mapping[str, Any]) -> str:
+    """Extract assistant text from a chat completion choice."""
+
+    message = choice.get("message") or {}
+    text = None
+    if isinstance(message, Mapping):
+        for key in ("content", "text", "parts"):
+            if key in message:
+                text = _normalise_text_parts(message[key])
+                if text:
+                    break
+    if not text:
+        # Some providers (e.g. text completion fallback) surface text directly
+        alt = choice.get("text")
+        if alt is not None:
+            text = _normalise_text_parts(alt)
+    if not text:
+        raise KeyError("content")
+    return text
+
+
 @observe_span(name="llm.call")
 def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     """Call the LLM via LiteLLM proxy using a routing ``label``.
@@ -115,12 +171,14 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "messages": [{"role": "user", "content": prompt}],
     }
     # Optional generation controls via ENV to keep latency predictable
+    default_max_tokens: int | None = None
     try:
         max_tokens_env = os.getenv("LITELLM_MAX_TOKENS")
         if max_tokens_env is not None:
             max_tokens_val = int(max_tokens_env)
             if max_tokens_val > 0:
                 payload["max_tokens"] = max_tokens_val
+                default_max_tokens = max_tokens_val
     except Exception:
         pass
     try:
@@ -165,6 +223,11 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
+    status: int | None = None
+    extended_for_length = False
+    text: str | None = None
+    data: Dict[str, Any] | None = None
+    finish_reason: str | None = None
     for attempt in range(max_retries):
         resp: requests.Response | None = None
         attempt_headers = headers.copy()
@@ -262,9 +325,51 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             )
 
         data = resp.json()
+        choices = data.get("choices") or []
+        if choices and isinstance(choices[0], Mapping):
+            raw_finish = choices[0].get("finish_reason")
+            finish_reason = str(raw_finish) if raw_finish is not None else None
+        try:
+            text = _coerce_choice_text(choices[0])
+        except (KeyError, IndexError, TypeError):
+            if (
+                finish_reason == "length"
+                and not extended_for_length
+                and (default_max_tokens or payload.get("max_tokens") or 0) < 4096
+            ):
+                current_max = payload.get("max_tokens")
+                if not current_max:
+                    current_max = default_max_tokens or 1024
+                new_max = int(min(max(current_max * 2, current_max + 512), 4096))
+                payload["max_tokens"] = new_max
+                extended_for_length = True
+                logger.info(
+                    "llm.extend_max_tokens",
+                    extra={
+                        **log_extra,
+                        "previous_max_tokens": current_max,
+                        "new_max_tokens": new_max,
+                    },
+                )
+                continue
+            message = "LLM response missing content"
+            if finish_reason:
+                message = f"{message} (finish_reason={finish_reason})"
+            logger.warning("llm.response_missing_content", extra=log_extra)
+            raise LlmClientError(message, status=status) from None
         break
+    else:
+        raise LlmClientError("LLM client error", status=status)
 
-    text = data["choices"][0]["message"]["content"]
+    choices = data.get("choices") or []
+    try:
+        text = text if text is not None else _coerce_choice_text(choices[0])
+    except (KeyError, IndexError, TypeError):
+        message = "LLM response missing content"
+        if finish_reason:
+            message = f"{message} (finish_reason={finish_reason})"
+        logger.warning("llm.response_missing_content", extra=log_extra)
+        raise LlmClientError(message, status=status) from None
     usage_raw = data.get("usage", {})
     usage = {
         "in_tokens": usage_raw.get("prompt_tokens", 0),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Tuple, List
 from uuid import UUID
@@ -222,12 +222,15 @@ def _rebuild_document_from_meta(
         except ValueError:
             created_at = None
 
+    if created_at is None:
+        created_at = datetime.fromtimestamp(meta_path.stat().st_mtime, tz=timezone.utc)
+
     return NormalizedDocument(
         ref=doc_ref,
         meta=doc_meta,
         blob=inline_blob,
         checksum=sha,
-        created_at=created_at or datetime.fromtimestamp(meta_path.stat().st_mtime),
+        created_at=created_at,
         source=str(meta.get("source") or "upload"),
     )
 

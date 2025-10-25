@@ -915,14 +915,19 @@ class PgVectorClient:
 
     @staticmethod
     def _normalise_result_row(
-        row: Sequence[object], *, kind: str
-    ) -> Tuple[object, object, Mapping[str, object], object, object, float]:
+        row: Sequence[object] | Mapping[str, object], *, kind: str
+    ) -> tuple[
+        object | None,
+        object | None,
+        Dict[str, object],
+        object | None,
+        object | None,
+        float,
+    ]:
         # Support both tuple/sequence-shaped rows and mapping-shaped rows
         # returned by different query execution paths in tests and adapters.
         # When a mapping is provided, extract fields by name.
-        from typing import Mapping as _Mapping  # local alias to avoid confusion
-
-        if isinstance(row, _Mapping):
+        if isinstance(row, Mapping):
             # Expected keys: id, text, metadata, hash, document_id and either
             # distance (vector) or lscore (lexical)
             chunk_id = row.get("id")
@@ -941,13 +946,7 @@ class PgVectorClient:
             if math.isnan(score_float) or math.isinf(score_float):
                 score_float = fallback
 
-            # Coerce metadata into a plain dict
-            metadata_dict: Dict[str, object]
-            if isinstance(metadata_value, _Mapping):
-                metadata_dict = dict(metadata_value)
-            else:
-                metadata_dict = {}
-
+            metadata_dict = _coerce_metadata_map(metadata_value)
             return (
                 chunk_id,
                 text_value,
@@ -970,21 +969,7 @@ class PgVectorClient:
                 PgVectorClient._ROW_SHAPE_WARNINGS.add(key)
         padded_list: List[object] = list((row_tuple + (None,) * 6)[:6])
 
-        metadata_value = padded_list[2]
-        metadata_dict: Dict[str, object]
-        if isinstance(metadata_value, Mapping):
-            metadata_dict = dict(metadata_value)
-        elif isinstance(metadata_value, Sequence) and not isinstance(
-            metadata_value, (str, bytes)
-        ):
-            try:
-                metadata_dict = dict(metadata_value)  # type: ignore[arg-type]
-            except Exception:
-                metadata_dict = {}
-        elif metadata_value is None:
-            metadata_dict = {}
-        else:
-            metadata_dict = {}
+        metadata_dict = _coerce_metadata_map(padded_list[2])
         padded_list[2] = metadata_dict
 
         score_value = padded_list[5]
@@ -995,11 +980,14 @@ class PgVectorClient:
             score_float = fallback
         if math.isnan(score_float) or math.isinf(score_float):
             score_float = fallback
-        padded_list[5] = score_float
 
-        return cast(
-            Tuple[object, object, Mapping[str, object], object, object, float],
-            tuple(padded_list),
+        return (
+            padded_list[0],
+            padded_list[1],
+            metadata_dict,
+            padded_list[3],
+            padded_list[4],
+            score_float,
         )
 
     @staticmethod
@@ -2914,6 +2902,40 @@ class PgVectorClient:
                     allow_below_cutoff,
                 )
             )
+
+        if results:
+            normalized_results: List[Tuple[Chunk, bool]] = []
+            discarded_entries = 0
+            for entry in results:
+                chunk_candidate: Chunk | None = None
+                allow_flag = False
+                if isinstance(entry, tuple):
+                    if entry:
+                        candidate_chunk = entry[0]
+                        if isinstance(candidate_chunk, Chunk):
+                            chunk_candidate = candidate_chunk
+                            if len(entry) > 1:
+                                allow_flag = bool(entry[1])
+                elif isinstance(entry, Chunk):
+                    chunk_candidate = entry
+                if chunk_candidate is None:
+                    discarded_entries += 1
+                    continue
+                normalized_results.append((chunk_candidate, allow_flag))
+            if discarded_entries:
+                try:
+                    logger.warning(
+                        "rag.hybrid.result_shape_unexpected",
+                        extra={
+                            "tenant_id": tenant,
+                            "case_id": case_value,
+                            "discarded_entries": discarded_entries,
+                            "kept": len(normalized_results),
+                        },
+                    )
+                except Exception:
+                    pass
+            results = normalized_results
 
         results.sort(
             key=lambda item: float(item[0].meta.get("fused", 0.0)), reverse=True

@@ -121,6 +121,182 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert fail_once.timeouts == [20, 20]
 
 
+def test_llm_client_flattens_structured_content(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class StructuredContent:
+        def __call__(
+            self, url: str, headers: dict[str, str], json: dict[str, Any], timeout: int
+        ):
+            class Resp:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "choices": [
+                            {
+                                "message": {
+                                    "content": [
+                                        {"text": "Alpha"},
+                                        {"content": "Beta"},
+                                        {"type": "output_text", "text": "Gamma"},
+                                    ],
+                                    "thinking_blocks": [],
+                                }
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 2, "completion_tokens": 3},
+                    }
+
+            return Resp()
+
+    handler = StructuredContent()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    _prepare_env(monkeypatch)
+
+    result = call("simple-query", "prompt", metadata)
+    assert result["text"] == "Alpha\nBeta\nGamma"
+
+
+def test_llm_client_falls_back_to_choice_text(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class ChoiceText:
+        def __call__(self, url, headers, json, timeout):
+            class Resp:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "choices": [
+                            {
+                                "text": "Direct output",
+                                "message": {"role": "assistant"},
+                            }
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 2},
+                    }
+
+            return Resp()
+
+    handler = ChoiceText()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    _prepare_env(monkeypatch)
+
+    result = call("simple-query", "prompt", metadata)
+    assert result["text"] == "Direct output"
+
+
+def test_llm_client_extends_max_tokens_when_truncated(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class LengthThenSuccess:
+        def __init__(self):
+            self.calls: list[int | None] = []
+
+        def __call__(self, url, headers, json, timeout):
+            self.calls.append(json.get("max_tokens"))
+
+            class Resp:
+                def __init__(self, index: int):
+                    self.status_code = 200
+                    self._index = index
+
+                def json(self):
+                    if self._index == 0:
+                        return {
+                            "choices": [
+                                {
+                                    "message": {"role": "assistant"},
+                                    "finish_reason": "length",
+                                }
+                            ],
+                            "usage": {
+                                "prompt_tokens": 1,
+                                "completion_tokens": 1023,
+                                "completion_tokens_details": {
+                                    "reasoning_tokens": 1023,
+                                    "text_tokens": 0,
+                                },
+                            },
+                        }
+                    return {
+                        "choices": [
+                            {
+                                "message": {"content": "Completed output"},
+                                "finish_reason": "stop",
+                            }
+                        ],
+                        "usage": {
+                            "prompt_tokens": 1,
+                            "completion_tokens": 200,
+                        },
+                    }
+
+            return Resp(len(self.calls) - 1)
+
+    handler = LengthThenSuccess()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    _prepare_env(monkeypatch)
+
+    result = call("simple-query", "prompt", metadata)
+    assert result["text"] == "Completed output"
+    assert handler.calls[0] is None  # initial request without explicit cap
+    assert handler.calls[1] and handler.calls[1] > 1024
+
+
+def test_llm_client_raises_when_content_missing(monkeypatch):
+    metadata = {
+        "tenant": "t1",
+        "case": "c1",
+        "trace_id": "tr1",
+        "prompt_version": "v1",
+    }
+
+    class MissingContent:
+        def __call__(self, url, headers, json, timeout):
+            class Resp:
+                status_code = 200
+
+                def json(self):
+                    return {
+                        "choices": [
+                            {"message": {"role": "assistant", "thinking_blocks": []}}
+                        ],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    }
+
+            return Resp()
+
+    handler = MissingContent()
+    monkeypatch.setattr("ai_core.llm.client.requests.post", handler)
+    monkeypatch.setattr("ai_core.llm.client.ledger.record", lambda meta: None)
+    _prepare_env(monkeypatch)
+
+    with pytest.raises(LlmClientError) as excinfo:
+        call("simple-query", "prompt", metadata)
+
+    assert "missing content" in str(excinfo.value).lower()
+
+
 def test_llm_client_uses_configured_timeouts(monkeypatch):
     metadata = {
         "tenant": "t1",
