@@ -6,7 +6,7 @@ import os
 import re
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
@@ -16,7 +16,13 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
-from ai_core.infra.observability import observe_span, record_span, update_observation
+from ai_core.infra import observability as observability_helpers
+from ai_core.infra.observability import (
+    observe_span,
+    record_span,
+    tracing_enabled,
+    update_observation,
+)
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
@@ -113,14 +119,35 @@ class _EmbedSpanMetrics:
 def _observed_embed_section(name: str) -> Iterator[_EmbedSpanMetrics]:
     metrics = _EmbedSpanMetrics()
 
+    span_cm = nullcontext()
+    if tracing_enabled():
+        get_tracer = getattr(observability_helpers, "_get_tracer", None)
+        tracer = None
+        if callable(get_tracer):
+            try:
+                tracer = get_tracer()
+            except Exception:
+                tracer = None
+        if tracer is not None:
+            try:
+                candidate = tracer.start_as_current_span(
+                    f"ingestion.embed.{name}"
+                )
+            except Exception:
+                candidate = None
+            else:
+                if candidate is not None:
+                    span_cm = candidate
+
     @contextmanager
-    @observe_span(name=f"ingestion.embed.{name}")
     def _span() -> Iterator[_EmbedSpanMetrics]:
         try:
-            yield metrics
-        except Exception:
-            metrics.set("status", "error")
-            raise
+            with span_cm:
+                try:
+                    yield metrics
+                except Exception:
+                    metrics.set("status", "error")
+                    raise
         finally:
             metrics.finalise()
 
