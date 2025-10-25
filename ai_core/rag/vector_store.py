@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import inspect
 import logging
-from typing import Dict, Iterable, Mapping, NoReturn, Protocol, TYPE_CHECKING, Any
+import math
+import statistics
+from collections import deque
+from typing import Any, Dict, Iterable, Mapping, NoReturn, Protocol, Sequence, TYPE_CHECKING
 from uuid import UUID
 
 from psycopg2 import OperationalError
@@ -15,6 +19,7 @@ from ai_core.rag.limits import clamp_fraction, get_limit_setting
 from ai_core.rag.visibility import DEFAULT_VISIBILITY, Visibility
 from common.logging import get_log_context
 from ai_core.infra.observability import (
+    emit_event,
     observe_span,
     record_span,
     update_observation,
@@ -33,6 +38,26 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _EXTENDED_VISIBILITY = {Visibility.ALL, Visibility.DELETED}
+
+
+_TOP1_HISTORY: deque[float] = deque(maxlen=50)
+
+
+def _update_top1_history(score: float | None) -> float | None:
+    """Track the rolling median for top-1 fused scores."""
+
+    if score is None:
+        return None
+    try:
+        numeric = float(score)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(numeric):
+        return None
+    _TOP1_HISTORY.append(numeric)
+    if not _TOP1_HISTORY:
+        return None
+    return statistics.median(_TOP1_HISTORY)
 
 
 class NullVectorStore:
@@ -278,6 +303,7 @@ def _prepare_filters(
         normalised.pop("collection_ids", None)
 
     context["collection_ids_filter"] = existing_collection_ids or None
+    context["filters_applied"] = dict(normalised) if normalised else None
 
     return normalised
 
@@ -289,6 +315,7 @@ def _emit_retrieval_span(
     case_id: str | None,
     context: Mapping[str, object | None],
     result: Any,
+    query: str,
 ) -> None:
     trace_id = (get_log_context().get("trace_id") or "").strip()
     if not trace_id:
@@ -311,6 +338,19 @@ def _emit_retrieval_span(
         "visibility_effective": context.get("visibility_effective"),
         "visibility_override_allowed": bool(context.get("visibility_override_allowed")),
     }
+
+    filters_applied = context.get("filters_applied")
+    if isinstance(filters_applied, Mapping):
+        metadata["filters_applied"] = dict(filters_applied)
+    elif filters_applied is not None:
+        metadata["filters_applied"] = filters_applied
+
+    try:
+        query_hash = hashlib.sha256(query.encode("utf-8")).hexdigest()[:12]
+    except Exception:
+        query_hash = None
+    if query_hash:
+        metadata["query_hash"] = query_hash
 
     requested_top_k = context.get("top_k_requested")
     if requested_top_k is not None:
@@ -357,9 +397,22 @@ def _emit_retrieval_span(
     if fused_candidates is not None:
         metadata["fused_candidates"] = fused_candidates
 
+    if vector_candidates is not None or lexical_candidates is not None:
+        metadata["candidates_total"] = (
+            (vector_candidates or 0) + (lexical_candidates or 0)
+        )
+
     duration_ms = _coerce_float(getattr(result, "duration_ms", None))
     if duration_ms is not None:
         metadata["duration_ms"] = duration_ms
+
+    index_latency_ms = _coerce_float(getattr(result, "index_latency_ms", None))
+    if index_latency_ms is not None:
+        metadata["index_latency_ms"] = index_latency_ms
+
+    rerank_latency_ms = _coerce_float(getattr(result, "rerank_latency_ms", None))
+    if rerank_latency_ms is not None:
+        metadata["rerank_latency_ms"] = rerank_latency_ms
 
     below_cutoff = _coerce_int(getattr(result, "below_cutoff", None))
     if below_cutoff is not None:
@@ -369,10 +422,62 @@ def _emit_retrieval_span(
     if returned_after_cutoff is not None:
         metadata["returned_after_cutoff"] = returned_after_cutoff
 
+    cached_total_candidates = _coerce_int(
+        getattr(result, "cached_total_candidates", None)
+    )
+    if cached_total_candidates is not None:
+        metadata["cached_total_candidates"] = cached_total_candidates
+
     deleted_matches_blocked = _coerce_int(getattr(result, "deleted_matches_blocked", 0))
     metadata["deleted_matches_blocked"] = (
         deleted_matches_blocked if deleted_matches_blocked is not None else 0
     )
+
+    chunks = getattr(result, "chunks", None)
+    chunk_list: Sequence[object] = ()
+    if isinstance(chunks, Sequence) and not isinstance(chunks, (str, bytes, bytearray)):
+        chunk_list = chunks
+
+    scores_payload = getattr(result, "scores", None)
+    scores_top3: list[float] = []
+    if isinstance(scores_payload, Sequence):
+        for entry in scores_payload[:3]:
+            fused = None
+            if isinstance(entry, Mapping):
+                fused = entry.get("fused")
+            elif isinstance(entry, Sequence) and entry:
+                fused = entry[0]
+            try:
+                fused_value = float(fused) if fused is not None else None
+            except (TypeError, ValueError):
+                fused_value = None
+            if fused_value is None or not math.isfinite(fused_value):
+                fused_value = None
+            if fused_value is not None:
+                scores_top3.append(fused_value)
+    if len(scores_top3) < 3 and chunk_list:
+        remaining = max(0, 3 - len(scores_top3))
+        start_index = len(scores_top3)
+        end_index = min(len(chunk_list), start_index + remaining)
+        for chunk in chunk_list[start_index:end_index]:
+            fused = None
+            if hasattr(chunk, "meta"):
+                chunk_meta = getattr(chunk, "meta", None)
+                if isinstance(chunk_meta, Mapping):
+                    fused = chunk_meta.get("fused")
+            try:
+                fused_value = float(fused) if fused is not None else None
+            except (TypeError, ValueError):
+                fused_value = None
+            if fused_value is None or not math.isfinite(fused_value):
+                fused_value = None
+            if fused_value is not None:
+                scores_top3.append(fused_value)
+    if scores_top3:
+        metadata["scores_top3"] = scores_top3[:3]
+
+    if chunk_list:
+        metadata["topk"] = len(chunk_list)
 
     visibility = getattr(result, "visibility", None)
     if isinstance(visibility, str):
@@ -381,6 +486,55 @@ def _emit_retrieval_span(
     query_embedding_empty = getattr(result, "query_embedding_empty", None)
     if isinstance(query_embedding_empty, bool):
         metadata["query_embedding_empty"] = query_embedding_empty
+
+    if isinstance(scores_payload, Sequence):
+        serialised_scores: list[dict[str, float]] = []
+        for entry in scores_payload:
+            if not isinstance(entry, Mapping):
+                continue
+            try:
+                fused_value = float(entry.get("fused", 0.0))
+            except (TypeError, ValueError):
+                fused_value = 0.0
+            try:
+                vector_value = float(entry.get("vector", 0.0))
+            except (TypeError, ValueError):
+                vector_value = 0.0
+            try:
+                lexical_value = float(entry.get("lexical", 0.0))
+            except (TypeError, ValueError):
+                lexical_value = 0.0
+            serialised_scores.append(
+                {
+                    "fused": fused_value,
+                    "vector": vector_value,
+                    "lexical": lexical_value,
+                }
+            )
+        if serialised_scores:
+            metadata["scores"] = serialised_scores
+
+    top1_score = scores_top3[0] if scores_top3 else None
+    try:
+        median_score = _update_top1_history(top1_score)
+    except Exception:
+        median_score = None
+    if top1_score is not None and median_score is not None:
+        delta = top1_score - median_score
+        event_payload = {
+            "event": "rag.drift.top1",
+            "tenant_id": tenant_id,
+            "scope": scope,
+            "top1_score": top1_score,
+            "median_score": median_score,
+            "delta": delta,
+        }
+        if query_hash:
+            event_payload["query_hash"] = query_hash
+        try:
+            emit_event(event_payload)
+        except Exception:
+            pass
 
     try:  # best-effort observability; never break retrieval
 
@@ -915,6 +1069,7 @@ class VectorStoreRouter:
                     case_id=case_id,
                     context=validation_context,
                     result=result,
+                    query=query,
                 )
                 return result
             logger.warning(
@@ -961,6 +1116,7 @@ class VectorStoreRouter:
             case_id=case_id,
             context=validation_context,
             result=fallback_result,
+            query=query,
         )
         return fallback_result
 

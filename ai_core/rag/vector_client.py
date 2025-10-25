@@ -748,6 +748,10 @@ class HybridSearchResult:
     fallback_limit_used: float | None = None
     visibility: str = Visibility.ACTIVE.value
     deleted_matches_blocked: int = 0
+    index_latency_ms: float | None = None
+    rerank_latency_ms: float | None = None
+    cached_total_candidates: int | None = None
+    scores: List[Dict[str, float]] | None = None
 
 
 class UpsertResult(int):
@@ -3174,6 +3178,31 @@ class PgVectorClient:
             duration_ms,
         )
 
+        per_result_scores: List[Dict[str, float]] = []
+        for chunk in limited_results:
+            fused_score = chunk.meta.get("fused", 0.0)
+            vector_score = chunk.meta.get("vscore", 0.0)
+            lexical_score = chunk.meta.get("lscore", 0.0)
+            try:
+                fused_value = float(fused_score)
+            except (TypeError, ValueError):
+                fused_value = 0.0
+            try:
+                vector_value = float(vector_score)
+            except (TypeError, ValueError):
+                vector_value = 0.0
+            try:
+                lexical_value = float(lexical_score)
+            except (TypeError, ValueError):
+                lexical_value = 0.0
+            per_result_scores.append(
+                {
+                    "fused": fused_value,
+                    "vector": vector_value,
+                    "lexical": lexical_value,
+                }
+            )
+
         return HybridSearchResult(
             chunks=limited_results,
             vector_candidates=len(vector_rows),
@@ -3191,6 +3220,8 @@ class PgVectorClient:
             fallback_limit_used=fallback_limit_used_value,
             visibility=visibility_mode.value,
             deleted_matches_blocked=deleted_matches_blocked_value,
+            cached_total_candidates=total_without_filter,
+            scores=per_result_scores if per_result_scores else None,
         )
 
     def fetch_parent_context(
