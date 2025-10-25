@@ -754,6 +754,39 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     chunk_candidates: List[Tuple[str, List[str], str]] = []
 
     if structured_blocks:
+        pending_pieces: List[str] = []
+        pending_parent_ids: Optional[Tuple[str, ...]] = None
+        pending_heading_prefix: str = ""
+
+        def _flush_pending() -> None:
+            nonlocal pending_pieces, pending_parent_ids, pending_heading_prefix
+            if not pending_pieces or pending_parent_ids is None:
+                pending_pieces = []
+                pending_parent_ids = None
+                pending_heading_prefix = ""
+                return
+
+            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
+            sentences = _split_sentences(combined_text)
+            if not sentences:
+                sentences = [combined_text] if combined_text else []
+
+            if sentences:
+                bodies = _chunkify(
+                    sentences,
+                    target_tokens=target_tokens,
+                    overlap_tokens=overlap_tokens,
+                    hard_limit=hard_limit,
+                )
+                for body in bodies:
+                    chunk_candidates.append(
+                        (body, list(pending_parent_ids), pending_heading_prefix)
+                    )
+
+            pending_pieces = []
+            pending_parent_ids = None
+            pending_heading_prefix = ""
+
         section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
 
         for block in structured_blocks:
@@ -769,6 +802,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 )
             masked_text = _mask_for_chunk(text_value)
             if kind == "heading":
+                _flush_pending()
                 level = len(path_tuple) if path_tuple else 1
                 while parent_stack and len(parent_stack[-1].get("path", ())) >= level:
                     parent_stack.pop()
@@ -818,25 +852,55 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                     )
                 else:
                     _append_parent_text(root_id, piece_text, 0)
-                sentences = _split_sentences(piece_text)
-                if not sentences:
-                    continue
+                parent_ids = [root_id] + [info["id"] for info in parent_stack]
+                unique_parent_ids = list(
+                    dict.fromkeys(pid for pid in parent_ids if pid)
+                )
+                heading_prefix = " / ".join(path_tuple) if path_tuple else ""
+
+                new_parent_ids = tuple(unique_parent_ids)
+                if pending_parent_ids is not None and (
+                    pending_parent_ids != new_parent_ids
+                    or pending_heading_prefix != heading_prefix
+                ):
+                    _flush_pending()
+
+                if pending_parent_ids is None:
+                    pending_parent_ids = new_parent_ids
+                    pending_heading_prefix = heading_prefix
+
+                pending_pieces.append(piece_text)
+
+        _flush_pending()
+    else:
+        pending_pieces = []
+        pending_parent_ids: Optional[Tuple[str, ...]] = None
+
+        def _flush_pending() -> None:
+            nonlocal pending_pieces, pending_parent_ids
+            if not pending_pieces or pending_parent_ids is None:
+                pending_pieces = []
+                pending_parent_ids = None
+                return
+
+            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
+            sentences = _split_sentences(combined_text)
+            if not sentences:
+                sentences = [combined_text] if combined_text else []
+
+            if sentences:
                 bodies = _chunkify(
                     sentences,
                     target_tokens=target_tokens,
                     overlap_tokens=overlap_tokens,
                     hard_limit=hard_limit,
                 )
-                if not bodies:
-                    continue
-                parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(
-                    dict.fromkeys(pid for pid in parent_ids if pid)
-                )
-                heading_prefix = " / ".join(path_tuple) if path_tuple else ""
                 for body in bodies:
-                    chunk_candidates.append((body, unique_parent_ids, heading_prefix))
-    else:
+                    chunk_candidates.append((body, list(pending_parent_ids), ""))
+
+            pending_pieces = []
+            pending_parent_ids = None
+
         heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 
         for block in fallback_segments:
@@ -845,6 +909,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 continue
             heading_match = heading_pattern.match(stripped_block)
             if heading_match:
+                _flush_pending()
                 hashes, heading_title = heading_match.groups()
                 level = len(hashes)
                 while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
@@ -869,23 +934,21 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                     )
                 else:
                     _append_parent_text(root_id, piece_text, 0)
-                sentences = _split_sentences(piece)
-                if not sentences:
-                    continue
-                bodies = _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
-                if not bodies:
-                    continue
                 parent_ids = [root_id] + [info["id"] for info in parent_stack]
                 unique_parent_ids = list(
                     dict.fromkeys(pid for pid in parent_ids if pid)
                 )
-                for body in bodies:
-                    chunk_candidates.append((body, unique_parent_ids, ""))
+                new_parent_ids = tuple(unique_parent_ids)
+
+                if pending_parent_ids is not None and pending_parent_ids != new_parent_ids:
+                    _flush_pending()
+
+                if pending_parent_ids is None:
+                    pending_parent_ids = new_parent_ids
+
+                pending_pieces.append(piece_text)
+
+        _flush_pending()
 
     if not chunk_candidates:
         fallback_ids = [root_id] + [info["id"] for info in parent_stack]
