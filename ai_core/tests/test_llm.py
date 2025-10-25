@@ -259,8 +259,10 @@ def test_llm_client_extends_max_tokens_when_truncated(monkeypatch):
 
     result = call("simple-query", "prompt", metadata)
     assert result["text"] == "Completed output"
-    assert handler.calls[0] is None  # initial request without explicit cap
-    assert handler.calls[1] and handler.calls[1] > 1024
+    first_request = handler.calls[0]
+    second_request = handler.calls[1]
+    assert first_request is not None and first_request > 0
+    assert second_request and second_request > first_request
 
 
 def test_llm_client_raises_when_content_missing(monkeypatch):

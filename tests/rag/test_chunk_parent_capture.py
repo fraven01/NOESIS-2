@@ -203,9 +203,9 @@ def test_structured_chunk_flushes_when_heading_changes(settings, configured_stor
 
     doc_id = str(uuid.uuid4())
     meta = {
-        "tenant_id": "tenant", 
-        "case_id": "case", 
-        "external_id": "doc-structured-heading", 
+        "tenant_id": "tenant",
+        "case_id": "case",
+        "external_id": "doc-structured-heading",
         "document_id": doc_id,
     }
     markdown = textwrap.dedent(
@@ -276,9 +276,7 @@ def test_structured_chunk_flushes_when_heading_changes(settings, configured_stor
     assert section_two_chunk["content"].splitlines()[0] == "Section Two"
 
 
-def test_structured_chunk_flushes_when_section_path_changes(
-    settings, configured_store
-):
+def test_structured_chunk_flushes_when_section_path_changes(settings, configured_store):
     del configured_store
     settings.RAG_PARENT_MAX_BYTES = 0
     settings.RAG_PARENT_CAPTURE_MAX_BYTES = 0
