@@ -3,6 +3,7 @@
 from .contracts import (
     DEFAULT_TRACKING_PARAMETERS,
     DEFAULT_TRACKING_PREFIXES,
+    Decision,
     DEFAULT_NATIVE_ID_GETTER,
     HTTP_URL_CANONICALIZER,
     NormalizedSource,
@@ -102,6 +103,7 @@ __all__ = [
     "DEFAULT_TRACKING_PARAMETERS",
     "DEFAULT_TRACKING_PREFIXES",
     "DEFAULT_NATIVE_ID_GETTER",
+    "Decision",
     "HTTP_URL_CANONICALIZER",
     "NormalizedSource",
     "ProviderRules",

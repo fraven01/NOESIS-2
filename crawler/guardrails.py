@@ -8,6 +8,7 @@ from enum import Enum
 from typing import FrozenSet, Optional, Tuple
 
 from .errors import CrawlerError, ErrorClass
+from .contracts import Decision
 
 
 class GuardrailStatus(str, Enum):
@@ -118,20 +119,33 @@ class GuardrailSignals:
 
 
 @dataclass(frozen=True)
-class GuardrailDecision:
+class GuardrailDecision(Decision):
     """Decision emitted after evaluating guardrail limits."""
 
-    status: GuardrailStatus
-    reason: str
-    policy_events: Tuple[str, ...] = ()
-    error: Optional[CrawlerError] = None
+    @classmethod
+    def from_legacy(
+        cls,
+        status: GuardrailStatus,
+        reason: str,
+        policy_events: Tuple[str, ...] = (),
+        error: Optional[CrawlerError] = None,
+    ) -> "GuardrailDecision":
+        attributes = {"policy_events": tuple(policy_events)}
+        if error is not None:
+            attributes["error"] = error
+        return cls(status.value, reason, attributes)
 
-    def __post_init__(self) -> None:
-        normalized_reason = (self.reason or "").strip()
-        if not normalized_reason:
-            raise ValueError("reason_required")
-        object.__setattr__(self, "reason", normalized_reason)
-        object.__setattr__(self, "policy_events", tuple(self.policy_events))
+    @property
+    def status(self) -> GuardrailStatus:
+        return GuardrailStatus(self.decision)
+
+    @property
+    def policy_events(self) -> Tuple[str, ...]:
+        return tuple(self.attributes.get("policy_events", ()))
+
+    @property
+    def error(self) -> Optional[CrawlerError]:
+        return self.attributes.get("error")
 
     @property
     def allowed(self) -> bool:
@@ -249,7 +263,9 @@ def enforce_guardrails(
                 ),
             )
 
-    return GuardrailDecision(GuardrailStatus.ALLOW, "allow")
+    return GuardrailDecision.from_legacy(
+        GuardrailStatus.ALLOW, "allow", (), None
+    )
 
 
 def _deny(
@@ -258,7 +274,9 @@ def _deny(
     events: Tuple[str, ...],
     error: CrawlerError,
 ) -> GuardrailDecision:
-    return GuardrailDecision(GuardrailStatus.DENY, reason, events, error)
+    return GuardrailDecision.from_legacy(
+        GuardrailStatus.DENY, reason, events, error
+    )
 
 
 def _quota_exceeded(

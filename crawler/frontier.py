@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from .contracts import Decision
+
 
 class FrontierAction(str, Enum):
     """Supported high-level decisions for the crawl frontier."""
@@ -115,18 +117,34 @@ class SourceDescriptor:
 
 
 @dataclass(frozen=True)
-class FrontierDecision:
-    """Outcome of the frontier policy evaluation.
+class FrontierDecision(Decision):
+    """Outcome of the frontier policy evaluation using the shared payload."""
 
-    ``earliest_visit_at`` equals ``now`` when the action is :class:`ENQUEUE`.
-    Consumers that treat ``None`` as "immediately" should rely on the action to
-    determine scheduling semantics.
-    """
+    @classmethod
+    def from_legacy(
+        cls,
+        action: FrontierAction,
+        earliest_visit_at: Optional[datetime],
+        reason: str,
+        policy_events: Tuple[str, ...] = (),
+    ) -> "FrontierDecision":
+        attributes = {
+            "earliest_visit_at": earliest_visit_at,
+            "policy_events": tuple(policy_events),
+        }
+        return cls(action.value, reason, attributes)
 
-    action: FrontierAction
-    earliest_visit_at: Optional[datetime]
-    reason: str
-    policy_events: Tuple[str, ...] = ()
+    @property
+    def action(self) -> FrontierAction:
+        return FrontierAction(self.decision)
+
+    @property
+    def earliest_visit_at(self) -> Optional[datetime]:
+        return self.attributes.get("earliest_visit_at")
+
+    @property
+    def policy_events(self) -> Tuple[str, ...]:
+        return tuple(self.attributes.get("policy_events", ()))
 
 
 FAILURE_RETIRE_THRESHOLD = 5
@@ -150,21 +168,24 @@ def decide_frontier_action(
     events = []
 
     if active_signals.retire:
-        return FrontierDecision(
+        return FrontierDecision.from_legacy(
             FrontierAction.RETIRE, None, "manual_retire", tuple(events)
         )
 
     if active_signals.consecutive_failures >= FAILURE_RETIRE_THRESHOLD:
         events.append("retire_after_failures")
-        return FrontierDecision(
-            FrontierAction.RETIRE, None, "retire_after_failures", tuple(events)
+        return FrontierDecision.from_legacy(
+            FrontierAction.RETIRE,
+            None,
+            "retire_after_failures",
+            tuple(events),
         )
 
     robots_policy = robots or RobotsPolicy()
     robots_allowed, robots_event = _check_robots(robots_policy, source.path)
     if not robots_allowed:
         events.append("robots_disallow")
-        return FrontierDecision(
+        return FrontierDecision.from_legacy(
             FrontierAction.SKIP, None, "robots_disallow", tuple(events)
         )
     if robots_event:
@@ -209,8 +230,12 @@ def decide_frontier_action(
             reason = "failure_backoff"
 
     if earliest > current_time:
-        return FrontierDecision(FrontierAction.DEFER, earliest, reason, tuple(events))
-    return FrontierDecision(FrontierAction.ENQUEUE, earliest, reason, tuple(events))
+        return FrontierDecision.from_legacy(
+            FrontierAction.DEFER, earliest, reason, tuple(events)
+        )
+    return FrontierDecision.from_legacy(
+        FrontierAction.ENQUEUE, earliest, reason, tuple(events)
+    )
 
 
 def _ensure_aware(candidate: Optional[datetime]) -> datetime:

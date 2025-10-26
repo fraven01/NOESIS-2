@@ -68,11 +68,11 @@ def _make_signatures(content_hash: str) -> DeltaSignatures:
 
 def test_build_ingestion_decision_upsert_includes_metadata() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.NEW,
-        signatures=_make_signatures("hash123"),
-        version=1,
-        reason="no_previous_hash",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.NEW,
+        _make_signatures("hash123"),
+        1,
+        "no_previous_hash",
     )
 
     decision = build_ingestion_decision(document, delta, case_id="case-7")
@@ -98,11 +98,11 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
 
 def test_build_ingestion_decision_skips_when_unchanged() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.UNCHANGED,
-        signatures=_make_signatures("hash999"),
-        version=3,
-        reason="hash_match",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.UNCHANGED,
+        _make_signatures("hash999"),
+        3,
+        "hash_match",
     )
 
     decision = build_ingestion_decision(document, delta, case_id="case-1")
@@ -115,11 +115,11 @@ def test_build_ingestion_decision_skips_when_unchanged() -> None:
 
 def test_build_ingestion_decision_skips_near_duplicate() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.NEAR_DUPLICATE,
-        signatures=_make_signatures("hash777"),
-        version=None,
-        reason="near_duplicate:0.950",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.NEAR_DUPLICATE,
+        _make_signatures("hash777"),
+        None,
+        "near_duplicate:0.950",
     )
 
     decision = build_ingestion_decision(document, delta, case_id="case-1")
@@ -132,11 +132,11 @@ def test_build_ingestion_decision_skips_near_duplicate() -> None:
 
 def test_build_ingestion_decision_requires_case_id() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.NEW,
-        signatures=_make_signatures("hash000"),
-        version=1,
-        reason="new",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.NEW,
+        _make_signatures("hash000"),
+        1,
+        "new",
     )
 
     with pytest.raises(ValueError):
@@ -145,11 +145,11 @@ def test_build_ingestion_decision_requires_case_id() -> None:
 
 def test_build_ingestion_decision_retire_overrides_delta() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.UNCHANGED,
-        signatures=_make_signatures("hash111"),
-        version=5,
-        reason="hash_match",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.UNCHANGED,
+        _make_signatures("hash111"),
+        5,
+        "hash_match",
     )
 
     decision = build_ingestion_decision(document, delta, case_id="case-9", retire=True)
@@ -164,11 +164,11 @@ def test_build_ingestion_decision_retire_overrides_delta() -> None:
 
 def test_build_ingestion_decision_respects_lifecycle_decision() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.CHANGED,
-        signatures=_make_signatures("hash333"),
-        version=2,
-        reason="hash_mismatch",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.CHANGED,
+        _make_signatures("hash333"),
+        2,
+        "hash_mismatch",
     )
     lifecycle = LifecycleDecision(
         state=LifecycleState.RETIRED,
@@ -192,11 +192,11 @@ def test_build_ingestion_decision_respects_lifecycle_decision() -> None:
 
 def test_build_ingestion_error_wraps_metadata() -> None:
     document = _make_document()
-    delta = DeltaDecision(
-        status=DeltaStatus.NEW,
-        signatures=_make_signatures("hash222"),
-        version=1,
-        reason="new",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.NEW,
+        _make_signatures("hash222"),
+        1,
+        "new",
     )
     decision = build_ingestion_decision(document, delta, case_id="case-5")
     assert decision.payload is not None
@@ -225,11 +225,11 @@ def test_ingestion_payload_hashed_external_id_validates_with_chunk_meta() -> Non
         canonical_source=normalized_source.canonical_source,
         external_id=normalized_source.external_id,
     )
-    delta = DeltaDecision(
-        status=DeltaStatus.NEW,
-        signatures=_make_signatures("hash555"),
-        version=1,
-        reason="no_previous_hash",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.NEW,
+        _make_signatures("hash555"),
+        1,
+        "no_previous_hash",
     )
 
     decision = build_ingestion_decision(document, delta, case_id="case-hash")

@@ -435,11 +435,11 @@ def test_gone_fetch_triggers_retire_lifecycle() -> None:
         downloaded_bytes=0,
     )
     lifecycle = evaluate_lifecycle(fetch=gone_fetch)
-    delta = DeltaDecision(
-        status=DeltaStatus.UNCHANGED,
-        signatures=base_delta.signatures,
-        version=base_delta.version,
-        reason="hash_match",
+    delta = DeltaDecision.from_legacy(
+        DeltaStatus.UNCHANGED,
+        base_delta.signatures,
+        base_delta.version,
+        "hash_match",
     )
     ingestion = build_ingestion_decision(
         document,

@@ -7,6 +7,7 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Dict, Mapping, Optional, Tuple
 
+from .contracts import Decision
 from .delta import DeltaDecision, DeltaStatus
 from .errors import CrawlerError, ErrorClass
 from .normalizer import NormalizedDocument
@@ -85,14 +86,43 @@ class IngestionPayload:
 
 
 @dataclass(frozen=True)
-class IngestionDecision:
+class IngestionDecision(Decision):
     """Outcome emitted for ingestion including payload and routing reason."""
 
-    status: IngestionStatus
-    reason: str
-    payload: Optional[IngestionPayload] = None
-    lifecycle_state: LifecycleState = LifecycleState.ACTIVE
-    policy_events: Tuple[str, ...] = ()
+    @classmethod
+    def from_legacy(
+        cls,
+        status: IngestionStatus,
+        reason: str,
+        payload: Optional[IngestionPayload] = None,
+        lifecycle_state: LifecycleState = LifecycleState.ACTIVE,
+        policy_events: Tuple[str, ...] = (),
+    ) -> "IngestionDecision":
+        attributes = {
+            "payload": payload,
+            "lifecycle_state": lifecycle_state,
+            "policy_events": tuple(policy_events),
+        }
+        return cls(status.value, reason, attributes)
+
+    @property
+    def status(self) -> IngestionStatus:
+        return IngestionStatus(self.decision)
+
+    @property
+    def payload(self) -> Optional[IngestionPayload]:
+        return self.attributes.get("payload")
+
+    @property
+    def lifecycle_state(self) -> LifecycleState:
+        state = self.attributes.get("lifecycle_state", LifecycleState.ACTIVE)
+        if isinstance(state, LifecycleState):
+            return state
+        return LifecycleState(state)
+
+    @property
+    def policy_events(self) -> Tuple[str, ...]:
+        return tuple(self.attributes.get("policy_events", ()))
 
 
 def build_ingestion_decision(
@@ -112,7 +142,7 @@ def build_ingestion_decision(
         payload = _build_payload(
             document, delta.signatures.content_hash, normalized_case_id
         )
-        return IngestionDecision(
+        return IngestionDecision.from_legacy(
             IngestionStatus.RETIRE,
             lifecycle_decision.reason,
             payload,
@@ -121,7 +151,7 @@ def build_ingestion_decision(
         )
 
     if delta.status is DeltaStatus.UNCHANGED:
-        return IngestionDecision(
+        return IngestionDecision.from_legacy(
             IngestionStatus.SKIP,
             delta.reason,
             None,
@@ -130,7 +160,7 @@ def build_ingestion_decision(
         )
 
     if delta.status is DeltaStatus.NEAR_DUPLICATE:
-        return IngestionDecision(
+        return IngestionDecision.from_legacy(
             IngestionStatus.SKIP,
             delta.reason,
             None,
@@ -141,7 +171,7 @@ def build_ingestion_decision(
     payload = _build_payload(
         document, delta.signatures.content_hash, normalized_case_id
     )
-    return IngestionDecision(
+    return IngestionDecision.from_legacy(
         IngestionStatus.UPSERT,
         delta.reason,
         payload,
