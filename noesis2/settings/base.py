@@ -198,6 +198,12 @@ DOCUMENTS_REPOSITORY_CLASS = env(
 )
 
 
+# Crawler HTTP adapter defaults
+CRAWLER_HTTP_USER_AGENT = env(
+    "CRAWLER_HTTP_USER_AGENT", default="noesis-crawler/1.0"
+)
+
+
 # Application definition
 
 # Apps that live in the ``public`` schema and are shared across all tenants
@@ -223,6 +229,7 @@ TENANT_APPS = [
     "django.contrib.staticfiles",
     "rest_framework",
     "drf_spectacular",
+    "crawler",
     "documents",
     "ai_core",
     "users",
