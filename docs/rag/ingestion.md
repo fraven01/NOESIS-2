@@ -50,6 +50,9 @@ flowchart TD
 - Netzwerkfehler lösen Wiederholungen aus; nach Erfolg werden Dead-Letter-Einträge automatisch erneut angestoßen.
 - Fehler werden in Langfuse als Span `ingestion.error` mit Metadaten protokolliert.
 
+### Fehlercodes
+- Die Ingestion-Adapter geben Fehler über `ingest.error_code` weiter. Die Werte folgen dem gemeinsamen Crawler-Vokabular (`crawler.errors.ErrorClass`) und verlinken damit die Telemetrie in Langfuse mit den RAG-Runbooks.
+
 ## Near-Duplicate Detection
 
 - `RAG_NEAR_DUPLICATE_THRESHOLD` vergleicht eine kosinus-ähnliche Ähnlichkeit in

@@ -29,6 +29,12 @@ flowchart LR
 - Ingestion sendet Batch-Statistiken (`batch_size`, `duration`, `cost_estimate`) über Custom Metrics.
 - LiteLLM aktiviert Model-Trace per ENV `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_KEY`; Sampling wird über `LANGFUSE_SAMPLE_RATE` (0.05 Prod, 0.25 Staging) gesteuert.
 
+### Crawler-Spans
+- Für den kompletten Lebenszyklus einer Quelle (Frontier → Fetch → Parse → Normalize → Delta → Ingestion)
+  gelten die Verträge aus [Crawler Observability in Langfuse](./crawler-langfuse.md).
+- Jeder Span trägt `noesis.external_id`, `crawler.provider` und die in der Tabelle definierten Pflichtattribute.
+- Events wie `policy_deny`, `not_modified`, `changed` und `ingestion_failure` werden als Span-Events gemeldet und erscheinen in der Trace-Timeline.
+
 ## Felder und Sampling
 | Feld | Quelle | Beschreibung |
 | --- | --- | --- |
