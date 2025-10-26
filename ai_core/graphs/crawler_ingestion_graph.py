@@ -150,14 +150,7 @@ class CrawlerIngestionGraph:
         graph_run_id = str(_generate_uuid7())
         working_state["graph_run_id"] = graph_run_id
         transitions: Dict[str, Transition] = {}
-        existing_transitions = working_state.get("transitions", {})
-        if isinstance(existing_transitions, Mapping):
-            for name, payload in existing_transitions.items():
-                if isinstance(payload, Mapping):
-                    try:
-                        transitions[name] = Transition.from_mapping(payload)
-                    except ValueError:
-                        continue
+        working_state["transitions"] = {}
         artifacts: Dict[str, Any] = dict(working_state.get("artifacts", {}))
         control: Dict[str, Any] = working_state["control"]
 
@@ -306,8 +299,7 @@ class CrawlerIngestionGraph:
         control.setdefault("policy_revision", 0)
         control.setdefault("recompute_delta", False)
         base["control"] = control
-        if base.get("ingest_action") is None:
-            base["ingest_action"] = "pending"
+        base["ingest_action"] = "pending"
         if base.get("gating_score") is None:
             base["gating_score"] = 0.0
         missing_required = [
