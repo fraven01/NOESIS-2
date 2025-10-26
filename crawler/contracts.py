@@ -7,12 +7,40 @@ import posixpath
 import threading
 import unicodedata
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 
 MAX_EXTERNAL_ID_LENGTH = 512
 _HASH_PREFIX = "sha1:"
+
+
+@dataclass(frozen=True)
+class Decision:
+    """Canonical payload shared by crawler decision helpers."""
+
+    decision: str
+    reason: str
+    attributes: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized_decision = str(self.decision or "").strip()
+        if not normalized_decision:
+            raise ValueError("decision_required")
+        normalized_reason = str(self.reason or "").strip()
+        if not normalized_reason:
+            raise ValueError("reason_required")
+        object.__setattr__(self, "decision", normalized_decision)
+        object.__setattr__(self, "reason", normalized_reason)
+
+        attributes: Mapping[str, Any]
+        raw_attributes = self.attributes or {}
+        if isinstance(raw_attributes, Mapping):
+            attributes = MappingProxyType(dict(raw_attributes))
+        else:
+            raise TypeError("attributes_must_be_mapping")
+        object.__setattr__(self, "attributes", attributes)
 
 
 DEFAULT_TRACKING_PARAMETERS = frozenset(
@@ -393,3 +421,4 @@ register_provider(
         fragment_strategy="drop",
     )
 )
+
