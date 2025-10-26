@@ -25,6 +25,209 @@
 
   <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
     <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">Crawler Runner</h2>
+      <p class="text-sm text-slate-600">
+        Starte den neuen LangGraph-Crawler mit beliebigen Inhalten, steuere Shadow- und Dry-Run-Modi
+        und entscheide manuell über Ingestion-Freigaben. Der Request nutzt automatisch die aktiven Tenant-Header.
+      </p>
+    </div>
+
+    <form id="crawler-form" class="grid gap-4 md:grid-cols-2">
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-workflow">Workflow ID</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-workflow"
+          name="workflow_id"
+          type="text"
+          value="{{ crawler_default_workflow_id }}"
+          placeholder="crawler-demo"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-origin">Origin URL</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-origin"
+          name="origin_url"
+          type="url"
+          placeholder="https://example.com/docs"
+          required
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-title">Titel (optional)</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-title"
+          name="title"
+          type="text"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-language">Sprache</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-language"
+          name="language"
+          type="text"
+          placeholder="de"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-provider">Provider</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-provider"
+          name="provider"
+          type="text"
+          value="web"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-tags">Tags</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-tags"
+          name="tags"
+          type="text"
+          placeholder="handbook,hr"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-content-type">Content Type</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-content-type"
+          name="content_type"
+          type="text"
+          value="text/html"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-max-bytes">Max Document Bytes</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-max-bytes"
+          name="max_document_bytes"
+          type="number"
+          min="0"
+        />
+        <p class="text-xs text-slate-500">Optional: kleiner Wert löst einen Manual-Review-Pfad aus.</p>
+      </div>
+      <div class="md:col-span-2 space-y-1">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <label class="text-sm font-medium text-slate-700" for="crawler-content">Content</label>
+          <span class="text-xs text-slate-500">HTML oder Plain Text</span>
+        </div>
+        <textarea
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-content"
+          name="content"
+          rows="6"
+          required
+        ></textarea>
+      </div>
+      <div class="md:col-span-2 flex flex-wrap items-center gap-4">
+        <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="crawler-shadow">
+          <input
+            type="checkbox"
+            id="crawler-shadow"
+            class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+          />
+          Shadow Mode (Upsert überspringen)
+        </label>
+        <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="crawler-dry-run">
+          <input
+            type="checkbox"
+            id="crawler-dry-run"
+            class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+          />
+          Dry-Run (nur Simulation)
+        </label>
+      </div>
+      <div class="md:col-span-2 flex flex-wrap items-center gap-3">
+        <button
+          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          type="submit"
+        >
+          Crawl starten
+        </button>
+        <button
+          class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+          type="button"
+          id="crawler-approve"
+          disabled
+        >
+          Manuell freigeben
+        </button>
+        <button
+          class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+          type="button"
+          id="crawler-reject"
+          disabled
+        >
+          Manuell ablehnen
+        </button>
+      </div>
+    </form>
+
+    <div class="space-y-3">
+      <div
+        id="crawler-error"
+        class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+      ></div>
+      <div class="grid gap-6 lg:grid-cols-2">
+        <div class="space-y-4">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Status</h3>
+            <dl class="space-y-1 text-sm text-slate-700">
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Decision</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-decision">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Manual Review</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-manual-status">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Shadow Mode</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-shadow-state">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Graph Run</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-run-id">–</code></dd>
+              </div>
+            </dl>
+          </div>
+          <div class="space-y-2">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Transitions</h3>
+            <div id="crawler-transitions" class="space-y-3 text-sm text-slate-700">
+              <p class="text-sm text-slate-500">Noch keine Ausführung gestartet.</p>
+            </div>
+          </div>
+        </div>
+        <div class="space-y-2">
+          <div class="flex items-center justify-between">
+            <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Rohdaten</h3>
+            <button
+              type="button"
+              id="crawler-copy"
+              class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+            >
+              Copy JSON
+            </button>
+          </div>
+          <pre class="max-h-80 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="crawler-json"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+    <div class="space-y-2">
       <h2 class="text-xl font-semibold text-slate-900">Upload Document</h2>
       <p class="text-sm text-slate-600">
         Lade eine Datei hoch, registriere sie im Dokumentenspeicher und starte automatisch eine Ingestion.
@@ -498,6 +701,10 @@
     const allowDocClassAlias = {{ collection_alias_enabled|yesno:'true,false' }};
     const resolverProfileHint = "{{ resolver_profile_hint|default_if_none:''|escapejs }}";
     const resolverCollectionHint = "{{ resolver_collection_hint|default_if_none:''|escapejs }}";
+    const crawlerRunnerUrl = "{{ crawler_runner_url|escapejs }}";
+    const crawlerDefaultWorkflow = "{{ crawler_default_workflow_id|default_if_none:''|escapejs }}";
+    const crawlerShadowDefault = {{ crawler_shadow_default|yesno:'true,false' }};
+    const crawlerDryRunDefault = {{ crawler_dry_run_default|yesno:'true,false' }};
     const support = window.RagToolsSupport || {};
     const normalizeCollectionInput =
       typeof support.normalizeCollectionInput === 'function'
@@ -561,6 +768,90 @@
           }
           return list.includes(normalizedValue);
         };
+
+    const buildCrawlerPayload =
+      typeof support.buildCrawlerPayload === 'function'
+        ? support.buildCrawlerPayload
+        : function (options) {
+            const opts = options || {};
+            const payload = {};
+            if (opts.workflowId) {
+              payload.workflow_id = String(opts.workflowId).trim();
+            }
+            if (opts.originUrl) {
+              payload.origin_url = String(opts.originUrl).trim();
+            }
+            if (opts.documentId) {
+              payload.document_id = String(opts.documentId).trim();
+            }
+            if (opts.title) {
+              payload.title = String(opts.title).trim();
+            }
+            if (opts.language) {
+              payload.language = String(opts.language).trim();
+            }
+            if (opts.contentType) {
+              payload.content_type = String(opts.contentType).trim();
+            }
+            if (opts.content) {
+              payload.content = String(opts.content);
+            }
+            if (opts.provider) {
+              payload.provider = String(opts.provider).trim();
+            }
+            if (opts.tags) {
+              if (Array.isArray(opts.tags)) {
+                payload.tags = opts.tags.filter(Boolean);
+              } else if (typeof opts.tags === 'string') {
+                payload.tags = opts.tags
+                  .split(',')
+                  .map(function (entry) {
+                    return entry.trim();
+                  })
+                  .filter(Boolean);
+              }
+            }
+            if (opts.maxDocumentBytes !== undefined && opts.maxDocumentBytes !== null && opts.maxDocumentBytes !== '') {
+              const parsed = Number(opts.maxDocumentBytes);
+              if (!Number.isNaN(parsed) && parsed >= 0) {
+                payload.max_document_bytes = Math.floor(parsed);
+              }
+            }
+            if (opts.shadowMode != null) {
+              payload.shadow_mode = Boolean(opts.shadowMode);
+            }
+            if (opts.dryRun != null) {
+              payload.dry_run = Boolean(opts.dryRun);
+            }
+            if (opts.manualReview) {
+              payload.manual_review = String(opts.manualReview).trim();
+            }
+            if (opts.forceRetire != null) {
+              payload.force_retire = Boolean(opts.forceRetire);
+            }
+            if (opts.recomputeDelta != null) {
+              payload.recompute_delta = Boolean(opts.recomputeDelta);
+            }
+            return payload;
+          };
+
+    const normalizeCrawlerManualReview =
+      typeof support.normalizeCrawlerManualReview === 'function'
+        ? support.normalizeCrawlerManualReview
+        : function (value) {
+            if (typeof value !== 'string') {
+              return null;
+            }
+            const lowered = value.trim().toLowerCase();
+            if (!lowered) {
+              return null;
+            }
+            if (['required', 'approved', 'rejected'].includes(lowered)) {
+              return lowered;
+            }
+            return null;
+          };
+
 
     // Simple UUID v4-like check (case-insensitive)
     function isUuidLike(value) {
@@ -1042,6 +1333,302 @@
 
     async function copyTextJSON(selector) {
       await copyText(selector);
+    }
+
+    const crawlerForm = document.getElementById('crawler-form');
+    const crawlerWorkflowInput = document.getElementById('crawler-workflow');
+    const crawlerOriginInput = document.getElementById('crawler-origin');
+    const crawlerTitleInput = document.getElementById('crawler-title');
+    const crawlerLanguageInput = document.getElementById('crawler-language');
+    const crawlerProviderInput = document.getElementById('crawler-provider');
+    const crawlerTagsInput = document.getElementById('crawler-tags');
+    const crawlerContentTypeInput = document.getElementById('crawler-content-type');
+    const crawlerMaxBytesInput = document.getElementById('crawler-max-bytes');
+    const crawlerContentInput = document.getElementById('crawler-content');
+    const crawlerShadowToggle = document.getElementById('crawler-shadow');
+    const crawlerDryRunToggle = document.getElementById('crawler-dry-run');
+    const crawlerDecisionDisplay = document.getElementById('crawler-decision');
+    const crawlerManualStatus = document.getElementById('crawler-manual-status');
+    const crawlerShadowState = document.getElementById('crawler-shadow-state');
+    const crawlerRunId = document.getElementById('crawler-run-id');
+    const crawlerErrorBox = document.getElementById('crawler-error');
+    const crawlerTransitionsContainer = document.getElementById('crawler-transitions');
+    const crawlerJson = document.getElementById('crawler-json');
+    const crawlerApproveButton = document.getElementById('crawler-approve');
+    const crawlerRejectButton = document.getElementById('crawler-reject');
+    const crawlerCopyButton = document.getElementById('crawler-copy');
+
+    if (crawlerWorkflowInput && crawlerDefaultWorkflow && !crawlerWorkflowInput.value) {
+      crawlerWorkflowInput.value = crawlerDefaultWorkflow;
+    }
+    if (crawlerProviderInput && !crawlerProviderInput.value) {
+      crawlerProviderInput.value = 'web';
+    }
+    if (crawlerShadowToggle && crawlerShadowToggle instanceof HTMLInputElement) {
+      crawlerShadowToggle.checked = Boolean(crawlerShadowDefault);
+    }
+    if (crawlerDryRunToggle && crawlerDryRunToggle instanceof HTMLInputElement) {
+      crawlerDryRunToggle.checked = Boolean(crawlerDryRunDefault);
+    }
+
+    function clearCrawlerError() {
+      if (!crawlerErrorBox) {
+        return;
+      }
+      crawlerErrorBox.textContent = '';
+      crawlerErrorBox.classList.add('hidden');
+    }
+
+    function showCrawlerError(message) {
+      if (!crawlerErrorBox) {
+        return;
+      }
+      crawlerErrorBox.textContent = message;
+      crawlerErrorBox.classList.remove('hidden');
+    }
+
+    function setCrawlerJson(data) {
+      if (!crawlerJson) {
+        return;
+      }
+      if (data === null || data === undefined) {
+        crawlerJson.textContent = '';
+        return;
+      }
+      try {
+        crawlerJson.textContent = JSON.stringify(data, null, 2);
+      } catch (err) {
+        crawlerJson.textContent = String(data);
+      }
+    }
+
+    function renderCrawlerTransitions(transitions) {
+      if (!crawlerTransitionsContainer) {
+        return;
+      }
+      crawlerTransitionsContainer.innerHTML = '';
+      if (!transitions || typeof transitions !== 'object') {
+        const placeholder = document.createElement('p');
+        placeholder.className = 'text-sm text-slate-500';
+        placeholder.textContent = 'Keine Transitions vorhanden.';
+        crawlerTransitionsContainer.appendChild(placeholder);
+        return;
+      }
+      const entries = Object.entries(transitions);
+      if (!entries.length) {
+        const placeholder = document.createElement('p');
+        placeholder.className = 'text-sm text-slate-500';
+        placeholder.textContent = 'Keine Transitions vorhanden.';
+        crawlerTransitionsContainer.appendChild(placeholder);
+        return;
+      }
+      entries.forEach(function (entry) {
+        const name = entry[0];
+        const payload = entry[1] || {};
+        const card = document.createElement('article');
+        card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+
+        const header = document.createElement('div');
+        header.className = 'flex items-center justify-between gap-3 text-sm font-semibold text-slate-700';
+
+        const nameEl = document.createElement('span');
+        nameEl.textContent = name;
+        const decisionEl = document.createElement('code');
+        decisionEl.className = 'rounded bg-slate-100 px-2 py-1 text-xs';
+        decisionEl.textContent = typeof payload.decision === 'string' ? payload.decision : '–';
+        header.appendChild(nameEl);
+        header.appendChild(decisionEl);
+        card.appendChild(header);
+
+        const reason = document.createElement('p');
+        reason.className = 'text-sm text-slate-600';
+        reason.textContent = typeof payload.reason === 'string' ? payload.reason : '–';
+        card.appendChild(reason);
+
+        if (payload.attributes && typeof payload.attributes === 'object') {
+          const attributesList = document.createElement('dl');
+          attributesList.className = 'space-y-1 text-xs text-slate-600';
+          Object.entries(payload.attributes).forEach(function (attributeEntry) {
+            const attrKey = attributeEntry[0];
+            const attrValue = attributeEntry[1];
+            const row = document.createElement('div');
+            row.className = 'flex items-start justify-between gap-3';
+            const dt = document.createElement('dt');
+            dt.className = 'font-medium text-slate-500';
+            dt.textContent = attrKey;
+            const dd = document.createElement('dd');
+            dd.className = 'flex-1 text-right text-slate-700';
+            if (typeof attrValue === 'string' || typeof attrValue === 'number' || typeof attrValue === 'boolean') {
+              dd.textContent = String(attrValue);
+            } else {
+              try {
+                dd.textContent = JSON.stringify(attrValue);
+              } catch (err) {
+                dd.textContent = String(attrValue);
+              }
+            }
+            row.appendChild(dt);
+            row.appendChild(dd);
+            attributesList.appendChild(row);
+          });
+          card.appendChild(attributesList);
+        }
+
+        crawlerTransitionsContainer.appendChild(card);
+      });
+    }
+
+    function renderCrawlerSummary(data) {
+      const result = data && typeof data === 'object' ? data.result : null;
+      const control = data && typeof data === 'object' ? data.control : null;
+      const decisionValue = result && typeof result === 'object' && typeof result.decision === 'string' ? result.decision : '–';
+      const runIdValue = data && typeof data.graph_run_id === 'string' && data.graph_run_id
+        ? data.graph_run_id
+        : result && typeof result.graph_run_id === 'string' && result.graph_run_id
+        ? result.graph_run_id
+        : '–';
+      const manualValue = control && typeof control.manual_review !== 'undefined'
+        ? normalizeCrawlerManualReview(control.manual_review) || '–'
+        : '–';
+      const shadowValue = control && Object.prototype.hasOwnProperty.call(control, 'shadow_mode')
+        ? String(Boolean(control.shadow_mode))
+        : '–';
+
+      if (crawlerDecisionDisplay) {
+        crawlerDecisionDisplay.textContent = decisionValue;
+      }
+      if (crawlerManualStatus) {
+        crawlerManualStatus.textContent = manualValue;
+      }
+      if (crawlerShadowState) {
+        crawlerShadowState.textContent = shadowValue;
+      }
+      if (crawlerRunId) {
+        crawlerRunId.textContent = runIdValue;
+      }
+    }
+
+    function enableCrawlerActions(enabled) {
+      const allow = Boolean(enabled);
+      if (crawlerApproveButton) {
+        crawlerApproveButton.disabled = !allow;
+      }
+      if (crawlerRejectButton) {
+        crawlerRejectButton.disabled = !allow;
+      }
+    }
+
+    let crawlerHasRun = false;
+
+    function handleCrawlerResponse(data) {
+      crawlerHasRun = true;
+      clearCrawlerError();
+      renderCrawlerSummary(data);
+      renderCrawlerTransitions(data && data.transitions);
+      setCrawlerJson(data);
+      enableCrawlerActions(true);
+    }
+
+    async function executeCrawler(payload) {
+      try {
+        const headers = buildHeaders({ 'Content-Type': 'application/json' });
+        const csrfToken = getCsrfToken();
+        if (csrfToken) {
+          headers['X-CSRFToken'] = csrfToken;
+        }
+        const response = await fetch(crawlerRunnerUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+          credentials: 'include',
+        });
+        const [res, data] = await parseJsonOrText(response);
+        if (!res.ok) {
+          const detail = data && typeof data === 'object' && data.detail ? data.detail : res.status + ' ' + res.statusText;
+          showCrawlerError(detail);
+          enableCrawlerActions(crawlerHasRun);
+          return;
+        }
+        handleCrawlerResponse(data);
+      } catch (err) {
+        showCrawlerError('Crawler Request fehlgeschlagen.');
+        enableCrawlerActions(crawlerHasRun);
+      }
+    }
+
+    function collectCrawlerConfig(manualOverride) {
+      const config = {
+        workflowId: crawlerWorkflowInput ? crawlerWorkflowInput.value : '',
+        originUrl: crawlerOriginInput ? crawlerOriginInput.value : '',
+        title: crawlerTitleInput ? crawlerTitleInput.value : '',
+        language: crawlerLanguageInput ? crawlerLanguageInput.value : '',
+        provider: crawlerProviderInput ? crawlerProviderInput.value : '',
+        tags: crawlerTagsInput ? crawlerTagsInput.value : '',
+        contentType: crawlerContentTypeInput ? crawlerContentTypeInput.value : '',
+        content: crawlerContentInput ? crawlerContentInput.value : '',
+        maxDocumentBytes: crawlerMaxBytesInput ? crawlerMaxBytesInput.value : '',
+        shadowMode: crawlerShadowToggle instanceof HTMLInputElement ? crawlerShadowToggle.checked : false,
+        dryRun: crawlerDryRunToggle instanceof HTMLInputElement ? crawlerDryRunToggle.checked : false,
+      };
+      if (manualOverride !== undefined) {
+        config.manualReview = manualOverride;
+      }
+      return config;
+    }
+
+    if (crawlerForm) {
+      crawlerForm.addEventListener('submit', function (event) {
+        event.preventDefault();
+        if (!crawlerRunnerUrl) {
+          showCrawlerError('Crawler Endpoint nicht konfiguriert.');
+          return;
+        }
+        clearCrawlerError();
+        const config = collectCrawlerConfig();
+        if (!config.originUrl || !config.content) {
+          showCrawlerError('Bitte Origin URL und Content ausfüllen.');
+          return;
+        }
+        const payload = buildCrawlerPayload(config);
+        if (!payload.origin_url || !payload.content) {
+          showCrawlerError('Bitte Origin URL und Content ausfüllen.');
+          return;
+        }
+        enableCrawlerActions(false);
+        executeCrawler(payload);
+      });
+    }
+
+    if (crawlerApproveButton) {
+      crawlerApproveButton.addEventListener('click', function () {
+        if (!crawlerHasRun || !crawlerRunnerUrl) {
+          return;
+        }
+        clearCrawlerError();
+        const config = collectCrawlerConfig('approved');
+        const payload = buildCrawlerPayload(config);
+        enableCrawlerActions(false);
+        executeCrawler(payload);
+      });
+    }
+
+    if (crawlerRejectButton) {
+      crawlerRejectButton.addEventListener('click', function () {
+        if (!crawlerHasRun || !crawlerRunnerUrl) {
+          return;
+        }
+        clearCrawlerError();
+        const config = collectCrawlerConfig('rejected');
+        const payload = buildCrawlerPayload(config);
+        enableCrawlerActions(false);
+        executeCrawler(payload);
+      });
+    }
+
+    if (crawlerCopyButton) {
+      crawlerCopyButton.addEventListener('click', function () {
+        copyTextJSON('#crawler-json');
+      });
     }
 
     const answerCopyButton = document.getElementById('rag-answer-copy');
