@@ -47,6 +47,13 @@ from noesis2.api.serializers import (
     SysDescResponseSerializer,
 )
 
+# Crawler contracts and runtime structures used by the ingestion runner view.
+from crawler.contracts import normalize_source
+from crawler.fetcher import FetchRequest, PolitenessContext
+from crawler.frontier import CrawlSignals, SourceDescriptor
+from crawler.guardrails import GuardrailSignals
+from crawler.parser import ParseStatus, ParserContent, ParserStats
+
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
 # near the view definitions.
