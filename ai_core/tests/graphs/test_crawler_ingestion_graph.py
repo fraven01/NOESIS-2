@@ -13,7 +13,9 @@ from crawler.ingestion import IngestionStatus
 from crawler.parser import ParseStatus, ParserContent, ParserStats
 
 
-def _build_state(url: str = "https://example.com/doc") -> Tuple[Dict[str, object], Dict[str, str], bytes]:
+def _build_state(
+    url: str = "https://example.com/doc",
+) -> Tuple[Dict[str, object], Dict[str, str], bytes]:
     source: NormalizedSource = normalize_source("web", url, None)
     descriptor = SourceDescriptor(host="example.com", path="/doc")
     frontier_input = {
@@ -21,7 +23,9 @@ def _build_state(url: str = "https://example.com/doc") -> Tuple[Dict[str, object
         "signals": CrawlSignals(),
     }
     politeness = PolitenessContext(host="example.com")
-    request = FetchRequest(canonical_source=source.canonical_source, politeness=politeness)
+    request = FetchRequest(
+        canonical_source=source.canonical_source, politeness=politeness
+    )
     body = b"<html><body>Example content for crawler.</body></html>"
     fetch_input = {
         "request": request,
@@ -36,7 +40,9 @@ def _build_state(url: str = "https://example.com/doc") -> Tuple[Dict[str, object
         title="Example",
         content_language="en",
     )
-    parse_stats = ParserStats(token_count=5, character_count=32, extraction_path="html.body")
+    parse_stats = ParserStats(
+        token_count=5, character_count=32, extraction_path="html.body"
+    )
     parse_input = {
         "status": ParseStatus.PARSED,
         "content": parse_content,
@@ -94,7 +100,10 @@ def test_nominal_run_executes_pipeline() -> None:
     assert transitions["crawler.parse"]["decision"] == ParseStatus.PARSED.value
     assert transitions["crawler.normalize"]["decision"] == "normalized"
     assert transitions["crawler.delta"]["decision"] in {"new", "changed"}
-    assert transitions["crawler.ingest_decision"]["decision"] == IngestionStatus.UPSERT.value
+    assert (
+        transitions["crawler.ingest_decision"]["decision"]
+        == IngestionStatus.UPSERT.value
+    )
     assert transitions["rag.upsert"]["decision"] == "upsert"
     assert transitions["rag.retire"]["decision"] == "skip"
     assert result["decision"] == IngestionStatus.UPSERT.value
@@ -125,7 +134,10 @@ def test_manual_approval_path() -> None:
     approved = graph.approve_ingest(denied_state)
     approved_state, final_result = graph.run(approved, meta)
     assert approved_state["control"].get("manual_review") is None
-    assert approved_state["transitions"]["crawler.gating"]["decision"] == GuardrailStatus.ALLOW.value
+    assert (
+        approved_state["transitions"]["crawler.gating"]["decision"]
+        == GuardrailStatus.ALLOW.value
+    )
     assert approved_state["transitions"]["rag.upsert"]["decision"] == "upsert"
     assert final_result["decision"] == IngestionStatus.UPSERT.value
     assert final_result["graph_run_id"] != denied_result["graph_run_id"]
@@ -139,7 +151,10 @@ def test_retire_flow_dispatches_retire_node() -> None:
 
     retired_state, result = graph.run(state, meta)
     transitions = retired_state["transitions"]
-    assert transitions["crawler.ingest_decision"]["decision"] == IngestionStatus.RETIRE.value
+    assert (
+        transitions["crawler.ingest_decision"]["decision"]
+        == IngestionStatus.RETIRE.value
+    )
     assert transitions["rag.retire"]["decision"] == "retire"
     assert result["decision"] == IngestionStatus.RETIRE.value
 
@@ -150,9 +165,14 @@ def test_shadow_mode_turns_upsert_into_noop() -> None:
 
     def _recording_upsert(decision):
         recorded["calls"] += 1
-        return {"status": "queued", "document": decision.payload.document_id if decision.payload else None}
+        return {
+            "status": "queued",
+            "document": decision.payload.document_id if decision.payload else None,
+        }
 
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(upsert_handler=_recording_upsert)
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
+        upsert_handler=_recording_upsert
+    )
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
@@ -171,7 +191,9 @@ def test_shadow_mode_toggle_allows_follow_up_upsert() -> None:
         recorded.append(decision.payload.document_id if decision.payload else None)
         return {"status": "queued"}
 
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(upsert_handler=_recording_upsert)
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
+        upsert_handler=_recording_upsert
+    )
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
@@ -275,7 +297,9 @@ def test_gating_score_uses_custom_score_if_supplied() -> None:
 
 def test_parser_failure_sets_error_summary() -> None:
     initial_state, meta, _ = _build_state()
-    initial_state["parse_input"].update({"status": ParseStatus.PARSER_FAILURE, "content": None, "stats": None})
+    initial_state["parse_input"].update(
+        {"status": ParseStatus.PARSER_FAILURE, "content": None, "stats": None}
+    )
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
 

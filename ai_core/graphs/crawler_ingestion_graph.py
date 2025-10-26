@@ -38,7 +38,13 @@ from crawler.ingestion import (
     build_ingestion_decision,
 )
 from crawler.normalizer import NormalizedDocument, build_normalized_document
-from crawler.parser import ParseResult, ParseStatus, ParserContent, ParserStats, build_parse_result
+from crawler.parser import (
+    ParseResult,
+    ParseStatus,
+    ParserContent,
+    ParserStats,
+    build_parse_result,
+)
 
 
 def _generate_uuid7() -> UUID:
@@ -93,7 +99,9 @@ def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
     return value.astimezone().isoformat()
 
 
-def _ensure_mapping(obj: Mapping[str, Any] | MutableMapping[str, Any] | None) -> Dict[str, Any]:
+def _ensure_mapping(
+    obj: Mapping[str, Any] | MutableMapping[str, Any] | None,
+) -> Dict[str, Any]:
     if obj is None:
         return {}
     if isinstance(obj, MutableMapping):
@@ -198,7 +206,9 @@ class CrawlerIngestionGraph:
         }
         return working_state, result
 
-    def start_crawl(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def start_crawl(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         updated["transitions"] = {}
         updated["artifacts"] = {}
@@ -217,28 +227,36 @@ class CrawlerIngestionGraph:
         updated["content_hash"] = None
         return updated
 
-    def shadow_mode_on(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def shadow_mode_on(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["shadow_mode"] = True
         updated["control"] = control
         return updated
 
-    def shadow_mode_off(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def shadow_mode_off(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["shadow_mode"] = False
         updated["control"] = control
         return updated
 
-    def approve_ingest(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def approve_ingest(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["manual_review"] = "approved"
         updated["control"] = control
         return updated
 
-    def reject_ingest(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def reject_ingest(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["manual_review"] = "rejected"
@@ -263,7 +281,9 @@ class CrawlerIngestionGraph:
             updated["gating_input"] = gating_input
         return updated
 
-    def retire(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def retire(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["force_retire"] = True
@@ -271,7 +291,9 @@ class CrawlerIngestionGraph:
         updated["ingest_action"] = "retire"
         return updated
 
-    def recompute_delta(self, state: Mapping[str, Any] | MutableMapping[str, Any]) -> Dict[str, Any]:
+    def recompute_delta(
+        self, state: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
         control["recompute_delta"] = True
@@ -377,7 +399,9 @@ class CrawlerIngestionGraph:
         }
         if decision.action is not FrontierAction.ENQUEUE:
             attributes["severity"] = "warn"
-        outcome = _transition(decision.action.value, decision.reason, attributes=attributes)
+        outcome = _transition(
+            decision.action.value, decision.reason, attributes=attributes
+        )
         should_continue = decision.action is FrontierAction.ENQUEUE
         if not should_continue:
             state["ingest_action"] = decision.action.value
@@ -424,7 +448,11 @@ class CrawlerIngestionGraph:
         should_continue = result.status is FetchStatus.FETCHED
         if not should_continue:
             attributes["severity"] = "error"
-        outcome = _transition(result.status.value, result.detail or result.status.value, attributes=attributes)
+        outcome = _transition(
+            result.status.value,
+            result.detail or result.status.value,
+            attributes=attributes,
+        )
         if not should_continue:
             state["ingest_action"] = result.status.value
         return outcome, should_continue
@@ -456,13 +484,17 @@ class CrawlerIngestionGraph:
         artifacts["parse_result"] = parse_result
         attributes = {
             "status": parse_result.status.value,
-            "media_type": parse_result.content.media_type if parse_result.content else None,
+            "media_type": (
+                parse_result.content.media_type if parse_result.content else None
+            ),
         }
         should_continue = parse_result.status is ParseStatus.PARSED
         if not should_continue:
             attributes["severity"] = "error"
             state["ingest_action"] = "skip"
-        outcome = _transition(parse_result.status.value, parse_result.status.value, attributes=attributes)
+        outcome = _transition(
+            parse_result.status.value, parse_result.status.value, attributes=attributes
+        )
         return outcome, should_continue
 
     def _run_normalize(
@@ -544,7 +576,9 @@ class CrawlerIngestionGraph:
             attributes["recomputed"] = True
             control["recompute_delta_recent"] = True
             control["recompute_delta"] = False
-        outcome = _transition(decision.status.value, decision.reason, attributes=attributes)
+        outcome = _transition(
+            decision.status.value, decision.reason, attributes=attributes
+        )
         return outcome, True
 
     def _run_gating(
@@ -572,7 +606,10 @@ class CrawlerIngestionGraph:
             limits: Optional[GuardrailLimits] = params.get("limits")
             signals: Optional[GuardrailSignals] = params.get("signals")
             decision = self.guardrail_enforcer(limits=limits, signals=signals)
-            if decision.status is GuardrailStatus.DENY and control.get("manual_review") is None:
+            if (
+                decision.status is GuardrailStatus.DENY
+                and control.get("manual_review") is None
+            ):
                 control["manual_review"] = "required"
 
         artifacts["guardrail_decision"] = decision
@@ -588,8 +625,12 @@ class CrawlerIngestionGraph:
             "manual_review": control.get("manual_review"),
         }
         if decision.status is GuardrailStatus.DENY:
-            attributes["severity"] = "warn" if control.get("manual_review") != "rejected" else "error"
-        outcome = _transition(decision.status.value, decision.reason, attributes=attributes)
+            attributes["severity"] = (
+                "warn" if control.get("manual_review") != "rejected" else "error"
+            )
+        outcome = _transition(
+            decision.status.value, decision.reason, attributes=attributes
+        )
         should_continue = allowed
         if not allowed and control.get("manual_review") == "rejected":
             state["ingest_action"] = "skip"
@@ -614,7 +655,9 @@ class CrawlerIngestionGraph:
         lifecycle = state.get("lifecycle_decision")
         conflict_note = None
         recompute_recent = control.pop("recompute_delta_recent", False)
-        if control.get("force_retire") and (control.get("recompute_delta") or recompute_recent):
+        if control.get("force_retire") and (
+            control.get("recompute_delta") or recompute_recent
+        ):
             conflict_note = "retire_overrides_recompute"
             control["recompute_delta"] = False
         ingestion = self.ingestion_builder(
@@ -639,7 +682,9 @@ class CrawlerIngestionGraph:
         }
         if conflict_note:
             attributes["conflict_resolution"] = conflict_note
-        outcome = _transition(ingestion.status.value, ingestion.reason, attributes=attributes)
+        outcome = _transition(
+            ingestion.status.value, ingestion.reason, attributes=attributes
+        )
         continue_to_upsert = ingestion.status is IngestionStatus.UPSERT
         continue_to_retire = ingestion.status is IngestionStatus.RETIRE
         return outcome, continue_to_upsert or continue_to_retire
@@ -661,12 +706,16 @@ class CrawlerIngestionGraph:
 
         if control.get("shadow_mode"):
             artifacts["upsert_result"] = None
-            outcome = _transition("shadow_skip", "shadow_mode", attributes={"shadow_mode": True})
+            outcome = _transition(
+                "shadow_skip", "shadow_mode", attributes={"shadow_mode": True}
+            )
             return outcome, True
 
         result = self.upsert_handler(ingestion)
         artifacts["upsert_result"] = result
-        outcome = _transition("upsert", "upsert_dispatched", attributes={"result": result})
+        outcome = _transition(
+            "upsert", "upsert_dispatched", attributes={"result": result}
+        )
         return outcome, True
 
     def _run_retire(
@@ -709,9 +758,8 @@ class CrawlerIngestionGraph:
             order_score = 0
             if name in preferred_order:
                 order_score = len(preferred_order) - preferred_order.index(name)
-            if (
-                severity_score > best_severity
-                or (severity_score == best_severity and order_score > best_order_score)
+            if severity_score > best_severity or (
+                severity_score == best_severity and order_score > best_order_score
             ):
                 best_transition = payload
                 best_severity = severity_score
