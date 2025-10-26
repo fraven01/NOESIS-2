@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
 from importlib import import_module
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from django.conf import settings
@@ -62,6 +63,7 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graphs import (
+    crawler_ingestion_graph,
     info_intake,
     needs_mapping,
     scope_check,
@@ -96,9 +98,7 @@ from .ingestion_status import (
     get_latest_ingestion_run,
 )
 from .rag.hard_delete import hard_delete
-from .schemas import (
-    RagHardDeleteAdminRequest,
-)
+from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from pydantic import ValidationError
 
 from .infra.resp import apply_std_headers
@@ -923,6 +923,132 @@ RAG_HARD_DELETE_ADMIN_SCHEMA = {
 }
 
 
+CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
+    name="CrawlerRunRequest",
+    summary="Trigger crawler ingestion",
+    description="Run the crawler LangGraph against a manually supplied document payload.",
+    value={
+        "workflow_id": "crawler-demo",
+        "origin_url": "https://example.com/docs/handbook",
+        "title": "Employee Handbook",
+        "language": "de",
+        "content_type": "text/html",
+        "content": "<html><body>Handbook excerpt …</body></html>",
+        "tags": ["handbook", "hr"],
+        "shadow_mode": True,
+        "manual_review": "required",
+        "max_document_bytes": 2048,
+    },
+    request_only=True,
+)
+
+
+CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
+    name="CrawlerRunResponse",
+    summary="Crawler graph outcome",
+    description="Summarises the node decisions, control state and resulting action for the crawl.",
+    value={
+        "result": {
+            "decision": "upsert",
+            "reason": "ingest_ready",
+            "attributes": {"severity": "info"},
+            "graph_run_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
+        },
+        "transitions": {
+            "crawler.frontier": {
+                "decision": "enqueue",
+                "reason": "fresh_source",
+                "attributes": {"policy_events": []},
+            },
+            "crawler.fetch": {
+                "decision": "fetched",
+                "reason": "fetched",
+                "attributes": {"status_code": 200, "bytes_downloaded": 1280},
+            },
+            "crawler.parse": {
+                "decision": "parsed",
+                "reason": "parsed",
+                "attributes": {"media_type": "text/html"},
+            },
+            "crawler.gating": {
+                "decision": "allow",
+                "reason": "allow",
+                "attributes": {"manual_review": None},
+            },
+            "crawler.ingest_decision": {
+                "decision": "upsert",
+                "reason": "ingest_ready",
+                "attributes": {"lifecycle_state": "active"},
+            },
+            "rag.upsert": {
+                "decision": "shadow_skip",
+                "reason": "shadow_mode",
+                "attributes": {"shadow_mode": True},
+            },
+        },
+        "control": {"shadow_mode": True, "manual_review": None, "force_retire": False},
+        "ingest_action": "upsert",
+        "gating_score": 1.0,
+        "graph_run_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
+        "state": {
+            "workflow_id": "crawler-demo",
+            "document_id": "d84cf1d6d1254378920aa87e4d343b1b",
+            "origin_uri": "https://example.com/docs/handbook",
+            "provider": "web",
+            "content_hash": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
+            "tags": ["handbook", "hr"],
+        },
+    },
+    response_only=True,
+)
+
+
+CRAWLER_RUN_REQUEST = inline_serializer(
+    name="CrawlerRunRequest",
+    fields={
+        "workflow_id": serializers.CharField(required=False),
+        "origin_url": serializers.CharField(),
+        "provider": serializers.CharField(required=False),
+        "document_id": serializers.CharField(required=False),
+        "title": serializers.CharField(required=False),
+        "language": serializers.CharField(required=False),
+        "content": serializers.CharField(),
+        "content_type": serializers.CharField(required=False),
+        "tags": serializers.ListField(child=serializers.CharField(), required=False),
+        "shadow_mode": serializers.BooleanField(required=False),
+        "dry_run": serializers.BooleanField(required=False),
+        "manual_review": serializers.CharField(required=False),
+        "force_retire": serializers.BooleanField(required=False),
+        "recompute_delta": serializers.BooleanField(required=False),
+        "max_document_bytes": serializers.IntegerField(required=False),
+    },
+)
+
+
+CRAWLER_RUN_RESPONSE = inline_serializer(
+    name="CrawlerRunResponse",
+    fields={
+        "result": serializers.JSONField(),
+        "transitions": serializers.JSONField(),
+        "control": serializers.JSONField(),
+        "ingest_action": serializers.CharField(required=False),
+        "gating_score": serializers.FloatField(required=False),
+        "graph_run_id": serializers.CharField(required=False),
+        "state": serializers.JSONField(required=False),
+    },
+)
+
+
+CRAWLER_RUN_SCHEMA = {
+    "request": CRAWLER_RUN_REQUEST,
+    "responses": {200: CRAWLER_RUN_RESPONSE},
+    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
+    "include_trace_header": True,
+    "description": "Execute the crawler ingestion LangGraph with manual sample content for debugging.",
+    "examples": [CRAWLER_RUN_REQUEST_EXAMPLE, CRAWLER_RUN_RESPONSE_EXAMPLE],
+}
+
+
 PING_SCHEMA = {
     "responses": {200: PingResponseSerializer},
     "error_statuses": RATE_LIMIT_ERROR_STATUSES,
@@ -1258,6 +1384,99 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     return projected
 
 
+def _build_crawler_state(
+    meta: Mapping[str, object], request_data: CrawlerRunRequest
+) -> dict[str, object]:
+    """Compose the crawler graph state from request inputs."""
+
+    workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
+    workflow_id = request_data.workflow_id or workflow_default or meta.get("tenant_id")
+    if not workflow_id:
+        raise ValueError("workflow_id could not be resolved for the crawler run")
+
+    try:
+        source = normalize_source(request_data.provider, request_data.origin_url, None)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise ValueError(str(exc)) from exc
+
+    parsed = urlsplit(source.canonical_source)
+    host = parsed.hostname or parsed.netloc
+    if not host:
+        raise ValueError("origin_url must include a valid host component")
+    path = parsed.path or "/"
+
+    descriptor = SourceDescriptor(host=host, path=path, provider=source.provider)
+    frontier_input = {"descriptor": descriptor, "signals": CrawlSignals()}
+
+    politeness = PolitenessContext(host=descriptor.host)
+    fetch_request = FetchRequest(
+        canonical_source=source.canonical_source, politeness=politeness
+    )
+
+    body = request_data.content.encode("utf-8")
+    fetch_input = {
+        "request": fetch_request,
+        "status_code": 200,
+        "body": body,
+        "headers": {"Content-Type": request_data.content_type},
+        "elapsed": 0.05,
+    }
+
+    parse_content = ParserContent(
+        media_type=request_data.content_type,
+        primary_text=request_data.content,
+        title=request_data.title,
+        content_language=request_data.language,
+    )
+    token_count = max(len(request_data.content.split()), 1)
+    parse_stats = ParserStats(
+        token_count=token_count,
+        character_count=len(request_data.content),
+        extraction_path="manual.input",
+    )
+    parse_input = {
+        "status": ParseStatus.PARSED,
+        "content": parse_content,
+        "stats": parse_stats,
+    }
+
+    guardrail_signals = GuardrailSignals(
+        tenant_id=str(meta.get("tenant_id")),
+        provider=source.provider,
+        canonical_source=source.canonical_source,
+        host=descriptor.host,
+        document_bytes=len(body),
+        mime_type=request_data.content_type,
+    )
+    limits = GuardrailLimits(max_document_bytes=request_data.max_document_bytes)
+    gating_input = {"limits": limits, "signals": guardrail_signals}
+
+    document_id = request_data.document_id or uuid4().hex
+    tags = tuple(request_data.tags or ())
+    normalize_input = {
+        "source": source,
+        "document_id": document_id,
+        "tags": tags,
+    }
+
+    state: dict[str, object] = {
+        "tenant_id": meta.get("tenant_id"),
+        "case_id": meta.get("case_id"),
+        "workflow_id": workflow_id,
+        "external_id": source.external_id,
+        "origin_uri": source.canonical_source,
+        "provider": source.provider,
+        "frontier_input": frontier_input,
+        "fetch_input": fetch_input,
+        "parse_input": parse_input,
+        "normalize_input": normalize_input,
+        "delta_input": {},
+        "gating_input": gating_input,
+        "document_id": document_id,
+    }
+    return state
+
+
 class RagQueryViewV1(_GraphView):
     """Execute the production retrieval augmented generation graph."""
 
@@ -1495,6 +1714,77 @@ class RagHardDeleteAdminView(APIView):
         return apply_std_headers(response, meta)
 
 
+class CrawlerIngestionRunnerView(APIView):
+    """Expose the crawler ingestion LangGraph for manual debugging runs."""
+
+    @default_extend_schema(**CRAWLER_RUN_SCHEMA)
+    def post(self, request: Request) -> Response:
+        meta, error = _prepare_request(request)
+        if error:
+            return error
+
+        payload = request.data if isinstance(request.data, Mapping) else {}
+        try:
+            request_model = CrawlerRunRequest.model_validate(payload)
+        except ValidationError as exc:
+            return _error_response(
+                _format_validation_error(exc),
+                "invalid_request",
+                status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            state = _build_crawler_state(meta, request_model)
+        except ValueError as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+        graph = crawler_ingestion_graph.build_graph()
+        state = graph.start_crawl(state)
+
+        control = dict(state.get("control", {}))
+        control["shadow_mode"] = bool(request_model.shadow_mode or request_model.dry_run)
+        if request_model.manual_review:
+            control["manual_review"] = request_model.manual_review
+        if request_model.force_retire:
+            control["force_retire"] = True
+        if request_model.recompute_delta:
+            control["recompute_delta"] = True
+        state["control"] = control
+
+        graph_meta = {
+            "tenant_id": meta["tenant_id"],
+            "case_id": meta["case_id"],
+            "workflow_id": state.get("workflow_id"),
+        }
+
+        result_state, result = graph.run(state, graph_meta)
+
+        snapshot = {
+            "workflow_id": result_state.get("workflow_id"),
+            "document_id": result_state.get("normalize_input", {}).get("document_id")
+            or result_state.get("document_id"),
+            "origin_uri": result_state.get("origin_uri"),
+            "provider": result_state.get("provider"),
+            "content_hash": result_state.get("content_hash"),
+            "tags": list(result_state.get("normalize_input", {}).get("tags", ())),
+        }
+
+        response_payload = {
+            "result": services._make_json_safe(result),
+            "transitions": services._make_json_safe(
+                result_state.get("transitions", {})
+            ),
+            "control": services._make_json_safe(result_state.get("control", {})),
+            "ingest_action": result_state.get("ingest_action"),
+            "gating_score": result_state.get("gating_score"),
+            "graph_run_id": result.get("graph_run_id"),
+            "state": services._make_json_safe(snapshot),
+        }
+
+        response = Response(response_payload, status=status.HTTP_200_OK)
+        return apply_std_headers(response, meta)
+
+
 class RagDemoViewV1(_BaseAgentView):
     """Deprecated demo endpoint retained only for backwards compatibility."""
 
@@ -1571,3 +1861,4 @@ rag_ingestion_status_v1 = RagIngestionStatusView.as_view()
 rag_ingestion_status = rag_ingestion_status_v1
 
 rag_hard_delete_admin = RagHardDeleteAdminView.as_view()
+crawler_runner = CrawlerIngestionRunnerView.as_view()

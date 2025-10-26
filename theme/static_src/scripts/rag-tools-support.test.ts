@@ -4,6 +4,8 @@ import {
   sanitizeKnownCollections,
   isKnownCollection,
   formatCollectionDisplay,
+  buildCrawlerPayload,
+  normalizeCrawlerManualReview,
 } from '../../static/theme/rag-tools-support.js';
 
 describe('rag-tools-support helpers', () => {
@@ -54,5 +56,49 @@ describe('rag-tools-support helpers', () => {
   it('formats collection display with fallback placeholder', () => {
     expect(formatCollectionDisplay('primary')).toBe('primary');
     expect(formatCollectionDisplay('   ')).toBe('–');
+  });
+
+  it('builds crawler payload from loosely typed inputs', () => {
+    const payload = buildCrawlerPayload({
+      workflowId: ' wf-1 ',
+      originUrl: ' https://example.com/page ',
+      documentId: ' doc-1 ',
+      provider: ' web ',
+      title: ' Handbook ',
+      language: ' DE ',
+      content: '<html>Hallo</html>',
+      contentType: ' text/html ',
+      tags: 'alpha, beta , ',
+      maxDocumentBytes: '1024',
+      shadowMode: true,
+      dryRun: false,
+      manualReview: 'APPROVED',
+      forceRetire: 1,
+      recomputeDelta: '1',
+    });
+
+    expect(payload.workflow_id).toBe('wf-1');
+    expect(payload.origin_url).toBe('https://example.com/page');
+    expect(payload.document_id).toBe('doc-1');
+    expect(payload.provider).toBe('web');
+    expect(payload.title).toBe('Handbook');
+    expect(payload.language).toBe('DE');
+    expect(payload.content_type).toBe('text/html');
+    expect(payload.content).toBe('<html>Hallo</html>');
+    expect(payload.tags).toEqual(['alpha', 'beta']);
+    expect(payload.max_document_bytes).toBe(1024);
+    expect(payload.shadow_mode).toBe(true);
+    expect(payload.dry_run).toBe(false);
+    expect(payload.manual_review).toBe('approved');
+    expect(payload.force_retire).toBe(true);
+    expect(payload.recompute_delta).toBe(true);
+  });
+
+  it('normalizes crawler manual review inputs', () => {
+    expect(normalizeCrawlerManualReview('required')).toBe('required');
+    expect(normalizeCrawlerManualReview(' Approved ')).toBe('approved');
+    expect(normalizeCrawlerManualReview('Rejected')).toBe('rejected');
+    expect(normalizeCrawlerManualReview('')).toBeNull();
+    expect(normalizeCrawlerManualReview('skip')).toBeNull();
   });
 });

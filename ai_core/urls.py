@@ -20,6 +20,7 @@ urlpatterns = [
         views.rag_ingestion_status,
         name="rag_ingestion_status",
     ),
+    path("rag/crawler/run/", views.crawler_runner, name="rag_crawler_run"),
     path(
         "rag/admin/hard-delete/",
         views.rag_hard_delete_admin,
