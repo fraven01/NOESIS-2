@@ -156,7 +156,7 @@ class CrawlerIngestionGraph:
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         working_state = self._prepare_state(state, meta)
         working_state["ingest_action"] = "pending"
-        working_state["transitions"] = {}        
+        working_state["transitions"] = {}
         graph_run_id = str(_generate_uuid7())
         working_state["graph_run_id"] = graph_run_id
         transitions: Dict[str, Transition] = {}
