@@ -110,7 +110,8 @@ class LifecycleEvent:
             else:
                 raise TypeError("attributes_must_be_mapping_or_tuple")
             normalized = tuple(
-                (str(key), value) for key, value in sorted(items, key=lambda item: str(item[0]))
+                (str(key), value)
+                for key, value in sorted(items, key=lambda item: str(item[0]))
             )
         object.__setattr__(self, "attributes", normalized)
 
@@ -127,7 +128,9 @@ class LifecycleEvent:
 
         attr_items: Tuple[Tuple[str, object], ...] = ()
         if attributes:
-            attr_items = tuple(sorted((str(key), value) for key, value in attributes.items()))
+            attr_items = tuple(
+                sorted((str(key), value) for key, value in attributes.items())
+            )
         return cls(
             status=status,
             occurred_at=occurred_at or datetime.now(timezone.utc),
@@ -201,4 +204,3 @@ __all__ = [
     "LifecycleStatus",
     "LifecycleTimeline",
 ]
-

@@ -176,9 +176,7 @@ def test_fragment_strategy_preserve_and_empty():
             provider_empty,
             "https://example.com/path?value=1#Section",
         )
-        assert preserve.canonical_source == (
-            "https://example.com/path?value=1#Section"
-        )
+        assert preserve.canonical_source == ("https://example.com/path?value=1#Section")
         assert empty.canonical_source == "https://example.com/path?value=1#"
     finally:
         deregister_provider(provider_preserve)

@@ -143,5 +143,3 @@ def test_invalid_quota_limits_raise() -> None:
         QuotaUsage(bytes=-1)
     with pytest.raises(ValueError):
         GuardrailSignals(document_bytes=-2)
-
-

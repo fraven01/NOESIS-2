@@ -1099,7 +1099,7 @@ class VectorStoreRouter:
         )
         from .vector_client import (
             HybridSearchResult as _HybridSearchResult,
-        )  # noqa: WPS433
+        )  # noqa: E402
 
         fallback_max = max_candidates_value
         effective_vec = int(vec_limit if vec_limit is not None else normalized_top_k)

@@ -19,7 +19,9 @@ from .fetcher import FetcherLimits
 from .frontier import HostPolitenessPolicy, RecrawlFrequency
 
 Canonicalizer = Callable[[str, Optional[Mapping[str, Any]], ProviderRules], str]
-NativeIdGetter = Callable[[str, Optional[Mapping[str, Any]], ProviderRules], Optional[str]]
+NativeIdGetter = Callable[
+    [str, Optional[Mapping[str, Any]], ProviderRules], Optional[str]
+]
 
 _UNSET = object()
 
@@ -123,7 +125,9 @@ class PolicyRegistry:
             return provider_policy.recrawl_frequency
         return self.default_recrawl_frequency
 
-    def resolve_host_politeness(self, host: Optional[str]) -> Optional[HostPolitenessPolicy]:
+    def resolve_host_politeness(
+        self, host: Optional[str]
+    ) -> Optional[HostPolitenessPolicy]:
         """Return the host politeness override if configured."""
 
         host_policy = self.get_host_policy(host)
@@ -131,7 +135,9 @@ class PolicyRegistry:
             return host_policy.politeness
         return None
 
-    def resolve_provider(self, host: Optional[str], default_provider: Optional[str] = None) -> Optional[str]:
+    def resolve_provider(
+        self, host: Optional[str], default_provider: Optional[str] = None
+    ) -> Optional[str]:
         """Return the provider override for ``host`` if present."""
 
         host_policy = self.get_host_policy(host)
@@ -269,7 +275,9 @@ def _build_provider_policy(
     elif base_rules is not None:
         canonicalizer = base_rules.canonicalizer
     else:
-        canonicalizer = _lookup_canonicalizer("http", canonicalizers, f"{context}.canonicalizer")
+        canonicalizer = _lookup_canonicalizer(
+            "http", canonicalizers, f"{context}.canonicalizer"
+        )
 
     if base_rules is None:
         base_rules = ProviderRules(name=name, canonicalizer=canonicalizer)
@@ -336,7 +344,9 @@ def _build_provider_policy(
     if metadata_tag_keys_value is not _UNSET:
         metadata_tag_keys = dict(base_rules.metadata_tag_keys)
         metadata_tag_keys.update(
-            _parse_metadata_tag_keys(metadata_tag_keys_value, f"{context}.metadata_tag_keys")
+            _parse_metadata_tag_keys(
+                metadata_tag_keys_value, f"{context}.metadata_tag_keys"
+            )
         )
     else:
         metadata_tag_keys = base_rules.metadata_tag_keys
@@ -380,7 +390,9 @@ def _build_host_policy(
     provider_value = config.get("provider")
     provider_override: Optional[str] = None
     if provider_value is not None:
-        provider_override = _normalize_registry_key(provider_value, f"{context}.provider")
+        provider_override = _normalize_registry_key(
+            provider_value, f"{context}.provider"
+        )
         if provider_override not in configured_providers:
             try:
                 get_provider_rules(provider_override)
@@ -425,7 +437,9 @@ def _ensure_mapping(value: Any, context: str) -> Mapping[str, Any]:
     return value
 
 
-def _validate_keys(config: Mapping[str, Any], allowed: Sequence[str], context: str) -> None:
+def _validate_keys(
+    config: Mapping[str, Any], allowed: Sequence[str], context: str
+) -> None:
     invalid = sorted(set(config.keys()) - set(allowed))
     if invalid:
         raise ValueError(f"{context}.unknown_keys:{','.join(invalid)}")
@@ -616,4 +630,3 @@ __all__ = [
     "PolicyRegistry",
     "build_policy_registry",
 ]
-

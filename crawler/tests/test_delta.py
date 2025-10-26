@@ -225,7 +225,9 @@ def test_evaluate_delta_checks_near_duplicates_when_changed() -> None:
 
 def test_evaluate_delta_ignores_near_duplicate_for_same_document() -> None:
     document = _make_document("doc-42", "Short headline text")
-    signature = NearDuplicateSignature(fingerprint="sig", tokens=("headline", "short", "text"))
+    signature = NearDuplicateSignature(
+        fingerprint="sig", tokens=("headline", "short", "text")
+    )
 
     decision = evaluate_delta(
         document,

@@ -59,7 +59,9 @@ class FetchRetryPolicy:
         if self.jitter < 0:
             raise ValueError("jitter_invalid")
         object.__setattr__(self, "retry_on", tuple(int(code) for code in self.retry_on))
-        object.__setattr__(self, "retry_failures", tuple(str(reason) for reason in self.retry_failures))
+        object.__setattr__(
+            self, "retry_failures", tuple(str(reason) for reason in self.retry_failures)
+        )
 
     def backoff_for(self, attempt: int) -> float:
         """Return the backoff (seconds) before the given retry attempt."""
@@ -86,8 +88,14 @@ class HttpFetcherConfig:
     request_timeout: Optional[float] = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "allowed_schemes", tuple(scheme.lower() for scheme in self.allowed_schemes))
-        immutable_headers = tuple((str(key), str(value)) for key, value in self.default_headers.items())
+        object.__setattr__(
+            self,
+            "allowed_schemes",
+            tuple(scheme.lower() for scheme in self.allowed_schemes),
+        )
+        immutable_headers = tuple(
+            (str(key), str(value)) for key, value in self.default_headers.items()
+        )
         object.__setattr__(self, "default_headers", dict(immutable_headers))
 
 
@@ -158,7 +166,9 @@ class HttpFetcher:
                 transport=self._transport,
             ) as client:
                 with client.stream("GET", url, headers=headers) as streamed:
-                    body, downloaded, status_code, response_headers = self._read_stream(streamed)
+                    body, downloaded, status_code, response_headers = self._read_stream(
+                        streamed
+                    )
         except httpx.TimeoutException as exc:
             elapsed = self._elapsed_since(start)
             elapsed = self._ensure_timeout_violation(elapsed)
@@ -174,7 +184,7 @@ class HttpFetcher:
                 retry_reason=timeout_reason,
                 backoff_total_ms=backoff_total_ms,
             )
-        except httpx.TooManyRedirects as exc:
+        except httpx.TooManyRedirects:
             elapsed = self._elapsed_since(start)
             failure = FetchFailure(reason="too_many_redirects", temporary=True)
             return evaluate_fetch_response(
@@ -350,4 +360,3 @@ class HttpFetcher:
             if elapsed <= min_elapsed:
                 return min_elapsed + 1e-6
         return elapsed
-

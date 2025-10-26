@@ -17,8 +17,18 @@ from crawler.fetcher import (
     PolitenessContext,
     evaluate_fetch_response,
 )
-from crawler.frontier import CrawlSignals, FrontierDecision, RobotsPolicy, SourceDescriptor, decide_frontier_action
-from crawler.ingestion import IngestionDecision, IngestionStatus, build_ingestion_decision
+from crawler.frontier import (
+    CrawlSignals,
+    FrontierDecision,
+    RobotsPolicy,
+    SourceDescriptor,
+    decide_frontier_action,
+)
+from crawler.ingestion import (
+    IngestionDecision,
+    IngestionStatus,
+    build_ingestion_decision,
+)
 from crawler.normalizer import NormalizedDocument, build_normalized_document
 from crawler.parser import (
     ParseResult,
@@ -100,14 +110,20 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
 
     descriptor = _descriptor_from_source(first_source)
     frontier = decide_frontier_action(descriptor)
-    fetch = _make_fetch_result(first_source.canonical_source, body=b"<html>Hello</html>", etag="v1")
-    parse = _make_parse_result(fetch, primary_text="Hello world", title="Hello", language="en")
+    fetch = _make_fetch_result(
+        first_source.canonical_source, body=b"<html>Hello</html>", etag="v1"
+    )
+    parse = _make_parse_result(
+        fetch, primary_text="Hello world", title="Hello", language="en"
+    )
     document = _make_document(parse, first_source, document_id="doc-tracking")
     delta = evaluate_delta(document)
     ingestion = build_ingestion_decision(document, delta, case_id=CASE_ID)
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document),
@@ -117,7 +133,14 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
 
     assert delta.status is DeltaStatus.NEW
     assert ingestion.status is IngestionStatus.UPSERT
-    assert {"frontier.queue", "fetch.http", "parse", "normalize", "delta", "ingest"} <= set(spans)
+    assert {
+        "frontier.queue",
+        "fetch.http",
+        "parse",
+        "normalize",
+        "delta",
+        "ingest",
+    } <= set(spans)
     assert spans["fetch.http"].attributes["http.status_code"] == 200
     assert spans["delta"].events and spans["delta"].events[0].name == "changed"
 
@@ -168,11 +191,15 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
     ingestion = build_ingestion_decision(document_repeat, delta, case_id=CASE_ID)
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document_repeat),
-        "delta": _build_delta_span(trace, delta, previous_hash, ingestion.status, CASE_ID),
+        "delta": _build_delta_span(
+            trace, delta, previous_hash, ingestion.status, CASE_ID
+        ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
@@ -221,11 +248,15 @@ def test_content_change_advances_version_and_upserts() -> None:
     ingestion = build_ingestion_decision(document_updated, delta, case_id=CASE_ID)
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document_updated),
-        "delta": _build_delta_span(trace, delta, previous_hash, ingestion.status, CASE_ID),
+        "delta": _build_delta_span(
+            trace, delta, previous_hash, ingestion.status, CASE_ID
+        ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
@@ -251,7 +282,9 @@ def test_robots_deny_shortcircuits_fetch() -> None:
     frontier = decide_frontier_action(descriptor, robots=robots)
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
     }
 
     assert frontier.reason == "robots_disallow"
@@ -289,15 +322,22 @@ def test_unsupported_media_emits_parser_error() -> None:
     )
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
     }
 
     assert parse.error is not None
     assert parse.error.error_class is ErrorClass.UNSUPPORTED_MEDIA
-    assert spans["parse"].attributes["crawler.error_class"] == ErrorClass.UNSUPPORTED_MEDIA.value
-    assert spans["parse"].events and spans["parse"].events[0].name == "unsupported_media"
+    assert (
+        spans["parse"].attributes["crawler.error_class"]
+        == ErrorClass.UNSUPPORTED_MEDIA.value
+    )
+    assert (
+        spans["parse"].events and spans["parse"].events[0].name == "unsupported_media"
+    )
     assert "normalize" not in spans
     assert "delta" not in spans
 
@@ -354,7 +394,9 @@ def test_near_duplicate_detected_without_upsert() -> None:
     ingestion = build_ingestion_decision(duplicate_document, delta, case_id=CASE_ID)
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, duplicate_fetch),
         "parse": _build_parse_span(trace, duplicate_parse),
         "normalize": _build_normalize_span(trace, duplicate_document),
@@ -407,9 +449,13 @@ def test_gone_fetch_triggers_retire_lifecycle() -> None:
     )
 
     spans = {
-        "frontier.queue": _build_frontier_span(trace, descriptor, frontier, CrawlSignals()),
+        "frontier.queue": _build_frontier_span(
+            trace, descriptor, frontier, CrawlSignals()
+        ),
         "fetch.http": _build_fetch_span(trace, gone_fetch),
-        "delta": _build_delta_span(trace, delta, delta.signatures.content_hash, ingestion.status, CASE_ID),
+        "delta": _build_delta_span(
+            trace, delta, delta.signatures.content_hash, ingestion.status, CASE_ID
+        ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
@@ -429,7 +475,9 @@ def _build_document_state(
     document_id: str,
     etag: str = "v1",
     last_modified: Optional[str] = None,
-) -> Tuple[NormalizedSource, FetchResult, ParseResult, NormalizedDocument, DeltaDecision]:
+) -> Tuple[
+    NormalizedSource, FetchResult, ParseResult, NormalizedDocument, DeltaDecision
+]:
     source = normalize_source("web", url, None)
     fetch = _make_fetch_result(
         source.canonical_source,
@@ -468,7 +516,9 @@ def _make_fetch_result(
 ) -> FetchResult:
     request = FetchRequest(
         canonical_source=url,
-        politeness=PolitenessContext(host=(urlsplit(url).hostname or "example.com"), user_agent="CrawlerTest/1.0"),
+        politeness=PolitenessContext(
+            host=(urlsplit(url).hostname or "example.com"), user_agent="CrawlerTest/1.0"
+        ),
         metadata={"provider": "web"},
     )
     headers = {}
@@ -548,7 +598,9 @@ def _build_frontier_span(
     decision: FrontierDecision,
     signals: CrawlSignals,
 ) -> SpanSnapshot:
-    earliest = decision.earliest_visit_at.isoformat() if decision.earliest_visit_at else None
+    earliest = (
+        decision.earliest_visit_at.isoformat() if decision.earliest_visit_at else None
+    )
     attributes = trace.annotate(
         {
             "crawler.host": descriptor.host,
@@ -556,7 +608,9 @@ def _build_frontier_span(
             "crawler.policy_decision": decision.action.value,
             "crawler.next_visit_at": earliest,
             "crawler.retry_count": signals.consecutive_failures,
-            "crawler.crawl_delay_ms": (descriptor.metadata.get("crawl_delay") if descriptor.metadata else None),
+            "crawler.crawl_delay_ms": (
+                descriptor.metadata.get("crawl_delay") if descriptor.metadata else None
+            ),
             "crawler.manual_override": signals.override_recrawl_frequency is not None,
             "noesis.reason": decision.reason,
         }
@@ -566,12 +620,16 @@ def _build_frontier_span(
         events.append(SpanEvent("policy_deny", {"reason": "robots_disallow"}))
     if "robots_allow" in decision.policy_events:
         events.append(SpanEvent("policy_allow", {}))
-    return SpanSnapshot(name="frontier.queue", attributes=attributes, events=tuple(events))
+    return SpanSnapshot(
+        name="frontier.queue", attributes=attributes, events=tuple(events)
+    )
 
 
 def _build_fetch_span(trace: TraceContext, fetch: FetchResult) -> SpanSnapshot:
     parts = urlsplit(fetch.request.canonical_source)
-    latency = fetch.telemetry.latency * 1000 if fetch.telemetry.latency is not None else None
+    latency = (
+        fetch.telemetry.latency * 1000 if fetch.telemetry.latency is not None else None
+    )
     policy_state = "ok"
     if fetch.status is FetchStatus.POLICY_DENIED:
         policy_state = "denied"
@@ -631,17 +689,25 @@ def _build_fetch_span(trace: TraceContext, fetch: FetchResult) -> SpanSnapshot:
 def _build_parse_span(trace: TraceContext, parse: ParseResult) -> SpanSnapshot:
     fetch = parse.fetch
     bytes_in = fetch.telemetry.bytes_downloaded
-    primary_length = len(parse.content.primary_text) if parse.status is ParseStatus.PARSED else 0
+    primary_length = (
+        len(parse.content.primary_text) if parse.status is ParseStatus.PARSED else 0
+    )
     token_count = parse.stats.token_count if parse.status is ParseStatus.PARSED else 0
     language = (
         parse.content.content_language if parse.status is ParseStatus.PARSED else None
     )
     warning_count = (
-        len(parse.stats.warnings) if parse.status is ParseStatus.PARSED and parse.stats else 0
+        len(parse.stats.warnings)
+        if parse.status is ParseStatus.PARSED and parse.stats
+        else 0
     )
     attributes = trace.annotate(
         {
-            "parser.media_type": parse.content.media_type if parse.content else fetch.metadata.content_type,
+            "parser.media_type": (
+                parse.content.media_type
+                if parse.content
+                else fetch.metadata.content_type
+            ),
             "parser.bytes_in": bytes_in,
             "parser.primary_text_length": primary_length,
             "parser.token_count": token_count,
@@ -665,7 +731,9 @@ def _build_parse_span(trace: TraceContext, parse: ParseResult) -> SpanSnapshot:
     return SpanSnapshot(name="parse", attributes=attributes, events=tuple(events))
 
 
-def _build_normalize_span(trace: TraceContext, document: NormalizedDocument) -> SpanSnapshot:
+def _build_normalize_span(
+    trace: TraceContext, document: NormalizedDocument
+) -> SpanSnapshot:
     parser_stats = document.meta.parser_stats
     parser_warnings = parser_stats.get("parser.warnings", [])
     warning_count = len(parser_warnings) if isinstance(parser_warnings, Sequence) else 0
@@ -742,7 +810,9 @@ def _build_delta_span(
     return SpanSnapshot(name="delta", attributes=attributes, events=tuple(events))
 
 
-def _build_ingest_span(trace: TraceContext, decision: IngestionDecision) -> SpanSnapshot:
+def _build_ingest_span(
+    trace: TraceContext, decision: IngestionDecision
+) -> SpanSnapshot:
     payload_size = 0
     chunk_count = 0
     if decision.payload is not None:

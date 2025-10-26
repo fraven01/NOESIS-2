@@ -55,7 +55,9 @@ def test_crawl_delay_enforces_minimum_wait():
 def test_host_parallelism_defers_until_slot_available():
     now = aware(year=2024, month=1, day=1, hour=8)
     descriptor = SourceDescriptor(host="example.com", path="/docs")
-    host_policy = HostPolitenessPolicy(max_parallelism=1, min_delay=timedelta(seconds=5))
+    host_policy = HostPolitenessPolicy(
+        max_parallelism=1, min_delay=timedelta(seconds=5)
+    )
     host_state = HostVisitState(
         active_requests=1,
         next_available_at=now + timedelta(seconds=20),
@@ -205,4 +207,3 @@ def test_failure_backoff_is_capped():
     assert decision.reason == "failure_backoff"
     assert decision.earliest_visit_at == now + timedelta(minutes=4)
     assert decision.earliest_visit_at <= now + timedelta(minutes=15)
-

@@ -23,7 +23,9 @@ from crawler.parser import (
 )
 
 
-def make_fetch_result(status: FetchStatus = FetchStatus.FETCHED, payload: bytes | None = b"data") -> FetchResult:
+def make_fetch_result(
+    status: FetchStatus = FetchStatus.FETCHED, payload: bytes | None = b"data"
+) -> FetchResult:
     request = FetchRequest(
         canonical_source="https://example.com/article",
         politeness=PolitenessContext(host="example.com"),
@@ -110,7 +112,9 @@ def test_compute_parser_stats_handles_empty_text():
 
 def test_unsupported_media_discards_payload_and_sets_diagnostic():
     fetch = make_fetch_result()
-    stats = compute_parser_stats(primary_text=None, extraction_path="pdf.extract", error_fraction=0.2)
+    stats = compute_parser_stats(
+        primary_text=None, extraction_path="pdf.extract", error_fraction=0.2
+    )
     result = build_parse_result(
         fetch,
         status=ParseStatus.UNSUPPORTED_MEDIA,
@@ -129,7 +133,9 @@ def test_unsupported_media_discards_payload_and_sets_diagnostic():
 
 def test_parser_failure_prevents_content_in_result():
     fetch = make_fetch_result()
-    content = ParserContent(media_type="application/pdf", binary_payload_ref="s3://bucket/key")
+    content = ParserContent(
+        media_type="application/pdf", binary_payload_ref="s3://bucket/key"
+    )
     with pytest.raises(ValueError):
         ParseResult(
             status=ParseStatus.PARSER_FAILURE,

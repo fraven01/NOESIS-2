@@ -199,9 +199,7 @@ DOCUMENTS_REPOSITORY_CLASS = env(
 
 
 # Crawler HTTP adapter defaults
-CRAWLER_HTTP_USER_AGENT = env(
-    "CRAWLER_HTTP_USER_AGENT", default="noesis-crawler/1.0"
-)
+CRAWLER_HTTP_USER_AGENT = env("CRAWLER_HTTP_USER_AGENT", default="noesis-crawler/1.0")
 
 
 # Application definition

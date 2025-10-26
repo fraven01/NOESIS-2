@@ -59,17 +59,28 @@ class GuardrailLimits:
     def __post_init__(self) -> None:
         if self.max_document_bytes is not None and self.max_document_bytes < 0:
             raise ValueError("max_document_bytes_negative")
-        if self.processing_time_limit is not None and self.processing_time_limit <= timedelta(0):
+        if (
+            self.processing_time_limit is not None
+            and self.processing_time_limit <= timedelta(0)
+        ):
             raise ValueError("processing_time_limit_non_positive")
         object.__setattr__(
             self,
             "mime_blacklist",
-            frozenset(_normalize_mime(mime) for mime in self.mime_blacklist if _normalize_mime(mime)),
+            frozenset(
+                _normalize_mime(mime)
+                for mime in self.mime_blacklist
+                if _normalize_mime(mime)
+            ),
         )
         object.__setattr__(
             self,
             "host_blocklist",
-            frozenset(_normalize_host(host) for host in self.host_blocklist if _normalize_host(host)),
+            frozenset(
+                _normalize_host(host)
+                for host in self.host_blocklist
+                if _normalize_host(host)
+            ),
         )
 
 
@@ -101,7 +112,9 @@ class GuardrailSignals:
         if self.provider is not None:
             object.__setattr__(self, "provider", self.provider.strip() or None)
         if self.canonical_source is not None:
-            object.__setattr__(self, "canonical_source", self.canonical_source.strip() or None)
+            object.__setattr__(
+                self, "canonical_source", self.canonical_source.strip() or None
+            )
 
 
 @dataclass(frozen=True)
@@ -165,7 +178,11 @@ def enforce_guardrails(
 
     document_bytes = applied_signals.document_bytes
     max_bytes = applied_limits.max_document_bytes
-    if max_bytes is not None and document_bytes is not None and document_bytes > max_bytes:
+    if (
+        max_bytes is not None
+        and document_bytes is not None
+        and document_bytes > max_bytes
+    ):
         return _deny(
             "document_too_large",
             events=("max_document_bytes",),
@@ -209,7 +226,9 @@ def enforce_guardrails(
                     ErrorClass.POLICY_DENY,
                     "tenant_quota_exceeded",
                     applied_signals,
-                    attributes=_quota_attributes(tenant_quota, tenant_usage, document_bytes),
+                    attributes=_quota_attributes(
+                        tenant_quota, tenant_usage, document_bytes
+                    ),
                 ),
             )
 
@@ -224,7 +243,9 @@ def enforce_guardrails(
                     ErrorClass.POLICY_DENY,
                     "host_quota_exceeded",
                     applied_signals,
-                    attributes=_quota_attributes(host_quota, host_usage, document_bytes),
+                    attributes=_quota_attributes(
+                        host_quota, host_usage, document_bytes
+                    ),
                 ),
             )
 

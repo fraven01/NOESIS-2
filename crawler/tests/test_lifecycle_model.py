@@ -108,4 +108,3 @@ def test_negative_duration_rejected() -> None:
 
     with pytest.raises(ValueError):
         timeline.advance(LifecycleStatus.SEEDED, duration_ms=-1.0)
-

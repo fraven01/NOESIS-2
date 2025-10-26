@@ -50,7 +50,9 @@ class IngestionPayload:
         content_hash = _require_identifier(self.content_hash, "content_hash")
         external_id = _require_identifier(self.external_id, "external_id")
         provider = _require_identifier(self.provider, "provider")
-        canonical_source = _require_identifier(self.canonical_source, "canonical_source")
+        canonical_source = _require_identifier(
+            self.canonical_source, "canonical_source"
+        )
         origin_uri = _require_identifier(self.origin_uri, "origin_uri")
         source = _require_identifier(self.source, "source")
         object.__setattr__(self, "tenant_id", tenant)
@@ -74,8 +76,12 @@ class IngestionPayload:
             raise TypeError("parser_stats_must_be_mapping")
         if not isinstance(self.provider_tags, Mapping):
             raise TypeError("provider_tags_must_be_mapping")
-        object.__setattr__(self, "parser_stats", MappingProxyType(dict(self.parser_stats)))
-        object.__setattr__(self, "provider_tags", MappingProxyType(dict(self.provider_tags)))
+        object.__setattr__(
+            self, "parser_stats", MappingProxyType(dict(self.parser_stats))
+        )
+        object.__setattr__(
+            self, "provider_tags", MappingProxyType(dict(self.provider_tags))
+        )
 
 
 @dataclass(frozen=True)
@@ -103,7 +109,9 @@ def build_ingestion_decision(
     lifecycle_decision = _resolve_lifecycle(lifecycle, retire)
 
     if lifecycle_decision.should_retire:
-        payload = _build_payload(document, delta.signatures.content_hash, normalized_case_id)
+        payload = _build_payload(
+            document, delta.signatures.content_hash, normalized_case_id
+        )
         return IngestionDecision(
             IngestionStatus.RETIRE,
             lifecycle_decision.reason,
@@ -130,7 +138,9 @@ def build_ingestion_decision(
             lifecycle_decision.policy_events,
         )
 
-    payload = _build_payload(document, delta.signatures.content_hash, normalized_case_id)
+    payload = _build_payload(
+        document, delta.signatures.content_hash, normalized_case_id
+    )
     return IngestionDecision(
         IngestionStatus.UPSERT,
         delta.reason,

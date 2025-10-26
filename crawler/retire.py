@@ -157,11 +157,10 @@ def evaluate_lifecycle(
             ("permanent_failure",),
         )
 
-    if (
-        fetch.status is FetchStatus.TEMPORARY_ERROR
-        and status_code in {301, 308}
-    ):
-        reason = f"permanent_redirect:{status_code}" if status_code else "permanent_redirect"
+    if fetch.status is FetchStatus.TEMPORARY_ERROR and status_code in {301, 308}:
+        reason = (
+            f"permanent_redirect:{status_code}" if status_code else "permanent_redirect"
+        )
         return LifecycleDecision(
             LifecycleState.RETIRED,
             reason,
@@ -222,4 +221,3 @@ __all__ = [
     "RetireSignals",
     "evaluate_lifecycle",
 ]
-

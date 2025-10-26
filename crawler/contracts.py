@@ -189,7 +189,11 @@ def _default_http_canonicalizer(
     else:
         normalized_hostname = ""
     try:
-        hostname = normalized_hostname.encode("idna").decode("ascii") if normalized_hostname else ""
+        hostname = (
+            normalized_hostname.encode("idna").decode("ascii")
+            if normalized_hostname
+            else ""
+        )
     except UnicodeError:
         hostname = normalized_hostname
     hostname = hostname.lower()
@@ -260,11 +264,16 @@ def _normalize_query(query: str, rules: ProviderRules) -> str:
         lower_name = normalized_name.lower()
         if _is_tracking_param(normalized_name, rules, lower_name=lower_name):
             continue
-        if rules.param_whitelist is not None and lower_name not in rules.param_whitelist:
+        if (
+            rules.param_whitelist is not None
+            and lower_name not in rules.param_whitelist
+        ):
             continue
         filtered.append((lower_name, normalized_name, value))
     filtered.sort(key=lambda item: (item[0], item[1], item[2]))
-    return urlencode([(original_name, value) for _, original_name, value in filtered], doseq=True)
+    return urlencode(
+        [(original_name, value) for _, original_name, value in filtered], doseq=True
+    )
 
 
 def _default_native_id_getter(
@@ -384,4 +393,3 @@ register_provider(
         fragment_strategy="drop",
     )
 )
-

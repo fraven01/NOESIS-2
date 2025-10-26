@@ -43,7 +43,12 @@ def test_fetch_success_returns_payload_and_metadata():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits(max_bytes=1024)
-    fetcher = HttpFetcher(HttpFetcherConfig(limits=limits), transport=transport, clock=clock, sleeper=clock.sleep)
+    fetcher = HttpFetcher(
+        HttpFetcherConfig(limits=limits),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
     result = fetcher.fetch(make_request())
 
     assert result.status is FetchStatus.FETCHED
@@ -75,7 +80,9 @@ def test_conditional_request_uses_etag_and_last_modified_headers():
 
 def test_mime_not_in_whitelist_is_policy_denied():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"Content-Type": "application/zip"}, content=b"binary")
+        return httpx.Response(
+            200, headers={"Content-Type": "application/zip"}, content=b"binary"
+        )
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits(mime_whitelist=("text/plain",))
@@ -91,7 +98,9 @@ def test_mime_not_in_whitelist_is_policy_denied():
 
 def test_stream_exceeding_max_bytes_aborts_and_denies_policy():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, headers={"Content-Type": "text/plain"}, content=b"x" * 20)
+        return httpx.Response(
+            200, headers={"Content-Type": "text/plain"}, content=b"x" * 20
+        )
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits(max_bytes=10)
@@ -114,7 +123,12 @@ def test_timeout_returns_policy_denied_with_detail():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits(timeout=timedelta(seconds=0.1))
-    fetcher = HttpFetcher(HttpFetcherConfig(limits=limits), transport=transport, clock=clock, sleeper=clock.sleep)
+    fetcher = HttpFetcher(
+        HttpFetcherConfig(limits=limits),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
 
     result = fetcher.fetch(make_request())
 
@@ -137,8 +151,12 @@ def test_retries_until_successful_response():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits()
-    retry_policy = FetchRetryPolicy(max_tries=3, retry_on=(503,), initial_backoff=0.0, jitter=0.0)
-    fetcher = HttpFetcher(HttpFetcherConfig(limits=limits, retry_policy=retry_policy), transport=transport)
+    retry_policy = FetchRetryPolicy(
+        max_tries=3, retry_on=(503,), initial_backoff=0.0, jitter=0.0
+    )
+    fetcher = HttpFetcher(
+        HttpFetcherConfig(limits=limits, retry_policy=retry_policy), transport=transport
+    )
 
     result = fetcher.fetch(make_request())
 
@@ -158,8 +176,12 @@ def test_retry_limit_returns_temporary_error():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits()
-    retry_policy = FetchRetryPolicy(max_tries=3, retry_on=(429,), initial_backoff=0.0, jitter=0.0)
-    fetcher = HttpFetcher(HttpFetcherConfig(limits=limits, retry_policy=retry_policy), transport=transport)
+    retry_policy = FetchRetryPolicy(
+        max_tries=3, retry_on=(429,), initial_backoff=0.0, jitter=0.0
+    )
+    fetcher = HttpFetcher(
+        HttpFetcherConfig(limits=limits, retry_policy=retry_policy), transport=transport
+    )
 
     result = fetcher.fetch(make_request())
 
@@ -213,7 +235,12 @@ def test_crawl_delay_is_reflected_in_latency():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits()
-    fetcher = HttpFetcher(HttpFetcherConfig(limits=limits), transport=transport, clock=clock, sleeper=clock.sleep)
+    fetcher = HttpFetcher(
+        HttpFetcherConfig(limits=limits),
+        transport=transport,
+        clock=clock,
+        sleeper=clock.sleep,
+    )
     request = FetchRequest(
         canonical_source="https://example.com/resource",
         politeness=PolitenessContext(host="example.com", crawl_delay=0.5),
@@ -238,9 +265,13 @@ def test_metadata_headers_override_defaults():
 
     transport = httpx.MockTransport(handler)
     limits = FetcherLimits()
-    config = HttpFetcherConfig(limits=limits, default_headers={"X-Test": "foo"}, user_agent="crawler/1.0")
+    config = HttpFetcherConfig(
+        limits=limits, default_headers={"X-Test": "foo"}, user_agent="crawler/1.0"
+    )
     fetcher = HttpFetcher(config, transport=transport)
-    request = make_request(headers={"User-Agent": "tenant-agent/2.0", "X-Test": "override"})
+    request = make_request(
+        headers={"User-Agent": "tenant-agent/2.0", "X-Test": "override"}
+    )
 
     result = fetcher.fetch(request)
 
@@ -313,4 +344,3 @@ def test_backoff_totals_are_reported_in_telemetry():
     assert result.telemetry.retry_reason is None
     assert pytest.approx(result.telemetry.backoff_total_ms, rel=1e-6) == 100.0
     assert result.error is None
-

@@ -78,7 +78,9 @@ def evaluate_delta(
     )
     near_signature = _compute_near_duplicate_signature(document)
 
-    signatures = DeltaSignatures(content_hash=content_hash, near_duplicate=near_signature)
+    signatures = DeltaSignatures(
+        content_hash=content_hash, near_duplicate=near_signature
+    )
 
     duplicate_match = _match_near_duplicate(
         near_signature,
@@ -140,7 +142,9 @@ def _compute_content_hash(
     return hasher.hexdigest()
 
 
-def _compute_near_duplicate_signature(document: NormalizedDocument) -> Optional[NearDuplicateSignature]:
+def _compute_near_duplicate_signature(
+    document: NormalizedDocument,
+) -> Optional[NearDuplicateSignature]:
     primary_text = document.content.primary_text
     if not primary_text:
         return None
@@ -158,7 +162,9 @@ def _tokenize(text: str) -> Tuple[str, ...]:
 
 
 def _normalize_token_sequence(tokens: Sequence[str]) -> Tuple[str, ...]:
-    normalized = tuple(sorted({token.strip().lower() for token in tokens if token.strip()}))
+    normalized = tuple(
+        sorted({token.strip().lower() for token in tokens if token.strip()})
+    )
     if not normalized:
         raise ValueError("near_duplicate_tokens_required")
     return normalized
@@ -213,4 +219,3 @@ __all__ = [
     "DEFAULT_NEAR_DUPLICATE_THRESHOLD",
     "evaluate_delta",
 ]
-

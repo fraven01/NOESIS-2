@@ -73,7 +73,9 @@ def test_policy_registry_resolve_fetcher_limits_and_recrawl() -> None:
     assert registry.resolve_fetcher_limits("web").max_bytes == 600
     assert registry.resolve_fetcher_limits("web", host="example.com").max_bytes == 300
     assert registry.resolve_fetcher_limits("web", host="unknown.com").max_bytes == 600
-    assert registry.resolve_fetcher_limits("unknown", host="unknown.com").max_bytes == 900
+    assert (
+        registry.resolve_fetcher_limits("unknown", host="unknown.com").max_bytes == 900
+    )
 
     assert (
         registry.resolve_recrawl_frequency("web", host="example.com")
@@ -99,9 +101,7 @@ def test_policy_registry_registers_new_provider() -> None:
                 "param_whitelist": ["token"],
             }
         },
-        "hosts": {
-            "api.example.com": {"provider": "api"}
-        },
+        "hosts": {"api.example.com": {"provider": "api"}},
     }
 
     registry = build_policy_registry(config)
@@ -153,4 +153,3 @@ def test_policy_registry_rejects_unknown_canonicalizer() -> None:
     config = {"providers": {"api": {"canonicalizer": "unknown"}}}
     with pytest.raises(ValueError):
         build_policy_registry(config)
-

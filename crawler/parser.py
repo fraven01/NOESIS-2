@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
-import re
 from typing import Dict, Mapping, Optional, Sequence, Tuple, TypeVar
-
-
-_LANGUAGE_TAG_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
 from .errors import CrawlerError, ErrorClass
 from .fetcher import FetchResult
+
+
+_LANGUAGE_TAG_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
 
 class ParseStatus(str, Enum):
@@ -98,7 +98,9 @@ class ParserContent:
         if self.primary_text is not None:
             object.__setattr__(self, "primary_text", self.primary_text.strip())
         if self.binary_payload_ref is not None:
-            object.__setattr__(self, "binary_payload_ref", self.binary_payload_ref.strip())
+            object.__setattr__(
+                self, "binary_payload_ref", self.binary_payload_ref.strip()
+            )
         if self.title is not None:
             object.__setattr__(self, "title", self.title.strip())
         if self.content_language is not None:
@@ -109,7 +111,11 @@ class ParserContent:
             if not _LANGUAGE_TAG_RE.fullmatch(normalized_language):
                 raise ValueError("content_language_invalid")
             object.__setattr__(self, "content_language", normalized_language)
-        object.__setattr__(self, "structural_elements", _tupled(self.structural_elements, StructuralElement))
+        object.__setattr__(
+            self,
+            "structural_elements",
+            _tupled(self.structural_elements, StructuralElement),
+        )
         object.__setattr__(self, "entities", _tupled(self.entities, ParsedEntity))
 
 
@@ -166,7 +172,9 @@ class ParseResult:
         if self.status in {ParseStatus.UNSUPPORTED_MEDIA, ParseStatus.PARSER_FAILURE}:
             if self.content is not None:
                 raise ValueError("error_states_must_not_include_content")
-        object.__setattr__(self, "diagnostics", _normalize_diagnostics(self.diagnostics))
+        object.__setattr__(
+            self, "diagnostics", _normalize_diagnostics(self.diagnostics)
+        )
         if self.status is ParseStatus.PARSED:
             object.__setattr__(self, "error", None)
 

@@ -10,7 +10,14 @@ if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .fetcher import FetchResult
 
 from .contracts import NormalizedSource
-from .parser import ParseResult, ParseStatus, ParsedEntity, ParserContent, ParserStats, StructuralElement
+from .parser import (
+    ParseResult,
+    ParseStatus,
+    ParsedEntity,
+    ParserContent,
+    ParserStats,
+    StructuralElement,
+)
 
 
 @dataclass(frozen=True)
@@ -25,7 +32,9 @@ class ExternalDocumentReference:
     def __post_init__(self) -> None:
         provider = _require_identifier(self.provider, "provider")
         external_id = _require_identifier(self.external_id, "external_id")
-        canonical_source = _require_identifier(self.canonical_source, "canonical_source")
+        canonical_source = _require_identifier(
+            self.canonical_source, "canonical_source"
+        )
         object.__setattr__(self, "provider", provider)
         object.__setattr__(self, "external_id", external_id)
         object.__setattr__(self, "canonical_source", canonical_source)
@@ -56,7 +65,9 @@ class NormalizedDocumentMeta:
         object.__setattr__(self, "tags", _normalize_tags(self.tags))
         if not isinstance(self.parser_stats, Mapping):
             raise TypeError("parser_stats_must_be_mapping")
-        object.__setattr__(self, "parser_stats", MappingProxyType(dict(self.parser_stats)))
+        object.__setattr__(
+            self, "parser_stats", MappingProxyType(dict(self.parser_stats))
+        )
 
 
 @dataclass(frozen=True)
@@ -72,8 +83,14 @@ class NormalizedDocumentContent:
         if self.primary_text is not None:
             object.__setattr__(self, "primary_text", self.primary_text.strip())
         if self.binary_payload_ref is not None:
-            object.__setattr__(self, "binary_payload_ref", self.binary_payload_ref.strip())
-        object.__setattr__(self, "structural_elements", _ensure_tuple(self.structural_elements, StructuralElement))
+            object.__setattr__(
+                self, "binary_payload_ref", self.binary_payload_ref.strip()
+            )
+        object.__setattr__(
+            self,
+            "structural_elements",
+            _ensure_tuple(self.structural_elements, StructuralElement),
+        )
         object.__setattr__(self, "entities", _ensure_tuple(self.entities, ParsedEntity))
         if not (self.primary_text or self.binary_payload_ref):
             raise ValueError("content_payload_missing")
@@ -101,7 +118,9 @@ class NormalizedDocument:
         object.__setattr__(self, "document_id", document)
         if not isinstance(self.stats, ParserStats):
             raise TypeError("stats_must_be_parser_stats")
-        object.__setattr__(self, "diagnostics", _normalize_diagnostics(self.diagnostics))
+        object.__setattr__(
+            self, "diagnostics", _normalize_diagnostics(self.diagnostics)
+        )
 
 
 def build_normalized_document(
@@ -121,7 +140,10 @@ def build_normalized_document(
     stats = _require_stats(parse_result.stats)
     request_source = parse_result.fetch.request.canonical_source
     canonical_source = _require_identifier(source.canonical_source, "canonical_source")
-    if _require_identifier(request_source, "fetch_canonical_source") != canonical_source:
+    if (
+        _require_identifier(request_source, "fetch_canonical_source")
+        != canonical_source
+    ):
         raise ValueError("canonical_source_mismatch")
 
     normalized_tags = _normalize_tags(tags)
@@ -257,4 +279,3 @@ def _normalizer_bytes_in(fetch_result: "FetchResult") -> Optional[int]:
         return len(payload)
     bytes_downloaded = fetch_result.telemetry.bytes_downloaded
     return bytes_downloaded if bytes_downloaded > 0 else None
-

@@ -150,17 +150,23 @@ def decide_frontier_action(
     events = []
 
     if active_signals.retire:
-        return FrontierDecision(FrontierAction.RETIRE, None, "manual_retire", tuple(events))
+        return FrontierDecision(
+            FrontierAction.RETIRE, None, "manual_retire", tuple(events)
+        )
 
     if active_signals.consecutive_failures >= FAILURE_RETIRE_THRESHOLD:
         events.append("retire_after_failures")
-        return FrontierDecision(FrontierAction.RETIRE, None, "retire_after_failures", tuple(events))
+        return FrontierDecision(
+            FrontierAction.RETIRE, None, "retire_after_failures", tuple(events)
+        )
 
     robots_policy = robots or RobotsPolicy()
     robots_allowed, robots_event = _check_robots(robots_policy, source.path)
     if not robots_allowed:
         events.append("robots_disallow")
-        return FrontierDecision(FrontierAction.SKIP, None, "robots_disallow", tuple(events))
+        return FrontierDecision(
+            FrontierAction.SKIP, None, "robots_disallow", tuple(events)
+        )
     if robots_event:
         events.append(robots_event)
 
@@ -240,7 +246,9 @@ def _check_robots(policy: RobotsPolicy, path: str) -> Tuple[bool, Optional[str]]
     matched_allow = _longest_match(policy.allow, path)
     matched_disallow = _longest_match(policy.disallow, path)
 
-    if matched_disallow and (not matched_allow or len(matched_disallow) > len(matched_allow)):
+    if matched_disallow and (
+        not matched_allow or len(matched_disallow) > len(matched_allow)
+    ):
         return False, None
     if matched_allow:
         return True, "robots_allow"
@@ -272,7 +280,11 @@ def _resolve_frequency(
         for frequency in RecrawlFrequency:
             if normalized in {frequency.value, frequency.name.lower()}:
                 return frequency
-    return RecrawlFrequency.FREQUENT if source.provider == "news" else RecrawlFrequency.STANDARD
+    return (
+        RecrawlFrequency.FREQUENT
+        if source.provider == "news"
+        else RecrawlFrequency.STANDARD
+    )
 
 
 def _compute_recrawl_interval(
@@ -290,7 +302,9 @@ def _compute_recrawl_interval(
                 break
 
     if signals.observed_change_interval:
-        interval = min(interval, _ensure_positive(signals.observed_change_interval, interval))
+        interval = min(
+            interval, _ensure_positive(signals.observed_change_interval, interval)
+        )
 
     if signals.consecutive_unchanged > 0:
         factor = 1.0 + min(5, signals.consecutive_unchanged) * 0.5
@@ -340,4 +354,3 @@ def _apply_host_rules(
         reason = "host_parallel_limit"
 
     return earliest, reason
-
