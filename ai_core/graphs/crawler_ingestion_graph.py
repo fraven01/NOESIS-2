@@ -155,10 +155,11 @@ class CrawlerIngestionGraph:
         meta: Mapping[str, Any] | MutableMapping[str, Any],
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         working_state = self._prepare_state(state, meta)
+        working_state["ingest_action"] = "pending"
+        working_state["transitions"] = {}        
         graph_run_id = str(_generate_uuid7())
         working_state["graph_run_id"] = graph_run_id
         transitions: Dict[str, Transition] = {}
-        working_state["transitions"] = {}
         artifacts: Dict[str, Any] = dict(working_state.get("artifacts", {}))
         control: Dict[str, Any] = working_state["control"]
 
