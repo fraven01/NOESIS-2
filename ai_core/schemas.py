@@ -222,6 +222,147 @@ class RagHardDeleteAdminRequest(BaseModel):
         return None
 
 
+class CrawlerRunRequest(BaseModel):
+    """Request payload used by the crawler LangGraph runner."""
+
+    workflow_id: str | None = None
+    origin_url: str
+    provider: str = "web"
+    document_id: str | None = None
+    title: str | None = None
+    language: str | None = None
+    content: str
+    content_type: str = "text/html"
+    tags: list[str] | None = None
+    shadow_mode: bool = False
+    dry_run: bool = False
+    manual_review: Literal["required", "approved", "rejected"] | None = None
+    force_retire: bool = False
+    recompute_delta: bool = False
+    max_document_bytes: int | None = None
+
+    @field_validator("origin_url", mode="before")
+    @classmethod
+    def _normalise_origin_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin_url must be provided as a non-empty string.",
+            )
+        url = value.strip()
+        if not url:
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin_url must be provided as a non-empty string.",
+            )
+        return url
+
+    @field_validator("provider", "content_type", mode="before")
+    @classmethod
+    def _normalise_simple_text(
+        cls, value: object, info: ValidationInfo
+    ) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a non-empty string.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a non-empty string.",
+            )
+        return candidate
+
+    @field_validator("workflow_id", "document_id", "title", "language", mode="before")
+    @classmethod
+    def _trim_optional_text(
+        cls, value: object, info: ValidationInfo
+    ) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a string when provided.",
+            )
+        trimmed = value.strip()
+        return trimmed or None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _ensure_content(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_content",
+                "content must be provided as a non-empty string.",
+            )
+        content = value.strip()
+        if not content:
+            raise PydanticCustomError(
+                "invalid_content",
+                "content must be provided as a non-empty string.",
+            )
+        return content
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalise_tags(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            entries = [entry.strip() for entry in value.split(",")]
+        elif isinstance(value, Sequence):
+            entries = [str(entry).strip() for entry in value]
+        else:
+            raise PydanticCustomError(
+                "invalid_tags",
+                "tags must be provided as a list or comma separated string.",
+            )
+        normalised = [entry for entry in entries if entry]
+        return normalised or None
+
+    @field_validator("manual_review", mode="before")
+    @classmethod
+    def _normalise_manual_review(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip().lower()
+            if not candidate:
+                return None
+            if candidate not in {"required", "approved", "rejected"}:
+                raise PydanticCustomError(
+                    "invalid_manual_review",
+                    "manual_review must be one of required, approved, rejected.",
+                )
+            return candidate
+        raise PydanticCustomError(
+            "invalid_manual_review",
+            "manual_review must be a string when provided.",
+        )
+
+    @field_validator("max_document_bytes", mode="before")
+    @classmethod
+    def _coerce_max_document_bytes(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise PydanticCustomError(
+                "invalid_max_document_bytes",
+                "max_document_bytes must be a positive integer.",
+            )
+        if parsed < 0:
+            raise PydanticCustomError(
+                "invalid_max_document_bytes",
+                "max_document_bytes must be a positive integer.",
+            )
+        return parsed
+
+
 class RagUploadMetadata(BaseModel):
     """Metadata contract for document uploads."""
 
