@@ -1,5 +1,6 @@
 from django.conf import settings
 from django.shortcuts import render
+from django.urls import reverse
 
 from ai_core.rag.routing_rules import (
     get_routing_table,
@@ -91,5 +92,15 @@ def rag_tools(request):
             "collection_alias_enabled": is_collection_routing_enabled(),
             "resolver_profile_hint": resolver_profile_hint,
             "resolver_collection_hint": resolver_collection_hint,
+            "crawler_runner_url": reverse("ai_core:rag_crawler_run"),
+            "crawler_default_workflow_id": getattr(
+                settings, "CRAWLER_DEFAULT_WORKFLOW_ID", ""
+            ),
+            "crawler_shadow_default": bool(
+                getattr(settings, "CRAWLER_SHADOW_MODE_DEFAULT", False)
+            ),
+            "crawler_dry_run_default": bool(
+                getattr(settings, "CRAWLER_DRY_RUN_DEFAULT", False)
+            ),
         },
     )

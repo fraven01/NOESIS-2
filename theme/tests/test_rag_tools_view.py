@@ -28,10 +28,14 @@ def test_rag_tools_page_is_accessible():
     assert "Query" in content
     assert "Aktive Collection" in content
     assert "query-collection-options" in content
+    assert "Crawler Runner" in content
+    assert "crawler-form" in content
     assert f"X-Tenant-ID: {tenant_id}" in content
     assert f"X-Tenant-Schema: {tenant_schema}" in content
     assert f'const derivedTenantId = "{escapejs(tenant_id)}"' in content
     assert f'const derivedTenantSchema = "{escapejs(tenant_schema)}"' in content
     assert "const defaultEmbeddingProfile" in content
     assert "const allowDocClassAlias" in content
+    assert "const crawlerRunnerUrl" in content
+    assert "const crawlerDefaultWorkflow" in content
     assert "function requireCollection" in content
