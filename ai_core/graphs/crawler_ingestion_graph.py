@@ -590,14 +590,14 @@ class CrawlerIngestionGraph:
     ) -> Tuple[Transition, bool]:
         manual_state = control.get("manual_review")
         if manual_state == "approved":
-            decision = GuardrailDecision(
+            decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.ALLOW,
                 "manual_approved",
                 ("manual_approved",),
             )
             control["manual_review"] = None
         elif manual_state == "rejected":
-            decision = GuardrailDecision(
+            decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.DENY,
                 "manual_rejected",
                 ("manual_rejected",),

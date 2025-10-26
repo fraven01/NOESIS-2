@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from .contracts import Decision
 from .normalizer import NormalizedDocument
 
 
@@ -47,14 +48,40 @@ class DeltaSignatures:
 
 
 @dataclass(frozen=True)
-class DeltaDecision:
-    """Result of the delta evaluation including status and signatures."""
+class DeltaDecision(Decision):
+    """Result of the delta evaluation using the shared decision payload."""
 
-    status: DeltaStatus
-    signatures: DeltaSignatures
-    version: Optional[int]
-    reason: str
-    parent_document_id: Optional[str] = None
+    @classmethod
+    def from_legacy(
+        cls,
+        status: DeltaStatus,
+        signatures: DeltaSignatures,
+        version: Optional[int],
+        reason: str,
+        parent_document_id: Optional[str] = None,
+    ) -> "DeltaDecision":
+        attributes = {
+            "signatures": signatures,
+            "version": version,
+            "parent_document_id": parent_document_id,
+        }
+        return cls(status.value, reason, attributes)
+
+    @property
+    def status(self) -> DeltaStatus:
+        return DeltaStatus(self.decision)
+
+    @property
+    def signatures(self) -> DeltaSignatures:
+        return self.attributes["signatures"]
+
+    @property
+    def version(self) -> Optional[int]:
+        return self.attributes.get("version")
+
+    @property
+    def parent_document_id(self) -> Optional[str]:
+        return self.attributes.get("parent_document_id")
 
 
 DEFAULT_NEAR_DUPLICATE_THRESHOLD = 0.92
@@ -99,15 +126,19 @@ def evaluate_delta(
             version = None
             reason = f"near_duplicate:{duplicate_match.similarity:.3f}"
             parent_document_id = duplicate_match.document_id
-        return DeltaDecision(status, signatures, version, reason, parent_document_id)
+        return DeltaDecision.from_legacy(
+            status, signatures, version, reason, parent_document_id
+        )
 
     if previous_content_hash == content_hash:
         version = previous_version if previous_version is not None else 1
-        return DeltaDecision(DeltaStatus.UNCHANGED, signatures, version, "hash_match")
+        return DeltaDecision.from_legacy(
+            DeltaStatus.UNCHANGED, signatures, version, "hash_match"
+        )
 
     if check_near_duplicates_for_changes and duplicate_match is not None:
         reason = f"near_duplicate:{duplicate_match.similarity:.3f}"
-        return DeltaDecision(
+        return DeltaDecision.from_legacy(
             DeltaStatus.NEAR_DUPLICATE,
             signatures,
             None,
@@ -116,7 +147,9 @@ def evaluate_delta(
         )
 
     version = (previous_version or 0) + 1
-    return DeltaDecision(DeltaStatus.CHANGED, signatures, version, "hash_mismatch")
+    return DeltaDecision.from_legacy(
+        DeltaStatus.CHANGED, signatures, version, "hash_mismatch"
+    )
 
 
 def _compute_content_hash(
