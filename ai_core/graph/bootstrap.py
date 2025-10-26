@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from ai_core.graphs import (
+    crawler_ingestion_graph,
     info_intake,
     needs_mapping,
     retrieval_augmented_generation,
@@ -28,3 +29,5 @@ def bootstrap() -> None:
     rag_graph = retrieval_augmented_generation.build_graph()
     register("retrieval_augmented_generation", rag_graph)
     register("rag.default", rag_graph)
+    crawler_graph = crawler_ingestion_graph.build_graph()
+    register("crawler.ingestion", crawler_graph)
