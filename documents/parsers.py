@@ -4,12 +4,25 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+from enum import Enum
 import math
 from math import isfinite
 from types import MappingProxyType
 import re
-from typing import Any, Iterable, Mapping, MutableSequence, Optional, Protocol, Sequence
-from typing import Literal, Tuple, runtime_checkable
+from typing import (
+    Any,
+    Iterable,
+    Mapping,
+    MutableSequence,
+    Optional,
+    Protocol,
+    Sequence,
+    Literal,
+    Tuple,
+    runtime_checkable,
+)
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from documents.contract_utils import normalize_string, truncate_text
 
@@ -18,6 +31,7 @@ _MAX_SECTION_PATH_LENGTH = 10
 _MAX_SECTION_SEGMENT_LENGTH = 128
 
 _BCP47_PATTERN = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
+_LANGUAGE_TAG_RE = re.compile(r"^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$")
 
 
 _TEXT_BLOCK_KINDS: Tuple[str, ...] = (
@@ -32,6 +46,235 @@ _TEXT_BLOCK_KINDS: Tuple[str, ...] = (
 )
 
 TextBlockKind = Literal[_TEXT_BLOCK_KINDS]
+
+
+def normalize_diagnostics(entries: Iterable[str]) -> Tuple[str, ...]:
+    """Normalize diagnostic messages by stripping whitespace and dropping empties."""
+
+    return tuple(
+        normalized
+        for normalized in ((entry or "").strip() for entry in entries)
+        if normalized
+    )
+
+
+class ParseStatus(str, Enum):
+    """Semantic parser outcomes exposed to downstream processing."""
+
+    PARSED = "parsed"
+    UNSUPPORTED_MEDIA = "unsupported_media"
+    PARSER_FAILURE = "parser_failure"
+
+
+class ParserStats(BaseModel):
+    """Observability metrics emitted by parsers."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    token_count: int = Field(ge=0)
+    character_count: int = Field(ge=0)
+    extraction_path: str
+    error_fraction: float = Field(default=0.0, ge=0.0, le=1.0)
+    warnings: Tuple[str, ...] = ()
+    boilerplate_reduction: Optional[float] = Field(default=None)
+
+    @field_validator("extraction_path", mode="before")
+    @classmethod
+    def _validate_extraction_path(cls, value: str) -> str:
+        normalized = normalize_string(value)
+        if not normalized:
+            raise ValueError("extraction_path_required")
+        return normalized
+
+    @field_validator("warnings", mode="before")
+    @classmethod
+    def _normalize_warnings(cls, value: Optional[Iterable[str]]) -> Tuple[str, ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, Iterable):
+            raise TypeError("warnings_type")
+        return tuple(filter(None, (normalize_string(str(w)) for w in value)))
+
+    @field_validator("boilerplate_reduction")
+    @classmethod
+    def _validate_boilerplate(
+        cls, value: Optional[float]
+    ) -> Optional[float]:
+        if value is None:
+            return None
+        candidate = float(value)
+        if candidate < 0 or candidate > 1:
+            raise ValueError("boilerplate_reduction_bounds")
+        return candidate
+
+
+class ParserContent(BaseModel):
+    """Primary parser payload returned to the ingestion pipeline."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    media_type: str
+    primary_text: Optional[str] = None
+    binary_payload_ref: Optional[str] = None
+    title: Optional[str] = None
+    content_language: Optional[str] = None
+    structural_elements: Tuple["ParsedTextBlock", ...] = ()
+    entities: Tuple["ParsedEntity", ...] = ()
+
+    @field_validator("media_type", mode="before")
+    @classmethod
+    def _normalize_media_type(cls, value: str) -> str:
+        normalized = (value or "").strip().lower()
+        if not normalized:
+            raise ValueError("media_type_required")
+        return normalized
+
+    @field_validator("primary_text", mode="before")
+    @classmethod
+    def _strip_primary_text(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("binary_payload_ref", mode="before")
+    @classmethod
+    def _strip_binary_payload(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _strip_title(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return value.strip()
+
+    @field_validator("content_language", mode="before")
+    @classmethod
+    def _normalize_language(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        language = value.strip()
+        if not language:
+            raise ValueError("content_language_invalid")
+        normalized = language.lower()
+        if not _LANGUAGE_TAG_RE.fullmatch(normalized):
+            raise ValueError("content_language_invalid")
+        return normalized
+
+    @field_validator("structural_elements", mode="before")
+    @classmethod
+    def _coerce_structural_elements(
+        cls, value: Optional[Sequence["ParsedTextBlock"]]
+    ) -> Tuple["ParsedTextBlock", ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, Sequence):
+            raise TypeError("structural_elements_type")
+        tupled = tuple(value)
+        for entry in tupled:
+            if not isinstance(entry, ParsedTextBlock):
+                raise TypeError("unexpected_sequence_entry")
+        return tupled
+
+    @field_validator("entities", mode="before")
+    @classmethod
+    def _coerce_entities(
+        cls, value: Optional[Sequence["ParsedEntity"]]
+    ) -> Tuple["ParsedEntity", ...]:
+        if value is None:
+            return ()
+        if not isinstance(value, Sequence):
+            raise TypeError("entities_type")
+        tupled = tuple(value)
+        for entry in tupled:
+            if not isinstance(entry, ParsedEntity):
+                raise TypeError("unexpected_sequence_entry")
+        return tupled
+
+    @model_validator(mode="after")
+    def _require_payload(self) -> "ParserContent":
+        has_text = bool(self.primary_text and self.primary_text.strip())
+        has_binary = bool(self.binary_payload_ref and self.binary_payload_ref.strip())
+        if not (has_text or has_binary):
+            raise ValueError("primary_text_or_binary_required")
+        return self
+
+    def to_parsed_result(self) -> "ParsedResult":
+        """Build a :class:`ParsedResult` view of the content."""
+
+        return ParsedResult(
+            text_blocks=self.structural_elements,
+            assets=(),
+            statistics={},
+        )
+
+
+class ParseResult(BaseModel):
+    """Parser result shared with downstream enrichment steps."""
+
+    model_config = ConfigDict(
+        frozen=True,
+        extra="forbid",
+        arbitrary_types_allowed=True,
+    )
+
+    status: ParseStatus
+    fetch: Any
+    content: Optional[ParserContent]
+    stats: Optional[ParserStats]
+    diagnostics: Tuple[str, ...] = ()
+    error: Optional[Any] = None
+
+    @field_validator("diagnostics", mode="before")
+    @classmethod
+    def _normalize_diag_field(cls, value: Optional[Iterable[str]]) -> Tuple[str, ...]:
+        if value is None:
+            return ()
+        return normalize_diagnostics(value)
+
+    @model_validator(mode="after")
+    def _validate_relations(self) -> "ParseResult":
+        if self.status is ParseStatus.PARSED:
+            if self.content is None:
+                raise ValueError("content_required_for_parsed")
+            if self.stats is None:
+                raise ValueError("stats_required_for_parsed")
+            if self.error is not None:
+                raise ValueError("parsed_must_not_include_error")
+        if self.status in {ParseStatus.UNSUPPORTED_MEDIA, ParseStatus.PARSER_FAILURE}:
+            if self.content is not None:
+                raise ValueError("error_states_must_not_include_content")
+        return self
+
+
+def compute_parser_stats(
+    *,
+    primary_text: Optional[str],
+    extraction_path: str,
+    warnings: Optional[Sequence[str]] = None,
+    error_fraction: float = 0.0,
+    raw_token_count: Optional[int] = None,
+) -> ParserStats:
+    """Estimate parser stats from normalized text and optional raw metrics."""
+
+    text = (primary_text or "").strip()
+    token_count = len(text.split()) if text else 0
+    character_count = len(text)
+    warnings_tuple = tuple(warnings) if warnings else ()
+    boilerplate_reduction = None
+    if raw_token_count is not None and raw_token_count > 0:
+        ratio = 1 - (token_count / raw_token_count)
+        boilerplate_reduction = max(0.0, min(1.0, ratio))
+    return ParserStats(
+        token_count=token_count,
+        character_count=character_count,
+        extraction_path=extraction_path,
+        error_fraction=error_fraction,
+        warnings=warnings_tuple,
+        boilerplate_reduction=boilerplate_reduction,
+    )
 
 
 def _ensure_non_empty_string(value: str, code: str) -> str:
@@ -400,3 +643,7 @@ class ParserDispatcher:
 
     def parse(self, document: Any, config: Any) -> ParsedResult:
         return self._registry.dispatch(document, config)
+
+
+ParserContent.model_rebuild()
+ParseResult.model_rebuild()
