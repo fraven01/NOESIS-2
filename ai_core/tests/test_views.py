@@ -1797,3 +1797,130 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
     payload = response.json()
     assert payload["code"] == "retrieval_inconsistent_metadata"
     assert "reindex required" in payload["detail"]
+
+
+@pytest.mark.django_db
+def test_crawler_runner_manual_multi_origin(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    ingestion_calls: list[tuple[dict, dict, str | None]] = []
+
+    def _fake_start_ingestion(request_data, meta, idempotency_key=None):
+        ingestion_calls.append((request_data, meta, idempotency_key))
+        document_id = request_data["document_ids"][0]
+        return SimpleNamespace(
+            data={"ingestion_run_id": f"ingest-{document_id}", "status": "queued"}
+        )
+
+    monkeypatch.setattr(services, "start_ingestion_run", _fake_start_ingestion)
+
+    class _DummyDecision:
+        def __init__(self, document_id: str):
+            self.payload = SimpleNamespace(document_id=document_id)
+
+    class _DummyGraph:
+        def __init__(self) -> None:
+            self.upsert_handler = None
+
+        def start_crawl(self, state):
+            cloned = dict(state)
+            control = dict(cloned.get("control", {}))
+            control.setdefault("shadow_mode", True)
+            cloned["control"] = control
+            cloned["normalize_input"] = {
+                "document_id": cloned.get("document_id"),
+                "tags": control.get("tags", []),
+            }
+            cloned["transitions"] = {
+                "crawler.fetch": {"decision": "skipped"},
+                "crawler.ingest_decision": {"decision": "upsert"},
+            }
+            cloned["ingest_action"] = "upsert"
+            cloned["gating_score"] = 0.95
+            cloned["content_hash"] = f"hash-{cloned['document_id']}"
+            return cloned
+
+        def run(self, state, meta):
+            result_state = dict(state)
+            if self.upsert_handler is not None:
+                artifacts = result_state.setdefault("artifacts", {})
+                artifacts["upsert_result"] = self.upsert_handler(
+                    _DummyDecision(state.get("document_id"))
+                )
+            result = {
+                "graph_run_id": f"run-{state.get('document_id')}",
+                "decision": "upsert",
+            }
+            return result_state, result
+
+    monkeypatch.setattr(
+        views,
+        "crawler_ingestion_graph",
+        SimpleNamespace(build_graph=lambda: _DummyGraph()),
+    )
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-crawl",
+    }
+
+    payload = {
+        "mode": "manual",
+        "workflow_id": "crawler-demo",
+        "collection_id": "6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa",
+        "tags": ["handbook", "hr"],
+        "snapshot": {"enabled": True, "label": "debug"},
+        "review": "required",
+        "dry_run": True,
+        "origins": [
+            {
+                "url": "https://example.com/docs/handbook",
+                "content": "first origin",
+                "content_type": "text/plain",
+                "fetch": False,
+            },
+            {
+                "url": "https://example.com/docs/policies",
+                "content": "second origin",
+                "content_type": "text/plain",
+                "fetch": False,
+                "tags": ["policy"],
+            },
+        ],
+    }
+
+    first = client.post(
+        "/ai/rag/crawler/run/",
+        data=json.dumps(payload),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert first.status_code == 200
+    first_payload = first.json()
+    assert first_payload["workflow_id"] == "crawler-demo"
+    assert first_payload["mode"] == "manual"
+    assert len(first_payload["origins"]) == 2
+    assert len(first_payload["transitions"]) == 2
+    assert len(first_payload["telemetry"]) == 2
+    assert first_payload["errors"] == []
+    assert first_payload["idempotent"] is False
+    assert ingestion_calls
+    assert {
+        entry["origin"] for entry in first_payload["origins"]
+    } == {
+        "https://example.com/docs/handbook",
+        "https://example.com/docs/policies",
+    }
+
+    second = client.post(
+        "/ai/rag/crawler/run/",
+        data=json.dumps(payload),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert second.status_code == 200
+    assert second.json()["idempotent"] is True
