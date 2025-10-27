@@ -13,9 +13,16 @@ from crawler.fetcher import (
 )
 from uuid import uuid4
 
+from documents.contracts import InlineBlob, NormalizedDocument
 from documents.parsers import ParsedTextBlock
 
-from crawler.normalizer import NormalizedDocument, build_normalized_document
+from crawler.normalizer import (
+    build_normalized_document,
+    document_parser_stats,
+    document_payload_bytes,
+    normalize_diagnostics,
+    resolve_provider_reference,
+)
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -93,23 +100,26 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
     )
 
     assert isinstance(document, NormalizedDocument)
-    assert document.tenant_id == "tenant-1"
-    assert document.workflow_id == "wf-42"
-    assert document.document_id == document_id
+    assert document.ref.tenant_id == "tenant-1"
+    assert document.ref.workflow_id == "wf-42"
+    assert str(document.ref.document_id) == document_id
     assert document.meta.origin_uri == canonical
-    assert document.media_type == "text/html"
+    assert isinstance(document.blob, InlineBlob)
+    assert document.blob.media_type == "text/html"
     assert document.meta.title == "Example Title"
     assert document.meta.language == "en"
     assert document.meta.tags == ["featured", "news"]
-    assert document.external_ref.external_id == source.external_id
-    assert document.external_ref.provider == "web"
-    assert document.external_ref.provider_tags["collection"] == "news"
-    assert document.primary_text == "Example text"
-    assert document.stats.token_count == 2
-    assert document.parser_stats["parser.token_count"] == 2
-    assert document.parser_stats["parser.warnings"] == ["minor"]
-    assert document.parser_stats["normalizer.bytes_in"] == len(b"<html></html>")
-    assert document.diagnostics == ("ok",)
+    provider = resolve_provider_reference(document)
+    assert provider.external_id == source.external_id
+    assert provider.provider == "web"
+    assert provider.provider_tags["collection"] == "news"
+    parser_stats = document_parser_stats(document)
+    assert parser_stats["parser.token_count"] == 2
+    assert parser_stats["parser.warnings"] == ["minor"]
+    assert parser_stats["normalizer.bytes_in"] == len(b"<html></html>")
+    payload = document_payload_bytes(document)
+    assert payload == b"<html></html>"
+    assert normalize_diagnostics(parse_result.diagnostics) == ("ok",)
 
 
 def test_build_normalized_document_requires_parsed_status() -> None:

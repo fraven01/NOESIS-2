@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from documents.contracts import NormalizedDocument
+
 from .contracts import Decision
-from .normalizer import NormalizedDocument
+from .normalizer import document_payload_bytes
 
 
 class DeltaStatus(str, Enum):
@@ -90,6 +92,7 @@ DEFAULT_NEAR_DUPLICATE_THRESHOLD = 0.92
 def evaluate_delta(
     document: NormalizedDocument,
     *,
+    primary_text: Optional[str] = None,
     previous_content_hash: Optional[str] = None,
     previous_version: Optional[int] = None,
     known_near_duplicates: Optional[Mapping[str, NearDuplicateSignature]] = None,
@@ -101,9 +104,12 @@ def evaluate_delta(
     """Decide whether the document content is new, changed, unchanged or a near-duplicate."""
 
     content_hash = _compute_content_hash(
-        document, binary_payload=binary_payload, algorithm=hash_algorithm
+        document,
+        primary_text=primary_text,
+        binary_payload=binary_payload,
+        algorithm=hash_algorithm,
     )
-    near_signature = _compute_near_duplicate_signature(document)
+    near_signature = _compute_near_duplicate_signature(primary_text)
 
     signatures = DeltaSignatures(
         content_hash=content_hash, near_duplicate=near_signature
@@ -113,7 +119,7 @@ def evaluate_delta(
         near_signature,
         known_near_duplicates,
         threshold=near_duplicate_threshold,
-        exclude=document.document_id,
+        exclude=str(document.ref.document_id),
     )
 
     if previous_content_hash is None:
@@ -155,16 +161,17 @@ def evaluate_delta(
 def _compute_content_hash(
     document: NormalizedDocument,
     *,
+    primary_text: Optional[str],
     binary_payload: Optional[bytes] = None,
     algorithm: str = "sha256",
 ) -> str:
-    primary_text = document.primary_text
-    if primary_text:
-        normalized = " ".join(primary_text.split())
-        payload = normalized.encode("utf-8")
+    text = (primary_text or "").strip()
+    normalized_text = " ".join(text.split()) if text else ""
+    if normalized_text:
+        payload = normalized_text.encode("utf-8")
     else:
         if binary_payload is None:
-            payload = document.payload_bytes()
+            payload = document_payload_bytes(document)
         else:
             payload = binary_payload
 
@@ -177,12 +184,12 @@ def _compute_content_hash(
 
 
 def _compute_near_duplicate_signature(
-    document: NormalizedDocument,
+    primary_text: Optional[str],
 ) -> Optional[NearDuplicateSignature]:
-    primary_text = document.primary_text
-    if not primary_text:
+    text = (primary_text or "").strip()
+    if not text:
         return None
-    tokens = _tokenize(primary_text)
+    tokens = _tokenize(text)
     if not tokens:
         return None
     normalized_tokens = tuple(sorted(set(tokens)))

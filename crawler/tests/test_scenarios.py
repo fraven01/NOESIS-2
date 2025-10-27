@@ -30,7 +30,13 @@ from crawler.ingestion import (
     IngestionStatus,
     build_ingestion_decision,
 )
-from crawler.normalizer import NormalizedDocument, build_normalized_document
+from documents.contracts import NormalizedDocument
+
+from crawler.normalizer import (
+    build_normalized_document,
+    document_parser_stats,
+    normalize_diagnostics,
+)
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -122,7 +128,7 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
         fetch, primary_text="Hello world", title="Hello", language="en"
     )
     document = _make_document(parse, first_source, document_id=_doc_id("doc-tracking"))
-    delta = evaluate_delta(document)
+    delta = evaluate_delta(document, primary_text=parse.content.primary_text)
     ingestion = build_ingestion_decision(document, delta, case_id=CASE_ID)
 
     spans = {
@@ -131,7 +137,7 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
         ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
-        "normalize": _build_normalize_span(trace, document),
+        "normalize": _build_normalize_span(trace, document, parse),
         "delta": _build_delta_span(trace, delta, None, ingestion.status, CASE_ID),
         "ingest": _build_ingest_span(trace, ingestion),
     }
@@ -190,6 +196,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
     document_repeat = _make_document(parse, baseline_source, document_id=_doc_id("doc-ref"))
     delta = evaluate_delta(
         document_repeat,
+        primary_text=parse.content.primary_text,
         previous_content_hash=previous_hash,
         previous_version=previous_version,
     )
@@ -201,7 +208,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
-        "normalize": _build_normalize_span(trace, document_repeat),
+        "normalize": _build_normalize_span(trace, document_repeat, parse),
         "delta": _build_delta_span(
             trace, delta, previous_hash, ingestion.status, CASE_ID
         ),
@@ -247,6 +254,7 @@ def test_content_change_advances_version_and_upserts() -> None:
     document_updated = _make_document(parse, source, document_id=_doc_id("doc-story"))
     delta = evaluate_delta(
         document_updated,
+        primary_text=parse.content.primary_text,
         previous_content_hash=previous_hash,
         previous_version=previous_version,
     )
@@ -258,7 +266,7 @@ def test_content_change_advances_version_and_upserts() -> None:
         ),
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
-        "normalize": _build_normalize_span(trace, document_updated),
+        "normalize": _build_normalize_span(trace, document_updated, parse),
         "delta": _build_delta_span(
             trace, delta, previous_hash, ingestion.status, CASE_ID
         ),
@@ -393,6 +401,7 @@ def test_near_duplicate_detected_without_upsert() -> None:
     }
     delta = evaluate_delta(
         duplicate_document,
+        primary_text=duplicate_parse.content.primary_text,
         previous_content_hash=None,
         known_near_duplicates=known_signatures,
     )
@@ -404,7 +413,7 @@ def test_near_duplicate_detected_without_upsert() -> None:
         ),
         "fetch.http": _build_fetch_span(trace, duplicate_fetch),
         "parse": _build_parse_span(trace, duplicate_parse),
-        "normalize": _build_normalize_span(trace, duplicate_document),
+        "normalize": _build_normalize_span(trace, duplicate_document, duplicate_parse),
         "delta": _build_delta_span(trace, delta, None, ingestion.status, CASE_ID),
         "ingest": _build_ingest_span(trace, ingestion),
     }
@@ -497,7 +506,9 @@ def _build_document_state(
         language="en",
     )
     document = _make_document(parse, source, document_id=document_id)
-    delta = evaluate_delta(document)
+    delta = evaluate_delta(
+        document, primary_text=parse.content.primary_text
+    )
     return source, fetch, parse, document, delta
 
 
@@ -737,11 +748,16 @@ def _build_parse_span(trace: TraceContext, parse: ParseResult) -> SpanSnapshot:
 
 
 def _build_normalize_span(
-    trace: TraceContext, document: NormalizedDocument
+    trace: TraceContext,
+    document: NormalizedDocument,
+    parse_result: ParseResult,
 ) -> SpanSnapshot:
-    parser_stats = document.parser_stats
+    parser_stats = document_parser_stats(document)
     parser_warnings = parser_stats.get("parser.warnings", [])
     warning_count = len(parser_warnings) if isinstance(parser_warnings, Sequence) else 0
+    stats = parse_result.stats if parse_result.status is ParseStatus.PARSED else None
+    diagnostics = normalize_diagnostics(parse_result.diagnostics)
+    token_count = stats.token_count if stats else 0
     attributes = trace.annotate(
         {
             "normalizer.origin_uri": document.meta.origin_uri,
@@ -749,9 +765,9 @@ def _build_normalize_span(
             "normalizer.language": document.meta.language,
             "normalizer.bytes_in": parser_stats.get("normalizer.bytes_in"),
             "normalizer.tag_count": len(document.meta.tags),
-            "normalizer.parser_token_count": document.stats.token_count,
+            "normalizer.parser_token_count": token_count,
             "normalizer.validation_status": "ok",
-            "normalizer.warning_count": len(document.diagnostics) + warning_count,
+            "normalizer.warning_count": len(diagnostics) + warning_count,
         }
     )
     return SpanSnapshot(name="normalize", attributes=attributes, events=())

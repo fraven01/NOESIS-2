@@ -1,18 +1,16 @@
-from __future__ import annotations
-
 import hashlib
 from datetime import datetime, timezone
 from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import pytest
 
+from crawler.contracts import NormalizedSource
 from crawler.delta import (
     DEFAULT_NEAR_DUPLICATE_THRESHOLD,
     DeltaStatus,
     NearDuplicateSignature,
     evaluate_delta,
 )
-from crawler.contracts import NormalizedSource
 from crawler.fetcher import (
     FetchMetadata,
     FetchRequest,
@@ -21,13 +19,15 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
-from crawler.normalizer import NormalizedDocument, build_normalized_document
+from crawler.normalizer import build_normalized_document
 from crawler.parser import (
+    ParseResult,
     ParseStatus,
     ParserContent,
     ParserStats,
     build_parse_result,
 )
+from documents.contracts import NormalizedDocument
 from documents.parsers import ParsedTextBlock
 
 
@@ -63,7 +63,7 @@ def _make_document(
     *,
     binary_ref: str | None = None,
     structural_elements: tuple[ParsedTextBlock, ...] | None = None,
-) -> NormalizedDocument:
+) -> tuple[NormalizedDocument, ParseResult]:
     canonical_source = f"https://example.com/{document_id}"
     payload_bytes = (text.encode("utf-8") if text is not None else b"binary")
     fetch = _make_fetch_result(canonical_source, payload_bytes)
@@ -93,19 +93,31 @@ def _make_document(
         external_id=f"web::{document_id}",
         provider_tags={},
     )
-    return build_normalized_document(
+    document = build_normalized_document(
         parse_result=parse_result,
         source=source,
         tenant_id="tenant",
         workflow_id="wf",
         document_id=document_id,
     )
+    return document, parse_result
+
+
+def _evaluate(
+    document: NormalizedDocument,
+    parse_result: ParseResult,
+    **kwargs,
+):
+    primary_text = (
+        parse_result.content.primary_text if parse_result.content is not None else None
+    )
+    return evaluate_delta(document, primary_text=primary_text, **kwargs)
 
 
 def test_evaluate_delta_marks_new_document() -> None:
-    document = _make_document(str(uuid4()), "Hello world")
+    document, parse_result = _make_document(str(uuid4()), "Hello world")
 
-    decision = evaluate_delta(document)
+    decision = _evaluate(document, parse_result)
 
     assert decision.status is DeltaStatus.NEW
     assert decision.version == 1
@@ -115,11 +127,12 @@ def test_evaluate_delta_marks_new_document() -> None:
 
 def test_evaluate_delta_detects_unchanged_hash() -> None:
     document_id = str(uuid4())
-    document = _make_document(document_id, "Hello world")
-    initial = evaluate_delta(document)
+    document, parse_result = _make_document(document_id, "Hello world")
+    initial = _evaluate(document, parse_result)
 
-    repeat = evaluate_delta(
+    repeat = _evaluate(
         document,
+        parse_result,
         previous_content_hash=initial.signatures.content_hash,
         previous_version=7,
     )
@@ -131,12 +144,13 @@ def test_evaluate_delta_detects_unchanged_hash() -> None:
 
 def test_evaluate_delta_increments_version_on_change() -> None:
     doc_id = str(uuid4())
-    old_document = _make_document(doc_id, "Hello world")
-    initial = evaluate_delta(old_document)
+    old_document, old_parse = _make_document(doc_id, "Hello world")
+    initial = _evaluate(old_document, old_parse)
 
-    updated = _make_document(doc_id, "Hello brave new world")
-    decision = evaluate_delta(
+    updated, updated_parse = _make_document(doc_id, "Hello brave new world")
+    decision = _evaluate(
         updated,
+        updated_parse,
         previous_content_hash=initial.signatures.content_hash,
         previous_version=2,
     )
@@ -148,12 +162,13 @@ def test_evaluate_delta_increments_version_on_change() -> None:
 
 def test_evaluate_delta_ignores_whitespace_changes() -> None:
     doc_id = str(uuid4())
-    original = _make_document(doc_id, "Hello    world\n\n")
-    baseline = evaluate_delta(original)
+    original, original_parse = _make_document(doc_id, "Hello    world\n\n")
+    baseline = _evaluate(original, original_parse)
 
-    noisy = _make_document(doc_id, "  Hello world")
-    repeat = evaluate_delta(
+    noisy, noisy_parse = _make_document(doc_id, "  Hello world")
+    repeat = _evaluate(
         noisy,
+        noisy_parse,
         previous_content_hash=baseline.signatures.content_hash,
         previous_version=baseline.version,
     )
@@ -163,16 +178,17 @@ def test_evaluate_delta_ignores_whitespace_changes() -> None:
 
 def test_evaluate_delta_ignores_markup_only_changes() -> None:
     doc_id = str(uuid4())
-    baseline = _make_document(doc_id, "Hello world")
-    first = evaluate_delta(baseline)
+    baseline, baseline_parse = _make_document(doc_id, "Hello world")
+    first = _evaluate(baseline, baseline_parse)
 
-    updated = _make_document(
+    updated, updated_parse = _make_document(
         doc_id,
         "Hello world",
         structural_elements=(ParsedTextBlock(text="Hello world", kind="paragraph"),),
     )
-    repeat = evaluate_delta(
+    repeat = _evaluate(
         updated,
+        updated_parse,
         previous_content_hash=first.signatures.content_hash,
         previous_version=first.version,
     )
@@ -182,9 +198,9 @@ def test_evaluate_delta_ignores_markup_only_changes() -> None:
 
 def test_evaluate_delta_hashes_binary_payload_from_document() -> None:
     doc_id = str(uuid4())
-    document = _make_document(doc_id, None, binary_ref="blob://1")
+    document, parse_result = _make_document(doc_id, None, binary_ref="blob://1")
 
-    decision = evaluate_delta(document)
+    decision = _evaluate(document, parse_result)
 
     assert decision.status is DeltaStatus.NEW
     assert decision.signatures.content_hash
@@ -192,14 +208,13 @@ def test_evaluate_delta_hashes_binary_payload_from_document() -> None:
 
 def test_evaluate_delta_hashes_binary_payload() -> None:
     doc_id = str(uuid4())
-    document = _make_document(doc_id, None, binary_ref="blob://1")
+    document, parse_result = _make_document(doc_id, None, binary_ref="blob://1")
     payload = b"binary-data"
     expected_hash = hashlib.sha256(payload).hexdigest()
 
-    decision = evaluate_delta(document, binary_payload=payload)
+    decision = _evaluate(document, parse_result, binary_payload=payload)
 
     assert decision.signatures.content_hash == expected_hash
-    assert decision.status is DeltaStatus.NEW
 
 
 def test_evaluate_delta_flags_near_duplicate() -> None:
@@ -209,10 +224,11 @@ def test_evaluate_delta_flags_near_duplicate() -> None:
         tokens=canonical_tokens,
     )
     parent_id = str(uuid4())
-    document = _make_document(str(uuid4()), "world hello example")
+    document, parse_result = _make_document(str(uuid4()), "world hello example")
 
-    decision = evaluate_delta(
+    decision = _evaluate(
         document,
+        parse_result,
         known_near_duplicates={parent_id: parent_signature},
         near_duplicate_threshold=DEFAULT_NEAR_DUPLICATE_THRESHOLD - 0.1,
     )
@@ -228,11 +244,14 @@ def test_evaluate_delta_respects_threshold() -> None:
         fingerprint="abc",
         tokens=("foo", "bar"),
     )
-    document = _make_document(str(uuid4()), "completely different text")
+    document, parse_result = _make_document(
+        str(uuid4()), "completely different text"
+    )
 
     parent_id = str(uuid4())
-    decision = evaluate_delta(
+    decision = _evaluate(
         document,
+        parse_result,
         known_near_duplicates={parent_id: parent_signature},
         near_duplicate_threshold=0.95,
     )
@@ -243,17 +262,22 @@ def test_evaluate_delta_respects_threshold() -> None:
 
 def test_evaluate_delta_checks_near_duplicates_when_changed() -> None:
     base_id = _doc_id("doc-1")
-    baseline = _make_document(base_id, "Breaking news across the world")
-    first = evaluate_delta(baseline)
+    baseline, baseline_parse = _make_document(
+        base_id, "Breaking news across the world"
+    )
+    first = _evaluate(baseline, baseline_parse)
 
-    updated = _make_document(base_id, "Breaking news across the globe")
+    updated, updated_parse = _make_document(
+        base_id, "Breaking news across the globe"
+    )
     competitor_signature = NearDuplicateSignature(
         fingerprint="xyz",
         tokens=("across", "breaking", "globe", "news", "the"),
     )
 
-    decision = evaluate_delta(
+    decision = _evaluate(
         updated,
+        updated_parse,
         previous_content_hash=first.signatures.content_hash,
         previous_version=first.version,
         known_near_duplicates={"competitor": competitor_signature},
@@ -269,13 +293,14 @@ def test_evaluate_delta_checks_near_duplicates_when_changed() -> None:
 
 def test_evaluate_delta_ignores_near_duplicate_for_same_document() -> None:
     duplicate_id = _doc_id("doc-42")
-    document = _make_document(duplicate_id, "Short headline text")
+    document, parse_result = _make_document(duplicate_id, "Short headline text")
     signature = NearDuplicateSignature(
         fingerprint="sig", tokens=("headline", "short", "text")
     )
 
-    decision = evaluate_delta(
+    decision = _evaluate(
         document,
+        parse_result,
         known_near_duplicates={duplicate_id: signature},
         near_duplicate_threshold=0.0,
     )
@@ -286,18 +311,19 @@ def test_evaluate_delta_ignores_near_duplicate_for_same_document() -> None:
 
 def test_evaluate_delta_rejects_unsupported_hash_algorithm() -> None:
     hash_id = _doc_id("doc-hash")
-    document = _make_document(hash_id, "hash me")
+    document, parse_result = _make_document(hash_id, "hash me")
 
     with pytest.raises(ValueError):
-        evaluate_delta(document, hash_algorithm="not-a-real-hash")
+        _evaluate(document, parse_result, hash_algorithm="not-a-real-hash")
 
 
 def test_evaluate_delta_handles_minimal_text_without_false_positive() -> None:
-    document = _make_document(_doc_id("doc-1"), "Hi")
+    document, parse_result = _make_document(_doc_id("doc-1"), "Hi")
     signature = NearDuplicateSignature(fingerprint="sig", tokens=("bye",))
 
-    decision = evaluate_delta(
+    decision = _evaluate(
         document,
+        parse_result,
         known_near_duplicates={_doc_id("doc-other"): signature},
         near_duplicate_threshold=0.5,
     )

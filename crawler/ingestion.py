@@ -7,10 +7,12 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Dict, Mapping, Optional, Tuple
 
+from documents.contracts import NormalizedDocument
+
 from .contracts import Decision
 from .delta import DeltaDecision, DeltaStatus
 from .errors import CrawlerError, ErrorClass
-from .normalizer import NormalizedDocument
+from .normalizer import document_parser_stats, resolve_provider_reference
 from .retire import LifecycleDecision, LifecycleState
 
 
@@ -184,23 +186,26 @@ def _build_payload(
     document: NormalizedDocument, content_hash: str, case_id: str
 ) -> IngestionPayload:
     meta = document.meta
-    external = document.external_ref
+    external = resolve_provider_reference(document)
+    parser_stats = document_parser_stats(document)
+    media_type = getattr(document.blob, "media_type", None)
+    document_id = str(document.ref.document_id)
     return IngestionPayload(
-        tenant_id=document.tenant_id,
+        tenant_id=document.ref.tenant_id,
         case_id=case_id,
-        workflow_id=document.workflow_id,
-        document_id=document.document_id,
+        workflow_id=document.ref.workflow_id,
+        document_id=document_id,
         content_hash=content_hash,
         external_id=external.external_id,
         provider=external.provider,
         source="crawler",
         canonical_source=external.canonical_source,
         origin_uri=meta.origin_uri,
-        media_type=document.media_type,
+        media_type=media_type,
         title=meta.title,
         language=meta.language,
         tags=tuple(meta.tags),
-        parser_stats=document.parser_stats,
+        parser_stats=parser_stats,
         provider_tags=external.provider_tags,
     )
 
