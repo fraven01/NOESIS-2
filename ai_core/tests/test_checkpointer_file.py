@@ -28,7 +28,7 @@ def test_save_persists_state_under_sanitized_path(tmp_path, monkeypatch) -> None
         tenant_id="Tenant One",
         case_id="Case:01",
         trace_id="trace-abc",
-        graph_name="scope_check",
+        graph_name="retrieval_augmented_generation",
     )
     state = {"step": "complete", "nested": {"value": 3}}
 

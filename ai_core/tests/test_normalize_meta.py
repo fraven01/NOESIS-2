@@ -87,7 +87,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
             X_TRACE_ID_HEADER: "trace-999",
             IDEMPOTENCY_KEY_HEADER: "idem-1",
         },
-        graph_name="needs",
+        graph_name="retrieval_augmented_generation",
     )
 
     meta = normalize_meta(request)

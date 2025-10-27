@@ -26,13 +26,13 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 ### Beispiel-cURL
 
 ```bash
-curl -X POST "https://api.noesis.example/ai/scope/" \
+curl -X POST "https://api.noesis.example/v1/ai/rag/query/" \
   -H "X-Tenant-Schema: acme_prod" \
   -H "X-Tenant-Id: acme" \
   -H "X-Case-Id: crm-7421" \
-  -H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a" \
+  -H "Idempotency-Key: 6cdb89f6-8826-4f9b-8c82-1f14b3d4c21b" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "Erstelle Meeting-Notizen"}'
+  -d '{"question": "Welche Reisekosten gelten für Consultants?"}'
 ```
 
 ## System Endpunkte
@@ -311,46 +311,6 @@ zurückgefallen.
 
 ## Agenten (Queue `agents`)
 
-### POST `/ai/scope/`
-Validiert Zugriffsscope und Kontextinformationen für eine Anfrage. Triggert den LangGraph-Knoten `scope_check`.
-
-> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
-> shallow overwrite mit dem bestehenden State zusammen.
-
-**Headers**
-- `X-Tenant-Schema` (required)
-- `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
-- `Idempotency-Key` (optional)
-- `Content-Type: application/json`
-
-**Body Schema**
-```json
-{
-  "prompt": "Zeige den Projektstatus", 
-  "conversation": [
-    {"role": "user", "content": "Was ist der letzte Stand?"}
-  ],
-  "scope_overrides": {"projects": ["alpha"]}
-}
-```
-
-**Response 200 Beispiel**
-```json
-{
-  "scope": {
-    "projects": ["alpha"],
-    "pii_allowed": false
-  },
-  "idempotent": false,
-  "trace_id": "4fcb5171d5264dd2919c91174f9bcf75"
-}
-```
-
-**Fehler**
-- `400 Bad Request`: Ungültige JSON-Struktur.
-- `404 Not Found`: Tenant existiert nicht oder besitzt keinen aktiven Scope.
-
 ### POST `/ai/intake/`
 Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 
@@ -381,60 +341,57 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 }
 ```
 
-### POST `/ai/needs/`
-Ermittelt offene Aufgaben und Anforderungen (`needs_mapping`).
+### POST `/v1/ai/rag/query/`
+Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augmented_generation`).
 
-> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
-> shallow overwrite mit dem bestehenden State zusammen.
-
-**Headers** wie `/ai/intake/`.
+**Headers**
+- `X-Tenant-Schema` (required)
+- `X-Tenant-Id` (required)
+- `X-Case-Id` (required)
+- `Idempotency-Key` (optional, empfohlen)
+- `Content-Type: application/json`
 
 **Body Beispiel**
 ```json
 {
-  "conversation": [
-    {"role": "user", "content": "Wir brauchen ein Angebot bis Freitag."}
-  ]
+  "question": "Welche Reisekosten gelten für Consultants?",
+  "filters": {"doc_class": "policy", "process": "travel"},
+  "visibility": "tenant"
 }
 ```
 
 **Response 200 Beispiel**
 ```json
 {
-  "needs": [
+  "answer": "Consultants nutzen das Travel-Policy-Template.",
+  "prompt_version": "2024-05-01",
+  "retrieval": {
+    "alpha": 0.7,
+    "min_sim": 0.15,
+    "top_k_effective": 1,
+    "matches_returned": 1,
+    "max_candidates_effective": 50,
+    "vector_candidates": 37,
+    "lexical_candidates": 41,
+    "deleted_matches_blocked": 0,
+    "visibility_effective": "active",
+    "took_ms": 42,
+    "routing": {
+      "profile": "standard",
+      "vector_space_id": "rag/global"
+    }
+  },
+  "snippets": [
     {
-      "type": "offer",
-      "due": "2024-05-19",
-      "confidence": 0.88
+      "id": "doc-871#p3",
+      "text": "Rücksendungen sind innerhalb von 30 Tagen möglich, sofern das Produkt unbenutzt ist.",
+      "score": 0.82,
+      "source": "policies/returns.md",
+      "hash": "7f3d6a2c",
+      "meta": {"page": 3, "language": "de"}
     }
   ],
-  "trace_id": "7f0f7d8a0e994a85a0a3c5d509a5bd1a"
+  "trace_id": "b5d0c7a4d5de4b89b9b7d0c14fd31b1b"
 }
 ```
 
-### POST `/ai/sysdesc/`
-Erzeugt eine Systembeschreibung zur Weiterleitung an nachgelagerte Agenten (`system_description`).
-
-> **Hinweis:** Der Graph persistiert den Zustand und führt das Request-JSON als
-> shallow overwrite mit dem bestehenden State zusammen.
-
-**Headers** wie `/ai/intake/`.
-
-**Body Beispiel**
-```json
-{
-  "context": {
-    "tenant_features": ["rag", "chat"],
-    "language": "de"
-  }
-}
-```
-
-**Response 200 Beispiel**
-```json
-{
-  "system_prompt": "Du bist der NOESIS-2 Assistent für Tenant acme.",
-  "guardrails": ["keine PII ausgeben"],
-  "trace_id": "a5d059fbe33b4a7fa6bbfd93a8f41d4e"
-}
-```

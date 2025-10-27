@@ -1,8 +1,7 @@
 from ai_core.graphs import (
+    crawler_ingestion_graph,
     info_intake,
-    scope_check,
-    needs_mapping,
-    system_description,
+    retrieval_augmented_generation,
 )
 
 META = {"tenant_id": "t1", "case_id": "c1", "trace_id": "tr"}
@@ -14,34 +13,11 @@ def test_info_intake_adds_meta():
     assert result["tenant_id"] == META["tenant_id"]
 
 
-def test_scope_check_never_creates_draft():
-    state, result = scope_check.run({}, META)
-    assert "draft" not in state
-    assert "draft" not in result
-    assert result["missing"] == ["scope"]
+def test_retrieval_graph_build_exposes_runner():
+    graph = retrieval_augmented_generation.build_graph()
+    assert hasattr(graph, "run"), "retrieval graph must provide a run method"
 
 
-def test_needs_mapping_breaks_on_missing():
-    initial = {"missing": ["scope"]}
-    state, result = needs_mapping.run(initial, META)
-    assert result["missing"] == ["scope"]
-    assert "needs" not in state
-
-
-def test_needs_mapping_success():
-    initial = {"missing": [], "needs_input": ["a", "b"]}
-    state, result = needs_mapping.run(initial, META)
-    assert state["needs"] == ["a", "b"]
-    assert result["mapped"] is True
-
-
-def test_system_description_only_when_no_missing():
-    state, result = system_description.run({"missing": ["scope"]}, META)
-    assert result["skipped"] is True
-    assert "description" not in state
-
-    state2, result2 = system_description.run({"missing": []}, META)
-    assert "description" in state2
-    assert result2["description"] == state2["description"]
-    expected = f"System for tenant {META['tenant_id']} case {META['case_id']}"
-    assert state2["description"] == expected
+def test_crawler_graph_build_exposes_runner():
+    graph = crawler_ingestion_graph.build_graph()
+    assert hasattr(graph, "run"), "crawler graph must provide a run method"

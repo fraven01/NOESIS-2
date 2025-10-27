@@ -40,11 +40,8 @@ from noesis2.api import (
 from noesis2.api.serializers import (
     IntakeRequestSerializer,
     IntakeResponseSerializer,
-    NeedsResponseSerializer,
     PingResponseSerializer,
     RagQueryResponseSerializer,
-    ScopeResponseSerializer,
-    SysDescResponseSerializer,
 )
 
 # Crawler contracts and runtime structures used by the ingestion runner view.
@@ -72,9 +69,6 @@ from ai_core.graph.registry import get as get_graph_runner, register as register
 from ai_core.graphs import (
     crawler_ingestion_graph,
     info_intake,
-    needs_mapping,
-    scope_check,
-    system_description,
 )  # noqa: F401
 
 # Import graphs so they are available via module globals for Legacy views.
@@ -82,9 +76,6 @@ from ai_core.graphs import (
 # allows _GraphView.get_graph to resolve from globals() without importing.
 try:  # pragma: no cover - exercised indirectly via tests
     info_intake = import_module("ai_core.graphs.info_intake")
-    scope_check = import_module("ai_core.graphs.scope_check")
-    needs_mapping = import_module("ai_core.graphs.needs_mapping")
-    system_description = import_module("ai_core.graphs.system_description")
 except Exception:  # defensive: don't break module import if graphs change
     # Fallback to lazy import via _GraphView.get_graph when not present.
     pass
@@ -471,114 +462,6 @@ INTAKE_CURL = _curl(
     )
 )
 
-SCOPE_REQUEST_EXAMPLE = OpenApiExample(
-    name="ScopeRequest",
-    summary="Scope payload",
-    description="Provide the captured scope inputs that should be validated.",
-    value={
-        "prompt": "Zeige den Projektstatus",
-        "metadata": {"project": "acme-kickoff"},
-        "scope": "discovery",
-    },
-    request_only=True,
-)
-
-SCOPE_RESPONSE_EXAMPLE = OpenApiExample(
-    name="ScopeResponse",
-    summary="Scope validation result",
-    description="Lists missing prerequisites that must be provided before scope validation passes.",
-    value={"missing": ["project_brief"], "idempotent": False},
-    response_only=True,
-)
-
-SCOPE_CURL = _curl(
-    " ".join(
-        [
-            "curl -X POST https://api.noesis.example/v1/ai/scope/",
-            '-H "Content-Type: application/json"',
-            '-H "X-Tenant-Schema: acme_prod"',
-            '-H "X-Tenant-Id: acme"',
-            '-H "X-Case-Id: crm-7421"',
-            '-H "Idempotency-Key: 1d1d8aa4-0f2e-4b94-8e41-44f96c42e01a"',
-            '-d \'{"prompt": "Erstelle Meeting-Notizen"}\'',
-        ]
-    )
-)
-
-NEEDS_REQUEST_EXAMPLE = OpenApiExample(
-    name="NeedsRequest",
-    summary="Needs mapping payload",
-    description="Submit captured inputs so the needs mapping node can derive tasks.",
-    value={
-        "metadata": {"project": "acme-kickoff"},
-        "needs_input": ["stakeholder_alignment", "timeline"],
-    },
-    request_only=True,
-)
-
-NEEDS_RESPONSE_EXAMPLE = OpenApiExample(
-    name="NeedsResponse",
-    summary="Needs mapping outcome",
-    description="Shows whether actionable needs were derived and highlights any missing context.",
-    value={
-        "mapped": True,
-        "missing": ["stakeholder_alignment"],
-        "idempotent": False,
-    },
-    response_only=True,
-)
-
-NEEDS_CURL = _curl(
-    " ".join(
-        [
-            "curl -X POST https://api.noesis.example/v1/ai/needs/",
-            '-H "Content-Type: application/json"',
-            '-H "X-Tenant-Schema: acme_prod"',
-            '-H "X-Tenant-Id: acme"',
-            '-H "X-Case-Id: crm-7421"',
-            '-H "Idempotency-Key: 9c2ef7a8-7e6b-4a55-8cb3-bf6203d86016"',
-            '-d \'{"metadata": {"project": "acme-kickoff"}}\'',
-        ]
-    )
-)
-
-SYSDESC_REQUEST_EXAMPLE = OpenApiExample(
-    name="SysDescRequest",
-    summary="System description payload",
-    description="Provide the finalised scope so the system description can be generated.",
-    value={
-        "scope": "kickoff",
-        "metadata": {"project": "acme-kickoff"},
-    },
-    request_only=True,
-)
-
-SYSDESC_RESPONSE_EXAMPLE = OpenApiExample(
-    name="SysDescResponse",
-    summary="System description",
-    description="Outputs the deterministic system prompt once all workflow prerequisites are met.",
-    value={
-        "description": "You are the NOESIS kickoff agent.",
-        "skipped": False,
-        "missing": [],
-        "idempotent": True,
-    },
-    response_only=True,
-)
-
-SYSDESC_CURL = _curl(
-    " ".join(
-        [
-            "curl -X POST https://api.noesis.example/v1/ai/sysdesc/",
-            '-H "Content-Type: application/json"',
-            '-H "X-Tenant-Schema: acme_prod"',
-            '-H "X-Tenant-Id: acme"',
-            '-H "X-Case-Id: crm-7421"',
-            '-H "Idempotency-Key: f2b0b0f4-3c4b-4b9c-a8b5-5a4a9c8796c1"',
-            '-d \'{"scope": "kickoff"}\'',
-        ]
-    )
-)
 
 RAG_QUERY_REQUEST_EXAMPLE = OpenApiExample(
     name="RagQueryRequest",
@@ -1078,36 +961,6 @@ INTAKE_SCHEMA = {
     "extensions": INTAKE_CURL,
 }
 
-SCOPE_SCHEMA = {
-    "request": IntakeRequestSerializer,
-    "responses": {200: ScopeResponseSerializer},
-    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
-    "include_trace_header": True,
-    "description": "Check whether the current workflow state contains the required scope metadata.",
-    "examples": [SCOPE_REQUEST_EXAMPLE, SCOPE_RESPONSE_EXAMPLE],
-    "extensions": SCOPE_CURL,
-}
-
-NEEDS_SCHEMA = {
-    "request": IntakeRequestSerializer,
-    "responses": {200: NeedsResponseSerializer},
-    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
-    "include_trace_header": True,
-    "description": "Map captured inputs to actionable needs and signal any missing prerequisites.",
-    "examples": [NEEDS_REQUEST_EXAMPLE, NEEDS_RESPONSE_EXAMPLE],
-    "extensions": NEEDS_CURL,
-}
-
-SYSDESC_SCHEMA = {
-    "request": IntakeRequestSerializer,
-    "responses": {200: SysDescResponseSerializer},
-    "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
-    "include_trace_header": True,
-    "description": "Produce a deterministic system prompt when all prerequisites have been satisfied.",
-    "examples": [SYSDESC_REQUEST_EXAMPLE, SYSDESC_RESPONSE_EXAMPLE],
-    "extensions": SYSDESC_CURL,
-}
-
 
 RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
     name="RagDemoDeprecatedResponse",
@@ -1223,72 +1076,6 @@ class LegacyIntakeView(_GraphView):
     graph_name = "info_intake"
 
     @default_extend_schema(**_legacy_schema_kwargs(INTAKE_SCHEMA))
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class ScopeViewV1(_GraphView):
-    """Validate that a workflow has sufficient scope information."""
-
-    graph_name = "scope_check"
-
-    @default_extend_schema(**SCOPE_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacyScopeView(_GraphView):
-    """Deprecated scope validation endpoint retained for clients on /ai/."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "scope_check"
-
-    @default_extend_schema(**_legacy_schema_kwargs(SCOPE_SCHEMA))
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class NeedsViewV1(_GraphView):
-    """Derive concrete needs from the captured workflow state."""
-
-    graph_name = "needs_mapping"
-
-    @default_extend_schema(**NEEDS_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacyNeedsView(_GraphView):
-    """Deprecated needs endpoint retained for clients on /ai/."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "needs_mapping"
-
-    @default_extend_schema(**_legacy_schema_kwargs(NEEDS_SCHEMA))
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class SysDescViewV1(_GraphView):
-    """Generate a system description for downstream agents."""
-
-    graph_name = "system_description"
-
-    @default_extend_schema(**SYSDESC_SCHEMA)
-    def post(self, request: Request) -> Response:
-        return super().post(request)
-
-
-class LegacySysDescView(_GraphView):
-    """Deprecated system description endpoint retained for clients on /ai/."""
-
-    api_deprecated = True
-    api_deprecation_id = LEGACY_DEPRECATION_ID
-    graph_name = "system_description"
-
-    @default_extend_schema(**_legacy_schema_kwargs(SYSDESC_SCHEMA))
     def post(self, request: Request) -> Response:
         return super().post(request)
 
@@ -1858,18 +1645,6 @@ ping = ping_legacy
 intake_v1 = IntakeViewV1.as_view()
 intake_legacy = LegacyIntakeView.as_view()
 intake = intake_legacy
-
-scope_v1 = ScopeViewV1.as_view()
-scope_legacy = LegacyScopeView.as_view()
-scope = scope_legacy
-
-needs_v1 = NeedsViewV1.as_view()
-needs_legacy = LegacyNeedsView.as_view()
-needs = needs_legacy
-
-sysdesc_v1 = SysDescViewV1.as_view()
-sysdesc_legacy = LegacySysDescView.as_view()
-sysdesc = sysdesc_legacy
 
 rag_demo_v1 = RagDemoViewV1.as_view()
 rag_demo = rag_demo_v1

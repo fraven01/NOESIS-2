@@ -334,30 +334,6 @@ def test_ai_core_endpoints_expose_serializers():
         for example in service_unavailable_examples.values()
     )
 
-    scope_operation = schema["paths"]["/ai/scope/"]["post"]
-    scope_response_ref = scope_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["$ref"]
-    _, scope_component = _extract_component(schema, scope_response_ref)
-    assert scope_component["properties"]["missing"]["type"] == "array"
-    assert scope_component["properties"]["idempotent"]["type"] == "boolean"
-    assert any(
-        "curl" in sample.get("source", "")
-        for sample in scope_operation.get("x-codeSamples", [])
-    )
-
-    needs_operation = schema["paths"]["/ai/needs/"]["post"]
-    needs_response_ref = needs_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["$ref"]
-    _, needs_component = _extract_component(schema, needs_response_ref)
-    assert set(needs_component["properties"].keys()) >= {"missing", "mapped"}
-    assert needs_component["properties"]["idempotent"]["type"] == "boolean"
-    assert any(
-        "curl" in sample.get("source", "")
-        for sample in needs_operation.get("x-codeSamples", [])
-    )
-
     rag_operation = schema["paths"]["/v1/ai/rag/query/"]["post"]
     rag_response_ref = rag_operation["responses"]["200"]["content"]["application/json"][
         "schema"
@@ -405,18 +381,6 @@ def test_ai_core_endpoints_expose_serializers():
         snippet_component = snippet_items
     snippet_props = snippet_component["properties"]
     assert snippet_props["score"]["type"] == "number"
-
-    sysdesc_operation = schema["paths"]["/ai/sysdesc/"]["post"]
-    sysdesc_response_ref = sysdesc_operation["responses"]["200"]["content"][
-        "application/json"
-    ]["schema"]["$ref"]
-    _, sysdesc_component = _extract_component(schema, sysdesc_response_ref)
-    assert set(sysdesc_component["properties"].keys()) >= {"description", "skipped"}
-    assert sysdesc_component["properties"]["idempotent"]["type"] == "boolean"
-    assert any(
-        "curl" in sample.get("source", "")
-        for sample in sysdesc_operation.get("x-codeSamples", [])
-    )
 
     error_components = [
         component

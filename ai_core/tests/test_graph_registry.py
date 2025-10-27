@@ -23,10 +23,10 @@ def test_register_overwrites_existing_runner(monkeypatch) -> None:
     first = types.SimpleNamespace()
     second = types.SimpleNamespace()
 
-    registry.register("scope_check", first)
-    registry.register("scope_check", second)
+    registry.register("retrieval_augmented_generation", first)
+    registry.register("retrieval_augmented_generation", second)
 
-    assert registry.get("scope_check") is second
+    assert registry.get("retrieval_augmented_generation") is second
 
 
 def test_register_requires_name(monkeypatch) -> None:

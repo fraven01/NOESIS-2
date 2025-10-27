@@ -101,20 +101,24 @@ class TenantHttpUser(HttpUser):
                 response.success()
 
 
-class ScopeUser(TenantHttpUser):
-    """Exercises POST /ai/scope/ with representative payloads."""
+class RagQueryUser(TenantHttpUser):
+    """Exercises POST /v1/ai/rag/query/ with representative payloads."""
 
     payload = _load_json_env(
-        "LOCUST_SCOPE_PAYLOAD",
+        "LOCUST_RAG_PAYLOAD",
         {
-            "prompt": "Summarise the latest release notes for internal QA.",
-            "metadata": {"origin": "locust", "environment": "staging"},
+            "question": "Welche Reisekosten gelten für Consultants?",
+            "filters": {"doc_class": "policy", "process": "travel"},
         },
     )
 
     @task
-    def run_scope(self) -> None:
-        self.post_json("/ai/scope/", self.payload, name="POST /ai/scope/")
+    def run_rag_query(self) -> None:
+        self.post_json(
+            "/v1/ai/rag/query/",
+            self.payload,
+            name="POST /v1/ai/rag/query/",
+        )
 
 
 class IntakeUser(TenantHttpUser):
@@ -154,4 +158,4 @@ class IngestionRunUser(TenantHttpUser):
         self.post_json("/rag/ingestion/run/", payload, name="POST /rag/ingestion/run/")
 
 
-__all__ = ["ScopeUser", "IntakeUser", "IngestionRunUser"]
+__all__ = ["RagQueryUser", "IntakeUser", "IngestionRunUser"]

@@ -33,7 +33,7 @@ cd NOESIS-2
    npm run win:dev:stack
    # Alternativ (nur App-Stack):
    npm run dev:up      # Migrationen, Public-Tenant, Demo-Daten & Superuser
-   npm run dev:check   # Smoke-Checks (LiteLLM, /ai/ping, /ai/scope)
+   npm run dev:check   # Smoke-Checks (LiteLLM, /ai/ping, /v1/ai/rag/query)
    ```
 4. Für tägliche Entwicklungszyklen:
    - `npm run dev:init` führt nur die Jobs `migrate` & `bootstrap` aus (nach einem `up -d`).

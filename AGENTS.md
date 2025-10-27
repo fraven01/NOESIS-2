@@ -91,7 +91,7 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 ## Schnittstellen & Contracts
 | Interface | Endpunkt/Topic | Kurzbeschreibung | Primärquelle |
 | --- | --- | --- | --- |
-| AI Core REST | `/ai/ping/`, `/ai/intake/`, `/ai/scope/`, `/ai/needs/`, `/ai/sysdesc/` | HTTP-Endpunkte mit Tenant-Headern, orchestriert durch LangGraph. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
+| AI Core REST | `/ai/ping/`, `/ai/intake/`, `/v1/ai/rag/query/` | HTTP-Endpunkte mit Tenant-Headern, orchestriert durch LangGraph. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
 | Agenten Queue | Celery Queue `agents` | Startet LangGraph-Nodes, setzt Guardrails & Cancellation. | [docs/agents/overview.md#knoten-und-guardrails](docs/agents/overview.md#knoten-und-guardrails) |
 | Ingestion Queue | Celery Queue `ingestion` | Führt Loader→Chunk→Embedding→Upsert Schritte aus. | [docs/rag/ingestion.md#pipeline](docs/rag/ingestion.md#pipeline) |
 | Vector Schema Migration | Cloud SQL Verbindung via Pipeline-Stufe | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |

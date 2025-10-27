@@ -5,7 +5,7 @@ $ErrorActionPreference = 'Stop'
 # - Verifies LANGFUSE_* env in containers
 # - Checks Langfuse health from web container
 # - Runs a minimal SDK smoke (observation) inside web
-# - Hits /ai/scope/ on the dev server to exercise graph + nodes
+# - Hits /v1/ai/rag/query/ on the dev server to exercise graph + nodes
 
 $compose = 'docker compose -f docker-compose.yml -f docker-compose.dev.yml'
 
@@ -74,18 +74,18 @@ OTEL_RESOURCE_ATTRIBUTES='service.name=noesis2,service.version=dev' \
 python /app/lf_otel_only.py
 '@
 
-Write-Host '[smoke] Exercising POST /ai/scope/ on dev server' -ForegroundColor Yellow
+Write-Host '[smoke] Exercising POST /v1/ai/rag/query/ on dev server' -ForegroundColor Yellow
 try {
     Invoke-InContainer 'web' @'
-curl -sS -X POST http://localhost:8000/ai/scope/ \
+curl -sS -X POST http://localhost:8000/v1/ai/rag/query/ \
   -H "Content-Type: application/json" \
   -H "X-Tenant-Schema: dev" \
   -H "X-Tenant-ID: dev" \
   -H "X-Case-ID: local" \
-  --data "{}" | head -c 200
+  --data '{"question":"Ping?"}' | head -c 200
 '@
 } catch {
-    Write-Warning "Scope call failed: $($_.Exception.Message)"
+    Write-Warning "RAG query failed: $($_.Exception.Message)"
 }
 
 Write-Host '[smoke] Done. Check Langfuse GUI:' -ForegroundColor Green

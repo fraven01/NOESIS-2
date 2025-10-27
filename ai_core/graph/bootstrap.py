@@ -5,10 +5,7 @@ from __future__ import annotations
 from ai_core.graphs import (
     crawler_ingestion_graph,
     info_intake,
-    needs_mapping,
     retrieval_augmented_generation,
-    scope_check,
-    system_description,
 )
 
 from .adapters import module_runner
@@ -23,9 +20,6 @@ def bootstrap() -> None:
     """
 
     register("info_intake", module_runner(info_intake))
-    register("scope_check", module_runner(scope_check))
-    register("needs_mapping", module_runner(needs_mapping))
-    register("system_description", module_runner(system_description))
     rag_graph = retrieval_augmented_generation.build_graph()
     register("retrieval_augmented_generation", rag_graph)
     register("rag.default", rag_graph)

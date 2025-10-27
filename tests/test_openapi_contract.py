@@ -51,14 +51,10 @@ def test_expected_paths_are_present(openapi_schema):
     required_paths = {
         "/ai/ping/",
         "/ai/intake/",
-        "/ai/scope/",
-        "/ai/needs/",
-        "/ai/sysdesc/",
+        "/ai/rag/query/",
         "/v1/ai/ping/",
         "/v1/ai/intake/",
-        "/v1/ai/scope/",
-        "/v1/ai/needs/",
-        "/v1/ai/sysdesc/",
+        "/v1/ai/rag/query/",
     }
     missing = sorted(required_paths - paths)
     assert not missing, f"Missing expected API paths: {missing}"

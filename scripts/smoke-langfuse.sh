@@ -5,7 +5,7 @@ set -euo pipefail
 # - Verifies LANGFUSE_* env in containers
 # - Checks Langfuse health from web container
 # - Runs a minimal SDK smoke (observation) inside web
-# - Hits /ai/scope/ on the dev server to exercise graph + nodes
+# - Hits /v1/ai/rag/query/ on the dev server to exercise graph + nodes
 
 COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.dev.yml)
 
@@ -74,13 +74,13 @@ OTEL_EXPORTER_OTLP_HEADERS='X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY_VALUE},X
 OTEL_RESOURCE_ATTRIBUTES='service.name=noesis2,service.version=dev' \
 python /app/lf_otel_only.py"
 
-echo "[smoke] Exercising POST /ai/scope/ on dev server"
-in_container web "curl -sS -X POST http://localhost:8000/ai/scope/ \
+echo "[smoke] Exercising POST /v1/ai/rag/query/ on dev server"
+in_container web "curl -sS -X POST http://localhost:8000/v1/ai/rag/query/ \
   -H 'Content-Type: application/json' \
   -H 'X-Tenant-Schema: dev' \
   -H 'X-Tenant-ID: dev' \
   -H 'X-Case-ID: local' \
-  --data '{}' | head -c 200 || true"
+  --data '{"question":"Ping?"}' | head -c 200 || true"
 
 echo "[smoke] Done. Check Langfuse GUI:"
 echo " - Project: the project of your current keys"
