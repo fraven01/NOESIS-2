@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from types import MappingProxyType
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Mapping, Optional, Protocol, Tuple
 
 from documents.contracts import NormalizedDocument
 
@@ -14,6 +14,11 @@ from .delta import DeltaDecision, DeltaStatus
 from .errors import CrawlerError, ErrorClass
 from .normalizer import document_parser_stats, resolve_provider_reference
 from .retire import LifecycleDecision, LifecycleState
+
+from django.conf import settings
+
+from ai_core.rag.ingestion_contracts import ChunkMeta, IngestionProfileResolution
+from ai_core.rag.ingestion_contracts import resolve_ingestion_profile
 
 
 class IngestionStatus(str, Enum):
@@ -24,107 +29,36 @@ class IngestionStatus(str, Enum):
     RETIRE = "retire"
 
 
-@dataclass(frozen=True)
-class IngestionPayload:
-    """Structured payload forwarded to the ingestion entrypoint."""
+class CrawlerIngestionAdapter(Protocol):
+    """Adapter interface for crawler-specific ingestion metadata."""
 
-    tenant_id: str
-    case_id: str
-    workflow_id: str
-    document_id: str
-    content_hash: str
-    external_id: str
-    provider: str
-    canonical_source: str
-    origin_uri: str
-    source: str
-    media_type: Optional[str]
-    title: Optional[str]
-    language: Optional[str]
-    tags: Tuple[str, ...] = ()
-    parser_stats: Mapping[str, object] = field(default_factory=dict)
-    provider_tags: Mapping[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        tenant = _require_identifier(self.tenant_id, "tenant_id")
-        case = _require_identifier(self.case_id, "case_id")
-        workflow = _require_identifier(self.workflow_id, "workflow_id")
-        document = _require_identifier(self.document_id, "document_id")
-        content_hash = _require_identifier(self.content_hash, "content_hash")
-        external_id = _require_identifier(self.external_id, "external_id")
-        provider = _require_identifier(self.provider, "provider")
-        canonical_source = _require_identifier(
-            self.canonical_source, "canonical_source"
-        )
-        origin_uri = _require_identifier(self.origin_uri, "origin_uri")
-        source = _require_identifier(self.source, "source")
-        object.__setattr__(self, "tenant_id", tenant)
-        object.__setattr__(self, "case_id", case)
-        object.__setattr__(self, "workflow_id", workflow)
-        object.__setattr__(self, "document_id", document)
-        object.__setattr__(self, "content_hash", content_hash)
-        object.__setattr__(self, "external_id", external_id)
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "canonical_source", canonical_source)
-        object.__setattr__(self, "origin_uri", origin_uri)
-        object.__setattr__(self, "source", source)
-        if self.media_type is not None:
-            object.__setattr__(self, "media_type", self.media_type.strip())
-        if self.title is not None:
-            object.__setattr__(self, "title", self.title.strip())
-        if self.language is not None:
-            object.__setattr__(self, "language", self.language.strip())
-        object.__setattr__(self, "tags", tuple(self.tags))
-        if not isinstance(self.parser_stats, Mapping):
-            raise TypeError("parser_stats_must_be_mapping")
-        if not isinstance(self.provider_tags, Mapping):
-            raise TypeError("provider_tags_must_be_mapping")
-        object.__setattr__(
-            self, "parser_stats", MappingProxyType(dict(self.parser_stats))
-        )
-        object.__setattr__(
-            self, "provider_tags", MappingProxyType(dict(self.provider_tags))
-        )
+    def build_metadata(
+        self, document: NormalizedDocument
+    ) -> Mapping[str, object]:  # pragma: no cover - Protocol
+        ...
 
 
 @dataclass(frozen=True)
-class IngestionDecision(Decision):
-    """Outcome emitted for ingestion including payload and routing reason."""
+class DefaultCrawlerIngestionAdapter:
+    """Default adapter forwarding crawler metadata to ingestion services."""
 
-    @classmethod
-    def from_legacy(
-        cls,
-        status: IngestionStatus,
-        reason: str,
-        payload: Optional[IngestionPayload] = None,
-        lifecycle_state: LifecycleState = LifecycleState.ACTIVE,
-        policy_events: Tuple[str, ...] = (),
-    ) -> "IngestionDecision":
-        attributes = {
-            "payload": payload,
-            "lifecycle_state": lifecycle_state,
-            "policy_events": tuple(policy_events),
+    def build_metadata(self, document: NormalizedDocument) -> Mapping[str, object]:
+        external = resolve_provider_reference(document)
+        parser_stats = document_parser_stats(document)
+        metadata: Dict[str, object] = {
+            "canonical_source": external.canonical_source,
+            "provider": external.provider,
+            "provider_tags": dict(external.provider_tags),
+            "parser_stats": dict(parser_stats),
+            "origin_uri": document.meta.origin_uri,
+            "title": document.meta.title,
+            "language": document.meta.language,
+            "media_type": getattr(document.blob, "media_type", None),
+            "tags": list(document.meta.tags),
         }
-        return cls(status.value, reason, attributes)
-
-    @property
-    def status(self) -> IngestionStatus:
-        return IngestionStatus(self.decision)
-
-    @property
-    def payload(self) -> Optional[IngestionPayload]:
-        return self.attributes.get("payload")
-
-    @property
-    def lifecycle_state(self) -> LifecycleState:
-        state = self.attributes.get("lifecycle_state", LifecycleState.ACTIVE)
-        if isinstance(state, LifecycleState):
-            return state
-        return LifecycleState(state)
-
-    @property
-    def policy_events(self) -> Tuple[str, ...]:
-        return tuple(self.attributes.get("policy_events", ()))
+        return MappingProxyType(
+            {key: value for key, value in metadata.items() if value is not None}
+        )
 
 
 def build_ingestion_decision(
@@ -134,80 +68,113 @@ def build_ingestion_decision(
     case_id: str,
     retire: bool = False,
     lifecycle: Optional[LifecycleDecision] = None,
-) -> IngestionDecision:
+    embedding_profile: Optional[str] = None,
+    adapter: Optional[CrawlerIngestionAdapter] = None,
+) -> Decision:
     """Compose an ingestion decision from normalized document and delta information."""
 
     normalized_case_id = _require_identifier(case_id, "case_id")
     lifecycle_decision = _resolve_lifecycle(lifecycle, retire)
+    adapter_impl = adapter or DefaultCrawlerIngestionAdapter()
+    adapter_metadata = adapter_impl.build_metadata(document)
+
+    attributes: Dict[str, object] = {
+        "lifecycle_state": lifecycle_decision.state,
+        "policy_events": tuple(lifecycle_decision.policy_events),
+        "adapter_metadata": adapter_metadata,
+        "document_id": str(document.ref.document_id),
+        "workflow_id": document.ref.workflow_id,
+        "tenant_id": document.ref.tenant_id,
+        "case_id": normalized_case_id,
+        "content_hash": delta.signatures.content_hash,
+    }
 
     if lifecycle_decision.should_retire:
-        payload = _build_payload(
-            document, delta.signatures.content_hash, normalized_case_id
+        chunk_meta, profile_binding = _build_chunk_meta(
+            document,
+            delta.signatures.content_hash,
+            normalized_case_id,
+            embedding_profile,
         )
-        return IngestionDecision.from_legacy(
-            IngestionStatus.RETIRE,
+        attributes["chunk_meta"] = chunk_meta
+        attributes["embedding_profile"] = profile_binding.profile_id
+        attributes["vector_space_id"] = (
+            profile_binding.resolution.vector_space.id
+        )
+        return Decision(
+            IngestionStatus.RETIRE.value,
             lifecycle_decision.reason,
-            payload,
-            lifecycle_decision.state,
-            lifecycle_decision.policy_events,
+            attributes,
         )
 
     if delta.status is DeltaStatus.UNCHANGED:
-        return IngestionDecision.from_legacy(
-            IngestionStatus.SKIP,
+        return Decision(
+            IngestionStatus.SKIP.value,
             delta.reason,
-            None,
-            lifecycle_decision.state,
-            lifecycle_decision.policy_events,
+            attributes,
         )
 
     if delta.status is DeltaStatus.NEAR_DUPLICATE:
-        return IngestionDecision.from_legacy(
-            IngestionStatus.SKIP,
+        return Decision(
+            IngestionStatus.SKIP.value,
             delta.reason,
-            None,
-            lifecycle_decision.state,
-            lifecycle_decision.policy_events,
+            attributes,
         )
 
-    payload = _build_payload(
-        document, delta.signatures.content_hash, normalized_case_id
+    chunk_meta, profile_binding = _build_chunk_meta(
+        document,
+        delta.signatures.content_hash,
+        normalized_case_id,
+        embedding_profile,
     )
-    return IngestionDecision.from_legacy(
-        IngestionStatus.UPSERT,
+    attributes["chunk_meta"] = chunk_meta
+    attributes["embedding_profile"] = profile_binding.profile_id
+    attributes["vector_space_id"] = profile_binding.resolution.vector_space.id
+    return Decision(
+        IngestionStatus.UPSERT.value,
         delta.reason,
-        payload,
-        lifecycle_decision.state,
-        lifecycle_decision.policy_events,
+        attributes,
     )
 
 
-def _build_payload(
-    document: NormalizedDocument, content_hash: str, case_id: str
-) -> IngestionPayload:
-    meta = document.meta
+def _build_chunk_meta(
+    document: NormalizedDocument,
+    content_hash: str,
+    case_id: str,
+    embedding_profile: Optional[str],
+) -> Tuple[ChunkMeta, IngestionProfileResolution]:
+    profile_binding = _resolve_profile(embedding_profile)
     external = resolve_provider_reference(document)
-    parser_stats = document_parser_stats(document)
-    media_type = getattr(document.blob, "media_type", None)
-    document_id = str(document.ref.document_id)
-    return IngestionPayload(
+    chunk_meta = ChunkMeta(
         tenant_id=document.ref.tenant_id,
         case_id=case_id,
-        workflow_id=document.ref.workflow_id,
-        document_id=document_id,
-        content_hash=content_hash,
-        external_id=external.external_id,
-        provider=external.provider,
         source="crawler",
-        canonical_source=external.canonical_source,
-        origin_uri=meta.origin_uri,
-        media_type=media_type,
-        title=meta.title,
-        language=meta.language,
-        tags=tuple(meta.tags),
-        parser_stats=parser_stats,
-        provider_tags=external.provider_tags,
+        hash=document.checksum,
+        external_id=external.external_id,
+        content_hash=content_hash,
+        embedding_profile=profile_binding.profile_id,
+        vector_space_id=profile_binding.resolution.vector_space.id,
+        process="crawler",
+        workflow_id=document.ref.workflow_id,
+        collection_id=(
+            str(document.ref.collection_id)
+            if document.ref.collection_id is not None
+            else None
+        ),
+        document_id=str(document.ref.document_id),
     )
+    return chunk_meta, profile_binding
+
+
+def _resolve_profile(
+    embedding_profile: Optional[str],
+) -> IngestionProfileResolution:
+    if embedding_profile is None:
+        default_profile = getattr(
+            settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+        )
+        embedding_profile = str(default_profile)
+    return resolve_ingestion_profile(embedding_profile)
 
 
 def _require_identifier(value: Optional[str], field: str) -> str:
@@ -229,7 +196,7 @@ def _resolve_lifecycle(
 
 def build_ingestion_error(
     *,
-    payload: Optional[IngestionPayload],
+    decision: Optional[Decision],
     reason: str,
     error_code: Optional[str] = None,
     status_code: Optional[int] = None,
@@ -240,8 +207,19 @@ def build_ingestion_error(
     if error_code:
         attributes["error_code"] = error_code
 
-    source = payload.canonical_source if payload else None
-    provider = payload.provider if payload else None
+    adapter_metadata: Mapping[str, object] | None = None
+    if decision is not None:
+        adapter_metadata = decision.attributes.get("adapter_metadata")
+    source = (
+        adapter_metadata.get("canonical_source")
+        if isinstance(adapter_metadata, Mapping)
+        else None
+    )
+    provider = (
+        adapter_metadata.get("provider")
+        if isinstance(adapter_metadata, Mapping)
+        else None
+    )
 
     return CrawlerError(
         error_class=ErrorClass.INGESTION_FAILURE,

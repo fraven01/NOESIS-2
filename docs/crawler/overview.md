@@ -66,7 +66,7 @@ flowchart TD
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
 | `crawler.normalizer` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocument` (mit `documents.contracts.DocumentMeta`, `ProviderReference`) |
 | `crawler.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
-| `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionDecision`, `IngestionPayload`, `LifecycleDecision` |
+| `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionStatus`, `ChunkMeta`, `DefaultCrawlerIngestionAdapter` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
 ## Normalisierung & Delta
@@ -85,8 +85,12 @@ flowchart TD
 
 ## Ingestion, Retire & Lifecycle
 - `build_ingestion_decision` kombiniert Normalizer-Output, Delta-Status und
-  optionale Lifecycle-Regeln. Bei Retire-Entscheidungen wird trotzdem ein
-  Payload erzeugt, damit Downstream-Systeme die Quelle abschließen können.【F:crawler/ingestion.py†L137-L215】
+  optionale Lifecycle-Regeln. Statt eigener Payload-Klassen liefert die
+  Entscheidung heute ein generisches `Decision`-Objekt mit validiertem
+  `ChunkMeta` und einem Adapter-Mapping für Provider-spezifische Felder.
+  Retire-Entscheidungen referenzieren dieselben Metadaten, sodass
+  Downstream-Systeme ohne Sonderpfad auf ai_core-Ingestion-Services
+  zugreifen können.【F:crawler/ingestion.py†L130-L219】
 - Lifecycle-Regeln stammen aus `crawler.retire` und `crawler.lifecycle_model`.
   `LifecycleTimeline` erzwingt Sequenzen von `seeded` bis zu terminalen
   Statuswerten (`ingested`, `skipped`, `retired`) und verhindert unzulässige

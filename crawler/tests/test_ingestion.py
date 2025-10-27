@@ -2,15 +2,9 @@ import pytest
 
 from ai_core.rag.ingestion_contracts import ChunkMeta
 
-from crawler.contracts import MAX_EXTERNAL_ID_LENGTH, normalize_source
+from crawler.contracts import MAX_EXTERNAL_ID_LENGTH, NormalizedSource, normalize_source
 from crawler.delta import DeltaDecision, DeltaSignatures, DeltaStatus
 from crawler.errors import ErrorClass
-from datetime import datetime, timezone
-from uuid import uuid4
-
-from documents.parsers import ParsedTextBlock
-
-from crawler.contracts import NormalizedSource
 from crawler.fetcher import (
     FetchMetadata,
     FetchRequest,
@@ -24,8 +18,6 @@ from crawler.ingestion import (
     build_ingestion_decision,
     build_ingestion_error,
 )
-from documents.contracts import NormalizedDocument
-
 from crawler.normalizer import build_normalized_document
 from crawler.parser import (
     ParseStatus,
@@ -34,6 +26,10 @@ from crawler.parser import (
     build_parse_result,
 )
 from crawler.retire import LifecycleDecision, LifecycleState
+from datetime import datetime, timezone
+from documents.contracts import NormalizedDocument
+from documents.parsers import ParsedTextBlock
+from uuid import uuid4
 
 
 def _make_fetch_result(canonical_source: str, payload: bytes) -> FetchResult:
@@ -118,23 +114,30 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
 
     decision = build_ingestion_decision(document, delta, case_id="case-7")
 
-    assert decision.status is IngestionStatus.UPSERT
+    status = IngestionStatus(decision.decision)
+    assert status is IngestionStatus.UPSERT
     assert decision.reason == "no_previous_hash"
-    assert decision.payload is not None
-    assert decision.lifecycle_state is LifecycleState.ACTIVE
-    assert decision.policy_events == ()
-    payload = decision.payload
-    assert payload.case_id == "case-7"
-    assert payload.content_hash == "hash123"
-    assert payload.origin_uri == "https://example.com/doc"
-    assert payload.external_id == "web::https://example.com/doc"
-    assert payload.source == "crawler"
-    assert payload.provider == "web"
-    assert payload.tags == ("alpha", "beta")
-    assert payload.parser_stats["parser.token_count"] == 42
-    assert payload.provider_tags["collection"] == "docs"
-    assert payload.language == "en"
-    assert payload.title == "Example Title"
+    attributes = decision.attributes
+    assert attributes["lifecycle_state"] is LifecycleState.ACTIVE
+    assert attributes["policy_events"] == ()
+    assert attributes["case_id"] == "case-7"
+    assert attributes["content_hash"] == "hash123"
+    chunk_meta = attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.case_id == "case-7"
+    assert chunk_meta.external_id == "web::https://example.com/doc"
+    assert chunk_meta.source == "crawler"
+    assert chunk_meta.workflow_id == "workflow-1"
+    assert chunk_meta.document_id is not None
+    adapter_metadata = attributes["adapter_metadata"]
+    assert adapter_metadata["canonical_source"] == "https://example.com/doc"
+    assert adapter_metadata["provider"] == "web"
+    provider_tags = adapter_metadata["provider_tags"]
+    assert provider_tags["collection"] == "docs"
+    parser_stats = adapter_metadata["parser_stats"]
+    assert parser_stats["parser.token_count"] == 42
+    assert adapter_metadata["language"] == "en"
+    assert adapter_metadata["title"] == "Example Title"
 
 
 def test_build_ingestion_decision_skips_when_unchanged() -> None:
@@ -148,10 +151,12 @@ def test_build_ingestion_decision_skips_when_unchanged() -> None:
 
     decision = build_ingestion_decision(document, delta, case_id="case-1")
 
-    assert decision.status is IngestionStatus.SKIP
-    assert decision.payload is None
+    status = IngestionStatus(decision.decision)
+    assert status is IngestionStatus.SKIP
     assert decision.reason == "hash_match"
-    assert decision.lifecycle_state is LifecycleState.ACTIVE
+    attributes = decision.attributes
+    assert attributes["lifecycle_state"] is LifecycleState.ACTIVE
+    assert "chunk_meta" not in attributes
 
 
 def test_build_ingestion_decision_skips_near_duplicate() -> None:
@@ -165,10 +170,11 @@ def test_build_ingestion_decision_skips_near_duplicate() -> None:
 
     decision = build_ingestion_decision(document, delta, case_id="case-1")
 
-    assert decision.status is IngestionStatus.SKIP
-    assert decision.payload is None
+    status = IngestionStatus(decision.decision)
+    assert status is IngestionStatus.SKIP
     assert decision.reason == "near_duplicate:0.950"
-    assert decision.lifecycle_state is LifecycleState.ACTIVE
+    assert decision.attributes["lifecycle_state"] is LifecycleState.ACTIVE
+    assert "chunk_meta" not in decision.attributes
 
 
 def test_build_ingestion_decision_requires_case_id() -> None:
@@ -195,12 +201,13 @@ def test_build_ingestion_decision_retire_overrides_delta() -> None:
 
     decision = build_ingestion_decision(document, delta, case_id="case-9", retire=True)
 
-    assert decision.status is IngestionStatus.RETIRE
-    assert decision.payload is not None
-    assert decision.payload.content_hash == "hash111"
-    assert decision.payload.source == "crawler"
+    status = IngestionStatus(decision.decision)
+    assert status is IngestionStatus.RETIRE
     assert decision.reason == "retired"
-    assert decision.lifecycle_state is LifecycleState.RETIRED
+    assert decision.attributes["lifecycle_state"] is LifecycleState.RETIRED
+    chunk_meta = decision.attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.content_hash == "hash111"
 
 
 def test_build_ingestion_decision_respects_lifecycle_decision() -> None:
@@ -224,11 +231,12 @@ def test_build_ingestion_decision_respects_lifecycle_decision() -> None:
         lifecycle=lifecycle,
     )
 
-    assert decision.status is IngestionStatus.RETIRE
+    status = IngestionStatus(decision.decision)
+    assert status is IngestionStatus.RETIRE
     assert decision.reason == "gone_410"
-    assert decision.policy_events == ("gone_410",)
-    assert decision.lifecycle_state is LifecycleState.RETIRED
-    assert decision.payload is not None
+    assert decision.attributes["policy_events"] == ("gone_410",)
+    assert decision.attributes["lifecycle_state"] is LifecycleState.RETIRED
+    assert isinstance(decision.attributes.get("chunk_meta"), ChunkMeta)
 
 
 def test_build_ingestion_error_wraps_metadata() -> None:
@@ -240,10 +248,9 @@ def test_build_ingestion_error_wraps_metadata() -> None:
         "new",
     )
     decision = build_ingestion_decision(document, delta, case_id="case-5")
-    assert decision.payload is not None
 
     error = build_ingestion_error(
-        payload=decision.payload,
+        decision=decision,
         reason="ingest_failed",
         error_code="INGEST_TIMEOUT",
         status_code=502,
@@ -275,22 +282,10 @@ def test_ingestion_payload_hashed_external_id_validates_with_chunk_meta() -> Non
 
     decision = build_ingestion_decision(document, delta, case_id="case-hash")
 
-    assert decision.payload is not None
-    payload = decision.payload
-    assert payload.external_id == normalized_source.external_id
-    assert len(payload.external_id) <= MAX_EXTERNAL_ID_LENGTH
+    chunk_meta = decision.attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.external_id == normalized_source.external_id
+    assert len(chunk_meta.external_id) <= MAX_EXTERNAL_ID_LENGTH
 
-    chunk_meta = ChunkMeta.model_validate(
-        {
-            "tenant_id": payload.tenant_id,
-            "case_id": payload.case_id,
-            "source": payload.source,
-            "hash": payload.content_hash,
-            "external_id": payload.external_id,
-            "content_hash": payload.content_hash,
-            "workflow_id": payload.workflow_id,
-            "document_id": payload.document_id,
-        }
-    )
-
-    assert chunk_meta.external_id == payload.external_id
+    validated = ChunkMeta.model_validate(chunk_meta.model_dump())
+    assert validated.external_id == chunk_meta.external_id

@@ -79,8 +79,7 @@ from .policies import (
     build_policy_registry,
 )
 from .ingestion import (
-    IngestionDecision,
-    IngestionPayload,
+    DefaultCrawlerIngestionAdapter,
     IngestionStatus,
     build_ingestion_decision,
     build_ingestion_error,
@@ -166,11 +165,10 @@ __all__ = [
     "PolicyRegistry",
     "ProviderPolicy",
     "build_policy_registry",
-    "IngestionDecision",
-    "IngestionPayload",
     "IngestionStatus",
     "build_ingestion_decision",
     "build_ingestion_error",
+    "DefaultCrawlerIngestionAdapter",
     "ALLOWED_TRANSITIONS",
     "FINAL_STATUSES",
     "InvalidLifecycleTransition",
