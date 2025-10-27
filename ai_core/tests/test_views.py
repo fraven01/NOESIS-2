@@ -277,7 +277,6 @@ def test_intake_persists_state_and_headers(
     assert state["meta"]["case_id"] == "case-123"
 
 
-
 def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)

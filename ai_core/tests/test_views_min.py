@@ -25,4 +25,3 @@ def test_rag_query_missing_headers(client):
         content_type="application/json",
     )
     assert resp.status_code == 400
-

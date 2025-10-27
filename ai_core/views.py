@@ -62,7 +62,12 @@ from crawler.frontier import (
     SourceDescriptor,
     decide_frontier_action,
 )
-from crawler.guardrails import GuardrailLimits, GuardrailSignals, GuardrailStatus, enforce_guardrails
+from crawler.guardrails import (
+    GuardrailLimits,
+    GuardrailSignals,
+    GuardrailStatus,
+    enforce_guardrails,
+)
 from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
 from crawler.parser import ParseStatus, ParserContent, compute_parser_stats
 
@@ -1042,9 +1047,7 @@ CRAWLER_RUN_REQUEST = inline_serializer(
         "document_id": serializers.CharField(required=False),
         "title": serializers.CharField(required=False),
         "language": serializers.CharField(required=False),
-        "content": serializers.CharField(
-            required=False, allow_null=True, default=None
-        ),
+        "content": serializers.CharField(required=False, allow_null=True, default=None),
         "content_type": serializers.CharField(required=False),
         "fetch": serializers.BooleanField(required=False, default=True),
         "tags": serializers.ListField(child=serializers.CharField(), required=False),

@@ -121,9 +121,7 @@ def test_rag_query_perf_smoke(
 
     with ThreadPoolExecutor(max_workers=_STAGING_WEB_CONCURRENCY) as executor:
         futures = [
-            executor.submit(
-                _execute_rag_query, f"RQ{index:03d}", tenant, tenant_schema
-            )
+            executor.submit(_execute_rag_query, f"RQ{index:03d}", tenant, tenant_schema)
             for index in range(_STAGING_WEB_CONCURRENCY)
         ]
         results = [future.result() for future in as_completed(futures)]
