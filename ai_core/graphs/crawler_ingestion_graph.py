@@ -142,6 +142,10 @@ class CrawlerIngestionGraph:
     delta_evaluator: Callable[..., DeltaDecision] = evaluate_delta
     guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
     ingestion_builder: Callable[..., IngestionDecision] = build_ingestion_decision
+    store_handler: Callable[[NormalizedDocument], Any] = lambda document: {
+        "status": "stored",
+        "document_id": document.document_id,
+    }
     upsert_handler: Callable[[IngestionDecision], Any] = lambda _: {"status": "queued"}
     retire_handler: Callable[[IngestionDecision], Any] = lambda decision: {
         "status": "retired",
@@ -171,6 +175,7 @@ class CrawlerIngestionGraph:
             ("crawler.delta", self._run_delta),
             ("crawler.gating", self._run_gating),
             ("crawler.ingest_decision", self._run_ingestion),
+            ("crawler.store", self._run_store),
             ("rag.upsert", self._run_upsert),
             ("rag.retire", self._run_retire),
         )
@@ -217,9 +222,11 @@ class CrawlerIngestionGraph:
         control = dict(updated.get("control", {}))
         control.update(
             {
-                "manual_review": None,
+                "review": None,
                 "force_retire": False,
                 "recompute_delta": False,
+                "mode": control.get("mode", "ingest"),
+                "dry_run": bool(control.get("dry_run", False)),
             }
         )
         updated["control"] = control
@@ -251,7 +258,7 @@ class CrawlerIngestionGraph:
     ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
-        control["manual_review"] = "approved"
+        control["review"] = "approved"
         updated["control"] = control
         return updated
 
@@ -260,7 +267,7 @@ class CrawlerIngestionGraph:
     ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
-        control["manual_review"] = "rejected"
+        control["review"] = "rejected"
         updated["control"] = control
         updated["ingest_action"] = "skip"
         return updated
@@ -317,10 +324,12 @@ class CrawlerIngestionGraph:
             base["artifacts"] = {}
         control = dict(base.get("control", {}))
         control.setdefault("shadow_mode", False)
-        control.setdefault("manual_review", None)
+        control.setdefault("review", None)
         control.setdefault("force_retire", False)
         control.setdefault("policy_revision", 0)
         control.setdefault("recompute_delta", False)
+        control.setdefault("mode", "ingest")
+        control.setdefault("dry_run", False)
         base["control"] = control
         base["ingest_action"] = "pending"
         if base.get("gating_score") is None:
@@ -588,15 +597,15 @@ class CrawlerIngestionGraph:
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
     ) -> Tuple[Transition, bool]:
-        manual_state = control.get("manual_review")
-        if manual_state == "approved":
+        initial_review = control.get("review")
+        if initial_review == "approved":
             decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.ALLOW,
                 "manual_approved",
                 ("manual_approved",),
             )
-            control["manual_review"] = None
-        elif manual_state == "rejected":
+            control["review"] = None
+        elif initial_review == "rejected":
             decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.DENY,
                 "manual_rejected",
@@ -609,9 +618,9 @@ class CrawlerIngestionGraph:
             decision = self.guardrail_enforcer(limits=limits, signals=signals)
             if (
                 decision.status is GuardrailStatus.DENY
-                and control.get("manual_review") is None
+                and initial_review != "rejected"
             ):
-                control["manual_review"] = "required"
+                control["review"] = "required"
 
         artifacts["guardrail_decision"] = decision
         allowed = decision.status is GuardrailStatus.ALLOW
@@ -620,20 +629,23 @@ class CrawlerIngestionGraph:
         if score is None:
             score = 1.0 if allowed else 0.0
         state["gating_score"] = float(score)
+        resolved_review = control.get("review") or initial_review
         attributes = {
             "status": decision.status.value,
             "policy_events": list(decision.policy_events),
-            "manual_review": control.get("manual_review"),
+            "review": resolved_review,
+            "mode": control.get("mode"),
+            "dry_run": bool(control.get("dry_run")),
         }
         if decision.status is GuardrailStatus.DENY:
             attributes["severity"] = (
-                "warn" if control.get("manual_review") != "rejected" else "error"
+                "warn" if resolved_review != "rejected" else "error"
             )
         outcome = _transition(
             decision.status.value, decision.reason, attributes=attributes
         )
         should_continue = allowed
-        if not allowed and control.get("manual_review") == "rejected":
+        if not allowed and resolved_review == "rejected":
             state["ingest_action"] = "skip"
         return outcome, should_continue
 
@@ -676,21 +688,47 @@ class CrawlerIngestionGraph:
             state["provider"] = payload.provider
             state["origin_uri"] = payload.origin_uri
             state["content_hash"] = payload.content_hash
+        review_state = control.get("review")
+        dry_run = bool(control.get("dry_run"))
+        mode = control.get("mode", "ingest")
+        blocked: list[str] = []
+        if review_state == "required":
+            blocked.append("review_required")
+        if dry_run:
+            blocked.append("dry_run")
         attributes = {
             "status": ingestion.status.value,
             "lifecycle_state": ingestion.lifecycle_state.value,
             "policy_events": list(ingestion.policy_events),
+            "mode": mode,
+            "review": review_state,
+            "dry_run": dry_run,
         }
         if conflict_note:
             attributes["conflict_resolution"] = conflict_note
+        if blocked:
+            attributes["blocked"] = blocked[0] if len(blocked) == 1 else tuple(blocked)
+        store_allowed = (
+            ingestion.status is IngestionStatus.UPSERT
+            and not blocked
+            and mode in {"store_only", "ingest"}
+        )
+        upsert_allowed = (
+            ingestion.status is IngestionStatus.UPSERT
+            and not blocked
+            and mode == "ingest"
+            and not control.get("shadow_mode")
+        )
+        attributes["store_allowed"] = store_allowed
+        attributes["upsert_allowed"] = upsert_allowed
         outcome = _transition(
             ingestion.status.value, ingestion.reason, attributes=attributes
         )
-        continue_to_upsert = ingestion.status is IngestionStatus.UPSERT
+        continue_to_store = ingestion.status is IngestionStatus.UPSERT
         continue_to_retire = ingestion.status is IngestionStatus.RETIRE
-        return outcome, continue_to_upsert or continue_to_retire
+        return outcome, continue_to_store or continue_to_retire
 
-    def _run_upsert(
+    def _run_store(
         self,
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
@@ -701,21 +739,139 @@ class CrawlerIngestionGraph:
             outcome = _transition(
                 "skip",
                 "not_applicable",
-                attributes={"shadow_mode": control.get("shadow_mode", False)},
+                attributes={
+                    "mode": control.get("mode"),
+                    "review": control.get("review"),
+                    "dry_run": bool(control.get("dry_run")),
+                },
             )
+            return outcome, True
+
+        normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
+        if normalized is None:
+            missing = self._missing_artifact("normalized_document")
+            attributes = dict(missing.attributes)
+            attributes.update(
+                {
+                    "mode": control.get("mode"),
+                    "review": control.get("review"),
+                    "dry_run": bool(control.get("dry_run")),
+                }
+            )
+            outcome = _transition(missing.decision, missing.reason, attributes=attributes)
+            return outcome, False
+
+        mode = control.get("mode", "ingest")
+        review_state = control.get("review")
+        dry_run = bool(control.get("dry_run"))
+        attributes = {
+            "mode": mode,
+            "review": review_state,
+            "dry_run": dry_run,
+        }
+
+        if review_state == "required":
+            attributes["severity"] = "warn"
+            artifacts["store_result"] = None
+            outcome = _transition("skip", "review_required", attributes=attributes)
+            return outcome, True
+
+        if dry_run:
+            artifacts["store_result"] = None
+            outcome = _transition("skip", "dry_run", attributes=attributes)
+            return outcome, True
+
+        if mode not in {"store_only", "ingest"}:
+            artifacts["store_result"] = None
+            outcome = _transition("skip", "mode_disabled", attributes=attributes)
+            return outcome, True
+
+        result = self.store_handler(normalized)
+        artifacts["store_result"] = result
+        attributes["result"] = result
+        outcome = _transition("stored", "document_stored", attributes=attributes)
+        return outcome, True
+
+    def _run_upsert(
+        self,
+        state: Dict[str, Any],
+        artifacts: Dict[str, Any],
+        control: Dict[str, Any],
+    ) -> Tuple[Transition, bool]:
+        ingestion: Optional[IngestionDecision] = artifacts.get("ingestion_decision")
+        mode = control.get("mode", "ingest")
+        dry_run = bool(control.get("dry_run"))
+        review_state = control.get("review")
+        if not ingestion or ingestion.status is not IngestionStatus.UPSERT:
+            outcome = _transition(
+                "skip",
+                "not_applicable",
+                attributes={
+                    "shadow_mode": control.get("shadow_mode", False),
+                    "mode": mode,
+                    "dry_run": dry_run,
+                    "review": review_state,
+                },
+            )
+            return outcome, True
+
+        if review_state == "required":
+            attributes = {
+                "shadow_mode": control.get("shadow_mode", False),
+                "mode": mode,
+                "dry_run": dry_run,
+                "review": review_state,
+                "severity": "warn",
+            }
+            outcome = _transition("skip", "review_required", attributes=attributes)
+            return outcome, True
+
+        if dry_run:
+            attributes = {
+                "shadow_mode": control.get("shadow_mode", False),
+                "mode": mode,
+                "dry_run": True,
+                "review": review_state,
+            }
+            outcome = _transition("skip", "dry_run", attributes=attributes)
+            return outcome, True
+
+        if mode != "ingest":
+            attributes = {
+                "shadow_mode": control.get("shadow_mode", False),
+                "mode": mode,
+                "dry_run": dry_run,
+                "review": review_state,
+            }
+            outcome = _transition("skip", "mode_disabled", attributes=attributes)
             return outcome, True
 
         if control.get("shadow_mode"):
             artifacts["upsert_result"] = None
             outcome = _transition(
-                "shadow_skip", "shadow_mode", attributes={"shadow_mode": True}
+                "shadow_skip",
+                "shadow_mode",
+                attributes={
+                    "shadow_mode": True,
+                    "mode": mode,
+                    "dry_run": dry_run,
+                    "review": review_state,
+                },
             )
             return outcome, True
 
         result = self.upsert_handler(ingestion)
         artifacts["upsert_result"] = result
         outcome = _transition(
-            "upsert", "upsert_dispatched", attributes={"result": result}
+            "upsert",
+            "upsert_dispatched",
+            attributes={
+                "result": result,
+                "mode": mode,
+                "dry_run": dry_run,
+                "review": review_state,
+                "shadow_mode": False,
+            },
         )
         return outcome, True
 
