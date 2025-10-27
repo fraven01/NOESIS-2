@@ -4,7 +4,7 @@ import hashlib
 import re
 import uuid
 from dataclasses import dataclass
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from types import ModuleType
 from importlib import import_module
@@ -135,6 +135,9 @@ logger.info(
 class CrawlerStateBuild:
     """Result bundle returned by :func:`_build_crawler_state`."""
 
+    origin: str
+    provider: str
+    document_id: str
     state: dict[str, object]
     fetch_used: bool
     http_status: int | None
@@ -146,6 +149,12 @@ class CrawlerStateBuild:
     fetch_backoff_total_ms: float | None
     snapshot_path: str | None
     snapshot_sha256: str | None
+    tags: tuple[str, ...]
+    collection_id: str | None
+    snapshot_requested: bool
+    snapshot_label: str | None
+    review: str | None
+    dry_run: bool
 
 
 class CrawlerRunError(RuntimeError):
@@ -263,6 +272,26 @@ def _build_header_mapping(fetch_result) -> dict[str, str]:
     if metadata.content_length is not None:
         headers["Content-Length"] = str(metadata.content_length)
     return headers
+
+
+def _merge_origin_tags(
+    global_tags: Sequence[str] | None, origin_tags: Sequence[str] | None
+) -> list[str]:
+    """Combine global and origin scoped tags while preserving order."""
+
+    combined: list[str] = []
+    seen: set[str] = set()
+    for tag_list in (global_tags or []), (origin_tags or []):
+        if not tag_list:
+            continue
+        for tag in tag_list:
+            if not tag:
+                continue
+            if tag in seen:
+                continue
+            seen.add(tag)
+            combined.append(tag)
+    return combined
 
 
 def _map_failure(error: ErrorClass | None, reason: str | None) -> FetchFailure | None:
@@ -943,21 +972,26 @@ RAG_HARD_DELETE_ADMIN_SCHEMA = {
 CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
     name="CrawlerRunRequest",
     summary="Trigger live crawl with snapshot",
-    description="Run the crawler LangGraph against a live origin fetch and capture a snapshot copy.",
+    description="Run the crawler LangGraph against one or more origins with optional snapshot capture.",
     value={
         "workflow_id": "crawler-demo",
-        "origin_url": "https://example.com/docs/handbook",
-        "title": "Employee Handbook",
-        "language": "de",
-        "content_type": "text/html",
-        "content": None,
+        "mode": "live",
+        "collection_id": "6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa",
         "tags": ["handbook", "hr"],
+        "limits": {"max_document_bytes": 2048},
+        "snapshot": {"enabled": True, "label": "debug"},
+        "review": "required",
         "shadow_mode": True,
-        "manual_review": "required",
-        "max_document_bytes": 2048,
-        "fetch": True,
-        "snapshot": True,
-        "snapshot_label": "debug",
+        "dry_run": True,
+        "origins": [
+            {
+                "url": "https://example.com/docs/handbook",
+                "title": "Employee Handbook",
+                "language": "de",
+                "provider": "web",
+                "fetch": True,
+            }
+        ],
     },
     request_only=True,
 )
@@ -966,72 +1000,64 @@ CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
 CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
     name="CrawlerRunResponse",
     summary="Crawler graph outcome",
-    description="Summarises the node decisions, control state, fetch telemetry and snapshot outcome for the crawl.",
+    description="Summarises the node decisions, control state, telemetry and snapshot outcome for each origin.",
     value={
-        "result": {
-            "decision": "upsert",
-            "reason": "ingest_ready",
-            "attributes": {"severity": "info"},
-            "graph_run_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
-        },
-        "transitions": {
-            "crawler.frontier": {
-                "decision": "enqueue",
-                "reason": "fresh_source",
-                "attributes": {"policy_events": []},
-            },
-            "crawler.fetch": {
-                "decision": "fetched",
-                "reason": "fetched",
-                "attributes": {"status_code": 200, "bytes_downloaded": 1280},
-            },
-            "crawler.parse": {
-                "decision": "parsed",
-                "reason": "parsed",
-                "attributes": {"media_type": "text/html"},
-            },
-            "crawler.gating": {
-                "decision": "allow",
-                "reason": "allow",
-                "attributes": {"manual_review": None},
-            },
-            "crawler.ingest_decision": {
-                "decision": "upsert",
-                "reason": "ingest_ready",
-                "attributes": {"lifecycle_state": "active"},
-            },
-            "rag.upsert": {
-                "decision": "shadow_skip",
-                "reason": "shadow_mode",
-                "attributes": {"shadow_mode": True},
-            },
-        },
-        "control": {"shadow_mode": True, "manual_review": None, "force_retire": False},
-        "ingest_action": "upsert",
-        "gating_score": 1.0,
-        "graph_run_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
-        "state": {
-            "workflow_id": "crawler-demo",
-            "document_id": "d84cf1d6d1254378920aa87e4d343b1b",
-            "origin_uri": "https://example.com/docs/handbook",
-            "provider": "web",
-            "content_hash": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
-            "tags": ["handbook", "hr"],
-            "snapshot_requested": True,
-            "snapshot_label": "debug",
-        },
-        "fetch_used": True,
-        "http_status": 200,
-        "fetched_bytes": 1280,
-        "media_type_effective": "text/html",
-        "fetch_elapsed": 0.44,
-        "fetch_retries": 1,
-        "fetch_retry_reason": "retry_after_backoff",
-        "fetch_backoff_total_ms": 200.0,
-        "snapshot_requested": True,
-        "snapshot_label": "debug",
-        "snapshot_path": ".ai_core_store/example-tenant/example-case/crawler/8d9db57d6c7b4d92a0dc772d1e9c2fd7.html",
-        "snapshot_sha256": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
+        "workflow_id": "crawler-demo",
+        "mode": "live",
+        "collection_id": "6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa",
+        "origins": [
+            {
+                "origin": "https://example.com/docs/handbook",
+                "provider": "web",
+                "document_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
+                "result": {"decision": "upsert", "reason": "ingest_ready"},
+                "control": {"shadow_mode": True, "review": "required"},
+                "ingest_action": "upsert",
+                "gating_score": 1.0,
+                "graph_run_id": "2b6a9bb4f0dc4635a663274807c33139",
+                "state": {
+                    "workflow_id": "crawler-demo",
+                    "document_id": "0f3b0d9c4f2a4bf6a4e46cf9f90c8d21",
+                    "origin_uri": "https://example.com/docs/handbook",
+                    "provider": "web",
+                    "content_hash": "3c21bd0b8f1a4a1b9c44d0fd57a2d9ef",
+                    "tags": ["handbook", "hr"],
+                    "snapshot_requested": True,
+                    "snapshot_label": "debug",
+                },
+                "collection_id": "6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa",
+                "review": "required",
+                "dry_run": True,
+                "ingestion_run_id": "4b0b2834606e4e4eb3d3933e9a735cbc",
+            }
+        ],
+        "transitions": [
+            {
+                "origin": "https://example.com/docs/handbook",
+                "transitions": {
+                    "crawler.fetch": {"decision": "fetched", "attributes": {"status_code": 200}},
+                    "crawler.ingest_decision": {"decision": "upsert"},
+                },
+            }
+        ],
+        "telemetry": [
+            {
+                "origin": "https://example.com/docs/handbook",
+                "provider": "web",
+                "fetch_used": True,
+                "http_status": 200,
+                "fetched_bytes": 1280,
+                "media_type_effective": "text/html",
+                "fetch_elapsed": 0.44,
+                "fetch_retries": 1,
+                "fetch_retry_reason": "retry_after_backoff",
+                "fetch_backoff_total_ms": 200.0,
+                "snapshot_requested": True,
+                "snapshot_label": "debug",
+                "tags": ["handbook", "hr"],
+            }
+        ],
+        "errors": [],
         "idempotent": False,
     },
     response_only=True,
@@ -1042,57 +1068,44 @@ CRAWLER_RUN_REQUEST = inline_serializer(
     name="CrawlerRunRequest",
     fields={
         "workflow_id": serializers.CharField(required=False),
-        "origin_url": serializers.CharField(),
+        "mode": serializers.ChoiceField(choices=["live", "manual"], required=False),
+        "origins": serializers.ListField(child=serializers.JSONField(), required=False),
+        "origin_url": serializers.CharField(required=False),
         "provider": serializers.CharField(required=False),
         "document_id": serializers.CharField(required=False),
         "title": serializers.CharField(required=False),
         "language": serializers.CharField(required=False),
-        "content": serializers.CharField(required=False, allow_null=True, default=None),
+        "content": serializers.CharField(required=False, allow_null=True),
         "content_type": serializers.CharField(required=False),
-        "fetch": serializers.BooleanField(required=False, default=True),
+        "fetch": serializers.BooleanField(required=False),
+        "collection_id": serializers.CharField(required=False),
+        "limits": serializers.JSONField(required=False),
+        "snapshot": serializers.JSONField(required=False),
+        "snapshot_label": serializers.CharField(required=False, allow_null=True),
         "tags": serializers.ListField(child=serializers.CharField(), required=False),
         "shadow_mode": serializers.BooleanField(required=False),
         "dry_run": serializers.BooleanField(required=False),
+        "review": serializers.CharField(required=False),
         "manual_review": serializers.CharField(required=False),
         "force_retire": serializers.BooleanField(required=False),
         "recompute_delta": serializers.BooleanField(required=False),
         "max_document_bytes": serializers.IntegerField(required=False),
-        "snapshot": serializers.BooleanField(required=False, default=False),
-        "snapshot_label": serializers.CharField(
-            required=False, allow_null=True, default=None
-        ),
     },
 )
-
 
 CRAWLER_RUN_RESPONSE = inline_serializer(
     name="CrawlerRunResponse",
     fields={
-        "result": serializers.JSONField(),
-        "transitions": serializers.JSONField(),
-        "control": serializers.JSONField(),
-        "ingest_action": serializers.CharField(required=False),
-        "gating_score": serializers.FloatField(required=False),
-        "graph_run_id": serializers.CharField(required=False),
-        "state": serializers.JSONField(required=False),
-        "fetch_used": serializers.BooleanField(required=False),
-        "http_status": serializers.IntegerField(required=False, allow_null=True),
-        "fetched_bytes": serializers.IntegerField(required=False, allow_null=True),
-        "media_type_effective": serializers.CharField(required=False, allow_null=True),
-        "fetch_elapsed": serializers.FloatField(required=False, allow_null=True),
-        "fetch_retries": serializers.IntegerField(required=False, allow_null=True),
-        "fetch_retry_reason": serializers.CharField(required=False, allow_null=True),
-        "fetch_backoff_total_ms": serializers.FloatField(
-            required=False, allow_null=True
-        ),
-        "snapshot_requested": serializers.BooleanField(required=False),
-        "snapshot_label": serializers.CharField(required=False, allow_null=True),
-        "snapshot_path": serializers.CharField(required=False, allow_null=True),
-        "snapshot_sha256": serializers.CharField(required=False, allow_null=True),
+        "workflow_id": serializers.CharField(required=False, allow_null=True),
+        "mode": serializers.CharField(),
+        "collection_id": serializers.CharField(required=False, allow_null=True),
+        "origins": serializers.ListField(child=serializers.JSONField(), required=True),
+        "transitions": serializers.ListField(child=serializers.JSONField(), required=True),
+        "telemetry": serializers.ListField(child=serializers.JSONField(), required=True),
+        "errors": serializers.ListField(child=serializers.JSONField(), required=False),
         "idempotent": serializers.BooleanField(),
     },
 )
-
 
 CRAWLER_RUN_SCHEMA = {
     "request": CRAWLER_RUN_REQUEST,
@@ -1113,12 +1126,13 @@ PING_SCHEMA = {
     "extensions": PING_CURL,
 }
 
+
 INTAKE_SCHEMA = {
     "request": IntakeRequestSerializer,
     "responses": {200: IntakeResponseSerializer},
     "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
     "include_trace_header": True,
-    "description": "Persist initial workflow context and return the recorded metadata.",
+    "description": "Primary entrypoint for LangGraph orchestrated intake conversations.",
     "examples": [INTAKE_REQUEST_EXAMPLE, INTAKE_RESPONSE_EXAMPLE],
     "extensions": INTAKE_CURL,
 }
@@ -1131,8 +1145,6 @@ RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
         "code": serializers.CharField(),
     },
 )
-
-
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
     authentication_classes: list = []
     permission_classes: list = []
@@ -1345,296 +1357,328 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 
 def _build_crawler_state(
     meta: Mapping[str, object], request_data: CrawlerRunRequest
-) -> CrawlerStateBuild:
-    """Compose the crawler graph state from request inputs."""
+) -> list[CrawlerStateBuild]:
+    """Compose crawler graph state objects for each requested origin."""
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_id = request_data.workflow_id or workflow_default or meta.get("tenant_id")
     if not workflow_id:
         raise ValueError("workflow_id could not be resolved for the crawler run")
 
-    try:
-        source = normalize_source(request_data.provider, request_data.origin_url, None)
-    except Exception as exc:  # pragma: no cover - defensive
-        raise ValueError(str(exc)) from exc
+    builds: list[CrawlerStateBuild] = []
+    for origin in request_data.origins or []:
+        provider = origin.provider or request_data.provider
+        try:
+            source = normalize_source(provider, origin.url, None)
+        except Exception as exc:  # pragma: no cover - defensive
+            raise ValueError(str(exc)) from exc
 
-    parsed = urlsplit(source.canonical_source)
-    host = parsed.hostname or parsed.netloc
-    if not host:
-        raise ValueError("origin_url must include a valid host component")
-    path = parsed.path or "/"
+        parsed = urlsplit(source.canonical_source)
+        host = parsed.hostname or parsed.netloc
+        if not host:
+            raise ValueError("origin URL must include a valid host component")
+        path_component = parsed.path or "/"
 
-    descriptor = SourceDescriptor(host=host, path=path, provider=source.provider)
-    frontier_input = {"descriptor": descriptor, "signals": CrawlSignals()}
+        descriptor = SourceDescriptor(host=host, path=path_component, provider=source.provider)
+        frontier_input = {"descriptor": descriptor, "signals": CrawlSignals()}
 
-    politeness = PolitenessContext(host=descriptor.host)
-    fetch_request = FetchRequest(
-        canonical_source=source.canonical_source, politeness=politeness
-    )
+        politeness = PolitenessContext(host=descriptor.host)
+        fetch_request = FetchRequest(
+            canonical_source=source.canonical_source, politeness=politeness
+        )
 
-    document_id = request_data.document_id or uuid4().hex
-    tags = tuple(request_data.tags or ())
-    limits = GuardrailLimits(max_document_bytes=request_data.max_document_bytes)
+        document_id = origin.document_id or request_data.document_id or uuid4().hex
+        tags = tuple(_merge_origin_tags(request_data.tags, origin.tags))
 
-    need_fetch = bool(request_data.fetch or request_data.content is None)
-    body_bytes: bytes = b""
-    effective_content_type = request_data.content_type
-    fetch_input: dict[str, object]
-    fetch_used = False
-    http_status: int | None = None
-    fetched_bytes: int | None = None
-    fetch_elapsed: float | None = None
-    fetch_retries: int | None = None
-    fetch_retry_reason: str | None = None
-    fetch_backoff_total_ms: float | None = None
-    snapshot_path: str | None = None
-    snapshot_sha256: str | None = None
+        limit_bytes = None
+        if origin.limits and origin.limits.max_document_bytes is not None:
+            limit_bytes = origin.limits.max_document_bytes
+        elif request_data.max_document_bytes is not None:
+            limit_bytes = request_data.max_document_bytes
+        limits = GuardrailLimits(max_document_bytes=limit_bytes)
 
-    if need_fetch:
-        decision = decide_frontier_action(descriptor, CrawlSignals())
-        if decision.action is not FrontierAction.ENQUEUE:
+        snapshot_options = origin.snapshot
+        if snapshot_options is None and (
+            request_data.snapshot.enabled or request_data.snapshot.label
+        ):
+            snapshot_options = request_data.snapshot
+        snapshot_requested = bool(snapshot_options and snapshot_options.enabled)
+        snapshot_label = snapshot_options.label if snapshot_options else None
+
+        dry_run = bool(origin.dry_run if origin.dry_run is not None else request_data.dry_run)
+        review = origin.review or request_data.review or request_data.manual_review
+
+        need_fetch = bool(origin.fetch or origin.content is None)
+        body_bytes: bytes = b''
+        effective_content_type = origin.content_type or request_data.content_type
+        fetch_input: dict[str, object]
+        fetch_used = False
+        http_status: int | None = None
+        fetched_bytes: int | None = None
+        fetch_elapsed: float | None = None
+        fetch_retries: int | None = None
+        fetch_retry_reason: str | None = None
+        fetch_backoff_total_ms: float | None = None
+        snapshot_path: str | None = None
+        snapshot_sha256: str | None = None
+
+        if need_fetch:
+            decision = decide_frontier_action(descriptor, CrawlSignals())
+            if decision.action is not FrontierAction.ENQUEUE:
+                emit_event(
+                    "crawler_robots_blocked",
+                    {
+                        "host": descriptor.host,
+                        "reason": decision.reason,
+                        "policy_events": list(decision.policy_events),
+                    },
+                )
+                raise CrawlerRunError(
+                    "Frontier denied the crawl due to robots or scheduling policies.",
+                    code="crawler_robots_blocked",
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    details={
+                        "fetch_used": False,
+                        "http_status": None,
+                        "fetched_bytes": None,
+                        "media_type_effective": None,
+                        "fetch_elapsed": None,
+                        "fetch_retries": None,
+                        "fetch_retry_reason": None,
+                        "fetch_backoff_total_ms": None,
+                    },
+                )
+
             emit_event(
-                "crawler_robots_blocked",
+                "fetch_started",
+                {"origin": source.canonical_source, "provider": source.provider},
+            )
+            fetch_limits = None
+            if limits.max_document_bytes is not None:
+                fetch_limits = FetcherLimits(max_bytes=limits.max_document_bytes)
+            config = HttpFetcherConfig(limits=fetch_limits)
+            fetcher = HttpFetcher(config)
+            fetch_result = fetcher.fetch(fetch_request)
+            record_span(
+                "crawler.fetch",
+                attributes={
+                    "crawler.fetch.status": fetch_result.status.value,
+                    "crawler.fetch.bytes": fetch_result.telemetry.bytes_downloaded,
+                    "crawler.fetch.retry_reason": fetch_result.telemetry.retry_reason,
+                },
+            )
+            emit_event(
+                "fetch_finished",
                 {
-                    "host": descriptor.host,
-                    "reason": decision.reason,
-                    "policy_events": list(decision.policy_events),
+                    "status": fetch_result.status.value,
+                    "status_code": fetch_result.metadata.status_code,
+                    "bytes": fetch_result.telemetry.bytes_downloaded,
                 },
             )
-            raise CrawlerRunError(
-                "Frontier denied the crawl due to robots or scheduling policies.",
-                code="crawler_robots_blocked",
-                status_code=status.HTTP_403_FORBIDDEN,
-                details={
-                    "fetch_used": False,
-                    "http_status": None,
-                    "fetched_bytes": None,
-                    "media_type_effective": None,
-                    "fetch_elapsed": None,
-                    "fetch_retries": None,
-                    "fetch_retry_reason": None,
-                    "fetch_backoff_total_ms": None,
-                },
-            )
+            fetch_elapsed = fetch_result.telemetry.latency
+            fetch_retries = fetch_result.telemetry.retries
+            fetch_retry_reason = fetch_result.telemetry.retry_reason
+            fetch_backoff_total_ms = fetch_result.telemetry.backoff_total_ms
 
-        emit_event(
-            "fetch_started",
-            {"origin": source.canonical_source, "provider": source.provider},
-        )
-        fetch_limits = None
-        if limits.max_document_bytes is not None:
-            fetch_limits = FetcherLimits(max_bytes=limits.max_document_bytes)
-        config = HttpFetcherConfig(limits=fetch_limits)
-        fetcher = HttpFetcher(config)
-        fetch_result = fetcher.fetch(fetch_request)
-        record_span(
-            "crawler.fetch",
-            attributes={
-                "crawler.fetch.status": fetch_result.status.value,
-                "crawler.fetch.bytes": fetch_result.telemetry.bytes_downloaded,
-                "crawler.fetch.retry_reason": fetch_result.telemetry.retry_reason,
-            },
-        )
-        emit_event(
-            "fetch_finished",
-            {
-                "status": fetch_result.status.value,
-                "status_code": fetch_result.metadata.status_code,
-                "bytes": fetch_result.telemetry.bytes_downloaded,
-            },
-        )
-        fetch_elapsed = fetch_result.telemetry.latency
-        fetch_retries = fetch_result.telemetry.retries
-        fetch_retry_reason = fetch_result.telemetry.retry_reason
-        fetch_backoff_total_ms = fetch_result.telemetry.backoff_total_ms
-
-        if fetch_result.status is not FetchStatus.FETCHED:
-            status_code, code = _map_fetch_error_response(fetch_result)
-            emit_event(code, {"origin": source.canonical_source})
-            details = {
-                "fetch_used": True,
-                "http_status": fetch_result.metadata.status_code,
-                "fetched_bytes": fetch_result.telemetry.bytes_downloaded,
-                "media_type_effective": fetch_result.metadata.content_type,
-                "fetch_elapsed": fetch_elapsed,
-                "fetch_retries": fetch_retries,
-                "fetch_retry_reason": fetch_retry_reason,
-                "fetch_backoff_total_ms": fetch_backoff_total_ms,
-            }
-            raise CrawlerRunError(
-                "Fetching the origin URL failed.",
-                code=code,
-                status_code=status_code,
-                details=details,
-            )
-        fetch_used = True
-        http_status = fetch_result.metadata.status_code
-        fetched_bytes = fetch_result.telemetry.bytes_downloaded
-        body_bytes = fetch_result.payload or b""
-        if not body_bytes:
-            raise CrawlerRunError(
-                "Fetched payload was empty.",
-                code="crawler_fetch_empty",
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                details={
+            if fetch_result.status is not FetchStatus.FETCHED:
+                status_code, code = _map_fetch_error_response(fetch_result)
+                emit_event(code, {"origin": source.canonical_source})
+                details = {
                     "fetch_used": True,
+                    "http_status": fetch_result.metadata.status_code,
+                    "fetched_bytes": fetch_result.telemetry.bytes_downloaded,
+                    "media_type_effective": fetch_result.metadata.content_type,
+                    "fetch_elapsed": fetch_elapsed,
+                    "fetch_retries": fetch_retries,
+                    "fetch_retry_reason": fetch_retry_reason,
+                    "fetch_backoff_total_ms": fetch_backoff_total_ms,
+                }
+                raise CrawlerRunError(
+                    "Fetching the origin URL failed.",
+                    code=code,
+                    status_code=status_code,
+                    details=details,
+                )
+
+            fetch_used = True
+            http_status = fetch_result.metadata.status_code
+            body_bytes = fetch_result.body or b''
+            fetched_bytes = len(body_bytes)
+            effective_content_type = fetch_result.metadata.content_type
+            fetch_input = {
+                "request": fetch_request,
+                "status_code": fetch_result.metadata.status_code,
+                "body": body_bytes,
+                "headers": _build_header_mapping(fetch_result),
+                "elapsed": fetch_result.telemetry.latency,
+                "retries": fetch_result.telemetry.retries,
+                "retry_reason": fetch_result.telemetry.retry_reason,
+                "downloaded_bytes": fetch_result.telemetry.bytes_downloaded,
+                "backoff_total_ms": fetch_result.telemetry.backoff_total_ms,
+            }
+            if fetch_limits is not None:
+                fetch_input["limits"] = fetch_limits
+            failure = _map_failure(
+                getattr(fetch_result.error, "error_class", None),
+                getattr(fetch_result.error, "reason", None),
+            )
+            if failure is not None:
+                fetch_input["failure"] = failure
+        else:
+            if origin.content is None:
+                raise ValueError(
+                    "Manual crawler runs require inline content. Provide content or enable remote fetching."
+                )
+            body_bytes = origin.content.encode("utf-8")
+            fetched_bytes = len(body_bytes)
+            fetch_elapsed = 0.05
+            fetch_retries = 0
+            fetch_retry_reason = None
+            fetch_backoff_total_ms = 0.0
+            fetch_input = {
+                "request": fetch_request,
+                "status_code": 200,
+                "body": body_bytes,
+                "headers": {"Content-Type": effective_content_type},
+                "elapsed": 0.05,
+            }
+
+        if effective_content_type is None:
+            effective_content_type = "application/octet-stream"
+
+        guardrail_signals = GuardrailSignals(
+            tenant_id=str(meta.get("tenant_id")),
+            provider=source.provider,
+            canonical_source=source.canonical_source,
+            host=descriptor.host,
+            document_bytes=len(body_bytes),
+            mime_type=effective_content_type,
+        )
+        guardrail_decision = enforce_guardrails(limits=limits, signals=guardrail_signals)
+        if guardrail_decision.status is GuardrailStatus.DENY:
+            emit_event(
+                "crawler_guardrail_denied",
+                {
+                    "reason": guardrail_decision.reason,
+                    "policy_events": list(guardrail_decision.policy_events),
+                },
+            )
+            raise CrawlerRunError(
+                "Crawler guardrails denied the document.",
+                code="crawler_guardrail_denied",
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                details={
+                    "fetch_used": fetch_used,
                     "http_status": http_status,
                     "fetched_bytes": fetched_bytes,
-                    "media_type_effective": fetch_result.metadata.content_type,
+                    "media_type_effective": effective_content_type,
                     "fetch_elapsed": fetch_elapsed,
                     "fetch_retries": fetch_retries,
                     "fetch_retry_reason": fetch_retry_reason,
                     "fetch_backoff_total_ms": fetch_backoff_total_ms,
                 },
             )
-        if fetch_result.metadata.content_type:
-            effective_content_type = fetch_result.metadata.content_type
-        fetch_input = {
-            "request": fetch_request,
-            "status_code": fetch_result.metadata.status_code,
-            "body": body_bytes,
-            "headers": _build_header_mapping(fetch_result),
-            "elapsed": fetch_result.telemetry.latency,
-            "retries": fetch_result.telemetry.retries,
-            "retry_reason": fetch_result.telemetry.retry_reason,
-            "downloaded_bytes": fetch_result.telemetry.bytes_downloaded,
-            "backoff_total_ms": fetch_result.telemetry.backoff_total_ms,
-        }
-        if fetch_limits is not None:
-            fetch_input["limits"] = fetch_limits
-        failure = _map_failure(
-            getattr(fetch_result.error, "error_class", None),
-            getattr(fetch_result.error, "reason", None),
+
+        try:
+            decoded = body_bytes.decode("utf-8", errors="replace")
+        except Exception:  # pragma: no cover - defensive
+            decoded = body_bytes.decode("latin-1", errors="replace")
+
+        parse_content = ParserContent(
+            media_type=effective_content_type,
+            primary_text=decoded,
+            title=origin.title or request_data.title,
+            content_language=origin.language or request_data.language,
         )
-        if failure is not None:
-            fetch_input["failure"] = failure
-    else:
-        if request_data.content is None:
-            raise ValueError(
-                "Manual crawler runs require inline content. Provide content or enable remote fetching."
+        parse_stats = compute_parser_stats(
+            primary_text=decoded,
+            extraction_path="crawler.manual",
+        )
+        parse_input = {
+            "status": ParseStatus.PARSED,
+            "content": parse_content,
+            "stats": parse_stats,
+        }
+
+        normalize_input = {
+            "source": source,
+            "document_id": document_id,
+            "tags": tags,
+        }
+
+        gating_input = {"limits": limits, "signals": guardrail_signals}
+
+        if snapshot_requested and body_bytes:
+            tenant_id = str(meta.get("tenant_id"))
+            case_id = str(meta.get("case_id"))
+            snapshot_path, snapshot_sha256 = _write_snapshot(
+                tenant=tenant_id,
+                case=case_id,
+                payload=body_bytes,
             )
-        body_bytes = request_data.content.encode("utf-8")
-        fetched_bytes = len(body_bytes)
-        fetch_elapsed = 0.05
-        fetch_retries = 0
-        fetch_retry_reason = None
-        fetch_backoff_total_ms = 0.0
-        fetch_input = {
-            "request": fetch_request,
-            "status_code": 200,
-            "body": body_bytes,
-            "headers": {"Content-Type": effective_content_type},
-            "elapsed": 0.05,
+        else:
+            snapshot_path = None
+            snapshot_sha256 = None
+
+        state: dict[str, object] = {
+            "tenant_id": meta.get("tenant_id"),
+            "case_id": meta.get("case_id"),
+            "workflow_id": workflow_id,
+            "external_id": source.external_id,
+            "origin_uri": source.canonical_source,
+            "provider": source.provider,
+            "frontier_input": frontier_input,
+            "fetch_input": fetch_input,
+            "parse_input": parse_input,
+            "normalize_input": normalize_input,
+            "delta_input": {},
+            "gating_input": gating_input,
+            "document_id": document_id,
+            "collection_id": request_data.collection_id,
         }
+        control: dict[str, object] = {
+            "snapshot": snapshot_requested,
+            "snapshot_label": snapshot_label,
+            "fetch": fetch_used,
+            "tags": list(tags),
+            "shadow_mode": bool(request_data.shadow_mode or dry_run),
+            "dry_run": dry_run,
+        }
+        if review:
+            control["review"] = review
+            control["manual_review"] = review
+        if request_data.force_retire:
+            control["force_retire"] = True
+        if request_data.recompute_delta:
+            control["recompute_delta"] = True
+        state["control"] = control
 
-    if effective_content_type is None:
-        effective_content_type = "application/octet-stream"
-
-    guardrail_signals = GuardrailSignals(
-        tenant_id=str(meta.get("tenant_id")),
-        provider=source.provider,
-        canonical_source=source.canonical_source,
-        host=descriptor.host,
-        document_bytes=len(body_bytes),
-        mime_type=effective_content_type,
-    )
-    guardrail_decision = enforce_guardrails(limits=limits, signals=guardrail_signals)
-    if guardrail_decision.status is GuardrailStatus.DENY:
-        emit_event(
-            "crawler_guardrail_denied",
-            {
-                "reason": guardrail_decision.reason,
-                "policy_events": list(guardrail_decision.policy_events),
-            },
-        )
-        raise CrawlerRunError(
-            "Crawler guardrails denied the document.",
-            code="crawler_guardrail_denied",
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            details={
-                "fetch_used": fetch_used,
-                "http_status": http_status,
-                "fetched_bytes": fetched_bytes,
-                "media_type_effective": effective_content_type,
-                "fetch_elapsed": fetch_elapsed,
-                "fetch_retries": fetch_retries,
-                "fetch_retry_reason": fetch_retry_reason,
-                "fetch_backoff_total_ms": fetch_backoff_total_ms,
-            },
-        )
-
-    try:
-        decoded = body_bytes.decode("utf-8", errors="replace")
-    except Exception:  # pragma: no cover - defensive
-        decoded = body_bytes.decode("latin-1", errors="replace")
-
-    parse_content = ParserContent(
-        media_type=effective_content_type,
-        primary_text=decoded,
-        title=request_data.title,
-        content_language=request_data.language,
-    )
-    parse_stats = compute_parser_stats(
-        primary_text=decoded,
-        extraction_path="crawler.manual",
-    )
-    parse_input = {
-        "status": ParseStatus.PARSED,
-        "content": parse_content,
-        "stats": parse_stats,
-    }
-
-    normalize_input = {
-        "source": source,
-        "document_id": document_id,
-        "tags": tags,
-    }
-
-    gating_input = {"limits": limits, "signals": guardrail_signals}
-
-    if request_data.snapshot and body_bytes:
-        tenant_id = str(meta.get("tenant_id"))
-        case_id = str(meta.get("case_id"))
-        snapshot_path, snapshot_sha256 = _write_snapshot(
-            tenant=tenant_id,
-            case=case_id,
-            payload=body_bytes,
+        builds.append(
+            CrawlerStateBuild(
+                origin=source.canonical_source,
+                provider=source.provider,
+                document_id=document_id,
+                state=state,
+                fetch_used=fetch_used,
+                http_status=http_status,
+                fetched_bytes=fetched_bytes,
+                media_type_effective=effective_content_type,
+                fetch_elapsed=fetch_elapsed,
+                fetch_retries=fetch_retries,
+                fetch_retry_reason=fetch_retry_reason,
+                fetch_backoff_total_ms=fetch_backoff_total_ms,
+                snapshot_path=snapshot_path,
+                snapshot_sha256=snapshot_sha256,
+                tags=tags,
+                collection_id=request_data.collection_id,
+                snapshot_requested=snapshot_requested,
+                snapshot_label=snapshot_label,
+                review=review,
+                dry_run=dry_run,
+            )
         )
 
-    state: dict[str, object] = {
-        "tenant_id": meta.get("tenant_id"),
-        "case_id": meta.get("case_id"),
-        "workflow_id": workflow_id,
-        "external_id": source.external_id,
-        "origin_uri": source.canonical_source,
-        "provider": source.provider,
-        "frontier_input": frontier_input,
-        "fetch_input": fetch_input,
-        "parse_input": parse_input,
-        "normalize_input": normalize_input,
-        "delta_input": {},
-        "gating_input": gating_input,
-        "document_id": document_id,
-    }
-    state["control"] = {
-        "snapshot": request_data.snapshot,
-        "snapshot_label": request_data.snapshot_label,
-        "fetch": fetch_used,
-    }
-    return CrawlerStateBuild(
-        state=state,
-        fetch_used=fetch_used,
-        http_status=http_status,
-        fetched_bytes=fetched_bytes,
-        media_type_effective=effective_content_type,
-        fetch_elapsed=fetch_elapsed,
-        fetch_retries=fetch_retries,
-        fetch_retry_reason=fetch_retry_reason,
-        fetch_backoff_total_ms=fetch_backoff_total_ms,
-        snapshot_path=snapshot_path,
-        snapshot_sha256=snapshot_sha256,
-    )
-
+    return builds
 
 class RagQueryViewV1(_GraphView):
     """Execute the production retrieval augmented generation graph."""
@@ -1892,138 +1936,223 @@ class CrawlerIngestionRunnerView(APIView):
                 status.HTTP_400_BAD_REQUEST,
             )
 
+        if request_model.collection_id:
+            meta["collection_id"] = request_model.collection_id
+
         try:
-            state_build = _build_crawler_state(meta, request_model)
+            state_builds = _build_crawler_state(meta, request_model)
         except CrawlerRunError as exc:
-            payload = {
-                "detail": str(exc),
-                "code": exc.code,
-            }
+            payload = {"detail": str(exc), "code": exc.code}
             payload.update(exc.details)
             response = Response(payload, status=exc.status_code)
             return apply_std_headers(response, meta)
         except ValueError as exc:
+            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+
+        if not state_builds:
             return _error_response(
-                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+                "No origins resolved for crawler run.",
+                "missing_origins",
+                status.HTTP_400_BAD_REQUEST,
             )
 
-        state = state_build.state
-        graph = crawler_ingestion_graph.build_graph()
-
-        # Attach real upsert handler to enqueue ingestion runs when allowed
-        def _upsert_handler(decision):  # type: ignore[no-untyped-def]
+        origin_keys = sorted(build.origin for build in state_builds)
+        workflow_id = state_builds[0].state.get("workflow_id")
+        fingerprint_components = [
+            str(meta.get("tenant_id", "")),
+            str(meta.get("case_id", "")),
+            str(workflow_id or ""),
+            request_model.mode,
+            "|".join(origin_keys),
+        ]
+        fingerprint = hashlib.sha256("::".join(fingerprint_components).encode("utf-8")).hexdigest()
+        fingerprint_path: str | None = None
+        fingerprint_match = False
+        try:
+            tenant_key = object_store.sanitize_identifier(str(meta.get("tenant_id")))
+            case_key = object_store.sanitize_identifier(str(meta.get("case_id")))
+            fingerprint_path = f"{tenant_key}/{case_key}/crawler_runner_idempotency.json"
+        except Exception:
+            fingerprint_path = None
+        if fingerprint_path:
             try:
-                payload = getattr(decision, "payload", None)
-                document_id = getattr(payload, "document_id", None)
-                if not document_id:
-                    return {"status": "skipped", "reason": "missing_document_id"}
-                request_data = {
-                    "document_ids": [str(document_id)],
-                    "embedding_profile": getattr(
-                        settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+                existing = object_store.read_json(fingerprint_path)
+            except FileNotFoundError:
+                existing = None
+            except Exception:
+                existing = None
+            if isinstance(existing, dict) and existing.get("fingerprint") == fingerprint:
+                fingerprint_match = True
+            else:
+                try:
+                    object_store.write_json(
+                        fingerprint_path,
+                        {
+                            "fingerprint": fingerprint,
+                            "workflow_id": workflow_id,
+                            "mode": request_model.mode,
+                            "origins": origin_keys,
+                        },
+                    )
+                except Exception:
+                    pass
+
+        origins_payload: list[dict[str, object]] = []
+        transitions_payload: list[dict[str, object]] = []
+        telemetry_payload: list[dict[str, object]] = []
+        errors_payload: list[dict[str, object]] = []
+
+        header_idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+
+        for build in state_builds:
+            graph = crawler_ingestion_graph.build_graph()
+
+            def _upsert_handler(decision):  # type: ignore[no-untyped-def]
+                try:
+                    payload = getattr(decision, "payload", None)
+                    document_id = getattr(payload, "document_id", None)
+                    if not document_id:
+                        return {"status": "skipped", "reason": "missing_document_id"}
+                    request_data = {
+                        "document_ids": [str(document_id)],
+                        "embedding_profile": getattr(
+                            settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+                        ),
+                    }
+                    collection_scope = (
+                        build.collection_id
+                        or request_model.collection_id
+                        or meta.get("collection_id")
+                    )
+                    ingest_meta = dict(meta)
+                    if collection_scope:
+                        request_data["collection_id"] = collection_scope
+                        ingest_meta["collection_id"] = collection_scope
+                    resp = services.start_ingestion_run(
+                        request_data,
+                        ingest_meta,
+                        idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
+                    )
+                    body = getattr(resp, "data", {}) or {}
+                    run_id = body.get("ingestion_run_id")
+                    status_label = body.get("status") or "queued"
+                    result = {"status": status_label}
+                    if run_id:
+                        result["ingestion_run_id"] = run_id
+                    return result
+                except Exception as exc:  # pragma: no cover - defensive
+                    return {"status": "error", "error": str(exc)}
+
+            try:
+                graph.upsert_handler = _upsert_handler  # type: ignore[attr-defined]
+            except Exception:
+                pass
+
+            try:
+                state = graph.start_crawl(build.state)
+            except Exception as exc:
+                errors_payload.append(
+                    {"origin": build.origin, "error": str(exc), "stage": "start_crawl"}
+                )
+                continue
+
+            graph_meta = {
+                "tenant_id": meta["tenant_id"],
+                "case_id": meta["case_id"],
+                "workflow_id": state.get("workflow_id"),
+            }
+
+            try:
+                result_state, result = graph.run(state, graph_meta)
+            except Exception as exc:
+                errors_payload.append(
+                    {"origin": build.origin, "error": str(exc), "stage": "run"}
+                )
+                continue
+
+            artifacts = result_state.get("artifacts", {}) or {}
+            upsert_result = artifacts.get("upsert_result") if isinstance(artifacts, dict) else {}
+            ingestion_run_id = None
+            if isinstance(upsert_result, dict):
+                ingestion_run_id = upsert_result.get("ingestion_run_id")
+
+            origin_snapshot = {
+                "workflow_id": result_state.get("workflow_id"),
+                "document_id": result_state.get("normalize_input", {}).get("document_id")
+                or result_state.get("document_id"),
+                "origin_uri": result_state.get("origin_uri"),
+                "provider": result_state.get("provider"),
+                "content_hash": result_state.get("content_hash"),
+                "tags": list(result_state.get("normalize_input", {}).get("tags", ())),
+                "snapshot_requested": build.snapshot_requested,
+                "snapshot_label": build.snapshot_label,
+            }
+            if build.snapshot_path:
+                origin_snapshot["snapshot_path"] = build.snapshot_path
+            if build.snapshot_sha256:
+                origin_snapshot["snapshot_sha256"] = build.snapshot_sha256
+
+            origin_entry: dict[str, object] = {
+                "origin": build.origin,
+                "provider": build.provider,
+                "document_id": build.document_id,
+                "result": services._make_json_safe(result),
+                "control": services._make_json_safe(result_state.get("control", {})),
+                "ingest_action": result_state.get("ingest_action"),
+                "gating_score": result_state.get("gating_score"),
+                "graph_run_id": result.get("graph_run_id"),
+                "state": services._make_json_safe(origin_snapshot),
+                "collection_id": build.collection_id,
+                "review": build.review,
+                "dry_run": build.dry_run,
+            }
+            if ingestion_run_id:
+                origin_entry["ingestion_run_id"] = ingestion_run_id
+
+            origins_payload.append(origin_entry)
+
+            transitions_payload.append(
+                {
+                    "origin": build.origin,
+                    "transitions": services._make_json_safe(
+                        result_state.get("transitions", {})
                     ),
                 }
-                collection_scope = meta.get("collection_id")
-                if collection_scope:
-                    request_data["collection_id"] = collection_scope
-                resp = services.start_ingestion_run(
-                    request_data,
-                    dict(meta),
-                    idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
-                )
-                body = getattr(resp, "data", {}) or {}
-                run_id = body.get("ingestion_run_id")
-                status_label = body.get("status") or "queued"
-                result = {"status": status_label}
-                if run_id:
-                    result["ingestion_run_id"] = run_id
-                return result
-            except Exception as exc:
-                return {"status": "error", "error": str(exc)}
+            )
 
-        try:
-            graph.upsert_handler = _upsert_handler  # type: ignore[attr-defined]
-        except Exception:
-            pass
-        state = graph.start_crawl(state)
-
-        control = dict(state.get("control", {}))
-        control["shadow_mode"] = bool(
-            request_model.shadow_mode or request_model.dry_run
-        )
-        if request_model.manual_review:
-            control["manual_review"] = request_model.manual_review
-        if request_model.force_retire:
-            control["force_retire"] = True
-        if request_model.recompute_delta:
-            control["recompute_delta"] = True
-        state["control"] = control
-
-        graph_meta = {
-            "tenant_id": meta["tenant_id"],
-            "case_id": meta["case_id"],
-            "workflow_id": state.get("workflow_id"),
-        }
-
-        result_state, result = graph.run(state, graph_meta)
-
-        snapshot = {
-            "workflow_id": result_state.get("workflow_id"),
-            "document_id": result_state.get("normalize_input", {}).get("document_id")
-            or result_state.get("document_id"),
-            "origin_uri": result_state.get("origin_uri"),
-            "provider": result_state.get("provider"),
-            "content_hash": result_state.get("content_hash"),
-            "tags": list(result_state.get("normalize_input", {}).get("tags", ())),
-            "snapshot_requested": request_model.snapshot,
-            "snapshot_label": request_model.snapshot_label,
-        }
+            telemetry_entry: dict[str, object] = {
+                "origin": build.origin,
+                "provider": build.provider,
+                "fetch_used": build.fetch_used,
+                "http_status": build.http_status,
+                "fetched_bytes": build.fetched_bytes,
+                "media_type_effective": build.media_type_effective,
+                "fetch_elapsed": build.fetch_elapsed,
+                "fetch_retries": build.fetch_retries,
+                "fetch_retry_reason": build.fetch_retry_reason,
+                "fetch_backoff_total_ms": build.fetch_backoff_total_ms,
+                "snapshot_requested": build.snapshot_requested,
+                "snapshot_label": build.snapshot_label,
+                "tags": list(build.tags),
+            }
+            if build.snapshot_path:
+                telemetry_entry["snapshot_path"] = build.snapshot_path
+            if build.snapshot_sha256:
+                telemetry_entry["snapshot_sha256"] = build.snapshot_sha256
+            telemetry_payload.append(telemetry_entry)
 
         response_payload = {
-            "result": services._make_json_safe(result),
-            "transitions": services._make_json_safe(
-                result_state.get("transitions", {})
-            ),
-            "control": services._make_json_safe(result_state.get("control", {})),
-            "ingest_action": result_state.get("ingest_action"),
-            "gating_score": result_state.get("gating_score"),
-            "graph_run_id": result.get("graph_run_id"),
-            "state": services._make_json_safe(snapshot),
+            "workflow_id": workflow_id,
+            "mode": request_model.mode,
+            "collection_id": request_model.collection_id,
+            "origins": origins_payload,
+            "transitions": transitions_payload,
+            "telemetry": telemetry_payload,
+            "errors": errors_payload,
+            "idempotent": bool(fingerprint_match or header_idempotent),
         }
-        response_payload.update(
-            {
-                "fetch_used": state_build.fetch_used,
-                "http_status": state_build.http_status,
-                "fetched_bytes": state_build.fetched_bytes,
-                "media_type_effective": state_build.media_type_effective,
-                "fetch_elapsed": state_build.fetch_elapsed,
-                "fetch_retries": state_build.fetch_retries,
-                "fetch_retry_reason": state_build.fetch_retry_reason,
-                "fetch_backoff_total_ms": state_build.fetch_backoff_total_ms,
-                "snapshot_requested": bool(request_model.snapshot),
-                "snapshot_label": request_model.snapshot_label,
-                "idempotent": bool(request.headers.get(IDEMPOTENCY_KEY_HEADER)),
-            }
-        )
-        if state_build.snapshot_path:
-            response_payload["snapshot_path"] = state_build.snapshot_path
-        if state_build.snapshot_sha256:
-            response_payload["snapshot_sha256"] = state_build.snapshot_sha256
-
-        # If ingestion was enqueued, surface the ingestion_run_id for convenience
-        try:
-            artifacts = result_state.get("artifacts", {}) or {}
-            upsert_result = artifacts.get("upsert_result")
-            if isinstance(upsert_result, dict) and upsert_result.get(
-                "ingestion_run_id"
-            ):
-                response_payload["ingestion_run_id"] = upsert_result["ingestion_run_id"]
-        except Exception:
-            pass
-
         response = Response(response_payload, status=status.HTTP_200_OK)
         return apply_std_headers(response, meta)
-
 
 class RagDemoViewV1(_BaseAgentView):
     """Deprecated demo endpoint retained only for backwards compatibility."""

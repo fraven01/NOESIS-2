@@ -222,11 +222,210 @@ class RagHardDeleteAdminRequest(BaseModel):
         return None
 
 
+class CrawlerRunLimits(BaseModel):
+    """Optional limits that influence crawler runtime decisions."""
+
+    max_document_bytes: int | None = None
+
+    @field_validator("max_document_bytes", mode="before")
+    @classmethod
+    def _coerce_max_document_bytes(cls, value: object) -> int | None:
+        if value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            raise PydanticCustomError(
+                "invalid_max_document_bytes",
+                "max_document_bytes must be a positive integer.",
+            )
+        if parsed < 0:
+            raise PydanticCustomError(
+                "invalid_max_document_bytes",
+                "max_document_bytes must be a positive integer.",
+            )
+        return parsed
+
+
+class CrawlerSnapshotOptions(BaseModel):
+    """Snapshot configuration shared across crawler origins."""
+
+    enabled: bool = False
+    label: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_snapshot(cls, value: object) -> Mapping[str, object] | object:
+        if value is None:
+            return {}
+        if isinstance(value, bool):
+            return {"enabled": value}
+        if isinstance(value, Mapping):
+            return value
+        raise PydanticCustomError(
+            "invalid_snapshot",
+            "snapshot must be provided as an object or boolean.",
+        )
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _trim_label(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_snapshot_label",
+                "snapshot label must be a string when provided.",
+            )
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class CrawlerOriginConfig(BaseModel):
+    """Origin specific configuration for crawler runs."""
+
+    url: str
+    provider: str | None = None
+    document_id: str | None = None
+    title: str | None = None
+    language: str | None = None
+    content: str | None = None
+    content_type: str | None = None
+    fetch: bool | None = None
+    tags: list[str] | None = None
+    limits: CrawlerRunLimits | None = None
+    snapshot: CrawlerSnapshotOptions | None = None
+    review: Literal["required", "approved", "rejected"] | None = None
+    dry_run: bool | None = None
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _normalise_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin URL must be provided as a non-empty string.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin URL must be provided as a non-empty string.",
+            )
+        return candidate
+
+    @field_validator("provider", mode="before")
+    @classmethod
+    def _normalise_provider(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_provider",
+                "provider must be a non-empty string when provided.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                "invalid_provider",
+                "provider must be a non-empty string when provided.",
+            )
+        return candidate
+
+    @field_validator("document_id", "title", "language", mode="before")
+    @classmethod
+    def _trim_optional_text(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a string when provided.",
+            )
+        trimmed = value.strip()
+        return trimmed or None
+
+    @field_validator("content", mode="before")
+    @classmethod
+    def _ensure_content(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_content",
+                "content must be provided as a non-empty string.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                "invalid_content",
+                "content must be provided as a non-empty string.",
+            )
+        return candidate
+
+    @field_validator("content_type", mode="before")
+    @classmethod
+    def _normalise_content_type(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_content_type",
+                "content_type must be a non-empty string when provided.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                "invalid_content_type",
+                "content_type must be a non-empty string when provided.",
+            )
+        return candidate
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalise_tags(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            entries = [entry.strip() for entry in value.split(",")]
+        elif isinstance(value, Sequence):
+            entries = [str(entry).strip() for entry in value]
+        else:
+            raise PydanticCustomError(
+                "invalid_tags",
+                "tags must be provided as a list or comma separated string.",
+            )
+        normalised = [entry for entry in entries if entry]
+        return normalised or None
+
+    @field_validator("review", mode="before")
+    @classmethod
+    def _normalise_review(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip().lower()
+            if not candidate:
+                return None
+            if candidate not in {"required", "approved", "rejected"}:
+                raise PydanticCustomError(
+                    "invalid_review",
+                    "review must be one of required, approved, rejected.",
+                )
+            return candidate
+        raise PydanticCustomError(
+            "invalid_review",
+            "review must be a string when provided.",
+        )
+
+
 class CrawlerRunRequest(BaseModel):
     """Request payload used by the crawler LangGraph runner."""
 
     workflow_id: str | None = None
-    origin_url: str
+    mode: Literal["live", "manual"] = "live"
+    origins: list[CrawlerOriginConfig] | None = None
+    origin_url: str | None = None
     provider: str = "web"
     document_id: str | None = None
     title: str | None = None
@@ -234,31 +433,36 @@ class CrawlerRunRequest(BaseModel):
     content: str | None = None
     content_type: str = "text/html"
     fetch: bool = True
-    snapshot: bool = False
+    snapshot: CrawlerSnapshotOptions = Field(default_factory=CrawlerSnapshotOptions)
     snapshot_label: str | None = None
     tags: list[str] | None = None
     shadow_mode: bool = False
     dry_run: bool = False
+    review: Literal["required", "approved", "rejected"] | None = None
     manual_review: Literal["required", "approved", "rejected"] | None = None
     force_retire: bool = False
     recompute_delta: bool = False
     max_document_bytes: int | None = None
+    limits: CrawlerRunLimits | None = None
+    collection_id: str | None = None
 
     @field_validator("origin_url", mode="before")
     @classmethod
-    def _normalise_origin_url(cls, value: object) -> str:
+    def _normalise_origin_url(cls, value: object) -> str | None:
+        if value is None:
+            return None
         if not isinstance(value, str):
             raise PydanticCustomError(
                 "invalid_origin_url",
                 "origin_url must be provided as a non-empty string.",
             )
-        url = value.strip()
-        if not url:
+        candidate = value.strip()
+        if not candidate:
             raise PydanticCustomError(
                 "invalid_origin_url",
                 "origin_url must be provided as a non-empty string.",
             )
-        return url
+        return candidate
 
     @field_validator("provider", "content_type", mode="before")
     @classmethod
@@ -299,13 +503,13 @@ class CrawlerRunRequest(BaseModel):
                 "invalid_content",
                 "content must be provided as a non-empty string.",
             )
-        content = value.strip()
-        if not content:
+        candidate = value.strip()
+        if not candidate:
             raise PydanticCustomError(
                 "invalid_content",
                 "content must be provided as a non-empty string.",
             )
-        return content
+        return candidate
 
     @field_validator("snapshot_label", mode="before")
     @classmethod
@@ -337,9 +541,9 @@ class CrawlerRunRequest(BaseModel):
         normalised = [entry for entry in entries if entry]
         return normalised or None
 
-    @field_validator("manual_review", mode="before")
+    @field_validator("review", "manual_review", mode="before")
     @classmethod
-    def _normalise_manual_review(cls, value: object) -> str | None:
+    def _normalise_review(cls, value: object, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         if isinstance(value, str):
@@ -348,41 +552,137 @@ class CrawlerRunRequest(BaseModel):
                 return None
             if candidate not in {"required", "approved", "rejected"}:
                 raise PydanticCustomError(
-                    "invalid_manual_review",
-                    "manual_review must be one of required, approved, rejected.",
+                    f"invalid_{info.field_name}",
+                    f"{info.field_name} must be one of required, approved, rejected.",
                 )
             return candidate
         raise PydanticCustomError(
-            "invalid_manual_review",
-            "manual_review must be a string when provided.",
+            f"invalid_{info.field_name}",
+            f"{info.field_name} must be a string when provided.",
         )
 
     @field_validator("max_document_bytes", mode="before")
     @classmethod
     def _coerce_max_document_bytes(cls, value: object) -> int | None:
-        if value is None:
-            return None
-        try:
-            parsed = int(value)
-        except (TypeError, ValueError):
-            raise PydanticCustomError(
-                "invalid_max_document_bytes",
-                "max_document_bytes must be a positive integer.",
-            )
-        if parsed < 0:
-            raise PydanticCustomError(
-                "invalid_max_document_bytes",
-                "max_document_bytes must be a positive integer.",
-            )
-        return parsed
+        return CrawlerRunLimits._coerce_max_document_bytes(value)  # type: ignore[arg-type]
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        return _normalise_optional_uuid(value, "collection_id")
 
     @model_validator(mode="after")
-    def _ensure_content_when_fetch_disabled(self) -> "CrawlerRunRequest":
-        if not self.fetch and self.content is None:
+    def _finalise(self) -> "CrawlerRunRequest":
+        if self.review and self.manual_review and self.review != self.manual_review:
             raise PydanticCustomError(
-                "content_required_when_fetch_disabled",
-                "content must be provided when fetch is disabled.",
+                "invalid_review",
+                "review and manual_review must match when both are provided.",
             )
+        if self.review and not self.manual_review:
+            object.__setattr__(self, "manual_review", self.review)
+        elif self.manual_review and not self.review:
+            object.__setattr__(self, "review", self.manual_review)
+
+        snapshot_label = self.snapshot_label or self.snapshot.label
+        if snapshot_label and not self.snapshot.label:
+            object.__setattr__(
+                self,
+                "snapshot",
+                self.snapshot.model_copy(update={"label": snapshot_label}),
+            )
+
+        origins = list(self.origins or [])
+        if not origins:
+            if not self.origin_url:
+                raise PydanticCustomError(
+                    "missing_origins",
+                    "At least one origin must be provided via origins or origin_url.",
+                )
+            limits = self.limits
+            if limits is None and self.max_document_bytes is not None:
+                limits = CrawlerRunLimits(max_document_bytes=self.max_document_bytes)
+            origin_snapshot: CrawlerSnapshotOptions | None = None
+            if self.snapshot.enabled or self.snapshot.label:
+                origin_snapshot = self.snapshot
+            origin = CrawlerOriginConfig(
+                url=self.origin_url,
+                provider=self.provider,
+                document_id=self.document_id,
+                title=self.title,
+                language=self.language,
+                content=self.content,
+                content_type=self.content_type,
+                fetch=self.fetch,
+                tags=self.tags,
+                limits=limits,
+                snapshot=origin_snapshot,
+                review=self.review,
+                dry_run=self.dry_run,
+            )
+            origins = [origin]
+        else:
+            normalised: list[CrawlerOriginConfig] = []
+            default_limits = self.limits
+            if default_limits is None and self.max_document_bytes is not None:
+                default_limits = CrawlerRunLimits(
+                    max_document_bytes=self.max_document_bytes
+                )
+            for origin in origins:
+                update_payload: dict[str, object] = {}
+                if origin.provider is None:
+                    update_payload["provider"] = self.provider
+                if origin.content_type is None:
+                    update_payload["content_type"] = self.content_type
+                if origin.fetch is None:
+                    update_payload["fetch"] = self.fetch
+                if origin.tags is None and self.tags is not None:
+                    update_payload["tags"] = list(self.tags)
+                if origin.limits is None and default_limits is not None:
+                    update_payload["limits"] = default_limits.model_copy()
+                if origin.snapshot is None and (
+                    self.snapshot.enabled or self.snapshot.label
+                ):
+                    update_payload["snapshot"] = self.snapshot.model_copy()
+                if origin.review is None and self.review is not None:
+                    update_payload["review"] = self.review
+                if origin.dry_run is None:
+                    update_payload["dry_run"] = self.dry_run
+                if update_payload:
+                    origin = origin.model_copy(update=update_payload)
+                normalised.append(origin)
+            origins = normalised
+
+        if self.mode == "manual":
+            manual_origins: list[CrawlerOriginConfig] = []
+            for origin in origins:
+                updated = origin
+                if updated.fetch not in (None, False):
+                    raise PydanticCustomError(
+                        "invalid_manual_mode",
+                        "Manual mode does not support remote fetching.",
+                    )
+                if not updated.content and not self.content:
+                    raise PydanticCustomError(
+                        "content_required_when_fetch_disabled",
+                        "Manual mode requires inline content for each origin.",
+                    )
+                if updated.content is None and self.content:
+                    updated = updated.model_copy(update={"content": self.content})
+                if updated.content_type is None:
+                    updated = updated.model_copy(update={"content_type": self.content_type})
+                if updated.fetch is None:
+                    updated = updated.model_copy(update={"fetch": False})
+                manual_origins.append(updated)
+            origins = manual_origins
+
+        for origin in origins:
+            if origin.fetch is False and origin.content is None:
+                raise PydanticCustomError(
+                    "content_required_when_fetch_disabled",
+                    "content must be provided when fetch is disabled.",
+                )
+
+        object.__setattr__(self, "origins", origins)
         return self
 
 
