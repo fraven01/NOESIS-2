@@ -135,6 +135,10 @@ class CrawlerStateBuild:
     http_status: int | None
     fetched_bytes: int | None
     media_type_effective: str | None
+    fetch_elapsed: float | None
+    fetch_retries: int | None
+    fetch_retry_reason: str | None
+    fetch_backoff_total_ms: float | None
     snapshot_path: str | None
     snapshot_sha256: str | None
 
@@ -933,15 +937,15 @@ RAG_HARD_DELETE_ADMIN_SCHEMA = {
 
 CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
     name="CrawlerRunRequest",
-    summary="Trigger crawler ingestion",
-    description="Run the crawler LangGraph against a manually supplied document payload.",
+    summary="Trigger live crawl with snapshot",
+    description="Run the crawler LangGraph against a live origin fetch and capture a snapshot copy.",
     value={
         "workflow_id": "crawler-demo",
         "origin_url": "https://example.com/docs/handbook",
         "title": "Employee Handbook",
         "language": "de",
         "content_type": "text/html",
-        "content": "<html><body>Handbook excerpt …</body></html>",
+        "content": None,
         "tags": ["handbook", "hr"],
         "shadow_mode": True,
         "manual_review": "required",
@@ -957,7 +961,7 @@ CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
 CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
     name="CrawlerRunResponse",
     summary="Crawler graph outcome",
-    description="Summarises the node decisions, control state and resulting action for the crawl.",
+    description="Summarises the node decisions, control state, fetch telemetry and snapshot outcome for the crawl.",
     value={
         "result": {
             "decision": "upsert",
@@ -1015,8 +1019,15 @@ CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
         "http_status": 200,
         "fetched_bytes": 1280,
         "media_type_effective": "text/html",
+        "fetch_elapsed": 0.44,
+        "fetch_retries": 1,
+        "fetch_retry_reason": "retry_after_backoff",
+        "fetch_backoff_total_ms": 200.0,
+        "snapshot_requested": True,
+        "snapshot_label": "debug",
         "snapshot_path": ".ai_core_store/example-tenant/example-case/crawler/8d9db57d6c7b4d92a0dc772d1e9c2fd7.html",
         "snapshot_sha256": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
+        "idempotent": False,
     },
     response_only=True,
 )
@@ -1031,9 +1042,11 @@ CRAWLER_RUN_REQUEST = inline_serializer(
         "document_id": serializers.CharField(required=False),
         "title": serializers.CharField(required=False),
         "language": serializers.CharField(required=False),
-        "content": serializers.CharField(required=False, allow_null=True),
+        "content": serializers.CharField(
+            required=False, allow_null=True, default=None
+        ),
         "content_type": serializers.CharField(required=False),
-        "fetch": serializers.BooleanField(required=False),
+        "fetch": serializers.BooleanField(required=False, default=True),
         "tags": serializers.ListField(child=serializers.CharField(), required=False),
         "shadow_mode": serializers.BooleanField(required=False),
         "dry_run": serializers.BooleanField(required=False),
@@ -1041,8 +1054,10 @@ CRAWLER_RUN_REQUEST = inline_serializer(
         "force_retire": serializers.BooleanField(required=False),
         "recompute_delta": serializers.BooleanField(required=False),
         "max_document_bytes": serializers.IntegerField(required=False),
-        "snapshot": serializers.BooleanField(required=False),
-        "snapshot_label": serializers.CharField(required=False, allow_null=True),
+        "snapshot": serializers.BooleanField(required=False, default=False),
+        "snapshot_label": serializers.CharField(
+            required=False, allow_null=True, default=None
+        ),
     },
 )
 
@@ -1061,8 +1076,17 @@ CRAWLER_RUN_RESPONSE = inline_serializer(
         "http_status": serializers.IntegerField(required=False, allow_null=True),
         "fetched_bytes": serializers.IntegerField(required=False, allow_null=True),
         "media_type_effective": serializers.CharField(required=False, allow_null=True),
+        "fetch_elapsed": serializers.FloatField(required=False, allow_null=True),
+        "fetch_retries": serializers.IntegerField(required=False, allow_null=True),
+        "fetch_retry_reason": serializers.CharField(required=False, allow_null=True),
+        "fetch_backoff_total_ms": serializers.FloatField(
+            required=False, allow_null=True
+        ),
+        "snapshot_requested": serializers.BooleanField(required=False),
+        "snapshot_label": serializers.CharField(required=False, allow_null=True),
         "snapshot_path": serializers.CharField(required=False, allow_null=True),
         "snapshot_sha256": serializers.CharField(required=False, allow_null=True),
+        "idempotent": serializers.BooleanField(),
     },
 )
 
@@ -1072,7 +1096,7 @@ CRAWLER_RUN_SCHEMA = {
     "responses": {200: CRAWLER_RUN_RESPONSE},
     "error_statuses": RATE_LIMIT_JSON_ERROR_STATUSES,
     "include_trace_header": True,
-    "description": "Execute the crawler ingestion LangGraph with manual sample content for debugging.",
+    "description": "Execute the crawler ingestion LangGraph with manual or live fetch content for debugging.",
     "examples": [CRAWLER_RUN_REQUEST_EXAMPLE, CRAWLER_RUN_RESPONSE_EXAMPLE],
 }
 
@@ -1356,6 +1380,10 @@ def _build_crawler_state(
     fetch_used = False
     http_status: int | None = None
     fetched_bytes: int | None = None
+    fetch_elapsed: float | None = None
+    fetch_retries: int | None = None
+    fetch_retry_reason: str | None = None
+    fetch_backoff_total_ms: float | None = None
     snapshot_path: str | None = None
     snapshot_sha256: str | None = None
 
@@ -1379,6 +1407,10 @@ def _build_crawler_state(
                     "http_status": None,
                     "fetched_bytes": None,
                     "media_type_effective": None,
+                    "fetch_elapsed": None,
+                    "fetch_retries": None,
+                    "fetch_retry_reason": None,
+                    "fetch_backoff_total_ms": None,
                 },
             )
 
@@ -1408,6 +1440,11 @@ def _build_crawler_state(
                 "bytes": fetch_result.telemetry.bytes_downloaded,
             },
         )
+        fetch_elapsed = fetch_result.telemetry.latency
+        fetch_retries = fetch_result.telemetry.retries
+        fetch_retry_reason = fetch_result.telemetry.retry_reason
+        fetch_backoff_total_ms = fetch_result.telemetry.backoff_total_ms
+
         if fetch_result.status is not FetchStatus.FETCHED:
             status_code, code = _map_fetch_error_response(fetch_result)
             emit_event(code, {"origin": source.canonical_source})
@@ -1416,6 +1453,10 @@ def _build_crawler_state(
                 "http_status": fetch_result.metadata.status_code,
                 "fetched_bytes": fetch_result.telemetry.bytes_downloaded,
                 "media_type_effective": fetch_result.metadata.content_type,
+                "fetch_elapsed": fetch_elapsed,
+                "fetch_retries": fetch_retries,
+                "fetch_retry_reason": fetch_retry_reason,
+                "fetch_backoff_total_ms": fetch_backoff_total_ms,
             }
             raise CrawlerRunError(
                 "Fetching the origin URL failed.",
@@ -1437,6 +1478,10 @@ def _build_crawler_state(
                     "http_status": http_status,
                     "fetched_bytes": fetched_bytes,
                     "media_type_effective": fetch_result.metadata.content_type,
+                    "fetch_elapsed": fetch_elapsed,
+                    "fetch_retries": fetch_retries,
+                    "fetch_retry_reason": fetch_retry_reason,
+                    "fetch_backoff_total_ms": fetch_backoff_total_ms,
                 },
             )
         if fetch_result.metadata.content_type:
@@ -1467,6 +1512,10 @@ def _build_crawler_state(
             )
         body_bytes = request_data.content.encode("utf-8")
         fetched_bytes = len(body_bytes)
+        fetch_elapsed = 0.05
+        fetch_retries = 0
+        fetch_retry_reason = None
+        fetch_backoff_total_ms = 0.0
         fetch_input = {
             "request": fetch_request,
             "status_code": 200,
@@ -1504,6 +1553,10 @@ def _build_crawler_state(
                 "http_status": http_status,
                 "fetched_bytes": fetched_bytes,
                 "media_type_effective": effective_content_type,
+                "fetch_elapsed": fetch_elapsed,
+                "fetch_retries": fetch_retries,
+                "fetch_retry_reason": fetch_retry_reason,
+                "fetch_backoff_total_ms": fetch_backoff_total_ms,
             },
         )
 
@@ -1571,6 +1624,10 @@ def _build_crawler_state(
         http_status=http_status,
         fetched_bytes=fetched_bytes,
         media_type_effective=effective_content_type,
+        fetch_elapsed=fetch_elapsed,
+        fetch_retries=fetch_retries,
+        fetch_retry_reason=fetch_retry_reason,
+        fetch_backoff_total_ms=fetch_backoff_total_ms,
         snapshot_path=snapshot_path,
         snapshot_sha256=snapshot_sha256,
     )
@@ -1900,6 +1957,13 @@ class CrawlerIngestionRunnerView(APIView):
                 "http_status": state_build.http_status,
                 "fetched_bytes": state_build.fetched_bytes,
                 "media_type_effective": state_build.media_type_effective,
+                "fetch_elapsed": state_build.fetch_elapsed,
+                "fetch_retries": state_build.fetch_retries,
+                "fetch_retry_reason": state_build.fetch_retry_reason,
+                "fetch_backoff_total_ms": state_build.fetch_backoff_total_ms,
+                "snapshot_requested": bool(request_model.snapshot),
+                "snapshot_label": request_model.snapshot_label,
+                "idempotent": bool(request.headers.get(IDEMPOTENCY_KEY_HEADER)),
             }
         )
         if state_build.snapshot_path:
