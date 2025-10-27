@@ -410,12 +410,9 @@ def _extract_external_id(document: object) -> str | None:
 
 
 def _extract_meta_media_type(document: object) -> str | None:
-    meta = getattr(document, "meta", None)
-    external_ref = getattr(meta, "external_ref", None)
-    if isinstance(external_ref, Mapping):
-        candidate = external_ref.get("media_type")
-        if isinstance(candidate, str) and candidate.strip():
-            return candidate.strip().lower()
+    media_type = getattr(document, "media_type", None)
+    if isinstance(media_type, str) and media_type.strip():
+        return media_type.strip().lower()
     return None
 
 

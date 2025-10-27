@@ -11,16 +11,16 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
-from crawler.normalizer import (
-    NormalizedDocument,
-    build_normalized_document,
-)
+from uuid import uuid4
+
+from documents.parsers import ParsedTextBlock
+
+from crawler.normalizer import NormalizedDocument, build_normalized_document
 from crawler.parser import (
     ParseResult,
     ParseStatus,
     ParserContent,
     ParserStats,
-    StructuralElement,
     build_parse_result,
 )
 
@@ -54,7 +54,7 @@ def _make_parse_result(canonical_source: str) -> ParseResult:
         primary_text="Example text",
         title=" Example Title ",
         content_language="en",
-        structural_elements=(StructuralElement(kind="heading", text="Title"),),
+        structural_elements=(ParsedTextBlock(text="Title", kind="heading"),),
     )
     stats = ParserStats(
         token_count=2,
@@ -82,32 +82,33 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
         provider_tags={"collection": "news"},
     )
 
+    document_id = str(uuid4())
     document = build_normalized_document(
         parse_result=parse_result,
         source=source,
         tenant_id="tenant-1",
         workflow_id="wf-42",
-        document_id="doc-123",
+        document_id=document_id,
         tags=[" featured ", "news", "featured"],
     )
 
     assert isinstance(document, NormalizedDocument)
     assert document.tenant_id == "tenant-1"
     assert document.workflow_id == "wf-42"
-    assert document.document_id == "doc-123"
+    assert document.document_id == document_id
     assert document.meta.origin_uri == canonical
-    assert document.meta.media_type == "text/html"
+    assert document.media_type == "text/html"
     assert document.meta.title == "Example Title"
     assert document.meta.language == "en"
-    assert document.meta.tags == ("featured", "news")
+    assert document.meta.tags == ["featured", "news"]
     assert document.external_ref.external_id == source.external_id
     assert document.external_ref.provider == "web"
     assert document.external_ref.provider_tags["collection"] == "news"
-    assert document.content.primary_text == "Example text"
+    assert document.primary_text == "Example text"
     assert document.stats.token_count == 2
-    assert document.meta.parser_stats["parser.token_count"] == 2
-    assert document.meta.parser_stats["parser.warnings"] == ["minor"]
-    assert document.meta.parser_stats["normalizer.bytes_in"] == len(b"<html></html>")
+    assert document.parser_stats["parser.token_count"] == 2
+    assert document.parser_stats["parser.warnings"] == ["minor"]
+    assert document.parser_stats["normalizer.bytes_in"] == len(b"<html></html>")
     assert document.diagnostics == ("ok",)
 
 

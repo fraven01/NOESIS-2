@@ -11,13 +11,14 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
+from documents.parsers import ParsedTextBlock
+
 from crawler.parser import (
     ParseResult,
     ParseStatus,
     ParsedEntity,
     ParserContent,
     ParserStats,
-    StructuralElement,
     build_parse_result,
     compute_parser_stats,
 )
@@ -53,9 +54,9 @@ def test_parser_content_requires_primary_text_or_binary():
         ParserContent(media_type="text/html")
 
 
-def test_structural_element_requires_metadata_mapping():
-    with pytest.raises(TypeError):
-        StructuralElement(kind="heading", metadata=None)  # type: ignore[arg-type]
+def test_parsed_text_block_rejects_invalid_kind():
+    with pytest.raises(ValueError):
+        ParsedTextBlock(text="Example", kind="invalid")  # type: ignore[arg-type]
 
 
 def test_build_parse_result_requires_content_when_parsed():
@@ -76,9 +77,10 @@ def test_successful_parse_includes_structures_and_entities():
         media_type="text/html",
         primary_text="Hello world",
         title="Example",
-        structural_elements=(StructuralElement(kind="heading", text="Example"),),
+        structural_elements=(ParsedTextBlock(text="Example", kind="heading"),),
         entities=(ParsedEntity(label="ORG", value="Noesis"),),
     )
+    parsed_view = content.to_parsed_result()
     stats = compute_parser_stats(
         primary_text=content.primary_text,
         extraction_path="html.body",
@@ -101,6 +103,7 @@ def test_successful_parse_includes_structures_and_entities():
     assert result.stats.warnings == ("minor-truncation",)
     assert result.diagnostics == ("ok",)
     assert result.error is None
+    assert parsed_view.text_blocks[0].text == "Example"
 
 
 def test_compute_parser_stats_handles_empty_text():

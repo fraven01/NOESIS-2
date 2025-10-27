@@ -19,6 +19,7 @@ from .pipeline import (  # noqa: F401
 from .parsers import (  # noqa: F401
     DocumentParser,
     ParsedAsset,
+    ParsedEntity,
     ParsedResult,
     ParsedTextBlock,
     ParserDispatcher,
@@ -47,6 +48,7 @@ __all__ = [
     "require_document_contracts",
     "DocumentParser",
     "ParsedAsset",
+    "ParsedEntity",
     "ParsedResult",
     "ParsedTextBlock",
     "ParserDispatcher",

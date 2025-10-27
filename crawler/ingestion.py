@@ -196,11 +196,11 @@ def _build_payload(
         source="crawler",
         canonical_source=external.canonical_source,
         origin_uri=meta.origin_uri,
-        media_type=meta.media_type,
+        media_type=document.media_type,
         title=meta.title,
         language=meta.language,
-        tags=meta.tags,
-        parser_stats=meta.parser_stats,
+        tags=tuple(meta.tags),
+        parser_stats=document.parser_stats,
         provider_tags=external.provider_tags,
     )
 

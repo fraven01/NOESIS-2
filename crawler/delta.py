@@ -158,14 +158,15 @@ def _compute_content_hash(
     binary_payload: Optional[bytes] = None,
     algorithm: str = "sha256",
 ) -> str:
-    content = document.content
-    if content.primary_text:
-        normalized = " ".join(content.primary_text.split())
+    primary_text = document.primary_text
+    if primary_text:
+        normalized = " ".join(primary_text.split())
         payload = normalized.encode("utf-8")
     else:
         if binary_payload is None:
-            raise ValueError("binary_payload_required")
-        payload = binary_payload
+            payload = document.payload_bytes()
+        else:
+            payload = binary_payload
 
     try:
         hasher = hashlib.new(algorithm)
@@ -178,7 +179,7 @@ def _compute_content_hash(
 def _compute_near_duplicate_signature(
     document: NormalizedDocument,
 ) -> Optional[NearDuplicateSignature]:
-    primary_text = document.content.primary_text
+    primary_text = document.primary_text
     if not primary_text:
         return None
     tokens = _tokenize(primary_text)
