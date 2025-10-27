@@ -75,6 +75,26 @@
     return null;
   }
 
+  function mapCrawlerMode(value) {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const lowered = value.trim().toLowerCase();
+    if (!lowered) {
+      return null;
+    }
+    if (lowered === 'manual') {
+      return 'manual';
+    }
+    if (lowered === 'live') {
+      return 'live';
+    }
+    if (lowered === 'ingest' || lowered === 'store_only' || lowered === 'fetch_only') {
+      return 'live';
+    }
+    return 'live';
+  }
+
   function buildCrawlerPayload(options) {
     const opts = options || {};
     const payload = {};
@@ -94,9 +114,9 @@
       payload.workflow_id = String(opts.workflowId).trim();
     }
     if (opts.mode) {
-      const mode = String(opts.mode).trim();
-      if (mode) {
-        payload.mode = mode;
+      const mappedMode = mapCrawlerMode(opts.mode);
+      if (mappedMode) {
+        payload.mode = mappedMode;
       }
     }
     if (opts.originUrl) {
@@ -253,8 +273,23 @@
         })
         .filter(Boolean);
     }
-    if (originUrls.length) {
-      payload.origins = originUrls.map(function (url) {
+    const seenOrigins = new Set();
+    const combinedOrigins = [];
+    if (payload.origin_url) {
+      const primaryOrigin = payload.origin_url;
+      if (!seenOrigins.has(primaryOrigin)) {
+        seenOrigins.add(primaryOrigin);
+        combinedOrigins.push(primaryOrigin);
+      }
+    }
+    originUrls.forEach(function (url) {
+      if (!seenOrigins.has(url)) {
+        seenOrigins.add(url);
+        combinedOrigins.push(url);
+      }
+    });
+    if (combinedOrigins.length) {
+      payload.origins = combinedOrigins.map(function (url) {
         const originEntry = { url: url };
         if (payload.review) {
           originEntry.review = payload.review;

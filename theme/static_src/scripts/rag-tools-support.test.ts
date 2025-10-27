@@ -84,7 +84,7 @@ describe('rag-tools-support helpers', () => {
     });
 
     expect(payload.workflow_id).toBe('wf-1');
-    expect(payload.mode).toBe('ingest');
+    expect(payload.mode).toBe('live');
     expect(payload.origin_url).toBe('https://example.com/page');
     expect(payload.document_id).toBe('doc-1');
     expect(payload.provider).toBe('web');
@@ -106,6 +106,13 @@ describe('rag-tools-support helpers', () => {
     expect(payload.recompute_delta).toBe(true);
     expect(payload.collection_id).toBe('6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa');
     expect(payload.origins).toEqual([
+      {
+        url: 'https://example.com/page',
+        review: 'approved',
+        dry_run: false,
+        limits: { max_document_bytes: 1024 },
+        snapshot: { enabled: true, label: 'debug' },
+      },
       {
         url: 'https://example.com/docs/handbook',
         review: 'approved',
@@ -138,7 +145,7 @@ describe('rag-tools-support helpers', () => {
       dryRun: true,
     });
 
-    expect(payload.mode).toBe('store_only');
+    expect(payload.mode).toBe('live');
     expect(payload.review).toBe('required');
     expect(payload.origins).toEqual([
       { url: 'https://example.com/a', review: 'required', dry_run: true },
