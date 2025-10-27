@@ -45,6 +45,19 @@
         />
       </div>
       <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-mode">Modus</label>
+        <select
+          id="crawler-mode"
+          name="mode"
+          class="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+        >
+          <option value="ingest" selected>Ingest (Fetch · Store · Upsert)</option>
+          <option value="store_only">Store only (Fetch · Store)</option>
+          <option value="fetch_only">Fetch only (Analyse ohne Storage)</option>
+        </select>
+        <p class="text-xs text-slate-500">Steuert, ob der Lauf nur Fetch, Fetch+Store oder den kompletten Ingestion-Pfad inklusive Upsert ausführt.</p>
+      </div>
+      <div class="space-y-1">
         <label class="text-sm font-medium text-slate-700" for="crawler-origin">Origin URL</label>
         <input
           class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
@@ -54,6 +67,20 @@
           placeholder="https://example.com/docs"
           required
         />
+      </div>
+      <div class="md:col-span-2 space-y-1">
+        <div class="flex items-center justify-between gap-2">
+          <label class="text-sm font-medium text-slate-700" for="crawler-origin-list">Weitere URLs (optional)</label>
+          <span class="text-xs text-slate-500">Eine pro Zeile oder Komma-getrennt</span>
+        </div>
+        <textarea
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-origin-list"
+          name="origin_urls"
+          rows="3"
+          placeholder="https://example.com/docs/handbook\nhttps://example.com/docs/policies"
+        ></textarea>
+        <p class="text-xs text-slate-500">Wenn gesetzt, werden alle angegebenen Origins gemeinsam mit den globalen Optionen ausgeführt.</p>
       </div>
       <div class="space-y-1">
         <label class="text-sm font-medium text-slate-700" for="crawler-title">Titel (optional)</label>
@@ -94,6 +121,19 @@
           placeholder="handbook,hr"
         />
       </div>
+      <div class="md:col-span-2 space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-collection">Collection ID</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="crawler-collection"
+          name="collection_id"
+          type="search"
+          list="query-collection-options"
+          autocomplete="off"
+          placeholder="z. B. 123e4567-e89b-12d3-a456-426614174000"
+        />
+        <p class="text-xs text-slate-500">Optional: Überschreibt die aktive Resolver-Collection nur für diesen Lauf.</p>
+      </div>
       <div class="space-y-1">
         <label class="text-sm font-medium text-slate-700" for="crawler-content-type">Content Type</label>
         <input
@@ -114,6 +154,20 @@
           min="0"
         />
         <p class="text-xs text-slate-500">Optional: kleiner Wert löst einen Manual-Review-Pfad aus.</p>
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="crawler-review">Review Status</label>
+        <select
+          id="crawler-review"
+          name="review"
+          class="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          required
+        >
+          <option value="required" selected>Review erforderlich</option>
+          <option value="approved">Bereits freigegeben</option>
+          <option value="rejected">Bereits abgelehnt</option>
+        </select>
+        <p class="text-xs text-slate-500">Der Status steuert die Ingestion-Gating-Entscheidung und beeinflusst die Buttons zur manuellen Freigabe.</p>
       </div>
       <div class="md:col-span-2">
         <label class="inline-flex w-full cursor-pointer items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700" for="crawler-fetch">
@@ -197,7 +251,7 @@
           id="crawler-approve"
           disabled
         >
-          Manuell freigeben
+          Review freigeben
         </button>
         <button
           class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
@@ -205,8 +259,9 @@
           id="crawler-reject"
           disabled
         >
-          Manuell ablehnen
+          Review ablehnen
         </button>
+        <span class="text-xs text-slate-500" id="crawler-review-indicator">Review offen: –</span>
       </div>
     </form>
 
@@ -265,6 +320,12 @@
                 <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-run-id">–</code></dd>
               </div>
             </dl>
+            <div class="space-y-2">
+              <h4 class="text-xs font-semibold uppercase tracking-wide text-slate-500">Origin Outcomes</h4>
+              <div id="crawler-origin-outcomes" class="space-y-2 text-xs text-slate-600">
+                <p class="text-xs text-slate-500">Noch keine Ausführung gestartet.</p>
+              </div>
+            </div>
           </div>
           <div class="space-y-2">
             <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Transitions</h3>
@@ -1022,12 +1083,16 @@
       if (uploadCollectionInput && uploadCollectionInput instanceof HTMLInputElement) {
         uploadCollectionInput.value = currentCollectionId;
       }
+      if (crawlerCollectionInput && crawlerCollectionInput instanceof HTMLInputElement) {
+        crawlerCollectionInput.value = currentCollectionId;
+      }
       updateCollectionDisplays(currentCollectionId);
       return currentCollectionId;
     }
 
     const collectionInput = document.getElementById('query-collection');
     const uploadCollectionInput = document.getElementById('upload-collection');
+    const crawlerCollectionInput = document.getElementById('crawler-collection');
     updateCollectionDisplays(currentCollectionId);
     if (collectionInput && collectionInput instanceof HTMLInputElement) {
       if (currentCollectionId) {
@@ -1045,6 +1110,19 @@
           updateCollectionDisplays('');
         }
       });
+    }
+    if (crawlerCollectionInput && crawlerCollectionInput instanceof HTMLInputElement) {
+      if (currentCollectionId) {
+        crawlerCollectionInput.value = currentCollectionId;
+      }
+      const syncCrawlerCollection = function (event) {
+        const resolved = requireCollection({ rawValue: event.target.value, allowResolverFallback: false });
+        if (!resolved) {
+          updateCollectionDisplays('');
+        }
+      };
+      crawlerCollectionInput.addEventListener('change', syncCrawlerCollection);
+      crawlerCollectionInput.addEventListener('blur', syncCrawlerCollection);
     }
     if (uploadCollectionInput && uploadCollectionInput instanceof HTMLInputElement) {
       if (currentCollectionId) {
@@ -1405,7 +1483,9 @@
 
     const crawlerForm = document.getElementById('crawler-form');
     const crawlerWorkflowInput = document.getElementById('crawler-workflow');
+    const crawlerModeSelect = document.getElementById('crawler-mode');
     const crawlerOriginInput = document.getElementById('crawler-origin');
+    const crawlerOriginListInput = document.getElementById('crawler-origin-list');
     const crawlerTitleInput = document.getElementById('crawler-title');
     const crawlerLanguageInput = document.getElementById('crawler-language');
     const crawlerProviderInput = document.getElementById('crawler-provider');
@@ -1437,6 +1517,9 @@
     const crawlerApproveButton = document.getElementById('crawler-approve');
     const crawlerRejectButton = document.getElementById('crawler-reject');
     const crawlerCopyButton = document.getElementById('crawler-copy');
+    const crawlerReviewSelect = document.getElementById('crawler-review');
+    const crawlerOriginOutcomes = document.getElementById('crawler-origin-outcomes');
+    const crawlerReviewIndicator = document.getElementById('crawler-review-indicator');
 
     if (crawlerWorkflowInput && crawlerDefaultWorkflow && !crawlerWorkflowInput.value) {
       crawlerWorkflowInput.value = crawlerDefaultWorkflow;
@@ -1529,180 +1612,540 @@
         return;
       }
       crawlerTransitionsContainer.innerHTML = '';
-      if (!transitions || typeof transitions !== 'object') {
+      if (!Array.isArray(transitions) || !transitions.length) {
         const placeholder = document.createElement('p');
         placeholder.className = 'text-sm text-slate-500';
         placeholder.textContent = 'Keine Transitions vorhanden.';
         crawlerTransitionsContainer.appendChild(placeholder);
         return;
       }
-      const entries = Object.entries(transitions);
-      if (!entries.length) {
-        const placeholder = document.createElement('p');
-        placeholder.className = 'text-sm text-slate-500';
-        placeholder.textContent = 'Keine Transitions vorhanden.';
-        crawlerTransitionsContainer.appendChild(placeholder);
-        return;
-      }
-      entries.forEach(function (entry) {
-        const name = entry[0];
-        const payload = entry[1] || {};
-        const card = document.createElement('article');
-        card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+      transitions.forEach(function (entry) {
+        if (!entry || typeof entry !== 'object') {
+          return;
+        }
+        const origin =
+          typeof entry.origin === 'string' && entry.origin.trim()
+            ? entry.origin.trim()
+            : '–';
+        const transitionsMap =
+          entry.transitions && typeof entry.transitions === 'object'
+            ? entry.transitions
+            : {};
+        const wrapper = document.createElement('article');
+        wrapper.className = 'space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
 
         const header = document.createElement('div');
-        header.className = 'flex items-center justify-between gap-3 text-sm font-semibold text-slate-700';
+        header.className = 'flex flex-col gap-1';
+        const title = document.createElement('span');
+        title.className = 'break-all text-sm font-semibold text-slate-700';
+        title.textContent = origin;
+        header.appendChild(title);
+        const stepInfo = document.createElement('span');
+        stepInfo.className = 'text-xs text-slate-500';
+        stepInfo.textContent = Object.keys(transitionsMap).length + ' Schritte';
+        header.appendChild(stepInfo);
+        wrapper.appendChild(header);
 
-        const nameEl = document.createElement('span');
-        nameEl.textContent = name;
-        const decisionEl = document.createElement('code');
-        decisionEl.className = 'rounded bg-slate-100 px-2 py-1 text-xs';
-        decisionEl.textContent = typeof payload.decision === 'string' ? payload.decision : '–';
-        header.appendChild(nameEl);
-        header.appendChild(decisionEl);
-        card.appendChild(header);
+        const entries = Object.entries(transitionsMap);
+        if (!entries.length) {
+          const placeholder = document.createElement('p');
+          placeholder.className = 'text-xs text-slate-500';
+          placeholder.textContent = 'Keine Transitions vorhanden.';
+          wrapper.appendChild(placeholder);
+        } else {
+          entries.forEach(function (transitionEntry) {
+            const name = transitionEntry[0];
+            const payload = transitionEntry[1] || {};
+            const card = document.createElement('div');
+            card.className = 'space-y-2 rounded-md border border-slate-200 bg-white p-3';
 
-        const reason = document.createElement('p');
-        reason.className = 'text-sm text-slate-600';
-        reason.textContent = typeof payload.reason === 'string' ? payload.reason : '–';
-        card.appendChild(reason);
+            const topRow = document.createElement('div');
+            topRow.className = 'flex items-center justify-between gap-3 text-xs font-semibold text-slate-700';
+            const nameEl = document.createElement('span');
+            nameEl.textContent = name;
+            const decisionEl = document.createElement('code');
+            decisionEl.className = 'rounded bg-slate-100 px-2 py-0.5 text-[0.65rem] uppercase tracking-wide text-slate-700';
+            decisionEl.textContent = typeof payload.decision === 'string' ? payload.decision : '–';
+            topRow.appendChild(nameEl);
+            topRow.appendChild(decisionEl);
+            card.appendChild(topRow);
 
-        if (payload.attributes && typeof payload.attributes === 'object') {
-          const attributesList = document.createElement('dl');
-          attributesList.className = 'space-y-1 text-xs text-slate-600';
-          Object.entries(payload.attributes).forEach(function (attributeEntry) {
-            const attrKey = attributeEntry[0];
-            const attrValue = attributeEntry[1];
-            const row = document.createElement('div');
-            row.className = 'flex items-start justify-between gap-3';
-            const dt = document.createElement('dt');
-            dt.className = 'font-medium text-slate-500';
-            dt.textContent = attrKey;
-            const dd = document.createElement('dd');
-            dd.className = 'flex-1 text-right text-slate-700';
-            if (typeof attrValue === 'string' || typeof attrValue === 'number' || typeof attrValue === 'boolean') {
-              dd.textContent = String(attrValue);
-            } else {
-              try {
-                dd.textContent = JSON.stringify(attrValue);
-              } catch (err) {
-                dd.textContent = String(attrValue);
-              }
+            const detailKeys = Object.keys(payload).filter(function (key) {
+              return key !== 'decision';
+            });
+            if (detailKeys.length) {
+              const detailList = document.createElement('dl');
+              detailList.className = 'grid grid-cols-2 gap-x-3 gap-y-1 text-[0.65rem] text-slate-600';
+              detailKeys.forEach(function (key) {
+                const dt = document.createElement('dt');
+                dt.className = 'font-medium';
+                dt.textContent = key;
+                const dd = document.createElement('dd');
+                dd.className = 'text-right break-all';
+                const value = payload[key];
+                if (value === null || value === undefined) {
+                  dd.textContent = '–';
+                } else if (typeof value === 'object') {
+                  try {
+                    dd.textContent = JSON.stringify(value);
+                  } catch (err) {
+                    dd.textContent = String(value);
+                  }
+                } else {
+                  dd.textContent = String(value);
+                }
+                detailList.appendChild(dt);
+                detailList.appendChild(dd);
+              });
+              card.appendChild(detailList);
             }
-            row.appendChild(dt);
-            row.appendChild(dd);
-            attributesList.appendChild(row);
+
+            wrapper.appendChild(card);
           });
-          card.appendChild(attributesList);
         }
 
-        crawlerTransitionsContainer.appendChild(card);
+        crawlerTransitionsContainer.appendChild(wrapper);
+      });
+    }
+
+    function formatCountSummary(values, options) {
+      const opts = options || {};
+      const mapValue =
+        typeof opts.mapValue === 'function'
+          ? opts.mapValue
+          : function (value) {
+              return value;
+            };
+      const emptyLabel = opts.emptyLabel || '–';
+      const counts = new Map();
+      values.forEach(function (rawValue) {
+        let mapped = mapValue(rawValue);
+        if (mapped === undefined || mapped === null || mapped === '') {
+          mapped = '–';
+        }
+        const key = String(mapped);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
+      if (!counts.size) {
+        return emptyLabel;
+      }
+      const parts = [];
+      counts.forEach(function (count, key) {
+        if (key === '–') {
+          parts.push('–');
+          return;
+        }
+        if (count <= 1) {
+          parts.push(key);
+        } else {
+          parts.push(key + ' ×' + count);
+        }
+      });
+      return parts.join(', ') || emptyLabel;
+    }
+
+    function formatNumberValue(value) {
+      if (typeof value !== 'number' || !Number.isFinite(value)) {
+        return value;
+      }
+      try {
+        return new Intl.NumberFormat('de-DE').format(value);
+      } catch (err) {
+        return value;
+      }
+    }
+
+    function renderCrawlerOriginOutcomes(origins, telemetryByOrigin, data) {
+      if (!crawlerOriginOutcomes) {
+        return;
+      }
+      crawlerOriginOutcomes.innerHTML = '';
+      if (!Array.isArray(origins) || !origins.length) {
+        const placeholder = document.createElement('p');
+        placeholder.className = 'text-xs text-slate-500';
+        placeholder.textContent = 'Noch keine Ausführung gestartet.';
+        crawlerOriginOutcomes.appendChild(placeholder);
+        return;
+      }
+      origins.forEach(function (origin) {
+        if (!origin || typeof origin !== 'object') {
+          return;
+        }
+        const card = document.createElement('article');
+        card.className = 'space-y-2 rounded-md border border-slate-200 bg-white p-3 shadow-sm';
+        const header = document.createElement('div');
+        header.className = 'flex flex-col gap-1';
+        const originKey =
+          typeof origin.origin === 'string' && origin.origin.trim()
+            ? origin.origin.trim()
+            : typeof origin.url === 'string' && origin.url.trim()
+            ? origin.url.trim()
+            : '–';
+        const title = document.createElement('span');
+        title.className = 'break-all text-sm font-semibold text-slate-700';
+        title.textContent = originKey;
+        header.appendChild(title);
+        if (typeof origin.collection_id === 'string' && origin.collection_id.trim()) {
+          const collectionBadge = document.createElement('span');
+          collectionBadge.className = 'text-xs text-slate-500';
+          collectionBadge.textContent = 'Collection: ' + origin.collection_id.trim();
+          header.appendChild(collectionBadge);
+        }
+        card.appendChild(header);
+
+        const list = document.createElement('dl');
+        list.className = 'grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-600';
+
+        const addRow = function (label, value) {
+          const dt = document.createElement('dt');
+          dt.className = 'font-medium text-slate-600';
+          dt.textContent = label;
+          const dd = document.createElement('dd');
+          dd.className = 'text-right text-slate-700 break-all';
+          dd.textContent = value && value !== '' ? value : '–';
+          list.appendChild(dt);
+          list.appendChild(dd);
+        };
+
+        const control = origin.control && typeof origin.control === 'object' ? origin.control : {};
+        const ingestAction =
+          typeof origin.ingest_action === 'string' && origin.ingest_action.trim()
+            ? origin.ingest_action.trim()
+            : origin.result && typeof origin.result === 'object' && typeof origin.result.decision === 'string' && origin.result.decision.trim()
+            ? origin.result.decision.trim()
+            : '–';
+        addRow('Ingestion', ingestAction);
+        addRow(
+          'Graph Decision',
+          origin.result && typeof origin.result.decision === 'string'
+            ? origin.result.decision
+            : '–'
+        );
+
+        const reviewCandidate =
+          typeof origin.review === 'string'
+            ? origin.review
+            : typeof control.review === 'string'
+            ? control.review
+            : null;
+        const normalizedReview = reviewCandidate
+          ? normalizeCrawlerManualReview(reviewCandidate) || reviewCandidate
+          : '–';
+        addRow('Review', normalizedReview || '–');
+
+        const manualCandidate =
+          typeof control.manual_review === 'string'
+            ? control.manual_review
+            : null;
+        const normalizedManual = manualCandidate
+          ? normalizeCrawlerManualReview(manualCandidate) || manualCandidate
+          : normalizedReview || '–';
+        addRow('Manual Status', normalizedManual || '–');
+
+        const modeValue =
+          typeof control.mode === 'string' && control.mode.trim()
+            ? control.mode.trim()
+            : typeof data.mode === 'string' && data.mode.trim()
+            ? data.mode.trim()
+            : '';
+        if (modeValue) {
+          addRow('Modus', modeValue);
+        }
+
+        if (Object.prototype.hasOwnProperty.call(control, 'shadow_mode')) {
+          addRow('Shadow', String(Boolean(control.shadow_mode)));
+        } else if (Object.prototype.hasOwnProperty.call(origin, 'shadow_mode')) {
+          addRow('Shadow', String(Boolean(origin.shadow_mode)));
+        }
+
+        if (Object.prototype.hasOwnProperty.call(control, 'dry_run')) {
+          addRow('Dry Run', String(Boolean(control.dry_run)));
+        } else if (Object.prototype.hasOwnProperty.call(origin, 'dry_run')) {
+          addRow('Dry Run', String(Boolean(origin.dry_run)));
+        }
+
+        if (origin.ingestion_run_id) {
+          addRow('Ingestion Run', origin.ingestion_run_id);
+        }
+        if (origin.graph_run_id) {
+          addRow('Graph Run', origin.graph_run_id);
+        }
+
+        const telemetryEntry =
+          telemetryByOrigin.get(
+            typeof origin.origin === 'string' && origin.origin.trim()
+              ? origin.origin.trim()
+              : ''
+          ) ||
+          telemetryByOrigin.get(
+            typeof origin.url === 'string' && origin.url.trim() ? origin.url.trim() : ''
+          );
+        if (telemetryEntry) {
+          addRow(
+            'Fetch',
+            typeof telemetryEntry.fetch_used === 'boolean'
+              ? String(telemetryEntry.fetch_used)
+              : '–'
+          );
+          addRow(
+            'HTTP Status',
+            telemetryEntry.http_status !== undefined && telemetryEntry.http_status !== null
+              ? String(telemetryEntry.http_status)
+              : '–'
+          );
+          addRow(
+            'Fetched Bytes',
+            typeof telemetryEntry.fetched_bytes === 'number'
+              ? formatNumberValue(telemetryEntry.fetched_bytes)
+              : telemetryEntry.fetched_bytes
+              ? String(telemetryEntry.fetched_bytes)
+              : '–'
+          );
+          if (telemetryEntry.snapshot_label) {
+            addRow('Snapshot Label', telemetryEntry.snapshot_label);
+          }
+          if (telemetryEntry.snapshot_path) {
+            addRow('Snapshot Path', telemetryEntry.snapshot_path);
+          }
+          if (telemetryEntry.snapshot_sha256) {
+            addRow('Snapshot SHA', telemetryEntry.snapshot_sha256);
+          }
+        } else if (origin.state && typeof origin.state === 'object') {
+          const state = origin.state;
+          if (Object.prototype.hasOwnProperty.call(state, 'snapshot_requested')) {
+            addRow('Snapshot', String(Boolean(state.snapshot_requested)));
+          }
+          if (state.snapshot_label) {
+            addRow('Snapshot Label', state.snapshot_label);
+          }
+          if (state.snapshot_path) {
+            addRow('Snapshot Path', state.snapshot_path);
+          }
+          if (state.snapshot_sha256) {
+            addRow('Snapshot SHA', state.snapshot_sha256);
+          }
+        }
+
+        card.appendChild(list);
+        crawlerOriginOutcomes.appendChild(card);
       });
     }
 
     function renderCrawlerSummary(data) {
-      const result = data && typeof data === 'object' ? data.result : null;
-      const control = data && typeof data === 'object' ? data.control : null;
-      const snapshotState = data && typeof data === 'object' && data.state && typeof data.state === 'object' ? data.state : null;
-      const decisionValue = result && typeof result === 'object' && typeof result.decision === 'string' ? result.decision : '–';
-      const runIdValue = data && typeof data.graph_run_id === 'string' && data.graph_run_id
-        ? data.graph_run_id
-        : result && typeof result.graph_run_id === 'string' && result.graph_run_id
-        ? result.graph_run_id
-        : '–';
-      const manualValue = control && typeof control.manual_review !== 'undefined'
-        ? normalizeCrawlerManualReview(control.manual_review) || '–'
-        : '–';
-      const shadowValue = control && Object.prototype.hasOwnProperty.call(control, 'shadow_mode')
-        ? String(Boolean(control.shadow_mode))
-        : '–';
-      let fetchUsedValue = '–';
-      const fetchUsedRaw = data && Object.prototype.hasOwnProperty.call(data, 'fetch_used')
-        ? data.fetch_used
-        : result && Object.prototype.hasOwnProperty.call(result, 'fetch_used')
-        ? result.fetch_used
-        : null;
-      if (typeof fetchUsedRaw === 'boolean') {
-        fetchUsedValue = String(fetchUsedRaw);
-      }
-      let httpStatusValue = '–';
-      if (data && Object.prototype.hasOwnProperty.call(data, 'http_status')) {
-        const httpStatusRaw = data.http_status;
-        if (typeof httpStatusRaw === 'number' || typeof httpStatusRaw === 'string') {
-          httpStatusValue = String(httpStatusRaw);
+      const origins = Array.isArray(data && data.origins) ? data.origins : [];
+      const telemetry = Array.isArray(data && data.telemetry) ? data.telemetry : [];
+      const telemetryByOrigin = new Map();
+      telemetry.forEach(function (entry) {
+        if (!entry || typeof entry !== 'object') {
+          return;
         }
-      }
-      let fetchedBytesValue = '–';
-      if (data && Object.prototype.hasOwnProperty.call(data, 'fetched_bytes')) {
-        const fetchedRaw = data.fetched_bytes;
-        if (typeof fetchedRaw === 'number') {
-          try {
-            fetchedBytesValue = new Intl.NumberFormat('de-DE').format(fetchedRaw);
-          } catch (err) {
-            fetchedBytesValue = String(fetchedRaw);
+        const key =
+          typeof entry.origin === 'string' && entry.origin.trim()
+            ? entry.origin.trim()
+            : null;
+        if (key) {
+          telemetryByOrigin.set(key, entry);
+        }
+      });
+
+      const decisionValues = [];
+      const reviewValues = [];
+      const shadowValues = [];
+      const runIds = [];
+      const fetchUsedValues = [];
+      const httpStatusValues = [];
+      const fetchedBytesValues = [];
+      const snapshotRequestedValues = [];
+      const snapshotLabelValues = [];
+      const snapshotPathValues = [];
+      const snapshotShaValues = [];
+
+      origins.forEach(function (origin) {
+        if (!origin || typeof origin !== 'object') {
+          return;
+        }
+        const control = origin.control && typeof origin.control === 'object' ? origin.control : {};
+        const ingestAction =
+          typeof origin.ingest_action === 'string' && origin.ingest_action.trim()
+            ? origin.ingest_action.trim()
+            : origin.result && typeof origin.result === 'object' && typeof origin.result.decision === 'string' && origin.result.decision.trim()
+            ? origin.result.decision.trim()
+            : '–';
+        decisionValues.push(ingestAction);
+
+        if (typeof origin.graph_run_id === 'string' && origin.graph_run_id.trim()) {
+          runIds.push(origin.graph_run_id.trim());
+        }
+
+        const reviewCandidate =
+          typeof origin.review === 'string'
+            ? origin.review
+            : typeof control.review === 'string'
+            ? control.review
+            : null;
+        const normalizedReview = reviewCandidate
+          ? normalizeCrawlerManualReview(reviewCandidate) || reviewCandidate
+          : null;
+        reviewValues.push(normalizedReview || '–');
+
+        if (Object.prototype.hasOwnProperty.call(control, 'shadow_mode')) {
+          shadowValues.push(Boolean(control.shadow_mode));
+        }
+
+        const originKey =
+          typeof origin.origin === 'string' && origin.origin.trim()
+            ? origin.origin.trim()
+            : typeof origin.url === 'string' && origin.url.trim()
+            ? origin.url.trim()
+            : '';
+        const telemetryEntry = originKey ? telemetryByOrigin.get(originKey) : null;
+        if (telemetryEntry) {
+          fetchUsedValues.push(telemetryEntry.fetch_used);
+          httpStatusValues.push(telemetryEntry.http_status);
+          fetchedBytesValues.push(telemetryEntry.fetched_bytes);
+          snapshotRequestedValues.push(telemetryEntry.snapshot_requested);
+          snapshotLabelValues.push(telemetryEntry.snapshot_label);
+          snapshotPathValues.push(telemetryEntry.snapshot_path);
+          snapshotShaValues.push(telemetryEntry.snapshot_sha256);
+        } else if (origin.state && typeof origin.state === 'object') {
+          const state = origin.state;
+          if (Object.prototype.hasOwnProperty.call(state, 'snapshot_requested')) {
+            snapshotRequestedValues.push(state.snapshot_requested);
           }
-        } else if (typeof fetchedRaw === 'string') {
-          fetchedBytesValue = fetchedRaw;
+          if (Object.prototype.hasOwnProperty.call(state, 'snapshot_label')) {
+            snapshotLabelValues.push(state.snapshot_label);
+          }
+          if (Object.prototype.hasOwnProperty.call(state, 'snapshot_path')) {
+            snapshotPathValues.push(state.snapshot_path);
+          }
+          if (Object.prototype.hasOwnProperty.call(state, 'snapshot_sha256')) {
+            snapshotShaValues.push(state.snapshot_sha256);
+          }
         }
+      });
+
+      if (!fetchUsedValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'fetch_used')) {
+        fetchUsedValues.push(data.fetch_used);
       }
-      let snapshotRequestedValue = '–';
-      if (data && Object.prototype.hasOwnProperty.call(data, 'snapshot_requested')) {
-        snapshotRequestedValue = String(Boolean(data.snapshot_requested));
-      } else if (snapshotState && Object.prototype.hasOwnProperty.call(snapshotState, 'snapshot_requested')) {
-        snapshotRequestedValue = String(Boolean(snapshotState.snapshot_requested));
+      if (!httpStatusValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'http_status')) {
+        httpStatusValues.push(data.http_status);
       }
-      let snapshotLabelValue = '–';
-      if (data && typeof data.snapshot_label === 'string' && data.snapshot_label.trim()) {
-        snapshotLabelValue = data.snapshot_label.trim();
-      } else if (snapshotState && typeof snapshotState.snapshot_label === 'string' && snapshotState.snapshot_label.trim()) {
-        snapshotLabelValue = snapshotState.snapshot_label.trim();
+      if (!fetchedBytesValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'fetched_bytes')) {
+        fetchedBytesValues.push(data.fetched_bytes);
       }
-      let snapshotPathValue = '–';
-      if (data && typeof data.snapshot_path === 'string' && data.snapshot_path.trim()) {
-        snapshotPathValue = data.snapshot_path.trim();
-      } else if (snapshotState && typeof snapshotState.snapshot_path === 'string' && snapshotState.snapshot_path.trim()) {
-        snapshotPathValue = snapshotState.snapshot_path.trim();
+      if (!snapshotRequestedValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'snapshot_requested')) {
+        snapshotRequestedValues.push(data.snapshot_requested);
       }
-      let snapshotShaValue = '–';
-      if (data && typeof data.snapshot_sha256 === 'string' && data.snapshot_sha256.trim()) {
-        snapshotShaValue = data.snapshot_sha256.trim();
-      } else if (snapshotState && typeof snapshotState.snapshot_sha256 === 'string' && snapshotState.snapshot_sha256.trim()) {
-        snapshotShaValue = snapshotState.snapshot_sha256.trim();
+      if (!snapshotLabelValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'snapshot_label')) {
+        snapshotLabelValues.push(data.snapshot_label);
+      }
+      if (!snapshotPathValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'snapshot_path')) {
+        snapshotPathValues.push(data.snapshot_path);
+      }
+      if (!snapshotShaValues.length && Object.prototype.hasOwnProperty.call(data || {}, 'snapshot_sha256')) {
+        snapshotShaValues.push(data.snapshot_sha256);
       }
 
       if (crawlerDecisionDisplay) {
-        crawlerDecisionDisplay.textContent = decisionValue;
+        crawlerDecisionDisplay.textContent = formatCountSummary(decisionValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerManualStatus) {
-        crawlerManualStatus.textContent = manualValue;
+        crawlerManualStatus.textContent = formatCountSummary(reviewValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerShadowState) {
-        crawlerShadowState.textContent = shadowValue;
+        crawlerShadowState.textContent = formatCountSummary(shadowValues, {
+          emptyLabel: '–',
+          mapValue: function (value) {
+            return typeof value === 'boolean' ? String(value) : value;
+          },
+        });
       }
       if (crawlerFetchUsedDisplay) {
-        crawlerFetchUsedDisplay.textContent = fetchUsedValue;
+        crawlerFetchUsedDisplay.textContent = formatCountSummary(fetchUsedValues, {
+          emptyLabel: '–',
+          mapValue: function (value) {
+            if (typeof value === 'boolean') {
+              return String(value);
+            }
+            return value;
+          },
+        });
       }
       if (crawlerHttpStatusDisplay) {
-        crawlerHttpStatusDisplay.textContent = httpStatusValue;
+        crawlerHttpStatusDisplay.textContent = formatCountSummary(httpStatusValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerFetchedBytesDisplay) {
-        crawlerFetchedBytesDisplay.textContent = fetchedBytesValue;
+        crawlerFetchedBytesDisplay.textContent = formatCountSummary(fetchedBytesValues, {
+          emptyLabel: '–',
+          mapValue: function (value) {
+            if (typeof value === 'number' && Number.isFinite(value)) {
+              return formatNumberValue(value);
+            }
+            if (typeof value === 'string' && value.trim()) {
+              return value.trim();
+            }
+            return value;
+          },
+        });
       }
       if (crawlerSnapshotRequestedDisplay) {
-        crawlerSnapshotRequestedDisplay.textContent = snapshotRequestedValue;
+        crawlerSnapshotRequestedDisplay.textContent = formatCountSummary(snapshotRequestedValues, {
+          emptyLabel: '–',
+          mapValue: function (value) {
+            if (typeof value === 'boolean') {
+              return String(value);
+            }
+            return value;
+          },
+        });
       }
       if (crawlerSnapshotLabelDisplay) {
-        crawlerSnapshotLabelDisplay.textContent = snapshotLabelValue;
+        crawlerSnapshotLabelDisplay.textContent = formatCountSummary(snapshotLabelValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerSnapshotPathDisplay) {
-        crawlerSnapshotPathDisplay.textContent = snapshotPathValue;
+        crawlerSnapshotPathDisplay.textContent = formatCountSummary(snapshotPathValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerSnapshotShaDisplay) {
-        crawlerSnapshotShaDisplay.textContent = snapshotShaValue;
+        crawlerSnapshotShaDisplay.textContent = formatCountSummary(snapshotShaValues, {
+          emptyLabel: '–',
+        });
       }
       if (crawlerRunId) {
-        crawlerRunId.textContent = runIdValue;
+        if (runIds.length === 1) {
+          crawlerRunId.textContent = runIds[0];
+        } else if (runIds.length > 1) {
+          crawlerRunId.textContent = runIds.length + ' Läufe';
+        } else {
+          crawlerRunId.textContent = '–';
+        }
       }
+      if (crawlerReviewIndicator) {
+        if (!origins.length) {
+          crawlerReviewIndicator.textContent = 'Review offen: –';
+        } else {
+          const pending = reviewValues.filter(function (value) {
+            return value === 'required';
+          }).length;
+          if (pending > 0) {
+            crawlerReviewIndicator.textContent =
+              'Review offen: ' + pending + (pending === 1 ? ' URL' : ' URLs');
+          } else {
+            crawlerReviewIndicator.textContent = 'Review offen: 0';
+          }
+        }
+      }
+
+      renderCrawlerOriginOutcomes(origins, telemetryByOrigin, data || {});
     }
 
     function enableCrawlerActions(enabled) {
@@ -1753,10 +2196,36 @@
       }
     }
 
+    function parseOriginList(rawValue) {
+      if (typeof rawValue !== 'string') {
+        return [];
+      }
+      return rawValue
+        .split(/[\n,]/)
+        .map(function (entry) {
+          return entry.trim();
+        })
+        .filter(Boolean);
+    }
+
     function collectCrawlerConfig(manualOverride) {
+      const modeValue =
+        crawlerModeSelect && crawlerModeSelect instanceof HTMLSelectElement
+          ? crawlerModeSelect.value.trim()
+          : '';
+      const reviewValue =
+        crawlerReviewSelect && crawlerReviewSelect instanceof HTMLSelectElement
+          ? crawlerReviewSelect.value.trim()
+          : '';
+
       const config = {
         workflowId: crawlerWorkflowInput ? crawlerWorkflowInput.value : '',
+        mode: modeValue || 'ingest',
         originUrl: crawlerOriginInput ? crawlerOriginInput.value : '',
+        originUrls:
+          crawlerOriginListInput && crawlerOriginListInput instanceof HTMLTextAreaElement
+            ? parseOriginList(crawlerOriginListInput.value)
+            : [],
         title: crawlerTitleInput ? crawlerTitleInput.value : '',
         language: crawlerLanguageInput ? crawlerLanguageInput.value : '',
         provider: crawlerProviderInput ? crawlerProviderInput.value : '',
@@ -1769,10 +2238,45 @@
         maxDocumentBytes: crawlerMaxBytesInput ? crawlerMaxBytesInput.value : '',
         shadowMode: crawlerShadowToggle instanceof HTMLInputElement ? crawlerShadowToggle.checked : false,
         dryRun: crawlerDryRunToggle instanceof HTMLInputElement ? crawlerDryRunToggle.checked : false,
+        review: reviewValue || 'required',
       };
+
+      if (!config.originUrls.length) {
+        delete config.originUrls;
+      }
+
+      let collectionCandidate = '';
+      if (crawlerCollectionInput && crawlerCollectionInput instanceof HTMLInputElement && crawlerCollectionInput.value.trim()) {
+        collectionCandidate = crawlerCollectionInput.value.trim();
+      } else if (currentCollectionId) {
+        collectionCandidate = currentCollectionId;
+      }
+      if (collectionCandidate) {
+        const resolvedCollection = requireCollection({
+          rawValue: collectionCandidate,
+          allowResolverFallback: false,
+        });
+        if (resolvedCollection) {
+          config.collectionId = resolvedCollection;
+        }
+      }
+
+      if (
+        config.maxDocumentBytes !== undefined &&
+        config.maxDocumentBytes !== null &&
+        config.maxDocumentBytes !== ''
+      ) {
+        config.limits = { maxDocumentBytes: config.maxDocumentBytes };
+      }
+
       if (manualOverride !== undefined) {
         config.manualReview = manualOverride;
+        config.review = manualOverride;
+        if (crawlerReviewSelect && crawlerReviewSelect instanceof HTMLSelectElement) {
+          crawlerReviewSelect.value = manualOverride;
+        }
       }
+
       return config;
     }
 
@@ -1785,8 +2289,10 @@
         }
         clearCrawlerError();
         const config = collectCrawlerConfig();
-        if (!config.originUrl) {
-          showCrawlerError('Bitte Origin URL ausfüllen.');
+        const hasPrimaryOrigin = typeof config.originUrl === 'string' && config.originUrl.trim();
+        const hasAdditionalOrigins = Array.isArray(config.originUrls) && config.originUrls.length > 0;
+        if (!hasPrimaryOrigin && !hasAdditionalOrigins) {
+          showCrawlerError('Bitte mindestens eine Origin URL angeben.');
           return;
         }
         if (!config.fetch && !config.content) {
@@ -1794,8 +2300,10 @@
           return;
         }
         const payload = buildCrawlerPayload(config);
-        if (!payload.origin_url) {
-          showCrawlerError('Bitte Origin URL ausfüllen.');
+        const payloadHasOrigin = typeof payload.origin_url === 'string' && payload.origin_url.trim();
+        const payloadHasOriginsArray = Array.isArray(payload.origins) && payload.origins.length > 0;
+        if (!payloadHasOrigin && !payloadHasOriginsArray) {
+          showCrawlerError('Bitte mindestens eine Origin URL angeben.');
           return;
         }
         if (Object.prototype.hasOwnProperty.call(payload, 'fetch') && payload.fetch === false) {

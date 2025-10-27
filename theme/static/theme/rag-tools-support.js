@@ -78,11 +78,32 @@
   function buildCrawlerPayload(options) {
     const opts = options || {};
     const payload = {};
+
+    const parseInteger = function (value) {
+      if (value === undefined || value === null || value === '') {
+        return null;
+      }
+      const numeric = Number(value);
+      if (!Number.isFinite(numeric) || numeric < 0) {
+        return null;
+      }
+      return Math.floor(numeric);
+    };
+
     if (opts.workflowId) {
       payload.workflow_id = String(opts.workflowId).trim();
     }
+    if (opts.mode) {
+      const mode = String(opts.mode).trim();
+      if (mode) {
+        payload.mode = mode;
+      }
+    }
     if (opts.originUrl) {
-      payload.origin_url = String(opts.originUrl).trim();
+      const origin = String(opts.originUrl).trim();
+      if (origin) {
+        payload.origin_url = origin;
+      }
     }
     if (opts.documentId) {
       payload.document_id = String(opts.documentId).trim();
@@ -99,14 +120,20 @@
     if (opts.contentType) {
       payload.content_type = String(opts.contentType).trim();
     }
+
     const hasFetchFlag = Object.prototype.hasOwnProperty.call(opts, 'fetch');
     if (hasFetchFlag) {
       payload.fetch = Boolean(opts.fetch);
     }
-    const contentProvided = Object.prototype.hasOwnProperty.call(opts, 'content') && typeof opts.content === 'string' && opts.content.length > 0;
+
+    const contentProvided =
+      Object.prototype.hasOwnProperty.call(opts, 'content') &&
+      typeof opts.content === 'string' &&
+      opts.content.length > 0;
     if (contentProvided) {
       payload.content = String(opts.content);
     }
+
     if (opts.tags) {
       if (Array.isArray(opts.tags)) {
         payload.tags = opts.tags
@@ -123,49 +150,141 @@
           .filter(Boolean);
       }
     }
-    if (
-      opts.maxDocumentBytes !== undefined &&
-      opts.maxDocumentBytes !== null &&
-      opts.maxDocumentBytes !== ''
-    ) {
-      const parsed = Number(opts.maxDocumentBytes);
-      if (!Number.isNaN(parsed) && parsed >= 0) {
-        payload.max_document_bytes = Math.floor(parsed);
-      }
+
+    const limitsPayload = {};
+    const parsedMaxDocumentBytes = parseInteger(opts.maxDocumentBytes);
+    if (parsedMaxDocumentBytes !== null) {
+      payload.max_document_bytes = parsedMaxDocumentBytes;
+      limitsPayload.max_document_bytes = parsedMaxDocumentBytes;
     }
+    const providedLimits = opts.limits && typeof opts.limits === 'object' ? opts.limits : null;
+    if (providedLimits) {
+      ['maxDocumentBytes', 'max_document_bytes'].forEach(function (key) {
+        if (!Object.prototype.hasOwnProperty.call(providedLimits, key)) {
+          return;
+        }
+        const parsed = parseInteger(providedLimits[key]);
+        if (parsed !== null) {
+          limitsPayload.max_document_bytes = parsed;
+        }
+      });
+    }
+    if (Object.keys(limitsPayload).length) {
+      payload.limits = limitsPayload;
+    }
+
     if (Object.prototype.hasOwnProperty.call(opts, 'shadowMode')) {
       payload.shadow_mode = Boolean(opts.shadowMode);
     }
     if (Object.prototype.hasOwnProperty.call(opts, 'dryRun')) {
       payload.dry_run = Boolean(opts.dryRun);
     }
+
+    let snapshotOptions = null;
     if (Object.prototype.hasOwnProperty.call(opts, 'snapshot')) {
-      payload.snapshot = Boolean(opts.snapshot);
+      snapshotOptions = { enabled: Boolean(opts.snapshot) };
     }
     const snapshotLabel = Object.prototype.hasOwnProperty.call(opts, 'snapshotLabel')
       ? opts.snapshotLabel
       : opts.snapshot_label;
     if (typeof snapshotLabel === 'string' && snapshotLabel.trim()) {
-      payload.snapshot_label = snapshotLabel.trim();
+      const trimmedSnapshotLabel = snapshotLabel.trim();
+      payload.snapshot_label = trimmedSnapshotLabel;
+      if (!snapshotOptions) {
+        snapshotOptions = {};
+      }
+      snapshotOptions.label = trimmedSnapshotLabel;
     }
-    const manual = Object.prototype.hasOwnProperty.call(opts, 'manualReview')
+    if (snapshotOptions) {
+      payload.snapshot = snapshotOptions;
+    }
+
+    const reviewRaw = Object.prototype.hasOwnProperty.call(opts, 'review') ? opts.review : undefined;
+    const normalizedReview = normalizeCrawlerManualReview(
+      typeof reviewRaw === 'string' ? reviewRaw : ''
+    );
+    const manualRaw = Object.prototype.hasOwnProperty.call(opts, 'manualReview')
       ? opts.manualReview
       : opts.manual_review;
     const normalizedManual = normalizeCrawlerManualReview(
-      typeof manual === 'string' ? manual : ''
+      typeof manualRaw === 'string' ? manualRaw : ''
     );
+    if (normalizedReview) {
+      payload.review = normalizedReview;
+    }
     if (normalizedManual) {
       payload.manual_review = normalizedManual;
+      if (!payload.review) {
+        payload.review = normalizedManual;
+      }
+    } else if (payload.review) {
+      payload.manual_review = payload.review;
     }
+
+    if (opts.collectionId) {
+      const collectionId = String(opts.collectionId).trim();
+      if (collectionId) {
+        payload.collection_id = collectionId;
+      }
+    }
+
     if (Object.prototype.hasOwnProperty.call(opts, 'forceRetire')) {
       payload.force_retire = Boolean(opts.forceRetire);
     }
     if (Object.prototype.hasOwnProperty.call(opts, 'recomputeDelta')) {
       payload.recompute_delta = Boolean(opts.recomputeDelta);
     }
+
+    let originUrls = [];
+    if (Array.isArray(opts.originUrls)) {
+      originUrls = opts.originUrls
+        .map(function (entry) {
+          if (typeof entry === 'string') {
+            return entry.trim();
+          }
+          return String(entry || '').trim();
+        })
+        .filter(Boolean);
+    } else if (typeof opts.originUrls === 'string') {
+      originUrls = opts.originUrls
+        .split(/[\n,]/)
+        .map(function (entry) {
+          return entry.trim();
+        })
+        .filter(Boolean);
+    }
+    if (originUrls.length) {
+      payload.origins = originUrls.map(function (url) {
+        const originEntry = { url: url };
+        if (payload.review) {
+          originEntry.review = payload.review;
+        }
+        if (Object.prototype.hasOwnProperty.call(opts, 'dryRun')) {
+          originEntry.dry_run = Boolean(opts.dryRun);
+        }
+        if (payload.limits && Object.prototype.hasOwnProperty.call(payload.limits, 'max_document_bytes')) {
+          originEntry.limits = { max_document_bytes: payload.limits.max_document_bytes };
+        }
+        if (snapshotOptions) {
+          const perOriginSnapshot = {};
+          if (Object.prototype.hasOwnProperty.call(snapshotOptions, 'enabled')) {
+            perOriginSnapshot.enabled = Boolean(snapshotOptions.enabled);
+          }
+          if (snapshotOptions.label) {
+            perOriginSnapshot.label = snapshotOptions.label;
+          }
+          if (Object.keys(perOriginSnapshot).length) {
+            originEntry.snapshot = perOriginSnapshot;
+          }
+        }
+        return originEntry;
+      });
+    }
+
     if (hasFetchFlag && payload.fetch === false && !Object.prototype.hasOwnProperty.call(payload, 'content')) {
       payload.content = '';
     }
+
     return payload;
   }
 
