@@ -68,10 +68,13 @@ describe('rag-tools-support helpers', () => {
       language: ' DE ',
       content: '<html>Hallo</html>',
       contentType: ' text/html ',
+      fetch: false,
       tags: 'alpha, beta , ',
       maxDocumentBytes: '1024',
       shadowMode: true,
       dryRun: false,
+      snapshot: '1',
+      snapshotLabel: ' debug ',
       manualReview: 'APPROVED',
       forceRetire: 1,
       recomputeDelta: '1',
@@ -85,13 +88,30 @@ describe('rag-tools-support helpers', () => {
     expect(payload.language).toBe('DE');
     expect(payload.content_type).toBe('text/html');
     expect(payload.content).toBe('<html>Hallo</html>');
+    expect(payload.fetch).toBe(false);
     expect(payload.tags).toEqual(['alpha', 'beta']);
     expect(payload.max_document_bytes).toBe(1024);
     expect(payload.shadow_mode).toBe(true);
     expect(payload.dry_run).toBe(false);
+    expect(payload.snapshot).toBe(true);
+    expect(payload.snapshot_label).toBe('debug');
     expect(payload.manual_review).toBe('approved');
     expect(payload.force_retire).toBe(true);
     expect(payload.recompute_delta).toBe(true);
+  });
+
+  it('omits content when fetch is enabled and input empty', () => {
+    const payload = buildCrawlerPayload({ fetch: true, content: '' });
+
+    expect(payload.fetch).toBe(true);
+    expect(Object.prototype.hasOwnProperty.call(payload, 'content')).toBe(false);
+  });
+
+  it('enforces empty content placeholder when fetch disabled', () => {
+    const payload = buildCrawlerPayload({ fetch: false });
+
+    expect(payload.fetch).toBe(false);
+    expect(payload.content).toBe('');
   });
 
   it('normalizes crawler manual review inputs', () => {

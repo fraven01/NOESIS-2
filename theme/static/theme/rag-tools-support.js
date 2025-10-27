@@ -99,7 +99,12 @@
     if (opts.contentType) {
       payload.content_type = String(opts.contentType).trim();
     }
-    if (opts.content) {
+    const hasFetchFlag = Object.prototype.hasOwnProperty.call(opts, 'fetch');
+    if (hasFetchFlag) {
+      payload.fetch = Boolean(opts.fetch);
+    }
+    const contentProvided = Object.prototype.hasOwnProperty.call(opts, 'content') && typeof opts.content === 'string' && opts.content.length > 0;
+    if (contentProvided) {
       payload.content = String(opts.content);
     }
     if (opts.tags) {
@@ -134,6 +139,15 @@
     if (Object.prototype.hasOwnProperty.call(opts, 'dryRun')) {
       payload.dry_run = Boolean(opts.dryRun);
     }
+    if (Object.prototype.hasOwnProperty.call(opts, 'snapshot')) {
+      payload.snapshot = Boolean(opts.snapshot);
+    }
+    const snapshotLabel = Object.prototype.hasOwnProperty.call(opts, 'snapshotLabel')
+      ? opts.snapshotLabel
+      : opts.snapshot_label;
+    if (typeof snapshotLabel === 'string' && snapshotLabel.trim()) {
+      payload.snapshot_label = snapshotLabel.trim();
+    }
     const manual = Object.prototype.hasOwnProperty.call(opts, 'manualReview')
       ? opts.manualReview
       : opts.manual_review;
@@ -148,6 +162,9 @@
     }
     if (Object.prototype.hasOwnProperty.call(opts, 'recomputeDelta')) {
       payload.recompute_delta = Boolean(opts.recomputeDelta);
+    }
+    if (hasFetchFlag && payload.fetch === false && !Object.prototype.hasOwnProperty.call(payload, 'content')) {
+      payload.content = '';
     }
     return payload;
   }
