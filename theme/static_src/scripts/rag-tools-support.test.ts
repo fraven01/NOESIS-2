@@ -154,6 +154,13 @@ describe('rag-tools-support helpers', () => {
     ]);
   });
 
+  it('maps crawler mode selections to backend-supported values', () => {
+    expect(buildCrawlerPayload({ mode: 'ingest' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'store_only' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'fetch_only' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'manual' }).mode).toBe('manual');
+  });
+
   it('normalizes crawler manual review inputs', () => {
     expect(normalizeCrawlerManualReview('required')).toBe('required');
     expect(normalizeCrawlerManualReview(' Approved ')).toBe('approved');

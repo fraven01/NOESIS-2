@@ -75,6 +75,14 @@
     return null;
   }
 
+  const crawlerModeMap = {
+    manual: 'manual',
+    live: 'live',
+    ingest: 'live',
+    store_only: 'live',
+    fetch_only: 'live',
+  };
+
   function mapCrawlerMode(value) {
     if (typeof value !== 'string') {
       return null;
@@ -83,16 +91,7 @@
     if (!lowered) {
       return null;
     }
-    if (lowered === 'manual') {
-      return 'manual';
-    }
-    if (lowered === 'live') {
-      return 'live';
-    }
-    if (lowered === 'ingest' || lowered === 'store_only' || lowered === 'fetch_only') {
-      return 'live';
-    }
-    return 'live';
+    return crawlerModeMap[lowered] || 'live';
   }
 
   function buildCrawlerPayload(options) {
