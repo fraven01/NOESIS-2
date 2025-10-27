@@ -222,140 +222,10 @@ class RagHardDeleteAdminRequest(BaseModel):
         return None
 
 
-class CrawlerRunRequest(BaseModel):
-    """Request payload used by the crawler LangGraph runner."""
+class CrawlerRunLimits(BaseModel):
+    """Optional guardrail limit overrides for crawler runs."""
 
-    workflow_id: str | None = None
-    origin_url: str
-    provider: str = "web"
-    document_id: str | None = None
-    title: str | None = None
-    language: str | None = None
-    content: str | None = None
-    content_type: str = "text/html"
-    fetch: bool = True
-    snapshot: bool = False
-    snapshot_label: str | None = None
-    tags: list[str] | None = None
-    shadow_mode: bool = False
-    dry_run: bool = False
-    manual_review: Literal["required", "approved", "rejected"] | None = None
-    force_retire: bool = False
-    recompute_delta: bool = False
     max_document_bytes: int | None = None
-
-    @field_validator("origin_url", mode="before")
-    @classmethod
-    def _normalise_origin_url(cls, value: object) -> str:
-        if not isinstance(value, str):
-            raise PydanticCustomError(
-                "invalid_origin_url",
-                "origin_url must be provided as a non-empty string.",
-            )
-        url = value.strip()
-        if not url:
-            raise PydanticCustomError(
-                "invalid_origin_url",
-                "origin_url must be provided as a non-empty string.",
-            )
-        return url
-
-    @field_validator("provider", "content_type", mode="before")
-    @classmethod
-    def _normalise_simple_text(cls, value: object, info: ValidationInfo) -> str:
-        if not isinstance(value, str):
-            raise PydanticCustomError(
-                f"invalid_{info.field_name}",
-                f"{info.field_name} must be a non-empty string.",
-            )
-        candidate = value.strip()
-        if not candidate:
-            raise PydanticCustomError(
-                f"invalid_{info.field_name}",
-                f"{info.field_name} must be a non-empty string.",
-            )
-        return candidate
-
-    @field_validator("workflow_id", "document_id", "title", "language", mode="before")
-    @classmethod
-    def _trim_optional_text(cls, value: object, info: ValidationInfo) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise PydanticCustomError(
-                f"invalid_{info.field_name}",
-                f"{info.field_name} must be a string when provided.",
-            )
-        trimmed = value.strip()
-        return trimmed or None
-
-    @field_validator("content", mode="before")
-    @classmethod
-    def _ensure_content(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise PydanticCustomError(
-                "invalid_content",
-                "content must be provided as a non-empty string.",
-            )
-        content = value.strip()
-        if not content:
-            raise PydanticCustomError(
-                "invalid_content",
-                "content must be provided as a non-empty string.",
-            )
-        return content
-
-    @field_validator("snapshot_label", mode="before")
-    @classmethod
-    def _normalise_snapshot_label(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if not isinstance(value, str):
-            raise PydanticCustomError(
-                "invalid_snapshot_label",
-                "snapshot_label must be a string when provided.",
-            )
-        trimmed = value.strip()
-        return trimmed or None
-
-    @field_validator("tags", mode="before")
-    @classmethod
-    def _normalise_tags(cls, value: object) -> list[str] | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            entries = [entry.strip() for entry in value.split(",")]
-        elif isinstance(value, Sequence):
-            entries = [str(entry).strip() for entry in value]
-        else:
-            raise PydanticCustomError(
-                "invalid_tags",
-                "tags must be provided as a list or comma separated string.",
-            )
-        normalised = [entry for entry in entries if entry]
-        return normalised or None
-
-    @field_validator("manual_review", mode="before")
-    @classmethod
-    def _normalise_manual_review(cls, value: object) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            candidate = value.strip().lower()
-            if not candidate:
-                return None
-            if candidate not in {"required", "approved", "rejected"}:
-                raise PydanticCustomError(
-                    "invalid_manual_review",
-                    "manual_review must be one of required, approved, rejected.",
-                )
-            return candidate
-        raise PydanticCustomError(
-            "invalid_manual_review",
-            "manual_review must be a string when provided.",
-        )
 
     @field_validator("max_document_bytes", mode="before")
     @classmethod
@@ -376,13 +246,252 @@ class CrawlerRunRequest(BaseModel):
             )
         return parsed
 
-    @model_validator(mode="after")
-    def _ensure_content_when_fetch_disabled(self) -> "CrawlerRunRequest":
-        if not self.fetch and self.content is None:
+
+class CrawlerRunSnapshot(BaseModel):
+    """Snapshot configuration for crawler runs."""
+
+    enabled: bool = False
+    label: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_bool(cls, value: object) -> Mapping[str, object] | object:
+        if isinstance(value, bool):
+            return {"enabled": value}
+        return value
+
+    @field_validator("label", mode="before")
+    @classmethod
+    def _normalise_label(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
             raise PydanticCustomError(
-                "content_required_when_fetch_disabled",
-                "content must be provided when fetch is disabled.",
+                "invalid_snapshot_label",
+                "snapshot label must be a string when provided.",
             )
+        trimmed = value.strip()
+        return trimmed or None
+
+
+class CrawlerRunOrigin(BaseModel):
+    """Origin description for crawler runs."""
+
+    url: str
+    provider: str = "web"
+    document_id: str | None = None
+    title: str | None = None
+    language: str | None = None
+    content: str | None = None
+    content_type: str = "text/html"
+    snapshot_label: str | None = None
+    tags: list[str] | None = None
+
+    @field_validator("url", mode="before")
+    @classmethod
+    def _normalise_url(cls, value: object) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin url must be provided as a non-empty string.",
+            )
+        url = value.strip()
+        if not url:
+            raise PydanticCustomError(
+                "invalid_origin_url",
+                "origin url must be provided as a non-empty string.",
+            )
+        return url
+
+    @field_validator("provider", "content_type", mode="before")
+    @classmethod
+    def _normalise_simple_text(cls, value: object, info: ValidationInfo) -> str:
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a non-empty string.",
+            )
+        candidate = value.strip()
+        if not candidate:
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a non-empty string.",
+            )
+        return candidate
+
+    @field_validator(
+        "document_id", "title", "language", "content", "snapshot_label", mode="before"
+    )
+    @classmethod
+    def _trim_optional_text(cls, value: object, info: ValidationInfo) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                f"invalid_{info.field_name}",
+                f"{info.field_name} must be a string when provided.",
+            )
+        trimmed = value.strip()
+        if info.field_name == "content" and not trimmed:
+            raise PydanticCustomError(
+                "invalid_content",
+                "content must be provided as a non-empty string.",
+            )
+        return trimmed or None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalise_tags(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            entries = [entry.strip() for entry in value.split(",")]
+        elif isinstance(value, Sequence):
+            entries = [str(entry).strip() for entry in value]
+        else:
+            raise PydanticCustomError(
+                "invalid_tags",
+                "tags must be provided as a list or comma separated string.",
+            )
+        normalised: list[str] = []
+        seen: set[str] = set()
+        for entry in entries:
+            if not entry or entry in seen:
+                continue
+            seen.add(entry)
+            normalised.append(entry)
+        return normalised or None
+
+
+class CrawlerRunRequest(BaseModel):
+    """Request payload used by the crawler LangGraph runner."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    workflow_id: str | None = None
+    origins: list[CrawlerRunOrigin] = Field(..., min_length=1)
+    mode: Literal["live", "content"] = "live"
+    collection_id: str | None = None
+    limits: CrawlerRunLimits | None = None
+    review: Literal["required", "approved", "rejected"] | None = None
+    snapshot: CrawlerRunSnapshot = Field(default_factory=CrawlerRunSnapshot)
+    tags: list[str] | None = None
+    shadow_mode: bool = False
+    dry_run: bool = False
+    force_retire: bool = False
+    recompute_delta: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_legacy_payload(cls, value: object) -> Mapping[str, object]:
+        if not isinstance(value, Mapping):
+            raise PydanticCustomError(
+                "invalid_request",
+                "Crawler request must be provided as an object.",
+            )
+        data = dict(value)
+        if "origins" not in data and data.get("origin_url"):
+            origin: dict[str, object] = {"url": data.get("origin_url")}
+            if data.get("provider"):
+                origin["provider"] = data.get("provider")
+            for field in ("document_id", "title", "language", "content"):
+                if data.get(field) is not None:
+                    origin[field] = data[field]
+            if data.get("content_type"):
+                origin["content_type"] = data["content_type"]
+            if data.get("snapshot_label"):
+                origin["snapshot_label"] = data["snapshot_label"]
+            if data.get("tags"):
+                origin["tags"] = data["tags"]
+            data["origins"] = [origin]
+        if "limits" not in data and data.get("max_document_bytes") is not None:
+            data["limits"] = {"max_document_bytes": data["max_document_bytes"]}
+        if "snapshot" not in data:
+            snapshot_enabled = data.get("snapshot") if "snapshot" in data else None
+            label = data.get("snapshot_label")
+            if snapshot_enabled is not None or label is not None:
+                data["snapshot"] = {
+                    "enabled": bool(snapshot_enabled),
+                    "label": label,
+                }
+        if "review" not in data and data.get("manual_review") is not None:
+            data["review"] = data.get("manual_review")
+        if "mode" not in data and data.get("fetch") is not None:
+            data["mode"] = "live" if data.get("fetch") else "content"
+        return data
+
+    @field_validator("workflow_id", mode="before")
+    @classmethod
+    def _trim_workflow(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_workflow_id",
+                "workflow_id must be a string when provided.",
+            )
+        trimmed = value.strip()
+        return trimmed or None
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        return _normalise_optional_uuid(value, "collection_id")
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalise_tags(cls, value: object) -> list[str] | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            entries = [entry.strip() for entry in value.split(",")]
+        elif isinstance(value, Sequence):
+            entries = [str(entry).strip() for entry in value]
+        else:
+            raise PydanticCustomError(
+                "invalid_tags",
+                "tags must be provided as a list or comma separated string.",
+            )
+        normalised = []
+        seen: set[str] = set()
+        for entry in entries:
+            if not entry:
+                continue
+            if entry in seen:
+                continue
+            seen.add(entry)
+            normalised.append(entry)
+        return normalised or None
+
+    @field_validator("review", mode="before")
+    @classmethod
+    def _normalise_review(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            candidate = value.strip().lower()
+            if not candidate:
+                return None
+            if candidate not in {"required", "approved", "rejected"}:
+                raise PydanticCustomError(
+                    "invalid_review",
+                    "review must be one of required, approved, rejected.",
+                )
+            return candidate
+        raise PydanticCustomError(
+            "invalid_review",
+            "review must be a string when provided.",
+        )
+
+    @model_validator(mode="after")
+    def _validate_mode_requirements(self) -> "CrawlerRunRequest":
+        if self.mode == "content":
+            for origin in self.origins:
+                if origin.content is None:
+                    raise PydanticCustomError(
+                        "content_required",
+                        "content mode requires inline content for every origin.",
+                    )
         return self
 
 
