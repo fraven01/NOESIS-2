@@ -445,7 +445,7 @@ class RagQueryRequest(_GraphStateBase):
     visibility: str | None = None
     visibility_override_allowed: bool | None = None
     hybrid: dict[str, Any] | None = None
-    collection_id: str
+    collection_id: str | None = None
 
     @field_validator(
         "question", "query", "process", "doc_class", "visibility", mode="before"
@@ -480,14 +480,9 @@ class RagQueryRequest(_GraphStateBase):
 
     @field_validator("collection_id", mode="before")
     @classmethod
-    def _normalise_collection_id(cls, value: object) -> str:
-        normalised = _normalise_optional_uuid(value, "collection_id")
-        if normalised is None:
-            raise PydanticCustomError(
-                "invalid_collection_id",
-                "collection_id must be provided as a UUID string.",
-            )
-        return normalised
+    def _normalise_collection_id(cls, value: object) -> str | None:
+        # Accept missing/empty values to allow global queries across all documents.
+        return _normalise_optional_uuid(value, "collection_id")
 
     @model_validator(mode="after")
     def _apply_collection_scope(self) -> "RagQueryRequest":
@@ -514,11 +509,19 @@ class RagQueryRequest(_GraphStateBase):
                     existing_collection_ids.insert(0, normalised_filter_id)
             filters.pop("collection_id", None)
 
-        if self.collection_id not in existing_collection_ids:
-            existing_collection_ids.insert(0, self.collection_id)
+        # Only apply a concrete collection scope if provided either via the
+        # request body (self.collection_id) or as legacy filter fields above.
+        if self.collection_id is not None:
+            if self.collection_id not in existing_collection_ids:
+                existing_collection_ids.insert(0, self.collection_id)
+            filters["collection_id"] = self.collection_id
 
-        filters["collection_id"] = self.collection_id
-        filters["collection_ids"] = existing_collection_ids
+        # Persist list only when non-empty; otherwise omit to indicate global search
+        if existing_collection_ids:
+            filters["collection_ids"] = existing_collection_ids
+        else:
+            filters.pop("collection_ids", None)
+            filters.pop("collection_id", None)
 
         if filters:
             self.filters = filters

@@ -1042,6 +1042,7 @@ CRAWLER_RUN_RESPONSE = inline_serializer(
         "gating_score": serializers.FloatField(required=False),
         "graph_run_id": serializers.CharField(required=False),
         "state": serializers.JSONField(required=False),
+        "idempotent": serializers.BooleanField(),
     },
 )
 
@@ -1790,6 +1791,7 @@ class CrawlerIngestionRunnerView(APIView):
             "gating_score": result_state.get("gating_score"),
             "graph_run_id": result.get("graph_run_id"),
             "state": services._make_json_safe(snapshot),
+            "idempotent": bool(request.headers.get(IDEMPOTENCY_KEY_HEADER)),
         }
 
         response = Response(response_payload, status=status.HTTP_200_OK)

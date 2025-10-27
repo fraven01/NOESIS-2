@@ -94,6 +94,20 @@ logger = logging.getLogger(__name__)
 CHECKPOINTER = FileCheckpointer()
 
 
+# Lightweight ledger shim so tests can monkeypatch services.ledger.record(...)
+class _LedgerShim:
+    def record(self, meta):  # type: ignore[no-untyped-def]
+        # No-op by default; tests replace this with a spy.
+        try:
+            _ = dict(meta)  # force materialization for safety
+        except Exception:
+            pass
+        return None
+
+
+ledger = _LedgerShim()
+
+
 _DOCUMENTS_REPOSITORY: DocumentsRepository | None = None
 
 
