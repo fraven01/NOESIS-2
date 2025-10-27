@@ -1019,8 +1019,9 @@ CRAWLER_RUN_REQUEST = inline_serializer(
         "document_id": serializers.CharField(required=False),
         "title": serializers.CharField(required=False),
         "language": serializers.CharField(required=False),
-        "content": serializers.CharField(),
+        "content": serializers.CharField(required=False, allow_null=True),
         "content_type": serializers.CharField(required=False),
+        "fetch": serializers.BooleanField(required=False),
         "tags": serializers.ListField(child=serializers.CharField(), required=False),
         "shadow_mode": serializers.BooleanField(required=False),
         "dry_run": serializers.BooleanField(required=False),
@@ -1028,6 +1029,8 @@ CRAWLER_RUN_REQUEST = inline_serializer(
         "force_retire": serializers.BooleanField(required=False),
         "recompute_delta": serializers.BooleanField(required=False),
         "max_document_bytes": serializers.IntegerField(required=False),
+        "snapshot": serializers.BooleanField(required=False),
+        "snapshot_label": serializers.CharField(required=False, allow_null=True),
     },
 )
 
@@ -1420,6 +1423,11 @@ def _build_crawler_state(
         canonical_source=source.canonical_source, politeness=politeness
     )
 
+    if request_data.content is None:
+        raise ValueError(
+            "Manual crawler runs require inline content. Provide content or enable remote fetching."
+        )
+
     body = request_data.content.encode("utf-8")
     fetch_input = {
         "request": fetch_request,
@@ -1480,6 +1488,11 @@ def _build_crawler_state(
         "delta_input": {},
         "gating_input": gating_input,
         "document_id": document_id,
+    }
+    state["control"] = {
+        "snapshot": request_data.snapshot,
+        "snapshot_label": request_data.snapshot_label,
+        "fetch": request_data.fetch,
     }
     return state
 
@@ -1778,6 +1791,8 @@ class CrawlerIngestionRunnerView(APIView):
             "provider": result_state.get("provider"),
             "content_hash": result_state.get("content_hash"),
             "tags": list(result_state.get("normalize_input", {}).get("tags", ())),
+            "snapshot_requested": request_model.snapshot,
+            "snapshot_label": request_model.snapshot_label,
         }
 
         response_payload = {
