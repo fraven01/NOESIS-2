@@ -51,7 +51,7 @@ from noesis2.api.serializers import (
 from crawler.contracts import normalize_source
 from crawler.fetcher import FetchRequest, PolitenessContext
 from crawler.frontier import CrawlSignals, SourceDescriptor
-from crawler.guardrails import GuardrailSignals
+from crawler.guardrails import GuardrailLimits, GuardrailSignals
 from crawler.parser import ParseStatus, ParserContent, ParserStats
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
@@ -1735,7 +1735,7 @@ class CrawlerIngestionRunnerView(APIView):
             request_model = CrawlerRunRequest.model_validate(payload)
         except ValidationError as exc:
             return _error_response(
-                _format_validation_error(exc),
+                services._format_validation_error(exc),
                 "invalid_request",
                 status.HTTP_400_BAD_REQUEST,
             )
@@ -1743,13 +1743,17 @@ class CrawlerIngestionRunnerView(APIView):
         try:
             state = _build_crawler_state(meta, request_model)
         except ValueError as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
 
         graph = crawler_ingestion_graph.build_graph()
         state = graph.start_crawl(state)
 
         control = dict(state.get("control", {}))
-        control["shadow_mode"] = bool(request_model.shadow_mode or request_model.dry_run)
+        control["shadow_mode"] = bool(
+            request_model.shadow_mode or request_model.dry_run
+        )
         if request_model.manual_review:
             control["manual_review"] = request_model.manual_review
         if request_model.force_retire:

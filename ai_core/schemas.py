@@ -259,9 +259,7 @@ class CrawlerRunRequest(BaseModel):
 
     @field_validator("provider", "content_type", mode="before")
     @classmethod
-    def _normalise_simple_text(
-        cls, value: object, info: ValidationInfo
-    ) -> str:
+    def _normalise_simple_text(cls, value: object, info: ValidationInfo) -> str:
         if not isinstance(value, str):
             raise PydanticCustomError(
                 f"invalid_{info.field_name}",
@@ -277,9 +275,7 @@ class CrawlerRunRequest(BaseModel):
 
     @field_validator("workflow_id", "document_id", "title", "language", mode="before")
     @classmethod
-    def _trim_optional_text(
-        cls, value: object, info: ValidationInfo
-    ) -> str | None:
+    def _trim_optional_text(cls, value: object, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         if not isinstance(value, str):

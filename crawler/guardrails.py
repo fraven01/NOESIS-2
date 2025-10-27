@@ -263,9 +263,7 @@ def enforce_guardrails(
                 ),
             )
 
-    return GuardrailDecision.from_legacy(
-        GuardrailStatus.ALLOW, "allow", (), None
-    )
+    return GuardrailDecision.from_legacy(GuardrailStatus.ALLOW, "allow", (), None)
 
 
 def _deny(
@@ -274,9 +272,7 @@ def _deny(
     events: Tuple[str, ...],
     error: CrawlerError,
 ) -> GuardrailDecision:
-    return GuardrailDecision.from_legacy(
-        GuardrailStatus.DENY, reason, events, error
-    )
+    return GuardrailDecision.from_legacy(GuardrailStatus.DENY, reason, events, error)
 
 
 def _quota_exceeded(
