@@ -115,7 +115,21 @@
         />
         <p class="text-xs text-slate-500">Optional: kleiner Wert löst einen Manual-Review-Pfad aus.</p>
       </div>
-      <div class="md:col-span-2 space-y-1">
+      <div class="md:col-span-2">
+        <label class="inline-flex w-full cursor-pointer items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700" for="crawler-fetch">
+          <input
+            type="checkbox"
+            id="crawler-fetch"
+            class="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+            checked
+          />
+          <span class="flex flex-col gap-1">
+            <span class="font-medium text-slate-800">Live fetch via URL</span>
+            <span class="text-xs text-slate-500">Bei aktivem Live-Fetch wird der Inhalt direkt von der Origin-URL geladen. Deaktiviere den Schalter, um stattdessen manuell eingegebenen Content zu senden.</span>
+          </span>
+        </label>
+      </div>
+      <div id="crawler-content-wrapper" class="md:col-span-2 hidden space-y-1">
         <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <label class="text-sm font-medium text-slate-700" for="crawler-content">Content</label>
           <span class="text-xs text-slate-500">HTML oder Plain Text</span>
@@ -125,8 +139,32 @@
           id="crawler-content"
           name="content"
           rows="6"
-          required
         ></textarea>
+      </div>
+      <div class="md:col-span-2 space-y-2">
+        <label class="inline-flex w-full cursor-pointer items-start gap-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700" for="crawler-snapshot">
+          <input
+            type="checkbox"
+            id="crawler-snapshot"
+            class="mt-1 h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+          />
+          <span class="flex flex-col gap-1">
+            <span class="font-medium text-slate-800">Snapshot anlegen</span>
+            <span class="text-xs text-slate-500">Erstellt eine HTML-Kopie des Inputs zur späteren Analyse. Aktivieren, wenn der Lauf dokumentiert werden soll.</span>
+          </span>
+        </label>
+        <div id="crawler-snapshot-label-wrapper" class="hidden space-y-1">
+          <label class="text-sm font-medium text-slate-700" for="crawler-snapshot-label">Snapshot Label (optional)</label>
+          <input
+            class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+            id="crawler-snapshot-label"
+            name="snapshot_label"
+            type="text"
+            placeholder="z. B. live-debug"
+            disabled
+          />
+          <p class="text-xs text-slate-500">Hinweis: Labels helfen beim Wiederfinden im Storage und erscheinen in der JSON-Antwort.</p>
+        </div>
       </div>
       <div class="md:col-span-2 flex flex-wrap items-center gap-4">
         <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="crawler-shadow">
@@ -195,6 +233,34 @@
                 <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-shadow-state">–</code></dd>
               </div>
               <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Live Fetch genutzt</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-fetch-used">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">HTTP Status</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-http-status">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Fetched Bytes</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-fetched-bytes">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Snapshot requested</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-snapshot-requested">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Snapshot Label</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-snapshot-label-display">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Snapshot Path</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-snapshot-path">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
+                <dt class="font-medium text-slate-600">Snapshot SHA256</dt>
+                <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-snapshot-sha">–</code></dd>
+              </div>
+              <div class="flex items-center justify-between gap-3">
                 <dt class="font-medium text-slate-600">Graph Run</dt>
                 <dd><code class="rounded bg-slate-100 px-2 py-1 text-xs" id="crawler-run-id">–</code></dd>
               </div>
@@ -219,6 +285,7 @@
             </button>
           </div>
           <pre class="max-h-80 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-100" id="crawler-json"></pre>
+          <p class="text-xs text-slate-500">Smoke Hinweis: Nutze „Copy JSON“, um Fetch- und Snapshot-Felder manuell zu validieren. Optisches QA via Browser-Stack durchführen, sobald verfügbar.</p>
         </div>
       </div>
     </div>
@@ -1345,13 +1412,25 @@
     const crawlerTagsInput = document.getElementById('crawler-tags');
     const crawlerContentTypeInput = document.getElementById('crawler-content-type');
     const crawlerMaxBytesInput = document.getElementById('crawler-max-bytes');
+    const crawlerFetchToggle = document.getElementById('crawler-fetch');
+    const crawlerContentWrapper = document.getElementById('crawler-content-wrapper');
     const crawlerContentInput = document.getElementById('crawler-content');
+    const crawlerSnapshotToggle = document.getElementById('crawler-snapshot');
+    const crawlerSnapshotLabelWrapper = document.getElementById('crawler-snapshot-label-wrapper');
+    const crawlerSnapshotLabelInput = document.getElementById('crawler-snapshot-label');
     const crawlerShadowToggle = document.getElementById('crawler-shadow');
     const crawlerDryRunToggle = document.getElementById('crawler-dry-run');
     const crawlerDecisionDisplay = document.getElementById('crawler-decision');
     const crawlerManualStatus = document.getElementById('crawler-manual-status');
     const crawlerShadowState = document.getElementById('crawler-shadow-state');
     const crawlerRunId = document.getElementById('crawler-run-id');
+    const crawlerFetchUsedDisplay = document.getElementById('crawler-fetch-used');
+    const crawlerHttpStatusDisplay = document.getElementById('crawler-http-status');
+    const crawlerFetchedBytesDisplay = document.getElementById('crawler-fetched-bytes');
+    const crawlerSnapshotRequestedDisplay = document.getElementById('crawler-snapshot-requested');
+    const crawlerSnapshotLabelDisplay = document.getElementById('crawler-snapshot-label-display');
+    const crawlerSnapshotPathDisplay = document.getElementById('crawler-snapshot-path');
+    const crawlerSnapshotShaDisplay = document.getElementById('crawler-snapshot-sha');
     const crawlerErrorBox = document.getElementById('crawler-error');
     const crawlerTransitionsContainer = document.getElementById('crawler-transitions');
     const crawlerJson = document.getElementById('crawler-json');
@@ -1370,6 +1449,48 @@
     }
     if (crawlerDryRunToggle && crawlerDryRunToggle instanceof HTMLInputElement) {
       crawlerDryRunToggle.checked = Boolean(crawlerDryRunDefault);
+    }
+
+    function syncCrawlerFetchUI() {
+      const fetchActive = !(crawlerFetchToggle instanceof HTMLInputElement) || crawlerFetchToggle.checked;
+      if (crawlerContentWrapper) {
+        if (fetchActive) {
+          crawlerContentWrapper.classList.add('hidden');
+        } else {
+          crawlerContentWrapper.classList.remove('hidden');
+        }
+      }
+      if (crawlerContentInput && crawlerContentInput instanceof HTMLTextAreaElement) {
+        crawlerContentInput.disabled = fetchActive;
+      }
+    }
+
+    function syncCrawlerSnapshotUI() {
+      const snapshotActive = crawlerSnapshotToggle instanceof HTMLInputElement ? crawlerSnapshotToggle.checked : false;
+      if (crawlerSnapshotLabelWrapper) {
+        if (snapshotActive) {
+          crawlerSnapshotLabelWrapper.classList.remove('hidden');
+        } else {
+          crawlerSnapshotLabelWrapper.classList.add('hidden');
+        }
+      }
+      if (crawlerSnapshotLabelInput && crawlerSnapshotLabelInput instanceof HTMLInputElement) {
+        crawlerSnapshotLabelInput.disabled = !snapshotActive;
+      }
+    }
+
+    syncCrawlerFetchUI();
+    syncCrawlerSnapshotUI();
+
+    if (crawlerFetchToggle && crawlerFetchToggle instanceof HTMLInputElement) {
+      crawlerFetchToggle.addEventListener('change', function () {
+        syncCrawlerFetchUI();
+      });
+    }
+    if (crawlerSnapshotToggle && crawlerSnapshotToggle instanceof HTMLInputElement) {
+      crawlerSnapshotToggle.addEventListener('change', function () {
+        syncCrawlerSnapshotUI();
+      });
     }
 
     function clearCrawlerError() {
@@ -1482,6 +1603,7 @@
     function renderCrawlerSummary(data) {
       const result = data && typeof data === 'object' ? data.result : null;
       const control = data && typeof data === 'object' ? data.control : null;
+      const snapshotState = data && typeof data === 'object' && data.state && typeof data.state === 'object' ? data.state : null;
       const decisionValue = result && typeof result === 'object' && typeof result.decision === 'string' ? result.decision : '–';
       const runIdValue = data && typeof data.graph_run_id === 'string' && data.graph_run_id
         ? data.graph_run_id
@@ -1494,6 +1616,59 @@
       const shadowValue = control && Object.prototype.hasOwnProperty.call(control, 'shadow_mode')
         ? String(Boolean(control.shadow_mode))
         : '–';
+      let fetchUsedValue = '–';
+      const fetchUsedRaw = data && Object.prototype.hasOwnProperty.call(data, 'fetch_used')
+        ? data.fetch_used
+        : result && Object.prototype.hasOwnProperty.call(result, 'fetch_used')
+        ? result.fetch_used
+        : null;
+      if (typeof fetchUsedRaw === 'boolean') {
+        fetchUsedValue = String(fetchUsedRaw);
+      }
+      let httpStatusValue = '–';
+      if (data && Object.prototype.hasOwnProperty.call(data, 'http_status')) {
+        const httpStatusRaw = data.http_status;
+        if (typeof httpStatusRaw === 'number' || typeof httpStatusRaw === 'string') {
+          httpStatusValue = String(httpStatusRaw);
+        }
+      }
+      let fetchedBytesValue = '–';
+      if (data && Object.prototype.hasOwnProperty.call(data, 'fetched_bytes')) {
+        const fetchedRaw = data.fetched_bytes;
+        if (typeof fetchedRaw === 'number') {
+          try {
+            fetchedBytesValue = new Intl.NumberFormat('de-DE').format(fetchedRaw);
+          } catch (err) {
+            fetchedBytesValue = String(fetchedRaw);
+          }
+        } else if (typeof fetchedRaw === 'string') {
+          fetchedBytesValue = fetchedRaw;
+        }
+      }
+      let snapshotRequestedValue = '–';
+      if (data && Object.prototype.hasOwnProperty.call(data, 'snapshot_requested')) {
+        snapshotRequestedValue = String(Boolean(data.snapshot_requested));
+      } else if (snapshotState && Object.prototype.hasOwnProperty.call(snapshotState, 'snapshot_requested')) {
+        snapshotRequestedValue = String(Boolean(snapshotState.snapshot_requested));
+      }
+      let snapshotLabelValue = '–';
+      if (data && typeof data.snapshot_label === 'string' && data.snapshot_label.trim()) {
+        snapshotLabelValue = data.snapshot_label.trim();
+      } else if (snapshotState && typeof snapshotState.snapshot_label === 'string' && snapshotState.snapshot_label.trim()) {
+        snapshotLabelValue = snapshotState.snapshot_label.trim();
+      }
+      let snapshotPathValue = '–';
+      if (data && typeof data.snapshot_path === 'string' && data.snapshot_path.trim()) {
+        snapshotPathValue = data.snapshot_path.trim();
+      } else if (snapshotState && typeof snapshotState.snapshot_path === 'string' && snapshotState.snapshot_path.trim()) {
+        snapshotPathValue = snapshotState.snapshot_path.trim();
+      }
+      let snapshotShaValue = '–';
+      if (data && typeof data.snapshot_sha256 === 'string' && data.snapshot_sha256.trim()) {
+        snapshotShaValue = data.snapshot_sha256.trim();
+      } else if (snapshotState && typeof snapshotState.snapshot_sha256 === 'string' && snapshotState.snapshot_sha256.trim()) {
+        snapshotShaValue = snapshotState.snapshot_sha256.trim();
+      }
 
       if (crawlerDecisionDisplay) {
         crawlerDecisionDisplay.textContent = decisionValue;
@@ -1503,6 +1678,27 @@
       }
       if (crawlerShadowState) {
         crawlerShadowState.textContent = shadowValue;
+      }
+      if (crawlerFetchUsedDisplay) {
+        crawlerFetchUsedDisplay.textContent = fetchUsedValue;
+      }
+      if (crawlerHttpStatusDisplay) {
+        crawlerHttpStatusDisplay.textContent = httpStatusValue;
+      }
+      if (crawlerFetchedBytesDisplay) {
+        crawlerFetchedBytesDisplay.textContent = fetchedBytesValue;
+      }
+      if (crawlerSnapshotRequestedDisplay) {
+        crawlerSnapshotRequestedDisplay.textContent = snapshotRequestedValue;
+      }
+      if (crawlerSnapshotLabelDisplay) {
+        crawlerSnapshotLabelDisplay.textContent = snapshotLabelValue;
+      }
+      if (crawlerSnapshotPathDisplay) {
+        crawlerSnapshotPathDisplay.textContent = snapshotPathValue;
+      }
+      if (crawlerSnapshotShaDisplay) {
+        crawlerSnapshotShaDisplay.textContent = snapshotShaValue;
       }
       if (crawlerRunId) {
         crawlerRunId.textContent = runIdValue;
@@ -1566,7 +1762,10 @@
         provider: crawlerProviderInput ? crawlerProviderInput.value : '',
         tags: crawlerTagsInput ? crawlerTagsInput.value : '',
         contentType: crawlerContentTypeInput ? crawlerContentTypeInput.value : '',
+        fetch: crawlerFetchToggle instanceof HTMLInputElement ? crawlerFetchToggle.checked : true,
         content: crawlerContentInput ? crawlerContentInput.value : '',
+        snapshot: crawlerSnapshotToggle instanceof HTMLInputElement ? crawlerSnapshotToggle.checked : false,
+        snapshotLabel: crawlerSnapshotLabelInput ? crawlerSnapshotLabelInput.value : '',
         maxDocumentBytes: crawlerMaxBytesInput ? crawlerMaxBytesInput.value : '',
         shadowMode: crawlerShadowToggle instanceof HTMLInputElement ? crawlerShadowToggle.checked : false,
         dryRun: crawlerDryRunToggle instanceof HTMLInputElement ? crawlerDryRunToggle.checked : false,
@@ -1586,14 +1785,25 @@
         }
         clearCrawlerError();
         const config = collectCrawlerConfig();
-        if (!config.originUrl || !config.content) {
-          showCrawlerError('Bitte Origin URL und Content ausfüllen.');
+        if (!config.originUrl) {
+          showCrawlerError('Bitte Origin URL ausfüllen.');
+          return;
+        }
+        if (!config.fetch && !config.content) {
+          showCrawlerError('Content ist erforderlich, wenn Live Fetch deaktiviert ist.');
           return;
         }
         const payload = buildCrawlerPayload(config);
-        if (!payload.origin_url || !payload.content) {
-          showCrawlerError('Bitte Origin URL und Content ausfüllen.');
+        if (!payload.origin_url) {
+          showCrawlerError('Bitte Origin URL ausfüllen.');
           return;
+        }
+        if (Object.prototype.hasOwnProperty.call(payload, 'fetch') && payload.fetch === false) {
+          const hasContent = Object.prototype.hasOwnProperty.call(payload, 'content') && typeof payload.content === 'string' && payload.content.length > 0;
+          if (!hasContent) {
+            showCrawlerError('Content ist erforderlich, wenn Live Fetch deaktiviert ist.');
+            return;
+          }
         }
         enableCrawlerActions(false);
         executeCrawler(payload);
