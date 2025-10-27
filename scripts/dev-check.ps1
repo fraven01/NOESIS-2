@@ -84,14 +84,13 @@ for ($i=0; $i -lt 5; $i++) {
 }
 if (-not $ok) { Write-Warning 'AI ping failed' }
 
-Write-Host "[dev-check] POST /ai/scope minimal payload"
+Write-Host "[dev-check] POST /v1/ai/rag/query minimal payload"
 try {
-  # Provide required field expected by scope_check graph
-  $payload = '{"scope":"global"}'
-  $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/ai/scope/' -Method POST -ContentType 'application/json' -Headers @{ 'X-Tenant-Schema' = $DevTenantSchema; 'X-Tenant-ID' = $TenantId; 'X-Case-ID' = $CaseId } -Body $payload
+  $payload = '{"question":"Ping?"}'
+  $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/v1/ai/rag/query/' -Method POST -ContentType 'application/json' -Headers @{ 'X-Tenant-Schema' = $DevTenantSchema; 'X-Tenant-ID' = $TenantId; 'X-Case-ID' = $CaseId } -Body $payload
   $content = $resp.Content
   if ($content.Length -gt 200) { $content.Substring(0,200) + '...' } else { $content }
-} catch { Write-Warning "AI scope failed: $_" }
+} catch { Write-Warning "AI rag query failed: $_" }
 
 try {
   Write-Host "[dev-check] RAG migrate"

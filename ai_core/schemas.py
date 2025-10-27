@@ -231,8 +231,11 @@ class CrawlerRunRequest(BaseModel):
     document_id: str | None = None
     title: str | None = None
     language: str | None = None
-    content: str
+    content: str | None = None
     content_type: str = "text/html"
+    fetch: bool = True
+    snapshot: bool = False
+    snapshot_label: str | None = None
     tags: list[str] | None = None
     shadow_mode: bool = False
     dry_run: bool = False
@@ -288,7 +291,9 @@ class CrawlerRunRequest(BaseModel):
 
     @field_validator("content", mode="before")
     @classmethod
-    def _ensure_content(cls, value: object) -> str:
+    def _ensure_content(cls, value: object) -> str | None:
+        if value is None:
+            return None
         if not isinstance(value, str):
             raise PydanticCustomError(
                 "invalid_content",
@@ -301,6 +306,19 @@ class CrawlerRunRequest(BaseModel):
                 "content must be provided as a non-empty string.",
             )
         return content
+
+    @field_validator("snapshot_label", mode="before")
+    @classmethod
+    def _normalise_snapshot_label(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise PydanticCustomError(
+                "invalid_snapshot_label",
+                "snapshot_label must be a string when provided.",
+            )
+        trimmed = value.strip()
+        return trimmed or None
 
     @field_validator("tags", mode="before")
     @classmethod
@@ -357,6 +375,15 @@ class CrawlerRunRequest(BaseModel):
                 "max_document_bytes must be a positive integer.",
             )
         return parsed
+
+    @model_validator(mode="after")
+    def _ensure_content_when_fetch_disabled(self) -> "CrawlerRunRequest":
+        if not self.fetch and self.content is None:
+            raise PydanticCustomError(
+                "content_required_when_fetch_disabled",
+                "content must be provided when fetch is disabled.",
+            )
+        return self
 
 
 class RagUploadMetadata(BaseModel):

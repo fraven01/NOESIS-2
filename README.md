@@ -30,15 +30,13 @@ Alle Pfade erfordern die Header `X-Tenant-ID`, `X-Case-ID` sowie `Idempotency-Ke
 
 - `GET /ai/ping/` – einfacher Health-Check
 - `POST /ai/intake/` – Metadaten speichern und Eingangsbestätigung liefern
-- `POST /ai/scope/` – Auftragsumfang prüfen und fehlende Angaben melden
-- `POST /ai/needs/` – Informationen dem Tenant-Profil zuordnen, Abbruch bei Lücken
-- `POST /ai/sysdesc/` – Systembeschreibung nur wenn keine Informationen fehlen
+- `POST /v1/ai/rag/query/` – produktiver Retrieval-Augmented-Generation-Flow
 
 ### API-Auth
 Die Django REST Framework Authentifizierung ist standardmäßig deaktiviert, damit öffentliche Mandanten-Endpunkte keinen Bearer-Token erfordern. Admin- oder LiteLLM-Routen binden den Master-Key explizit per View-Decorator. Weil keine SessionAuth aktiv ist, gelten auch keine CSRF-Cookies – Token-Clients können ohne CSRF-Header arbeiten.
 
 ### Graphen
-Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Gates wie `needs_mapping` oder `scope_check` brechen früh ab, statt unvollständige Drafts zu erzeugen.
+Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Die MVP-Variante enthält den Intake-Stub (`info_intake`) sowie die produktiven Graphen `retrieval_augmented_generation` und `crawler.ingestion`.
 
 ### Lokale Nutzung
 Das bestehende `docker compose`-Setup startet Web-App und Redis. Ein externer LiteLLM-Proxy kann über `LITELLM_BASE_URL` angebunden werden. Nach dem Start (`docker compose ... up`) können die Endpunkte lokal unter `http://localhost:8000/ai/` getestet werden.
@@ -71,7 +69,7 @@ npm run dev:up
 npm run dev:check
 ```
 
-Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `migrate_schemas` aus und prüfen LiteLLM sowie die AI-Endpunkte (`/ai/ping`, `/ai/scope`).
+Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `migrate_schemas` aus und prüfen LiteLLM sowie die AI-Endpunkte (`/ai/ping`, `/v1/ai/rag/query`).
 
 > ℹ️ **Compose-Notizen**
 > - Der `web`-Container führt `collectstatic` automatisch aus (Storage: `CompressedManifestStaticFilesStorage`).
@@ -98,7 +96,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 | Script | Beschreibung |
 | --- | --- |
 | `npm run dev:up` | Initialisiert Datenbank & Tenants im Compose-Stack, erstellt Superuser |
-| `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/ai/scope`) aus |
+| `npm run dev:check` | Führt Health-Checks (LiteLLM, `/ai/ping`, `/v1/ai/rag/query`) aus |
 | `npm run dev:init` | Führt `jobs:migrate` und `jobs:bootstrap` aus (nach `up -d`); Vector-Schemata kommen über `rag-schema` automatisch |
 | `npm run dev:stack` / `npm run win:dev:stack` | Startet App + ELK, Migrationen, Bootstrap, Demo- & Heavy-Seeding |
 | `npm run dev:down` | Stoppt alle Container inkl. Volumes (`down -v`) |
@@ -217,10 +215,10 @@ du häufig nach Metadaten (z. B. `case`) filterst. Der GIN-Index verwendet dab
 Setze dabei auch den eindeutigen Index auf `(tenant_id, external_id)` und führe alle Statements schema-qualifiziert oder mit passendem `search_path` aus, wenn mehrere RAG-Schemata im Einsatz sind.
 
 - **Skripte:**
-  - `npm run load:k6` bzw. `make load:k6` startet das Spike+Soak-Szenario aus `load/k6/script.js`. Setze dafür die Staging-Parameter (`STAGING_WEB_URL`, `STAGING_TENANT_SCHEMA`, `STAGING_TENANT_ID`, `STAGING_CASE_ID`, optional `STAGING_BEARER_TOKEN`, `STAGING_KEY_ALIAS`). Zusätzliche Parameter wie `SCOPE_SOAK_DURATION` können via ENV angepasst werden.
+  - `npm run load:k6` bzw. `make load:k6` startet das Spike+Soak-Szenario aus `load/k6/script.js`. Setze dafür die Staging-Parameter (`STAGING_WEB_URL`, `STAGING_TENANT_SCHEMA`, `STAGING_TENANT_ID`, `STAGING_CASE_ID`, optional `STAGING_BEARER_TOKEN`, `STAGING_KEY_ALIAS`). Zusätzliche Parameter wie `RAG_SOAK_DURATION` können via ENV angepasst werden.
   - `npm run load:locust` bzw. `make load:locust` lädt die User-Klassen aus `load/locust/locustfile.py`. Übergib weitere Flags nach `--`, z. B. `npm run load:locust -- --headless -u 30 -r 10 --run-time 5m`.
-- **Matrix & Scaling:** Für Staging orientiert sich die Grundlast an der Web-Concurrency (~30 Worker). Nutze für Locust `-u 30` (gleichzeitige Nutzer) als Basis und erhöhe schrittweise (z. B. 30 → 60 → 90) je nach QA-Plan. Für k6 beschreibt das Script ein kurzes Spike+Soak-Profil mit Ramp-Up/-Down und optionalen Overrides (`SCOPE_SPIKE_RPS`, `SCOPE_SOAK_RPS`).
-- **Tenancy & Idempotency:** Beide Skripte injizieren die Header `X-Tenant-Schema`, `X-Tenant-ID`, `X-Case-ID` sowie eindeutige `Idempotency-Key`s. Standardpayloads folgen den Beispielen aus [docs/api/reference.md](docs/api/reference.md) und lassen sich über ENV-Overrides (`LOCUST_SCOPE_PAYLOAD`, `LOCUST_INGESTION_PAYLOAD`, …) anpassen.
+- **Matrix & Scaling:** Für Staging orientiert sich die Grundlast an der Web-Concurrency (~30 Worker). Nutze für Locust `-u 30` (gleichzeitige Nutzer) als Basis und erhöhe schrittweise (z. B. 30 → 60 → 90) je nach QA-Plan. Für k6 beschreibt das Script ein kurzes Spike+Soak-Profil mit Ramp-Up/-Down und optionalen Overrides (`RAG_SPIKE_RPS`, `RAG_SOAK_RPS`).
+- **Tenancy & Idempotency:** Beide Skripte injizieren die Header `X-Tenant-Schema`, `X-Tenant-ID`, `X-Case-ID` sowie eindeutige `Idempotency-Key`s. Standardpayloads folgen den Beispielen aus [docs/api/reference.md](docs/api/reference.md) und lassen sich über ENV-Overrides (`LOCUST_RAG_PAYLOAD`, `LOCUST_INGESTION_PAYLOAD`, …) anpassen.
 - **Ausführung:** Die Load-Skripte sind nicht in CI eingebunden. Führe sie manuell lokal oder gegen Staging aus (siehe [docs/cloud/gcp-staging.md](docs/cloud/gcp-staging.md) für URLs und Credentials) und archiviere Metriken/Artefakte als Bestandteil der QA-Gates.
 
 ## Manuelles Setup ohne Docker

@@ -27,14 +27,14 @@ for i in $(seq 1 5); do
   sleep 1
 done
 
-echo "[dev-check] POST /ai/scope minimal payload"
+echo "[dev-check] POST /v1/ai/rag/query minimal payload"
 RESP=$(curl -s -X POST \
     -H "Content-Type: application/json" \
     -H "X-Tenant-Schema: ${DEV_TENANT_SCHEMA}" \
     -H "X-Tenant-ID: ${TENANT_ID}" \
     -H "X-Case-ID: ${CASE_ID}" \
-    --data '{"scope":"global"}' \
-  http://localhost:8000/ai/scope/ || true)
+    --data '{"question":"Ping?"}' \
+  http://localhost:8000/v1/ai/rag/query/ || true)
 echo "$RESP" | head -c 200; echo
 
 echo "[dev-check] RAG migrate"

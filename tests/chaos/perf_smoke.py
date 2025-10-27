@@ -39,8 +39,8 @@ _FAILURE_THRESHOLD = 0.05
 
 
 @dataclass
-class ScopeResponse:
-    """Result container for concurrent scope requests."""
+class RagQueryResponse:
+    """Result container for concurrent RAG query requests."""
 
     ok: bool
     latency_s: float
@@ -68,21 +68,23 @@ def _percentile(values: Iterable[float], percentile: float) -> float:
     return lower_value * (1 - weight) + upper_value * weight
 
 
-def _execute_scope(case_id: str, tenant: str, tenant_schema: str) -> ScopeResponse:
-    """Issue a single /ai/scope/ request and record metrics."""
+def _execute_rag_query(
+    case_id: str, tenant: str, tenant_schema: str
+) -> RagQueryResponse:
+    """Issue a single /v1/ai/rag/query/ request and record metrics."""
 
     client = Client()
-    payload = {"scope": {"topic": "chaos", "case_id": case_id}}
+    payload = {"question": "Ping?", "filters": {"topic": "chaos"}}
     headers = {
         META_TENANT_ID_KEY: tenant,
         META_TENANT_SCHEMA_KEY: tenant_schema,
         META_CASE_ID_KEY: case_id,
-        META_IDEMPOTENCY_KEY: f"scope-chaos-{case_id}",
+        META_IDEMPOTENCY_KEY: f"rag-chaos-{case_id}",
     }
     start = time.perf_counter()
     try:
         response = client.post(
-            "/ai/scope/",
+            "/v1/ai/rag/query/",
             data=json.dumps(payload),
             content_type="application/json",
             **headers,
@@ -91,18 +93,18 @@ def _execute_scope(case_id: str, tenant: str, tenant_schema: str) -> ScopeRespon
         close_old_connections()
     latency_s = time.perf_counter() - start
     ok = response.status_code == 200
-    return ScopeResponse(ok=ok, latency_s=latency_s, status=response.status_code)
+    return RagQueryResponse(ok=ok, latency_s=latency_s, status=response.status_code)
 
 
 @pytest.mark.django_db
-def test_scope_perf_smoke(
+def test_rag_query_perf_smoke(
     chaos_env,
     test_tenant_schema_name,
     monkeypatch,
     record_property,
     tmp_path,
 ):
-    """Run a mini load probe for /ai/scope/ mirroring QA abort criteria."""
+    """Run a mini load probe for /v1/ai/rag/query/ mirroring QA abort criteria."""
 
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
     if worker_id and worker_id not in {"gw0", "master"}:
@@ -119,7 +121,9 @@ def test_scope_perf_smoke(
 
     with ThreadPoolExecutor(max_workers=_STAGING_WEB_CONCURRENCY) as executor:
         futures = [
-            executor.submit(_execute_scope, f"SC{index:03d}", tenant, tenant_schema)
+            executor.submit(
+                _execute_rag_query, f"RQ{index:03d}", tenant, tenant_schema
+            )
             for index in range(_STAGING_WEB_CONCURRENCY)
         ]
         results = [future.result() for future in as_completed(futures)]
@@ -129,18 +133,18 @@ def test_scope_perf_smoke(
     latencies = [result.latency_s for result in results if result.ok]
     failures = [result for result in results if not result.ok]
 
-    assert results, "expected scope responses to be recorded"
-    assert latencies, "expected successful scope responses for percentile metrics"
+    assert results, "expected rag responses to be recorded"
+    assert latencies, "expected successful rag responses for percentile metrics"
 
     p50_ms = _percentile(latencies, 0.50) * 1000
     p95_ms = _percentile(latencies, 0.95) * 1000
     failure_rate = len(failures) / len(results)
 
-    record_property("scope_perf_total", len(results))
-    record_property("scope_perf_failures", len(failures))
-    record_property("scope_perf_failure_rate", failure_rate)
-    record_property("scope_perf_p50_ms", round(p50_ms, 3))
-    record_property("scope_perf_p95_ms", round(p95_ms, 3))
+    record_property("rag_perf_total", len(results))
+    record_property("rag_perf_failures", len(failures))
+    record_property("rag_perf_failure_rate", failure_rate)
+    record_property("rag_perf_p50_ms", round(p50_ms, 3))
+    record_property("rag_perf_p95_ms", round(p95_ms, 3))
 
     assert (
         failure_rate < _FAILURE_THRESHOLD
@@ -148,8 +152,8 @@ def test_scope_perf_smoke(
 
     # Document the key headers to aid debugging if a percentile spike occurs
     sample = results[0]
-    record_property("scope_perf_first_status", sample.status)
+    record_property("rag_perf_first_status", sample.status)
     record_property(
-        "scope_perf_headers",
+        "rag_perf_headers",
         [X_TENANT_ID_HEADER, X_CASE_ID_HEADER, IDEMPOTENCY_KEY_HEADER],
     )

@@ -79,12 +79,9 @@ from .rag.ingestion_contracts import (
 )
 from .schemas import (
     InfoIntakeRequest,
-    NeedsMappingRequest,
     RagIngestionRunRequest,
     RagQueryRequest,
     RagUploadMetadata,
-    ScopeCheckRequest,
-    SystemDescriptionRequest,
 )
 
 
@@ -467,9 +464,6 @@ def _persist_collection_scope(
 
 GRAPH_REQUEST_MODELS = {
     "info_intake": InfoIntakeRequest,
-    "scope_check": ScopeCheckRequest,
-    "needs_mapping": NeedsMappingRequest,
-    "system_description": SystemDescriptionRequest,
     "rag.default": RagQueryRequest,
 }
 

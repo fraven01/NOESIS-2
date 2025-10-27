@@ -8,8 +8,9 @@ funktionsfähig, während neue Graph-Laufzeiten schrittweise integriert werden k
 ## Heutiger Scope
 - `ai_core/graph/core.py` definiert `GraphRunner`, `Checkpointer`, `GraphContext` und den
 dateibasierten `FileCheckpointer` (`.ai_core_store/<tenant>/<case>/state.json`).
-- `ai_core/graph/adapters.py` und `graph/bootstrap.py` registrieren die vier Legacy-Module
-  (`info_intake`, `scope_check`, `needs_mapping`, `system_description`) als Runner.
+- `ai_core/graph/adapters.py` und `graph/bootstrap.py` registrieren den Intake-Stub
+  (`info_intake`) sowie die produktiven Graphen `retrieval_augmented_generation` und
+  `crawler.ingestion`.
 - `_GraphView` in `ai_core/views.py` nutzt `normalize_meta`, `merge_state` und die Registry,
 um Requests unverändert zu bedienen, inklusive Rate-Limits und Header-Contracts.
 - Die ehemaligen `workflows`-Modelle wurden entfernt; LangGraph bedient Cases direkt über `ai_core`.
