@@ -217,6 +217,22 @@ def test_evaluate_delta_hashes_binary_payload() -> None:
     assert decision.signatures.content_hash == expected_hash
 
 
+def test_evaluate_delta_uses_stored_primary_text_hash() -> None:
+    doc_id = str(uuid4())
+    document, parse_result = _make_document(doc_id, "Hello world")
+    baseline = _evaluate(document, parse_result)
+
+    repeat = evaluate_delta(
+        document,
+        primary_text=None,
+        previous_content_hash=baseline.signatures.content_hash,
+        previous_version=baseline.version,
+    )
+
+    assert repeat.status is DeltaStatus.UNCHANGED
+    assert repeat.signatures.content_hash == baseline.signatures.content_hash
+
+
 def test_evaluate_delta_flags_near_duplicate() -> None:
     canonical_tokens = ("example", "hello", "world")
     parent_signature = NearDuplicateSignature(

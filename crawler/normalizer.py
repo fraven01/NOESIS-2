@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
@@ -70,6 +71,11 @@ def build_normalized_document(
 
     normalized_tags = _normalize_tags(tags)
     parser_stats = dict(_parser_stats_mapping(stats))
+    normalized_text = normalized_primary_text(content.primary_text)
+    if normalized_text:
+        hash_value = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        if _HASH_HEX_RE.fullmatch(hash_value):
+            parser_stats["crawler.primary_text_hash_sha256"] = hash_value
     bytes_in = _normalizer_bytes_in(parse_result.fetch)
     if bytes_in is not None:
         parser_stats["normalizer.bytes_in"] = bytes_in
@@ -133,6 +139,18 @@ def document_payload_bytes(document: ContractsNormalizedDocument) -> bytes:
     if isinstance(blob, InlineBlob):
         return blob.decoded_payload()
     raise ValueError("unsupported_blob_type")
+
+
+def normalized_primary_text(text: Optional[str]) -> str:
+    """Return whitespace-normalized primary text or an empty string."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    return " ".join(raw.split())
+
+
+_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 def normalize_diagnostics(entries: Iterable[str]) -> Tuple[str, ...]:

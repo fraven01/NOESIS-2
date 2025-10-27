@@ -11,7 +11,10 @@ from typing import Iterable, Mapping, Optional, Sequence, Tuple
 from documents.contracts import NormalizedDocument
 
 from .contracts import Decision
-from .normalizer import document_payload_bytes
+from .normalizer import document_payload_bytes, normalized_primary_text
+
+_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
 
 
 class DeltaStatus(str, Enum):
@@ -165,22 +168,52 @@ def _compute_content_hash(
     binary_payload: Optional[bytes] = None,
     algorithm: str = "sha256",
 ) -> str:
-    text = (primary_text or "").strip()
-    normalized_text = " ".join(text.split()) if text else ""
+    normalized_text = normalized_primary_text(primary_text)
     if normalized_text:
         payload = normalized_text.encode("utf-8")
-    else:
-        if binary_payload is None:
-            payload = document_payload_bytes(document)
-        else:
-            payload = binary_payload
+        return _hash_payload(payload, algorithm)
 
+    stored_hash = _stored_primary_text_hash(document, algorithm)
+    if stored_hash is not None:
+        return stored_hash
+
+    if binary_payload is None:
+        payload = document_payload_bytes(document)
+    else:
+        payload = binary_payload
+    return _hash_payload(payload, algorithm)
+
+
+def _hash_payload(payload: bytes, algorithm: str) -> str:
     try:
         hasher = hashlib.new(algorithm)
     except ValueError as exc:
         raise ValueError("unsupported_hash_algorithm") from exc
     hasher.update(payload)
     return hasher.hexdigest()
+
+
+def _stored_primary_text_hash(
+    document: NormalizedDocument, algorithm: str
+) -> Optional[str]:
+    key = _PRIMARY_TEXT_HASH_KEYS.get(algorithm.lower())
+    if key is None:
+        return None
+
+    stats = document.meta.parse_stats or {}
+    if not isinstance(stats, Mapping):
+        return None
+
+    raw = stats.get(key)
+    if not isinstance(raw, str):
+        return None
+
+    candidate = raw.strip().lower()
+    if not candidate:
+        return None
+    if not _HASH_HEX_RE.fullmatch(candidate):
+        return None
+    return candidate
 
 
 def _compute_near_duplicate_signature(
