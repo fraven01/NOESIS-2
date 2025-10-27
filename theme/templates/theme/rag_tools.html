@@ -434,15 +434,16 @@
           placeholder="z. B. support-faq"
           autocomplete="off"
         />
-        <p class="text-xs text-slate-500">Hinweis: Erwartet wird eine UUID (8-4-4-4-12).</p>
+        <p class="text-xs text-slate-500">Hinweis: Erwartet wird eine UUID (8-4-4-4-12); das Feld kann leer bleiben.</p>
         <datalist id="query-collection-options">
           {% for option in collection_options %}
           <option value="{{ option }}"></option>
           {% endfor %}
         </datalist>
         <p class="text-xs text-slate-500">
-          Wähle die Collection für Uploads, Ingestion und Queries. Legacy-Parameter <code>doc_class</code> aus URLs werden bei
-          aktivem Collection-Routing automatisch als Collection verwendet.
+          Wähle die Collection für Uploads, Ingestion und Queries. Lässt du das Feld frei, werden Queries ohne expliziten
+          Collection-Filter gesendet. Legacy-Parameter <code>doc_class</code> aus URLs werden bei aktivem Collection-Routing
+          automatisch als Collection verwendet.
         </p>
       </div>
       <div class="space-y-1">
@@ -1874,11 +1875,9 @@
           payload.process = processInput.value.trim();
         }
         const collectionScope = requireCollection({ allowResolverFallback: true });
-        if (!collectionScope) {
-          showError('Bitte eine Collection auswählen.');
-          return;
+        if (collectionScope) {
+          payload.collection_id = collectionScope;
         }
-        payload.collection_id = collectionScope;
         const visibilitySelect = document.getElementById('query-visibility');
         if (visibilitySelect && visibilitySelect.value) {
           payload.visibility = visibilitySelect.value;
