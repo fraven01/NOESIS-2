@@ -3,8 +3,8 @@ import { check, sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 import { textSummary } from './vendor/k6-summary-0.0.4.js';
 
-const scopeLatency = new Trend('scope_latency_ms', true);
-const scopeErrorRate = new Rate('scope_error_rate');
+const ragLatency = new Trend('rag_latency_ms', true);
+const ragErrorRate = new Rate('rag_error_rate');
 
 const baseUrl = (__ENV.STAGING_WEB_URL || '').replace(/\/$/, '');
 const tenantSchema = __ENV.STAGING_TENANT_SCHEMA;
@@ -13,22 +13,22 @@ const caseId = __ENV.STAGING_CASE_ID;
 const bearerToken = __ENV.STAGING_BEARER_TOKEN;
 const keyAlias = __ENV.STAGING_KEY_ALIAS;
 const maxConcurrency = Number(__ENV.STAGING_WEB_CONCURRENCY || 30);
-const spikeArrivalRate = Number(__ENV.SCOPE_SPIKE_RPS || maxConcurrency);
+const spikeArrivalRate = Number(__ENV.RAG_SPIKE_RPS || maxConcurrency);
 const soakArrivalRate = Number(
-  __ENV.SCOPE_SOAK_RPS || Math.max(Math.floor(maxConcurrency / 2), 1),
+  __ENV.RAG_SOAK_RPS || Math.max(Math.floor(maxConcurrency / 2), 1),
 );
-const rampUpDuration = __ENV.SCOPE_RAMP_UP || '30s';
-const soakDuration = __ENV.SCOPE_SOAK_DURATION || '2m';
-const rampDownDuration = __ENV.SCOPE_RAMP_DOWN || '30s';
-const p95ThresholdMs = Number(__ENV.SCOPE_P95_THRESHOLD_MS || 1200);
-const thinkTimeSeconds = Number(__ENV.SCOPE_THINK_TIME_SECONDS || 0.5);
-const idempotencyPrefix = __ENV.SCOPE_IDEMPOTENCY_PREFIX || 'k6-chaos-load';
+const rampUpDuration = __ENV.RAG_RAMP_UP || '30s';
+const soakDuration = __ENV.RAG_SOAK_DURATION || '2m';
+const rampDownDuration = __ENV.RAG_RAMP_DOWN || '30s';
+const p95ThresholdMs = Number(__ENV.RAG_P95_THRESHOLD_MS || 1200);
+const thinkTimeSeconds = Number(__ENV.RAG_THINK_TIME_SECONDS || 0.5);
+const idempotencyPrefix = __ENV.RAG_IDEMPOTENCY_PREFIX || 'k6-chaos-load';
 const defaultPrompt = JSON.stringify(
-  __ENV.SCOPE_REQUEST_BODY
-    ? JSON.parse(__ENV.SCOPE_REQUEST_BODY)
+  __ENV.RAG_REQUEST_BODY
+    ? JSON.parse(__ENV.RAG_REQUEST_BODY)
     : {
-        prompt: 'Summarise the latest release notes for internal QA.',
-        metadata: { origin: 'k6-spike-soak', environment: 'staging' },
+        question: 'Welche Reisekosten gelten für Consultants?',
+        filters: { doc_class: 'policy', process: 'travel' },
       },
 );
 
@@ -89,14 +89,14 @@ function buildHeaders(iterationId) {
 
 export default function spikeAndSoak() {
   const iterationId = `${__VU}-${__ITER}-${Date.now()}`;
-  const res = http.post(`${baseUrl}/ai/scope/`, defaultPrompt, {
+  const res = http.post(`${baseUrl}/v1/ai/rag/query/`, defaultPrompt, {
     headers: buildHeaders(iterationId),
     tags: { tenant: tenantId, scenario: 'spike-and-soak-short' },
   });
 
-  scopeLatency.add(res.timings.duration);
+  ragLatency.add(res.timings.duration);
   const failed = res.status >= 400;
-  scopeErrorRate.add(failed);
+  ragErrorRate.add(failed);
 
   check(res, {
     'status is success or accepted': (r) => r.status === 200 || r.status === 202,

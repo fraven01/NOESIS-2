@@ -248,24 +248,6 @@ def test_intake_rejects_invalid_metadata_type(
 
 
 @pytest.mark.django_db
-def test_needs_view_rejects_non_list_needs_input(
-    client, monkeypatch, test_tenant_schema_name
-):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    response = client.post(
-        "/ai/needs/",
-        data=json.dumps({"needs_input": "single"}),
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
-    )
-
-    assert response.status_code == 400
-    body = response.json()
-    assert body["code"] == "invalid_request"
-    assert "needs_input must be provided as a list" in body["detail"]
-
-
-@pytest.mark.django_db
 def test_intake_persists_state_and_headers(
     client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
@@ -294,69 +276,6 @@ def test_intake_persists_state_and_headers(
     assert state["meta"]["tenant_schema"] == test_tenant_schema_name
     assert state["meta"]["case_id"] == "case-123"
 
-
-@pytest.mark.django_db
-def test_scope_and_needs_flow(client, monkeypatch, tmp_path, test_tenant_schema_name):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
-    )
-
-    resp_scope = client.post(
-        "/ai/scope/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
-    )
-    assert resp_scope.status_code == 200
-    assert resp_scope.json()["missing"] == ["scope"]
-    state = object_store.read_json(f"{test_tenant_schema_name}/c/state.json")
-    assert state["missing"] == ["scope"]
-
-    resp_needs = client.post(
-        "/ai/needs/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
-    )
-    assert resp_needs.status_code == 200
-    assert resp_needs.json()["missing"] == ["scope"]
-
-
-@pytest.mark.django_db
-def test_sysdesc_requires_no_missing(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
-):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    object_store.write_json(
-        f"{test_tenant_schema_name}/c/state.json", {"missing": ["scope"]}
-    )
-    resp_skip = client.post(
-        "/ai/sysdesc/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
-    )
-    assert resp_skip.status_code == 200
-    assert resp_skip.json()["missing"] == ["scope"]
-
-    object_store.write_json(f"{test_tenant_schema_name}/c/state.json", {"missing": []})
-    resp_desc = client.post(
-        "/ai/sysdesc/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "c"},
-    )
-    assert resp_desc.status_code == 200
-    body = resp_desc.json()
-    assert "description" in body
 
 
 def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):

@@ -60,7 +60,7 @@ Ziel: Sichere, reproduzierbare Schritte für Schema‑Änderungen in der lokalen
 - API‑Ping (Header‑Routing):
   - `curl -i -H "X-Tenant-Schema: dev" -H "X-Tenant-ID: dev-tenant" -H "X-Case-ID: local" -H "Idempotency-Key: smoke-ping" http://localhost:8000/ai/ping/`
 - Beispiel‑Graph:
-  - `curl -s -X POST http://localhost:8000/ai/scope/ -H "Content-Type: application/json" -H "X-Tenant-Schema: dev" -H "X-Tenant-ID: dev-tenant" -H "X-Case-ID: local" -H "Idempotency-Key: smoke-scope" --data '{"hello":"world"}'`
+  - `curl -s -X POST http://localhost:8000/v1/ai/rag/query/ -H "Content-Type: application/json" -H "X-Tenant-Schema: dev" -H "X-Tenant-ID: dev-tenant" -H "X-Case-ID: local" -H "Idempotency-Key: smoke-rag" --data '{"question":"Ping?"}'`
 - Komplett: `npm run win:dev:check` (Windows) bzw. `npm run dev:check` (Bash)
 
 ## RAG / pgvector (optional)
