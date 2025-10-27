@@ -5,45 +5,34 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Tuple
-from uuid import UUID
 
+from documents.contract_utils import normalize_string
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
     InlineBlob,
     NormalizedDocument as ContractsNormalizedDocument,
 )
+from documents.parsers import (
+    ParseResult,
+    ParseStatus,
+    ParserContent,
+    ParserStats,
+    normalize_diagnostics,
+)
+from documents.providers import (
+    ProviderReference,
+    build_external_reference,
+    parse_provider_reference,
+)
+
 from .contracts import NormalizedSource
-from .parser import ParseResult, ParseStatus, ParserContent, ParserStats
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .fetcher import FetchResult
-
-
-@dataclass(frozen=True)
-class ProviderReference:
-    """Adapter exposing crawler provider metadata from document contracts."""
-
-    provider: str
-    external_id: str
-    canonical_source: str
-    provider_tags: Mapping[str, str] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        provider = _require_identifier(self.provider, "provider")
-        external_id = _require_identifier(self.external_id, "external_id")
-        canonical_source = _require_identifier(
-            self.canonical_source, "canonical_source"
-        )
-        object.__setattr__(self, "provider", provider)
-        object.__setattr__(self, "external_id", external_id)
-        object.__setattr__(self, "canonical_source", canonical_source)
-        normalized = _normalize_str_mapping(self.provider_tags)
-        object.__setattr__(self, "provider_tags", normalized)
 
 
 def build_normalized_document(
@@ -63,13 +52,10 @@ def build_normalized_document(
     stats = _require_stats(parse_result.stats)
     request_source = parse_result.fetch.request.canonical_source
     canonical_source = _require_identifier(source.canonical_source, "canonical_source")
-    if (
-        _require_identifier(request_source, "fetch_canonical_source")
-        != canonical_source
-    ):
+    if _require_identifier(request_source, "fetch_canonical_source") != canonical_source:
         raise ValueError("canonical_source_mismatch")
 
-    normalized_tags = _normalize_tags(tags)
+    normalized_tags = tuple(tags) if tags else ()
     parser_stats = dict(_parser_stats_mapping(stats))
     normalized_text = normalized_primary_text(content.primary_text)
     if normalized_text:
@@ -88,7 +74,11 @@ def build_normalized_document(
         tags=list(normalized_tags),
         origin_uri=canonical_source,
         parse_stats=parser_stats,
-        external_ref=_build_external_ref(source, canonical_source),
+        external_ref=build_external_reference(
+            provider=source.provider,
+            external_id=source.external_id,
+            provider_tags=source.provider_tags,
+        ),
     )
 
     payload_bytes = parse_result.fetch.payload
@@ -101,7 +91,7 @@ def build_normalized_document(
     document_ref = DocumentRef(
         tenant_id=meta.tenant_id,
         workflow_id=meta.workflow_id,
-        document_id=_coerce_uuid(document_id),
+        document_id=document_id,
     )
 
     normalized = ContractsNormalizedDocument(
@@ -121,7 +111,7 @@ def resolve_provider_reference(
 ) -> ProviderReference:
     """Return the provider reference derived from the document metadata."""
 
-    return _parse_external_ref(document.meta)
+    return parse_provider_reference(document.meta)
 
 
 def document_parser_stats(
@@ -153,14 +143,8 @@ def normalized_primary_text(text: Optional[str]) -> str:
 _HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
-def normalize_diagnostics(entries: Iterable[str]) -> Tuple[str, ...]:
-    """Normalize diagnostic messages by stripping whitespace and dropping empties."""
-
-    return _normalize_diagnostics(tuple(entries))
-
-
 def _require_identifier(value: Optional[str], field: str) -> str:
-    candidate = (value or "").strip()
+    candidate = normalize_string(value or "")
     if not candidate:
         raise ValueError(f"{field}_required")
     return candidate
@@ -180,38 +164,6 @@ def _require_stats(stats: Optional[ParserStats]) -> ParserStats:
     if not isinstance(stats, ParserStats):
         raise TypeError("parser_stats_invalid")
     return stats
-
-
-def _normalize_tags(values: Optional[Sequence[str]]) -> Tuple[str, ...]:
-    if not values:
-        return ()
-    normalized: list[str] = []
-    seen = set()
-    for raw in values:
-        text = (raw or "").strip()
-        if not text:
-            continue
-        if text not in seen:
-            normalized.append(text)
-            seen.add(text)
-    return tuple(normalized)
-
-
-def _normalize_str_mapping(mapping: Optional[Mapping[str, str]]) -> Mapping[str, str]:
-    if not mapping:
-        return MappingProxyType({})
-    normalized: dict[str, str] = {}
-    for key, value in mapping.items():
-        normalized_key = _require_identifier(str(key), "provider_tag_key")
-        normalized_val = _require_identifier(str(value), "provider_tag_value")
-        normalized[normalized_key] = normalized_val
-    return MappingProxyType(normalized)
-def _normalize_diagnostics(entries: Sequence[str]) -> Tuple[str, ...]:
-    return tuple(
-        normalized
-        for normalized in ((entry or "").strip() for entry in entries)
-        if normalized
-    )
 
 
 def _parser_stats_mapping(stats: ParserStats) -> Mapping[str, object]:
@@ -236,38 +188,6 @@ def _normalizer_bytes_in(fetch_result: "FetchResult") -> Optional[int]:
     return bytes_downloaded if bytes_downloaded > 0 else None
 
 
-def _build_external_ref(
-    source: NormalizedSource, canonical_source: str
-) -> Mapping[str, str]:
-    data: dict[str, str] = {
-        "provider": _sanitize_external_value(source.provider, limit=128),
-        "external_id": _sanitize_external_value(source.external_id),
-    }
-    for key, value in (source.provider_tags or {}).items():
-        normalized_key = _sanitize_tag_key(str(key))
-        normalized_val = _sanitize_external_value(str(value))
-        data[f"provider_tag:{normalized_key}"] = normalized_val
-    return data
-
-
-def _parse_external_ref(meta: DocumentMeta) -> ProviderReference:
-    external = meta.external_ref or {}
-    provider = external.get("provider", "")
-    external_id = external.get("external_id", "")
-    canonical_source = meta.origin_uri or ""
-    tags = {
-        key.split(":", 1)[1]: value
-        for key, value in external.items()
-        if key.startswith("provider_tag:")
-    }
-    return ProviderReference(
-        provider=provider,
-        external_id=external_id,
-        canonical_source=canonical_source,
-        provider_tags=tags,
-    )
-
-
 def _build_inline_blob(media_type: str, payload: bytes) -> InlineBlob:
     encoded = base64.b64encode(payload).decode("ascii")
     checksum = hashlib.sha256(payload).hexdigest()
@@ -280,23 +200,3 @@ def _build_inline_blob(media_type: str, payload: bytes) -> InlineBlob:
     )
 
 
-def _coerce_uuid(value: str) -> UUID:
-    try:
-        return UUID(_require_identifier(value, "document_id"))
-    except (ValueError, AttributeError) as exc:  # pragma: no cover - invalid uuid
-        raise ValueError("document_id_invalid") from exc
-
-
-def _sanitize_external_value(value: str, *, limit: int = 512) -> str:
-    normalized = _require_identifier(value, "external_ref_value")
-    if len(normalized) > limit:
-        return normalized[:limit]
-    return normalized
-
-
-def _sanitize_tag_key(key: str) -> str:
-    normalized = _require_identifier(key, "provider_tag_key")
-    max_length = 128 - len("provider_tag:")
-    if len(normalized) > max_length:
-        return normalized[:max_length]
-    return normalized

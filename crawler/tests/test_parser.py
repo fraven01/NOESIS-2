@@ -11,6 +11,8 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
+from pydantic import ValidationError
+
 from documents.parsers import ParsedTextBlock
 
 from crawler.parser import (
@@ -127,7 +129,7 @@ def test_unsupported_media_discards_payload_and_sets_diagnostic():
 
     assert result.status is ParseStatus.UNSUPPORTED_MEDIA
     assert result.content is None
-    assert result.stats is stats
+    assert result.stats == stats
     assert result.diagnostics == ("Unsupported media",)
     assert result.error is not None
     assert result.error.error_class is ErrorClass.UNSUPPORTED_MEDIA
@@ -139,7 +141,7 @@ def test_parser_failure_prevents_content_in_result():
     content = ParserContent(
         media_type="application/pdf", binary_payload_ref="s3://bucket/key"
     )
-    with pytest.raises(ValueError):
+    with pytest.raises(ValidationError):
         ParseResult(
             status=ParseStatus.PARSER_FAILURE,
             fetch=fetch,
