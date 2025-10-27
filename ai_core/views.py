@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
+from dataclasses import dataclass
 from collections.abc import Mapping
 from pathlib import Path
 from types import ModuleType
@@ -49,10 +51,23 @@ from noesis2.api.serializers import (
 
 # Crawler contracts and runtime structures used by the ingestion runner view.
 from crawler.contracts import normalize_source
-from crawler.fetcher import FetchRequest, PolitenessContext
-from crawler.frontier import CrawlSignals, SourceDescriptor
-from crawler.guardrails import GuardrailLimits, GuardrailSignals
-from crawler.parser import ParseStatus, ParserContent, ParserStats
+from crawler.errors import ErrorClass
+from crawler.fetcher import (
+    FetchFailure,
+    FetchRequest,
+    FetchStatus,
+    FetcherLimits,
+    PolitenessContext,
+)
+from crawler.frontier import (
+    CrawlSignals,
+    FrontierAction,
+    SourceDescriptor,
+    decide_frontier_action,
+)
+from crawler.guardrails import GuardrailLimits, GuardrailSignals, GuardrailStatus, enforce_guardrails
+from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
+from crawler.parser import ParseStatus, ParserContent, compute_parser_stats
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
@@ -100,7 +115,8 @@ from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
 from .rag.ingestion_contracts import (
     resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
 )
-from .infra import rate_limit
+from .infra import object_store, rate_limit
+from ai_core.infra.observability import emit_event, record_span
 from .ingestion_status import (
     get_latest_ingestion_run,
 )
@@ -117,6 +133,36 @@ logger.info(
     "module_loaded",
     extra={"module": __name__, "path": str(Path(__file__).resolve())},
 )
+
+
+@dataclass(slots=True)
+class CrawlerStateBuild:
+    """Result bundle returned by :func:`_build_crawler_state`."""
+
+    state: dict[str, object]
+    fetch_used: bool
+    http_status: int | None
+    fetched_bytes: int | None
+    media_type_effective: str | None
+    snapshot_path: str | None
+    snapshot_sha256: str | None
+
+
+class CrawlerRunError(RuntimeError):
+    """Raised when crawler state preparation cannot proceed."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str,
+        status_code: int,
+        details: Mapping[str, object] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.code = code
+        self.status_code = status_code
+        self.details = dict(details or {})
 
 
 def assert_case_active(tenant: str, case_id: str) -> None:
@@ -201,6 +247,78 @@ def _extract_internal_key(request: object) -> str | None:
         if isinstance(key_meta, str) and key_meta.strip():
             return key_meta.strip()
     return None
+
+
+def _build_header_mapping(fetch_result) -> dict[str, str]:
+    """Return a header mapping reconstructed from fetch metadata."""
+
+    headers: dict[str, str] = {}
+    metadata = fetch_result.metadata
+    if metadata.content_type:
+        headers["Content-Type"] = metadata.content_type
+    if metadata.etag:
+        headers["ETag"] = metadata.etag
+    if metadata.last_modified:
+        headers["Last-Modified"] = metadata.last_modified
+    if metadata.content_length is not None:
+        headers["Content-Length"] = str(metadata.content_length)
+    return headers
+
+
+def _map_failure(error: ErrorClass | None, reason: str | None) -> FetchFailure | None:
+    """Translate :class:`CrawlerError` metadata into a fetch failure contract."""
+
+    if error is None:
+        return None
+    if error is ErrorClass.TIMEOUT:
+        return FetchFailure(reason=reason or "timeout", temporary=True)
+    if error is ErrorClass.TRANSIENT_NETWORK:
+        return FetchFailure(reason=reason or "network_error", temporary=True)
+    if error is ErrorClass.RATE_LIMIT:
+        return FetchFailure(reason=reason or "rate_limited", temporary=True)
+    return FetchFailure(reason=reason or error.value, temporary=False)
+
+
+def _map_fetch_error_response(result) -> tuple[int, str]:
+    """Return HTTP status code and error identifier for fetch failures."""
+
+    error = result.error
+    if error is None:
+        return status.HTTP_502_BAD_GATEWAY, "crawler_fetch_failed"
+
+    error_class = getattr(error, "error_class", None)
+    if error_class is ErrorClass.TIMEOUT:
+        return status.HTTP_504_GATEWAY_TIMEOUT, "crawler_fetch_timeout"
+    if error_class is ErrorClass.RATE_LIMIT:
+        return status.HTTP_429_TOO_MANY_REQUESTS, "crawler_fetch_rate_limited"
+    if error_class is ErrorClass.NOT_FOUND:
+        return status.HTTP_404_NOT_FOUND, "crawler_fetch_not_found"
+    if error_class is ErrorClass.GONE:
+        return status.HTTP_410_GONE, "crawler_fetch_gone"
+    if error_class is ErrorClass.POLICY_DENY:
+        return status.HTTP_403_FORBIDDEN, "crawler_fetch_policy_denied"
+    if error_class is ErrorClass.UPSTREAM_429:
+        return status.HTTP_429_TOO_MANY_REQUESTS, "crawler_fetch_upstream_429"
+    if error_class is ErrorClass.TRANSIENT_NETWORK:
+        return status.HTTP_503_SERVICE_UNAVAILABLE, "crawler_fetch_transient_error"
+    return status.HTTP_502_BAD_GATEWAY, "crawler_fetch_failed"
+
+
+def _write_snapshot(
+    *,
+    tenant: str,
+    case: str,
+    payload: bytes,
+) -> tuple[str, str]:
+    """Persist the crawler payload as HTML snapshot and return metadata."""
+
+    sha256 = hashlib.sha256(payload).hexdigest()
+    tenant_safe = object_store.sanitize_identifier(tenant)
+    case_safe = object_store.sanitize_identifier(case)
+    relative = "/".join((tenant_safe, case_safe, "crawler", f"{sha256}.html"))
+    object_store.write_bytes(relative, payload)
+    absolute = str(object_store.BASE_PATH / relative)
+    return absolute, sha256
 
 
 def _resolve_hard_delete_actor(
@@ -945,6 +1063,9 @@ CRAWLER_RUN_REQUEST_EXAMPLE = OpenApiExample(
         "shadow_mode": True,
         "manual_review": "required",
         "max_document_bytes": 2048,
+        "fetch": True,
+        "snapshot": True,
+        "snapshot_label": "debug",
     },
     request_only=True,
 )
@@ -1004,7 +1125,15 @@ CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
             "provider": "web",
             "content_hash": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
             "tags": ["handbook", "hr"],
+            "snapshot_requested": True,
+            "snapshot_label": "debug",
         },
+        "fetch_used": True,
+        "http_status": 200,
+        "fetched_bytes": 1280,
+        "media_type_effective": "text/html",
+        "snapshot_path": ".ai_core_store/example-tenant/example-case/crawler/8d9db57d6c7b4d92a0dc772d1e9c2fd7.html",
+        "snapshot_sha256": "8d9db57d6c7b4d92a0dc772d1e9c2fd7",
     },
     response_only=True,
 )
@@ -1045,6 +1174,12 @@ CRAWLER_RUN_RESPONSE = inline_serializer(
         "gating_score": serializers.FloatField(required=False),
         "graph_run_id": serializers.CharField(required=False),
         "state": serializers.JSONField(required=False),
+        "fetch_used": serializers.BooleanField(required=False),
+        "http_status": serializers.IntegerField(required=False, allow_null=True),
+        "fetched_bytes": serializers.IntegerField(required=False, allow_null=True),
+        "media_type_effective": serializers.CharField(required=False, allow_null=True),
+        "snapshot_path": serializers.CharField(required=False, allow_null=True),
+        "snapshot_sha256": serializers.CharField(required=False, allow_null=True),
     },
 )
 
@@ -1396,7 +1531,7 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 
 def _build_crawler_state(
     meta: Mapping[str, object], request_data: CrawlerRunRequest
-) -> dict[str, object]:
+) -> CrawlerStateBuild:
     """Compose the crawler graph state from request inputs."""
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
@@ -1423,31 +1558,182 @@ def _build_crawler_state(
         canonical_source=source.canonical_source, politeness=politeness
     )
 
-    if request_data.content is None:
-        raise ValueError(
-            "Manual crawler runs require inline content. Provide content or enable remote fetching."
+    document_id = request_data.document_id or uuid4().hex
+    tags = tuple(request_data.tags or ())
+    limits = GuardrailLimits(max_document_bytes=request_data.max_document_bytes)
+
+    need_fetch = bool(request_data.fetch or request_data.content is None)
+    body_bytes: bytes = b""
+    effective_content_type = request_data.content_type
+    fetch_input: dict[str, object]
+    fetch_used = False
+    http_status: int | None = None
+    fetched_bytes: int | None = None
+    snapshot_path: str | None = None
+    snapshot_sha256: str | None = None
+
+    if need_fetch:
+        decision = decide_frontier_action(descriptor, CrawlSignals())
+        if decision.action is not FrontierAction.ENQUEUE:
+            emit_event(
+                "crawler_robots_blocked",
+                {
+                    "host": descriptor.host,
+                    "reason": decision.reason,
+                    "policy_events": list(decision.policy_events),
+                },
+            )
+            raise CrawlerRunError(
+                "Frontier denied the crawl due to robots or scheduling policies.",
+                code="crawler_robots_blocked",
+                status_code=status.HTTP_403_FORBIDDEN,
+                details={
+                    "fetch_used": False,
+                    "http_status": None,
+                    "fetched_bytes": None,
+                    "media_type_effective": None,
+                },
+            )
+
+        emit_event(
+            "fetch_started",
+            {"origin": source.canonical_source, "provider": source.provider},
+        )
+        fetch_limits = None
+        if limits.max_document_bytes is not None:
+            fetch_limits = FetcherLimits(max_bytes=limits.max_document_bytes)
+        config = HttpFetcherConfig(limits=fetch_limits)
+        fetcher = HttpFetcher(config)
+        fetch_result = fetcher.fetch(fetch_request)
+        record_span(
+            "crawler.fetch",
+            attributes={
+                "crawler.fetch.status": fetch_result.status.value,
+                "crawler.fetch.bytes": fetch_result.telemetry.bytes_downloaded,
+                "crawler.fetch.retry_reason": fetch_result.telemetry.retry_reason,
+            },
+        )
+        emit_event(
+            "fetch_finished",
+            {
+                "status": fetch_result.status.value,
+                "status_code": fetch_result.metadata.status_code,
+                "bytes": fetch_result.telemetry.bytes_downloaded,
+            },
+        )
+        if fetch_result.status is not FetchStatus.FETCHED:
+            status_code, code = _map_fetch_error_response(fetch_result)
+            emit_event(code, {"origin": source.canonical_source})
+            details = {
+                "fetch_used": True,
+                "http_status": fetch_result.metadata.status_code,
+                "fetched_bytes": fetch_result.telemetry.bytes_downloaded,
+                "media_type_effective": fetch_result.metadata.content_type,
+            }
+            raise CrawlerRunError(
+                "Fetching the origin URL failed.",
+                code=code,
+                status_code=status_code,
+                details=details,
+            )
+        fetch_used = True
+        http_status = fetch_result.metadata.status_code
+        fetched_bytes = fetch_result.telemetry.bytes_downloaded
+        body_bytes = fetch_result.payload or b""
+        if not body_bytes:
+            raise CrawlerRunError(
+                "Fetched payload was empty.",
+                code="crawler_fetch_empty",
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                details={
+                    "fetch_used": True,
+                    "http_status": http_status,
+                    "fetched_bytes": fetched_bytes,
+                    "media_type_effective": fetch_result.metadata.content_type,
+                },
+            )
+        if fetch_result.metadata.content_type:
+            effective_content_type = fetch_result.metadata.content_type
+        fetch_input = {
+            "request": fetch_request,
+            "status_code": fetch_result.metadata.status_code,
+            "body": body_bytes,
+            "headers": _build_header_mapping(fetch_result),
+            "elapsed": fetch_result.telemetry.latency,
+            "retries": fetch_result.telemetry.retries,
+            "retry_reason": fetch_result.telemetry.retry_reason,
+            "downloaded_bytes": fetch_result.telemetry.bytes_downloaded,
+            "backoff_total_ms": fetch_result.telemetry.backoff_total_ms,
+        }
+        if fetch_limits is not None:
+            fetch_input["limits"] = fetch_limits
+        failure = _map_failure(
+            getattr(fetch_result.error, "error_class", None),
+            getattr(fetch_result.error, "reason", None),
+        )
+        if failure is not None:
+            fetch_input["failure"] = failure
+    else:
+        if request_data.content is None:
+            raise ValueError(
+                "Manual crawler runs require inline content. Provide content or enable remote fetching."
+            )
+        body_bytes = request_data.content.encode("utf-8")
+        fetched_bytes = len(body_bytes)
+        fetch_input = {
+            "request": fetch_request,
+            "status_code": 200,
+            "body": body_bytes,
+            "headers": {"Content-Type": effective_content_type},
+            "elapsed": 0.05,
+        }
+
+    if effective_content_type is None:
+        effective_content_type = "application/octet-stream"
+
+    guardrail_signals = GuardrailSignals(
+        tenant_id=str(meta.get("tenant_id")),
+        provider=source.provider,
+        canonical_source=source.canonical_source,
+        host=descriptor.host,
+        document_bytes=len(body_bytes),
+        mime_type=effective_content_type,
+    )
+    guardrail_decision = enforce_guardrails(limits=limits, signals=guardrail_signals)
+    if guardrail_decision.status is GuardrailStatus.DENY:
+        emit_event(
+            "crawler_guardrail_denied",
+            {
+                "reason": guardrail_decision.reason,
+                "policy_events": list(guardrail_decision.policy_events),
+            },
+        )
+        raise CrawlerRunError(
+            "Crawler guardrails denied the document.",
+            code="crawler_guardrail_denied",
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            details={
+                "fetch_used": fetch_used,
+                "http_status": http_status,
+                "fetched_bytes": fetched_bytes,
+                "media_type_effective": effective_content_type,
+            },
         )
 
-    body = request_data.content.encode("utf-8")
-    fetch_input = {
-        "request": fetch_request,
-        "status_code": 200,
-        "body": body,
-        "headers": {"Content-Type": request_data.content_type},
-        "elapsed": 0.05,
-    }
+    try:
+        decoded = body_bytes.decode("utf-8", errors="replace")
+    except Exception:  # pragma: no cover - defensive
+        decoded = body_bytes.decode("latin-1", errors="replace")
 
     parse_content = ParserContent(
-        media_type=request_data.content_type,
-        primary_text=request_data.content,
+        media_type=effective_content_type,
+        primary_text=decoded,
         title=request_data.title,
         content_language=request_data.language,
     )
-    token_count = max(len(request_data.content.split()), 1)
-    parse_stats = ParserStats(
-        token_count=token_count,
-        character_count=len(request_data.content),
-        extraction_path="manual.input",
+    parse_stats = compute_parser_stats(
+        primary_text=decoded,
+        extraction_path="crawler.manual",
     )
     parse_input = {
         "status": ParseStatus.PARSED,
@@ -1455,24 +1741,22 @@ def _build_crawler_state(
         "stats": parse_stats,
     }
 
-    guardrail_signals = GuardrailSignals(
-        tenant_id=str(meta.get("tenant_id")),
-        provider=source.provider,
-        canonical_source=source.canonical_source,
-        host=descriptor.host,
-        document_bytes=len(body),
-        mime_type=request_data.content_type,
-    )
-    limits = GuardrailLimits(max_document_bytes=request_data.max_document_bytes)
-    gating_input = {"limits": limits, "signals": guardrail_signals}
-
-    document_id = request_data.document_id or uuid4().hex
-    tags = tuple(request_data.tags or ())
     normalize_input = {
         "source": source,
         "document_id": document_id,
         "tags": tags,
     }
+
+    gating_input = {"limits": limits, "signals": guardrail_signals}
+
+    if request_data.snapshot and body_bytes:
+        tenant_id = str(meta.get("tenant_id"))
+        case_id = str(meta.get("case_id"))
+        snapshot_path, snapshot_sha256 = _write_snapshot(
+            tenant=tenant_id,
+            case=case_id,
+            payload=body_bytes,
+        )
 
     state: dict[str, object] = {
         "tenant_id": meta.get("tenant_id"),
@@ -1492,9 +1776,17 @@ def _build_crawler_state(
     state["control"] = {
         "snapshot": request_data.snapshot,
         "snapshot_label": request_data.snapshot_label,
-        "fetch": request_data.fetch,
+        "fetch": fetch_used,
     }
-    return state
+    return CrawlerStateBuild(
+        state=state,
+        fetch_used=fetch_used,
+        http_status=http_status,
+        fetched_bytes=fetched_bytes,
+        media_type_effective=effective_content_type,
+        snapshot_path=snapshot_path,
+        snapshot_sha256=snapshot_sha256,
+    )
 
 
 class RagQueryViewV1(_GraphView):
@@ -1754,12 +2046,21 @@ class CrawlerIngestionRunnerView(APIView):
             )
 
         try:
-            state = _build_crawler_state(meta, request_model)
+            state_build = _build_crawler_state(meta, request_model)
+        except CrawlerRunError as exc:
+            payload = {
+                "detail": str(exc),
+                "code": exc.code,
+            }
+            payload.update(exc.details)
+            response = Response(payload, status=exc.status_code)
+            return apply_std_headers(response, meta)
         except ValueError as exc:
             return _error_response(
                 str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
             )
 
+        state = state_build.state
         graph = crawler_ingestion_graph.build_graph()
         state = graph.start_crawl(state)
 
@@ -1806,6 +2107,18 @@ class CrawlerIngestionRunnerView(APIView):
             "graph_run_id": result.get("graph_run_id"),
             "state": services._make_json_safe(snapshot),
         }
+        response_payload.update(
+            {
+                "fetch_used": state_build.fetch_used,
+                "http_status": state_build.http_status,
+                "fetched_bytes": state_build.fetched_bytes,
+                "media_type_effective": state_build.media_type_effective,
+            }
+        )
+        if state_build.snapshot_path:
+            response_payload["snapshot_path"] = state_build.snapshot_path
+        if state_build.snapshot_sha256:
+            response_payload["snapshot_sha256"] = state_build.snapshot_sha256
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         return apply_std_headers(response, meta)
