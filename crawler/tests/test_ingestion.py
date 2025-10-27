@@ -24,7 +24,9 @@ from crawler.ingestion import (
     build_ingestion_decision,
     build_ingestion_error,
 )
-from crawler.normalizer import NormalizedDocument, build_normalized_document
+from documents.contracts import NormalizedDocument
+
+from crawler.normalizer import build_normalized_document
 from crawler.parser import (
     ParseStatus,
     ParserContent,

@@ -37,7 +37,12 @@ from crawler.ingestion import (
     IngestionStatus,
     build_ingestion_decision,
 )
-from crawler.normalizer import NormalizedDocument, build_normalized_document
+from documents.contracts import NormalizedDocument
+
+from crawler.normalizer import (
+    build_normalized_document,
+    resolve_provider_reference,
+)
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -163,7 +168,7 @@ class CrawlerIngestionGraph:
     ingestion_builder: Callable[..., IngestionDecision] = build_ingestion_decision
     store_handler: Callable[[NormalizedDocument], Any] = lambda document: {
         "status": "stored",
-        "document_id": document.document_id,
+        "document_id": str(document.ref.document_id),
     }
     upsert_handler: Callable[[IngestionDecision], Any] = lambda _: {"status": "queued"}
     retire_handler: Callable[[IngestionDecision], Any] = lambda decision: {
@@ -552,11 +557,12 @@ class CrawlerIngestionGraph:
         )
         artifacts["normalized_document"] = normalized
         state["origin_uri"] = normalized.meta.origin_uri
-        state["provider"] = normalized.external_ref.provider
-        state["external_id"] = normalized.external_ref.external_id
+        provider_reference = resolve_provider_reference(normalized)
+        state["provider"] = provider_reference.provider
+        state["external_id"] = provider_reference.external_id
         attributes = {
-            "document_id": normalized.document_id,
-            "media_type": normalized.media_type,
+            "document_id": str(normalized.ref.document_id),
+            "media_type": getattr(normalized.blob, "media_type", None),
         }
         outcome = _transition("normalized", "normalized", attributes=attributes)
         return outcome, True
@@ -580,9 +586,18 @@ class CrawlerIngestionGraph:
         binary_payload = params.get("binary_payload")
         check_for_changes = params.get("check_near_duplicates_for_changes", False)
         algorithm = params.get("hash_algorithm", "sha256")
+        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
+        primary_text: Optional[str] = None
+        if (
+            parse_result is not None
+            and parse_result.status is ParseStatus.PARSED
+            and parse_result.content is not None
+        ):
+            primary_text = parse_result.content.primary_text
 
         decision = self.delta_evaluator(
             normalized,
+            primary_text=primary_text,
             previous_content_hash=previous_hash,
             previous_version=previous_version,
             known_near_duplicates=known_duplicates,

@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Mapping, Optional, Sequence, Tuple, TypeVar
+from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
 from documents.contracts import (
@@ -16,8 +17,6 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument as ContractsNormalizedDocument,
 )
-from documents.parsers import ParsedEntity, ParsedTextBlock
-
 from .contracts import NormalizedSource
 from .parser import ParseResult, ParseStatus, ParserContent, ParserStats
 
@@ -47,68 +46,6 @@ class ProviderReference:
         object.__setattr__(self, "provider_tags", normalized)
 
 
-@dataclass(frozen=True)
-class NormalizedDocument:
-    """Normalized crawler document composed of shared document contracts."""
-
-    document: ContractsNormalizedDocument
-    primary_text: Optional[str]
-    binary_payload_ref: Optional[str]
-    text_blocks: Tuple[ParsedTextBlock, ...]
-    entities: Tuple[ParsedEntity, ...]
-    stats: ParserStats
-    diagnostics: Tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        if self.primary_text is not None:
-            object.__setattr__(self, "primary_text", self.primary_text.strip())
-        if self.binary_payload_ref is not None:
-            object.__setattr__(
-                self, "binary_payload_ref", self.binary_payload_ref.strip()
-            )
-        object.__setattr__(
-            self, "text_blocks", _ensure_tuple(self.text_blocks, ParsedTextBlock)
-        )
-        object.__setattr__(self, "entities", _ensure_tuple(self.entities, ParsedEntity))
-        object.__setattr__(self, "diagnostics", _normalize_diagnostics(self.diagnostics))
-        if not isinstance(self.stats, ParserStats):
-            raise TypeError("stats_must_be_parser_stats")
-
-    @property
-    def tenant_id(self) -> str:
-        return self.document.ref.tenant_id
-
-    @property
-    def workflow_id(self) -> str:
-        return self.document.ref.workflow_id
-
-    @property
-    def document_id(self) -> str:
-        return str(self.document.ref.document_id)
-
-    @property
-    def meta(self) -> DocumentMeta:
-        return self.document.meta
-
-    @property
-    def media_type(self) -> str:
-        return self.document.blob.media_type
-
-    @property
-    def parser_stats(self) -> Mapping[str, object]:
-        return MappingProxyType(dict(self.meta.parse_stats or {}))
-
-    @property
-    def external_ref(self) -> ProviderReference:
-        return _parse_external_ref(self.meta)
-
-    def payload_bytes(self) -> bytes:
-        blob = self.document.blob
-        if isinstance(blob, InlineBlob):
-            return blob.decoded_payload()
-        raise ValueError("unsupported_blob_type")
-
-
 def build_normalized_document(
     *,
     parse_result: ParseResult,
@@ -117,8 +54,8 @@ def build_normalized_document(
     workflow_id: str,
     document_id: str,
     tags: Optional[Sequence[str]] = None,
-) -> NormalizedDocument:
-    """Compose a :class:`NormalizedDocument` from parser output and source data."""
+) -> ContractsNormalizedDocument:
+    """Compose a :class:`documents.contracts.NormalizedDocument` instance."""
 
     if parse_result.status is not ParseStatus.PARSED:
         raise ValueError("parse_result_not_parsed")
@@ -134,6 +71,11 @@ def build_normalized_document(
 
     normalized_tags = _normalize_tags(tags)
     parser_stats = dict(_parser_stats_mapping(stats))
+    normalized_text = normalized_primary_text(content.primary_text)
+    if normalized_text:
+        hash_value = hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
+        if _HASH_HEX_RE.fullmatch(hash_value):
+            parser_stats["crawler.primary_text_hash_sha256"] = hash_value
     bytes_in = _normalizer_bytes_in(parse_result.fetch)
     if bytes_in is not None:
         parser_stats["normalizer.bytes_in"] = bytes_in
@@ -171,15 +113,50 @@ def build_normalized_document(
         source="crawler",
     )
 
-    return NormalizedDocument(
-        document=normalized,
-        primary_text=content.primary_text,
-        binary_payload_ref=content.binary_payload_ref,
-        text_blocks=content.structural_elements,
-        entities=content.entities,
-        stats=stats,
-        diagnostics=parse_result.diagnostics,
-    )
+    return normalized
+
+
+def resolve_provider_reference(
+    document: ContractsNormalizedDocument,
+) -> ProviderReference:
+    """Return the provider reference derived from the document metadata."""
+
+    return _parse_external_ref(document.meta)
+
+
+def document_parser_stats(
+    document: ContractsNormalizedDocument,
+) -> Mapping[str, object]:
+    """Expose parser statistics as an immutable mapping."""
+
+    return MappingProxyType(dict(document.meta.parse_stats or {}))
+
+
+def document_payload_bytes(document: ContractsNormalizedDocument) -> bytes:
+    """Decode the inline payload embedded in the normalized document."""
+
+    blob = document.blob
+    if isinstance(blob, InlineBlob):
+        return blob.decoded_payload()
+    raise ValueError("unsupported_blob_type")
+
+
+def normalized_primary_text(text: Optional[str]) -> str:
+    """Return whitespace-normalized primary text or an empty string."""
+
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    return " ".join(raw.split())
+
+
+_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
+def normalize_diagnostics(entries: Iterable[str]) -> Tuple[str, ...]:
+    """Normalize diagnostic messages by stripping whitespace and dropping empties."""
+
+    return _normalize_diagnostics(tuple(entries))
 
 
 def _require_identifier(value: Optional[str], field: str) -> str:
@@ -229,21 +206,6 @@ def _normalize_str_mapping(mapping: Optional[Mapping[str, str]]) -> Mapping[str,
         normalized_val = _require_identifier(str(value), "provider_tag_value")
         normalized[normalized_key] = normalized_val
     return MappingProxyType(normalized)
-
-
-T = TypeVar("T")
-
-
-def _ensure_tuple(values: Optional[Sequence[T]], expected_type: type) -> Tuple[T, ...]:
-    if values is None:
-        return ()
-    tupled: Tuple[T, ...] = tuple(values)  # type: ignore[var-annotated]
-    for entry in tupled:
-        if not isinstance(entry, expected_type):
-            raise TypeError("unexpected_entry_type")
-    return tupled
-
-
 def _normalize_diagnostics(entries: Sequence[str]) -> Tuple[str, ...]:
     return tuple(
         normalized

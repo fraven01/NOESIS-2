@@ -8,8 +8,13 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Iterable, Mapping, Optional, Sequence, Tuple
 
+from documents.contracts import NormalizedDocument
+
 from .contracts import Decision
-from .normalizer import NormalizedDocument
+from .normalizer import document_payload_bytes, normalized_primary_text
+
+_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
 
 
 class DeltaStatus(str, Enum):
@@ -90,6 +95,7 @@ DEFAULT_NEAR_DUPLICATE_THRESHOLD = 0.92
 def evaluate_delta(
     document: NormalizedDocument,
     *,
+    primary_text: Optional[str] = None,
     previous_content_hash: Optional[str] = None,
     previous_version: Optional[int] = None,
     known_near_duplicates: Optional[Mapping[str, NearDuplicateSignature]] = None,
@@ -101,9 +107,12 @@ def evaluate_delta(
     """Decide whether the document content is new, changed, unchanged or a near-duplicate."""
 
     content_hash = _compute_content_hash(
-        document, binary_payload=binary_payload, algorithm=hash_algorithm
+        document,
+        primary_text=primary_text,
+        binary_payload=binary_payload,
+        algorithm=hash_algorithm,
     )
-    near_signature = _compute_near_duplicate_signature(document)
+    near_signature = _compute_near_duplicate_signature(primary_text)
 
     signatures = DeltaSignatures(
         content_hash=content_hash, near_duplicate=near_signature
@@ -113,7 +122,7 @@ def evaluate_delta(
         near_signature,
         known_near_duplicates,
         threshold=near_duplicate_threshold,
-        exclude=document.document_id,
+        exclude=str(document.ref.document_id),
     )
 
     if previous_content_hash is None:
@@ -155,19 +164,27 @@ def evaluate_delta(
 def _compute_content_hash(
     document: NormalizedDocument,
     *,
+    primary_text: Optional[str],
     binary_payload: Optional[bytes] = None,
     algorithm: str = "sha256",
 ) -> str:
-    primary_text = document.primary_text
-    if primary_text:
-        normalized = " ".join(primary_text.split())
-        payload = normalized.encode("utf-8")
-    else:
-        if binary_payload is None:
-            payload = document.payload_bytes()
-        else:
-            payload = binary_payload
+    normalized_text = normalized_primary_text(primary_text)
+    if normalized_text:
+        payload = normalized_text.encode("utf-8")
+        return _hash_payload(payload, algorithm)
 
+    stored_hash = _stored_primary_text_hash(document, algorithm)
+    if stored_hash is not None:
+        return stored_hash
+
+    if binary_payload is None:
+        payload = document_payload_bytes(document)
+    else:
+        payload = binary_payload
+    return _hash_payload(payload, algorithm)
+
+
+def _hash_payload(payload: bytes, algorithm: str) -> str:
     try:
         hasher = hashlib.new(algorithm)
     except ValueError as exc:
@@ -176,13 +193,36 @@ def _compute_content_hash(
     return hasher.hexdigest()
 
 
-def _compute_near_duplicate_signature(
-    document: NormalizedDocument,
-) -> Optional[NearDuplicateSignature]:
-    primary_text = document.primary_text
-    if not primary_text:
+def _stored_primary_text_hash(
+    document: NormalizedDocument, algorithm: str
+) -> Optional[str]:
+    key = _PRIMARY_TEXT_HASH_KEYS.get(algorithm.lower())
+    if key is None:
         return None
-    tokens = _tokenize(primary_text)
+
+    stats = document.meta.parse_stats or {}
+    if not isinstance(stats, Mapping):
+        return None
+
+    raw = stats.get(key)
+    if not isinstance(raw, str):
+        return None
+
+    candidate = raw.strip().lower()
+    if not candidate:
+        return None
+    if not _HASH_HEX_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def _compute_near_duplicate_signature(
+    primary_text: Optional[str],
+) -> Optional[NearDuplicateSignature]:
+    text = (primary_text or "").strip()
+    if not text:
+        return None
+    tokens = _tokenize(text)
     if not tokens:
         return None
     normalized_tokens = tuple(sorted(set(tokens)))
