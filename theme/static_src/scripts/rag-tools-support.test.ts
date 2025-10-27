@@ -61,7 +61,9 @@ describe('rag-tools-support helpers', () => {
   it('builds crawler payload from loosely typed inputs', () => {
     const payload = buildCrawlerPayload({
       workflowId: ' wf-1 ',
+      mode: ' ingest ',
       originUrl: ' https://example.com/page ',
+      originUrls: [' https://example.com/docs/handbook ', ''],
       documentId: ' doc-1 ',
       provider: ' web ',
       title: ' Handbook ',
@@ -78,9 +80,11 @@ describe('rag-tools-support helpers', () => {
       manualReview: 'APPROVED',
       forceRetire: 1,
       recomputeDelta: '1',
+      collectionId: ' 6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa ',
     });
 
     expect(payload.workflow_id).toBe('wf-1');
+    expect(payload.mode).toBe('live');
     expect(payload.origin_url).toBe('https://example.com/page');
     expect(payload.document_id).toBe('doc-1');
     expect(payload.provider).toBe('web');
@@ -91,13 +95,32 @@ describe('rag-tools-support helpers', () => {
     expect(payload.fetch).toBe(false);
     expect(payload.tags).toEqual(['alpha', 'beta']);
     expect(payload.max_document_bytes).toBe(1024);
+    expect(payload.limits).toEqual({ max_document_bytes: 1024 });
     expect(payload.shadow_mode).toBe(true);
     expect(payload.dry_run).toBe(false);
-    expect(payload.snapshot).toBe(true);
+    expect(payload.snapshot).toEqual({ enabled: true, label: 'debug' });
     expect(payload.snapshot_label).toBe('debug');
+    expect(payload.review).toBe('approved');
     expect(payload.manual_review).toBe('approved');
     expect(payload.force_retire).toBe(true);
     expect(payload.recompute_delta).toBe(true);
+    expect(payload.collection_id).toBe('6d6fba7c-1c62-4f0a-8b8b-7efb4567a0aa');
+    expect(payload.origins).toEqual([
+      {
+        url: 'https://example.com/page',
+        review: 'approved',
+        dry_run: false,
+        limits: { max_document_bytes: 1024 },
+        snapshot: { enabled: true, label: 'debug' },
+      },
+      {
+        url: 'https://example.com/docs/handbook',
+        review: 'approved',
+        dry_run: false,
+        limits: { max_document_bytes: 1024 },
+        snapshot: { enabled: true, label: 'debug' },
+      },
+    ]);
   });
 
   it('omits content when fetch is enabled and input empty', () => {
@@ -112,6 +135,30 @@ describe('rag-tools-support helpers', () => {
 
     expect(payload.fetch).toBe(false);
     expect(payload.content).toBe('');
+  });
+
+  it('normalizes origin list inputs into payload.origins', () => {
+    const payload = buildCrawlerPayload({
+      mode: 'store_only',
+      review: 'required',
+      originUrls: ' https://example.com/a \nhttps://example.com/b,  https://example.com/c ',
+      dryRun: true,
+    });
+
+    expect(payload.mode).toBe('live');
+    expect(payload.review).toBe('required');
+    expect(payload.origins).toEqual([
+      { url: 'https://example.com/a', review: 'required', dry_run: true },
+      { url: 'https://example.com/b', review: 'required', dry_run: true },
+      { url: 'https://example.com/c', review: 'required', dry_run: true },
+    ]);
+  });
+
+  it('maps crawler mode selections to backend-supported values', () => {
+    expect(buildCrawlerPayload({ mode: 'ingest' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'store_only' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'fetch_only' }).mode).toBe('live');
+    expect(buildCrawlerPayload({ mode: 'manual' }).mode).toBe('manual');
   });
 
   it('normalizes crawler manual review inputs', () => {
