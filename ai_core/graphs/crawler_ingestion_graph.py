@@ -634,7 +634,7 @@ class CrawlerIngestionGraph:
             signals: Optional[GuardrailSignals] = params.get("signals")
             decision = self.guardrail_enforcer(limits=limits, signals=signals)
             if decision.status is GuardrailStatus.DENY and initial_review != "rejected":
-                control["review"] = "required"
+                _set_review_value(control, "required")
 
         artifacts["guardrail_decision"] = decision
         allowed = decision.status is GuardrailStatus.ALLOW
@@ -643,7 +643,7 @@ class CrawlerIngestionGraph:
         if score is None:
             score = 1.0 if allowed else 0.0
         state["gating_score"] = float(score)
-        resolved_review = control.get("review") or initial_review
+        resolved_review = _get_review_value(control) or initial_review
         attributes = {
             "status": decision.status.value,
             "policy_events": list(decision.policy_events),
