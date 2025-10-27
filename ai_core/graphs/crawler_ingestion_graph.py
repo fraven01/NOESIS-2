@@ -109,6 +109,25 @@ def _ensure_mapping(
     return dict(obj)
 
 
+def _get_review_value(control: Mapping[str, Any]) -> Optional[str]:
+    review_value = control.get("review")
+    if isinstance(review_value, str) and review_value:
+        return review_value
+    manual_value = control.get("manual_review")
+    if isinstance(manual_value, str) and manual_value:
+        return manual_value
+    return None
+
+
+def _set_review_value(control: MutableMapping[str, Any], value: Optional[str]) -> None:
+    if value is None:
+        control["review"] = None
+        control["manual_review"] = None
+        return
+    control["review"] = value
+    control["manual_review"] = value
+
+
 def _transition(
     decision: str,
     reason: str,
@@ -220,15 +239,12 @@ class CrawlerIngestionGraph:
         updated["artifacts"] = {}
         updated.pop("graph_run_id", None)
         control = dict(updated.get("control", {}))
-        control.update(
-            {
-                "review": None,
-                "force_retire": False,
-                "recompute_delta": False,
-                "mode": control.get("mode", "ingest"),
-                "dry_run": bool(control.get("dry_run", False)),
-            }
-        )
+        review_value = _get_review_value(control)
+        control["force_retire"] = False
+        control["recompute_delta"] = False
+        control["mode"] = control.get("mode", "ingest")
+        control["dry_run"] = bool(control.get("dry_run", False))
+        _set_review_value(control, review_value)
         updated["control"] = control
         updated["ingest_action"] = "pending"
         updated["gating_score"] = 0.0
@@ -258,7 +274,7 @@ class CrawlerIngestionGraph:
     ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
-        control["review"] = "approved"
+        _set_review_value(control, "approved")
         updated["control"] = control
         return updated
 
@@ -267,7 +283,7 @@ class CrawlerIngestionGraph:
     ) -> Dict[str, Any]:
         updated = self._copy_state(state)
         control = dict(updated.get("control", {}))
-        control["review"] = "rejected"
+        _set_review_value(control, "rejected")
         updated["control"] = control
         updated["ingest_action"] = "skip"
         return updated
@@ -323,13 +339,14 @@ class CrawlerIngestionGraph:
         if not isinstance(base.get("artifacts"), dict):
             base["artifacts"] = {}
         control = dict(base.get("control", {}))
+        review_value = _get_review_value(control)
         control.setdefault("shadow_mode", False)
-        control.setdefault("review", None)
         control.setdefault("force_retire", False)
         control.setdefault("policy_revision", 0)
         control.setdefault("recompute_delta", False)
         control.setdefault("mode", "ingest")
         control.setdefault("dry_run", False)
+        _set_review_value(control, review_value)
         base["control"] = control
         base["ingest_action"] = "pending"
         if base.get("gating_score") is None:
@@ -597,14 +614,14 @@ class CrawlerIngestionGraph:
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
     ) -> Tuple[Transition, bool]:
-        initial_review = control.get("review")
+        initial_review = _get_review_value(control)
         if initial_review == "approved":
             decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.ALLOW,
                 "manual_approved",
                 ("manual_approved",),
             )
-            control["review"] = None
+            _set_review_value(control, None)
         elif initial_review == "rejected":
             decision = GuardrailDecision.from_legacy(
                 GuardrailStatus.DENY,
@@ -616,10 +633,7 @@ class CrawlerIngestionGraph:
             limits: Optional[GuardrailLimits] = params.get("limits")
             signals: Optional[GuardrailSignals] = params.get("signals")
             decision = self.guardrail_enforcer(limits=limits, signals=signals)
-            if (
-                decision.status is GuardrailStatus.DENY
-                and initial_review != "rejected"
-            ):
+            if decision.status is GuardrailStatus.DENY and initial_review != "rejected":
                 control["review"] = "required"
 
         artifacts["guardrail_decision"] = decision
@@ -758,7 +772,9 @@ class CrawlerIngestionGraph:
                     "dry_run": bool(control.get("dry_run")),
                 }
             )
-            outcome = _transition(missing.decision, missing.reason, attributes=attributes)
+            outcome = _transition(
+                missing.decision, missing.reason, attributes=attributes
+            )
             return outcome, False
 
         mode = control.get("mode", "ingest")

@@ -114,6 +114,18 @@ def test_nominal_run_executes_pipeline() -> None:
     assert "transitions" not in initial_state
 
 
+def test_start_crawl_respects_legacy_manual_review_control() -> None:
+    initial_state, _, _ = _build_state()
+    initial_state["control"] = {"manual_review": "required", "dry_run": True}
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
+
+    state = graph.start_crawl(initial_state)
+
+    assert state["control"]["review"] == "required"
+    assert state["control"]["manual_review"] == "required"
+    assert state["control"]["dry_run"] is True
+
+
 def test_manual_approval_path() -> None:
     initial_state, meta, body = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
@@ -127,6 +139,7 @@ def test_manual_approval_path() -> None:
     gating = transitions["crawler.gating"]
     assert gating["decision"] == GuardrailStatus.DENY.value
     assert denied_state["control"]["review"] == "required"
+    assert denied_state["control"]["manual_review"] == "required"
     assert gating["attributes"]["severity"] == "warn"
     assert "crawler.ingest_decision" not in transitions
     assert denied_result["decision"] == "pending"
@@ -135,6 +148,7 @@ def test_manual_approval_path() -> None:
     approved = graph.approve_ingest(denied_state)
     approved_state, final_result = graph.run(approved, meta)
     assert approved_state["control"].get("review") is None
+    assert approved_state["control"].get("manual_review") is None
     assert (
         approved_state["transitions"]["crawler.gating"]["decision"]
         == GuardrailStatus.ALLOW.value
@@ -338,7 +352,9 @@ def test_dry_run_blocks_store_and_upsert() -> None:
     assert transitions["crawler.store"]["reason"] == "dry_run"
     assert transitions["rag.upsert"]["decision"] == "skip"
     assert transitions["rag.upsert"]["reason"] == "dry_run"
-    ingestion_attrs = result_state["transitions"]["crawler.ingest_decision"]["attributes"]
+    ingestion_attrs = result_state["transitions"]["crawler.ingest_decision"][
+        "attributes"
+    ]
     assert ingestion_attrs["blocked"] == "dry_run"
 
 
@@ -355,5 +371,7 @@ def test_review_required_blocks_store_and_upsert() -> None:
     assert transitions["crawler.store"]["reason"] == "review_required"
     assert transitions["rag.upsert"]["decision"] == "skip"
     assert transitions["rag.upsert"]["reason"] == "review_required"
-    ingestion_attrs = result_state["transitions"]["crawler.ingest_decision"]["attributes"]
+    ingestion_attrs = result_state["transitions"]["crawler.ingest_decision"][
+        "attributes"
+    ]
     assert ingestion_attrs["blocked"] == "review_required"
