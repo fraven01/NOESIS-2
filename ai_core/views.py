@@ -1909,6 +1909,7 @@ class CrawlerIngestionRunnerView(APIView):
 
         state = state_build.state
         graph = crawler_ingestion_graph.build_graph()
+
         # Attach real upsert handler to enqueue ingestion runs when allowed
         def _upsert_handler(decision):  # type: ignore[no-untyped-def]
             try:
@@ -1918,7 +1919,9 @@ class CrawlerIngestionRunnerView(APIView):
                     return {"status": "skipped", "reason": "missing_document_id"}
                 request_data = {
                     "document_ids": [str(document_id)],
-                    "embedding_profile": getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"),
+                    "embedding_profile": getattr(
+                        settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
+                    ),
                 }
                 collection_scope = meta.get("collection_id")
                 if collection_scope:
@@ -1937,6 +1940,7 @@ class CrawlerIngestionRunnerView(APIView):
                 return result
             except Exception as exc:
                 return {"status": "error", "error": str(exc)}
+
         try:
             graph.upsert_handler = _upsert_handler  # type: ignore[attr-defined]
         except Exception:
@@ -2010,7 +2014,9 @@ class CrawlerIngestionRunnerView(APIView):
         try:
             artifacts = result_state.get("artifacts", {}) or {}
             upsert_result = artifacts.get("upsert_result")
-            if isinstance(upsert_result, dict) and upsert_result.get("ingestion_run_id"):
+            if isinstance(upsert_result, dict) and upsert_result.get(
+                "ingestion_run_id"
+            ):
                 response_payload["ingestion_run_id"] = upsert_result["ingestion_run_id"]
         except Exception:
             pass
