@@ -42,7 +42,6 @@ from .parser import (
     ParsedEntity,
     ParserContent,
     ParserStats,
-    StructuralElement,
     build_parse_result,
     compute_parser_stats,
 )
@@ -56,10 +55,8 @@ from .guardrails import (
     enforce_guardrails,
 )
 from .normalizer import (
-    ExternalDocumentReference,
     NormalizedDocument,
-    NormalizedDocumentContent,
-    NormalizedDocumentMeta,
+    ProviderReference,
     build_normalized_document,
 )
 from .delta import (
@@ -138,7 +135,6 @@ __all__ = [
     "ParsedEntity",
     "ParserContent",
     "ParserStats",
-    "StructuralElement",
     "build_parse_result",
     "compute_parser_stats",
     "GuardrailDecision",
@@ -148,10 +144,8 @@ __all__ = [
     "QuotaLimits",
     "QuotaUsage",
     "enforce_guardrails",
-    "ExternalDocumentReference",
     "NormalizedDocument",
-    "NormalizedDocumentContent",
-    "NormalizedDocumentMeta",
+    "ProviderReference",
     "build_normalized_document",
     "DeltaDecision",
     "DeltaSignatures",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
+import math
 from math import isfinite
 from types import MappingProxyType
 import re
@@ -37,6 +38,19 @@ def _ensure_non_empty_string(value: str, code: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(code)
     return value
+
+
+def _ensure_optional_offsets(value: Optional[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    if value is None:
+        return None
+    if not isinstance(value, tuple) or len(value) != 2:
+        raise ValueError("parsed_entity_offsets")
+    start, end = value
+    if not isinstance(start, int) or not isinstance(end, int):
+        raise ValueError("parsed_entity_offsets")
+    if start < 0 or end < start:
+        raise ValueError("parsed_entity_offsets")
+    return (start, end)
 
 
 def _normalise_section_path(
@@ -200,6 +214,32 @@ class ParsedTextBlock:
             "language",
             _ensure_optional_language(self.language),
         )
+
+
+@dataclass(frozen=True)
+class ParsedEntity:
+    """Entity recognised during parsing."""
+
+    label: str
+    value: str
+    confidence: Optional[float] = None
+    offsets: Optional[Tuple[int, int]] = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
+        object.__setattr__(
+            self, "label", _ensure_non_empty_string(self.label, "parsed_entity_label")
+        )
+        object.__setattr__(
+            self, "value", _ensure_non_empty_string(self.value, "parsed_entity_value")
+        )
+        if self.confidence is not None:
+            if not isinstance(self.confidence, (int, float)):
+                raise ValueError("parsed_entity_confidence")
+            confidence = float(self.confidence)
+            if confidence < 0.0 or confidence > 1.0 or math.isnan(confidence):
+                raise ValueError("parsed_entity_confidence")
+            object.__setattr__(self, "confidence", confidence)
+        object.__setattr__(self, "offsets", _ensure_optional_offsets(self.offsets))
 
 
 @dataclass(frozen=True)

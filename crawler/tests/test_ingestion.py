@@ -5,19 +5,55 @@ from ai_core.rag.ingestion_contracts import ChunkMeta
 from crawler.contracts import MAX_EXTERNAL_ID_LENGTH, normalize_source
 from crawler.delta import DeltaDecision, DeltaSignatures, DeltaStatus
 from crawler.errors import ErrorClass
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from documents.parsers import ParsedTextBlock
+
+from crawler.contracts import NormalizedSource
+from crawler.fetcher import (
+    FetchMetadata,
+    FetchRequest,
+    FetchResult,
+    FetchStatus,
+    FetchTelemetry,
+    PolitenessContext,
+)
 from crawler.ingestion import (
     IngestionStatus,
     build_ingestion_decision,
     build_ingestion_error,
 )
-from crawler.retire import LifecycleDecision, LifecycleState
-from crawler.normalizer import (
-    ExternalDocumentReference,
-    NormalizedDocument,
-    NormalizedDocumentContent,
-    NormalizedDocumentMeta,
+from crawler.normalizer import NormalizedDocument, build_normalized_document
+from crawler.parser import (
+    ParseStatus,
+    ParserContent,
+    ParserStats,
+    build_parse_result,
 )
-from crawler.parser import ParserStats
+from crawler.retire import LifecycleDecision, LifecycleState
+
+
+def _make_fetch_result(canonical_source: str, payload: bytes) -> FetchResult:
+    request = FetchRequest(
+        canonical_source=canonical_source,
+        politeness=PolitenessContext(host="example.com"),
+    )
+    metadata = FetchMetadata(
+        status_code=200,
+        content_type="text/html",
+        etag="abc",
+        last_modified=datetime.now(tz=timezone.utc).isoformat(),
+        content_length=len(payload),
+    )
+    telemetry = FetchTelemetry(latency=0.1, bytes_downloaded=len(payload))
+    return FetchResult(
+        status=FetchStatus.FETCHED,
+        request=request,
+        payload=payload,
+        metadata=metadata,
+        telemetry=telemetry,
+    )
 
 
 def _make_document(
@@ -25,40 +61,43 @@ def _make_document(
     canonical_source: str = "https://example.com/doc",
     external_id: str = "web::https://example.com/doc",
 ) -> NormalizedDocument:
+    payload = b"<html>Body text</html>"
+    fetch = _make_fetch_result(canonical_source, payload)
+    content = ParserContent(
+        media_type="text/html",
+        primary_text="Body text",
+        binary_payload_ref=None,
+        title=" Example Title ",
+        content_language=" en ",
+        structural_elements=(
+            ParsedTextBlock(text="Body text", kind="paragraph"),
+        ),
+    )
     stats = ParserStats(
         token_count=42,
         character_count=128,
         extraction_path="html.body",
         error_fraction=0.0,
     )
-    meta = NormalizedDocumentMeta(
-        title=" Example Title ",
-        language=" en ",
-        tags=("alpha", "beta"),
-        origin_uri=canonical_source,
-        media_type="text/html",
-        parser_stats={"parser.token_count": stats.token_count},
+    parse_result = build_parse_result(
+        fetch,
+        status=ParseStatus.PARSED,
+        content=content,
+        stats=stats,
     )
-    content = NormalizedDocumentContent(
-        primary_text="Body text",
-        binary_payload_ref=None,
-        structural_elements=(),
-        entities=(),
-    )
-    external_ref = ExternalDocumentReference(
+    source = NormalizedSource(
         provider="web",
-        external_id=external_id,
         canonical_source=canonical_source,
+        external_id=external_id,
         provider_tags={"collection": "docs"},
     )
-    return NormalizedDocument(
+    return build_normalized_document(
+        parse_result=parse_result,
+        source=source,
         tenant_id="tenant-a",
         workflow_id="workflow-1",
-        document_id="doc-1",
-        meta=meta,
-        content=content,
-        external_ref=external_ref,
-        stats=stats,
+        document_id=str(uuid4()),
+        tags=("alpha", "beta"),
     )
 
 

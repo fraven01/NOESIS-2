@@ -64,7 +64,7 @@ flowchart TD
 | `crawler.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `GuardrailDecision` |
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
-| `crawler.normalizer` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocument`, `NormalizedDocumentMeta`, `ExternalDocumentReference` |
+| `crawler.normalizer` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocument` (mit `documents.contracts.DocumentMeta`, `ProviderReference`) |
 | `crawler.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
 | `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionDecision`, `IngestionPayload`, `LifecycleDecision` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
@@ -74,7 +74,7 @@ flowchart TD
   `binary_payload_ref` erwartet, ansonsten schlägt der Normalizer fehl. Das
   garantiert, dass entweder Text oder Binärdaten für Hashing und Ingestion
   vorhanden sind.【F:crawler/normalizer.py†L73-L125】
-- Parser-Statistiken werden in `NormalizedDocumentMeta.parser_stats`
+- Parser-Statistiken werden in `NormalizedDocument.parser_stats`
   übernommen. Der Normalizer ergänzt eigene Kennzahlen wie
   `normalizer.bytes_in`, damit Langfuse und Dead-Letter-Payloads denselben
   Zahlenraum teilen.【F:crawler/normalizer.py†L153-L214】

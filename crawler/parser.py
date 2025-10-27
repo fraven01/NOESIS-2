@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from enum import Enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple, TypeVar
+
+from documents.parsers import ParsedEntity, ParsedResult, ParsedTextBlock
 
 from .errors import CrawlerError, ErrorClass
 from .fetcher import FetchResult
@@ -21,55 +23,6 @@ class ParseStatus(str, Enum):
     UNSUPPORTED_MEDIA = "unsupported_media"
     PARSER_FAILURE = "parser_failure"
 
-
-@dataclass(frozen=True)
-class StructuralElement:
-    """Structured block extracted from the source document."""
-
-    kind: str
-    text: Optional[str] = None
-    metadata: Mapping[str, object] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        normalized_kind = (self.kind or "").strip().lower()
-        if not normalized_kind:
-            raise ValueError("kind_required")
-        object.__setattr__(self, "kind", normalized_kind)
-        if self.text is not None:
-            object.__setattr__(self, "text", self.text.strip())
-        if not isinstance(self.metadata, Mapping):
-            raise TypeError("metadata_must_be_mapping")
-
-
-@dataclass(frozen=True)
-class ParsedEntity:
-    """Entity recognized during parsing.
-
-    Offsets follow the ``[start, end)`` convention with respect to the
-    ``primary_text`` characters.
-    """
-
-    label: str
-    value: str
-    confidence: Optional[float] = None
-    offsets: Optional[Tuple[int, int]] = None
-
-    def __post_init__(self) -> None:
-        label = (self.label or "").strip()
-        value = (self.value or "").strip()
-        if not label or not value:
-            raise ValueError("label_and_value_required")
-        object.__setattr__(self, "label", label)
-        object.__setattr__(self, "value", value)
-        if self.confidence is not None:
-            if self.confidence < 0 or self.confidence > 1:
-                raise ValueError("confidence_out_of_bounds")
-        if self.offsets is not None:
-            start, end = self.offsets
-            if start < 0 or end < start:
-                raise ValueError("invalid_offsets")
-
-
 @dataclass(frozen=True)
 class ParserContent:
     """Primary parser payload returned to the ingestion pipeline.
@@ -82,7 +35,7 @@ class ParserContent:
     binary_payload_ref: Optional[str] = None
     title: Optional[str] = None
     content_language: Optional[str] = None
-    structural_elements: Tuple[StructuralElement, ...] = ()
+    structural_elements: Tuple[ParsedTextBlock, ...] = ()
     entities: Tuple[ParsedEntity, ...] = ()
 
     def __post_init__(self) -> None:
@@ -114,9 +67,18 @@ class ParserContent:
         object.__setattr__(
             self,
             "structural_elements",
-            _tupled(self.structural_elements, StructuralElement),
+            _tupled(self.structural_elements, ParsedTextBlock),
         )
         object.__setattr__(self, "entities", _tupled(self.entities, ParsedEntity))
+
+    def to_parsed_result(self) -> ParsedResult:
+        """Build a :class:`documents.parsers.ParsedResult` view of the content."""
+
+        return ParsedResult(
+            text_blocks=self.structural_elements,
+            assets=(),
+            statistics={},
+        )
 
 
 @dataclass(frozen=True)

@@ -556,7 +556,7 @@ class CrawlerIngestionGraph:
         state["external_id"] = normalized.external_ref.external_id
         attributes = {
             "document_id": normalized.document_id,
-            "media_type": normalized.meta.media_type,
+            "media_type": normalized.media_type,
         }
         outcome = _transition("normalized", "normalized", attributes=attributes)
         return outcome, True

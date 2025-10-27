@@ -2,27 +2,32 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Mapping, Optional, Sequence, Tuple, TypeVar
+from uuid import UUID
+
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument as ContractsNormalizedDocument,
+)
+from documents.parsers import ParsedEntity, ParsedTextBlock
+
+from .contracts import NormalizedSource
+from .parser import ParseResult, ParseStatus, ParserContent, ParserStats
 
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .fetcher import FetchResult
 
-from .contracts import NormalizedSource
-from .parser import (
-    ParseResult,
-    ParseStatus,
-    ParsedEntity,
-    ParserContent,
-    ParserStats,
-    StructuralElement,
-)
-
 
 @dataclass(frozen=True)
-class ExternalDocumentReference:
-    """External document reference derived from crawler source data."""
+class ProviderReference:
+    """Adapter exposing crawler provider metadata from document contracts."""
 
     provider: str
     external_id: str
@@ -38,46 +43,21 @@ class ExternalDocumentReference:
         object.__setattr__(self, "provider", provider)
         object.__setattr__(self, "external_id", external_id)
         object.__setattr__(self, "canonical_source", canonical_source)
-        normalized_tags = _normalize_str_mapping(self.provider_tags)
-        object.__setattr__(self, "provider_tags", normalized_tags)
+        normalized = _normalize_str_mapping(self.provider_tags)
+        object.__setattr__(self, "provider_tags", normalized)
 
 
 @dataclass(frozen=True)
-class NormalizedDocumentMeta:
-    """Metadata describing document provenance and parser statistics."""
+class NormalizedDocument:
+    """Normalized crawler document composed of shared document contracts."""
 
-    title: Optional[str]
-    language: Optional[str]
-    tags: Tuple[str, ...]
-    origin_uri: str
-    media_type: str
-    parser_stats: Mapping[str, object]
-
-    def __post_init__(self) -> None:
-        if self.title is not None:
-            object.__setattr__(self, "title", self.title.strip())
-        if self.language is not None:
-            object.__setattr__(self, "language", self.language.strip())
-        origin_uri = _require_identifier(self.origin_uri, "origin_uri")
-        object.__setattr__(self, "origin_uri", origin_uri)
-        media_type = _require_identifier(self.media_type, "media_type")
-        object.__setattr__(self, "media_type", media_type.lower())
-        object.__setattr__(self, "tags", _normalize_tags(self.tags))
-        if not isinstance(self.parser_stats, Mapping):
-            raise TypeError("parser_stats_must_be_mapping")
-        object.__setattr__(
-            self, "parser_stats", MappingProxyType(dict(self.parser_stats))
-        )
-
-
-@dataclass(frozen=True)
-class NormalizedDocumentContent:
-    """Content payload produced by the parser."""
-
+    document: ContractsNormalizedDocument
     primary_text: Optional[str]
     binary_payload_ref: Optional[str]
-    structural_elements: Tuple[StructuralElement, ...]
+    text_blocks: Tuple[ParsedTextBlock, ...]
     entities: Tuple[ParsedEntity, ...]
+    stats: ParserStats
+    diagnostics: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.primary_text is not None:
@@ -87,40 +67,46 @@ class NormalizedDocumentContent:
                 self, "binary_payload_ref", self.binary_payload_ref.strip()
             )
         object.__setattr__(
-            self,
-            "structural_elements",
-            _ensure_tuple(self.structural_elements, StructuralElement),
+            self, "text_blocks", _ensure_tuple(self.text_blocks, ParsedTextBlock)
         )
         object.__setattr__(self, "entities", _ensure_tuple(self.entities, ParsedEntity))
-        if not (self.primary_text or self.binary_payload_ref):
-            raise ValueError("content_payload_missing")
-
-
-@dataclass(frozen=True)
-class NormalizedDocument:
-    """Normalized crawler document linking metadata, content and provenance."""
-
-    tenant_id: str
-    workflow_id: str
-    document_id: str
-    meta: NormalizedDocumentMeta
-    content: NormalizedDocumentContent
-    external_ref: ExternalDocumentReference
-    stats: ParserStats
-    diagnostics: Tuple[str, ...] = ()
-
-    def __post_init__(self) -> None:
-        tenant = _require_identifier(self.tenant_id, "tenant_id")
-        workflow = _require_identifier(self.workflow_id, "workflow_id")
-        document = _require_identifier(self.document_id, "document_id")
-        object.__setattr__(self, "tenant_id", tenant)
-        object.__setattr__(self, "workflow_id", workflow)
-        object.__setattr__(self, "document_id", document)
+        object.__setattr__(self, "diagnostics", _normalize_diagnostics(self.diagnostics))
         if not isinstance(self.stats, ParserStats):
             raise TypeError("stats_must_be_parser_stats")
-        object.__setattr__(
-            self, "diagnostics", _normalize_diagnostics(self.diagnostics)
-        )
+
+    @property
+    def tenant_id(self) -> str:
+        return self.document.ref.tenant_id
+
+    @property
+    def workflow_id(self) -> str:
+        return self.document.ref.workflow_id
+
+    @property
+    def document_id(self) -> str:
+        return str(self.document.ref.document_id)
+
+    @property
+    def meta(self) -> DocumentMeta:
+        return self.document.meta
+
+    @property
+    def media_type(self) -> str:
+        return self.document.blob.media_type
+
+    @property
+    def parser_stats(self) -> Mapping[str, object]:
+        return MappingProxyType(dict(self.meta.parse_stats or {}))
+
+    @property
+    def external_ref(self) -> ProviderReference:
+        return _parse_external_ref(self.meta)
+
+    def payload_bytes(self) -> bytes:
+        blob = self.document.blob
+        if isinstance(blob, InlineBlob):
+            return blob.decoded_payload()
+        raise ValueError("unsupported_blob_type")
 
 
 def build_normalized_document(
@@ -152,36 +138,45 @@ def build_normalized_document(
     if bytes_in is not None:
         parser_stats["normalizer.bytes_in"] = bytes_in
 
-    meta = NormalizedDocumentMeta(
+    meta = DocumentMeta(
+        tenant_id=_require_identifier(tenant_id, "tenant_id"),
+        workflow_id=_require_identifier(workflow_id, "workflow_id"),
         title=content.title,
         language=content.content_language,
-        tags=normalized_tags,
+        tags=list(normalized_tags),
         origin_uri=canonical_source,
-        media_type=content.media_type,
-        parser_stats=parser_stats,
+        parse_stats=parser_stats,
+        external_ref=_build_external_ref(source, canonical_source),
     )
 
-    doc_content = NormalizedDocumentContent(
-        primary_text=content.primary_text,
-        binary_payload_ref=content.binary_payload_ref,
-        structural_elements=content.structural_elements,
-        entities=content.entities,
+    payload_bytes = parse_result.fetch.payload
+    if payload_bytes is None and content.primary_text is not None:
+        payload_bytes = content.primary_text.encode("utf-8")
+    if payload_bytes is None:
+        raise ValueError("normalizer_payload_missing")
+    blob = _build_inline_blob(content.media_type, payload_bytes)
+
+    document_ref = DocumentRef(
+        tenant_id=meta.tenant_id,
+        workflow_id=meta.workflow_id,
+        document_id=_coerce_uuid(document_id),
     )
 
-    external_ref = ExternalDocumentReference(
-        provider=source.provider,
-        external_id=source.external_id,
-        canonical_source=canonical_source,
-        provider_tags=source.provider_tags,
+    normalized = ContractsNormalizedDocument(
+        ref=document_ref,
+        meta=meta,
+        blob=blob,
+        checksum=blob.sha256,
+        created_at=datetime.now(timezone.utc),
+        source="crawler",
     )
 
     return NormalizedDocument(
-        tenant_id=tenant_id,
-        workflow_id=workflow_id,
-        document_id=document_id,
-        meta=meta,
-        content=doc_content,
-        external_ref=external_ref,
+        document=normalized,
+        primary_text=content.primary_text,
+        binary_payload_ref=content.binary_payload_ref,
+        text_blocks=content.structural_elements,
+        entities=content.entities,
         stats=stats,
         diagnostics=parse_result.diagnostics,
     )
@@ -265,8 +260,6 @@ def _parser_stats_mapping(stats: ParserStats) -> Mapping[str, object]:
         "parser.extraction_path": stats.extraction_path,
     }
     if stats.warnings:
-        # Keep warnings as a list to match telemetry payload expectations downstream
-        # (e.g. serializer targets) even though the underlying stats store tuples.
         data["parser.warnings"] = list(stats.warnings)
     if stats.boilerplate_reduction is not None:
         data["parser.boilerplate_reduction"] = stats.boilerplate_reduction
@@ -279,3 +272,69 @@ def _normalizer_bytes_in(fetch_result: "FetchResult") -> Optional[int]:
         return len(payload)
     bytes_downloaded = fetch_result.telemetry.bytes_downloaded
     return bytes_downloaded if bytes_downloaded > 0 else None
+
+
+def _build_external_ref(
+    source: NormalizedSource, canonical_source: str
+) -> Mapping[str, str]:
+    data: dict[str, str] = {
+        "provider": _sanitize_external_value(source.provider, limit=128),
+        "external_id": _sanitize_external_value(source.external_id),
+    }
+    for key, value in (source.provider_tags or {}).items():
+        normalized_key = _sanitize_tag_key(str(key))
+        normalized_val = _sanitize_external_value(str(value))
+        data[f"provider_tag:{normalized_key}"] = normalized_val
+    return data
+
+
+def _parse_external_ref(meta: DocumentMeta) -> ProviderReference:
+    external = meta.external_ref or {}
+    provider = external.get("provider", "")
+    external_id = external.get("external_id", "")
+    canonical_source = meta.origin_uri or ""
+    tags = {
+        key.split(":", 1)[1]: value
+        for key, value in external.items()
+        if key.startswith("provider_tag:")
+    }
+    return ProviderReference(
+        provider=provider,
+        external_id=external_id,
+        canonical_source=canonical_source,
+        provider_tags=tags,
+    )
+
+
+def _build_inline_blob(media_type: str, payload: bytes) -> InlineBlob:
+    encoded = base64.b64encode(payload).decode("ascii")
+    checksum = hashlib.sha256(payload).hexdigest()
+    return InlineBlob(
+        type="inline",
+        media_type=media_type,
+        base64=encoded,
+        sha256=checksum,
+        size=len(payload),
+    )
+
+
+def _coerce_uuid(value: str) -> UUID:
+    try:
+        return UUID(_require_identifier(value, "document_id"))
+    except (ValueError, AttributeError) as exc:  # pragma: no cover - invalid uuid
+        raise ValueError("document_id_invalid") from exc
+
+
+def _sanitize_external_value(value: str, *, limit: int = 512) -> str:
+    normalized = _require_identifier(value, "external_ref_value")
+    if len(normalized) > limit:
+        return normalized[:limit]
+    return normalized
+
+
+def _sanitize_tag_key(key: str) -> str:
+    normalized = _require_identifier(key, "provider_tag_key")
+    max_length = 128 - len("provider_tag:")
+    if len(normalized) > max_length:
+        return normalized[:max_length]
+    return normalized

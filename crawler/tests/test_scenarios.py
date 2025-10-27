@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Mapping, Optional, Sequence, Tuple
+from uuid import NAMESPACE_URL, uuid5
 from urllib.parse import urlsplit
 
 from crawler.contracts import NormalizedSource, normalize_source
@@ -35,15 +36,19 @@ from crawler.parser import (
     ParseStatus,
     ParserContent,
     ParserStats,
-    StructuralElement,
     build_parse_result,
     compute_parser_stats,
 )
+from documents.parsers import ParsedTextBlock
 from crawler.retire import evaluate_lifecycle
 
 TENANT_ID = "tenant-main"
 WORKFLOW_ID = "wf-e2e"
 CASE_ID = "case-007"
+
+
+def _doc_id(name: str) -> str:
+    return str(uuid5(NAMESPACE_URL, name))
 
 
 @dataclass(frozen=True)
@@ -105,7 +110,7 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
         provider=first_source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-tracking",
+        document_id=_doc_id("doc-tracking"),
     )
 
     descriptor = _descriptor_from_source(first_source)
@@ -116,7 +121,7 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
     parse = _make_parse_result(
         fetch, primary_text="Hello world", title="Hello", language="en"
     )
-    document = _make_document(parse, first_source, document_id="doc-tracking")
+    document = _make_document(parse, first_source, document_id=_doc_id("doc-tracking"))
     delta = evaluate_delta(document)
     ingestion = build_ingestion_decision(document, delta, case_id=CASE_ID)
 
@@ -148,7 +153,7 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
 def test_not_modified_chain_results_in_unchanged_delta() -> None:
     url = "https://example.com/docs/reference"
     baseline_source, _, _, document, baseline_delta = _build_document_state(
-        url, text="Original reference", document_id="doc-ref"
+        url, text="Original reference", document_id=_doc_id("doc-ref")
     )
 
     previous_hash = baseline_delta.signatures.content_hash
@@ -160,7 +165,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         provider=baseline_source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-ref",
+        document_id=_doc_id("doc-ref"),
     )
 
     descriptor = _descriptor_from_source(baseline_source)
@@ -182,7 +187,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         title="Reference",
         language="en",
     )
-    document_repeat = _make_document(parse, baseline_source, document_id="doc-ref")
+    document_repeat = _make_document(parse, baseline_source, document_id=_doc_id("doc-ref"))
     delta = evaluate_delta(
         document_repeat,
         previous_content_hash=previous_hash,
@@ -213,7 +218,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
 def test_content_change_advances_version_and_upserts() -> None:
     url = "https://example.com/news/story"
     source, _, _, previous_document, previous_delta = _build_document_state(
-        url, text="Breaking news", document_id="doc-story"
+        url, text="Breaking news", document_id=_doc_id("doc-story")
     )
 
     previous_hash = previous_delta.signatures.content_hash
@@ -225,7 +230,7 @@ def test_content_change_advances_version_and_upserts() -> None:
         provider=source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-story",
+        document_id=_doc_id("doc-story"),
     )
 
     descriptor = _descriptor_from_source(source)
@@ -239,7 +244,7 @@ def test_content_change_advances_version_and_upserts() -> None:
         title="Breaking",
         language="en",
     )
-    document_updated = _make_document(parse, source, document_id="doc-story")
+    document_updated = _make_document(parse, source, document_id=_doc_id("doc-story"))
     delta = evaluate_delta(
         document_updated,
         previous_content_hash=previous_hash,
@@ -274,7 +279,7 @@ def test_robots_deny_shortcircuits_fetch() -> None:
         provider=source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-robots",
+        document_id=_doc_id("doc-robots"),
     )
 
     descriptor = _descriptor_from_source(source)
@@ -302,7 +307,7 @@ def test_unsupported_media_emits_parser_error() -> None:
         provider=source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-unsupported",
+        document_id=_doc_id("doc-unsupported"),
     )
 
     descriptor = _descriptor_from_source(source)
@@ -345,7 +350,7 @@ def test_unsupported_media_emits_parser_error() -> None:
 def test_near_duplicate_detected_without_upsert() -> None:
     url = "https://example.com/blog/post"
     base_source, _, _, base_document, base_delta = _build_document_state(
-        url, text="Insightful analysis", document_id="doc-original"
+        url, text="Insightful analysis", document_id=_doc_id("doc-original")
     )
 
     trace = TraceContext(
@@ -354,7 +359,7 @@ def test_near_duplicate_detected_without_upsert() -> None:
         provider=base_source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-duplicate",
+        document_id=_doc_id("doc-duplicate"),
     )
 
     descriptor = _descriptor_from_source(base_source)
@@ -380,11 +385,11 @@ def test_near_duplicate_detected_without_upsert() -> None:
     duplicate_document = _make_document(
         duplicate_parse,
         duplicate_source,
-        document_id="doc-duplicate",
+        document_id=_doc_id("doc-duplicate"),
     )
     assert base_delta.signatures.near_duplicate is not None
     known_signatures = {
-        "doc-original": base_delta.signatures.near_duplicate,
+        _doc_id("doc-original"): base_delta.signatures.near_duplicate,
     }
     delta = evaluate_delta(
         duplicate_document,
@@ -413,7 +418,7 @@ def test_near_duplicate_detected_without_upsert() -> None:
 def test_gone_fetch_triggers_retire_lifecycle() -> None:
     url = "https://example.com/catalog/item"
     source, _, _, document, base_delta = _build_document_state(
-        url, text="Catalog entry", document_id="doc-item"
+        url, text="Catalog entry", document_id=_doc_id("doc-item")
     )
 
     trace = TraceContext(
@@ -422,7 +427,7 @@ def test_gone_fetch_triggers_retire_lifecycle() -> None:
         provider=source.provider,
         tenant_id=TENANT_ID,
         workflow_id=WORKFLOW_ID,
-        document_id="doc-item",
+        document_id=_doc_id("doc-item"),
     )
 
     descriptor = _descriptor_from_source(source)
@@ -557,8 +562,8 @@ def _make_parse_result(
         title=title,
         content_language=language,
         structural_elements=(
-            StructuralElement(kind="heading", text=title or primary_text[:30]),
-            StructuralElement(kind="paragraph", text=primary_text),
+            ParsedTextBlock(text=title or primary_text[:30], kind="heading"),
+            ParsedTextBlock(text=primary_text, kind="paragraph"),
         ),
     )
     stats = ParserStats(
@@ -734,7 +739,7 @@ def _build_parse_span(trace: TraceContext, parse: ParseResult) -> SpanSnapshot:
 def _build_normalize_span(
     trace: TraceContext, document: NormalizedDocument
 ) -> SpanSnapshot:
-    parser_stats = document.meta.parser_stats
+    parser_stats = document.parser_stats
     parser_warnings = parser_stats.get("parser.warnings", [])
     warning_count = len(parser_warnings) if isinstance(parser_warnings, Sequence) else 0
     attributes = trace.annotate(
