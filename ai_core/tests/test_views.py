@@ -4,8 +4,10 @@ from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
+from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
+from rest_framework.test import APIRequestFactory
 
 from django.conf import settings
 from django.test import RequestFactory
@@ -18,7 +20,7 @@ from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
 import ai_core.nodes.retrieve as retrieve
 from ai_core.nodes.retrieve import RetrieveInput
-from ai_core.schemas import RagQueryRequest
+from ai_core.schemas import CrawlerRunRequest, RagQueryRequest
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
@@ -198,6 +200,244 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
     error_body = resp.json()
     assert error_body["detail"] == "Tenant schema could not be resolved from headers."
     assert error_body["code"] == "tenant_not_found"
+
+
+def test_build_crawler_state_manual_origin(monkeypatch, tmp_path):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    meta = {"tenant_id": "tenant-a", "case_id": "case-1"}
+
+    request_model = CrawlerRunRequest.model_validate(
+        {
+            "mode": "content",
+            "origins": [
+                {
+                    "url": "https://example.com/docs/handbook",
+                    "content": "<html>Handbook</html>",
+                    "content_type": "text/html",
+                    "tags": ["handbook"],
+                    "title": "Handbook",
+                    "language": "de",
+                }
+            ],
+            "tags": ["hr"],
+            "snapshot": {"enabled": False},
+            "review": "required",
+        }
+    )
+
+    state_build = views._build_crawler_state(meta, request_model, request_model.origins[0])
+
+    assert state_build.fetch_used is False
+    assert state_build.snapshot_requested is False
+    assert state_build.tags == ("hr", "handbook")
+    assert state_build.state["control"]["review"] == "required"
+
+
+def test_crawler_runner_aggregates_results_and_errors(monkeypatch, tmp_path):
+    factory = APIRequestFactory()
+    monkeypatch.setattr(rate_limit, "check", lambda tenant: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    original_build = views._build_crawler_state
+
+    def _failing_build(meta, request_model, origin):
+        if origin.url.endswith("/fail"):
+            raise views.CrawlerRunError(
+                "Crawler guardrails denied the document.",
+                code="crawler_guardrail_denied",
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                details={"blocked": "guardrail"},
+            )
+        return original_build(meta, request_model, origin)
+
+    monkeypatch.setattr(views, "_build_crawler_state", _failing_build)
+
+    class DummyGraph:
+        def __init__(self):
+            self.upsert_handler = None
+
+        def start_crawl(self, state):
+            state = dict(state)
+            state.setdefault("transitions", {})
+            state["transitions"]["crawler.frontier"] = {"decision": "enqueue"}
+            return state
+
+        def run(self, state, meta):
+            state = dict(state)
+            transitions = state.setdefault("transitions", {})
+            transitions["crawler.ingest_decision"] = {"decision": "upsert"}
+            control = dict(state.get("control", {}))
+            state["control"] = control
+            return state, {
+                "graph_run_id": "run-123",
+                "decision": "upsert",
+                "reason": "ingest_ready",
+            }
+
+    monkeypatch.setattr(views.crawler_ingestion_graph, "build_graph", lambda: DummyGraph())
+
+    payload = {
+        "mode": "content",
+        "workflow_id": "crawler-demo",
+        "review": "required",
+        "snapshot": {"enabled": False},
+        "tags": ["handbook"],
+        "origins": [
+            {
+                "url": "https://example.com/docs/handbook",
+                "content": "<html>Handbook</html>",
+                "content_type": "text/html",
+            },
+            {
+                "url": "https://example.com/docs/fail",
+                "content": "<html>Fail</html>",
+                "content_type": "text/html",
+            },
+        ],
+        "dry_run": True,
+    }
+
+    request = factory.post(
+        "/ai/crawler/run/",
+        payload,
+        format="json",
+        HTTP_X_TENANT_ID="tenant-a",
+        HTTP_X_CASE_ID="case-1",
+        HTTP_X_TENANT_SCHEMA="tenant-a",
+    )
+
+    response = views.CrawlerIngestionRunnerView.as_view()(request)
+
+    assert response.status_code == 200
+    data = response.data
+    assert data["workflow_id"] == "crawler-demo"
+    assert data["review"] == "required"
+    assert data["idempotent"] is False
+    assert len(data["results"]) == 1
+    assert len(data["errors"]) == 1
+    assert len(data["telemetry"]) == 1
+    assert len(data["transitions"]) == 1
+    assert data["results"][0]["origin"].endswith("/handbook")
+    assert data["errors"][0]["origin"].endswith("/fail")
+    assert data["errors"][0]["code"] == "crawler_guardrail_denied"
+
+
+def test_crawler_runner_idempotency_reuses_cached_result(monkeypatch, tmp_path):
+    factory = APIRequestFactory()
+    monkeypatch.setattr(rate_limit, "check", lambda tenant: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    call_counter = {"count": 0}
+
+    def _stub_build(meta, request_model, origin):
+        call_counter["count"] += 1
+        control = {
+            "snapshot": False,
+            "snapshot_label": None,
+            "fetch": False,
+        }
+        if request_model.review:
+            control["review"] = request_model.review
+        state = {
+            "tenant_id": meta["tenant_id"],
+            "case_id": meta["case_id"],
+            "workflow_id": views._resolve_crawler_workflow_id(meta, request_model),
+            "external_id": f"ext-{call_counter['count']}",
+            "origin_uri": origin.url,
+            "provider": origin.provider,
+            "frontier_input": {},
+            "fetch_input": {},
+            "parse_input": {},
+            "normalize_input": {
+                "document_id": f"doc-{call_counter['count']}",
+                "tags": tuple(request_model.tags or ()),
+            },
+            "delta_input": {},
+            "gating_input": {},
+            "document_id": f"doc-{call_counter['count']}",
+            "control": control,
+        }
+        return views.CrawlerStateBuild(
+            origin=origin.url,
+            document_id=f"doc-{call_counter['count']}",
+            tags=tuple(request_model.tags or ()),
+            snapshot_requested=False,
+            snapshot_label=None,
+            collection_id=request_model.collection_id,
+            state=state,
+            fetch_used=False,
+            http_status=200,
+            fetched_bytes=0,
+            media_type_effective="text/html",
+            fetch_elapsed=0.0,
+            fetch_retries=0,
+            fetch_retry_reason=None,
+            fetch_backoff_total_ms=0.0,
+            snapshot_path=None,
+            snapshot_sha256=None,
+        )
+
+    monkeypatch.setattr(views, "_build_crawler_state", _stub_build)
+
+    class StubGraph:
+        def __init__(self):
+            self.upsert_handler = None
+
+        def start_crawl(self, state):
+            state = dict(state)
+            state.setdefault("transitions", {})
+            state["transitions"]["crawler.frontier"] = {"decision": "enqueue"}
+            return state
+
+        def run(self, state, meta):
+            state = dict(state)
+            transitions = state.setdefault("transitions", {})
+            transitions["crawler.ingest_decision"] = {"decision": "upsert"}
+            state["control"] = dict(state.get("control", {}))
+            return state, {
+                "graph_run_id": "run-1",
+                "decision": "upsert",
+                "reason": "ingest_ready",
+            }
+
+    monkeypatch.setattr(views.crawler_ingestion_graph, "build_graph", lambda: StubGraph())
+
+    payload = {
+        "workflow_id": "crawler-demo",
+        "mode": "content",
+        "review": "approved",
+        "origins": [
+            {
+                "url": "https://example.com/docs/handbook",
+                "content": "<html>Handbook</html>",
+                "content_type": "text/html",
+            }
+        ],
+        "tags": ["hr"],
+        "snapshot": {"enabled": False},
+    }
+
+    request_kwargs = {
+        "format": "json",
+        "HTTP_X_TENANT_ID": "tenant-a",
+        "HTTP_X_CASE_ID": "case-2",
+        "HTTP_X_TENANT_SCHEMA": "tenant-a",
+    }
+
+    request_first = factory.post("/ai/crawler/run/", payload, **request_kwargs)
+    response_first = views.CrawlerIngestionRunnerView.as_view()(request_first)
+    assert response_first.status_code == 200
+    data_first = response_first.data
+    assert data_first["idempotent"] is False
+    assert call_counter["count"] == 1
+
+    request_second = factory.post("/ai/crawler/run/", payload, **request_kwargs)
+    response_second = views.CrawlerIngestionRunnerView.as_view()(request_second)
+    assert response_second.status_code == 200
+    data_second = response_second.data
+    assert data_second["idempotent"] is True
+    assert call_counter["count"] == 1
+    assert data_second["results"] == data_first["results"]
 
 
 @pytest.mark.django_db
