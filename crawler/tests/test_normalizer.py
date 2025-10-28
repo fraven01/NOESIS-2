@@ -15,17 +15,18 @@ from crawler.fetcher import (
     PolitenessContext,
 )
 
+from documents import normalize_diagnostics
 from documents.contracts import InlineBlob, NormalizedDocument
-from documents.parsers import ParsedTextBlock
-
-from crawler.normalizer import (
+from documents.normalization import (
     MAX_TAG_LENGTH,
-    build_normalized_document,
     document_parser_stats,
     document_payload_bytes,
-    normalize_diagnostics,
+    normalize_from_parse,
     resolve_provider_reference,
 )
+from documents.parsers import ParsedTextBlock
+
+from crawler.normalizer import build_normalized_document
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -98,7 +99,7 @@ def _make_parse_result(
     )
 
 
-def test_build_normalized_document_merges_metadata_and_content() -> None:
+def test_normalize_from_parse_merges_metadata_and_content() -> None:
     canonical = "https://example.com/article"
     parse_result = _make_parse_result(canonical)
     source = NormalizedSource(
@@ -109,12 +110,15 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
     )
 
     document_uuid = uuid4()
-    document = build_normalized_document(
+    document = normalize_from_parse(
         parse_result=parse_result,
-        source=source,
         tenant_id="tenant-1",
         workflow_id="wf-42",
         document_id=document_uuid,
+        canonical_source=source.canonical_source,
+        provider=source.provider,
+        external_id=source.external_id,
+        provider_tags=source.provider_tags,
         tags=[" featured ", "news", "featured"],
     )
 
@@ -157,12 +161,15 @@ def test_build_normalized_document_includes_robot_tags() -> None:
         provider_tags={"source": canonical},
     )
 
-    document = build_normalized_document(
+    document = normalize_from_parse(
         parse_result=parse_result,
-        source=source,
         tenant_id="tenant-robots",
         workflow_id="wf-robots",
         document_id=uuid4(),
+        canonical_source=source.canonical_source,
+        provider=source.provider,
+        external_id=source.external_id,
+        provider_tags=source.provider_tags,
         tags=["base"],
     )
 
@@ -176,7 +183,7 @@ def test_build_normalized_document_includes_robot_tags() -> None:
     }
 
 
-def test_build_normalized_document_truncates_long_provider_tags() -> None:
+def test_normalize_from_parse_truncates_long_provider_tags() -> None:
     long_path = "a" * 200
     canonical = f"https://example.com/{long_path}"
     parse_result = _make_parse_result(canonical)
@@ -187,12 +194,15 @@ def test_build_normalized_document_truncates_long_provider_tags() -> None:
         provider_tags={"source": canonical},
     )
 
-    document = build_normalized_document(
+    document = normalize_from_parse(
         parse_result=parse_result,
-        source=source,
         tenant_id="tenant-long-tag",
         workflow_id="wf-long-tag",
         document_id=uuid4(),
+        canonical_source=source.canonical_source,
+        provider=source.provider,
+        external_id=source.external_id,
+        provider_tags=source.provider_tags,
     )
 
     provider_tags = [
@@ -202,7 +212,7 @@ def test_build_normalized_document_truncates_long_provider_tags() -> None:
     assert all(len(tag) <= MAX_TAG_LENGTH for tag in provider_tags)
 
 
-def test_build_normalized_document_requires_parsed_status() -> None:
+def test_normalize_from_parse_requires_parsed_status() -> None:
     canonical = "https://example.com/article"
     fetch = _make_fetch_result(canonical)
     stats = ParserStats(
@@ -225,16 +235,19 @@ def test_build_normalized_document_requires_parsed_status() -> None:
     )
 
     with pytest.raises(ValueError):
-        build_normalized_document(
+        normalize_from_parse(
             parse_result=result,
-            source=source,
             tenant_id="tenant",
             workflow_id="wf",
             document_id="doc",
+            canonical_source=source.canonical_source,
+            provider=source.provider,
+            external_id=source.external_id,
+            provider_tags=source.provider_tags,
         )
 
 
-def test_build_normalized_document_requires_workflow_identifier() -> None:
+def test_normalize_from_parse_requires_workflow_identifier() -> None:
     canonical = "https://example.com/resource"
     parse_result = _make_parse_result(canonical)
     source = NormalizedSource(
@@ -245,16 +258,19 @@ def test_build_normalized_document_requires_workflow_identifier() -> None:
     )
 
     with pytest.raises(ValueError):
-        build_normalized_document(
+        normalize_from_parse(
             parse_result=parse_result,
-            source=source,
             tenant_id="tenant",
             workflow_id=" ",
             document_id="doc",
+            canonical_source=source.canonical_source,
+            provider=source.provider,
+            external_id=source.external_id,
+            provider_tags=source.provider_tags,
         )
 
 
-def test_build_normalized_document_rejects_canonical_mismatch() -> None:
+def test_normalize_from_parse_rejects_canonical_mismatch() -> None:
     canonical = "https://example.com/entry"
     parse_result = _make_parse_result(canonical)
     source = NormalizedSource(
@@ -265,10 +281,47 @@ def test_build_normalized_document_rejects_canonical_mismatch() -> None:
     )
 
     with pytest.raises(ValueError):
-        build_normalized_document(
+        normalize_from_parse(
             parse_result=parse_result,
-            source=source,
             tenant_id="tenant",
             workflow_id="wf",
             document_id="doc",
+            canonical_source=source.canonical_source,
+            provider=source.provider,
+            external_id=source.external_id,
+            provider_tags=source.provider_tags,
         )
+
+
+def test_build_normalized_document_proxies_facade() -> None:
+    canonical = "https://example.com/wrapper"
+    parse_result = _make_parse_result(canonical)
+    source = NormalizedSource(
+        provider="web",
+        canonical_source=canonical,
+        external_id="web::https://example.com/wrapper",
+        provider_tags={"collection": "news"},
+    )
+
+    expected = normalize_from_parse(
+        parse_result=parse_result,
+        tenant_id="tenant",
+        workflow_id="workflow",
+        document_id=uuid4(),
+        canonical_source=source.canonical_source,
+        provider=source.provider,
+        external_id=source.external_id,
+        provider_tags=source.provider_tags,
+    )
+
+    actual = build_normalized_document(
+        parse_result=parse_result,
+        source=source,
+        tenant_id="tenant",
+        workflow_id="workflow",
+        document_id=expected.ref.document_id,
+    )
+
+    assert actual.model_dump(exclude={"created_at"}) == expected.model_dump(
+        exclude={"created_at"}
+    )

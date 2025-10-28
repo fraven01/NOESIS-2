@@ -47,10 +47,8 @@ from crawler.ingestion import (
 )
 from documents.contracts import NormalizedDocument
 
-from crawler.normalizer import (
-    build_normalized_document,
-    resolve_provider_reference,
-)
+from crawler.normalizer import build_normalized_document
+from documents.normalization import resolve_provider_reference
 from crawler.retire import LifecycleState
 from crawler.parser import (
     ParseResult,

@@ -35,11 +35,9 @@ from crawler.ingestion import (
 )
 from documents.contracts import NormalizedDocument
 
-from crawler.normalizer import (
-    build_normalized_document,
-    document_parser_stats,
-    normalize_diagnostics,
-)
+from crawler.normalizer import build_normalized_document
+from documents import normalize_diagnostics
+from documents.normalization import document_parser_stats
 from crawler.parser import (
     ParseResult,
     ParseStatus,

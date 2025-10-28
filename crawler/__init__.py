@@ -54,16 +54,17 @@ from .guardrails import (
     QuotaUsage,
     enforce_guardrails,
 )
+from documents import normalize_diagnostics
 from documents.contracts import NormalizedDocument
-
-from .normalizer import (
-    ProviderReference,
-    build_normalized_document,
+from documents.normalization import (
     document_parser_stats,
     document_payload_bytes,
-    normalize_diagnostics,
+    normalized_primary_text,
     resolve_provider_reference,
 )
+from documents.providers import ProviderReference
+
+from .normalizer import build_normalized_document
 from .delta import (
     DeltaDecision,
     DeltaSignatures,
@@ -153,6 +154,7 @@ __all__ = [
     "document_parser_stats",
     "document_payload_bytes",
     "normalize_diagnostics",
+    "normalized_primary_text",
     "resolve_provider_reference",
     "DeltaDecision",
     "DeltaSignatures",

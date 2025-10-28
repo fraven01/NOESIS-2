@@ -7,11 +7,11 @@ from types import MappingProxyType
 from typing import Dict, Mapping, Optional, Protocol
 
 from documents.contracts import NormalizedDocument
+from documents.normalization import document_parser_stats, resolve_provider_reference
 
 from .contracts import Decision
 from .delta import DeltaDecision
 from .errors import CrawlerError, ErrorClass
-from .normalizer import document_parser_stats, resolve_provider_reference
 from .retire import LifecycleDecision, LifecycleState
 
 from ai_core.rag.ingestion_contracts import (

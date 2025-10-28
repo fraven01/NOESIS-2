@@ -31,6 +31,14 @@ from .parsers import (  # noqa: F401
     compute_parser_stats,
     normalize_diagnostics,
 )
+from .normalization import (  # noqa: F401
+    MAX_TAG_LENGTH,
+    document_parser_stats,
+    document_payload_bytes,
+    normalize_from_parse,
+    normalized_primary_text,
+    resolve_provider_reference,
+)
 from .parsers_docx import DocxDocumentParser  # noqa: F401
 from .parsers_html import HtmlDocumentParser  # noqa: F401
 from .parsers_markdown import MarkdownDocumentParser  # noqa: F401
@@ -70,6 +78,12 @@ __all__ = [
     "ParserRegistry",
     "compute_parser_stats",
     "normalize_diagnostics",
+    "MAX_TAG_LENGTH",
+    "document_parser_stats",
+    "document_payload_bytes",
+    "normalize_from_parse",
+    "normalized_primary_text",
+    "resolve_provider_reference",
     "DocxDocumentParser",
     "HtmlDocumentParser",
     "MarkdownDocumentParser",
