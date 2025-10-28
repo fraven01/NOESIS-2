@@ -6,7 +6,6 @@ from ai_core.ingestion_status import (
     record_ingestion_run_queued,
 )
 from ai_core.infra import rate_limit
-from documents.repository import DEFAULT_LIFECYCLE_STORE
 from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
@@ -20,7 +19,6 @@ def test_rag_ingestion_status_returns_latest_run(
 ):
     tenant = test_tenant_schema_name
     case = "case-status"
-    DEFAULT_LIFECYCLE_STORE.reset()
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
 
     run_id = "run-123"
@@ -78,7 +76,6 @@ def test_rag_ingestion_status_returns_latest_run(
 def test_rag_ingestion_status_returns_404_when_empty(
     client, monkeypatch, test_tenant_schema_name
 ):
-    DEFAULT_LIFECYCLE_STORE.reset()
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
 
     response = client.get(

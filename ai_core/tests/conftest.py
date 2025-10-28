@@ -4,9 +4,10 @@ from uuid import UUID
 
 import pytest
 
+from ai_core import ingestion_status
 from ai_core.infra import object_store
 from documents.contracts import InlineBlob, NormalizedDocument
-from documents.repository import DocumentsRepository
+from documents.repository import DocumentLifecycleStore, DocumentsRepository
 
 from tests.plugins.rag_db import *  # noqa: F401,F403
 
@@ -117,3 +118,10 @@ def documents_repository_stub(monkeypatch) -> ObjectStoreDocumentsRepository:
 @pytest.fixture(autouse=True)
 def _auto_documents_repository(documents_repository_stub):
     yield
+
+
+@pytest.fixture(autouse=True)
+def ingestion_status_store(monkeypatch):
+    store = DocumentLifecycleStore()
+    monkeypatch.setattr(ingestion_status, "_LIFECYCLE_STORE", store, raising=False)
+    yield store

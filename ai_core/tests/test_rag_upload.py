@@ -15,14 +15,6 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
 )
 from types import SimpleNamespace
-from documents.repository import DEFAULT_LIFECYCLE_STORE
-
-
-@pytest.fixture(autouse=True)
-def reset_lifecycle_store() -> None:
-    DEFAULT_LIFECYCLE_STORE.reset()
-    yield
-    DEFAULT_LIFECYCLE_STORE.reset()
 
 
 @pytest.mark.django_db
@@ -32,6 +24,7 @@ def test_rag_upload_persists_file_and_metadata(
     tmp_path,
     test_tenant_schema_name,
     documents_repository_stub,
+    ingestion_status_store,
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -126,7 +119,7 @@ def test_rag_upload_persists_file_and_metadata(
     )
     assert saved_document.blob.media_type == "text/plain"
 
-    status_payload = DEFAULT_LIFECYCLE_STORE.get_ingestion_run(
+    status_payload = ingestion_status_store.get_ingestion_run(
         tenant=test_tenant_schema_name,
         case="case-123",
     )
