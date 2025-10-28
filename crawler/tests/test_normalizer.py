@@ -19,6 +19,7 @@ from documents.contracts import InlineBlob, NormalizedDocument
 from documents.parsers import ParsedTextBlock
 
 from crawler.normalizer import (
+    MAX_TAG_LENGTH,
     build_normalized_document,
     document_parser_stats,
     document_payload_bytes,
@@ -175,6 +176,30 @@ def test_build_normalized_document_includes_robot_tags() -> None:
         "robots.index.noindex",
         "robots.follow.nofollow",
     }
+
+
+def test_build_normalized_document_truncates_long_provider_tags() -> None:
+    long_path = "a" * 200
+    canonical = f"https://example.com/{long_path}"
+    parse_result = _make_parse_result(canonical)
+    source = NormalizedSource(
+        provider="web",
+        canonical_source=canonical,
+        external_id=f"web::{canonical}",
+        provider_tags={"source": canonical},
+    )
+
+    document = build_normalized_document(
+        parse_result=parse_result,
+        source=source,
+        tenant_id="tenant-long-tag",
+        workflow_id="wf-long-tag",
+        document_id=uuid4(),
+    )
+
+    provider_tags = [tag for tag in document.meta.tags if tag.startswith("provider.source.")]
+    assert provider_tags, "expected provider tag alias to be emitted"
+    assert all(len(tag) <= MAX_TAG_LENGTH for tag in provider_tags)
 
 
 def test_build_normalized_document_requires_parsed_status() -> None:

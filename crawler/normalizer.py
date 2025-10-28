@@ -32,6 +32,10 @@ from documents.providers import (
 
 from .contracts import NormalizedSource
 
+
+MAX_TAG_LENGTH = 64
+_PROVIDER_TAG_PREFIX = "provider."
+
 if TYPE_CHECKING:  # pragma: no cover - import for typing only
     from .fetcher import FetchResult
 
@@ -223,8 +227,21 @@ def _provider_tag_aliases(provider_tags: Mapping[str, str]) -> Tuple[str, ...]:
     for raw_key, raw_value in provider_tags.items():
         key = _sanitize_tag_component(raw_key)
         value = _sanitize_tag_component(raw_value)
-        if key and value:
-            aliases.append(f"provider.{key}.{value}")
+        if not (key and value):
+            continue
+        alias = f"{_PROVIDER_TAG_PREFIX}{key}.{value}"
+        if len(alias) > MAX_TAG_LENGTH:
+            max_value_length = MAX_TAG_LENGTH - len(_PROVIDER_TAG_PREFIX) - len(key) - 1
+            if max_value_length <= 0:
+                continue
+            truncated_value = value[:max_value_length]
+            truncated_value = _sanitize_tag_component(truncated_value)
+            if not truncated_value:
+                continue
+            alias = f"{_PROVIDER_TAG_PREFIX}{key}.{truncated_value}"
+            if len(alias) > MAX_TAG_LENGTH:
+                continue
+        aliases.append(alias)
     return tuple(aliases)
 
 
