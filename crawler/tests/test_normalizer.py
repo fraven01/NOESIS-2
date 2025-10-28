@@ -1,5 +1,7 @@
 from datetime import datetime, timezone
 import hashlib
+from typing import Mapping, Optional, Sequence
+from uuid import uuid4
 
 import pytest
 
@@ -12,12 +14,12 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
-from uuid import uuid4
 
 from documents.contracts import InlineBlob, NormalizedDocument
 from documents.parsers import ParsedTextBlock
 
 from crawler.normalizer import (
+    MAX_TAG_LENGTH,
     build_normalized_document,
     document_parser_stats,
     document_payload_bytes,
@@ -33,10 +35,16 @@ from crawler.parser import (
 )
 
 
-def _make_fetch_result(canonical_source: str) -> FetchResult:
+def _make_fetch_result(
+    canonical_source: str,
+    *,
+    request_metadata: Optional[Mapping[str, object]] = None,
+    policy_events: Sequence[str] = (),
+) -> FetchResult:
     request = FetchRequest(
         canonical_source=canonical_source,
         politeness=PolitenessContext(host="example.com"),
+        metadata=request_metadata or {},
     )
     metadata = FetchMetadata(
         status_code=200,
@@ -52,11 +60,21 @@ def _make_fetch_result(canonical_source: str) -> FetchResult:
         payload=b"<html></html>",
         metadata=metadata,
         telemetry=telemetry,
+        policy_events=tuple(policy_events),
     )
 
 
-def _make_parse_result(canonical_source: str) -> ParseResult:
-    fetch = _make_fetch_result(canonical_source)
+def _make_parse_result(
+    canonical_source: str,
+    *,
+    request_metadata: Optional[Mapping[str, object]] = None,
+    policy_events: Sequence[str] = (),
+) -> ParseResult:
+    fetch = _make_fetch_result(
+        canonical_source,
+        request_metadata=request_metadata,
+        policy_events=policy_events,
+    )
     content = ParserContent(
         media_type="text/html",
         primary_text="Example text",
@@ -90,26 +108,26 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
         provider_tags={"collection": "news"},
     )
 
-    document_id = str(uuid4())
+    document_uuid = uuid4()
     document = build_normalized_document(
         parse_result=parse_result,
         source=source,
         tenant_id="tenant-1",
         workflow_id="wf-42",
-        document_id=document_id,
+        document_id=document_uuid,
         tags=[" featured ", "news", "featured"],
     )
 
     assert isinstance(document, NormalizedDocument)
     assert document.ref.tenant_id == "tenant-1"
     assert document.ref.workflow_id == "wf-42"
-    assert str(document.ref.document_id) == document_id
+    assert document.ref.document_id == document_uuid
     assert document.meta.origin_uri == canonical
     assert isinstance(document.blob, InlineBlob)
     assert document.blob.media_type == "text/html"
     assert document.meta.title == "Example Title"
     assert document.meta.language == "en"
-    assert document.meta.tags == ["featured", "news"]
+    assert document.meta.tags == ["featured", "news", "provider.collection.news"]
     provider = resolve_provider_reference(document)
     assert provider.external_id == source.external_id
     assert provider.provider == "web"
@@ -125,6 +143,63 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
     payload = document_payload_bytes(document)
     assert payload == b"<html></html>"
     assert normalize_diagnostics(parse_result.diagnostics) == ("ok",)
+
+
+def test_build_normalized_document_includes_robot_tags() -> None:
+    canonical = "https://example.com/robots"
+    parse_result = _make_parse_result(
+        canonical,
+        request_metadata={"robots": {"index": "noindex", "follow": "nofollow"}},
+        policy_events=("robots_allow", "robots_index"),
+    )
+    source = NormalizedSource(
+        provider="web",
+        canonical_source=canonical,
+        external_id="web::https://example.com/robots",
+        provider_tags={"source": canonical},
+    )
+
+    document = build_normalized_document(
+        parse_result=parse_result,
+        source=source,
+        tenant_id="tenant-robots",
+        workflow_id="wf-robots",
+        document_id=uuid4(),
+        tags=["base"],
+    )
+
+    assert set(document.meta.tags) == {
+        "base",
+        "provider.source.https-example.com-robots",
+        "robots.allow",
+        "robots.index",
+        "robots.index.noindex",
+        "robots.follow.nofollow",
+    }
+
+
+def test_build_normalized_document_truncates_long_provider_tags() -> None:
+    long_path = "a" * 200
+    canonical = f"https://example.com/{long_path}"
+    parse_result = _make_parse_result(canonical)
+    source = NormalizedSource(
+        provider="web",
+        canonical_source=canonical,
+        external_id=f"web::{canonical}",
+        provider_tags={"source": canonical},
+    )
+
+    document = build_normalized_document(
+        parse_result=parse_result,
+        source=source,
+        tenant_id="tenant-long-tag",
+        workflow_id="wf-long-tag",
+        document_id=uuid4(),
+    )
+
+    provider_tags = [tag for tag in document.meta.tags if tag.startswith("provider.source.")]
+    assert provider_tags, "expected provider tag alias to be emitted"
+    assert all(len(tag) <= MAX_TAG_LENGTH for tag in provider_tags)
 
 
 def test_build_normalized_document_requires_parsed_status() -> None:
