@@ -15,6 +15,14 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
 )
 from types import SimpleNamespace
+from documents.repository import DEFAULT_LIFECYCLE_STORE
+
+
+@pytest.fixture(autouse=True)
+def reset_lifecycle_store() -> None:
+    DEFAULT_LIFECYCLE_STORE.reset()
+    yield
+    DEFAULT_LIFECYCLE_STORE.reset()
 
 
 @pytest.mark.django_db
@@ -118,11 +126,11 @@ def test_rag_upload_persists_file_and_metadata(
     )
     assert saved_document.blob.media_type == "text/plain"
 
-    status_path = (
-        Path(tmp_path) / tenant_segment / case_segment / "ingestion" / "run_status.json"
+    status_payload = DEFAULT_LIFECYCLE_STORE.get_ingestion_run(
+        tenant=test_tenant_schema_name,
+        case="case-123",
     )
-    assert status_path.exists()
-    status_payload = json.loads(status_path.read_text())
+    assert status_payload is not None
     assert status_payload["run_id"] == body["ingestion_run_id"]
     assert status_payload["status"] == "queued"
     assert status_payload["document_ids"] == [body["document_id"]]

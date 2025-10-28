@@ -2,30 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Iterable, Mapping, MutableMapping, Sequence
+from typing import Iterable, Sequence
 
-from .infra import object_store
-
-
-def _ingestion_status_path(tenant: str, case: str) -> str:
-    tenant_segment = object_store.sanitize_identifier(tenant)
-    case_segment = object_store.sanitize_identifier(case)
-    return f"{tenant_segment}/{case_segment}/ingestion/run_status.json"
+from documents.repository import DEFAULT_LIFECYCLE_STORE
 
 
-def _normalise_ids(document_ids: Iterable[str] | None) -> list[str]:
-    if not document_ids:
-        return []
-    return [str(value) for value in document_ids if value]
+_LIFECYCLE_STORE = DEFAULT_LIFECYCLE_STORE
 
 
-def _ensure_payload(
-    existing: Mapping[str, object] | None,
-    run_id: str,
-) -> MutableMapping[str, object]:
-    if isinstance(existing, Mapping) and existing.get("run_id") == run_id:
-        return dict(existing)
-    return {"run_id": run_id}
+def _as_iterable(values: Iterable[str] | None) -> Iterable[str]:
+    if not values:
+        return ()
+    return values
 
 
 def record_ingestion_run_queued(
@@ -42,30 +30,17 @@ def record_ingestion_run_queued(
 ) -> dict[str, object]:
     """Persist a queued ingestion run entry for later status lookups."""
 
-    status_path = _ingestion_status_path(tenant, case)
-    try:
-        existing = object_store.read_json(status_path)
-    except FileNotFoundError:
-        existing = None
-
-    payload = _ensure_payload(existing, run_id)
-    payload.update(
-        {
-            "status": "queued",
-            "queued_at": queued_at,
-            "document_ids": _normalise_ids(document_ids),
-            "invalid_document_ids": _normalise_ids(invalid_document_ids),
-        }
+    return _LIFECYCLE_STORE.record_ingestion_run_queued(
+        tenant=tenant,
+        case=case,
+        run_id=run_id,
+        document_ids=_as_iterable(document_ids),
+        invalid_document_ids=_as_iterable(invalid_document_ids),
+        queued_at=queued_at,
+        trace_id=trace_id,
+        embedding_profile=embedding_profile,
+        source=source,
     )
-    if trace_id:
-        payload["trace_id"] = trace_id
-    if embedding_profile:
-        payload["embedding_profile"] = embedding_profile
-    if source:
-        payload["source"] = source
-
-    object_store.write_json(status_path, payload)
-    return payload
 
 
 def mark_ingestion_run_running(
@@ -78,30 +53,13 @@ def mark_ingestion_run_running(
 ) -> dict[str, object] | None:
     """Update the persisted status when the worker begins processing."""
 
-    status_path = _ingestion_status_path(tenant, case)
-    try:
-        existing = object_store.read_json(status_path)
-    except FileNotFoundError:
-        return None
-
-    if not isinstance(existing, Mapping):
-        existing = None
-    elif existing.get("run_id") != run_id:
-        return None
-
-    payload = _ensure_payload(existing, run_id)
-
-    payload.update(
-        {
-            "status": "running",
-            "started_at": started_at,
-        }
+    return _LIFECYCLE_STORE.mark_ingestion_run_running(
+        tenant=tenant,
+        case=case,
+        run_id=run_id,
+        started_at=started_at,
+        document_ids=_as_iterable(document_ids),
     )
-    if document_ids:
-        payload["document_ids"] = _normalise_ids(document_ids)
-
-    object_store.write_json(status_path, payload)
-    return payload
 
 
 def mark_ingestion_run_completed(
@@ -121,51 +79,27 @@ def mark_ingestion_run_completed(
 ) -> dict[str, object] | None:
     """Persist the final state of an ingestion run."""
 
-    status_path = _ingestion_status_path(tenant, case)
-    try:
-        existing = object_store.read_json(status_path)
-    except FileNotFoundError:
-        existing = None
-
-    if not isinstance(existing, Mapping):
-        existing = None
-    elif existing.get("run_id") != run_id:
-        return None
-
-    payload = _ensure_payload(existing, run_id)
-
-    payload.update(
-        {
-            "status": "failed" if error else "succeeded",
-            "finished_at": finished_at,
-            "duration_ms": float(duration_ms),
-            "inserted_documents": int(inserted_documents),
-            "replaced_documents": int(replaced_documents),
-            "skipped_documents": int(skipped_documents),
-            "inserted_chunks": int(inserted_chunks),
-            "invalid_document_ids": _normalise_ids(invalid_document_ids),
-        }
+    return _LIFECYCLE_STORE.mark_ingestion_run_completed(
+        tenant=tenant,
+        case=case,
+        run_id=run_id,
+        finished_at=finished_at,
+        duration_ms=duration_ms,
+        inserted_documents=inserted_documents,
+        replaced_documents=replaced_documents,
+        skipped_documents=skipped_documents,
+        inserted_chunks=inserted_chunks,
+        invalid_document_ids=_as_iterable(invalid_document_ids),
+        document_ids=_as_iterable(document_ids),
+        error=error,
     )
-    if document_ids:
-        payload["document_ids"] = _normalise_ids(document_ids)
-    if error:
-        payload["error"] = str(error)
-    else:
-        payload.pop("error", None)
-
-    object_store.write_json(status_path, payload)
-    return payload
 
 
 def get_latest_ingestion_run(tenant: str, case: str) -> dict[str, object] | None:
     """Return the latest recorded ingestion run for the tenant/case pair."""
 
-    status_path = _ingestion_status_path(tenant, case)
-    try:
-        payload = object_store.read_json(status_path)
-    except FileNotFoundError:
-        return None
-    if not isinstance(payload, dict):
+    payload = _LIFECYCLE_STORE.get_ingestion_run(tenant=tenant, case=case)
+    if payload is None:
         return None
     if "run_id" not in payload:
         return None

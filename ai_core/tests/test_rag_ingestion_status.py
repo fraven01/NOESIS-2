@@ -5,7 +5,8 @@ from ai_core.ingestion_status import (
     mark_ingestion_run_running,
     record_ingestion_run_queued,
 )
-from ai_core.infra import object_store, rate_limit
+from ai_core.infra import rate_limit
+from documents.repository import DEFAULT_LIFECYCLE_STORE
 from common.constants import (
     META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
@@ -15,12 +16,12 @@ from common.constants import (
 
 @pytest.mark.django_db
 def test_rag_ingestion_status_returns_latest_run(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    client, monkeypatch, test_tenant_schema_name
 ):
     tenant = test_tenant_schema_name
     case = "case-status"
+    DEFAULT_LIFECYCLE_STORE.reset()
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     run_id = "run-123"
     record_ingestion_run_queued(
@@ -75,10 +76,10 @@ def test_rag_ingestion_status_returns_latest_run(
 
 @pytest.mark.django_db
 def test_rag_ingestion_status_returns_404_when_empty(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    client, monkeypatch, test_tenant_schema_name
 ):
+    DEFAULT_LIFECYCLE_STORE.reset()
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     response = client.get(
         "/ai/rag/ingestion/status/",
