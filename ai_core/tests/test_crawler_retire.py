@@ -1,3 +1,5 @@
+"""Lifecycle decisions for crawler documents feeding the RAG store."""
+
 from datetime import datetime, timedelta, timezone
 
 from crawler.fetcher import (

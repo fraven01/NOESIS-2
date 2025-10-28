@@ -44,6 +44,12 @@ Reihenfolge:
 5. **Retire** aktualisiert bei Bedarf den Lifecycle über
    `update_lifecycle_state` des Vector-Clients und protokolliert die Entscheidung.
 
+   Die Tests in `ai_core/tests/test_crawler_guardrails.py` und
+   `ai_core/tests/test_crawler_retire.py` decken Guardrail- bzw. Lifecycle-
+   Entscheidungen ab, während `ai_core/tests/test_crawler_ingestion.py` und
+   `ai_core/tests/test_crawler_delta.py` die Übergaben zu Store und Vector
+   prüfen.
+
 Jeder Schritt emittiert eine Transition mit deterministischer Struktur. Diese
 Transitions landen im aggregierten Ergebnis des Graph-Laufs und bilden die
 Grundlage für Unit-Tests sowie Langfuse-Spans.
