@@ -47,26 +47,15 @@ from crawler.parser import (
     compute_parser_stats,
 )
 from documents.parsers import ParsedTextBlock
-from crawler.retire import evaluate_lifecycle
+from crawler.retire import LifecycleDecision, LifecycleState, evaluate_lifecycle
 
-
-@pytest.fixture(autouse=True)
-def _stub_profile_resolution(monkeypatch):
-    from types import SimpleNamespace
-
-    fake_resolution = SimpleNamespace(
-        vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
-    )
-    monkeypatch.setattr(
-        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
-        lambda embedding_profile: SimpleNamespace(
-            profile_id="profile-test", resolution=fake_resolution
-        ),
-    )
 
 TENANT_ID = "tenant-main"
 WORKFLOW_ID = "wf-e2e"
 CASE_ID = "case-007"
+
+
+ACTIVE_LIFECYCLE = LifecycleDecision(LifecycleState.ACTIVE, "active")
 
 
 def _doc_id(name: str) -> str:
@@ -156,7 +145,9 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
     )
     document = _make_document(parse, first_source, document_id=_doc_id("doc-tracking"))
     delta = evaluate_delta(document, primary_text=parse.content.primary_text)
-    ingestion = build_ingestion_decision(document, delta, case_id=CASE_ID)
+    ingestion = build_ingestion_decision(
+        document, delta, case_id=CASE_ID, lifecycle=ACTIVE_LIFECYCLE
+    )
 
     spans = {
         "frontier.queue": _build_frontier_span(
@@ -231,7 +222,9 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         previous_content_hash=previous_hash,
         previous_version=previous_version,
     )
-    ingestion = build_ingestion_decision(document_repeat, delta, case_id=CASE_ID)
+    ingestion = build_ingestion_decision(
+        document_repeat, delta, case_id=CASE_ID, lifecycle=ACTIVE_LIFECYCLE
+    )
 
     spans = {
         "frontier.queue": _build_frontier_span(
@@ -289,7 +282,9 @@ def test_content_change_advances_version_and_upserts() -> None:
         previous_content_hash=previous_hash,
         previous_version=previous_version,
     )
-    ingestion = build_ingestion_decision(document_updated, delta, case_id=CASE_ID)
+    ingestion = build_ingestion_decision(
+        document_updated, delta, case_id=CASE_ID, lifecycle=ACTIVE_LIFECYCLE
+    )
 
     spans = {
         "frontier.queue": _build_frontier_span(
@@ -432,7 +427,9 @@ def test_near_duplicate_detected_without_upsert() -> None:
         primary_text=duplicate_parse.content.primary_text,
         previous_content_hash=None,
     )
-    ingestion = build_ingestion_decision(duplicate_document, delta, case_id=CASE_ID)
+    ingestion = build_ingestion_decision(
+        duplicate_document, delta, case_id=CASE_ID, lifecycle=ACTIVE_LIFECYCLE
+    )
 
     spans = {
         "frontier.queue": _build_frontier_span(

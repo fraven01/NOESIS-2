@@ -54,9 +54,10 @@ flowchart TD
   Payloads mit Tenant-, Workflow- und Content-Metadaten. Ergebnisse werden als
   `upsert`, `skip` oder `retire` markiert und enthalten Lifecycle-State sowie
   Policy-Events.【F:crawler/ingestion.py†L1-L129】【F:crawler/ingestion.py†L137-L215】
-- **Lifecycle (`crawler.lifecycle_model.LifecycleTimeline`)** stellt sicher,
-  dass Status-Übergänge nur entlang der erlaubten Sequenzen erfolgen und bietet
-  Telemetrie-Attribute pro Ereignis.【F:crawler/lifecycle_model.py†L1-L123】【F:crawler/lifecycle_model.py†L129-L208】
+- **Lifecycle (`documents.repository.DocumentLifecycleStore`)** verfolgt
+  dokumentweite Zustandswechsel zentral und validiert zulässige
+  Übergänge. Telemetrie-Attribute werden direkt im Repository persistiert und
+  anschließend vom Crawler nur noch weitergereicht.【F:documents/repository.py†L160-L238】
 
 ## Kernverträge & Artefakte
 | Modul | Verantwortung | Schlüsselklassen |
@@ -92,10 +93,10 @@ flowchart TD
   Retire-Entscheidungen referenzieren dieselben Metadaten, sodass
   Downstream-Systeme ohne Sonderpfad auf ai_core-Ingestion-Services
   zugreifen können.【F:crawler/ingestion.py†L130-L219】
-- Lifecycle-Regeln stammen aus `crawler.retire` und `crawler.lifecycle_model`.
-  `LifecycleTimeline` erzwingt Sequenzen von `seeded` bis zu terminalen
-  Statuswerten (`ingested`, `skipped`, `retired`) und verhindert unzulässige
-  Sprünge.【F:crawler/lifecycle_model.py†L1-L123】【F:crawler/lifecycle_model.py†L129-L208】
+- Lifecycle-Regeln stammen aus `crawler.retire`, die Persistenz und
+  Validierung der Statusübergänge übernimmt `documents.repository`. Dadurch
+  entfällt eine lokale Timeline-Implementierung im Crawler, alle Pfade nutzen
+  dieselbe Quelle für erlaubte Zustandswechsel.【F:crawler/retire.py†L1-L204】【F:documents/repository.py†L160-L238】
 - Fehler oder Policy-Denies werden über `CrawlerError` in Events gespiegelt und
   nutzen die gemeinsame Error-Class-Taxonomie (`timeout`, `rate_limit`,
   `policy_deny`, …). Das stellt sicher, dass Langfuse und Dead-Letter-Queues
@@ -124,8 +125,9 @@ flowchart TD
 - `FetchTelemetry` speichert Latenz, Bytes und Retry-Gründe. Die Werte fließen in
   Metrics (`crawler_fetch_latency_ms`, `crawler_fetch_bytes_total`) ein und
   werden von Guardrails genutzt, um Backoff-Strategien zu begründen.【F:crawler/fetcher.py†L81-L119】【F:docs/observability/crawler-langfuse.md†L9-L41】
-- Lifecycle-Events enthalten Zeitstempel und optionale Dauer in Millisekunden.
-  Dadurch lassen sich SLA-Verstöße pro Stage erkennen und Alerts konfigurieren.【F:crawler/lifecycle_model.py†L129-L208】
+- Lifecycle-Events werden beim Schreiben über das Repository mit Zeitstempeln
+  versehen. Diese Daten fließen unverändert in Observability und SLA-Auswertung
+  ein.【F:documents/repository.py†L160-L238】
 
 ## Erweiterungshinweise
 - Neue Provider sollten `NormalizedSource.provider_tags` und `ExternalDocumentReference`
