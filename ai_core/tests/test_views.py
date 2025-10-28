@@ -1924,3 +1924,77 @@ def test_crawler_runner_manual_multi_origin(
 
     assert second.status_code == 200
     assert second.json()["idempotent"] is True
+
+
+@pytest.mark.django_db
+def test_crawler_runner_propagates_idempotency_key(
+    client, monkeypatch, tmp_path, test_tenant_schema_name
+):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    recorded_keys: list[str | None] = []
+
+    def _start_ingestion(request_data, meta, idempotency_key=None):  # type: ignore[no-untyped-def]
+        recorded_keys.append(idempotency_key)
+        document_id = request_data["document_ids"][0]
+        return SimpleNamespace(data={"status": "queued", "ingestion_run_id": document_id})
+
+    monkeypatch.setattr(services, "start_ingestion_run", _start_ingestion)
+
+    class _Graph:
+        def __init__(self) -> None:
+            self.upsert_handler = None
+
+        def start_crawl(self, state):  # type: ignore[no-untyped-def]
+            updated = dict(state)
+            updated.setdefault("control", {})
+            updated["normalize_input"] = {"document_id": updated.get("document_id")}
+            updated["transitions"] = {"crawler.ingest_decision": {"decision": "upsert"}}
+            updated["ingest_action"] = "upsert"
+            updated["gating_score"] = 1.0
+            return updated
+
+        def run(self, state, meta):  # type: ignore[no-untyped-def]
+            artifacts = state.setdefault("artifacts", {})
+            if self.upsert_handler is not None:
+                artifacts["upsert_result"] = self.upsert_handler(
+                    SimpleNamespace(attributes={})
+                )
+            return state, {"graph_run_id": "run", "decision": "upsert"}
+
+    monkeypatch.setattr(
+        views,
+        "crawler_ingestion_graph",
+        SimpleNamespace(build_graph=lambda: _Graph()),
+    )
+
+    payload = {
+        "mode": "manual",
+        "workflow_id": "crawler-propagate",
+        "origins": [
+            {
+                "url": "https://example.org/manual",
+                "content": "manual payload",
+                "content_type": "text/plain",
+                "fetch": False,
+            }
+        ],
+    }
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-id",
+        IDEMPOTENCY_KEY_HEADER: "idem-crawler-1",
+    }
+
+    response = client.post(
+        "/ai/rag/crawler/run/",
+        data=json.dumps(payload),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["idempotent"] is True
+    assert recorded_keys == ["idem-crawler-1"]

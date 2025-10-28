@@ -7,6 +7,8 @@ from datetime import timedelta
 from enum import Enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
+from ai_core.middleware.guardrails import FetcherLimits
+
 from .errors import CrawlerError, ErrorClass
 
 
@@ -92,48 +94,6 @@ class FetchTelemetry:
             raise ValueError("retries_negative")
         if self.backoff_total_ms < 0:
             raise ValueError("backoff_negative")
-
-
-@dataclass(frozen=True)
-class FetcherLimits:
-    """Configurable fetcher limits that enforce security constraints."""
-
-    max_bytes: Optional[int] = None
-    timeout: Optional[timedelta] = None
-    mime_whitelist: Optional[Tuple[str, ...]] = None
-
-    def __post_init__(self) -> None:
-        if self.max_bytes is not None and self.max_bytes <= 0:
-            raise ValueError("max_bytes_invalid")
-        if self.timeout is not None and self.timeout <= timedelta(0):
-            raise ValueError("timeout_invalid")
-        if self.mime_whitelist is not None:
-            if not self.mime_whitelist:
-                raise ValueError("mime_whitelist_empty")
-            object.__setattr__(
-                self,
-                "mime_whitelist",
-                tuple(entry.strip().lower() for entry in self.mime_whitelist),
-            )
-
-    def enforce(
-        self,
-        metadata: FetchMetadata,
-        telemetry: FetchTelemetry,
-    ) -> Tuple[bool, Tuple[str, ...]]:
-        """Return whether the fetch obeyed limits and any violation reasons."""
-
-        violations = []
-        if self.max_bytes is not None and telemetry.bytes_downloaded > self.max_bytes:
-            violations.append("max_bytes_exceeded")
-        if self.timeout is not None and telemetry.latency is not None:
-            if telemetry.latency > self.timeout.total_seconds():
-                violations.append("timeout_exceeded")
-        if self.mime_whitelist is not None and metadata.content_type:
-            content_type = metadata.content_type.lower()
-            if not _mime_matches_whitelist(content_type, self.mime_whitelist):
-                violations.append("mime_not_allowed")
-        return (not violations, tuple(violations))
 
 
 @dataclass(frozen=True)
