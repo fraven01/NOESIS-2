@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import secrets
 import time
+import inspect
+from importlib import import_module
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -50,6 +52,11 @@ from crawler.parser import (
     build_parse_result,
 )
 
+from ai_core.rag import vector_client
+from ai_core.rag.ingestion_contracts import ChunkMeta
+from ai_core.rag.schemas import Chunk
+from documents.repository import DocumentsRepository
+
 
 def _generate_uuid7() -> UUID:
     """Generate a monotonic UUIDv7 compatible identifier."""
@@ -61,7 +68,88 @@ def _generate_uuid7() -> UUID:
     return UUID(int=value)
 
 
-def _default_retire_handler(decision: Decision) -> Dict[str, object]:
+def _resolve_documents_repository() -> DocumentsRepository:
+    services = import_module("ai_core.services")
+    repository = services._get_documents_repository()  # type: ignore[attr-defined]
+    if not isinstance(repository, DocumentsRepository):
+        raise TypeError("documents_repository_invalid")
+    return repository
+
+
+def _resolve_vector_client():
+    return vector_client.get_default_client()
+
+
+def _invoke_handler(
+    handler: Callable[..., Any],
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    try:
+        signature = inspect.signature(handler)
+    except (TypeError, ValueError):
+        return handler(*args, **kwargs)
+
+    params = signature.parameters.values()
+    accepts_var_kwargs = any(
+        parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in params
+    )
+    if accepts_var_kwargs:
+        return handler(*args, **kwargs)
+
+    allowed_kwargs = {
+        parameter.name
+        for parameter in params
+        if parameter.kind
+        in {inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
+    }
+    filtered_kwargs = {key: value for key, value in kwargs.items() if key in allowed_kwargs}
+
+    try:
+        return handler(*args, **filtered_kwargs)
+    except TypeError:
+        if not filtered_kwargs and kwargs:
+            return handler(*args)
+        raise
+
+
+def _default_store_handler(
+    document: NormalizedDocument,
+    *,
+    repository: Optional[DocumentsRepository] = None,
+) -> Dict[str, object]:
+    repo = repository or _resolve_documents_repository()
+    stored = repo.upsert(document)
+    return {
+        "status": "stored",
+        "document_id": str(stored.ref.document_id),
+        "version": stored.ref.version,
+    }
+
+
+def _default_upsert_handler(
+    decision: Decision,
+    *,
+    chunk: Optional[Chunk],
+    vector_client_instance: Optional[object] = None,
+) -> Dict[str, object]:
+    if chunk is None:
+        return {"status": "skipped", "reason": "missing_chunk"}
+    client = vector_client_instance or _resolve_vector_client()
+    written = client.upsert_chunks([chunk])
+    return {
+        "status": "upserted",
+        "chunks_written": int(written),
+        "document_id": chunk.meta.get("document_id"),
+    }
+
+
+def _default_retire_handler(
+    decision: Decision,
+    *,
+    chunk: Optional[Chunk],
+    vector_client_instance: Optional[object] = None,
+) -> Dict[str, object]:
     lifecycle_attr = decision.attributes.get(
         "lifecycle_state", LifecycleState.ACTIVE
     )
@@ -69,7 +157,20 @@ def _default_retire_handler(decision: Decision) -> Dict[str, object]:
         lifecycle_value = lifecycle_attr.value
     else:
         lifecycle_value = lifecycle_attr
-    return {"status": "retired", "lifecycle_state": lifecycle_value}
+    if chunk is None:
+        return {
+            "status": "retired",
+            "lifecycle_state": lifecycle_value,
+            "reason": "missing_chunk",
+        }
+    client = vector_client_instance or _resolve_vector_client()
+    written = client.upsert_chunks([chunk])
+    return {
+        "status": "retired",
+        "lifecycle_state": lifecycle_value,
+        "chunks_written": int(written),
+        "document_id": chunk.meta.get("document_id"),
+    }
 
 
 def _ingestion_status(decision: Optional[Decision]) -> Optional[IngestionStatus]:
@@ -182,12 +283,9 @@ class CrawlerIngestionGraph:
     delta_evaluator: Callable[..., DeltaDecision] = evaluate_delta
     guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
     ingestion_builder: Callable[..., Decision] = build_ingestion_decision
-    store_handler: Callable[[NormalizedDocument], Any] = lambda document: {
-        "status": "stored",
-        "document_id": str(document.ref.document_id),
-    }
-    upsert_handler: Callable[[Decision], Any] = lambda _: {"status": "queued"}
-    retire_handler: Callable[[Decision], Any] = _default_retire_handler
+    store_handler: Callable[..., Any] = _default_store_handler
+    upsert_handler: Callable[..., Any] = _default_upsert_handler
+    retire_handler: Callable[..., Any] = _default_retire_handler
     event_emitter: Optional[Callable[[str, Transition, str], None]] = None
 
     def run(
@@ -414,6 +512,79 @@ class CrawlerIngestionGraph:
             description,
             attributes={"artifact": artifact, "severity": "error"},
         )
+
+    def _build_chunk(
+        self,
+        decision: Decision,
+        artifacts: Mapping[str, Any],
+        state: Mapping[str, Any],
+        *,
+        deleted_at: Optional[datetime] = None,
+    ) -> Optional[Chunk]:
+        chunk_meta_obj = decision.attributes.get("chunk_meta")
+        meta_model: Optional[ChunkMeta]
+        if isinstance(chunk_meta_obj, ChunkMeta):
+            meta_model = chunk_meta_obj
+        elif isinstance(chunk_meta_obj, Mapping):
+            try:
+                meta_model = ChunkMeta.model_validate(chunk_meta_obj)
+            except Exception:
+                meta_model = None
+        else:
+            meta_model = None
+        if meta_model is None:
+            return None
+
+        meta_payload = meta_model.model_dump(exclude_none=True)
+
+        for key in ("tenant_id", "case_id", "workflow_id", "collection_id"):
+            value = meta_payload.get(key) or state.get(key)
+            if value is not None:
+                meta_payload[key] = str(value)
+
+        document_id = meta_payload.get("document_id")
+        if document_id is None:
+            fallback_id = state.get("document_id")
+            if fallback_id is not None:
+                meta_payload["document_id"] = str(fallback_id)
+        if not meta_payload.get("document_id"):
+            meta_payload.pop("document_id", None)
+
+        adapter_metadata = decision.attributes.get("adapter_metadata")
+        if isinstance(adapter_metadata, Mapping):
+            meta_payload.setdefault("adapter_metadata", dict(adapter_metadata))
+
+        if deleted_at is not None:
+            meta_payload["deleted_at"] = deleted_at.astimezone(timezone.utc).isoformat()
+        else:
+            meta_payload.pop("deleted_at", None)
+
+        primary_text: str = ""
+        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
+        if (
+            parse_result is not None
+            and isinstance(parse_result, ParseResult)
+            and parse_result.content is not None
+        ):
+            primary_text = parse_result.content.primary_text or ""
+
+        if not primary_text:
+            normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
+            if isinstance(normalized, NormalizedDocument):
+                blob = normalized.blob
+                payload = getattr(blob, "decoded_payload", None)
+                if callable(payload):
+                    try:
+                        decoded = payload()
+                    except Exception:
+                        decoded = None
+                    if isinstance(decoded, (bytes, bytearray)):
+                        try:
+                            primary_text = decoded.decode("utf-8", errors="ignore")
+                        except Exception:
+                            primary_text = ""
+
+        return Chunk(content=primary_text, meta=meta_payload, embedding=None, parents=None)
 
     def _run_frontier(
         self,
@@ -843,7 +1014,12 @@ class CrawlerIngestionGraph:
             outcome = _transition("skip", "mode_disabled", attributes=attributes)
             return outcome, True
 
-        result = self.store_handler(normalized)
+        repository = _resolve_documents_repository()
+        result = _invoke_handler(
+            self.store_handler,
+            normalized,
+            repository=repository,
+        )
         artifacts["store_result"] = result
         attributes["result"] = result
         outcome = _transition("stored", "document_stored", attributes=attributes)
@@ -918,7 +1094,14 @@ class CrawlerIngestionGraph:
             )
             return outcome, True
 
-        result = self.upsert_handler(ingestion)
+        chunk = self._build_chunk(ingestion, artifacts, state)
+        vector_client_instance = _resolve_vector_client()
+        result = _invoke_handler(
+            self.upsert_handler,
+            ingestion,
+            chunk=chunk,
+            vector_client_instance=vector_client_instance,
+        )
         artifacts["upsert_result"] = result
         outcome = _transition(
             "upsert",
@@ -945,7 +1128,19 @@ class CrawlerIngestionGraph:
             outcome = _transition("skip", "not_applicable", attributes={})
             return outcome, False
 
-        result = self.retire_handler(ingestion)
+        chunk = self._build_chunk(
+            ingestion,
+            artifacts,
+            state,
+            deleted_at=datetime.now(timezone.utc),
+        )
+        vector_client_instance = _resolve_vector_client()
+        result = _invoke_handler(
+            self.retire_handler,
+            ingestion,
+            chunk=chunk,
+            vector_client_instance=vector_client_instance,
+        )
         artifacts["retire_result"] = result
         outcome = _transition("retire", ingestion.reason, attributes={"result": result})
         return outcome, False
