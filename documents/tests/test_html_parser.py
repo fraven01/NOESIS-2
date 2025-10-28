@@ -5,13 +5,16 @@ import hashlib
 
 from typing import Optional
 
+import pytest
+
 from documents.contracts import InlineBlob
 from documents.parsers_html import HtmlDocumentParser
 from documents.pipeline import DocumentPipelineConfig
 
 
-def _inline_blob_from_text(text: str, media_type: str = "text/html") -> InlineBlob:
-    payload = text.encode("utf-8")
+def _inline_blob_from_bytes(
+    payload: bytes, media_type: str = "text/html"
+) -> InlineBlob:
     return InlineBlob(
         type="inline",
         media_type=media_type,
@@ -19,6 +22,10 @@ def _inline_blob_from_text(text: str, media_type: str = "text/html") -> InlineBl
         sha256=hashlib.sha256(payload).hexdigest(),
         size=len(payload),
     )
+
+
+def _inline_blob_from_text(text: str, media_type: str = "text/html") -> InlineBlob:
+    return _inline_blob_from_bytes(text.encode("utf-8"), media_type=media_type)
 
 
 class _DocumentStub:
@@ -185,6 +192,25 @@ def test_html_parser_can_handle_variants() -> None:
         blob=_inline_blob_from_text("Just some plain text", media_type="text/plain"),
     )
     assert not parser.can_handle(plain_doc)
+
+
+def test_html_parser_handles_brotli_payload() -> None:
+    brotli = pytest.importorskip("brotli")
+    html_source = "<html><body><p>Brotli payload decoded.</p></body></html>"
+    compressed = brotli.compress(html_source.encode("utf-8"))
+    document = _DocumentStub(
+        media_type="text/html",
+        blob=_inline_blob_from_bytes(compressed),
+        origin_uri="https://example.com/brotli",
+    )
+    parser = HtmlDocumentParser()
+
+    result = parser.parse(document, config={})
+
+    assert any(
+        block.kind == "paragraph" and "Brotli payload decoded." in block.text
+        for block in result.text_blocks
+    )
 
 
 def test_html_parser_readability_mode_reduces_boilerplate() -> None:

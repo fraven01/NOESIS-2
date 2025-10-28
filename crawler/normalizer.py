@@ -22,6 +22,7 @@ from documents.parsers import (
     ParseStatus,
     ParserContent,
     ParserStats,
+    normalize_diagnostics as _normalize_diagnostics,
 )
 from documents.providers import (
     ProviderReference,
@@ -304,3 +305,6 @@ def _sanitize_tag_component(value: object) -> Optional[str]:
         return None
     sanitized = re.sub(r"-{2,}", "-", sanitized)
     return sanitized
+
+
+normalize_diagnostics = _normalize_diagnostics

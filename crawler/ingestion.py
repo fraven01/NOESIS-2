@@ -108,11 +108,9 @@ def build_ingestion_decision(
             ),
             delta_status=delta.status.value,
         )
-        return Decision(
-            payload.action.value,
-            lifecycle_decision.reason,
-            payload.as_mapping(),
-        )
+        attributes = dict(payload.as_mapping())
+        attributes["lifecycle_state"] = lifecycle_decision.state
+        return Decision(payload.action.value, lifecycle_decision.reason, attributes)
 
     chunk_meta, profile_binding = _build_chunk_meta(
         document,
@@ -149,7 +147,9 @@ def build_ingestion_decision(
     reason = (
         lifecycle_decision.reason if lifecycle_decision.should_retire else delta.reason
     )
-    return Decision(payload.action.value, reason, payload.as_mapping())
+    attributes = dict(payload.as_mapping())
+    attributes["lifecycle_state"] = lifecycle_decision.state
+    return Decision(payload.action.value, reason, attributes)
 
 
 def _build_chunk_meta(

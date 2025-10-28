@@ -26,6 +26,7 @@ from documents import (
     ParsedResult,
     ParsedTextBlock,
 )
+from documents.payloads import extract_payload
 
 from . import tasks as pipe
 from .infra import object_store
@@ -47,31 +48,59 @@ class TextDocumentParser:
 
     _SUPPORTED_MEDIA_TYPE = "text/plain"
 
-    def can_handle(self, document: object) -> bool:
+    @staticmethod
+    def _normalized_media_type(value: object) -> Optional[str]:
+        if not isinstance(value, str):
+            return None
+        candidate = value.split(";")[0].strip().lower()
+        return candidate or None
+
+    def _infer_media_type(self, document: object) -> Optional[str]:
         blob = getattr(document, "blob", None)
-        media_type = getattr(blob, "media_type", None)
-        if isinstance(media_type, str):
-            if media_type.split(";")[0].strip().lower() == self._SUPPORTED_MEDIA_TYPE:
-                return True
-        candidate = getattr(document, "media_type", None)
-        if isinstance(candidate, str):
-            return candidate.split(";")[0].strip().lower() == self._SUPPORTED_MEDIA_TYPE
-        return False
+        media_type = self._normalized_media_type(getattr(blob, "media_type", None))
+        if media_type:
+            return media_type
+        meta = getattr(document, "meta", None)
+        external_ref = getattr(meta, "external_ref", None)
+        if isinstance(external_ref, Mapping):
+            media_type = self._normalized_media_type(external_ref.get("media_type"))
+            if media_type:
+                return media_type
+        candidate = self._normalized_media_type(getattr(document, "media_type", None))
+        if candidate:
+            return candidate
+        return None
+
+    def can_handle(self, document: object) -> bool:
+        media_type = self._infer_media_type(document)
+        if media_type:
+            return media_type == self._SUPPORTED_MEDIA_TYPE
+        blob = getattr(document, "blob", None)
+        blob_media = self._normalized_media_type(getattr(blob, "media_type", None))
+        if blob_media:
+            return blob_media == self._SUPPORTED_MEDIA_TYPE
+        # Fall back to payload sniffing for small inline text blobs.
+        try:
+            payload = extract_payload(blob)
+        except Exception:  # pragma: no cover - guard against storage errors
+            return False
+        if not payload:
+            return False
+        # Heuristic: treat as text if it decodes cleanly as UTF-8.
+        try:
+            payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return False
+        return True
 
     def parse(self, document: object, config: object) -> ParsedResult:  # noqa: ARG002
         blob = getattr(document, "blob", None)
-        payload: bytes | None = None
-        if hasattr(blob, "decoded_payload"):
-            try:
-                payload = blob.decoded_payload()
-            except Exception:  # pragma: no cover - defensive guard
-                payload = None
-        if payload is None and hasattr(blob, "content"):
-            content = getattr(blob, "content")
-            if isinstance(content, (bytes, bytearray)):
-                payload = bytes(content)
-            elif isinstance(content, str):
-                payload = content.encode("utf-8")
+        encoding = None
+        if hasattr(blob, "content_encoding"):
+            candidate = getattr(blob, "content_encoding")
+            if isinstance(candidate, str):
+                encoding = candidate
+        payload = extract_payload(blob, content_encoding=encoding)
         text = ""
         if payload:
             text = payload.decode("utf-8", errors="replace")
@@ -491,6 +520,8 @@ def process_document(
     vector_space_dimension: Optional[int] = None
     try:
         current_step = "resolve_profile"
+        state["current_step"] = current_step
+        _write_pipeline_state(tenant, case, document_id, state)
         profile_binding = resolve_ingestion_profile(embedding_profile)
         resolved_profile_id = profile_binding.profile_id
         vector_space = profile_binding.resolution.vector_space
@@ -632,13 +663,22 @@ def process_document(
 
         pipeline_config = _build_document_pipeline_config()
         dispatcher = _build_parser_dispatcher()
-        parsed_result = dispatcher.parse(normalized_document, pipeline_config)
-        if parsed_result.statistics:
-            meta["parse_stats"] = dict(parsed_result.statistics)
-            state.setdefault("meta", {})["parse_stats"] = dict(parsed_result.statistics)
-            _write_pipeline_state(tenant, case, document_id, state)
-
         current_step = "parse"
+        state["current_step"] = current_step
+        _write_pipeline_state(tenant, case, document_id, state)
+        try:
+            parsed_result = dispatcher.parse(normalized_document, pipeline_config)
+        except Exception as exc:  # pragma: no cover - fallback for plain text
+            message = str(exc)
+            fallback_parser = TextDocumentParser()
+            if "no_parser_found" in message and fallback_parser.can_handle(
+                normalized_document
+            ):
+                parsed_result = fallback_parser.parse(
+                    normalized_document, pipeline_config
+                )
+            else:
+                raise
         parse_artifact, reused = _ensure_step(
             tenant,
             case,
@@ -651,6 +691,11 @@ def process_document(
         )
         if not reused and parse_artifact.get("path"):
             created_artifacts.append((current_step, str(parse_artifact["path"])))
+
+        if parsed_result.statistics:
+            meta["parse_stats"] = dict(parsed_result.statistics)
+            state.setdefault("meta", {})["parse_stats"] = dict(parsed_result.statistics)
+            _write_pipeline_state(tenant, case, document_id, state)
         parse_path = parse_artifact.get("path")
         blocks_path = parse_artifact.get("blocks_path")
         if blocks_path:
@@ -664,6 +709,7 @@ def process_document(
             )
 
         current_step = "pii_mask"
+        state["current_step"] = current_step
         if not getattr(settings, "INGESTION_PII_MASK_ENABLED", True):
             masked = {"path": parse_path}
             reused = True
@@ -688,6 +734,7 @@ def process_document(
                 created_artifacts.append((current_step, str(masked["path"])))
 
         current_step = "chunk"
+        state["current_step"] = current_step
         chunks, reused = _ensure_step(
             tenant,
             case,
@@ -700,6 +747,7 @@ def process_document(
             created_artifacts.append((current_step, str(chunks["path"])))
 
         current_step = "embed"
+        state["current_step"] = current_step
         emb, reused = _ensure_step(
             tenant,
             case,
@@ -712,13 +760,28 @@ def process_document(
             created_artifacts.append((current_step, str(emb["path"])))
 
         current_step = "upsert"
-        upsert_result = pipe.upsert(meta, emb["path"], tenant_schema=tenant_schema)
+        state["current_step"] = current_step
+        _write_pipeline_state(tenant, case, document_id, state)
+        try:
+            upsert_result = pipe.upsert(meta, emb["path"], tenant_schema=tenant_schema)
+        except Exception as exc:
+            retries = getattr(self.request, "retries", 0)
+            state["last_error"] = {
+                "step": current_step,
+                "message": str(exc),
+                "retry": retries,
+                "failed_at": time.time(),
+            }
+            _write_pipeline_state(tenant, case, document_id, state)
+            setattr(exc, "_ingestion_step", current_step)
+            raise
         state.setdefault("steps", {})["upsert"] = {
             "completed_at": time.time(),
             "cleaned": True,
         }
         state["last_error"] = None
         state["completed_at"] = time.time()
+        state.pop("current_step", None)
         _write_pipeline_state(tenant, case, document_id, state)
     except InputError as exc:
         state["last_error"] = {
@@ -732,15 +795,17 @@ def process_document(
     except Exception as exc:  # pragma: no cover - defensive retry path
         retries = getattr(self.request, "retries", 0)
         countdown = min(300, 5 * (2**retries or 1))
+        failed_step = getattr(exc, "_ingestion_step", current_step)
+        state["current_step"] = failed_step
         state["last_error"] = {
-            "step": current_step,
+            "step": failed_step,
             "message": str(exc),
             "retry": retries,
             "failed_at": time.time(),
         }
         _write_pipeline_state(tenant, case, document_id, state)
         cleanup_targets = [
-            path for step, path in created_artifacts if step == current_step
+            path for step, path in created_artifacts if step == failed_step
         ]
         removed = _cleanup_artifacts(cleanup_targets)
         if removed:

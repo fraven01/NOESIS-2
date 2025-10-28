@@ -194,6 +194,24 @@ def test_start_crawl_respects_legacy_manual_review_control(service_fakes) -> Non
     assert state["control"]["dry_run"] is True
 
 
+def test_chunk_content_strips_null_bytes(service_fakes) -> None:
+    _, vector = service_fakes
+    initial_state, meta, body = _build_state()
+    initial_state["parse_input"]["content"] = ParserContent(
+        media_type="text/html",
+        primary_text="Leading\x00Null",
+        title="Example",
+        content_language="en",
+    )
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
+
+    state = graph.start_crawl(initial_state)
+    graph.run(state, meta)
+
+    assert vector.upserts, "Expected crawler run to upsert at least one chunk"
+    assert "\x00" not in vector.upserts[0].content
+
+
 def test_manual_approval_path(service_fakes) -> None:
     initial_state, meta, body = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()

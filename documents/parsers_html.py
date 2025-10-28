@@ -23,6 +23,7 @@ from documents.parsers import (
     ParsedResult,
     ParsedTextBlock,
 )
+from documents.payloads import extract_payload
 
 
 _HTML_MEDIA_TYPES = {"text/html", "application/xhtml+xml"}
@@ -78,29 +79,12 @@ def _extract_blob(document: Any) -> Any:
 def _decode_blob_payload(blob: Any) -> Optional[bytes]:
     if blob is None:
         return None
-    if hasattr(blob, "decoded_payload"):
-        payload = blob.decoded_payload()
-        if isinstance(payload, bytes):
-            return payload
-    content = _extract_candidate(blob, "content")
-    if isinstance(content, str):
-        return content.encode("utf-8")
-    if isinstance(content, (bytes, bytearray)):
-        return bytes(content)
-    if isinstance(blob, Mapping):
-        base64_value = blob.get("base64")
-        if isinstance(base64_value, str):
-            try:
-                import base64
-
-                return base64.b64decode(base64_value)
-            except Exception:  # pragma: no cover - malformed payloads
-                return None
-        if isinstance(base64_value, (bytes, bytearray)):
-            return bytes(base64_value)
-    if isinstance(blob, (bytes, bytearray)):
-        return bytes(blob)
-    return None
+    encoding = None
+    if hasattr(blob, "content_encoding"):
+        candidate = getattr(blob, "content_encoding")
+        if isinstance(candidate, str):
+            encoding = candidate
+    return extract_payload(blob, content_encoding=encoding)
 
 
 def _decode_text(payload: Optional[bytes]) -> str:

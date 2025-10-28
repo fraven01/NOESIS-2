@@ -138,7 +138,7 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
     assert adapter_metadata["title"] == "Example Title"
 
 
-def test_build_ingestion_decision_skips_when_unchanged() -> None:
+def test_build_ingestion_decision_upserts_when_unchanged() -> None:
     document = _make_document()
     delta = DeltaDecision.from_legacy(
         DeltaStatus.UNCHANGED,
@@ -150,14 +150,16 @@ def test_build_ingestion_decision_skips_when_unchanged() -> None:
     decision = build_ingestion_decision(document, delta, case_id="case-1")
 
     status = IngestionStatus(decision.decision)
-    assert status is IngestionStatus.SKIP
+    assert status is IngestionStatus.UPSERT
     assert decision.reason == "hash_match"
     attributes = decision.attributes
     assert attributes["lifecycle_state"] is LifecycleState.ACTIVE
-    assert "chunk_meta" not in attributes
+    chunk_meta = attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.lifecycle_state == LifecycleState.ACTIVE.value
 
 
-def test_build_ingestion_decision_skips_near_duplicate() -> None:
+def test_build_ingestion_decision_upserts_near_duplicate() -> None:
     document = _make_document()
     delta = DeltaDecision.from_legacy(
         DeltaStatus.NEAR_DUPLICATE,
@@ -169,10 +171,12 @@ def test_build_ingestion_decision_skips_near_duplicate() -> None:
     decision = build_ingestion_decision(document, delta, case_id="case-1")
 
     status = IngestionStatus(decision.decision)
-    assert status is IngestionStatus.SKIP
+    assert status is IngestionStatus.UPSERT
     assert decision.reason == "near_duplicate:0.950"
     assert decision.attributes["lifecycle_state"] is LifecycleState.ACTIVE
-    assert "chunk_meta" not in decision.attributes
+    chunk_meta = decision.attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.lifecycle_state == LifecycleState.ACTIVE.value
 
 
 def test_build_ingestion_decision_requires_case_id() -> None:

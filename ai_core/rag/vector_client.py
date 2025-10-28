@@ -4804,7 +4804,7 @@ class PgVectorClient:
             SET lifecycle = %s,
                 deleted_at = %s,
                 metadata = jsonb_strip_nulls(
-                    coalesce(metadata, '{}'::jsonb)
+                    coalesce(metadata, '{{}}'::jsonb)
                     || jsonb_build_object(
                         'lifecycle_state', %s,
                         'lifecycle_changed_at', %s,
@@ -4820,7 +4820,7 @@ class PgVectorClient:
             """
             UPDATE {}
             SET metadata = jsonb_strip_nulls(
-                coalesce(metadata, '{}'::jsonb)
+                coalesce(metadata, '{{}}'::jsonb)
                 || jsonb_build_object(
                     'lifecycle_state', %s,
                     'lifecycle_changed_at', %s,

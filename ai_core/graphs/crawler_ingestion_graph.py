@@ -274,7 +274,7 @@ RequiredStateKeys = (
 )
 
 
-@dataclass(frozen=True)
+@dataclass
 class CrawlerIngestionGraph:
     """State machine coordinating crawler ingestion decisions."""
 
@@ -286,6 +286,7 @@ class CrawlerIngestionGraph:
     guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
     ingestion_builder: Callable[..., Decision] = build_ingestion_decision
     event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None
+    upsert_handler: Optional[Callable[[Decision], object]] = None
 
     def run(
         self,
@@ -603,6 +604,9 @@ class CrawlerIngestionGraph:
                             primary_text = decoded.decode("utf-8", errors="ignore")
                         except Exception:
                             primary_text = ""
+
+        if "\x00" in primary_text:
+            primary_text = primary_text.replace("\x00", " ")
 
         return Chunk(
             content=primary_text, meta=meta_payload, embedding=None, parents=None
@@ -1143,18 +1147,30 @@ class CrawlerIngestionGraph:
             )
             return outcome, True
 
-        vector_client_instance = _resolve_vector_client()
-        written = vector_client_instance.upsert_chunks([chunk])
-        upsert_result = {
-            "status": "upserted",
-            "chunks_written": int(written),
-        }
+        handler = self.upsert_handler if callable(self.upsert_handler) else None
+        if handler:
+            try:
+                handler_result = handler(ingestion)
+            except Exception as exc:  # pragma: no cover - defensive handler guard
+                upsert_result = {"status": "error", "error": str(exc)}
+            else:
+                if isinstance(handler_result, Mapping):
+                    upsert_result = dict(handler_result)
+                else:
+                    upsert_result = {"status": str(handler_result)}
+        else:
+            vector_client_instance = _resolve_vector_client()
+            written = vector_client_instance.upsert_chunks([chunk])
+            upsert_result = {
+                "status": "upserted",
+                "chunks_written": int(written),
+            }
         document_id = chunk.meta.get("document_id") if chunk.meta else None
         if document_id is not None:
-            upsert_result["document_id"] = str(document_id)
+            upsert_result.setdefault("document_id", str(document_id))
         tenant_id = chunk.meta.get("tenant_id") if chunk.meta else None
         if tenant_id is not None:
-            upsert_result["tenant_id"] = str(tenant_id)
+            upsert_result.setdefault("tenant_id", str(tenant_id))
         artifacts["upsert_result"] = upsert_result
         outcome = _transition(
             "upsert",

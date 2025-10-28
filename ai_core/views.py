@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 import uuid
 from dataclasses import dataclass
@@ -15,7 +16,7 @@ from django.conf import settings
 from django.db import connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest
+from django.http import HttpRequest, HttpResponse
 
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -70,6 +71,9 @@ from crawler.guardrails import (
 )
 from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
 from crawler.parser import ParseStatus, ParserContent, compute_parser_stats
+from documents.contract_utils import (
+    normalize_media_type as normalize_document_media_type,
+)
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
@@ -274,6 +278,29 @@ def _build_header_mapping(fetch_result) -> dict[str, str]:
     return headers
 
 
+def _normalize_media_type_value(value: str | None) -> str | None:
+    """Return a normalized ``type/subtype`` media type or ``None`` when invalid."""
+
+    if not value:
+        return None
+    candidate = value.split(";", 1)[0].strip()
+    if not candidate:
+        return None
+    try:
+        return normalize_document_media_type(candidate)
+    except ValueError:
+        return None
+
+
+def _sanitize_primary_text(value: str | None) -> str:
+    """Strip disallowed control characters (e.g. NUL) from primary text payloads."""
+
+    if not value:
+        return ""
+    sanitized = value.replace("\x00", " ")
+    return sanitized
+
+
 def _merge_origin_tags(
     global_tags: Sequence[str] | None, origin_tags: Sequence[str] | None
 ) -> list[str]:
@@ -436,6 +463,12 @@ def _prepare_request(request: Request):
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
     idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+    if not idempotency_header:
+        idempotency_header = request.META.get(
+            "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
+        )
+    if not idempotency_header:
+        idempotency_header = request.META.get(IDEMPOTENCY_KEY_HEADER)
 
     idempotency_key = None
     if idempotency_header is not None:
@@ -526,6 +559,7 @@ def _prepare_request(request: Request):
         meta["collection_id"] = collection_id
     if idempotency_key:
         meta["idempotency_key"] = idempotency_key
+    print("PREPARE_META_IDEMPOTENCY", idempotency_key)
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id
@@ -1432,7 +1466,9 @@ def _build_crawler_state(
 
         need_fetch = bool(origin.fetch or origin.content is None)
         body_bytes: bytes = b""
-        effective_content_type = origin.content_type or request_data.content_type
+        effective_content_type = _normalize_media_type_value(
+            origin.content_type or request_data.content_type
+        )
         fetch_input: dict[str, object]
         fetch_used = False
         http_status: int | None = None
@@ -1524,9 +1560,14 @@ def _build_crawler_state(
 
             fetch_used = True
             http_status = fetch_result.metadata.status_code
-            body_bytes = fetch_result.body or b""
+            payload_bytes = getattr(fetch_result, "payload", None)
+            if payload_bytes is None:
+                payload_bytes = getattr(fetch_result, "body", None)
+            body_bytes = payload_bytes or b""
             fetched_bytes = len(body_bytes)
-            effective_content_type = fetch_result.metadata.content_type
+            effective_content_type = _normalize_media_type_value(
+                fetch_result.metadata.content_type
+            )
             fetch_input = {
                 "request": fetch_request,
                 "status_code": fetch_result.metadata.status_code,
@@ -1557,11 +1598,12 @@ def _build_crawler_state(
             fetch_retries = 0
             fetch_retry_reason = None
             fetch_backoff_total_ms = 0.0
+            manual_content_type = effective_content_type or "application/octet-stream"
             fetch_input = {
                 "request": fetch_request,
                 "status_code": 200,
                 "body": body_bytes,
-                "headers": {"Content-Type": effective_content_type},
+                "headers": {"Content-Type": manual_content_type},
                 "elapsed": 0.05,
             }
 
@@ -1607,6 +1649,7 @@ def _build_crawler_state(
             decoded = body_bytes.decode("utf-8", errors="replace")
         except Exception:  # pragma: no cover - defensive
             decoded = body_bytes.decode("latin-1", errors="replace")
+        decoded = _sanitize_primary_text(decoded)
 
         parse_content = ParserContent(
             media_type=effective_content_type,
@@ -1872,7 +1915,28 @@ class RagIngestionStatusView(APIView):
             return apply_std_headers(response, meta)
 
         response = Response(response_payload, status=status.HTTP_200_OK)
-        return apply_std_headers(response, meta)
+        processed_response = apply_std_headers(response, meta)
+        idempotency_key_value = meta.get("idempotency_key")
+        header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        print("DEBUG_IDEMPOTENCY", header_idempotency, idempotency_key_value)
+        if not header_idempotency:
+            meta_header_key = "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
+            raw_meta_header = request.META.get(meta_header_key)
+            if isinstance(raw_meta_header, str) and raw_meta_header.strip():
+                header_idempotency = raw_meta_header
+        resolved_idempotency = idempotency_key_value or (
+            header_idempotency.strip() if isinstance(header_idempotency, str) else None
+        )
+        if resolved_idempotency:
+            processed_response.headers[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
+            header_key_lower = IDEMPOTENCY_KEY_HEADER.lower()
+            processed_response._headers[header_key_lower] = (
+                IDEMPOTENCY_KEY_HEADER,
+                resolved_idempotency,
+            )
+            if not idempotency_key_value:
+                meta["idempotency_key"] = resolved_idempotency
+        return processed_response
 
 
 class RagHardDeleteAdminView(APIView):
@@ -2036,19 +2100,47 @@ class CrawlerIngestionRunnerView(APIView):
         telemetry_payload: list[dict[str, object]] = []
         errors_payload: list[dict[str, object]] = []
 
-        header_idempotent = bool(request.headers.get(IDEMPOTENCY_KEY_HEADER))
+        raw_header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+        if not raw_header_idempotency:
+            raw_header_idempotency = request.META.get(
+                "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
+            )
+        if not raw_header_idempotency:
+            raw_header_idempotency = request.META.get(IDEMPOTENCY_KEY_HEADER)
+        resolved_idempotency = meta.get("idempotency_key")
+        if not resolved_idempotency and isinstance(raw_header_idempotency, str):
+            candidate_key = raw_header_idempotency.strip()
+            if candidate_key:
+                resolved_idempotency = candidate_key
+                meta["idempotency_key"] = candidate_key
+        header_idempotent = bool(resolved_idempotency)
 
         for build in state_builds:
             graph = crawler_ingestion_graph.build_graph()
 
             def _upsert_handler(decision):  # type: ignore[no-untyped-def]
                 try:
-                    chunk_meta = decision.attributes.get("chunk_meta")
-                    document_id = (
-                        getattr(chunk_meta, "document_id", None)
-                        if chunk_meta is not None
-                        else None
-                    )
+                    document_id: object | None = None
+                    chunk_meta: object | None = None
+                    attributes = getattr(decision, "attributes", None)
+                    if isinstance(attributes, Mapping):
+                        chunk_meta = attributes.get("chunk_meta")
+                        if chunk_meta is not None:
+                            if hasattr(chunk_meta, "document_id"):
+                                document_id = getattr(chunk_meta, "document_id", None)
+                            elif isinstance(chunk_meta, Mapping):
+                                document_id = chunk_meta.get("document_id")
+                        if document_id is None:
+                            document_id = attributes.get("document_id")
+                    if document_id is None and hasattr(decision, "payload"):
+                        payload = getattr(decision, "payload")
+                        document_id = getattr(payload, "document_id", None)
+                        if document_id is None and hasattr(payload, "chunk_meta"):
+                            chunk_meta = getattr(payload, "chunk_meta", None)
+                            if getattr(chunk_meta, "document_id", None):
+                                document_id = getattr(chunk_meta, "document_id")
+                    if not document_id:
+                        document_id = build.document_id
                     if not document_id:
                         return {"status": "skipped", "reason": "missing_document_id"}
                     request_data = {
@@ -2069,7 +2161,7 @@ class CrawlerIngestionRunnerView(APIView):
                     resp = services.start_ingestion_run(
                         request_data,
                         ingest_meta,
-                        idempotency_key=request.headers.get(IDEMPOTENCY_KEY_HEADER),
+                        idempotency_key=resolved_idempotency,
                     )
                     body = getattr(resp, "data", {}) or {}
                     run_id = body.get("ingestion_run_id")
@@ -2193,8 +2285,13 @@ class CrawlerIngestionRunnerView(APIView):
             "errors": errors_payload,
             "idempotent": bool(fingerprint_match or header_idempotent),
         }
-        response = Response(response_payload, status=status.HTTP_200_OK)
-        return apply_std_headers(response, meta)
+        response_body = json.dumps(response_payload)
+        response = HttpResponse(response_body, status=status.HTTP_200_OK)
+        response["Content-Type"] = "application/json"
+        response = apply_std_headers(response, meta)
+        if resolved_idempotency:
+            response[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
+        return response
 
 
 class RagDemoViewV1(_BaseAgentView):

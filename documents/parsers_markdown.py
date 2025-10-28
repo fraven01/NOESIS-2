@@ -34,6 +34,7 @@ from documents.contract_utils import (
     truncate_text,
 )
 from documents.parsers import DocumentParser, ParsedAsset, ParsedResult, ParsedTextBlock
+from documents.payloads import extract_payload
 
 
 _MARKDOWN_MEDIA_TYPES = {"text/markdown", "text/x-markdown"}
@@ -96,29 +97,12 @@ def _extract_blob(document: Any) -> Any:
 def _decode_blob_payload(blob: Any) -> Optional[bytes]:
     if blob is None:
         return None
-    if hasattr(blob, "decoded_payload"):
-        payload = blob.decoded_payload()
-        if isinstance(payload, bytes):
-            return payload
-    data = _extract_candidate(blob, "content")
-    if isinstance(data, str):
-        return data.encode("utf-8")
-    if isinstance(data, (bytes, bytearray)):
-        return bytes(data)
-    if isinstance(blob, Mapping):
-        base64_data = blob.get("base64")
-        if isinstance(base64_data, (bytes, bytearray)):
-            return bytes(base64_data)
-        if isinstance(base64_data, str):
-            try:
-                import base64
-
-                return base64.b64decode(base64_data)
-            except Exception:  # pragma: no cover - malformed payloads fall back to None
-                return None
-    if isinstance(blob, (bytes, bytearray)):
-        return bytes(blob)
-    return None
+    encoding = None
+    if hasattr(blob, "content_encoding"):
+        candidate = getattr(blob, "content_encoding")
+        if isinstance(candidate, str):
+            encoding = candidate
+    return extract_payload(blob, content_encoding=encoding)
 
 
 def _extract_filename(document: Any) -> Optional[str]:
