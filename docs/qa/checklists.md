@@ -6,6 +6,7 @@ Qualitätssicherung verhindert Überraschungen nach Deployments. Diese Checklist
 - Build-Artefakte sind vorhanden (Semver+SHA Tag in Artifact Registry) und wurden signiert, falls erforderlich.
 - Migrationen: Trockenlauf per Cloud Run Job in Staging durchgeführt, Ergebnis dokumentiert ([Migrations-Runbook](../runbooks/migrations.md)).
 - Konnektivität: Smoke-Verbindungen zu Cloud SQL und Memorystore geprüft; LiteLLM `/health/liveliness` liefert `alive`.
+- RAG-Ende-zu-Ende: `pytest ai_core/tests/test_crawler_*.py` lokal oder via CI ausgeführt und dokumentiert.
 - Monitoring: Alerts für CPU, Fehlerquote und Queue-Länge aktiv und ohne offene Warnungen.
 
 ## Nach dem Deploy

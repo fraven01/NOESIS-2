@@ -30,6 +30,37 @@ flowchart TD
   Retire-Entscheidungen `update_lifecycle_state` für betroffene Dokumente
   triggern.
 
+## Crawler → RAG End-to-End
+
+```mermaid
+flowchart LR
+    subgraph Crawl
+        F[Frontier]
+        FE[Fetch]
+        P[Parse]
+        N[Normalize]
+        D[Delta]
+        G[Guardrails]
+    end
+    subgraph RAG
+        I[Ingestion Decision]
+        DS[DocumentsRepository.upsert]
+        VC[Vector Client Upsert]
+        R[Retire Updates]
+    end
+    F --> FE --> P --> N --> D --> G --> I
+    I --> DS --> VC --> R
+```
+
+- Der Graph verbindet Crawler-Artefakte deterministisch mit der RAG-Pipeline.
+  Die Tests in `ai_core/tests/test_crawler_delta.py`,
+  `ai_core/tests/test_crawler_ingestion.py`,
+  `ai_core/tests/test_crawler_guardrails.py` und
+  `ai_core/tests/test_crawler_retire.py` validieren die Übergaben.
+- Der Guardrail- und Retire-Pfad liegt jetzt ausschließlich in den
+  RAG-Test-Suites, damit CI- und QA-Teams eine zentrale Stelle für den
+  End-to-End-Nachweis haben.
+
 ## Upload → Ingest-Trigger
 - **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen.
 - **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.

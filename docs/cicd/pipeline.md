@@ -6,7 +6,7 @@ Die Pipeline sorgt dafür, dass jede Änderung getestet, geprüft und kontrollie
 | Reihenfolge | Stufe | Inhalt | Gate |
 | --- | --- | --- | --- |
 | 1 | Lint | `npm run lint` inklusive Ruff/Black, siehe `.github/workflows/ci.yml` | Merge blockiert bei Fehlern |
-| 2 | Unit | `pytest` mit Tenant-Migrationen und Coverage (siehe `.github/workflows/ci.yml`) | Must-pass für Image-Build |
+| 2 | Unit | `pytest` mit Tenant-Migrationen und Coverage (inkl. `ai_core/tests/test_crawler_*.py`, siehe `.github/workflows/ci.yml`) | Must-pass für Image-Build |
 | 3 | Build | Docker Build mit Multi-Stage, Tag `vX.Y.Z-<sha>` (Semver+SHA) | Nutzt Artifact Registry Service Account |
 | 4 | Push | Docker Push zum Artifact Registry Repo | Abbruch bei fehlender Auth |
 | 5 | E2E (Compose) | Playwright Tests aus `.github/workflows/e2e.yml` gegen Docker-Compose-Stack, prüft Retrieval-Ende-zu-Ende | Ergebnis entscheidet über Staging-Deploy |
