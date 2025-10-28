@@ -4,6 +4,10 @@ from datetime import timedelta
 
 import pytest
 
+from ai_core.middleware.guardrails import (
+    GuardrailErrorCategory,
+    enforce_guardrails as shared_enforce_guardrails,
+)
 from crawler.errors import ErrorClass
 from crawler.guardrails import (
     GuardrailLimits,
@@ -143,3 +147,40 @@ def test_invalid_quota_limits_raise() -> None:
         QuotaUsage(bytes=-1)
     with pytest.raises(ValueError):
         GuardrailSignals(document_bytes=-2)
+
+
+def test_shared_guardrails_without_error_builder() -> None:
+    limits = GuardrailLimits(max_document_bytes=10)
+    signals = GuardrailSignals(document_bytes=20)
+
+    decision = shared_enforce_guardrails(limits=limits, signals=signals)
+
+    assert decision.status is GuardrailStatus.DENY
+    assert decision.error is None
+    assert decision.policy_events == ("max_document_bytes",)
+
+
+def test_shared_guardrails_with_custom_builder() -> None:
+    limits = GuardrailLimits(mime_blacklist={"application/json"})
+    signals = GuardrailSignals(mime_type="application/json")
+
+    captured: dict[str, object] = {}
+
+    def _builder(category, reason, sig, attributes):  # type: ignore[no-untyped-def]
+        captured["category"] = category
+        captured["reason"] = reason
+        captured["signals"] = sig
+        captured["attributes"] = attributes
+        return {"error": "custom"}
+
+    decision = shared_enforce_guardrails(
+        limits=limits,
+        signals=signals,
+        error_builder=_builder,
+    )
+
+    assert decision.error == {"error": "custom"}
+    assert captured["category"] is GuardrailErrorCategory.POLICY_DENY
+    assert captured["reason"] == "mime_blacklisted"
+    assert isinstance(captured["signals"], GuardrailSignals)
+    assert captured["attributes"] == {"mime_type": "application/json"}
