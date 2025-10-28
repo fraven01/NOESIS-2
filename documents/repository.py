@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import base64
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from threading import RLock
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
 
 from common.logging import log_context
@@ -35,6 +35,13 @@ RETIRED_STATE = "retired"
 DELETED_STATE = "deleted"
 
 
+_DOCUMENT_TRANSITIONS: Mapping[str, Tuple[str, ...]] = {
+    ACTIVE_STATE: (ACTIVE_STATE, RETIRED_STATE, DELETED_STATE),
+    RETIRED_STATE: (ACTIVE_STATE, RETIRED_STATE, DELETED_STATE),
+    DELETED_STATE: (DELETED_STATE,),
+}
+
+
 def _normalize_lifecycle_state(value: Optional[str]) -> str:
     if value is None:
         return ACTIVE_STATE
@@ -42,6 +49,323 @@ def _normalize_lifecycle_state(value: Optional[str]) -> str:
     if candidate in {ACTIVE_STATE, RETIRED_STATE, DELETED_STATE}:
         return candidate
     return ACTIVE_STATE
+
+
+def _normalize_reason(reason: Optional[str]) -> Optional[str]:
+    if reason is None:
+        return None
+    candidate = str(reason).strip()
+    return candidate or None
+
+
+def _normalize_policy_events(events: Iterable[object]) -> Tuple[str, ...]:
+    normalized: List[str] = []
+    for event in events:
+        if event is None:
+            continue
+        candidate = str(event).strip()
+        if not candidate:
+            continue
+        normalized.append(candidate)
+    return tuple(dict.fromkeys(normalized))
+
+
+def _normalize_timestamp(value: Optional[datetime]) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class DocumentLifecycleRecord:
+    tenant_id: str
+    document_id: UUID
+    workflow_id: Optional[str]
+    state: str = field(default=ACTIVE_STATE)
+    changed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    reason: Optional[str] = None
+    policy_events: Tuple[str, ...] = field(default_factory=tuple)
+
+    def as_payload(self) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "tenant_id": self.tenant_id,
+            "document_id": str(self.document_id),
+            "state": self.state,
+            "changed_at": self.changed_at.isoformat(),
+        }
+        if self.workflow_id is not None:
+            payload["workflow_id"] = self.workflow_id
+        if self.reason:
+            payload["reason"] = self.reason
+        if self.policy_events:
+            payload["policy_events"] = list(self.policy_events)
+        return payload
+
+
+@dataclass
+class IngestionRunRecord:
+    tenant: str
+    case: str
+    run_id: str
+    status: str
+    queued_at: str
+    document_ids: Tuple[str, ...] = ()
+    invalid_document_ids: Tuple[str, ...] = ()
+    trace_id: Optional[str] = None
+    embedding_profile: Optional[str] = None
+    source: Optional[str] = None
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_ms: Optional[float] = None
+    inserted_documents: Optional[int] = None
+    replaced_documents: Optional[int] = None
+    skipped_documents: Optional[int] = None
+    inserted_chunks: Optional[int] = None
+    error: Optional[str] = None
+
+    def as_payload(self) -> Dict[str, object]:
+        payload: Dict[str, object] = {
+            "run_id": self.run_id,
+            "status": self.status,
+            "queued_at": self.queued_at,
+            "document_ids": list(self.document_ids),
+            "invalid_document_ids": list(self.invalid_document_ids),
+        }
+        if self.trace_id:
+            payload["trace_id"] = self.trace_id
+        if self.embedding_profile:
+            payload["embedding_profile"] = self.embedding_profile
+        if self.source:
+            payload["source"] = self.source
+        if self.started_at:
+            payload["started_at"] = self.started_at
+        if self.finished_at:
+            payload["finished_at"] = self.finished_at
+        if self.duration_ms is not None:
+            payload["duration_ms"] = float(self.duration_ms)
+        if self.inserted_documents is not None:
+            payload["inserted_documents"] = int(self.inserted_documents)
+        if self.replaced_documents is not None:
+            payload["replaced_documents"] = int(self.replaced_documents)
+        if self.skipped_documents is not None:
+            payload["skipped_documents"] = int(self.skipped_documents)
+        if self.inserted_chunks is not None:
+            payload["inserted_chunks"] = int(self.inserted_chunks)
+        if self.error:
+            payload["error"] = self.error
+        return payload
+
+
+class DocumentLifecycleStore:
+    """In-memory lifecycle persistence for document states and ingestion runs."""
+
+    def __init__(self) -> None:
+        self._lock = RLock()
+        self._documents: Dict[Tuple[str, Optional[str], UUID], DocumentLifecycleRecord] = {}
+        self._ingestion_runs: Dict[Tuple[str, str], IngestionRunRecord] = {}
+
+    # Document lifecycle -------------------------------------------------
+
+    def record_document_state(
+        self,
+        *,
+        tenant_id: str,
+        document_id: UUID,
+        workflow_id: Optional[str],
+        state: str,
+        reason: Optional[str] = None,
+        policy_events: Iterable[object] = (),
+        changed_at: Optional[datetime] = None,
+    ) -> DocumentLifecycleRecord:
+        normalized_state = _normalize_lifecycle_state(state)
+        normalized_reason = _normalize_reason(reason)
+        normalized_events = _normalize_policy_events(policy_events)
+        normalized_workflow = (workflow_id or None) and str(workflow_id)
+        timestamp = _normalize_timestamp(changed_at)
+
+        key = (tenant_id, normalized_workflow, document_id)
+
+        with self._lock:
+            previous = self._documents.get(key)
+            if previous is not None and previous.state != normalized_state:
+                allowed = _DOCUMENT_TRANSITIONS.get(previous.state, ())
+                if normalized_state not in allowed:
+                    raise ValueError(
+                        f"invalid_lifecycle_transition:{previous.state}->{normalized_state}"
+                    )
+
+            if normalized_reason is None:
+                normalized_reason = previous.reason if previous else normalized_state
+            if not normalized_events and previous is not None:
+                normalized_events = previous.policy_events
+
+            record = DocumentLifecycleRecord(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                workflow_id=normalized_workflow,
+                state=normalized_state,
+                changed_at=timestamp,
+                reason=normalized_reason,
+                policy_events=normalized_events,
+            )
+            self._documents[key] = record
+            return record
+
+    def get_document_state(
+        self,
+        *,
+        tenant_id: str,
+        document_id: UUID,
+        workflow_id: Optional[str],
+    ) -> Optional[DocumentLifecycleRecord]:
+        key = (tenant_id, (workflow_id or None) and str(workflow_id), document_id)
+        with self._lock:
+            return self._documents.get(key)
+
+    # Ingestion run status -----------------------------------------------
+
+    def record_ingestion_run_queued(
+        self,
+        *,
+        tenant: str,
+        case: str,
+        run_id: str,
+        document_ids: Iterable[str],
+        invalid_document_ids: Iterable[str],
+        queued_at: str,
+        trace_id: Optional[str] = None,
+        embedding_profile: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, object]:
+        normalized_ids = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in document_ids)
+            if value is not None
+        )
+        normalized_invalid = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in invalid_document_ids)
+            if value is not None
+        )
+        record = IngestionRunRecord(
+            tenant=tenant,
+            case=case,
+            run_id=str(run_id),
+            status="queued",
+            queued_at=str(queued_at),
+            document_ids=normalized_ids,
+            invalid_document_ids=normalized_invalid,
+            trace_id=_normalize_optional_string(trace_id),
+            embedding_profile=_normalize_optional_string(embedding_profile),
+            source=_normalize_optional_string(source),
+        )
+        key = (tenant, case)
+        with self._lock:
+            self._ingestion_runs[key] = record
+            return record.as_payload()
+
+    def mark_ingestion_run_running(
+        self,
+        *,
+        tenant: str,
+        case: str,
+        run_id: str,
+        started_at: str,
+        document_ids: Iterable[str],
+    ) -> Optional[Dict[str, object]]:
+        key = (tenant, case)
+        normalized_ids = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in document_ids)
+            if value is not None
+        )
+        with self._lock:
+            record = self._ingestion_runs.get(key)
+            if record is None or record.run_id != run_id:
+                return None
+            record.status = "running"
+            record.started_at = str(started_at)
+            if normalized_ids:
+                record.document_ids = normalized_ids
+            return record.as_payload()
+
+    def mark_ingestion_run_completed(
+        self,
+        *,
+        tenant: str,
+        case: str,
+        run_id: str,
+        finished_at: str,
+        duration_ms: float,
+        inserted_documents: int,
+        replaced_documents: int,
+        skipped_documents: int,
+        inserted_chunks: int,
+        invalid_document_ids: Iterable[str],
+        document_ids: Iterable[str],
+        error: Optional[str],
+    ) -> Optional[Dict[str, object]]:
+        key = (tenant, case)
+        normalized_ids = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in document_ids)
+            if value is not None
+        )
+        normalized_invalid = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in invalid_document_ids)
+            if value is not None
+        )
+        with self._lock:
+            record = self._ingestion_runs.get(key)
+            if record is None or record.run_id != run_id:
+                return None
+            record.status = "failed" if error else "succeeded"
+            record.finished_at = str(finished_at)
+            record.duration_ms = float(duration_ms)
+            record.inserted_documents = int(inserted_documents)
+            record.replaced_documents = int(replaced_documents)
+            record.skipped_documents = int(skipped_documents)
+            record.inserted_chunks = int(inserted_chunks)
+            record.invalid_document_ids = normalized_invalid
+            if normalized_ids:
+                record.document_ids = normalized_ids
+            record.error = _normalize_optional_string(error)
+            return record.as_payload()
+
+    def get_ingestion_run(
+        self, *, tenant: str, case: str
+    ) -> Optional[Dict[str, object]]:
+        key = (tenant, case)
+        with self._lock:
+            record = self._ingestion_runs.get(key)
+            if record is None:
+                return None
+            return record.as_payload()
+
+    def reset(self) -> None:
+        with self._lock:
+            self._documents.clear()
+            self._ingestion_runs.clear()
+
+
+def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    return candidate or None
+
+
+def _normalize_identifier(value: object) -> Optional[str]:
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    return candidate
+
+
+DEFAULT_LIFECYCLE_STORE = DocumentLifecycleStore()
 
 
 class DocumentsRepository:

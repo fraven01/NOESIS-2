@@ -24,6 +24,7 @@ def test_rag_upload_persists_file_and_metadata(
     tmp_path,
     test_tenant_schema_name,
     documents_repository_stub,
+    ingestion_status_store,
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -118,11 +119,11 @@ def test_rag_upload_persists_file_and_metadata(
     )
     assert saved_document.blob.media_type == "text/plain"
 
-    status_path = (
-        Path(tmp_path) / tenant_segment / case_segment / "ingestion" / "run_status.json"
+    status_payload = ingestion_status_store.get_ingestion_run(
+        tenant=test_tenant_schema_name,
+        case="case-123",
     )
-    assert status_path.exists()
-    status_payload = json.loads(status_path.read_text())
+    assert status_payload is not None
     assert status_payload["run_id"] == body["ingestion_run_id"]
     assert status_payload["status"] == "queued"
     assert status_payload["document_ids"] == [body["document_id"]]

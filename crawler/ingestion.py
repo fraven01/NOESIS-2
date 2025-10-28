@@ -8,6 +8,7 @@ from typing import Dict, Mapping, Optional, Protocol
 
 from documents.contracts import NormalizedDocument
 from documents.normalization import document_parser_stats, resolve_provider_reference
+from documents.repository import DEFAULT_LIFECYCLE_STORE
 
 from .contracts import Decision
 from .delta import DeltaDecision
@@ -20,6 +21,9 @@ from ai_core.rag.ingestion_contracts import (
 )
 
 IngestionStatus = IngestionAction
+
+
+_LIFECYCLE_STORE = DEFAULT_LIFECYCLE_STORE
 
 
 class CrawlerIngestionAdapter(Protocol):
@@ -94,6 +98,15 @@ def build_ingestion_decision(
     )
     attributes = dict(payload.as_mapping())
     attributes["lifecycle_state"] = lifecycle_decision.state
+    _LIFECYCLE_STORE.record_document_state(
+        tenant_id=document.ref.tenant_id,
+        document_id=document.ref.document_id,
+        workflow_id=document.ref.workflow_id,
+        state=lifecycle_decision.state.value,
+        reason=lifecycle_decision.reason,
+        policy_events=lifecycle_decision.policy_events,
+        changed_at=document.created_at,
+    )
     return Decision(payload.action.value, reason, attributes)
 
 
