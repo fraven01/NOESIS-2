@@ -95,12 +95,14 @@ def build_ingestion_decision(
             delta.signatures.content_hash,
             normalized_case_id,
             embedding_profile,
+            resolve_profile=False,
         )
         attributes["chunk_meta"] = chunk_meta
-        attributes["embedding_profile"] = profile_binding.profile_id
-        attributes["vector_space_id"] = (
-            profile_binding.resolution.vector_space.id
-        )
+        if profile_binding is not None:
+            attributes["embedding_profile"] = profile_binding.profile_id
+            attributes["vector_space_id"] = (
+                profile_binding.resolution.vector_space.id
+            )
         return Decision(
             IngestionStatus.RETIRE.value,
             lifecycle_decision.reason,
@@ -127,6 +129,7 @@ def build_ingestion_decision(
         normalized_case_id,
         embedding_profile,
     )
+    assert profile_binding is not None
     attributes["chunk_meta"] = chunk_meta
     attributes["embedding_profile"] = profile_binding.profile_id
     attributes["vector_space_id"] = profile_binding.resolution.vector_space.id
@@ -142,8 +145,21 @@ def _build_chunk_meta(
     content_hash: str,
     case_id: str,
     embedding_profile: Optional[str],
-) -> Tuple[ChunkMeta, IngestionProfileResolution]:
-    profile_binding = _resolve_profile(embedding_profile)
+    *,
+    resolve_profile: bool = True,
+) -> Tuple[ChunkMeta, Optional[IngestionProfileResolution]]:
+    profile_binding: Optional[IngestionProfileResolution]
+    profile_id: Optional[str]
+    vector_space_id: Optional[str]
+
+    if resolve_profile:
+        profile_binding = _resolve_profile(embedding_profile)
+        profile_id = profile_binding.profile_id
+        vector_space_id = profile_binding.resolution.vector_space.id
+    else:
+        profile_binding = None
+        profile_id = str(embedding_profile) if embedding_profile else None
+        vector_space_id = None
     external = resolve_provider_reference(document)
     chunk_meta = ChunkMeta(
         tenant_id=document.ref.tenant_id,
@@ -152,8 +168,8 @@ def _build_chunk_meta(
         hash=document.checksum,
         external_id=external.external_id,
         content_hash=content_hash,
-        embedding_profile=profile_binding.profile_id,
-        vector_space_id=profile_binding.resolution.vector_space.id,
+        embedding_profile=profile_id,
+        vector_space_id=vector_space_id,
         process="crawler",
         workflow_id=document.ref.workflow_id,
         collection_id=(
