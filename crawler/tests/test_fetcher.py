@@ -11,6 +11,7 @@ from crawler.fetcher import (
     PolitenessContext,
     evaluate_fetch_response,
 )
+from ai_core.rag.guardrails import FetcherLimits as SharedFetcherLimits
 
 
 def make_request(url: str = "https://example.com/foo") -> FetchRequest:
@@ -191,3 +192,7 @@ def test_policy_denied_for_http_policy_codes():
         assert result.policy_events == ("http_policy",)
         assert result.error is not None
         assert result.error.error_class is ErrorClass.POLICY_DENY
+
+
+def test_fetcher_limits_are_shared() -> None:
+    assert FetcherLimits is SharedFetcherLimits
