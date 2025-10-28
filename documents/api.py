@@ -1,0 +1,275 @@
+"""High level document service helpers consumed by orchestration graphs."""
+
+from __future__ import annotations
+
+import base64
+import hashlib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from types import MappingProxyType
+from typing import Any, Mapping, MutableMapping, Optional
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
+
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
+from documents.repository import DocumentLifecycleRecord, DocumentLifecycleStore, DEFAULT_LIFECYCLE_STORE
+
+
+def _normalize_mapping(value: Mapping[str, Any] | MutableMapping[str, Any] | None) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, Mapping):
+        if isinstance(value, MutableMapping):
+            value = dict(value)
+        else:
+            raise TypeError("metadata_mapping_required")
+    return MappingProxyType(dict(value))
+
+
+def _normalize_text(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    if isinstance(payload, bytes):
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError as exc:  # pragma: no cover - defensive guard
+            raise ValueError("raw_content_decode_error") from exc
+    raise TypeError("raw_content_type")
+
+
+def _coerce_uuid(value: Any) -> UUID:
+    if isinstance(value, UUID):
+        return value
+    if value is None:
+        return uuid4()
+    try:
+        return UUID(str(value))
+    except (TypeError, ValueError):
+        return uuid5(NAMESPACE_URL, str(value))
+
+
+def _timestamp() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+@dataclass(frozen=True)
+class NormalizedDocumentPayload:
+    """Wrapper exposing the normalized document and derived artefacts."""
+
+    document: NormalizedDocument
+    primary_text: str
+    payload_bytes: bytes
+    metadata: Mapping[str, Any]
+
+    @property
+    def tenant_id(self) -> str:
+        return self.document.ref.tenant_id
+
+    @property
+    def document_id(self) -> str:
+        return str(self.document.ref.document_id)
+
+    @property
+    def checksum(self) -> str:
+        return self.document.checksum
+
+    def to_dict(self) -> Mapping[str, Any]:
+        return MappingProxyType(
+            {
+                "document": self.document.model_dump(),
+                "primary_text": self.primary_text,
+                "checksum": self.checksum,
+                "metadata": dict(self.metadata),
+            }
+        )
+
+
+@dataclass(frozen=True)
+class LifecycleStatusUpdate:
+    """Lifecycle mutation returned by :func:`update_lifecycle_status`."""
+
+    record: DocumentLifecycleRecord
+
+    @property
+    def status(self) -> str:
+        return self.record.state
+
+    def to_dict(self) -> Mapping[str, Any]:
+        return MappingProxyType(self.record.as_payload())
+
+
+def normalize_from_raw(
+    *,
+    raw_reference: Mapping[str, Any],
+    tenant_id: str,
+    case_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+) -> NormalizedDocumentPayload:
+    """Normalize crawler raw payloads into a :class:`NormalizedDocument`."""
+
+    if not isinstance(raw_reference, Mapping):
+        raise TypeError("raw_reference_mapping_required")
+
+    content = _normalize_text(raw_reference.get("content"))
+    media_type = str(
+        raw_reference.get("media_type")
+        or raw_reference.get("content_type")
+        or raw_reference.get("mime_type")
+        or raw_reference.get("metadata", {}).get("media_type")
+        or "text/plain"
+    ).strip().lower()
+
+    payload_bytes = content.encode("utf-8")
+    checksum = hashlib.sha256(payload_bytes).hexdigest()
+    payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
+
+    metadata = _normalize_mapping(raw_reference.get("metadata"))
+    workflow_id = str(metadata.get("workflow_id") or raw_reference.get("workflow_id") or "crawler")
+    workflow_id = workflow_id.strip() or "crawler"
+
+    document_id = _coerce_uuid(raw_reference.get("document_id"))
+    collection_id = metadata.get("collection_id")
+    if collection_id is not None:
+        try:
+            collection_id = UUID(str(collection_id))
+        except (TypeError, ValueError):  # pragma: no cover - defensive guard
+            collection_id = None
+
+    version = metadata.get("version")
+    version_str = str(version).strip() if version else None
+
+    document_ref = DocumentRef(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        document_id=document_id,
+        collection_id=collection_id,
+        version=version_str,
+    )
+
+    external_ref: dict[str, str] = {}
+    provider = str(metadata.get("provider") or raw_reference.get("provider") or "crawler").strip()
+    if provider:
+        external_ref["provider"] = provider
+    external_id = metadata.get("external_id") or raw_reference.get("external_id")
+    if external_id:
+        external_ref["external_id"] = str(external_id).strip()
+    else:
+        external_ref["external_id"] = f"{provider}:{document_id}"
+    if case_id:
+        external_ref["case_id"] = str(case_id)
+
+    origin_uri = metadata.get("origin_uri") or raw_reference.get("origin_uri")
+
+    parse_stats: dict[str, Any] = {
+        "parser.character_count": len(content),
+        "parser.token_count": len(content.split()),
+        "crawler.primary_text_hash_sha256": checksum,
+    }
+
+    tags = metadata.get("tags") or ()
+    if isinstance(tags, (list, tuple, set)):
+        normalized_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+    else:
+        normalized_tags = []
+
+    doc_meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title=metadata.get("title"),
+        language=metadata.get("language"),
+        tags=normalized_tags,
+        origin_uri=str(origin_uri).strip() or None,
+        external_ref=external_ref,
+        parse_stats=parse_stats,
+    )
+
+    blob = InlineBlob(
+        type="inline",
+        media_type=media_type or "text/plain",
+        base64=payload_base64,
+        sha256=checksum,
+        size=len(payload_bytes),
+    )
+
+    document = NormalizedDocument(
+        ref=document_ref,
+        meta=doc_meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=_timestamp(),
+        source=str(raw_reference.get("source") or "crawler"),
+        lifecycle_state="active",
+        assets=[],
+    )
+
+    metadata_payload: dict[str, Any] = {
+        "tenant_id": tenant_id,
+        "workflow_id": workflow_id,
+        "case_id": case_id,
+        "request_id": request_id,
+        "provider": provider or None,
+        "origin_uri": doc_meta.origin_uri,
+    }
+
+    return NormalizedDocumentPayload(
+        document=document,
+        primary_text=content.strip(),
+        payload_bytes=payload_bytes,
+        metadata=MappingProxyType({k: v for k, v in metadata_payload.items() if v is not None}),
+    )
+
+
+def update_lifecycle_status(
+    *,
+    tenant_id: str,
+    document_id: str | UUID,
+    status: str,
+    previous_status: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    reason: Optional[str] = None,
+    policy_events: Optional[Mapping[str, Any] | tuple[str, ...] | list[str]] = None,
+    store: DocumentLifecycleStore = DEFAULT_LIFECYCLE_STORE,
+) -> LifecycleStatusUpdate:
+    """Persist a lifecycle transition in the shared lifecycle store."""
+
+    if not status:
+        raise ValueError("status_required")
+
+    document_uuid = _coerce_uuid(document_id)
+
+    events: tuple[str, ...]
+    if policy_events is None:
+        events = ()
+    elif isinstance(policy_events, tuple):
+        events = policy_events
+    elif isinstance(policy_events, list):
+        events = tuple(str(item) for item in policy_events if str(item).strip())
+    elif isinstance(policy_events, Mapping):
+        events = tuple(str(key) for key in policy_events.keys() if str(key).strip())
+    else:
+        events = (str(policy_events),)
+
+    record = store.record_document_state(
+        tenant_id=tenant_id,
+        document_id=document_uuid,
+        workflow_id=str(workflow_id).strip() or None,
+        state=str(status).strip(),
+        reason=reason or status,
+        policy_events=events,
+        changed_at=_timestamp(),
+    )
+
+    return LifecycleStatusUpdate(record)
+
+
+__all__ = [
+    "LifecycleStatusUpdate",
+    "NormalizedDocumentPayload",
+    "normalize_from_raw",
+    "update_lifecycle_status",
+]
+

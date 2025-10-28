@@ -1,0 +1,295 @@
+"""Service helpers bridging orchestration graphs with domain logic."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import timedelta
+from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from urllib.parse import urlparse
+
+from crawler.delta import DeltaDecision, evaluate_delta
+
+from ai_core.middleware import guardrails as guardrails_middleware
+from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals, QuotaLimits, QuotaUsage
+from ai_core.rag.ingestion_contracts import ChunkMeta, resolve_ingestion_profile
+from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import PgVectorClient, get_default_client
+
+from documents.api import NormalizedDocumentPayload
+
+
+GuardrailDecision = guardrails_middleware.GuardrailDecision
+
+
+def _build_quota_limits(config: Mapping[str, Any] | None) -> Optional[QuotaLimits]:
+    if not config:
+        return None
+    max_documents = config.get("max_documents")
+    max_bytes = config.get("max_bytes")
+    if max_documents is None and max_bytes is None:
+        return None
+    return QuotaLimits(
+        max_documents=int(max_documents) if max_documents is not None else None,
+        max_bytes=int(max_bytes) if max_bytes is not None else None,
+    )
+
+
+def _build_quota_usage(state: Mapping[str, Any] | None) -> Optional[QuotaUsage]:
+    if not state:
+        return None
+    documents = state.get("documents")
+    bytes_used = state.get("bytes")
+    if documents is None and bytes_used is None:
+        return None
+    return QuotaUsage(
+        documents=int(documents or 0),
+        bytes=int(bytes_used or 0),
+    )
+
+
+def _build_guardrail_limits(config: Mapping[str, Any] | None) -> GuardrailLimits:
+    config = config or {}
+    processing_limit = config.get("processing_time_limit")
+    if isinstance(processing_limit, (int, float)) and processing_limit > 0:
+        processing_timedelta = timedelta(milliseconds=float(processing_limit))
+    elif isinstance(processing_limit, timedelta):
+        processing_timedelta = processing_limit
+    else:
+        processing_timedelta = None
+
+    mime_blacklist: Sequence[str] = tuple(config.get("mime_blacklist") or ())
+    host_blocklist: Sequence[str] = tuple(config.get("host_blocklist") or ())
+
+    return GuardrailLimits(
+        max_document_bytes=int(config["max_document_bytes"])
+        if "max_document_bytes" in config and config["max_document_bytes"] is not None
+        else None,
+        processing_time_limit=processing_timedelta,
+        mime_blacklist=frozenset(str(entry).strip().lower() for entry in mime_blacklist if entry),
+        host_blocklist=frozenset(str(entry).strip().lower() for entry in host_blocklist if entry),
+        tenant_quota=_build_quota_limits(config.get("tenant_quota")),
+        host_quota=_build_quota_limits(config.get("host_quota")),
+    )
+
+
+def _build_guardrail_signals(
+    payload: NormalizedDocumentPayload,
+    config: Mapping[str, Any] | None,
+) -> GuardrailSignals:
+    config = config or {}
+    document = payload.document
+    meta = document.meta
+    origin_uri = meta.origin_uri or config.get("origin_uri")
+    parsed_origin = urlparse(origin_uri) if origin_uri else None
+    host = parsed_origin.hostname if parsed_origin else None
+
+    tenant_usage = _build_quota_usage(config.get("tenant_usage"))
+    host_usage = _build_quota_usage(config.get("host_usage"))
+
+    mime_type = getattr(document.blob, "media_type", None)
+
+    return GuardrailSignals(
+        tenant_id=meta.tenant_id,
+        provider=(meta.external_ref or {}).get("provider"),
+        canonical_source=origin_uri,
+        host=host,
+        document_bytes=len(payload.payload_bytes),
+        mime_type=mime_type,
+        tenant_usage=tenant_usage,
+        host_usage=host_usage,
+    )
+
+
+def enforce_guardrails(
+    *,
+    normalized_document: NormalizedDocumentPayload,
+    config: Optional[Mapping[str, Any]] = None,
+    error_builder: Optional[guardrails_middleware.ErrorBuilder] = None,
+) -> GuardrailDecision:
+    """Apply guardrail evaluation using the shared middleware implementation."""
+
+    limits = _build_guardrail_limits(config)
+    signals = _build_guardrail_signals(normalized_document, config)
+    decision = guardrails_middleware.enforce_guardrails(
+        limits=limits,
+        signals=signals,
+        error_builder=error_builder,
+    )
+
+    banned_terms = tuple(str(term).lower() for term in (config or {}).get("banned_terms", ()))
+    if decision.allowed and banned_terms:
+        text = normalized_document.primary_text.lower()
+        for term in banned_terms:
+            if term and term in text:
+                return GuardrailDecision(
+                    "deny",
+                    "term_blocked",
+                    {"policy_events": ("term_blocked",), "term": term},
+                )
+    return decision
+
+
+def decide_delta(
+    *,
+    normalized_document: NormalizedDocumentPayload,
+    baseline: Optional[Mapping[str, Any]] = None,
+) -> DeltaDecision:
+    """Evaluate delta against previous signatures using crawler heuristics."""
+
+    baseline = baseline or {}
+    previous_hash = baseline.get("content_hash") or baseline.get("checksum")
+    previous_version = baseline.get("version")
+    if previous_version is not None:
+        try:
+            previous_version = int(previous_version)
+        except (TypeError, ValueError):
+            previous_version = None
+
+    primary_text = baseline.get("primary_text")
+    if not isinstance(primary_text, str):
+        primary_text = normalized_document.primary_text
+
+    binary_payload = baseline.get("payload_bytes")
+    if not isinstance(binary_payload, (bytes, bytearray)):
+        binary_payload = normalized_document.payload_bytes
+
+    return evaluate_delta(
+        normalized_document.document,
+        primary_text=primary_text,
+        previous_content_hash=previous_hash,
+        previous_version=previous_version,
+        binary_payload=bytes(binary_payload),
+    )
+
+
+@dataclass(frozen=True)
+class EmbeddingResult:
+    """Outcome of the embedding trigger step."""
+
+    status: str
+    chunks_inserted: int
+    embedding_profile: Optional[str]
+    vector_space_id: Optional[str]
+    chunk_meta: ChunkMeta
+
+    def to_dict(self) -> Mapping[str, Any]:
+        return {
+            "status": self.status,
+            "chunks_inserted": self.chunks_inserted,
+            "embedding_profile": self.embedding_profile,
+            "vector_space_id": self.vector_space_id,
+            "chunk_meta": self.chunk_meta.model_dump(),
+        }
+
+
+def _resolve_vector_client(factory: Optional[Callable[[], PgVectorClient]] = None) -> PgVectorClient:
+    if factory is None:
+        return get_default_client()
+    client = factory()
+    if not isinstance(client, PgVectorClient):
+        raise TypeError("vector_client_factory_invalid")
+    return client
+
+
+def trigger_embedding(
+    *,
+    normalized_document: NormalizedDocumentPayload,
+    embedding_profile: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+    case_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    vector_client: Optional[PgVectorClient] = None,
+    vector_client_factory: Optional[Callable[[], PgVectorClient]] = None,
+) -> EmbeddingResult:
+    """Persist chunk metadata and forward the document to the vector client."""
+
+    document = normalized_document.document
+    tenant = tenant_id or document.ref.tenant_id
+    case = case_id or normalized_document.metadata.get("case_id") or "default"
+
+    profile_key = embedding_profile or "standard"
+    profile_resolution = resolve_ingestion_profile(profile_key)
+
+    chunk_meta = ChunkMeta(
+        tenant_id=tenant,
+        case_id=str(case),
+        source=document.source or "crawler",
+        hash=document.checksum,
+        external_id=(document.meta.external_ref or {}).get("external_id", str(document.ref.document_id)),
+        content_hash=document.checksum,
+        embedding_profile=profile_resolution.profile_id,
+        vector_space_id=profile_resolution.resolution.vector_space.id,
+        workflow_id=document.ref.workflow_id,
+        document_id=str(document.ref.document_id),
+        lifecycle_state=document.lifecycle_state,
+    )
+
+    chunk_payload = Chunk(
+        content=normalized_document.primary_text or "",
+        meta={
+            "tenant_id": chunk_meta.tenant_id,
+            "case_id": chunk_meta.case_id,
+            "source": chunk_meta.source,
+            "hash": chunk_meta.hash,
+            "external_id": chunk_meta.external_id,
+            "content_hash": chunk_meta.content_hash,
+            "embedding_profile": chunk_meta.embedding_profile,
+            "vector_space_id": chunk_meta.vector_space_id,
+            "workflow_id": chunk_meta.workflow_id,
+            "document_id": chunk_meta.document_id,
+            "lifecycle_state": chunk_meta.lifecycle_state,
+            "request_id": request_id,
+        },
+    )
+
+    client = vector_client or _resolve_vector_client(vector_client_factory)
+    inserted = client.upsert_chunks([chunk_payload])
+
+    return EmbeddingResult(
+        status="upserted" if inserted else "skipped",
+        chunks_inserted=inserted,
+        embedding_profile=chunk_meta.embedding_profile,
+        vector_space_id=chunk_meta.vector_space_id,
+        chunk_meta=chunk_meta,
+    )
+
+
+def build_completion_payload(
+    *,
+    normalized_document: NormalizedDocumentPayload,
+    decision: DeltaDecision,
+    guardrails: GuardrailDecision,
+    embedding_result: Optional[Mapping[str, Any]],
+) -> Mapping[str, Any]:
+    """Assemble a stable payload describing the graph summary."""
+
+    document_payload = normalized_document.document.model_dump()
+    document_payload["checksum"] = normalized_document.checksum
+    payload: Dict[str, Any] = {
+        "normalized_document": document_payload,
+        "delta": {
+            "decision": decision.decision,
+            "reason": decision.reason,
+            "attributes": dict(getattr(decision, "attributes", {})),
+        },
+        "guardrails": {
+            "decision": guardrails.decision,
+            "reason": guardrails.reason,
+            "attributes": dict(guardrails.attributes),
+        },
+    }
+    if embedding_result is not None:
+        payload["embedding"] = dict(embedding_result)
+    return payload
+
+
+__all__ = [
+    "EmbeddingResult",
+    "GuardrailDecision",
+    "DeltaDecision",
+    "build_completion_payload",
+    "decide_delta",
+    "enforce_guardrails",
+    "trigger_embedding",
+]
+

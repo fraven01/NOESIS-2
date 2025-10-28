@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import math
 import os
@@ -7,8 +8,12 @@ import re
 import time
 import uuid
 from contextlib import contextmanager, nullcontext
+from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
+from dataclasses import asdict, is_dataclass
+from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 try:
     import tiktoken  # type: ignore
@@ -16,6 +21,7 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
+from ai_core.graphs.crawler_ingestion_graph import build_graph
 from ai_core.infra import observability as observability_helpers
 from ai_core.infra.observability import (
     observe_span,
@@ -197,6 +203,45 @@ def log_ingestion_run_start(
             trace_id=trace_id,
             attributes={**extra},
         )
+
+
+def _jsonify_for_task(value: Any) -> Any:
+    """Convert objects returned by ingestion tasks into JSON primitives."""
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return base64.b64encode(value).decode("ascii")
+    if is_dataclass(value):
+        return _jsonify_for_task(asdict(value))
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            dumped = model_dump(mode="json")
+        except TypeError:
+            dumped = model_dump()
+        return _jsonify_for_task(dumped)
+    to_dict = getattr(value, "to_dict", None)
+    if callable(to_dict):
+        return _jsonify_for_task(dict(to_dict()))
+    if isinstance(value, MappingABC):
+        return {str(key): _jsonify_for_task(item) for key, item in value.items()}
+    if isinstance(value, set):
+        return [_jsonify_for_task(item) for item in value]
+    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+        return [_jsonify_for_task(item) for item in value]
+    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray)):
+        try:
+            return [_jsonify_for_task(item) for item in list(value)]
+        except TypeError:
+            pass
+    return str(value)
 
 
 def log_ingestion_run_end(
@@ -1528,3 +1573,23 @@ def ingestion_run(
         },
     )
     return {"status": "queued", "queued_at": queued_at}
+
+
+@shared_task(
+    base=ScopedTask,
+    queue="ingestion",
+    accepts_scope=True,
+    name="ai_core.tasks.run_ingestion_graph",
+)
+def run_ingestion_graph(
+    state: Mapping[str, Any],
+    meta: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Execute the crawler ingestion LangGraph orchestration."""
+
+    graph = build_graph()
+    _, result = graph.run(state, meta or {})
+    serialized_result = _jsonify_for_task(result)
+    if not isinstance(serialized_result, dict):
+        raise TypeError("ingestion_result_serialization_error")
+    return serialized_result
