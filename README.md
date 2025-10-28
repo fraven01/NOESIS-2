@@ -36,7 +36,7 @@ Alle Pfade erfordern die Header `X-Tenant-ID`, `X-Case-ID` sowie `Idempotency-Ke
 Die Django REST Framework Authentifizierung ist standardmäßig deaktiviert, damit öffentliche Mandanten-Endpunkte keinen Bearer-Token erfordern. Admin- oder LiteLLM-Routen binden den Master-Key explizit per View-Decorator. Weil keine SessionAuth aktiv ist, gelten auch keine CSRF-Cookies – Token-Clients können ohne CSRF-Header arbeiten.
 
 ### Graphen
-Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Die MVP-Variante enthält den Intake-Stub (`info_intake`) sowie die produktiven Graphen `retrieval_augmented_generation` und `crawler.ingestion`.
+Die Views orchestrieren reine Python-Graphen. Jeder Graph erhält `state: dict` und `meta: {tenant, case, trace_id}` und gibt `(new_state, result)` zurück. Der Zustand wird nach jedem Schritt in `.ai_core_store/{tenant}/{case}/state.json` persistiert. Die MVP-Variante enthält den Intake-Stub (`info_intake`) sowie die produktiven Graphen `retrieval_augmented_generation` und `crawler_ingestion_graph`.
 
 ### Lokale Nutzung
 Das bestehende `docker compose`-Setup startet Web-App und Redis. Ein externer LiteLLM-Proxy kann über `LITELLM_BASE_URL` angebunden werden. Nach dem Start (`docker compose ... up`) können die Endpunkte lokal unter `http://localhost:8000/ai/` getestet werden.

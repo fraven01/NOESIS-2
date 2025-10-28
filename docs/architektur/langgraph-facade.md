@@ -10,7 +10,7 @@ funktionsfähig, während neue Graph-Laufzeiten schrittweise integriert werden k
 dateibasierten `FileCheckpointer` (`.ai_core_store/<tenant>/<case>/state.json`).
 - `ai_core/graph/adapters.py` und `graph/bootstrap.py` registrieren den Intake-Stub
   (`info_intake`) sowie die produktiven Graphen `retrieval_augmented_generation` und
-  `crawler.ingestion`.
+  `crawler_ingestion_graph`.
 - `_GraphView` in `ai_core/views.py` nutzt `normalize_meta`, `merge_state` und die Registry,
 um Requests unverändert zu bedienen, inklusive Rate-Limits und Header-Contracts.
 - Die ehemaligen `workflows`-Modelle wurden entfernt; LangGraph bedient Cases direkt über `ai_core`.

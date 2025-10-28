@@ -53,10 +53,8 @@ flowchart LR
 ```
 
 - Der Graph verbindet Crawler-Artefakte deterministisch mit der RAG-Pipeline.
-  Die Tests in `ai_core/tests/test_crawler_delta.py`,
-  `ai_core/tests/test_crawler_ingestion.py`,
-  `ai_core/tests/test_crawler_guardrails.py` und
-  `ai_core/tests/test_crawler_retire.py` validieren die Übergaben.
+  Die Tests in `ai_core/tests/test_crawler_delta.py` und
+  `ai_core/tests/graphs/test_crawler_ingestion_graph.py` validieren die Übergaben.
 - Der Guardrail- und Retire-Pfad liegt jetzt ausschließlich in den
   RAG-Test-Suites, damit CI- und QA-Teams eine zentrale Stelle für den
   End-to-End-Nachweis haben.

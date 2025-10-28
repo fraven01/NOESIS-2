@@ -49,7 +49,7 @@ from noesis2.api.serializers import (
 
 # Crawler contracts and runtime structures used by the ingestion runner view.
 from crawler.contracts import normalize_source
-from crawler.errors import ErrorClass
+from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
     FetchFailure,
     FetchRequest,
@@ -63,14 +63,8 @@ from crawler.frontier import (
     SourceDescriptor,
     decide_frontier_action,
 )
-from crawler.guardrails import (
-    GuardrailLimits,
-    GuardrailSignals,
-    GuardrailStatus,
-    enforce_guardrails,
-)
 from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
-from crawler.parser import ParseStatus, ParserContent, compute_parser_stats
+from documents.parsers import ParseStatus, ParserContent, compute_parser_stats
 from documents.contract_utils import (
     normalize_media_type as normalize_document_media_type,
 )
@@ -94,6 +88,12 @@ from ai_core.graphs import (
     crawler_ingestion_graph,
     info_intake,
 )  # noqa: F401
+from ai_core.middleware import guardrails as guardrails_middleware
+from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
+
+
+GuardrailStatus = guardrails_middleware.GuardrailStatus
+GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 
 # Import graphs so they are available via module globals for Legacy views.
 # This enables tests to monkeypatch e.g. `views.info_intake` directly and
@@ -198,6 +198,25 @@ def make_fallback_external_id(filename: str, size: int, data: bytes) -> str:
     import hashlib
 
     return hashlib.sha256(buffer).hexdigest()
+
+
+def _build_guardrail_error(
+    category: GuardrailErrorCategory,
+    reason: str,
+    signals: GuardrailSignals,
+    attributes: Mapping[str, object],
+) -> CrawlerError:
+    error_class = {
+        GuardrailErrorCategory.POLICY_DENY: ErrorClass.POLICY_DENY,
+        GuardrailErrorCategory.TIMEOUT: ErrorClass.TIMEOUT,
+    }.get(category, ErrorClass.POLICY_DENY)
+    return CrawlerError(
+        error_class=error_class,
+        reason=reason,
+        source=signals.canonical_source,
+        provider=signals.provider,
+        attributes=dict(attributes or {}),
+    )
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
@@ -1618,8 +1637,10 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        guardrail_decision = enforce_guardrails(
-            limits=limits, signals=guardrail_signals
+        guardrail_decision = guardrails_middleware.enforce_guardrails(
+            limits=limits,
+            signals=guardrail_signals,
+            error_builder=_build_guardrail_error,
         )
         if guardrail_decision.status is GuardrailStatus.DENY:
             emit_event(

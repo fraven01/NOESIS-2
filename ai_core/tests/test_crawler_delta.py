@@ -1,6 +1,12 @@
+from __future__ import annotations
+
+from datetime import timedelta
+from uuid import uuid4
+
 import pytest
 
-from crawler.delta import DeltaStatus, evaluate_delta
+from ai_core.rag.delta import DeltaDecision, DeltaStatus, evaluate_delta
+from ai_core.rag.vector_client import DedupSignatures
 from crawler.fetcher import (
     FetchMetadata,
     FetchRequest,
@@ -9,79 +15,87 @@ from crawler.fetcher import (
     FetchTelemetry,
     PolitenessContext,
 )
-from crawler.normalizer import build_normalized_document
-from crawler.parser import (
+from documents.normalization import normalize_from_parse
+from documents.parsers import (
+    ParseResult,
     ParseStatus,
     ParserContent,
     ParserStats,
-    build_parse_result,
+    ParsedTextBlock,
 )
-from crawler.contracts import NormalizedSource
-from documents.parsers import ParsedTextBlock
-from uuid import uuid4
 
 
 @pytest.fixture(autouse=True)
-def _stub_vector_hashing(monkeypatch):
-    from ai_core.rag.vector_client import DedupSignatures
-
+def _stub_vector_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
     def _build_signatures(**_: object) -> DedupSignatures:
         return DedupSignatures(content_hash="stub-hash")
 
-    monkeypatch.setattr("crawler.delta.build_dedup_signatures", _build_signatures)
     monkeypatch.setattr(
-        "crawler.delta.extract_primary_text_hash", lambda *args, **kwargs: None
+        "ai_core.rag.delta.build_dedup_signatures",
+        _build_signatures,
+    )
+    monkeypatch.setattr(
+        "ai_core.rag.delta.extract_primary_text_hash",
+        lambda *args, **kwargs: None,
+    )
+
+
+def _make_fetch_result() -> FetchResult:
+    request = FetchRequest(
+        canonical_source="https://example.com/doc",
+        politeness=PolitenessContext(host="example.com"),
+    )
+    metadata = FetchMetadata(
+        status_code=200,
+        content_type="text/html",
+        etag="abc",
+        last_modified="2023-01-01T00:00:00+00:00",
+        content_length=20,
+    )
+    telemetry = FetchTelemetry(latency=0.1, bytes_downloaded=20)
+    return FetchResult(
+        status=FetchStatus.FETCHED,
+        request=request,
+        payload=b"<html>Body text</html>",
+        metadata=metadata,
+        telemetry=telemetry,
     )
 
 
 def _make_document(text: str = "Body text"):
-    fetch = FetchResult(
-        status=FetchStatus.FETCHED,
-        request=FetchRequest(
-            canonical_source="https://example.com/doc",
-            politeness=PolitenessContext(host="example.com"),
-        ),
-        payload=b"<html>Body text</html>",
-        metadata=FetchMetadata(
-            status_code=200,
-            content_type="text/html",
-            etag="abc",
-            last_modified="2023-01-01T00:00:00+00:00",
-            content_length=20,
-        ),
-        telemetry=FetchTelemetry(latency=0.1, bytes_downloaded=20),
+    fetch = _make_fetch_result()
+    content = ParserContent(
+        media_type="text/html",
+        primary_text=text,
+        binary_payload_ref=None,
+        title="Title",
+        content_language="en",
+        structural_elements=(ParsedTextBlock(text=text, kind="paragraph"),),
     )
-    parse = build_parse_result(
-        fetch,
+    stats = ParserStats(
+        token_count=10,
+        character_count=len(text),
+        extraction_path="html.body",
+        error_fraction=0.0,
+    )
+    parse = ParseResult(
         status=ParseStatus.PARSED,
-        content=ParserContent(
-            media_type="text/html",
-            primary_text=text,
-            binary_payload_ref=None,
-            title="Title",
-            content_language="en",
-            structural_elements=(ParsedTextBlock(text=text, kind="paragraph"),),
-        ),
-        stats=ParserStats(
-            token_count=10,
-            character_count=len(text),
-            extraction_path="html.body",
-            error_fraction=0.0,
-        ),
+        fetch=fetch,
+        content=content,
+        stats=stats,
     )
-    source = NormalizedSource(
-        provider="web",
-        canonical_source="https://example.com/doc",
-        external_id="web::https://example.com/doc",
-        provider_tags={},
-    )
-    return build_normalized_document(
+    return normalize_from_parse(
         parse_result=parse,
-        source=source,
         tenant_id="tenant-a",
         workflow_id="wf-1",
         document_id=str(uuid4()),
+        canonical_source="https://example.com/doc",
+        provider="web",
+        external_id="web::https://example.com/doc",
+        provider_tags={},
         tags=(),
+        fetch_result=fetch,
+        ingest_source="crawler",
     )
 
 
@@ -122,3 +136,18 @@ def test_evaluate_delta_detects_changes() -> None:
     assert decision.status is DeltaStatus.CHANGED
     assert decision.reason == "hash_mismatch"
     assert decision.version == 3
+
+
+def test_delta_decision_from_legacy_preserves_attributes() -> None:
+    decision = DeltaDecision.from_legacy(
+        DeltaStatus.NEW,
+        DedupSignatures(content_hash="hash"),
+        1,
+        "reason",
+        parent_document_id="parent",
+    )
+
+    assert decision.status is DeltaStatus.NEW
+    assert decision.signatures.content_hash == "hash"
+    assert decision.version == 1
+    assert decision.parent_document_id == "parent"

@@ -34,26 +34,26 @@ flowchart TD
   Host-Politeness und Recrawl-Signale. Rückgaben wie `enqueue`, `defer`, `skip`
   oder `retire` enthalten Gründe und optionale Policy-Events, um Scheduling und
   Blacklisting nachvollziehbar zu machen.【F:crawler/frontier.py†L14-L122】【F:crawler/frontier.py†L164-L218】
-- **Guardrails (`crawler.guardrails.enforce_guardrails`)** prüfen Host- und
+- **Guardrails (`ai_core.api.enforce_guardrails`)** prüfen Host- und
   Tenant-Quoten, MIME-Blacklists sowie Dokumentgrößen, bevor Fetch und Parser
   Ressourcen verbrauchen. Deny-Entscheidungen liefern einen `CrawlerError` mit
-  konsistenter Error-Class.【F:crawler/guardrails.py†L7-L140】【F:crawler/guardrails.py†L170-L232】
+  konsistenter Error-Class.【F:ai_core/api.py†L61-L121】【F:ai_core/middleware/guardrails.py†L1-L217】
 - **HTTP Fetch (`crawler.http_fetcher.HttpFetcher`)** kapselt Streaming-Fetches
   mit Retry-Policy, Politeness-Delays und Limit-Prüfungen für Bytes, Timeout und
   MIME-Whitelist. Response-Details werden in `FetchResult` und
   `FetchTelemetry` gespiegelt.【F:crawler/http_fetcher.py†L1-L126】【F:crawler/fetcher.py†L1-L119】
-- **Parser & Normalizer (`crawler.normalizer.build_normalized_document`)**
-  erzeugen `NormalizedDocument` inklusive Meta-, Content- und
+- **Parser & Normalizer (`documents.api.normalize_from_raw`)**
+  erzeugen `NormalizedDocumentPayload` inklusive Meta-, Content- und
   External-Referenzen. Parser-Statistiken werden für Downstream-Systeme
-  konserviert.【F:crawler/normalizer.py†L1-L129】【F:crawler/normalizer.py†L153-L229】
-- **Delta (`crawler.delta.evaluate_delta`)** berechnet Content-Hashes und
+  konserviert.【F:documents/api.py†L137-L205】【F:documents/normalization.py†L35-L160】
+- **Delta (`ai_core.rag.delta.evaluate_delta`)** berechnet Content-Hashes und
   Near-Duplicate-Signaturen, vergleicht Vorgängerversionen und liefert die
   Metadaten an den gemeinsamen Dedup-Service. Skip- oder Replace-Aktionen
-  passieren downstream im `vector_client`.【F:crawler/delta.py†L1-L114】【F:ai_core/rag/vector_client.py†L60-L220】
-- **Ingestion (`crawler.ingestion.build_ingestion_decision`)** erzeugt strukturierte
-  Payloads mit Tenant-, Workflow- und Content-Metadaten. Ergebnisse werden als
-  `upsert`, `skip` oder `retire` markiert und enthalten Lifecycle-State sowie
-  Policy-Events.【F:crawler/ingestion.py†L1-L129】【F:crawler/ingestion.py†L137-L215】
+  passieren downstream im `vector_client`.【F:ai_core/rag/delta.py†L1-L111】【F:ai_core/rag/vector_client.py†L60-L220】
+- **Ingestion (`ai_core.graphs.crawler_ingestion_graph`)** orchestriert Normalisierung,
+  Guardrails, Delta-Entscheidungen und Embedding-Trigger über die geteilten Service-APIs.
+  Ergebnisse werden als `upsert`, `skip` oder `retire` markiert und enthalten Lifecycle-States
+  sowie Policy-Events.【F:ai_core/graphs/crawler_ingestion_graph.py†L1-L211】【F:ai_core/api.py†L123-L247】
 - **Lifecycle (`documents.repository.DocumentLifecycleStore`)** verfolgt
   dokumentweite Zustandswechsel zentral und validiert zulässige
   Übergänge. Telemetrie-Attribute werden direkt im Repository persistiert und
@@ -63,40 +63,39 @@ flowchart TD
 | Modul | Verantwortung | Schlüsselklassen |
 | --- | --- | --- |
 | `crawler.frontier` | Robots-Compliance, Recrawl-Intervalle, Failure-Backoff | `FrontierDecision`, `RobotsPolicy`, `HostPolitenessPolicy` |
-| `crawler.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `GuardrailDecision` |
+| `ai_core.middleware.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `GuardrailDecision` |
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
-| `crawler.normalizer` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocument` (mit `documents.contracts.DocumentMeta`, `ProviderReference`) |
-| `crawler.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
-| `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionAction`, `ChunkMeta`, `DefaultCrawlerIngestionAdapter` |
+| `documents.api` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocumentPayload`, `normalize_from_raw` |
+| `ai_core.rag.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
+| `ai_core.graphs.crawler_ingestion_graph` | Übergabe an RAG-Ingestion & Lifecycle | `CrawlerIngestionGraph`, `GraphTransition` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
 ## Normalisierung & Delta
 - Parser-Ergebnisse müssen `ParserContent` liefern; ohne Text wird ein
-  `binary_payload_ref` erwartet, ansonsten schlägt der Normalizer fehl. Das
+  `binary_payload_ref` erwartet, ansonsten schlägt die Normalisierung fehl. Das
   garantiert, dass entweder Text oder Binärdaten für Hashing und Ingestion
-  vorhanden sind.【F:crawler/normalizer.py†L73-L125】
-- Parser-Statistiken werden in `NormalizedDocument.parser_stats`
-  übernommen. Der Normalizer ergänzt eigene Kennzahlen wie
+  vorhanden sind.【F:documents/parsers.py†L120-L214】
+- Parser-Statistiken werden in `NormalizedDocumentPayload.document.meta.parse_stats`
+  übernommen. Die Normalisierung ergänzt Kennzahlen wie
   `normalizer.bytes_in`, damit Langfuse und Dead-Letter-Payloads denselben
-  Zahlenraum teilen.【F:crawler/normalizer.py†L153-L214】
-- Delta-Bewertungen nutzen `evaluate_delta` und speichern Content-Hashes sowie
+  Zahlenraum teilen.【F:documents/normalization.py†L120-L214】
+- Delta-Bewertungen nutzen `ai_core.rag.delta.evaluate_delta` und speichern Content-Hashes sowie
   Near-Duplicate-Signaturen für spätere Vergleiche. Die tatsächliche
   Skip/Replace-Logik liegt im gemeinsamen Dedup-Service (`match_near_duplicate`)
-  des Vector-Clients.【F:crawler/delta.py†L70-L114】【F:ai_core/rag/vector_client.py†L60-L220】
+  des Vector-Clients.【F:ai_core/rag/delta.py†L59-L111】【F:ai_core/rag/vector_client.py†L60-L220】
 
 ## Ingestion, Retire & Lifecycle
-- `build_ingestion_decision` kombiniert Normalizer-Output, Delta-Status und
-  optionale Lifecycle-Regeln. Statt eigener Payload-Klassen liefert die
+- Der LangGraph `CrawlerIngestionGraph` kombiniert Normalisierung, Delta-Status
+  und optionale Lifecycle-Regeln. Statt eigener Payload-Klassen liefert die
   Entscheidung heute ein generisches `Decision`-Objekt mit validiertem
-  `ChunkMeta` und einem Adapter-Mapping für Provider-spezifische Felder.
-  Retire-Entscheidungen referenzieren dieselben Metadaten, sodass
-  Downstream-Systeme ohne Sonderpfad auf ai_core-Ingestion-Services
-  zugreifen können.【F:crawler/ingestion.py†L130-L219】
-- Lifecycle-Regeln stammen aus `crawler.retire`, die Persistenz und
+  `ChunkMeta` und artefaktbezogenen Feldern. Retire-Entscheidungen referenzieren
+  dieselben Metadaten, sodass Downstream-Systeme ohne Sonderpfad auf die Services
+  in `ai_core.api` zugreifen können.【F:ai_core/graphs/crawler_ingestion_graph.py†L40-L210】【F:ai_core/api.py†L123-L247】
+- Lifecycle-Updates erfolgen über `documents.api.update_lifecycle_status`, die Persistenz und
   Validierung der Statusübergänge übernimmt `documents.repository`. Dadurch
   entfällt eine lokale Timeline-Implementierung im Crawler, alle Pfade nutzen
-  dieselbe Quelle für erlaubte Zustandswechsel.【F:crawler/retire.py†L1-L204】【F:documents/repository.py†L160-L238】
+  dieselbe Quelle für erlaubte Zustandswechsel.【F:documents/api.py†L226-L273】【F:documents/repository.py†L160-L238】
 - Fehler oder Policy-Denies werden über `CrawlerError` in Events gespiegelt und
   nutzen die gemeinsame Error-Class-Taxonomie (`timeout`, `rate_limit`,
   `policy_deny`, …). Das stellt sicher, dass Langfuse und Dead-Letter-Queues
