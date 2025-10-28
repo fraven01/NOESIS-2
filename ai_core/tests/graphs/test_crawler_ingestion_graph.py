@@ -130,15 +130,6 @@ def _build_state(
     }
     meta = {"tenant_id": "tenant", "case_id": "case", "workflow_id": "workflow"}
     return state, meta, body
-
-
-def _extract_document_id(decision):
-    chunk_meta = decision.attributes.get("chunk_meta")
-    if chunk_meta is None:
-        return None
-    return getattr(chunk_meta, "document_id", None)
-
-
 def test_nominal_run_executes_pipeline(service_fakes) -> None:
     repository, vector = service_fakes
     initial_state, meta, body = _build_state()
@@ -175,12 +166,16 @@ def test_nominal_run_executes_pipeline(service_fakes) -> None:
     store_payload = transitions["crawler.store"]["attributes"].get("result", {})
     stored_document_id = store_payload.get("document_id")
     assert stored_document_id
+    assert store_payload.get("tenant_id") == "tenant"
+    assert store_payload.get("workflow_id") == "workflow"
     stored = repository.get("tenant", UUID(stored_document_id), prefer_latest=True)
     assert stored is not None
     assert vector.upserts
     upsert_meta = vector.upserts[0].meta
     assert upsert_meta.get("tenant_id") == "tenant"
     assert upsert_meta.get("case_id") == "case"
+    upsert_result = transitions["rag.upsert"]["attributes"]["result"]
+    assert upsert_result.get("tenant_id") == "tenant"
 
 
 def test_start_crawl_respects_legacy_manual_review_control(service_fakes) -> None:
@@ -253,47 +248,33 @@ def test_retire_flow_dispatches_retire_node(service_fakes) -> None:
 
 
 def test_shadow_mode_turns_upsert_into_noop(service_fakes) -> None:
+    _, vector = service_fakes
     initial_state, meta, _ = _build_state()
-    recorded = {"calls": 0}
-
-    def _recording_upsert(decision):
-        recorded["calls"] += 1
-        return {"status": "queued", "document": _extract_document_id(decision)}
-
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
-        upsert_handler=_recording_upsert
-    )
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
     shadow_state, result = graph.run(state, meta)
-    assert recorded["calls"] == 0
+    assert vector.upserts == []
     transitions = shadow_state["transitions"]
     assert transitions["rag.upsert"]["decision"] == "shadow_skip"
     assert result["decision"] == IngestionStatus.UPSERT.value
 
 
 def test_shadow_mode_toggle_allows_follow_up_upsert(service_fakes) -> None:
+    _, vector = service_fakes
     initial_state, meta, _ = _build_state()
-    recorded: List[int] = []
-
-    def _recording_upsert(decision):
-        recorded.append(_extract_document_id(decision))
-        return {"status": "queued"}
-
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
-        upsert_handler=_recording_upsert
-    )
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
     shadow_state, first_result = graph.run(state, meta)
-    assert recorded == []
+    assert vector.upserts == []
     assert shadow_state["transitions"]["rag.upsert"]["decision"] == "shadow_skip"
 
     resumed_state = graph.shadow_mode_off(shadow_state)
     resumed_state, resumed_result = graph.run(resumed_state, meta)
-    assert recorded != []
+    assert vector.upserts
     assert resumed_state["transitions"]["rag.upsert"]["decision"] == "upsert"
     assert resumed_result["graph_run_id"] != first_result["graph_run_id"]
 
