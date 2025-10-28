@@ -26,19 +26,7 @@ from uuid import uuid4
 from ai_core.rag.ingestion_contracts import ChunkMeta
 
 
-@pytest.fixture(autouse=True)
-def _stub_profile_resolution(monkeypatch):
-    from types import SimpleNamespace
-
-    fake_resolution = SimpleNamespace(
-        vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
-    )
-    monkeypatch.setattr(
-        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
-        lambda embedding_profile: SimpleNamespace(
-            profile_id="profile-test", resolution=fake_resolution
-        ),
-    )
+ACTIVE_LIFECYCLE = LifecycleDecision(LifecycleState.ACTIVE, "active")
 
 
 def _make_fetch_result(canonical_source: str, payload: bytes) -> FetchResult:
@@ -121,7 +109,9 @@ def test_build_ingestion_decision_always_provides_chunk_meta() -> None:
     document = _make_document()
     delta = _make_delta(DeltaStatus.NEW, reason="new")
 
-    decision = build_ingestion_decision(document, delta, case_id="case-7")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-7", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     assert decision.decision == IngestionStatus.UPSERT.value
     assert decision.reason == "new"
@@ -130,11 +120,15 @@ def test_build_ingestion_decision_always_provides_chunk_meta() -> None:
     assert attributes["policy_events"] == ()
     assert attributes["case_id"] == "case-7"
     assert attributes["content_hash"] == "hash-new"
+    assert attributes["embedding_profile"] == "standard"
+    assert attributes["vector_space_id"] == "global"
     chunk_meta = attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.case_id == "case-7"
     assert chunk_meta.external_id == "web::https://example.com/doc"
     assert chunk_meta.lifecycle_state == LifecycleState.ACTIVE.value
+    assert chunk_meta.embedding_profile == "standard"
+    assert chunk_meta.vector_space_id == "global"
     assert attributes["delta_status"] == DeltaStatus.NEW.value
 
 
@@ -149,7 +143,9 @@ def test_build_ingestion_decision_upserts_for_duplicates(status, reason) -> None
     document = _make_document()
     delta = _make_delta(status, reason=reason)
 
-    decision = build_ingestion_decision(document, delta, case_id="case-1")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-1", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     assert decision.decision == IngestionStatus.UPSERT.value
     assert decision.reason == reason
@@ -173,7 +169,6 @@ def test_build_ingestion_decision_retire_includes_metadata() -> None:
         document,
         delta,
         case_id="case-9",
-        retire=True,
         lifecycle=lifecycle,
     )
 
@@ -183,10 +178,14 @@ def test_build_ingestion_decision_retire_includes_metadata() -> None:
     assert attributes["lifecycle_state"] == LifecycleState.RETIRED.value
     assert attributes["policy_events"] == ("retired",)
     assert attributes["chunk_meta"] is not None
+    assert attributes["embedding_profile"] is None
+    assert attributes["vector_space_id"] is None
     chunk_meta = attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.lifecycle_state == LifecycleState.RETIRED.value
     assert attributes["delta_status"] == DeltaStatus.UNCHANGED.value
+    assert chunk_meta.embedding_profile is None
+    assert chunk_meta.vector_space_id is None
 
 
 def test_build_ingestion_decision_requires_case_id() -> None:
@@ -194,4 +193,6 @@ def test_build_ingestion_decision_requires_case_id() -> None:
     delta = _make_delta(DeltaStatus.NEW)
 
     with pytest.raises(ValueError):
-        build_ingestion_decision(document, delta, case_id=" ")
+        build_ingestion_decision(
+            document, delta, case_id=" ", lifecycle=ACTIVE_LIFECYCLE
+        )

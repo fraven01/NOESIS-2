@@ -84,14 +84,6 @@ from .ingestion import (
     build_ingestion_error,
 )
 from ai_core.rag.ingestion_contracts import IngestionAction
-from .lifecycle_model import (
-    ALLOWED_TRANSITIONS,
-    FINAL_STATUSES,
-    InvalidLifecycleTransition,
-    LifecycleEvent,
-    LifecycleStatus,
-    LifecycleTimeline,
-)
 from .retire import (
     LifecycleDecision,
     LifecycleState,
@@ -169,12 +161,6 @@ __all__ = [
     "build_ingestion_decision",
     "build_ingestion_error",
     "DefaultCrawlerIngestionAdapter",
-    "ALLOWED_TRANSITIONS",
-    "FINAL_STATUSES",
-    "InvalidLifecycleTransition",
-    "LifecycleEvent",
-    "LifecycleStatus",
-    "LifecycleTimeline",
     "LifecycleDecision",
     "LifecycleState",
     "RetirePolicy",

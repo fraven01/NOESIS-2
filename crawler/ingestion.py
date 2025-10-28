@@ -1,4 +1,10 @@
-"""Ingestion payload planning based on normalized documents and delta decisions."""
+"""Ingestion payload planning based on normalized documents and delta decisions.
+
+The crawler now delegates normalization to :mod:`documents` and profile/vector
+resolution to :mod:`ai_core.rag.ingestion_contracts`.  This module is therefore
+limited to wiring the signals together and emitting telemetry for the shared
+repositories without re-implementing business logic locally.
+"""
 
 from __future__ import annotations
 
@@ -13,7 +19,7 @@ from documents.repository import DEFAULT_LIFECYCLE_STORE
 from .contracts import Decision
 from .delta import DeltaDecision
 from .errors import CrawlerError, ErrorClass
-from .retire import LifecycleDecision, LifecycleState
+from .retire import LifecycleDecision
 
 from ai_core.rag.ingestion_contracts import (
     IngestionAction,
@@ -63,15 +69,14 @@ def build_ingestion_decision(
     delta: DeltaDecision,
     *,
     case_id: str,
-    retire: bool = False,
-    lifecycle: Optional[LifecycleDecision] = None,
+    lifecycle: LifecycleDecision,
     embedding_profile: Optional[str] = None,
     adapter: Optional[CrawlerIngestionAdapter] = None,
 ) -> Decision:
     """Compose an ingestion decision from normalized document and delta information."""
 
     normalized_case_id = _require_identifier(case_id, "case_id")
-    lifecycle_decision = _resolve_lifecycle(lifecycle, retire)
+    lifecycle_decision = _require_lifecycle(lifecycle)
     adapter_impl = adapter or DefaultCrawlerIngestionAdapter()
     adapter_metadata = adapter_impl.build_metadata(document)
 
@@ -98,6 +103,8 @@ def build_ingestion_decision(
     )
     attributes = dict(payload.as_mapping())
     attributes["lifecycle_state"] = lifecycle_decision.state
+    # Lifecycle state persistence now flows through ``documents.repository`` to
+    # keep crawler and repository semantics in sync.
     _LIFECYCLE_STORE.record_document_state(
         tenant_id=document.ref.tenant_id,
         document_id=document.ref.document_id,
@@ -117,14 +124,10 @@ def _require_identifier(value: Optional[str], field: str) -> str:
     return candidate
 
 
-def _resolve_lifecycle(
-    lifecycle: Optional[LifecycleDecision], retire: bool
-) -> LifecycleDecision:
-    if lifecycle is not None:
-        return lifecycle
-    if retire:
-        return LifecycleDecision(LifecycleState.RETIRED, "retired")
-    return LifecycleDecision(LifecycleState.ACTIVE, "active")
+def _require_lifecycle(lifecycle: Optional[LifecycleDecision]) -> LifecycleDecision:
+    if lifecycle is None:
+        raise ValueError("lifecycle_required")
+    return lifecycle
 
 
 def build_ingestion_error(

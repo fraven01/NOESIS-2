@@ -49,7 +49,7 @@ from documents.contracts import NormalizedDocument
 
 from crawler.normalizer import build_normalized_document
 from documents.normalization import resolve_provider_reference
-from crawler.retire import LifecycleState
+from crawler.retire import LifecycleDecision, LifecycleState
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -896,7 +896,10 @@ class CrawlerIngestionGraph:
             outcome = self._missing_artifact("delta_decision")
             state["ingest_action"] = "error"
             return outcome, False
-        lifecycle = state.get("lifecycle_decision")
+        lifecycle = self._resolve_lifecycle_decision(
+            state.get("lifecycle_decision"),
+            force_retire=bool(control.get("force_retire")),
+        )
         conflict_note = None
         recompute_recent = control.pop("recompute_delta_recent", False)
         if control.get("force_retire") and (
@@ -908,7 +911,6 @@ class CrawlerIngestionGraph:
             normalized,
             delta_decision,
             case_id=state.get("case_id"),
-            retire=control.get("force_retire", False),
             lifecycle=lifecycle,
         )
         artifacts["ingestion_decision"] = ingestion
@@ -974,6 +976,24 @@ class CrawlerIngestionGraph:
         continue_to_store = status is IngestionStatus.UPSERT
         continue_to_retire = status is IngestionStatus.RETIRE
         return outcome, continue_to_store or continue_to_retire
+
+    def _resolve_lifecycle_decision(
+        self,
+        lifecycle: Optional[LifecycleDecision],
+        *,
+        force_retire: bool,
+    ) -> LifecycleDecision:
+        """Normalize lifecycle input to the crawler decision contract."""
+
+        if isinstance(lifecycle, LifecycleDecision):
+            return lifecycle
+        if force_retire:
+            return LifecycleDecision(
+                state=LifecycleState.RETIRED,
+                reason="force_retire",
+                policy_events=("manual_retire",),
+            )
+        return LifecycleDecision(LifecycleState.ACTIVE, "active")
 
     def _run_store(
         self,

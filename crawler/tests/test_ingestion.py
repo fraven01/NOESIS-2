@@ -32,19 +32,7 @@ from documents.parsers import ParsedTextBlock
 from uuid import uuid4
 
 
-@pytest.fixture(autouse=True)
-def _stub_profile_resolution(monkeypatch):
-    from types import SimpleNamespace
-
-    fake_resolution = SimpleNamespace(
-        vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
-    )
-    monkeypatch.setattr(
-        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
-        lambda embedding_profile: SimpleNamespace(
-            profile_id="profile-test", resolution=fake_resolution
-        ),
-    )
+ACTIVE_LIFECYCLE = LifecycleDecision(LifecycleState.ACTIVE, "active")
 
 
 def _make_fetch_result(canonical_source: str, payload: bytes) -> FetchResult:
@@ -125,7 +113,9 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
         "no_previous_hash",
     )
 
-    decision = build_ingestion_decision(document, delta, case_id="case-7")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-7", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     status = IngestionStatus(decision.decision)
     assert status is IngestionStatus.UPSERT
@@ -135,6 +125,8 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
     assert attributes["policy_events"] == ()
     assert attributes["case_id"] == "case-7"
     assert attributes["content_hash"] == "hash123"
+    assert attributes["embedding_profile"] == "standard"
+    assert attributes["vector_space_id"] == "global"
     chunk_meta = attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.case_id == "case-7"
@@ -142,6 +134,8 @@ def test_build_ingestion_decision_upsert_includes_metadata() -> None:
     assert chunk_meta.source == "crawler"
     assert chunk_meta.workflow_id == "workflow-1"
     assert chunk_meta.document_id is not None
+    assert chunk_meta.embedding_profile == "standard"
+    assert chunk_meta.vector_space_id == "global"
     adapter_metadata = attributes["adapter_metadata"]
     assert adapter_metadata["canonical_source"] == "https://example.com/doc"
     assert adapter_metadata["provider"] == "web"
@@ -162,7 +156,9 @@ def test_build_ingestion_decision_upserts_when_unchanged() -> None:
         "hash_match",
     )
 
-    decision = build_ingestion_decision(document, delta, case_id="case-1")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-1", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     status = IngestionStatus(decision.decision)
     assert status is IngestionStatus.UPSERT
@@ -183,7 +179,9 @@ def test_build_ingestion_decision_upserts_near_duplicate() -> None:
         "near_duplicate:0.950",
     )
 
-    decision = build_ingestion_decision(document, delta, case_id="case-1")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-1", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     status = IngestionStatus(decision.decision)
     assert status is IngestionStatus.UPSERT
@@ -204,7 +202,9 @@ def test_build_ingestion_decision_requires_case_id() -> None:
     )
 
     with pytest.raises(ValueError):
-        build_ingestion_decision(document, delta, case_id=" ")
+        build_ingestion_decision(
+            document, delta, case_id=" ", lifecycle=ACTIVE_LIFECYCLE
+        )
 
 
 def test_build_ingestion_decision_retire_overrides_delta() -> None:
@@ -216,7 +216,14 @@ def test_build_ingestion_decision_retire_overrides_delta() -> None:
         "hash_match",
     )
 
-    decision = build_ingestion_decision(document, delta, case_id="case-9", retire=True)
+    lifecycle = LifecycleDecision(
+        state=LifecycleState.RETIRED,
+        reason="retired",
+        policy_events=("manual",),
+    )
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-9", lifecycle=lifecycle
+    )
 
     status = IngestionStatus(decision.decision)
     assert status is IngestionStatus.RETIRE
@@ -225,6 +232,10 @@ def test_build_ingestion_decision_retire_overrides_delta() -> None:
     chunk_meta = decision.attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.content_hash == "hash111"
+    assert decision.attributes["embedding_profile"] is None
+    assert decision.attributes["vector_space_id"] is None
+    assert chunk_meta.embedding_profile is None
+    assert chunk_meta.vector_space_id is None
 
 
 def test_build_ingestion_decision_respects_lifecycle_decision() -> None:
@@ -264,7 +275,9 @@ def test_build_ingestion_error_wraps_metadata() -> None:
         1,
         "new",
     )
-    decision = build_ingestion_decision(document, delta, case_id="case-5")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-5", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     error = build_ingestion_error(
         decision=decision,
@@ -297,7 +310,9 @@ def test_ingestion_payload_hashed_external_id_validates_with_chunk_meta() -> Non
         "no_previous_hash",
     )
 
-    decision = build_ingestion_decision(document, delta, case_id="case-hash")
+    decision = build_ingestion_decision(
+        document, delta, case_id="case-hash", lifecycle=ACTIVE_LIFECYCLE
+    )
 
     chunk_meta = decision.attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
