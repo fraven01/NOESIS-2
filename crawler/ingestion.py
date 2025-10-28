@@ -100,9 +100,7 @@ def build_ingestion_decision(
         attributes["chunk_meta"] = chunk_meta
         if profile_binding is not None:
             attributes["embedding_profile"] = profile_binding.profile_id
-            attributes["vector_space_id"] = (
-                profile_binding.resolution.vector_space.id
-            )
+            attributes["vector_space_id"] = profile_binding.resolution.vector_space.id
         return Decision(
             IngestionStatus.RETIRE.value,
             lifecycle_decision.reason,
@@ -186,9 +184,7 @@ def _resolve_profile(
     embedding_profile: Optional[str],
 ) -> IngestionProfileResolution:
     if embedding_profile is None:
-        default_profile = getattr(
-            settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
-        )
+        default_profile = getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
         embedding_profile = str(default_profile)
     return resolve_ingestion_profile(embedding_profile)
 

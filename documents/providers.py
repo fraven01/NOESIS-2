@@ -38,9 +38,7 @@ class ProviderReference(BaseModel):
 
     @field_validator("provider_tags", mode="before")
     @classmethod
-    def _normalize_tags(
-        cls, value: Optional[Mapping[str, str]]
-    ) -> Mapping[str, str]:
+    def _normalize_tags(cls, value: Optional[Mapping[str, str]]) -> Mapping[str, str]:
         if value is None:
             return {}
         if not isinstance(value, Mapping):
@@ -69,7 +67,9 @@ def build_external_reference(
 ) -> Dict[str, str]:
     """Compose a normalized external reference payload for document metadata."""
 
-    normalized_provider = _sanitize_external_value(provider, limit=_PROVIDER_VALUE_LIMIT)
+    normalized_provider = _sanitize_external_value(
+        provider, limit=_PROVIDER_VALUE_LIMIT
+    )
     normalized_external_id = _sanitize_external_value(external_id)
     tags = _normalize_external_tags(provider_tags)
     data: Dict[str, str] = {
@@ -111,7 +111,7 @@ def _sanitize_external_value(value: str, *, limit: int = _EXTERNAL_VALUE_LIMIT) 
 
 
 def _normalize_external_tags(
-    provider_tags: Optional[Mapping[str, str]]
+    provider_tags: Optional[Mapping[str, str]],
 ) -> Dict[str, str]:
     if not provider_tags:
         return {}

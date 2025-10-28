@@ -97,9 +97,7 @@ class ParserStats(BaseModel):
 
     @field_validator("boilerplate_reduction")
     @classmethod
-    def _validate_boilerplate(
-        cls, value: Optional[float]
-    ) -> Optional[float]:
+    def _validate_boilerplate(cls, value: Optional[float]) -> Optional[float]:
         if value is None:
             return None
         candidate = float(value)
@@ -283,7 +281,9 @@ def _ensure_non_empty_string(value: str, code: str) -> str:
     return value
 
 
-def _ensure_optional_offsets(value: Optional[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+def _ensure_optional_offsets(
+    value: Optional[Tuple[int, int]],
+) -> Optional[Tuple[int, int]]:
     if value is None:
         return None
     if not isinstance(value, tuple) or len(value) != 2:

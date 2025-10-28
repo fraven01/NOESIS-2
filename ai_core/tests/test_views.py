@@ -1908,9 +1908,7 @@ def test_crawler_runner_manual_multi_origin(
     assert first_payload["errors"] == []
     assert first_payload["idempotent"] is False
     assert ingestion_calls
-    assert {
-        entry["origin"] for entry in first_payload["origins"]
-    } == {
+    assert {entry["origin"] for entry in first_payload["origins"]} == {
         "https://example.com/docs/handbook",
         "https://example.com/docs/policies",
     }
@@ -1937,7 +1935,9 @@ def test_crawler_runner_propagates_idempotency_key(
     def _start_ingestion(request_data, meta, idempotency_key=None):  # type: ignore[no-untyped-def]
         recorded_keys.append(idempotency_key)
         document_id = request_data["document_ids"][0]
-        return SimpleNamespace(data={"status": "queued", "ingestion_run_id": document_id})
+        return SimpleNamespace(
+            data={"status": "queued", "ingestion_run_id": document_id}
+        )
 
     monkeypatch.setattr(services, "start_ingestion_run", _start_ingestion)
 

@@ -284,9 +284,7 @@ def enforce_guardrails(
                 category=GuardrailErrorCategory.POLICY_DENY,
                 error_builder=error_builder,
                 signals=applied_signals,
-                attributes=_quota_attributes(
-                    host_quota, host_usage, document_bytes
-                ),
+                attributes=_quota_attributes(host_quota, host_usage, document_bytes),
             )
 
     return GuardrailDecision.from_legacy(GuardrailStatus.ALLOW, "allow", (), None)
@@ -415,9 +413,7 @@ def _normalize_host(host: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
-def _mime_matches_whitelist(
-    content_type: str, whitelist: Tuple[str, ...]
-) -> bool:
+def _mime_matches_whitelist(content_type: str, whitelist: Tuple[str, ...]) -> bool:
     for entry in whitelist:
         if entry.endswith("/*"):
             prefix = entry[:-2]

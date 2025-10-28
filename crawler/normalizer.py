@@ -7,7 +7,7 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Mapping, Optional, Sequence
 
 from documents.contract_utils import normalize_string
 from documents.contracts import (
@@ -21,7 +21,6 @@ from documents.parsers import (
     ParseStatus,
     ParserContent,
     ParserStats,
-    normalize_diagnostics,
 )
 from documents.providers import (
     ProviderReference,
@@ -52,7 +51,10 @@ def build_normalized_document(
     stats = _require_stats(parse_result.stats)
     request_source = parse_result.fetch.request.canonical_source
     canonical_source = _require_identifier(source.canonical_source, "canonical_source")
-    if _require_identifier(request_source, "fetch_canonical_source") != canonical_source:
+    if (
+        _require_identifier(request_source, "fetch_canonical_source")
+        != canonical_source
+    ):
         raise ValueError("canonical_source_mismatch")
 
     normalized_tags = tuple(tags) if tags else ()
@@ -198,5 +200,3 @@ def _build_inline_blob(media_type: str, payload: bytes) -> InlineBlob:
         sha256=checksum,
         size=len(payload),
     )
-
-

@@ -669,7 +669,9 @@ class CrawlerRunRequest(BaseModel):
                 if updated.content is None and self.content:
                     updated = updated.model_copy(update={"content": self.content})
                 if updated.content_type is None:
-                    updated = updated.model_copy(update={"content_type": self.content_type})
+                    updated = updated.model_copy(
+                        update={"content_type": self.content_type}
+                    )
                 if updated.fetch is None:
                     updated = updated.model_copy(update={"fetch": False})
                 manual_origins.append(updated)

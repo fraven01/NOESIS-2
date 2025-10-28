@@ -67,9 +67,7 @@ def _make_document(
         binary_payload_ref=None,
         title=" Example Title ",
         content_language=" en ",
-        structural_elements=(
-            ParsedTextBlock(text="Body text", kind="paragraph"),
-        ),
+        structural_elements=(ParsedTextBlock(text="Body text", kind="paragraph"),),
     )
     stats = ParserStats(
         token_count=42,

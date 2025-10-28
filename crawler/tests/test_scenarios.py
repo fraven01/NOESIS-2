@@ -207,7 +207,9 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         title="Reference",
         language="en",
     )
-    document_repeat = _make_document(parse, baseline_source, document_id=_doc_id("doc-ref"))
+    document_repeat = _make_document(
+        parse, baseline_source, document_id=_doc_id("doc-ref")
+    )
     delta = evaluate_delta(
         document_repeat,
         primary_text=parse.content.primary_text,
@@ -523,9 +525,7 @@ def _build_document_state(
         language="en",
     )
     document = _make_document(parse, source, document_id=document_id)
-    delta = evaluate_delta(
-        document, primary_text=parse.content.primary_text
-    )
+    delta = evaluate_delta(document, primary_text=parse.content.primary_text)
     return source, fetch, parse, document, delta
 
 
@@ -848,14 +848,10 @@ def _build_delta_span(
     return SpanSnapshot(name="delta", attributes=attributes, events=tuple(events))
 
 
-def _build_ingest_span(
-    trace: TraceContext, decision: Decision
-) -> SpanSnapshot:
+def _build_ingest_span(trace: TraceContext, decision: Decision) -> SpanSnapshot:
     attributes_map = decision.attributes
     chunk_meta = attributes_map.get("chunk_meta")
-    adapter_metadata: Mapping[str, object] = attributes_map.get(
-        "adapter_metadata", {}
-    )
+    adapter_metadata: Mapping[str, object] = attributes_map.get("adapter_metadata", {})
     payload_size = 0
     chunk_count = 0
     if chunk_meta is not None:

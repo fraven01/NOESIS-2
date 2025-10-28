@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import timedelta
 from enum import Enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 

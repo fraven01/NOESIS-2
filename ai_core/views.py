@@ -1035,7 +1035,10 @@ CRAWLER_RUN_RESPONSE_EXAMPLE = OpenApiExample(
             {
                 "origin": "https://example.com/docs/handbook",
                 "transitions": {
-                    "crawler.fetch": {"decision": "fetched", "attributes": {"status_code": 200}},
+                    "crawler.fetch": {
+                        "decision": "fetched",
+                        "attributes": {"status_code": 200},
+                    },
                     "crawler.ingest_decision": {"decision": "upsert"},
                 },
             }
@@ -1100,8 +1103,12 @@ CRAWLER_RUN_RESPONSE = inline_serializer(
         "mode": serializers.CharField(),
         "collection_id": serializers.CharField(required=False, allow_null=True),
         "origins": serializers.ListField(child=serializers.JSONField(), required=True),
-        "transitions": serializers.ListField(child=serializers.JSONField(), required=True),
-        "telemetry": serializers.ListField(child=serializers.JSONField(), required=True),
+        "transitions": serializers.ListField(
+            child=serializers.JSONField(), required=True
+        ),
+        "telemetry": serializers.ListField(
+            child=serializers.JSONField(), required=True
+        ),
         "errors": serializers.ListField(child=serializers.JSONField(), required=False),
         "idempotent": serializers.BooleanField(),
     },
@@ -1145,6 +1152,8 @@ RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
         "code": serializers.CharField(),
     },
 )
+
+
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
     authentication_classes: list = []
     permission_classes: list = []
@@ -1379,7 +1388,9 @@ def _build_crawler_state(
             raise ValueError("origin URL must include a valid host component")
         path_component = parsed.path or "/"
 
-        descriptor = SourceDescriptor(host=host, path=path_component, provider=source.provider)
+        descriptor = SourceDescriptor(
+            host=host, path=path_component, provider=source.provider
+        )
         frontier_input = {"descriptor": descriptor, "signals": CrawlSignals()}
 
         politeness = PolitenessContext(host=descriptor.host)
@@ -1405,11 +1416,13 @@ def _build_crawler_state(
         snapshot_requested = bool(snapshot_options and snapshot_options.enabled)
         snapshot_label = snapshot_options.label if snapshot_options else None
 
-        dry_run = bool(origin.dry_run if origin.dry_run is not None else request_data.dry_run)
+        dry_run = bool(
+            origin.dry_run if origin.dry_run is not None else request_data.dry_run
+        )
         review = origin.review or request_data.review or request_data.manual_review
 
         need_fetch = bool(origin.fetch or origin.content is None)
-        body_bytes: bytes = b''
+        body_bytes: bytes = b""
         effective_content_type = origin.content_type or request_data.content_type
         fetch_input: dict[str, object]
         fetch_used = False
@@ -1502,7 +1515,7 @@ def _build_crawler_state(
 
             fetch_used = True
             http_status = fetch_result.metadata.status_code
-            body_bytes = fetch_result.body or b''
+            body_bytes = fetch_result.body or b""
             fetched_bytes = len(body_bytes)
             effective_content_type = fetch_result.metadata.content_type
             fetch_input = {
@@ -1554,7 +1567,9 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        guardrail_decision = enforce_guardrails(limits=limits, signals=guardrail_signals)
+        guardrail_decision = enforce_guardrails(
+            limits=limits, signals=guardrail_signals
+        )
         if guardrail_decision.status is GuardrailStatus.DENY:
             emit_event(
                 "crawler_guardrail_denied",
@@ -1679,6 +1694,7 @@ def _build_crawler_state(
         )
 
     return builds
+
 
 class RagQueryViewV1(_GraphView):
     """Execute the production retrieval augmented generation graph."""
@@ -1947,7 +1963,9 @@ class CrawlerIngestionRunnerView(APIView):
             response = Response(payload, status=exc.status_code)
             return apply_std_headers(response, meta)
         except ValueError as exc:
-            return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+            return _error_response(
+                str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST
+            )
 
         if not state_builds:
             return _error_response(
@@ -1965,13 +1983,17 @@ class CrawlerIngestionRunnerView(APIView):
             request_model.mode,
             "|".join(origin_keys),
         ]
-        fingerprint = hashlib.sha256("::".join(fingerprint_components).encode("utf-8")).hexdigest()
+        fingerprint = hashlib.sha256(
+            "::".join(fingerprint_components).encode("utf-8")
+        ).hexdigest()
         fingerprint_path: str | None = None
         fingerprint_match = False
         try:
             tenant_key = object_store.sanitize_identifier(str(meta.get("tenant_id")))
             case_key = object_store.sanitize_identifier(str(meta.get("case_id")))
-            fingerprint_path = f"{tenant_key}/{case_key}/crawler_runner_idempotency.json"
+            fingerprint_path = (
+                f"{tenant_key}/{case_key}/crawler_runner_idempotency.json"
+            )
         except Exception:
             fingerprint_path = None
         if fingerprint_path:
@@ -1981,7 +2003,10 @@ class CrawlerIngestionRunnerView(APIView):
                 existing = None
             except Exception:
                 existing = None
-            if isinstance(existing, dict) and existing.get("fingerprint") == fingerprint:
+            if (
+                isinstance(existing, dict)
+                and existing.get("fingerprint") == fingerprint
+            ):
                 fingerprint_match = True
             else:
                 try:
@@ -2075,14 +2100,18 @@ class CrawlerIngestionRunnerView(APIView):
                 continue
 
             artifacts = result_state.get("artifacts", {}) or {}
-            upsert_result = artifacts.get("upsert_result") if isinstance(artifacts, dict) else {}
+            upsert_result = (
+                artifacts.get("upsert_result") if isinstance(artifacts, dict) else {}
+            )
             ingestion_run_id = None
             if isinstance(upsert_result, dict):
                 ingestion_run_id = upsert_result.get("ingestion_run_id")
 
             origin_snapshot = {
                 "workflow_id": result_state.get("workflow_id"),
-                "document_id": result_state.get("normalize_input", {}).get("document_id")
+                "document_id": result_state.get("normalize_input", {}).get(
+                    "document_id"
+                )
                 or result_state.get("document_id"),
                 "origin_uri": result_state.get("origin_uri"),
                 "provider": result_state.get("provider"),
@@ -2157,6 +2186,7 @@ class CrawlerIngestionRunnerView(APIView):
         }
         response = Response(response_payload, status=status.HTTP_200_OK)
         return apply_std_headers(response, meta)
+
 
 class RagDemoViewV1(_BaseAgentView):
     """Deprecated demo endpoint retained only for backwards compatibility."""

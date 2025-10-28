@@ -119,9 +119,7 @@ def test_build_normalized_document_merges_metadata_and_content() -> None:
     assert parser_stats["parser.warnings"] == ["minor"]
     assert parser_stats["normalizer.bytes_in"] == len(b"<html></html>")
     expected_text_hash = hashlib.sha256("Example text".encode("utf-8")).hexdigest()
-    assert (
-        parser_stats["crawler.primary_text_hash_sha256"] == expected_text_hash
-    )
+    assert parser_stats["crawler.primary_text_hash_sha256"] == expected_text_hash
     payload = document_payload_bytes(document)
     assert payload == b"<html></html>"
     assert normalize_diagnostics(parse_result.diagnostics) == ("ok",)

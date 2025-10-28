@@ -6,7 +6,16 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import secrets
 import time
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 from uuid import UUID
 
 from crawler.contracts import Decision, NormalizedSource
@@ -62,9 +71,7 @@ def _generate_uuid7() -> UUID:
 
 
 def _default_retire_handler(decision: Decision) -> Dict[str, object]:
-    lifecycle_attr = decision.attributes.get(
-        "lifecycle_state", LifecycleState.ACTIVE
-    )
+    lifecycle_attr = decision.attributes.get("lifecycle_state", LifecycleState.ACTIVE)
     if isinstance(lifecycle_attr, LifecycleState):
         lifecycle_value = lifecycle_attr.value
     else:
@@ -775,9 +782,7 @@ class CrawlerIngestionGraph:
         )
         attributes["store_allowed"] = store_allowed
         attributes["upsert_allowed"] = upsert_allowed
-        outcome = _transition(
-            status.value, ingestion.reason, attributes=attributes
-        )
+        outcome = _transition(status.value, ingestion.reason, attributes=attributes)
         continue_to_store = status is IngestionStatus.UPSERT
         continue_to_retire = status is IngestionStatus.RETIRE
         return outcome, continue_to_store or continue_to_retire
