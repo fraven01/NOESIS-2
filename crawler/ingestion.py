@@ -3,30 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import Enum
 from types import MappingProxyType
 from typing import Dict, Mapping, Optional, Protocol, Tuple
 
 from documents.contracts import NormalizedDocument
 
 from .contracts import Decision
-from .delta import DeltaDecision, DeltaStatus
+from .delta import DeltaDecision
 from .errors import CrawlerError, ErrorClass
 from .normalizer import document_parser_stats, resolve_provider_reference
 from .retire import LifecycleDecision, LifecycleState
 
 from django.conf import settings
 
-from ai_core.rag.ingestion_contracts import ChunkMeta, IngestionProfileResolution
-from ai_core.rag.ingestion_contracts import resolve_ingestion_profile
+from ai_core.rag.ingestion_contracts import (
+    ChunkMeta,
+    CrawlerIngestionPayload,
+    IngestionAction,
+    IngestionProfileResolution,
+    resolve_ingestion_profile,
+)
 
-
-class IngestionStatus(str, Enum):
-    """Supported ingestion actions for downstream processing."""
-
-    UPSERT = "upsert"
-    SKIP = "skip"
-    RETIRE = "retire"
+IngestionStatus = IngestionAction
 
 
 class CrawlerIngestionAdapter(Protocol):
@@ -78,17 +76,6 @@ def build_ingestion_decision(
     adapter_impl = adapter or DefaultCrawlerIngestionAdapter()
     adapter_metadata = adapter_impl.build_metadata(document)
 
-    attributes: Dict[str, object] = {
-        "lifecycle_state": lifecycle_decision.state,
-        "policy_events": tuple(lifecycle_decision.policy_events),
-        "adapter_metadata": adapter_metadata,
-        "document_id": str(document.ref.document_id),
-        "workflow_id": document.ref.workflow_id,
-        "tenant_id": document.ref.tenant_id,
-        "case_id": normalized_case_id,
-        "content_hash": delta.signatures.content_hash,
-    }
-
     if lifecycle_decision.should_retire:
         chunk_meta, profile_binding = _build_chunk_meta(
             document,
@@ -96,29 +83,35 @@ def build_ingestion_decision(
             normalized_case_id,
             embedding_profile,
             resolve_profile=False,
+            lifecycle_state=lifecycle_decision.state,
         )
-        attributes["chunk_meta"] = chunk_meta
-        if profile_binding is not None:
-            attributes["embedding_profile"] = profile_binding.profile_id
-            attributes["vector_space_id"] = profile_binding.resolution.vector_space.id
+        payload = CrawlerIngestionPayload(
+            action=IngestionAction.RETIRE,
+            lifecycle_state=lifecycle_decision.state.value,
+            policy_events=tuple(lifecycle_decision.policy_events),
+            adapter_metadata=adapter_metadata,
+            document_id=str(document.ref.document_id),
+            workflow_id=document.ref.workflow_id,
+            tenant_id=document.ref.tenant_id,
+            case_id=normalized_case_id,
+            content_hash=delta.signatures.content_hash,
+            chunk_meta=chunk_meta,
+            embedding_profile=(
+                profile_binding.profile_id
+                if profile_binding is not None
+                else chunk_meta.embedding_profile
+            ),
+            vector_space_id=(
+                profile_binding.resolution.vector_space.id
+                if profile_binding is not None
+                else chunk_meta.vector_space_id
+            ),
+            delta_status=delta.status.value,
+        )
         return Decision(
-            IngestionStatus.RETIRE.value,
+            payload.action.value,
             lifecycle_decision.reason,
-            attributes,
-        )
-
-    if delta.status is DeltaStatus.UNCHANGED:
-        return Decision(
-            IngestionStatus.SKIP.value,
-            delta.reason,
-            attributes,
-        )
-
-    if delta.status is DeltaStatus.NEAR_DUPLICATE:
-        return Decision(
-            IngestionStatus.SKIP.value,
-            delta.reason,
-            attributes,
+            payload.as_mapping(),
         )
 
     chunk_meta, profile_binding = _build_chunk_meta(
@@ -126,16 +119,37 @@ def build_ingestion_decision(
         delta.signatures.content_hash,
         normalized_case_id,
         embedding_profile,
+        lifecycle_state=lifecycle_decision.state,
     )
-    assert profile_binding is not None
-    attributes["chunk_meta"] = chunk_meta
-    attributes["embedding_profile"] = profile_binding.profile_id
-    attributes["vector_space_id"] = profile_binding.resolution.vector_space.id
-    return Decision(
-        IngestionStatus.UPSERT.value,
-        delta.reason,
-        attributes,
+
+    payload = CrawlerIngestionPayload(
+        action=IngestionAction.UPSERT,
+        lifecycle_state=lifecycle_decision.state.value,
+        policy_events=tuple(lifecycle_decision.policy_events),
+        adapter_metadata=adapter_metadata,
+        document_id=str(document.ref.document_id),
+        workflow_id=document.ref.workflow_id,
+        tenant_id=document.ref.tenant_id,
+        case_id=normalized_case_id,
+        content_hash=delta.signatures.content_hash,
+        chunk_meta=chunk_meta,
+        embedding_profile=(
+            profile_binding.profile_id
+            if profile_binding is not None
+            else chunk_meta.embedding_profile
+        ),
+        vector_space_id=(
+            profile_binding.resolution.vector_space.id
+            if profile_binding is not None
+            else chunk_meta.vector_space_id
+        ),
+        delta_status=delta.status.value,
     )
+
+    reason = (
+        lifecycle_decision.reason if lifecycle_decision.should_retire else delta.reason
+    )
+    return Decision(payload.action.value, reason, payload.as_mapping())
 
 
 def _build_chunk_meta(
@@ -145,6 +159,7 @@ def _build_chunk_meta(
     embedding_profile: Optional[str],
     *,
     resolve_profile: bool = True,
+    lifecycle_state: LifecycleState = LifecycleState.ACTIVE,
 ) -> Tuple[ChunkMeta, Optional[IngestionProfileResolution]]:
     profile_binding: Optional[IngestionProfileResolution]
     profile_id: Optional[str]
@@ -176,6 +191,7 @@ def _build_chunk_meta(
             else None
         ),
         document_id=str(document.ref.document_id),
+        lifecycle_state=lifecycle_state.value,
     )
     return chunk_meta, profile_binding
 

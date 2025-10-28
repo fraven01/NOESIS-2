@@ -27,7 +27,7 @@ flowchart LR
 - Loader ziehen Quelldaten aus Dokumenten, APIs oder Datenbanken.
 - Splitter & Chunker erzeugen überlappende Textblöcke; Parameter stehen in [RAG-Ingestion](ingestion.md).
 - Embeddings landen in `pgvector` (siehe [Schema](schema.sql)), inklusive Metadaten pro Tenant.
-- Retriever filtert per `tenant_id` und blendet Soft-Deletes (`deleted_at`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)).
+- Retriever filtert per `tenant_id` und blendet nicht-aktive Lifecycle-Stände (`documents.lifecycle <> 'active'`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)).
 
 ## Mandantenfähigkeit
 Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenant_id` trennt Zugriffe und wird vom Retriever gefiltert. Für wachsende Last kann optional ein Silo/Schemas je Tenant aufgebaut werden.
@@ -146,7 +146,7 @@ Selektoren für Routing-Regeln (`tenant`, `process`, `doc_class`) werden beim La
 
 ## Löschkonzept
 - Dokumente erhalten Hashes (siehe [Schema](schema.sql)) und `metadata` mit Herkunft.
-- Löschläufe laufen als Ingestion-Task mit Modus „delete“ und markieren `documents.deleted_at` (Soft Delete). Hard Delete optional über `DELETE ... WHERE tenant_id = ?`.
+- Löschläufe laufen als Ingestion-Task mit Modus „delete“ und setzen `documents.lifecycle = 'retired'` (Soft Delete). Hard Delete optional über `DELETE ... WHERE tenant_id = ?`.
 - Nach dem Löschen wird `VACUUM`/`ANALYZE` ausgeführt (Staging monatlich, Prod wöchentlich). Index-Rebuild via [Migrations-Runbook](../runbooks/migrations.md).
 
 # Schritte

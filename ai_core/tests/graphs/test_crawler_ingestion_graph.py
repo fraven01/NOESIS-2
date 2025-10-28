@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import pytest
 
@@ -10,8 +10,60 @@ from crawler.fetcher import FetchRequest, PolitenessContext
 from crawler.frontier import CrawlSignals, FrontierAction, SourceDescriptor
 from crawler.guardrails import GuardrailLimits, GuardrailSignals, GuardrailStatus
 from crawler.ingestion import IngestionStatus
+from crawler.retire import LifecycleState
 from crawler.parser import ParseStatus, ParserContent, ParserStats
-from uuid import uuid4
+from uuid import UUID, uuid4
+
+from ai_core.rag.schemas import Chunk
+from documents.repository import InMemoryDocumentsRepository
+
+
+class _RecordingVectorClient:
+    def __init__(self) -> None:
+        self.upserts: List[Chunk] = []
+        self.lifecycle_updates: List[Dict[str, object]] = []
+
+    def upsert_chunks(self, chunks: List[Chunk]) -> int:
+        self.upserts.extend(chunks)
+        return len(chunks)
+
+    def update_lifecycle_state(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Iterable[object],
+        state: str,
+        reason: str | None = None,
+        changed_at=None,
+        cursor=None,
+    ) -> int:
+        record = {
+            "tenant_id": tenant_id,
+            "document_ids": [str(doc) for doc in document_ids],
+            "state": state,
+            "reason": reason,
+        }
+        self.lifecycle_updates.append(record)
+        return len(record["document_ids"])
+
+
+@pytest.fixture
+def service_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Tuple[InMemoryDocumentsRepository, _RecordingVectorClient]:
+    repository = InMemoryDocumentsRepository()
+    vector_client = _RecordingVectorClient()
+    monkeypatch.setattr(
+        crawler_ingestion_graph,
+        "_resolve_documents_repository",
+        lambda: repository,
+    )
+    monkeypatch.setattr(
+        crawler_ingestion_graph,
+        "_resolve_vector_client",
+        lambda: vector_client,
+    )
+    return repository, vector_client
 
 
 def _build_state(
@@ -82,14 +134,8 @@ def _build_state(
     return state, meta, body
 
 
-def _extract_document_id(decision):
-    chunk_meta = decision.attributes.get("chunk_meta")
-    if chunk_meta is None:
-        return None
-    return getattr(chunk_meta, "document_id", None)
-
-
-def test_nominal_run_executes_pipeline() -> None:
+def test_nominal_run_executes_pipeline(service_fakes) -> None:
+    repository, vector = service_fakes
     initial_state, meta, body = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
 
@@ -121,8 +167,22 @@ def test_nominal_run_executes_pipeline() -> None:
     # Ensure original input dictionary remains untouched.
     assert "transitions" not in initial_state
 
+    store_payload = transitions["crawler.store"]["attributes"].get("result", {})
+    stored_document_id = store_payload.get("document_id")
+    assert stored_document_id
+    assert store_payload.get("tenant_id") == "tenant"
+    assert store_payload.get("workflow_id") == "workflow"
+    stored = repository.get("tenant", UUID(stored_document_id), prefer_latest=True)
+    assert stored is not None
+    assert vector.upserts
+    upsert_meta = vector.upserts[0].meta
+    assert upsert_meta.get("tenant_id") == "tenant"
+    assert upsert_meta.get("case_id") == "case"
+    upsert_result = transitions["rag.upsert"]["attributes"]["result"]
+    assert upsert_result.get("tenant_id") == "tenant"
 
-def test_start_crawl_respects_legacy_manual_review_control() -> None:
+
+def test_start_crawl_respects_legacy_manual_review_control(service_fakes) -> None:
     initial_state, _, _ = _build_state()
     initial_state["control"] = {"manual_review": "required", "dry_run": True}
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
@@ -134,7 +194,7 @@ def test_start_crawl_respects_legacy_manual_review_control() -> None:
     assert state["control"]["dry_run"] is True
 
 
-def test_manual_approval_path() -> None:
+def test_manual_approval_path(service_fakes) -> None:
     initial_state, meta, body = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
@@ -167,7 +227,8 @@ def test_manual_approval_path() -> None:
     assert final_result["graph_run_id"] != denied_result["graph_run_id"]
 
 
-def test_retire_flow_dispatches_retire_node() -> None:
+def test_retire_flow_dispatches_retire_node(service_fakes) -> None:
+    _, vector = service_fakes
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
@@ -182,55 +243,47 @@ def test_retire_flow_dispatches_retire_node() -> None:
     assert transitions["crawler.store"]["decision"] == "skip"
     assert transitions["rag.retire"]["decision"] == "retire"
     assert result["decision"] == IngestionStatus.RETIRE.value
+    assert not vector.upserts
+    assert vector.lifecycle_updates
+    update = vector.lifecycle_updates[-1]
+    assert update["state"] == LifecycleState.RETIRED.value
+    assert update["tenant_id"] == initial_state["tenant_id"]
+    assert update["document_ids"]
 
 
-def test_shadow_mode_turns_upsert_into_noop() -> None:
+def test_shadow_mode_turns_upsert_into_noop(service_fakes) -> None:
+    _, vector = service_fakes
     initial_state, meta, _ = _build_state()
-    recorded = {"calls": 0}
-
-    def _recording_upsert(decision):
-        recorded["calls"] += 1
-        return {"status": "queued", "document": _extract_document_id(decision)}
-
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
-        upsert_handler=_recording_upsert
-    )
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
     shadow_state, result = graph.run(state, meta)
-    assert recorded["calls"] == 0
+    assert vector.upserts == []
     transitions = shadow_state["transitions"]
     assert transitions["rag.upsert"]["decision"] == "shadow_skip"
     assert result["decision"] == IngestionStatus.UPSERT.value
 
 
-def test_shadow_mode_toggle_allows_follow_up_upsert() -> None:
+def test_shadow_mode_toggle_allows_follow_up_upsert(service_fakes) -> None:
+    _, vector = service_fakes
     initial_state, meta, _ = _build_state()
-    recorded: List[int] = []
-
-    def _recording_upsert(decision):
-        recorded.append(_extract_document_id(decision))
-        return {"status": "queued"}
-
-    graph = crawler_ingestion_graph.CrawlerIngestionGraph(
-        upsert_handler=_recording_upsert
-    )
+    graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
     state = graph.shadow_mode_on(state)
 
     shadow_state, first_result = graph.run(state, meta)
-    assert recorded == []
+    assert vector.upserts == []
     assert shadow_state["transitions"]["rag.upsert"]["decision"] == "shadow_skip"
 
     resumed_state = graph.shadow_mode_off(shadow_state)
     resumed_state, resumed_result = graph.run(resumed_state, meta)
-    assert recorded != []
+    assert vector.upserts
     assert resumed_state["transitions"]["rag.upsert"]["decision"] == "upsert"
     assert resumed_result["graph_run_id"] != first_result["graph_run_id"]
 
 
-def test_event_emitter_receives_all_nodes() -> None:
+def test_event_emitter_receives_all_nodes(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     events: List[Tuple[str, str, str]] = []
 
@@ -256,7 +309,7 @@ def test_event_emitter_receives_all_nodes() -> None:
     assert all(event[2] == result["graph_run_id"] for event in events)
 
 
-def test_missing_required_keys_raise() -> None:
+def test_missing_required_keys_raise(service_fakes) -> None:
     state, meta, _ = _build_state()
     state.pop("tenant_id")
     meta = {"case_id": meta["case_id"], "workflow_id": meta["workflow_id"]}
@@ -269,7 +322,7 @@ def test_missing_required_keys_raise() -> None:
     assert exc.value.args[0] == "missing_required_state_keys"
 
 
-def test_ingestion_missing_delta_emits_missing_artifact() -> None:
+def test_ingestion_missing_delta_emits_missing_artifact(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     running_state = graph.start_crawl(initial_state)
@@ -289,7 +342,7 @@ def test_ingestion_missing_delta_emits_missing_artifact() -> None:
     assert state_copy["ingest_action"] == "error"
 
 
-def test_retire_overrides_recompute_delta() -> None:
+def test_retire_overrides_recompute_delta(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
@@ -307,7 +360,7 @@ def test_retire_overrides_recompute_delta() -> None:
     assert result["decision"] == IngestionStatus.RETIRE.value
 
 
-def test_gating_score_uses_custom_score_if_supplied() -> None:
+def test_gating_score_uses_custom_score_if_supplied(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     initial_state["gating_input"]["score"] = 0.42
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
@@ -318,7 +371,7 @@ def test_gating_score_uses_custom_score_if_supplied() -> None:
     assert result["attributes"].get("severity") == "info"
 
 
-def test_parser_failure_sets_error_summary() -> None:
+def test_parser_failure_sets_error_summary(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     initial_state["parse_input"].update(
         {"status": ParseStatus.PARSER_FAILURE, "content": None, "stats": None}
@@ -332,7 +385,7 @@ def test_parser_failure_sets_error_summary() -> None:
     assert result["attributes"].get("severity") == "error"
 
 
-def test_store_only_mode_stores_without_upsert() -> None:
+def test_store_only_mode_stores_without_upsert(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
@@ -345,7 +398,7 @@ def test_store_only_mode_stores_without_upsert() -> None:
     assert transitions["rag.upsert"]["reason"] == "mode_disabled"
 
 
-def test_dry_run_blocks_store_and_upsert() -> None:
+def test_dry_run_blocks_store_and_upsert(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)
@@ -363,7 +416,7 @@ def test_dry_run_blocks_store_and_upsert() -> None:
     assert ingestion_attrs["blocked"] == "dry_run"
 
 
-def test_review_required_blocks_store_and_upsert() -> None:
+def test_review_required_blocks_store_and_upsert(service_fakes) -> None:
     initial_state, meta, _ = _build_state()
     graph = crawler_ingestion_graph.CrawlerIngestionGraph()
     state = graph.start_crawl(initial_state)

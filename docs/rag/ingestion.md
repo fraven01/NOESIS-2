@@ -21,7 +21,45 @@ flowchart TD
 - Loader nutzen eine generische Schnittstelle und liefern strukturierte Records; Anbindungen an externe Quellen folgen als Erweiterung.
 - Splitter normalisiert Formate (Markdown → Plaintext), Chunker erzeugt überlappende Stücke.
 - Embedder ruft LiteLLM über `ai_core.rag.embeddings.EmbeddingClient` auf, nutzt `EMBEDDINGS_MODEL_PRIMARY` (optional `EMBEDDINGS_MODEL_FALLBACK`) sowie `EMBEDDINGS_PROVIDER` und schreibt Ergebnisse in `pgvector`.
-- Upsert nutzt Hashes, um Duplikate zu überspringen und `documents.deleted_at` zu respektieren.
+- Upsert nutzt Hashes, um Duplikate zu überspringen und den Lifecycle (`documents.lifecycle` sowie `chunks.metadata->>'lifecycle_state'`) zu respektieren.
+- Der Crawler-Ingestion-Graph speichert normalisierte Dokumente zuerst über
+  `documents.repository.DocumentsRepository.upsert()` und übergibt anschließend
+  strukturierte Chunks an den Standard-Vector-Client
+  (`ai_core.rag.vector_client.get_default_client().upsert_chunks`). Auf diese
+  Weise bleiben Dokumentenspeicher und Vector-Space synchron, bevor optionale
+  Retire-Entscheidungen `update_lifecycle_state` für betroffene Dokumente
+  triggern.
+
+## Crawler → RAG End-to-End
+
+```mermaid
+flowchart LR
+    subgraph Crawl
+        F[Frontier]
+        FE[Fetch]
+        P[Parse]
+        N[Normalize]
+        D[Delta]
+        G[Guardrails]
+    end
+    subgraph RAG
+        I[Ingestion Decision]
+        DS[DocumentsRepository.upsert]
+        VC[Vector Client Upsert]
+        R[Retire Updates]
+    end
+    F --> FE --> P --> N --> D --> G --> I
+    I --> DS --> VC --> R
+```
+
+- Der Graph verbindet Crawler-Artefakte deterministisch mit der RAG-Pipeline.
+  Die Tests in `ai_core/tests/test_crawler_delta.py`,
+  `ai_core/tests/test_crawler_ingestion.py`,
+  `ai_core/tests/test_crawler_guardrails.py` und
+  `ai_core/tests/test_crawler_retire.py` validieren die Übergaben.
+- Der Guardrail- und Retire-Pfad liegt jetzt ausschließlich in den
+  RAG-Test-Suites, damit CI- und QA-Teams eine zentrale Stelle für den
+  End-to-End-Nachweis haben.
 
 ## Upload → Ingest-Trigger
 - **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen.
@@ -67,3 +105,4 @@ flowchart TD
 1. Lade das Dokument via `POST /ai/rag/documents/upload/` hoch, dokumentiere die zurückgegebene `document_id` und prüfe Upload-Fehler (z.B. Tenant-Mismatch, Dateigrößenlimit) sofort im Response.
 2. Stoße den Ingest mit `POST /ai/rag/ingestion/run/` samt Payload `{ "document_ids": [<document_id>] }` an; ein 202-Response signalisiert, dass der Task in der `ingestion` Queue liegt. Bei 4xx-Replies Profil-/Statusfehler korrigieren, bei 5xx erneut triggern oder einen Retry-Job anlegen.
 3. Überwache den Worker-Lauf (Langfuse Trace `ingestion.*`, Dead-Letter-Queue, Cloud-SQL-Metriken) und führe bei Backpressure-Peaks ein gestaffeltes Retriggering durch, bevor du in Prod ausrollst. Einstellungen wie `BATCH_SIZE` dokumentieren und Alerts im [Langfuse Guide](../observability/langfuse.md) aktivieren.
+4. Für Crawler-Quellen protokolliert der LangGraph die einzelnen Schritte (Frontier → Fetch → Parse → Normalize → Delta → Guardrails → Store → Upsert → Retire) mitsamt der Transition-Metadaten. Die Store-Phase bestätigt das erfolgreiche `DocumentsRepository.upsert`, bevor der Vector-Client den Embedding-Lauf übernimmt und optionale Lifecycle-Updates für Retire-Pfade ausführt.

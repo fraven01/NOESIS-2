@@ -547,7 +547,7 @@ def test_graph_view_propagates_tool_context(
     assert request_obj.tool_context.tenant_id == test_tenant_schema_name
     assert request_obj.tool_context.case_id == "case-tool"
     assert request_obj.tool_context.idempotency_key == "idem-123"
-    assert response.headers.get(IDEMPOTENCY_KEY_HEADER) is None
+    assert response.headers.get(IDEMPOTENCY_KEY_HEADER) == "idem-123"
 
 
 @pytest.mark.django_db
@@ -1995,6 +1995,7 @@ def test_crawler_runner_propagates_idempotency_key(
     )
 
     assert response.status_code == 200
+    assert response[IDEMPOTENCY_KEY_HEADER] == "idem-crawler-1"
     body = response.json()
     assert body["idempotent"] is True
     assert recorded_keys == ["idem-crawler-1"]

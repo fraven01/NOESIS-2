@@ -234,7 +234,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
     assert fetch.status is FetchStatus.NOT_MODIFIED
     assert any(event.name == "not_modified" for event in spans["fetch.http"].events)
     assert delta.status is DeltaStatus.UNCHANGED
-    assert _ingestion_status(ingestion) is IngestionStatus.SKIP
+    assert _ingestion_status(ingestion) is IngestionStatus.UPSERT
     assert spans["delta"].events[0].name == "unchanged"
 
 

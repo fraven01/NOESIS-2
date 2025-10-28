@@ -7,12 +7,14 @@ from typing import Optional
 from ai_core.middleware.guardrails import (
     GuardrailDecision,
     GuardrailErrorCategory,
+    GuardrailStatus,
+    enforce_guardrails as _shared_enforce_guardrails,
+)
+from ai_core.rag.guardrails import (
     GuardrailLimits,
     GuardrailSignals,
-    GuardrailStatus,
     QuotaLimits,
     QuotaUsage,
-    enforce_guardrails as _shared_enforce_guardrails,
 )
 
 from .errors import CrawlerError, ErrorClass

@@ -1,3 +1,5 @@
+"""Integration-level guardrail tests for the crawler → RAG path."""
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -7,6 +9,12 @@ import pytest
 from ai_core.middleware.guardrails import (
     GuardrailErrorCategory,
     enforce_guardrails as shared_enforce_guardrails,
+)
+from ai_core.rag.guardrails import (
+    GuardrailLimits as SharedGuardrailLimits,
+    GuardrailSignals as SharedGuardrailSignals,
+    QuotaLimits as SharedQuotaLimits,
+    QuotaUsage as SharedQuotaUsage,
 )
 from crawler.errors import ErrorClass
 from crawler.guardrails import (
@@ -184,3 +192,10 @@ def test_shared_guardrails_with_custom_builder() -> None:
     assert captured["reason"] == "mime_blacklisted"
     assert isinstance(captured["signals"], GuardrailSignals)
     assert captured["attributes"] == {"mime_type": "application/json"}
+
+
+def test_crawler_guardrail_classes_are_shared() -> None:
+    assert GuardrailLimits is SharedGuardrailLimits
+    assert GuardrailSignals is SharedGuardrailSignals
+    assert QuotaLimits is SharedQuotaLimits
+    assert QuotaUsage is SharedQuotaUsage

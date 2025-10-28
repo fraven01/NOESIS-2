@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable
+from enum import Enum
+from types import MappingProxyType
+from typing import Iterable, Mapping, MutableMapping
 
 from common.logging import get_log_context, get_logger
 
@@ -66,8 +68,56 @@ class ChunkMeta(BaseModel):
     parent_ids: list[str] | None = None
     collection_id: str | None = None
     document_id: str | None = None
+    lifecycle_state: str | None = None
 
     model_config = ConfigDict(extra="forbid")
+
+
+class IngestionAction(str, Enum):
+    """Supported ingestion outcomes emitted by crawler planning."""
+
+    UPSERT = "upsert"
+    SKIP = "skip"
+    RETIRE = "retire"
+
+
+class CrawlerIngestionPayload(BaseModel):
+    """Normalized crawler ingestion metadata forwarded to vector services."""
+
+    action: IngestionAction
+    lifecycle_state: str
+    policy_events: tuple[str, ...] = ()
+    adapter_metadata: Mapping[str, object]
+    document_id: str
+    workflow_id: str | None = None
+    tenant_id: str
+    case_id: str
+    content_hash: str | None = None
+    chunk_meta: ChunkMeta | None = None
+    embedding_profile: str | None = None
+    vector_space_id: str | None = None
+    delta_status: str | None = None
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    def as_mapping(self) -> Mapping[str, object]:
+        """Return an immutable view of the payload for decision attributes."""
+
+        payload: MutableMapping[str, object] = {
+            "lifecycle_state": self.lifecycle_state,
+            "policy_events": tuple(self.policy_events),
+            "adapter_metadata": self.adapter_metadata,
+            "document_id": self.document_id,
+            "workflow_id": self.workflow_id,
+            "tenant_id": self.tenant_id,
+            "case_id": self.case_id,
+            "content_hash": self.content_hash,
+            "chunk_meta": self.chunk_meta,
+            "embedding_profile": self.embedding_profile,
+            "vector_space_id": self.vector_space_id,
+            "delta_status": self.delta_status,
+        }
+        return MappingProxyType(payload)
 
 
 def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolution:
@@ -179,6 +229,8 @@ __all__ = [
     "map_ingestion_error_to_status",
     "IngestionProfileResolution",
     "ChunkMeta",
+    "IngestionAction",
+    "CrawlerIngestionPayload",
     "resolve_ingestion_profile",
     "ensure_embedding_dimensions",
 ]

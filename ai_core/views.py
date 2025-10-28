@@ -435,6 +435,13 @@ def _prepare_request(request: Request):
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
+    idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)
+
+    idempotency_key = None
+    if idempotency_header is not None:
+        candidate = idempotency_header.strip()
+        if candidate:
+            idempotency_key = candidate
 
     tenant_schema = _resolve_tenant_id(request)
     if not tenant_schema:
@@ -517,6 +524,8 @@ def _prepare_request(request: Request):
         meta["key_alias"] = key_alias
     if collection_id:
         meta["collection_id"] = collection_id
+    if idempotency_key:
+        meta["idempotency_key"] = idempotency_key
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id

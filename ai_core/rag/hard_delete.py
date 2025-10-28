@@ -185,6 +185,18 @@ def _collect_stats(
                         not_found=len(doc_ids),
                     )
 
+                try:
+                    store.update_lifecycle_state(  # type: ignore[attr-defined]
+                        tenant_id=str(tenant_uuid),
+                        document_ids=existing_ids,
+                        state="deleted",
+                        reason="hard_delete",
+                        changed_at=timezone.now(),
+                        cursor=cur,
+                    )
+                except AttributeError:
+                    pass
+
                 cur.execute(
                     "SELECT COUNT(*) FROM chunks WHERE document_id = ANY(%s)",
                     (existing_ids,),

@@ -6,13 +6,13 @@ Dieser Leitfaden beschreibt, wie Dokumente nach dem Upload durch Ingestion, Retr
 
 1. **Upload** – Dateien gelangen über UI, API oder Batch-Import in die Ingestion-Warteschlange. Metadaten enthalten mindestens `tenant_id`, `source`, `hash` und optionale Klassifizierungen (z. B. Prozess, Dokumentklasse).
 2. **Ingestion** – Loader, Chunker und Embedder schreiben Chunks mit Embeddings nach `pgvector`. Konsistenzprüfungen (Hash, Dimension, Tenant-Isolation) sind in [Ingestion](ingestion.md) dokumentiert.
-3. **Retrieval** – Der `VectorStoreRouter` ruft den Retriever auf, der `deleted_at` auf Dokument- (`documents.deleted_at IS NULL`) und Chunk-Ebene (`chunks.metadata->>'deleted_at' IS NULL`) standardmäßig filtert. Soft-gelöschte Datensätze sind dadurch in allen Standard-Retrievalpfaden unsichtbar, bis ein autorisierter Kontext eine andere Sichtbarkeit erzwingt. Smoke-Tests können direkt über die Suche validieren, dass Löschungen greifen. Die Sichtbarkeitsregel wird explizit über das Feld `visibility` gesteuert (siehe Abschnitt „Soft-Delete“).
+3. **Retrieval** – Der `VectorStoreRouter` ruft den Retriever auf, der den Lifecycle auf Dokument- (`documents.lifecycle = 'active'`) und Chunk-Ebene (`chunks.metadata->>'lifecycle_state' = 'active'`) standardmäßig filtert. Soft-gelöschte Datensätze sind dadurch in allen Standard-Retrievalpfaden unsichtbar, bis ein autorisierter Kontext eine andere Sichtbarkeit erzwingt. Smoke-Tests können direkt über die Suche validieren, dass Löschungen greifen. Die Sichtbarkeitsregel wird explizit über das Feld `visibility` gesteuert (siehe Abschnitt „Soft-Delete“).
 4. **Pflege & Löschpfade** – Routinejobs prüfen Staleness, führen Re-Embeddings durch und setzen Lösch-Flags. Soft- und Hard-Delete unterscheiden Verantwortlichkeiten sowie Audit-Anforderungen.
 
 ## Soft-Delete
 
-- **Flag `deleted_at`**: Soft-Delete setzt einen Zeitstempel auf Dokument- und Chunk-Ebene. Der Datensatz bleibt erhalten und dient als Markierung – der Retriever blendet ihn jedoch per Default aus, bis Admin-Kontexte explizit eine erweiterte Sicht aktivieren.
-- **Router-Verhalten**: Der `VectorStoreRouter` injiziert standardmäßig `visibility="active"` und delegiert mit `meta.visibility_effective` an den Retriever, der `deleted_at` filtert. Admin- oder Service-Kontexte, die gelöschte Inhalte sehen müssen, aktivieren dies explizit über den Guard (siehe Roadmap für Auth).
+- **Lifecycle-Status `retired`**: Soft-Delete setzt den Lifecycle auf Dokument- und Chunk-Ebene auf `retired`. Der Datensatz bleibt erhalten und dient als Markierung – der Retriever blendet ihn jedoch per Default aus, bis Admin-Kontexte explizit eine erweiterte Sicht aktivieren. Der bisherige Zeitstempel `deleted_at` bleibt aus Kompatibilitätsgründen optional erhalten und wird beim Wechsel in einen nicht-aktiven Lifecycle gesetzt.
+- **Router-Verhalten**: Der `VectorStoreRouter` injiziert standardmäßig `visibility="active"` und delegiert mit `meta.visibility_effective` an den Retriever, der auf `lifecycle='active'` filtert. Admin- oder Service-Kontexte, die gelöschte Inhalte sehen müssen, aktivieren dies explizit über den Guard (siehe Roadmap für Auth).
 - **Sichtbarkeitsoptionen**: Clients können optional `visibility` setzen:
   - `"active"` (Default) blendet Soft-Deletes aus und entspricht dem bisherigen Verhalten der Suche.
   - `"all"` zeigt aktive und Soft-Delete-Dokumente gleichzeitig an, sofern der Guard die Anfrage autorisiert.
@@ -36,7 +36,7 @@ Hard-Delete-Aufträge werden bevorzugt über den Admin-Endpunkt [`POST /ai/rag/a
 
 | Rolle | Aufgaben | Tools/Artefakte |
 | --- | --- | --- |
-| Entwickler:innen | Soft-Delete für fehlerhafte Uploads, Re-Upload nach Fix, Dokumentation im Issue-Tracker. | SQL-Skript aus E1 des Runbooks, danach Router-Invalidierung & SQL-Abgleich (`deleted_at IS NULL`). |
+| Entwickler:innen | Soft-Delete für fehlerhafte Uploads, Re-Upload nach Fix, Dokumentation im Issue-Tracker. | SQL-Skript aus E1 des Runbooks, danach Router-Invalidierung & SQL-Abgleich (`lifecycle = 'active'`). |
 | Administrator:innen/Data-Ops | Freigabe & Durchführung von Hard-Deletes, Pflege von Audit-Logs, Nacharbeiten in Downstream-Systemen. | Celery-Task `rag.hard_delete` (oder Fallback-SQL), Audit-Log-Eintrag, Post-Delete-Checks. |
 | QA/Support | Meldet betroffene Dokumente, initiiert Soft-Delete-Requests, prüft, ob Retrieval (mit explizitem Filter) wieder korrekt arbeitet. | Support-Playbooks, Monitoring-Dashboards (Langfuse, BI). |
 

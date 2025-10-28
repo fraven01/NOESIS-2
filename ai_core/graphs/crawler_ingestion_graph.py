@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timezone
 import secrets
 import time
+from importlib import import_module
 from typing import (
     Any,
     Callable,
@@ -59,6 +60,11 @@ from crawler.parser import (
     build_parse_result,
 )
 
+from ai_core.rag import vector_client
+from ai_core.rag.ingestion_contracts import ChunkMeta
+from ai_core.rag.schemas import Chunk
+from documents.repository import DocumentsRepository
+
 
 def _generate_uuid7() -> UUID:
     """Generate a monotonic UUIDv7 compatible identifier."""
@@ -70,13 +76,83 @@ def _generate_uuid7() -> UUID:
     return UUID(int=value)
 
 
-def _default_retire_handler(decision: Decision) -> Dict[str, object]:
+def _resolve_documents_repository() -> DocumentsRepository:
+    services = import_module("ai_core.services")
+    repository = services._get_documents_repository()  # type: ignore[attr-defined]
+    if not isinstance(repository, DocumentsRepository):
+        raise TypeError("documents_repository_invalid")
+    return repository
+
+
+def _resolve_vector_client():
+    return vector_client.get_default_client()
+
+
+def _retire_payload(
+    decision: Decision,
+    *,
+    chunk: Optional[Chunk],
+    vector_client_instance: Optional[object] = None,
+) -> Dict[str, object]:
     lifecycle_attr = decision.attributes.get("lifecycle_state", LifecycleState.ACTIVE)
     if isinstance(lifecycle_attr, LifecycleState):
         lifecycle_value = lifecycle_attr.value
     else:
         lifecycle_value = lifecycle_attr
-    return {"status": "retired", "lifecycle_state": lifecycle_value}
+    attributes = decision.attributes
+    chunk_meta_obj = attributes.get("chunk_meta")
+    meta_model: Optional[ChunkMeta]
+    if isinstance(chunk_meta_obj, ChunkMeta):
+        meta_model = chunk_meta_obj
+    elif isinstance(chunk_meta_obj, Mapping):
+        try:
+            meta_model = ChunkMeta.model_validate(chunk_meta_obj)
+        except Exception:
+            meta_model = None
+    else:
+        meta_model = None
+
+    tenant_id: Optional[str] = None
+    document_id: Optional[str] = None
+    if isinstance(meta_model, ChunkMeta):
+        tenant_id = meta_model.tenant_id or None
+        document_id = meta_model.document_id or None
+    if not tenant_id:
+        tenant_id = attributes.get("tenant_id")  # type: ignore[index]
+    if not document_id:
+        document_id = attributes.get("document_id")  # type: ignore[index]
+    if not tenant_id and chunk is not None:
+        tenant_id = chunk.meta.get("tenant_id")
+    if not document_id and chunk is not None:
+        document_id = chunk.meta.get("document_id")
+
+    if not tenant_id or not document_id:
+        return {
+            "status": "retired",
+            "lifecycle_state": lifecycle_value,
+            "reason": "missing_identifier",
+        }
+
+    client = vector_client_instance or _resolve_vector_client()
+    changed_at = datetime.now(timezone.utc)
+    try:
+        updated = client.update_lifecycle_state(  # type: ignore[attr-defined]
+            tenant_id=tenant_id,
+            document_ids=[document_id],
+            state=lifecycle_value,
+            reason=decision.reason,
+            changed_at=changed_at,
+        )
+    except AttributeError:
+        updated = 0
+
+    return {
+        "status": "retired",
+        "lifecycle_state": lifecycle_value,
+        "documents_updated": int(updated),
+        "document_id": document_id,
+        "changed_at": changed_at.isoformat(),
+    }
 
 
 def _ingestion_status(decision: Optional[Decision]) -> Optional[IngestionStatus]:
@@ -86,7 +162,7 @@ def _ingestion_status(decision: Optional[Decision]) -> Optional[IngestionStatus]
 
 
 @dataclass(frozen=True)
-class Transition:
+class GraphTransition:
     """Typed transition payload for graph node outcomes."""
 
     decision: str
@@ -114,11 +190,29 @@ class Transition:
         }
 
     @classmethod
-    def from_mapping(cls, payload: Mapping[str, Any]) -> "Transition":
+    def from_mapping(cls, payload: Mapping[str, Any]) -> "GraphTransition":
         decision = payload.get("decision", "")
         reason = payload.get("reason", "")
         attributes = payload.get("attributes", {})
         return cls(decision=decision, reason=reason, attributes=attributes)
+
+
+@dataclass(frozen=True)
+class GraphNode:
+    """Graph node descriptor tying a name to the execution callable."""
+
+    name: str
+    runner: Callable[
+        [Dict[str, Any], Dict[str, Any], Dict[str, Any]], Tuple[GraphTransition, bool]
+    ]
+
+    def execute(
+        self,
+        state: Dict[str, Any],
+        artifacts: Dict[str, Any],
+        control: Dict[str, Any],
+    ) -> Tuple[GraphTransition, bool]:
+        return self.runner(state, artifacts, control)
 
 
 def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
@@ -161,8 +255,10 @@ def _transition(
     reason: str,
     *,
     attributes: Optional[Mapping[str, Any]] = None,
-) -> Transition:
-    return Transition(decision=decision, reason=reason, attributes=attributes or {})
+) -> GraphTransition:
+    return GraphTransition(
+        decision=decision, reason=reason, attributes=attributes or {}
+    )
 
 
 RequiredStateKeys = (
@@ -189,13 +285,7 @@ class CrawlerIngestionGraph:
     delta_evaluator: Callable[..., DeltaDecision] = evaluate_delta
     guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
     ingestion_builder: Callable[..., Decision] = build_ingestion_decision
-    store_handler: Callable[[NormalizedDocument], Any] = lambda document: {
-        "status": "stored",
-        "document_id": str(document.ref.document_id),
-    }
-    upsert_handler: Callable[[Decision], Any] = lambda _: {"status": "queued"}
-    retire_handler: Callable[[Decision], Any] = _default_retire_handler
-    event_emitter: Optional[Callable[[str, Transition, str], None]] = None
+    event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None
 
     def run(
         self,
@@ -207,33 +297,33 @@ class CrawlerIngestionGraph:
         working_state["transitions"] = {}
         graph_run_id = str(_generate_uuid7())
         working_state["graph_run_id"] = graph_run_id
-        transitions: Dict[str, Transition] = {}
+        transitions: Dict[str, GraphTransition] = {}
         artifacts: Dict[str, Any] = dict(working_state.get("artifacts", {}))
         control: Dict[str, Any] = working_state["control"]
 
         node_sequence = (
-            ("crawler.frontier", self._run_frontier),
-            ("crawler.fetch", self._run_fetch),
-            ("crawler.parse", self._run_parse),
-            ("crawler.normalize", self._run_normalize),
-            ("crawler.delta", self._run_delta),
-            ("crawler.gating", self._run_gating),
-            ("crawler.ingest_decision", self._run_ingestion),
-            ("crawler.store", self._run_store),
-            ("rag.upsert", self._run_upsert),
-            ("rag.retire", self._run_retire),
+            GraphNode("crawler.frontier", self._run_frontier),
+            GraphNode("crawler.fetch", self._run_fetch),
+            GraphNode("crawler.parse", self._run_parse),
+            GraphNode("crawler.normalize", self._run_normalize),
+            GraphNode("crawler.delta", self._run_delta),
+            GraphNode("crawler.gating", self._run_gating),
+            GraphNode("crawler.ingest_decision", self._run_ingestion),
+            GraphNode("crawler.store", self._run_store),
+            GraphNode("rag.upsert", self._run_upsert),
+            GraphNode("rag.retire", self._run_retire),
         )
 
-        last_transition: Optional[Transition] = None
+        last_transition: Optional[GraphTransition] = None
         should_continue = True
 
-        for name, handler in node_sequence:
+        for node in node_sequence:
             if not should_continue:
                 break
-            outcome, should_continue = handler(working_state, artifacts, control)
-            transitions[name] = outcome
+            outcome, should_continue = node.execute(working_state, artifacts, control)
+            transitions[node.name] = outcome
             last_transition = outcome
-            self._emit_event(name, outcome, graph_run_id)
+            self._emit_event(node.name, outcome, graph_run_id)
 
         working_state["transitions"] = {
             node: payload.to_dict() for node, payload in transitions.items()
@@ -400,7 +490,9 @@ class CrawlerIngestionGraph:
             copied["artifacts"] = dict(copied["artifacts"])
         return copied
 
-    def _emit_event(self, node: str, transition: Transition, graph_run_id: str) -> None:
+    def _emit_event(
+        self, node: str, transition: GraphTransition, graph_run_id: str
+    ) -> None:
         if self.event_emitter is None:
             return
         try:
@@ -414,7 +506,7 @@ class CrawlerIngestionGraph:
         artifact: str,
         *,
         reason: Optional[str] = None,
-    ) -> Transition:
+    ) -> GraphTransition:
         description = reason or f"{artifact}_missing"
         return _transition(
             "missing_artifact",
@@ -422,12 +514,106 @@ class CrawlerIngestionGraph:
             attributes={"artifact": artifact, "severity": "error"},
         )
 
+    def _build_chunk(
+        self,
+        decision: Decision,
+        artifacts: Mapping[str, Any],
+        state: Mapping[str, Any],
+        *,
+        lifecycle_state: Optional[str | LifecycleState] = None,
+        lifecycle_changed_at: Optional[datetime] = None,
+        lifecycle_reason: Optional[str] = None,
+    ) -> Optional[Chunk]:
+        chunk_meta_obj = decision.attributes.get("chunk_meta")
+        meta_model: Optional[ChunkMeta]
+        if isinstance(chunk_meta_obj, ChunkMeta):
+            meta_model = chunk_meta_obj
+        elif isinstance(chunk_meta_obj, Mapping):
+            try:
+                meta_model = ChunkMeta.model_validate(chunk_meta_obj)
+            except Exception:
+                meta_model = None
+        else:
+            meta_model = None
+        if meta_model is None:
+            return None
+
+        meta_payload = meta_model.model_dump(exclude_none=True)
+
+        for key in ("tenant_id", "case_id", "workflow_id", "collection_id"):
+            value = meta_payload.get(key) or state.get(key)
+            if value is not None:
+                meta_payload[key] = str(value)
+
+        document_id = meta_payload.get("document_id")
+        if document_id is None:
+            fallback_id = state.get("document_id")
+            if fallback_id is not None:
+                meta_payload["document_id"] = str(fallback_id)
+        if not meta_payload.get("document_id"):
+            meta_payload.pop("document_id", None)
+
+        adapter_metadata = decision.attributes.get("adapter_metadata")
+        if isinstance(adapter_metadata, Mapping):
+            meta_payload.setdefault("adapter_metadata", dict(adapter_metadata))
+
+        lifecycle_value: Optional[str] = None
+        if isinstance(lifecycle_state, LifecycleState):
+            lifecycle_value = lifecycle_state.value
+        elif isinstance(lifecycle_state, str) and lifecycle_state:
+            lifecycle_value = lifecycle_state
+
+        if lifecycle_value is not None:
+            meta_payload["lifecycle_state"] = lifecycle_value
+            if lifecycle_changed_at is not None:
+                meta_payload["lifecycle_changed_at"] = lifecycle_changed_at.astimezone(
+                    timezone.utc
+                ).isoformat()
+            elif "lifecycle_changed_at" in meta_payload:
+                meta_payload.pop("lifecycle_changed_at", None)
+            reason_value = (lifecycle_reason or "").strip()
+            if reason_value:
+                meta_payload["lifecycle_reason"] = reason_value
+            elif "lifecycle_reason" in meta_payload:
+                meta_payload.pop("lifecycle_reason", None)
+
+        primary_text: str = ""
+        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
+        if (
+            parse_result is not None
+            and isinstance(parse_result, ParseResult)
+            and parse_result.content is not None
+        ):
+            primary_text = parse_result.content.primary_text or ""
+
+        if not primary_text:
+            normalized: Optional[NormalizedDocument] = artifacts.get(
+                "normalized_document"
+            )
+            if isinstance(normalized, NormalizedDocument):
+                blob = normalized.blob
+                payload = getattr(blob, "decoded_payload", None)
+                if callable(payload):
+                    try:
+                        decoded = payload()
+                    except Exception:
+                        decoded = None
+                    if isinstance(decoded, (bytes, bytearray)):
+                        try:
+                            primary_text = decoded.decode("utf-8", errors="ignore")
+                        except Exception:
+                            primary_text = ""
+
+        return Chunk(
+            content=primary_text, meta=meta_payload, embedding=None, parents=None
+        )
+
     def _run_frontier(
         self,
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         params = state.get("frontier_input", {})
         descriptor: SourceDescriptor = params.get("descriptor")
         signals: Optional[CrawlSignals] = params.get("signals")
@@ -464,7 +650,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         params = state.get("fetch_input", {})
         request: FetchRequest = params.get("request")
         status_code = params.get("status_code")
@@ -514,7 +700,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         fetch_result: Optional[FetchResult] = artifacts.get("fetch_result")
         if fetch_result is None:
             outcome = self._missing_artifact("fetch_result")
@@ -554,7 +740,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         parse_result: Optional[ParseResult] = artifacts.get("parse_result")
         if parse_result is None:
             outcome = self._missing_artifact("parse_result")
@@ -592,7 +778,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
         if normalized is None:
             outcome = self._missing_artifact("normalized_document")
@@ -642,7 +828,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         initial_review = _get_review_value(control)
         if initial_review == "approved":
             decision = GuardrailDecision.from_legacy(
@@ -697,7 +883,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
         if normalized is None:
             outcome = self._missing_artifact("normalized_document")
@@ -792,7 +978,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
         status = _ingestion_status(ingestion) if ingestion else None
         if status is not IngestionStatus.UPSERT:
@@ -848,9 +1034,26 @@ class CrawlerIngestionGraph:
             outcome = _transition("skip", "mode_disabled", attributes=attributes)
             return outcome, True
 
-        result = self.store_handler(normalized)
-        artifacts["store_result"] = result
-        attributes["result"] = result
+        repository = _resolve_documents_repository()
+        stored_document = repository.upsert(normalized)
+        store_result = {
+            "status": "stored",
+            "tenant_id": stored_document.ref.tenant_id,
+            "document_id": str(stored_document.ref.document_id),
+            "version": stored_document.ref.version,
+            "workflow_id": stored_document.ref.workflow_id,
+            "collection_id": (
+                str(stored_document.ref.collection_id)
+                if stored_document.ref.collection_id
+                else None
+            ),
+        }
+        if store_result.get("version") is None:
+            store_result.pop("version")
+        if store_result.get("collection_id") is None:
+            store_result.pop("collection_id")
+        artifacts["store_result"] = store_result
+        attributes["result"] = store_result
         outcome = _transition("stored", "document_stored", attributes=attributes)
         return outcome, True
 
@@ -859,7 +1062,7 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
         mode = control.get("mode", "ingest")
         dry_run = bool(control.get("dry_run"))
@@ -923,13 +1126,41 @@ class CrawlerIngestionGraph:
             )
             return outcome, True
 
-        result = self.upsert_handler(ingestion)
-        artifacts["upsert_result"] = result
+        chunk = self._build_chunk(ingestion, artifacts, state)
+        if chunk is None:
+            upsert_result = {"status": "skipped", "reason": "missing_chunk"}
+            artifacts["upsert_result"] = upsert_result
+            outcome = _transition(
+                "skip",
+                "missing_chunk",
+                attributes={
+                    "result": upsert_result,
+                    "mode": mode,
+                    "dry_run": dry_run,
+                    "review": review_state,
+                    "shadow_mode": False,
+                },
+            )
+            return outcome, True
+
+        vector_client_instance = _resolve_vector_client()
+        written = vector_client_instance.upsert_chunks([chunk])
+        upsert_result = {
+            "status": "upserted",
+            "chunks_written": int(written),
+        }
+        document_id = chunk.meta.get("document_id") if chunk.meta else None
+        if document_id is not None:
+            upsert_result["document_id"] = str(document_id)
+        tenant_id = chunk.meta.get("tenant_id") if chunk.meta else None
+        if tenant_id is not None:
+            upsert_result["tenant_id"] = str(tenant_id)
+        artifacts["upsert_result"] = upsert_result
         outcome = _transition(
             "upsert",
             "upsert_dispatched",
             attributes={
-                "result": result,
+                "result": upsert_result,
                 "mode": mode,
                 "dry_run": dry_run,
                 "review": review_state,
@@ -943,23 +1174,41 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
-    ) -> Tuple[Transition, bool]:
+    ) -> Tuple[GraphTransition, bool]:
         ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
         status = _ingestion_status(ingestion) if ingestion else None
         if status is not IngestionStatus.RETIRE:
             outcome = _transition("skip", "not_applicable", attributes={})
             return outcome, False
 
-        result = self.retire_handler(ingestion)
+        changed_at = datetime.now(timezone.utc)
+        retire_reason = ingestion.reason
+        lifecycle_state = ingestion.attributes.get(
+            "lifecycle_state", LifecycleState.RETIRED.value
+        )
+        chunk = self._build_chunk(
+            ingestion,
+            artifacts,
+            state,
+            lifecycle_state=lifecycle_state,
+            lifecycle_changed_at=changed_at,
+            lifecycle_reason=retire_reason,
+        )
+        vector_client_instance = _resolve_vector_client()
+        result = _retire_payload(
+            ingestion,
+            chunk=chunk,
+            vector_client_instance=vector_client_instance,
+        )
         artifacts["retire_result"] = result
         outcome = _transition("retire", ingestion.reason, attributes={"result": result})
         return outcome, False
 
     def _select_summary_transition(
         self,
-        transitions: Mapping[str, Transition],
-        last_transition: Optional[Transition],
-    ) -> Optional[Transition]:
+        transitions: Mapping[str, GraphTransition],
+        last_transition: Optional[GraphTransition],
+    ) -> Optional[GraphTransition]:
         preferred_order = (
             "crawler.ingest_decision",
             "crawler.gating",
@@ -970,7 +1219,7 @@ class CrawlerIngestionGraph:
             "crawler.frontier",
         )
         severity_rank = {"error": 3, "warn": 2, "info": 1}
-        best_transition: Optional[Transition] = None
+        best_transition: Optional[GraphTransition] = None
         best_severity = -1
         best_order_score = -1
         for name, payload in transitions.items():

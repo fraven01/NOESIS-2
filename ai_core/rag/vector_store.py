@@ -9,6 +9,7 @@ import logging
 import math
 import statistics
 from collections import deque
+from datetime import datetime
 from typing import (
     Any,
     Dict,
@@ -200,6 +201,26 @@ class NullVectorStore:
         requests: Mapping[str, Iterable[str]],
     ) -> Dict[str, Dict[str, object]]:
         return {}
+
+    def update_lifecycle_state(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Iterable[object],
+        state: str,
+        reason: str | None = None,
+        changed_at: datetime | None = None,
+    ) -> int:
+        logger.debug(
+            "Null vector store lifecycle update ignored",
+            extra={
+                "scope": self._scope,
+                "tenant_id": tenant_id,
+                "state": state,
+                "count": len(list(document_ids)),
+            },
+        )
+        return 0
 
     def upsert_chunks(self, chunks: Iterable[Chunk]) -> int:
         chunk_list = list(chunks)
@@ -624,6 +645,17 @@ class VectorStore(Protocol):
         requests: Mapping[str, Iterable[str]],
     ) -> Dict[str, Dict[str, object]]:
         """Return parent node payloads for the requested document identifiers."""
+
+    def update_lifecycle_state(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Iterable[object],
+        state: str,
+        reason: str | None = None,
+        changed_at: datetime | None = None,
+    ) -> int:
+        """Apply lifecycle state updates to the provided document identifiers."""
 
     def close(self) -> None:
         """Release underlying resources if applicable."""

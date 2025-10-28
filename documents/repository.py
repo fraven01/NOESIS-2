@@ -30,6 +30,20 @@ from .logging_utils import (
 )
 
 
+ACTIVE_STATE = "active"
+RETIRED_STATE = "retired"
+DELETED_STATE = "deleted"
+
+
+def _normalize_lifecycle_state(value: Optional[str]) -> str:
+    if value is None:
+        return ACTIVE_STATE
+    candidate = str(value).strip().lower()
+    if candidate in {ACTIVE_STATE, RETIRED_STATE, DELETED_STATE}:
+        return candidate
+    return ACTIVE_STATE
+
+
 class DocumentsRepository:
     """Abstract persistence interface for normalized documents."""
 
@@ -154,7 +168,19 @@ class DocumentsRepository:
 @dataclass
 class _StoredDocument:
     value: NormalizedDocument
-    deleted: bool = False
+    lifecycle_state: str = ACTIVE_STATE
+
+    def __post_init__(self) -> None:
+        initial = getattr(self.value, "lifecycle_state", None) or self.lifecycle_state
+        self.set_state(initial)
+
+    def set_state(self, state: str) -> None:
+        normalized = _normalize_lifecycle_state(state)
+        self.lifecycle_state = normalized
+        try:
+            self.value.lifecycle_state = normalized
+        except Exception:
+            object.__setattr__(self.value, "lifecycle_state", normalized)
 
 
 @dataclass
@@ -195,7 +221,9 @@ class InMemoryDocumentsRepository(DocumentsRepository):
             key = (ref.tenant_id, workflow, ref.document_id, ref.version)
 
             with self._lock:
-                self._documents[key] = _StoredDocument(value=doc_copy, deleted=False)
+                self._documents[key] = _StoredDocument(
+                    value=doc_copy, lifecycle_state=doc_copy.lifecycle_state
+                )
 
                 if doc_copy.assets:
                     for asset in doc_copy.assets:
@@ -413,9 +441,10 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                         del self._documents[key]
                         changed = True
                         continue
-                    if not stored.deleted:
-                        stored.deleted = True
-                        changed = True
+                    if stored.lifecycle_state == RETIRED_STATE:
+                        continue
+                    stored.set_state(RETIRED_STATE)
+                    changed = True
 
                 self._mark_assets_for_document_locked(
                     tenant_id, document_id, workflow_id=workflow_id, hard=hard
@@ -655,7 +684,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 continue
             if workflow_id is not None and key_workflow != workflow_id:
                 continue
-            if not stored.deleted:
+            if stored.lifecycle_state == ACTIVE_STATE:
                 return True
         return False
 
@@ -879,7 +908,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
     ) -> Optional[NormalizedDocument]:
         selected: Optional[NormalizedDocument] = None
         for stored in self._documents.values():
-            if stored.deleted:
+            if stored.lifecycle_state != ACTIVE_STATE:
                 continue
             doc = stored.value
             if doc.ref.tenant_id != tenant_id or doc.ref.document_id != document_id:
@@ -899,7 +928,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str],
     ) -> Iterable[NormalizedDocument]:
         for stored in self._documents.values():
-            if stored.deleted:
+            if stored.lifecycle_state != ACTIVE_STATE:
                 continue
             doc = stored.value
             if doc.ref.tenant_id != tenant_id:
@@ -934,7 +963,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
     ) -> Optional[NormalizedDocument]:
         latest: Optional[NormalizedDocument] = None
         for stored in self._documents.values():
-            if stored.deleted:
+            if stored.lifecycle_state != ACTIVE_STATE:
                 continue
             doc = stored.value
             if doc.ref.tenant_id != tenant_id or doc.ref.document_id != document_id:
