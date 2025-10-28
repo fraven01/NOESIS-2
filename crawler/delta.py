@@ -7,9 +7,9 @@ from enum import Enum
 from typing import Optional
 
 from documents.contracts import NormalizedDocument
+from documents.normalization import document_payload_bytes, normalized_primary_text
 
 from .contracts import Decision
-from .normalizer import document_payload_bytes, normalized_primary_text
 
 from ai_core.rag.vector_client import (
     DedupSignatures as DeltaSignatures,
