@@ -10,6 +10,7 @@ from django.test import RequestFactory
 from structlog.contextvars import clear_contextvars, get_contextvars
 
 from ai_core.middleware import RequestContextMiddleware
+from common.constants import IDEMPOTENCY_KEY_HEADER
 
 
 @pytest.fixture(autouse=True)
@@ -63,6 +64,7 @@ def test_middleware_binds_headers_and_sets_response_metadata():
     assert response["X-Case-Id"] == "case-456"
     assert response["X-Key-Alias"] == "alias-001"
     assert response["traceparent"] == traceparent
+    assert response[IDEMPOTENCY_KEY_HEADER] == "idem-789"
 
     assert captured["trace.id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
     assert captured["span.id"] == "00f067aa0ba902b7"
