@@ -198,6 +198,7 @@ class Command(BaseCommand):
                     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
                     hash TEXT NOT NULL,
                     metadata JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+                    lifecycle TEXT NOT NULL DEFAULT 'active',
                     deleted_at TIMESTAMP WITH TIME ZONE,
                     external_id TEXT
                 )
@@ -210,6 +211,15 @@ class Command(BaseCommand):
                 """
                 ALTER TABLE {documents}
                     ADD COLUMN IF NOT EXISTS workflow_id TEXT
+                """
+            ).format(documents=documents)
+        )
+
+        cur.execute(
+            sql.SQL(
+                """
+                ALTER TABLE {documents}
+                    ADD COLUMN IF NOT EXISTS lifecycle TEXT NOT NULL DEFAULT 'active'
                 """
             ).format(documents=documents)
         )

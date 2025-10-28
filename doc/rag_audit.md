@@ -248,14 +248,14 @@
           metadata_dict["parent_nodes"] = limit_parent_payload(parents_map)
       cur.execute(
           """
-          INSERT INTO documents (id, tenant_id, external_id, source, hash, metadata)
-          VALUES (%s, %s, %s, %s, %s, %s)
+          INSERT INTO documents (id, tenant_id, external_id, source, hash, metadata, lifecycle)
+          VALUES (%s, %s, %s, %s, %s, %s, %s)
           ON CONFLICT (tenant_id, external_id) DO UPDATE
               SET source = EXCLUDED.source,
                   hash = EXCLUDED.hash,
                   metadata = EXCLUDED.metadata,
-                  deleted_at = NULL
-          RETURNING id, hash
+                  lifecycle = 'active'
+          RETURNING id, hash, lifecycle
           """,
           (
               document_id,
@@ -264,6 +264,7 @@
               doc["source"],
               storage_hash,
               metadata,
+              lifecycle_state,
           ),
       )
       )
@@ -330,7 +331,7 @@
           JOIN chunks c ON c.document_id = d.id
           JOIN embeddings e ON e.chunk_id = c.id
           WHERE d.tenant_id = %s
-            AND d.deleted_at IS NULL
+            AND COALESCE(d.lifecycle, 'active') = 'active'
             AND d.external_id <> %s
           ORDER BY chunk_distance ASC
           LIMIT %s

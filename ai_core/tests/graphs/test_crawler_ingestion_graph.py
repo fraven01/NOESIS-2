@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 import pytest
 
@@ -10,6 +10,7 @@ from crawler.fetcher import FetchRequest, PolitenessContext
 from crawler.frontier import CrawlSignals, FrontierAction, SourceDescriptor
 from crawler.guardrails import GuardrailLimits, GuardrailSignals, GuardrailStatus
 from crawler.ingestion import IngestionStatus
+from crawler.retire import LifecycleState
 from crawler.parser import ParseStatus, ParserContent, ParserStats
 from uuid import UUID, uuid4
 
@@ -20,10 +21,30 @@ from documents.repository import InMemoryDocumentsRepository
 class _RecordingVectorClient:
     def __init__(self) -> None:
         self.upserts: List[Chunk] = []
+        self.lifecycle_updates: List[Dict[str, object]] = []
 
     def upsert_chunks(self, chunks: List[Chunk]) -> int:
         self.upserts.extend(chunks)
         return len(chunks)
+
+    def update_lifecycle_state(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Iterable[object],
+        state: str,
+        reason: str | None = None,
+        changed_at=None,
+        cursor=None,
+    ) -> int:
+        record = {
+            "tenant_id": tenant_id,
+            "document_ids": [str(doc) for doc in document_ids],
+            "state": state,
+            "reason": reason,
+        }
+        self.lifecycle_updates.append(record)
+        return len(record["document_ids"])
 
 
 @pytest.fixture
@@ -223,9 +244,12 @@ def test_retire_flow_dispatches_retire_node(service_fakes) -> None:
     assert transitions["crawler.store"]["decision"] == "skip"
     assert transitions["rag.retire"]["decision"] == "retire"
     assert result["decision"] == IngestionStatus.RETIRE.value
-    assert vector.upserts
-    retire_meta = vector.upserts[-1].meta
-    assert retire_meta.get("deleted_at")
+    assert not vector.upserts
+    assert vector.lifecycle_updates
+    update = vector.lifecycle_updates[-1]
+    assert update["state"] == LifecycleState.RETIRED.value
+    assert update["tenant_id"] == initial_state["tenant_id"]
+    assert update["document_ids"]
 
 
 def test_shadow_mode_turns_upsert_into_noop(service_fakes) -> None:
