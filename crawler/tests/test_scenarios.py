@@ -7,7 +7,9 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 from uuid import NAMESPACE_URL, uuid5
 from urllib.parse import urlsplit
 
-from crawler.contracts import NormalizedSource, normalize_source
+from ai_core.rag.ingestion_contracts import ChunkMeta
+
+from crawler.contracts import Decision, NormalizedSource, normalize_source
 from crawler.delta import DeltaDecision, DeltaStatus, evaluate_delta
 from crawler.errors import ErrorClass
 from crawler.fetcher import (
@@ -26,7 +28,6 @@ from crawler.frontier import (
     decide_frontier_action,
 )
 from crawler.ingestion import (
-    IngestionDecision,
     IngestionStatus,
     build_ingestion_decision,
 )
@@ -55,6 +56,17 @@ CASE_ID = "case-007"
 
 def _doc_id(name: str) -> str:
     return str(uuid5(NAMESPACE_URL, name))
+
+
+def _ingestion_status(decision: Decision) -> IngestionStatus:
+    return IngestionStatus(decision.decision)
+
+
+def _ingestion_policy_events(decision: Decision) -> Tuple[str, ...]:
+    events = decision.attributes.get("policy_events", ())
+    if isinstance(events, Sequence):
+        return tuple(events)
+    return (events,) if events else ()
 
 
 @dataclass(frozen=True)
@@ -138,12 +150,14 @@ def test_tracking_parameter_explosion_produces_stable_external_id() -> None:
         "fetch.http": _build_fetch_span(trace, fetch),
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document, parse),
-        "delta": _build_delta_span(trace, delta, None, ingestion.status, CASE_ID),
+        "delta": _build_delta_span(
+            trace, delta, None, _ingestion_status(ingestion), CASE_ID
+        ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
     assert delta.status is DeltaStatus.NEW
-    assert ingestion.status is IngestionStatus.UPSERT
+    assert _ingestion_status(ingestion) is IngestionStatus.UPSERT
     assert {
         "frontier.queue",
         "fetch.http",
@@ -210,7 +224,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document_repeat, parse),
         "delta": _build_delta_span(
-            trace, delta, previous_hash, ingestion.status, CASE_ID
+            trace, delta, previous_hash, _ingestion_status(ingestion), CASE_ID
         ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
@@ -218,7 +232,7 @@ def test_not_modified_chain_results_in_unchanged_delta() -> None:
     assert fetch.status is FetchStatus.NOT_MODIFIED
     assert any(event.name == "not_modified" for event in spans["fetch.http"].events)
     assert delta.status is DeltaStatus.UNCHANGED
-    assert ingestion.status is IngestionStatus.SKIP
+    assert _ingestion_status(ingestion) is IngestionStatus.SKIP
     assert spans["delta"].events[0].name == "unchanged"
 
 
@@ -268,14 +282,14 @@ def test_content_change_advances_version_and_upserts() -> None:
         "parse": _build_parse_span(trace, parse),
         "normalize": _build_normalize_span(trace, document_updated, parse),
         "delta": _build_delta_span(
-            trace, delta, previous_hash, ingestion.status, CASE_ID
+            trace, delta, previous_hash, _ingestion_status(ingestion), CASE_ID
         ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
     assert delta.status is DeltaStatus.CHANGED
     assert delta.version == (previous_version or 0) + 1
-    assert ingestion.status is IngestionStatus.UPSERT
+    assert _ingestion_status(ingestion) is IngestionStatus.UPSERT
     assert spans["delta"].events[0].name == "changed"
 
 
@@ -414,12 +428,14 @@ def test_near_duplicate_detected_without_upsert() -> None:
         "fetch.http": _build_fetch_span(trace, duplicate_fetch),
         "parse": _build_parse_span(trace, duplicate_parse),
         "normalize": _build_normalize_span(trace, duplicate_document, duplicate_parse),
-        "delta": _build_delta_span(trace, delta, None, ingestion.status, CASE_ID),
+        "delta": _build_delta_span(
+            trace, delta, None, _ingestion_status(ingestion), CASE_ID
+        ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
     assert delta.status is DeltaStatus.NEAR_DUPLICATE
-    assert ingestion.status is IngestionStatus.SKIP
+    assert _ingestion_status(ingestion) is IngestionStatus.SKIP
     assert spans["delta"].events[0].name == "near_duplicate"
     assert spans["ingest"].attributes["ingest.decision"] == "skip"
 
@@ -468,7 +484,11 @@ def test_gone_fetch_triggers_retire_lifecycle() -> None:
         ),
         "fetch.http": _build_fetch_span(trace, gone_fetch),
         "delta": _build_delta_span(
-            trace, delta, delta.signatures.content_hash, ingestion.status, CASE_ID
+            trace,
+            delta,
+            delta.signatures.content_hash,
+            _ingestion_status(ingestion),
+            CASE_ID,
         ),
         "ingest": _build_ingest_span(trace, ingestion),
     }
@@ -476,7 +496,7 @@ def test_gone_fetch_triggers_retire_lifecycle() -> None:
     assert gone_fetch.status is FetchStatus.GONE
     assert gone_fetch.error is not None
     assert gone_fetch.error.error_class is ErrorClass.GONE
-    assert ingestion.status is IngestionStatus.RETIRE
+    assert _ingestion_status(ingestion) is IngestionStatus.RETIRE
     assert lifecycle.policy_events == ("gone_410",)
     assert spans["fetch.http"].events[0].name == "gone"
     assert spans["ingest"].attributes["ingest.decision"] == "retire"
@@ -832,48 +852,58 @@ def _build_delta_span(
 
 
 def _build_ingest_span(
-    trace: TraceContext, decision: IngestionDecision
+    trace: TraceContext, decision: Decision
 ) -> SpanSnapshot:
+    attributes_map = decision.attributes
+    chunk_meta = attributes_map.get("chunk_meta")
+    adapter_metadata: Mapping[str, object] = attributes_map.get(
+        "adapter_metadata", {}
+    )
     payload_size = 0
     chunk_count = 0
-    if decision.payload is not None:
-        payload_size = _estimate_payload_size(decision.payload)
-        chunk_count = 1 if decision.payload.media_type else 0
+    if chunk_meta is not None:
+        payload_size = _estimate_payload_size(chunk_meta, adapter_metadata)
+        media_type = adapter_metadata.get("media_type")
+        chunk_count = 1 if media_type else 0
+    status = IngestionStatus(decision.decision)
     attributes = trace.annotate(
         {
-            "ingest.decision": decision.status.value,
+            "ingest.decision": status.value,
             "ingest.chunk_count": chunk_count,
             "ingest.payload_size": payload_size,
-            "ingest.embedding_profile": None,
+            "ingest.embedding_profile": attributes_map.get("embedding_profile"),
             "ingest.queue": "ingestion",
             "ingest.retries": 0,
             "ingest.error_code": None,
-            "noesis.case_id": decision.payload.case_id if decision.payload else CASE_ID,
+            "noesis.case_id": attributes_map.get("case_id", CASE_ID),
         }
     )
-    if decision.policy_events:
-        attributes["ingest.policy_events"] = decision.policy_events
+    policy_events = attributes_map.get("policy_events")
+    if policy_events:
+        attributes["ingest.policy_events"] = tuple(policy_events)
     return SpanSnapshot(name="ingest", attributes=attributes, events=())
 
 
-def _estimate_payload_size(payload) -> int:
+def _estimate_payload_size(
+    chunk_meta: ChunkMeta, adapter_metadata: Mapping[str, object]
+) -> int:
     payload_dict = {
-        "tenant_id": payload.tenant_id,
-        "case_id": payload.case_id,
-        "workflow_id": payload.workflow_id,
-        "document_id": payload.document_id,
-        "content_hash": payload.content_hash,
-        "external_id": payload.external_id,
-        "provider": payload.provider,
-        "canonical_source": payload.canonical_source,
-        "origin_uri": payload.origin_uri,
-        "source": payload.source,
-        "media_type": payload.media_type,
-        "title": payload.title,
-        "language": payload.language,
-        "tags": list(payload.tags),
-        "parser_stats": dict(payload.parser_stats),
-        "provider_tags": dict(payload.provider_tags),
+        "tenant_id": chunk_meta.tenant_id,
+        "case_id": chunk_meta.case_id,
+        "workflow_id": chunk_meta.workflow_id,
+        "document_id": chunk_meta.document_id,
+        "content_hash": chunk_meta.content_hash,
+        "external_id": chunk_meta.external_id,
+        "provider": adapter_metadata.get("provider"),
+        "canonical_source": adapter_metadata.get("canonical_source"),
+        "origin_uri": adapter_metadata.get("origin_uri"),
+        "source": chunk_meta.source,
+        "media_type": adapter_metadata.get("media_type"),
+        "title": adapter_metadata.get("title"),
+        "language": adapter_metadata.get("language"),
+        "tags": list(adapter_metadata.get("tags", ())),
+        "parser_stats": dict(adapter_metadata.get("parser_stats", {})),
+        "provider_tags": dict(adapter_metadata.get("provider_tags", {})),
     }
     return len(json.dumps(payload_dict, sort_keys=True).encode("utf-8"))
 

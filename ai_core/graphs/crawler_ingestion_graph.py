@@ -6,10 +6,10 @@ from dataclasses import dataclass, field
 from datetime import datetime
 import secrets
 import time
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 from uuid import UUID
 
-from crawler.contracts import NormalizedSource
+from crawler.contracts import Decision, NormalizedSource
 from crawler.delta import DeltaDecision, evaluate_delta
 from crawler.fetcher import (
     FetchRequest,
@@ -32,8 +32,6 @@ from crawler.guardrails import (
     enforce_guardrails,
 )
 from crawler.ingestion import (
-    IngestionDecision,
-    IngestionPayload,
     IngestionStatus,
     build_ingestion_decision,
 )
@@ -43,6 +41,7 @@ from crawler.normalizer import (
     build_normalized_document,
     resolve_provider_reference,
 )
+from crawler.retire import LifecycleState
 from crawler.parser import (
     ParseResult,
     ParseStatus,
@@ -60,6 +59,23 @@ def _generate_uuid7() -> UUID:
     rand = secrets.randbits(62)
     value = (unix_ts_ms << 68) | (0x7 << 64) | (0b10 << 62) | rand
     return UUID(int=value)
+
+
+def _default_retire_handler(decision: Decision) -> Dict[str, object]:
+    lifecycle_attr = decision.attributes.get(
+        "lifecycle_state", LifecycleState.ACTIVE
+    )
+    if isinstance(lifecycle_attr, LifecycleState):
+        lifecycle_value = lifecycle_attr.value
+    else:
+        lifecycle_value = lifecycle_attr
+    return {"status": "retired", "lifecycle_state": lifecycle_value}
+
+
+def _ingestion_status(decision: Optional[Decision]) -> Optional[IngestionStatus]:
+    if decision is None:
+        return None
+    return IngestionStatus(decision.decision)
 
 
 @dataclass(frozen=True)
@@ -165,16 +181,13 @@ class CrawlerIngestionGraph:
     normalizer: Callable[..., NormalizedDocument] = build_normalized_document
     delta_evaluator: Callable[..., DeltaDecision] = evaluate_delta
     guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
-    ingestion_builder: Callable[..., IngestionDecision] = build_ingestion_decision
+    ingestion_builder: Callable[..., Decision] = build_ingestion_decision
     store_handler: Callable[[NormalizedDocument], Any] = lambda document: {
         "status": "stored",
         "document_id": str(document.ref.document_id),
     }
-    upsert_handler: Callable[[IngestionDecision], Any] = lambda _: {"status": "queued"}
-    retire_handler: Callable[[IngestionDecision], Any] = lambda decision: {
-        "status": "retired",
-        "lifecycle_state": decision.lifecycle_state.value,
-    }
+    upsert_handler: Callable[[Decision], Any] = lambda _: {"status": "queued"}
+    retire_handler: Callable[[Decision], Any] = _default_retire_handler
     event_emitter: Optional[Callable[[str, Transition, str], None]] = None
 
     def run(
@@ -710,13 +723,23 @@ class CrawlerIngestionGraph:
             lifecycle=lifecycle,
         )
         artifacts["ingestion_decision"] = ingestion
-        state["ingest_action"] = ingestion.status.value
-        payload: Optional[IngestionPayload] = ingestion.payload
-        if payload is not None:
-            state["external_id"] = payload.external_id
-            state["provider"] = payload.provider
-            state["origin_uri"] = payload.origin_uri
-            state["content_hash"] = payload.content_hash
+        status = IngestionStatus(ingestion.decision)
+        state["ingest_action"] = status.value
+        ingestion_attrs = ingestion.attributes
+        chunk_meta = ingestion_attrs.get("chunk_meta")
+        adapter_metadata: Mapping[str, object] = ingestion_attrs.get(
+            "adapter_metadata", {}
+        )
+        if chunk_meta is not None:
+            state["external_id"] = getattr(chunk_meta, "external_id", None)
+            state["content_hash"] = getattr(chunk_meta, "content_hash", None)
+        if isinstance(adapter_metadata, Mapping):
+            provider = adapter_metadata.get("provider")
+            if provider:
+                state["provider"] = provider
+            origin = adapter_metadata.get("origin_uri")
+            if origin:
+                state["origin_uri"] = origin
         review_state = control.get("review")
         dry_run = bool(control.get("dry_run"))
         mode = control.get("mode", "ingest")
@@ -725,10 +748,18 @@ class CrawlerIngestionGraph:
             blocked.append("review_required")
         if dry_run:
             blocked.append("dry_run")
+        lifecycle_state = ingestion_attrs.get("lifecycle_state", LifecycleState.ACTIVE)
+        if not isinstance(lifecycle_state, LifecycleState):
+            lifecycle_state = LifecycleState(lifecycle_state)
+        policy_events = ingestion_attrs.get("policy_events", ())
+        if not isinstance(policy_events, Sequence):
+            policy_events = (policy_events,) if policy_events else ()
+        else:
+            policy_events = tuple(policy_events)
         attributes = {
-            "status": ingestion.status.value,
-            "lifecycle_state": ingestion.lifecycle_state.value,
-            "policy_events": list(ingestion.policy_events),
+            "status": status.value,
+            "lifecycle_state": lifecycle_state.value,
+            "policy_events": list(policy_events),
             "mode": mode,
             "review": review_state,
             "dry_run": dry_run,
@@ -738,12 +769,12 @@ class CrawlerIngestionGraph:
         if blocked:
             attributes["blocked"] = blocked[0] if len(blocked) == 1 else tuple(blocked)
         store_allowed = (
-            ingestion.status is IngestionStatus.UPSERT
+            status is IngestionStatus.UPSERT
             and not blocked
             and mode in {"store_only", "ingest"}
         )
         upsert_allowed = (
-            ingestion.status is IngestionStatus.UPSERT
+            status is IngestionStatus.UPSERT
             and not blocked
             and mode == "ingest"
             and not control.get("shadow_mode")
@@ -751,10 +782,10 @@ class CrawlerIngestionGraph:
         attributes["store_allowed"] = store_allowed
         attributes["upsert_allowed"] = upsert_allowed
         outcome = _transition(
-            ingestion.status.value, ingestion.reason, attributes=attributes
+            status.value, ingestion.reason, attributes=attributes
         )
-        continue_to_store = ingestion.status is IngestionStatus.UPSERT
-        continue_to_retire = ingestion.status is IngestionStatus.RETIRE
+        continue_to_store = status is IngestionStatus.UPSERT
+        continue_to_retire = status is IngestionStatus.RETIRE
         return outcome, continue_to_store or continue_to_retire
 
     def _run_store(
@@ -763,8 +794,9 @@ class CrawlerIngestionGraph:
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
     ) -> Tuple[Transition, bool]:
-        ingestion: Optional[IngestionDecision] = artifacts.get("ingestion_decision")
-        if not ingestion or ingestion.status is not IngestionStatus.UPSERT:
+        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
+        status = _ingestion_status(ingestion) if ingestion else None
+        if status is not IngestionStatus.UPSERT:
             outcome = _transition(
                 "skip",
                 "not_applicable",
@@ -829,11 +861,12 @@ class CrawlerIngestionGraph:
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
     ) -> Tuple[Transition, bool]:
-        ingestion: Optional[IngestionDecision] = artifacts.get("ingestion_decision")
+        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
         mode = control.get("mode", "ingest")
         dry_run = bool(control.get("dry_run"))
         review_state = control.get("review")
-        if not ingestion or ingestion.status is not IngestionStatus.UPSERT:
+        status = _ingestion_status(ingestion) if ingestion else None
+        if status is not IngestionStatus.UPSERT:
             outcome = _transition(
                 "skip",
                 "not_applicable",
@@ -912,8 +945,9 @@ class CrawlerIngestionGraph:
         artifacts: Dict[str, Any],
         control: Dict[str, Any],
     ) -> Tuple[Transition, bool]:
-        ingestion: Optional[IngestionDecision] = artifacts.get("ingestion_decision")
-        if not ingestion or ingestion.status is not IngestionStatus.RETIRE:
+        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
+        status = _ingestion_status(ingestion) if ingestion else None
+        if status is not IngestionStatus.RETIRE:
             outcome = _transition("skip", "not_applicable", attributes={})
             return outcome, False
 

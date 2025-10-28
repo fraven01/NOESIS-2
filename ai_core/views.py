@@ -2009,8 +2009,12 @@ class CrawlerIngestionRunnerView(APIView):
 
             def _upsert_handler(decision):  # type: ignore[no-untyped-def]
                 try:
-                    payload = getattr(decision, "payload", None)
-                    document_id = getattr(payload, "document_id", None)
+                    chunk_meta = decision.attributes.get("chunk_meta")
+                    document_id = (
+                        getattr(chunk_meta, "document_id", None)
+                        if chunk_meta is not None
+                        else None
+                    )
                     if not document_id:
                         return {"status": "skipped", "reason": "missing_document_id"}
                     request_data = {

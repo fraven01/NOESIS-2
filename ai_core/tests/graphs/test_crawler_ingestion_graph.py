@@ -11,6 +11,7 @@ from crawler.frontier import CrawlSignals, FrontierAction, SourceDescriptor
 from crawler.guardrails import GuardrailLimits, GuardrailSignals, GuardrailStatus
 from crawler.ingestion import IngestionStatus
 from crawler.parser import ParseStatus, ParserContent, ParserStats
+from uuid import uuid4
 
 
 def _build_state(
@@ -71,7 +72,7 @@ def _build_state(
         "parse_input": parse_input,
         "normalize_input": {
             "source": source,
-            "document_id": "doc-1",
+            "document_id": str(uuid4()),
             "tags": ("alpha",),
         },
         "delta_input": {},
@@ -79,6 +80,13 @@ def _build_state(
     }
     meta = {"tenant_id": "tenant", "case_id": "case", "workflow_id": "workflow"}
     return state, meta, body
+
+
+def _extract_document_id(decision):
+    chunk_meta = decision.attributes.get("chunk_meta")
+    if chunk_meta is None:
+        return None
+    return getattr(chunk_meta, "document_id", None)
 
 
 def test_nominal_run_executes_pipeline() -> None:
@@ -182,10 +190,7 @@ def test_shadow_mode_turns_upsert_into_noop() -> None:
 
     def _recording_upsert(decision):
         recorded["calls"] += 1
-        return {
-            "status": "queued",
-            "document": decision.payload.document_id if decision.payload else None,
-        }
+        return {"status": "queued", "document": _extract_document_id(decision)}
 
     graph = crawler_ingestion_graph.CrawlerIngestionGraph(
         upsert_handler=_recording_upsert
@@ -205,7 +210,7 @@ def test_shadow_mode_toggle_allows_follow_up_upsert() -> None:
     recorded: List[int] = []
 
     def _recording_upsert(decision):
-        recorded.append(decision.payload.document_id if decision.payload else None)
+        recorded.append(_extract_document_id(decision))
         return {"status": "queued"}
 
     graph = crawler_ingestion_graph.CrawlerIngestionGraph(
