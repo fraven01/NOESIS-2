@@ -157,19 +157,59 @@ def _default_retire_handler(
         lifecycle_value = lifecycle_attr.value
     else:
         lifecycle_value = lifecycle_attr
-    if chunk is None:
+    attributes = decision.attributes
+    chunk_meta_obj = attributes.get("chunk_meta")
+    meta_model: Optional[ChunkMeta]
+    if isinstance(chunk_meta_obj, ChunkMeta):
+        meta_model = chunk_meta_obj
+    elif isinstance(chunk_meta_obj, Mapping):
+        try:
+            meta_model = ChunkMeta.model_validate(chunk_meta_obj)
+        except Exception:
+            meta_model = None
+    else:
+        meta_model = None
+
+    tenant_id: Optional[str] = None
+    document_id: Optional[str] = None
+    if isinstance(meta_model, ChunkMeta):
+        tenant_id = meta_model.tenant_id or None
+        document_id = meta_model.document_id or None
+    if not tenant_id:
+        tenant_id = attributes.get("tenant_id")  # type: ignore[index]
+    if not document_id:
+        document_id = attributes.get("document_id")  # type: ignore[index]
+    if not tenant_id and chunk is not None:
+        tenant_id = chunk.meta.get("tenant_id")
+    if not document_id and chunk is not None:
+        document_id = chunk.meta.get("document_id")
+
+    if not tenant_id or not document_id:
         return {
             "status": "retired",
             "lifecycle_state": lifecycle_value,
-            "reason": "missing_chunk",
+            "reason": "missing_identifier",
         }
+
     client = vector_client_instance or _resolve_vector_client()
-    written = client.upsert_chunks([chunk])
+    changed_at = datetime.now(timezone.utc)
+    try:
+        updated = client.update_lifecycle_state(  # type: ignore[attr-defined]
+            tenant_id=tenant_id,
+            document_ids=[document_id],
+            state=lifecycle_value,
+            reason=decision.reason,
+            changed_at=changed_at,
+        )
+    except AttributeError:
+        updated = 0
+
     return {
         "status": "retired",
         "lifecycle_state": lifecycle_value,
-        "chunks_written": int(written),
-        "document_id": chunk.meta.get("document_id"),
+        "documents_updated": int(updated),
+        "document_id": document_id,
+        "changed_at": changed_at.isoformat(),
     }
 
 
@@ -519,7 +559,9 @@ class CrawlerIngestionGraph:
         artifacts: Mapping[str, Any],
         state: Mapping[str, Any],
         *,
-        deleted_at: Optional[datetime] = None,
+        lifecycle_state: Optional[str | LifecycleState] = None,
+        lifecycle_changed_at: Optional[datetime] = None,
+        lifecycle_reason: Optional[str] = None,
     ) -> Optional[Chunk]:
         chunk_meta_obj = decision.attributes.get("chunk_meta")
         meta_model: Optional[ChunkMeta]
@@ -554,10 +596,25 @@ class CrawlerIngestionGraph:
         if isinstance(adapter_metadata, Mapping):
             meta_payload.setdefault("adapter_metadata", dict(adapter_metadata))
 
-        if deleted_at is not None:
-            meta_payload["deleted_at"] = deleted_at.astimezone(timezone.utc).isoformat()
-        else:
-            meta_payload.pop("deleted_at", None)
+        lifecycle_value: Optional[str] = None
+        if isinstance(lifecycle_state, LifecycleState):
+            lifecycle_value = lifecycle_state.value
+        elif isinstance(lifecycle_state, str) and lifecycle_state:
+            lifecycle_value = lifecycle_state
+
+        if lifecycle_value is not None:
+            meta_payload["lifecycle_state"] = lifecycle_value
+            if lifecycle_changed_at is not None:
+                meta_payload["lifecycle_changed_at"] = (
+                    lifecycle_changed_at.astimezone(timezone.utc).isoformat()
+                )
+            elif "lifecycle_changed_at" in meta_payload:
+                meta_payload.pop("lifecycle_changed_at", None)
+            reason_value = (lifecycle_reason or "").strip()
+            if reason_value:
+                meta_payload["lifecycle_reason"] = reason_value
+            elif "lifecycle_reason" in meta_payload:
+                meta_payload.pop("lifecycle_reason", None)
 
         primary_text: str = ""
         parse_result: Optional[ParseResult] = artifacts.get("parse_result")
@@ -1128,11 +1185,18 @@ class CrawlerIngestionGraph:
             outcome = _transition("skip", "not_applicable", attributes={})
             return outcome, False
 
+        changed_at = datetime.now(timezone.utc)
+        retire_reason = ingestion.reason
+        lifecycle_state = ingestion.attributes.get(
+            "lifecycle_state", LifecycleState.RETIRED.value
+        )
         chunk = self._build_chunk(
             ingestion,
             artifacts,
             state,
-            deleted_at=datetime.now(timezone.utc),
+            lifecycle_state=lifecycle_state,
+            lifecycle_changed_at=changed_at,
+            lifecycle_reason=retire_reason,
         )
         vector_client_instance = _resolve_vector_client()
         result = _invoke_handler(

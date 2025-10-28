@@ -10,10 +10,11 @@ Kurzleitfaden für die Entfernung von RAG-Dokumenten in Produktions-tenants. All
 1. **Dokumente markieren:**
    ```sql
    UPDATE rag.documents
-      SET deleted_at = NOW()
+      SET lifecycle = 'retired',
+          deleted_at = NOW()
     WHERE tenant_id = :tenant
       AND document_id = ANY(:document_ids)
-      AND deleted_at IS NULL;
+      AND lifecycle = 'active';
    ```
 2. **Idempotenz prüfen:** Folgeausführung mit denselben Parametern sollte `UPDATE 0` zurückgeben.
 3. **Router-Cache spülen:**

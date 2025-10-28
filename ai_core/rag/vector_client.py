@@ -13,7 +13,9 @@ import uuid
 from array import array
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import (
+    Any,
     Callable,
     ClassVar,
     Dict,
@@ -60,6 +62,22 @@ logger.info(
 _HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
 _NEAR_DUPLICATE_TOKEN_RE = re.compile(r"\w+")
 _PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
+
+LIFECYCLE_ACTIVE = "active"
+LIFECYCLE_RETIRED = "retired"
+LIFECYCLE_DELETED = "deleted"
+
+
+def _normalize_lifecycle_state(value: object | None) -> str:
+    if isinstance(value, str):
+        candidate = value.strip().lower()
+    elif value is None:
+        candidate = LIFECYCLE_ACTIVE
+    else:
+        candidate = str(value).strip().lower()
+    if candidate in {LIFECYCLE_ACTIVE, LIFECYCLE_RETIRED, LIFECYCLE_DELETED}:
+        return candidate
+    return LIFECYCLE_ACTIVE
 
 
 @dataclass(frozen=True)
@@ -1706,14 +1724,15 @@ class PgVectorClient:
 
         where_clauses = ["d.tenant_id = %s"]
         deleted_visibility_clauses = (
-            "d.deleted_at IS NULL",
-            "(c.metadata ->> 'deleted_at') IS NULL",
+            "COALESCE(d.lifecycle, 'active') = 'active'",
+            "COALESCE(c.metadata ->> 'lifecycle_state', 'active') = 'active'",
         )
         if visibility_mode is Visibility.ACTIVE:
             where_clauses.extend(deleted_visibility_clauses)
         elif visibility_mode is Visibility.DELETED:
             where_clauses.append(
-                "(d.deleted_at IS NOT NULL OR (c.metadata ->> 'deleted_at') IS NOT NULL)"
+                "(COALESCE(d.lifecycle, 'active') <> 'active'"
+                " OR COALESCE(c.metadata ->> 'lifecycle_state', 'active') <> 'active')"
             )
         where_params: List[object] = [tenant_uuid]
         for key, value in metadata_filters:
@@ -3842,7 +3861,7 @@ class PgVectorClient:
                 JOIN {embeddings} e ON e.chunk_id = c.id
                 WHERE d.tenant_id = %s
                   AND d.collection_id IS NOT DISTINCT FROM %s
-                  AND d.deleted_at IS NULL
+                  AND COALESCE(d.lifecycle, 'active') = 'active'
                   AND d.external_id <> %s
                 ORDER BY chunk_distance ASC
                 LIMIT %s
@@ -4037,6 +4056,12 @@ class PgVectorClient:
             doc["hash"] = storage_hash
             doc["content_hash"] = content_hash
             metadata_dict = self._strip_collection_scope(doc.get("metadata"))
+            raw_lifecycle = doc.get("lifecycle_state")
+            if raw_lifecycle is None:
+                raw_lifecycle = metadata_dict.get("lifecycle_state")
+            lifecycle_state = _normalize_lifecycle_state(raw_lifecycle)
+            metadata_dict["lifecycle_state"] = lifecycle_state
+            doc["lifecycle_state"] = lifecycle_state
             metadata_dict.setdefault("hash", content_hash)
             if workflow_text is not None:
                 metadata_dict["workflow_id"] = workflow_text
@@ -4214,7 +4239,7 @@ class PgVectorClient:
             if collection_text is None:
                 select_sql = sql.SQL(
                     """
-                    SELECT id, hash, metadata, source, deleted_at
+                    SELECT id, hash, metadata, source, lifecycle
                     FROM {}
                     WHERE tenant_id = %s
                       AND collection_id IS NULL
@@ -4227,7 +4252,7 @@ class PgVectorClient:
             else:
                 select_sql = sql.SQL(
                     """
-                    SELECT id, hash, metadata, source, deleted_at
+                    SELECT id, hash, metadata, source, lifecycle
                     FROM {}
                     WHERE tenant_id = %s
                       AND collection_id = %s
@@ -4248,7 +4273,7 @@ class PgVectorClient:
                         existing_hash,
                         existing_metadata,
                         existing_source,
-                        existing_deleted,
+                        existing_lifecycle,
                     ) = existing
                     metadata_dict = _normalise_document_identity(
                         doc, existing_id, metadata_dict
@@ -4303,7 +4328,11 @@ class PgVectorClient:
                         metadata_mismatch = False
                     needs_update = (
                         str(existing_hash) != storage_hash
-                        or existing_deleted is not None
+                        or (
+                            existing_lifecycle is not None
+                            and str(existing_lifecycle).lower()
+                            != LIFECYCLE_ACTIVE
+                        )
                         or metadata_mismatch
                     )
                     # DEBUG.4.post_diff – outcome of diff and final decision flags
@@ -4348,6 +4377,7 @@ class PgVectorClient:
                                     metadata = %s,
                                     collection_id = %s,
                                     workflow_id = %s,
+                                    lifecycle = %s,
                                     deleted_at = NULL
                                 WHERE id = %s
                                 """
@@ -4358,6 +4388,7 @@ class PgVectorClient:
                                 metadata,
                                 collection_text,
                                 workflow_text,
+                                lifecycle_state,
                                 existing_id,
                             ),
                         )
@@ -4408,9 +4439,11 @@ class PgVectorClient:
                             external_id,
                             source,
                             hash,
-                            metadata
+                            metadata,
+                            lifecycle,
+                            deleted_at
                         )
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
                     ).format(documents_table),
                     (
@@ -4422,6 +4455,8 @@ class PgVectorClient:
                         doc["source"],
                         storage_hash,
                         metadata,
+                        lifecycle_state,
+                        None,
                     ),
                 )
                 document_ids[key] = document_id
@@ -4441,7 +4476,7 @@ class PgVectorClient:
                     if collection_text is None:
                         retry_sql = sql.SQL(
                             """
-                            SELECT id, hash, metadata, source, deleted_at
+                            SELECT id, hash, metadata, source, lifecycle
                             FROM {}
                             WHERE tenant_id = %s
                               AND collection_id IS NULL
@@ -4454,7 +4489,7 @@ class PgVectorClient:
                     else:
                         retry_sql = sql.SQL(
                             """
-                            SELECT id, hash, metadata, source, deleted_at
+                            SELECT id, hash, metadata, source, lifecycle
                             FROM {}
                             WHERE tenant_id = %s
                               AND collection_id = %s
@@ -4476,7 +4511,7 @@ class PgVectorClient:
                         dup_hash,
                         dup_metadata,
                         dup_source,
-                        dup_deleted,
+                        dup_lifecycle,
                     ) = duplicate
                     metadata_dict = _normalise_document_identity(
                         doc, dup_id, metadata_dict
@@ -4525,7 +4560,10 @@ class PgVectorClient:
                     )
                     needs_update = (
                         str(dup_hash) != storage_hash
-                        or dup_deleted is not None
+                        or (
+                            dup_lifecycle is not None
+                            and str(dup_lifecycle).lower() != LIFECYCLE_ACTIVE
+                        )
                         or metadata_mismatch
                     )
                     # DEBUG.4.post_diff (retry path)
@@ -4569,6 +4607,7 @@ class PgVectorClient:
                                     metadata = %s,
                                     collection_id = %s,
                                     workflow_id = %s,
+                                    lifecycle = %s,
                                     deleted_at = NULL
                                 WHERE id = %s
                                 """
@@ -4579,6 +4618,7 @@ class PgVectorClient:
                                 metadata_payload,
                                 collection_text,
                                 workflow_text,
+                                lifecycle_state,
                                 dup_id,
                             ),
                         )
@@ -4718,6 +4758,118 @@ class PgVectorClient:
                     "error": str(exc),
                 },
             )
+
+    def update_lifecycle_state(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Iterable[object],
+        state: str,
+        reason: str | None = None,
+        changed_at: datetime | None = None,
+        cursor: Any | None = None,
+    ) -> int:
+        lifecycle_state = _normalize_lifecycle_state(state)
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        resolved_ids: list[uuid.UUID] = []
+        for raw in document_ids:
+            if raw in {None, "", "None"}:
+                continue
+            try:
+                resolved = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            resolved_ids.append(resolved)
+        if not resolved_ids:
+            return 0
+
+        timestamp = (changed_at or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        changed_iso = timestamp.isoformat()
+        reason_text = None
+        if isinstance(reason, str):
+            normalized_reason = reason.strip()
+            if normalized_reason:
+                reason_text = normalized_reason
+        deleted_timestamp = None
+        deleted_iso = None
+        if lifecycle_state != LIFECYCLE_ACTIVE:
+            deleted_timestamp = timestamp
+            deleted_iso = changed_iso
+
+        documents_table = self._table("documents")
+        chunks_table = self._table("chunks")
+
+        documents_sql = sql.SQL(
+            """
+            UPDATE {}
+            SET lifecycle = %s,
+                deleted_at = %s,
+                metadata = jsonb_strip_nulls(
+                    coalesce(metadata, '{}'::jsonb)
+                    || jsonb_build_object(
+                        'lifecycle_state', %s,
+                        'lifecycle_changed_at', %s,
+                        'lifecycle_reason', %s,
+                        'deleted_at', %s
+                    )
+                )
+            WHERE tenant_id = %s AND id = ANY(%s)
+            """
+        ).format(documents_table)
+
+        chunks_sql = sql.SQL(
+            """
+            UPDATE {}
+            SET metadata = jsonb_strip_nulls(
+                coalesce(metadata, '{}'::jsonb)
+                || jsonb_build_object(
+                    'lifecycle_state', %s,
+                    'lifecycle_changed_at', %s,
+                    'lifecycle_reason', %s,
+                    'deleted_at', %s
+                )
+            )
+            WHERE document_id = ANY(%s)
+            """
+        ).format(chunks_table)
+
+        params = (
+            lifecycle_state,
+            deleted_timestamp,
+            lifecycle_state,
+            changed_iso,
+            reason_text,
+            deleted_iso,
+            str(tenant_uuid),
+            resolved_ids,
+        )
+
+        chunk_params = (
+            lifecycle_state,
+            changed_iso,
+            reason_text,
+            deleted_iso,
+            resolved_ids,
+        )
+
+        def _execute(cur) -> int:
+            cur.execute(documents_sql, params)
+            updated = cur.rowcount or 0
+            cur.execute(chunks_sql, chunk_params)
+            return updated
+
+        if cursor is not None:
+            return _execute(cursor)
+
+        with self._connection() as conn:  # type: ignore[attr-defined]
+            try:
+                with conn.cursor() as cur:
+                    updated_rows = _execute(cur)
+                conn.commit()
+                return updated_rows
+            except Exception:
+                conn.rollback()
+                raise
 
     def _compute_storage_hash(
         self,

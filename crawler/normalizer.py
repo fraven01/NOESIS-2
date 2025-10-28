@@ -111,6 +111,7 @@ def build_normalized_document(
         checksum=blob.sha256,
         created_at=datetime.now(timezone.utc),
         source="crawler",
+        lifecycle_state="active",
     )
 
     return normalized

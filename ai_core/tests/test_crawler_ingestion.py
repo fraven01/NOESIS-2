@@ -136,6 +136,7 @@ def test_build_ingestion_decision_always_provides_chunk_meta() -> None:
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.case_id == "case-7"
     assert chunk_meta.external_id == "web::https://example.com/doc"
+    assert chunk_meta.lifecycle_state == LifecycleState.ACTIVE.value
     assert attributes["delta_status"] == DeltaStatus.NEW.value
 
 
@@ -157,6 +158,7 @@ def test_build_ingestion_decision_upserts_for_duplicates(status, reason) -> None
     chunk_meta = decision.attributes["chunk_meta"]
     assert isinstance(chunk_meta, ChunkMeta)
     assert chunk_meta.content_hash == f"hash-{status.value}"
+    assert chunk_meta.lifecycle_state == LifecycleState.ACTIVE.value
     assert decision.attributes["delta_status"] == status.value
 
 
@@ -183,6 +185,9 @@ def test_build_ingestion_decision_retire_includes_metadata() -> None:
     assert attributes["lifecycle_state"] == LifecycleState.RETIRED.value
     assert attributes["policy_events"] == ("retired",)
     assert attributes["chunk_meta"] is not None
+    chunk_meta = attributes["chunk_meta"]
+    assert isinstance(chunk_meta, ChunkMeta)
+    assert chunk_meta.lifecycle_state == LifecycleState.RETIRED.value
     assert attributes["delta_status"] == DeltaStatus.UNCHANGED.value
 
 

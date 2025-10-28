@@ -397,7 +397,7 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                         break
                 return
 
-            if "select id, hash, metadata, source, deleted_at" in lowered:
+            if "select id, hash, metadata, source, lifecycle" in lowered:
                 tenant = params[0] if params else None
                 index = 1
                 collection = None
@@ -425,7 +425,7 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                             row["hash"],
                             row["metadata"],
                             row["source"],
-                            row.get("deleted_at"),
+                            row.get("lifecycle"),
                         )
                         break
                 return
@@ -440,6 +440,8 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                     source,
                     hash_value,
                     metadata,
+                    lifecycle,
+                    deleted_at,
                 ) = params
                 if hasattr(metadata, "adapted"):
                     stored_metadata = metadata.adapted  # type: ignore[attr-defined]
@@ -455,7 +457,8 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                         "source": source,
                         "hash": hash_value,
                         "metadata": stored_metadata,
-                        "deleted_at": None,
+                        "lifecycle": lifecycle,
+                        "deleted_at": deleted_at,
                     }
                 )
                 return
@@ -464,6 +467,7 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                 params = list(params or [])
                 external_id = None
                 collection_id = None
+                lifecycle_value = "active"
                 if "set external_id = %s" in lowered:
                     (
                         external_id,
@@ -474,14 +478,25 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                         doc_id,
                     ) = params
                 else:
-                    (
-                        source,
-                        hash_value,
-                        metadata,
-                        collection_id,
-                        workflow_id,
-                        doc_id,
-                    ) = params
+                    if len(params) == 7:
+                        (
+                            source,
+                            hash_value,
+                            metadata,
+                            collection_id,
+                            workflow_id,
+                            lifecycle_value,
+                            doc_id,
+                        ) = params
+                    else:
+                        (
+                            source,
+                            hash_value,
+                            metadata,
+                            collection_id,
+                            workflow_id,
+                            doc_id,
+                        ) = params
                 if hasattr(metadata, "adapted"):
                     stored_metadata = metadata.adapted  # type: ignore[attr-defined]
                 else:
@@ -492,6 +507,7 @@ def test_upsert_chunks_isolates_workflows(monkeypatch: pytest.MonkeyPatch) -> No
                         row["hash"] = hash_value
                         row["metadata"] = stored_metadata
                         row["workflow_id"] = workflow_id
+                        row["lifecycle"] = lifecycle_value
                         row["deleted_at"] = None
                         if collection_id is not None:
                             row["collection_id"] = collection_id
@@ -2614,7 +2630,8 @@ class TestPgVectorClient:
                 "external_id": "deleted-doc",
                 "case_id": case,
                 "source": "example",
-                "deleted_at": "2024-01-01T00:00:00Z",
+                "lifecycle_state": "retired",
+                "lifecycle_changed_at": "2024-01-01T00:00:00Z",
             },
             embedding=list(base_vector),
         )

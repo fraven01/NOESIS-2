@@ -1,7 +1,7 @@
 import math
 import uuid
 from collections.abc import Sequence
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 
 import pytest
@@ -1916,30 +1916,56 @@ def _insert_active_and_soft_deleted_documents(
     with client.connection() as conn, conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO documents (id, tenant_id, source, hash, metadata, external_id, deleted_at)
-            VALUES (%s, %s, %s, %s, %s, %s, NULL)
+            INSERT INTO documents (
+                id,
+                tenant_id,
+                source,
+                hash,
+                metadata,
+                external_id,
+                lifecycle,
+                deleted_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
             """,
             (
                 active_doc_id,
                 tenant,
                 "unit-test",
                 "hash-active",
-                Json({"hash": "hash-active"}),
+                Json({"hash": "hash-active", "lifecycle_state": "active"}),
                 "doc-active",
+                "active",
             ),
         )
         cur.execute(
             """
-            INSERT INTO documents (id, tenant_id, source, hash, metadata, external_id, deleted_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO documents (
+                id,
+                tenant_id,
+                source,
+                hash,
+                metadata,
+                external_id,
+                lifecycle,
+                deleted_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 deleted_doc_id,
                 tenant,
                 "unit-test",
                 "hash-deleted",
-                Json({"hash": "hash-deleted"}),
+                Json(
+                    {
+                        "hash": "hash-deleted",
+                        "lifecycle_state": "retired",
+                        "lifecycle_changed_at": timestamp.isoformat(),
+                    }
+                ),
                 "doc-deleted",
+                "retired",
                 timestamp,
             ),
         )
@@ -1972,7 +1998,8 @@ def _insert_active_and_soft_deleted_documents(
                     {
                         "tenant_id": tenant,
                         "case_id": "alpha",
-                        "deleted_at": timestamp.isoformat(),
+                        "lifecycle_state": "retired",
+                        "lifecycle_changed_at": timestamp.isoformat(),
                     }
                 ),
             ),
@@ -2080,3 +2107,115 @@ def test_hybrid_search_returns_all_with_default_override():
         str(active_doc_id),
         str(deleted_doc_id),
     }
+
+
+def test_update_lifecycle_state_marks_documents_and_chunks():
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    document_id = uuid.uuid4()
+    chunk_id = uuid.uuid4()
+    changed_at = datetime(2024, 5, 1, 12, 30, tzinfo=timezone.utc)
+
+    with client.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO documents (
+                id,
+                tenant_id,
+                source,
+                hash,
+                metadata,
+                external_id,
+                lifecycle,
+                deleted_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, NULL)
+            """,
+            (
+                document_id,
+                tenant,
+                "unit-test",
+                "hash-lifecycle",
+                Json({"hash": "hash-lifecycle"}),
+                "doc-lifecycle",
+                "active",
+            ),
+        )
+        cur.execute(
+            """
+            INSERT INTO chunks (id, document_id, ord, text, tokens, metadata)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            """,
+            (
+                chunk_id,
+                document_id,
+                0,
+                "Lifecycle chunk",
+                2,
+                Json({"tenant_id": tenant}),
+            ),
+        )
+        conn.commit()
+
+    updated = client.update_lifecycle_state(
+        tenant_id=tenant,
+        document_ids=[document_id],
+        state="retired",
+        reason="test-retire",
+        changed_at=changed_at,
+    )
+
+    assert updated == 1
+
+    with client.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT lifecycle, deleted_at, metadata FROM documents WHERE id = %s",
+            (document_id,),
+        )
+        doc_row = cur.fetchone()
+        assert doc_row is not None
+        lifecycle, deleted_at, metadata = doc_row
+        assert lifecycle == "retired"
+        assert deleted_at == changed_at
+        assert metadata["lifecycle_state"] == "retired"
+        assert metadata["lifecycle_reason"] == "test-retire"
+        assert metadata["lifecycle_changed_at"].startswith("2024-05-01T12:30:00+00:00")
+
+        cur.execute(
+            "SELECT metadata FROM chunks WHERE id = %s",
+            (chunk_id,),
+        )
+        chunk_meta = cur.fetchone()[0]
+        assert chunk_meta["lifecycle_state"] == "retired"
+        assert chunk_meta["lifecycle_reason"] == "test-retire"
+        assert chunk_meta["lifecycle_changed_at"].startswith("2024-05-01T12:30:00+00:00")
+
+    updated_again = client.update_lifecycle_state(
+        tenant_id=tenant,
+        document_ids=[str(document_id)],
+        state="active",
+        reason=None,
+        changed_at=changed_at + timedelta(hours=1),
+    )
+
+    assert updated_again == 1
+
+    with client.connection() as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT lifecycle, deleted_at, metadata FROM documents WHERE id = %s",
+            (document_id,),
+        )
+        lifecycle, deleted_at, metadata = cur.fetchone()
+        assert lifecycle == "active"
+        assert deleted_at is None
+        assert metadata.get("lifecycle_state") == "active"
+        assert metadata.get("lifecycle_reason") is None
+
+        cur.execute(
+            "SELECT metadata FROM chunks WHERE id = %s",
+            (chunk_id,),
+        )
+        chunk_meta = cur.fetchone()[0]
+        assert chunk_meta.get("lifecycle_state") == "active"
+        assert chunk_meta.get("lifecycle_reason") is None

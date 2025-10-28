@@ -83,6 +83,7 @@ def build_ingestion_decision(
             normalized_case_id,
             embedding_profile,
             resolve_profile=False,
+            lifecycle_state=lifecycle_decision.state,
         )
         payload = CrawlerIngestionPayload(
             action=IngestionAction.RETIRE,
@@ -116,6 +117,7 @@ def build_ingestion_decision(
         delta.signatures.content_hash,
         normalized_case_id,
         embedding_profile,
+        lifecycle_state=lifecycle_decision.state,
     )
 
     payload = CrawlerIngestionPayload(
@@ -151,6 +153,7 @@ def _build_chunk_meta(
     embedding_profile: Optional[str],
     *,
     resolve_profile: bool = True,
+    lifecycle_state: LifecycleState = LifecycleState.ACTIVE,
 ) -> Tuple[ChunkMeta, Optional[IngestionProfileResolution]]:
     profile_binding: Optional[IngestionProfileResolution]
     profile_id: Optional[str]
@@ -182,6 +185,7 @@ def _build_chunk_meta(
             else None
         ),
         document_id=str(document.ref.document_id),
+        lifecycle_state=lifecycle_state.value,
     )
     return chunk_meta, profile_binding
 

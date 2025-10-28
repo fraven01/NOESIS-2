@@ -21,7 +21,7 @@ flowchart TD
 - Loader nutzen eine generische Schnittstelle und liefern strukturierte Records; Anbindungen an externe Quellen folgen als Erweiterung.
 - Splitter normalisiert Formate (Markdown → Plaintext), Chunker erzeugt überlappende Stücke.
 - Embedder ruft LiteLLM über `ai_core.rag.embeddings.EmbeddingClient` auf, nutzt `EMBEDDINGS_MODEL_PRIMARY` (optional `EMBEDDINGS_MODEL_FALLBACK`) sowie `EMBEDDINGS_PROVIDER` und schreibt Ergebnisse in `pgvector`.
-- Upsert nutzt Hashes, um Duplikate zu überspringen und `documents.deleted_at` zu respektieren.
+- Upsert nutzt Hashes, um Duplikate zu überspringen und den Lifecycle (`documents.lifecycle` sowie `chunks.metadata->>'lifecycle_state'`) zu respektieren.
 
 ## Upload → Ingest-Trigger
 - **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen.

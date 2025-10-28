@@ -802,6 +802,10 @@ class NormalizedDocument(BaseModel):
         default=None,
         description="Source channel through which the document entered the system.",
     )
+    lifecycle_state: Literal["active", "retired", "deleted"] = Field(
+        default="active",
+        description="Lifecycle status indicating whether the document is active, retired or deleted.",
+    )
     assets: List[Asset] = Field(
         default_factory=list,
         description="Assets that were extracted from the document.",
@@ -820,6 +824,14 @@ class NormalizedDocument(BaseModel):
         if value.tzinfo is None:
             raise ValueError("created_at_naive")
         return value.astimezone(timezone.utc)
+
+    @field_validator("lifecycle_state", mode="before")
+    @classmethod
+    def _normalize_lifecycle_state(cls, value: Optional[str]) -> str:
+        if value is None:
+            return "active"
+        candidate = str(value).strip().lower()
+        return candidate or "active"
 
     @model_validator(mode="after")
     def _validate_relationships(self) -> "NormalizedDocument":

@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.documents (
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
     hash TEXT NOT NULL,
     metadata JSONB NOT NULL DEFAULT '{}',
+    lifecycle TEXT NOT NULL DEFAULT 'active',
     deleted_at TIMESTAMP WITH TIME ZONE
 );
 
@@ -106,6 +107,9 @@ ALTER TABLE {{SCHEMA_NAME}}.documents ADD COLUMN IF NOT EXISTS external_id TEXT;
 ALTER TABLE {{SCHEMA_NAME}}.documents ADD COLUMN IF NOT EXISTS collection_id UUID;
 
 ALTER TABLE {{SCHEMA_NAME}}.documents ADD COLUMN IF NOT EXISTS workflow_id TEXT;
+
+ALTER TABLE {{SCHEMA_NAME}}.documents
+    ADD COLUMN IF NOT EXISTS lifecycle TEXT NOT NULL DEFAULT 'active';
 
 ALTER TABLE {{SCHEMA_NAME}}.documents
     ALTER COLUMN collection_id DROP NOT NULL;
