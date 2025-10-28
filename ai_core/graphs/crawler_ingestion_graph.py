@@ -594,10 +594,7 @@ class CrawlerIngestionGraph:
         params = state.get("delta_input", {})
         previous_hash = params.get("previous_content_hash")
         previous_version = params.get("previous_version")
-        known_duplicates = params.get("known_near_duplicates")
-        threshold = params.get("near_duplicate_threshold")
         binary_payload = params.get("binary_payload")
-        check_for_changes = params.get("check_near_duplicates_for_changes", False)
         algorithm = params.get("hash_algorithm", "sha256")
         parse_result: Optional[ParseResult] = artifacts.get("parse_result")
         primary_text: Optional[str] = None
@@ -613,10 +610,7 @@ class CrawlerIngestionGraph:
             primary_text=primary_text,
             previous_content_hash=previous_hash,
             previous_version=previous_version,
-            known_near_duplicates=known_duplicates,
-            near_duplicate_threshold=threshold if threshold is not None else 0.92,
             binary_payload=binary_payload,
-            check_near_duplicates_for_changes=check_for_changes,
             hash_algorithm=algorithm,
         )
         artifacts["delta_decision"] = decision

@@ -2,19 +2,23 @@
 
 from __future__ import annotations
 
-import hashlib
-import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Iterable, Mapping, Optional, Sequence, Tuple
+from typing import Optional
 
 from documents.contracts import NormalizedDocument
 
 from .contracts import Decision
 from .normalizer import document_payload_bytes, normalized_primary_text
 
-_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
-_PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
+from ai_core.rag.vector_client import (
+    DedupSignatures as DeltaSignatures,
+    NearDuplicateSignature as _NearDuplicateSignature,
+    build_dedup_signatures,
+    extract_primary_text_hash,
+)
+
+NearDuplicateSignature = _NearDuplicateSignature
 
 
 class DeltaStatus(str, Enum):
@@ -24,32 +28,6 @@ class DeltaStatus(str, Enum):
     CHANGED = "changed"
     UNCHANGED = "unchanged"
     NEAR_DUPLICATE = "near_duplicate"
-
-
-@dataclass(frozen=True)
-class NearDuplicateSignature:
-    """Set-based token signature used for near-duplicate checks."""
-
-    fingerprint: str
-    tokens: Tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        normalized_tokens = tuple(_normalize_token_sequence(self.tokens))
-        object.__setattr__(self, "tokens", normalized_tokens)
-        if not self.fingerprint:
-            raise ValueError("near_duplicate_fingerprint_required")
-
-
-@dataclass(frozen=True)
-class DeltaSignatures:
-    """Stable signatures emitted for each delta evaluation."""
-
-    content_hash: str
-    near_duplicate: Optional[NearDuplicateSignature] = None
-
-    def __post_init__(self) -> None:
-        if not self.content_hash:
-            raise ValueError("content_hash_required")
 
 
 @dataclass(frozen=True)
@@ -89,70 +67,45 @@ class DeltaDecision(Decision):
         return self.attributes.get("parent_document_id")
 
 
-DEFAULT_NEAR_DUPLICATE_THRESHOLD = 0.92
-
-
 def evaluate_delta(
     document: NormalizedDocument,
     *,
     primary_text: Optional[str] = None,
     previous_content_hash: Optional[str] = None,
     previous_version: Optional[int] = None,
-    known_near_duplicates: Optional[Mapping[str, NearDuplicateSignature]] = None,
-    near_duplicate_threshold: float = DEFAULT_NEAR_DUPLICATE_THRESHOLD,
     binary_payload: Optional[bytes] = None,
-    check_near_duplicates_for_changes: bool = False,
     hash_algorithm: str = "sha256",
 ) -> DeltaDecision:
-    """Decide whether the document content is new, changed, unchanged or a near-duplicate."""
+    """Evaluate content deltas and propose deduplication signatures."""
 
-    content_hash = _compute_content_hash(
-        document,
+    normalized_text = normalized_primary_text(primary_text)
+    stored_hash = extract_primary_text_hash(document.meta.parse_stats, hash_algorithm)
+
+    if binary_payload is None:
+        payload_bytes = document_payload_bytes(document)
+    else:
+        payload_bytes = binary_payload
+
+    signatures = build_dedup_signatures(
         primary_text=primary_text,
-        binary_payload=binary_payload,
+        normalized_primary_text=normalized_text,
+        stored_primary_text_hash=stored_hash,
+        payload_bytes=payload_bytes,
         algorithm=hash_algorithm,
-    )
-    near_signature = _compute_near_duplicate_signature(primary_text)
-
-    signatures = DeltaSignatures(
-        content_hash=content_hash, near_duplicate=near_signature
-    )
-
-    duplicate_match = _match_near_duplicate(
-        near_signature,
-        known_near_duplicates,
-        threshold=near_duplicate_threshold,
-        exclude=str(document.ref.document_id),
     )
 
     if previous_content_hash is None:
-        status = DeltaStatus.NEW
-        version = 1
-        reason = "no_previous_hash"
-        parent_document_id = None
-        if duplicate_match is not None:
-            status = DeltaStatus.NEAR_DUPLICATE
-            version = None
-            reason = f"near_duplicate:{duplicate_match.similarity:.3f}"
-            parent_document_id = duplicate_match.document_id
         return DeltaDecision.from_legacy(
-            status, signatures, version, reason, parent_document_id
+            DeltaStatus.NEW,
+            signatures,
+            1,
+            "no_previous_hash",
         )
 
-    if previous_content_hash == content_hash:
+    if previous_content_hash == signatures.content_hash:
         version = previous_version if previous_version is not None else 1
         return DeltaDecision.from_legacy(
             DeltaStatus.UNCHANGED, signatures, version, "hash_match"
-        )
-
-    if check_near_duplicates_for_changes and duplicate_match is not None:
-        reason = f"near_duplicate:{duplicate_match.similarity:.3f}"
-        return DeltaDecision.from_legacy(
-            DeltaStatus.NEAR_DUPLICATE,
-            signatures,
-            None,
-            reason,
-            duplicate_match.document_id,
         )
 
     version = (previous_version or 0) + 1
@@ -161,135 +114,10 @@ def evaluate_delta(
     )
 
 
-def _compute_content_hash(
-    document: NormalizedDocument,
-    *,
-    primary_text: Optional[str],
-    binary_payload: Optional[bytes] = None,
-    algorithm: str = "sha256",
-) -> str:
-    normalized_text = normalized_primary_text(primary_text)
-    if normalized_text:
-        payload = normalized_text.encode("utf-8")
-        return _hash_payload(payload, algorithm)
-
-    stored_hash = _stored_primary_text_hash(document, algorithm)
-    if stored_hash is not None:
-        return stored_hash
-
-    if binary_payload is None:
-        payload = document_payload_bytes(document)
-    else:
-        payload = binary_payload
-    return _hash_payload(payload, algorithm)
-
-
-def _hash_payload(payload: bytes, algorithm: str) -> str:
-    try:
-        hasher = hashlib.new(algorithm)
-    except ValueError as exc:
-        raise ValueError("unsupported_hash_algorithm") from exc
-    hasher.update(payload)
-    return hasher.hexdigest()
-
-
-def _stored_primary_text_hash(
-    document: NormalizedDocument, algorithm: str
-) -> Optional[str]:
-    key = _PRIMARY_TEXT_HASH_KEYS.get(algorithm.lower())
-    if key is None:
-        return None
-
-    stats = document.meta.parse_stats or {}
-    if not isinstance(stats, Mapping):
-        return None
-
-    raw = stats.get(key)
-    if not isinstance(raw, str):
-        return None
-
-    candidate = raw.strip().lower()
-    if not candidate:
-        return None
-    if not _HASH_HEX_RE.fullmatch(candidate):
-        return None
-    return candidate
-
-
-def _compute_near_duplicate_signature(
-    primary_text: Optional[str],
-) -> Optional[NearDuplicateSignature]:
-    text = (primary_text or "").strip()
-    if not text:
-        return None
-    tokens = _tokenize(text)
-    if not tokens:
-        return None
-    normalized_tokens = tuple(sorted(set(tokens)))
-    fingerprint_source = "\u001f".join(normalized_tokens)
-    fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
-    return NearDuplicateSignature(fingerprint=fingerprint, tokens=normalized_tokens)
-
-
-def _tokenize(text: str) -> Tuple[str, ...]:
-    return tuple(re.findall(r"\w+", text.lower()))
-
-
-def _normalize_token_sequence(tokens: Sequence[str]) -> Tuple[str, ...]:
-    normalized = tuple(
-        sorted({token.strip().lower() for token in tokens if token.strip()})
-    )
-    if not normalized:
-        raise ValueError("near_duplicate_tokens_required")
-    return normalized
-
-
-@dataclass(frozen=True)
-class _NearDuplicateMatch:
-    document_id: str
-    similarity: float
-
-
-def _match_near_duplicate(
-    signature: Optional[NearDuplicateSignature],
-    known: Optional[Mapping[str, NearDuplicateSignature]],
-    *,
-    threshold: float,
-    exclude: Optional[str],
-) -> Optional[_NearDuplicateMatch]:
-    if signature is None or not known:
-        return None
-    best_id: Optional[str] = None
-    best_similarity = 0.0
-    signature_tokens = set(signature.tokens)
-    for doc_id, candidate in known.items():
-        if exclude is not None and doc_id == exclude:
-            continue
-        similarity = _jaccard(signature_tokens, set(candidate.tokens))
-        if similarity > best_similarity:
-            best_id = doc_id
-            best_similarity = similarity
-    if best_id is None or best_similarity < threshold:
-        return None
-    return _NearDuplicateMatch(best_id, best_similarity)
-
-
-def _jaccard(left: Iterable[str], right: Iterable[str]) -> float:
-    set_left = set(left)
-    set_right = set(right)
-    if not set_left and not set_right:
-        return 1.0
-    union = set_left | set_right
-    if not union:
-        return 0.0
-    return len(set_left & set_right) / len(union)
-
-
 __all__ = [
     "DeltaDecision",
     "DeltaSignatures",
     "DeltaStatus",
     "NearDuplicateSignature",
-    "DEFAULT_NEAR_DUPLICATE_THRESHOLD",
     "evaluate_delta",
 ]
