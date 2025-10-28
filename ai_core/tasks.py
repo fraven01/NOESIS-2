@@ -8,7 +8,7 @@ import time
 import uuid
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
 
 try:
     import tiktoken  # type: ignore
@@ -16,6 +16,7 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
+from ai_core.graphs.crawler_ingestion_graph import build_graph
 from ai_core.infra import observability as observability_helpers
 from ai_core.infra.observability import (
     observe_span,
@@ -1528,3 +1529,20 @@ def ingestion_run(
         },
     )
     return {"status": "queued", "queued_at": queued_at}
+
+
+@shared_task(
+    base=ScopedTask,
+    queue="ingestion",
+    accepts_scope=True,
+    name="ai_core.tasks.run_ingestion_graph",
+)
+def run_ingestion_graph(
+    state: Mapping[str, Any],
+    meta: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Execute the crawler ingestion LangGraph orchestration."""
+
+    graph = build_graph()
+    working_state, result = graph.run(state, meta or {})
+    return {"state": working_state, "result": result}

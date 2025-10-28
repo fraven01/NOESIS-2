@@ -1,184 +1,36 @@
-"""Crawler ingestion orchestration expressed as a LangGraph-style state machine."""
+"""LangGraph inspired orchestration for crawler ingestion."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-import secrets
-import time
-from importlib import import_module
-from typing import (
-    Any,
-    Callable,
-    Dict,
-    Mapping,
-    MutableMapping,
-    Optional,
-    Sequence,
-    Tuple,
-)
-from uuid import UUID
+import traceback
+from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
+from uuid import uuid4
 
-from crawler.contracts import Decision, NormalizedSource
-from crawler.delta import DeltaDecision, evaluate_delta
-from crawler.fetcher import (
-    FetchRequest,
-    FetchResult,
-    FetchStatus,
-    evaluate_fetch_response,
-)
-from crawler.frontier import (
-    CrawlSignals,
-    FrontierAction,
-    FrontierDecision,
-    SourceDescriptor,
-    decide_frontier_action,
-)
-from crawler.guardrails import (
-    GuardrailDecision,
-    GuardrailLimits,
-    GuardrailSignals,
-    GuardrailStatus,
-    enforce_guardrails,
-)
-from crawler.ingestion import (
-    IngestionStatus,
-    build_ingestion_decision,
-)
-from documents.contracts import NormalizedDocument
+from ai_core import api as ai_core_api
+from ai_core.api import EmbeddingResult
+from documents import api as documents_api
+from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 
-from crawler.normalizer import build_normalized_document
-from documents.normalization import resolve_provider_reference
-from crawler.retire import LifecycleDecision, LifecycleState
-from crawler.parser import (
-    ParseResult,
-    ParseStatus,
-    ParserContent,
-    ParserStats,
-    build_parse_result,
-)
-
-from ai_core.rag import vector_client
-from ai_core.rag.ingestion_contracts import ChunkMeta
-from ai_core.rag.schemas import Chunk
-from documents.repository import DocumentsRepository
-
-
-def _generate_uuid7() -> UUID:
-    """Generate a monotonic UUIDv7 compatible identifier."""
-
-    unix_ts_ms = int(time.time_ns() // 1_000_000)
-    unix_ts_ms &= (1 << 60) - 1
-    rand = secrets.randbits(62)
-    value = (unix_ts_ms << 68) | (0x7 << 64) | (0b10 << 62) | rand
-    return UUID(int=value)
-
-
-def _resolve_documents_repository() -> DocumentsRepository:
-    services = import_module("ai_core.services")
-    repository = services._get_documents_repository()  # type: ignore[attr-defined]
-    if not isinstance(repository, DocumentsRepository):
-        raise TypeError("documents_repository_invalid")
-    return repository
-
-
-def _resolve_vector_client():
-    return vector_client.get_default_client()
-
-
-def _retire_payload(
-    decision: Decision,
-    *,
-    chunk: Optional[Chunk],
-    vector_client_instance: Optional[object] = None,
-) -> Dict[str, object]:
-    lifecycle_attr = decision.attributes.get("lifecycle_state", LifecycleState.ACTIVE)
-    if isinstance(lifecycle_attr, LifecycleState):
-        lifecycle_value = lifecycle_attr.value
-    else:
-        lifecycle_value = lifecycle_attr
-    attributes = decision.attributes
-    chunk_meta_obj = attributes.get("chunk_meta")
-    meta_model: Optional[ChunkMeta]
-    if isinstance(chunk_meta_obj, ChunkMeta):
-        meta_model = chunk_meta_obj
-    elif isinstance(chunk_meta_obj, Mapping):
-        try:
-            meta_model = ChunkMeta.model_validate(chunk_meta_obj)
-        except Exception:
-            meta_model = None
-    else:
-        meta_model = None
-
-    tenant_id: Optional[str] = None
-    document_id: Optional[str] = None
-    if isinstance(meta_model, ChunkMeta):
-        tenant_id = meta_model.tenant_id or None
-        document_id = meta_model.document_id or None
-    if not tenant_id:
-        tenant_id = attributes.get("tenant_id")  # type: ignore[index]
-    if not document_id:
-        document_id = attributes.get("document_id")  # type: ignore[index]
-    if not tenant_id and chunk is not None:
-        tenant_id = chunk.meta.get("tenant_id")
-    if not document_id and chunk is not None:
-        document_id = chunk.meta.get("document_id")
-
-    if not tenant_id or not document_id:
-        return {
-            "status": "retired",
-            "lifecycle_state": lifecycle_value,
-            "reason": "missing_identifier",
-        }
-
-    client = vector_client_instance or _resolve_vector_client()
-    changed_at = datetime.now(timezone.utc)
-    try:
-        updated = client.update_lifecycle_state(  # type: ignore[attr-defined]
-            tenant_id=tenant_id,
-            document_ids=[document_id],
-            state=lifecycle_value,
-            reason=decision.reason,
-            changed_at=changed_at,
-        )
-    except AttributeError:
-        updated = 0
-
-    return {
-        "status": "retired",
-        "lifecycle_state": lifecycle_value,
-        "documents_updated": int(updated),
-        "document_id": document_id,
-        "changed_at": changed_at.isoformat(),
-    }
-
-
-def _ingestion_status(decision: Optional[Decision]) -> Optional[IngestionStatus]:
-    if decision is None:
-        return None
-    return IngestionStatus(decision.decision)
+StateMapping = Mapping[str, Any] | MutableMapping[str, Any]
 
 
 @dataclass(frozen=True)
 class GraphTransition:
-    """Typed transition payload for graph node outcomes."""
+    """Standard transition payload returned by graph nodes."""
 
     decision: str
     reason: str
     attributes: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        normalized_decision = str(self.decision or "").strip()
-        if not normalized_decision:
+        if not str(self.decision or "").strip():
             raise ValueError("decision_required")
-        normalized_reason = str(self.reason or "").strip()
-        if not normalized_reason:
+        if not str(self.reason or "").strip():
             raise ValueError("reason_required")
-        object.__setattr__(self, "decision", normalized_decision)
-        object.__setattr__(self, "reason", normalized_reason)
-        attrs = dict(self.attributes or {})
-        attrs.setdefault("severity", "info")
-        object.__setattr__(self, "attributes", attrs)
+        attributes = dict(self.attributes or {})
+        attributes.setdefault("severity", "info")
+        object.__setattr__(self, "attributes", attributes)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -187,65 +39,16 @@ class GraphTransition:
             "attributes": dict(self.attributes),
         }
 
-    @classmethod
-    def from_mapping(cls, payload: Mapping[str, Any]) -> "GraphTransition":
-        decision = payload.get("decision", "")
-        reason = payload.get("reason", "")
-        attributes = payload.get("attributes", {})
-        return cls(decision=decision, reason=reason, attributes=attributes)
-
 
 @dataclass(frozen=True)
 class GraphNode:
-    """Graph node descriptor tying a name to the execution callable."""
+    """Tie a node name to an execution callable."""
 
     name: str
-    runner: Callable[
-        [Dict[str, Any], Dict[str, Any], Dict[str, Any]], Tuple[GraphTransition, bool]
-    ]
+    runner: Callable[[Dict[str, Any]], Tuple[GraphTransition, bool]]
 
-    def execute(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        return self.runner(state, artifacts, control)
-
-
-def _datetime_to_iso(value: Optional[datetime]) -> Optional[str]:
-    if value is None:
-        return None
-    return value.astimezone().isoformat()
-
-
-def _ensure_mapping(
-    obj: Mapping[str, Any] | MutableMapping[str, Any] | None,
-) -> Dict[str, Any]:
-    if obj is None:
-        return {}
-    if isinstance(obj, MutableMapping):
-        return dict(obj)
-    return dict(obj)
-
-
-def _get_review_value(control: Mapping[str, Any]) -> Optional[str]:
-    review_value = control.get("review")
-    if isinstance(review_value, str) and review_value:
-        return review_value
-    manual_value = control.get("manual_review")
-    if isinstance(manual_value, str) and manual_value:
-        return manual_value
-    return None
-
-
-def _set_review_value(control: MutableMapping[str, Any], value: Optional[str]) -> None:
-    if value is None:
-        control["review"] = None
-        control["manual_review"] = None
-        return
-    control["review"] = value
-    control["manual_review"] = value
+    def execute(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        return self.runner(state)
 
 
 def _transition(
@@ -254,1045 +57,336 @@ def _transition(
     *,
     attributes: Optional[Mapping[str, Any]] = None,
 ) -> GraphTransition:
-    return GraphTransition(
-        decision=decision, reason=reason, attributes=attributes or {}
-    )
+    return GraphTransition(decision=decision, reason=reason, attributes=attributes or {})
 
 
-RequiredStateKeys = (
-    "tenant_id",
-    "case_id",
-    "workflow_id",
-    "external_id",
-    "origin_uri",
-    "provider",
-    "content_hash",
-    "gating_score",
-    "ingest_action",
-)
-
-
-@dataclass
 class CrawlerIngestionGraph:
-    """State machine coordinating crawler ingestion decisions."""
+    """Minimal orchestration graph coordinating crawler ingestion."""
 
-    frontier_decider: Callable[..., FrontierDecision] = decide_frontier_action
-    fetch_evaluator: Callable[..., FetchResult] = evaluate_fetch_response
-    parse_builder: Callable[..., ParseResult] = build_parse_result
-    normalizer: Callable[..., NormalizedDocument] = build_normalized_document
-    delta_evaluator: Callable[..., DeltaDecision] = evaluate_delta
-    guardrail_enforcer: Callable[..., GuardrailDecision] = enforce_guardrails
-    ingestion_builder: Callable[..., Decision] = build_ingestion_decision
-    event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None
-    upsert_handler: Optional[Callable[[Decision], object]] = None
+    def __init__(
+        self,
+        *,
+        normalizer: Callable[..., documents_api.NormalizedDocumentPayload] = documents_api.normalize_from_raw,
+        status_updater: Callable[..., documents_api.LifecycleStatusUpdate] = documents_api.update_lifecycle_status,
+        guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision] = ai_core_api.enforce_guardrails,
+        delta_decider: Callable[..., ai_core_api.DeltaDecision] = ai_core_api.decide_delta,
+        embedding_handler: Callable[..., EmbeddingResult] = ai_core_api.trigger_embedding,
+        completion_builder: Callable[..., Mapping[str, Any]] = ai_core_api.build_completion_payload,
+        event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None,
+    ) -> None:
+        self._normalizer = normalizer
+        self._status_updater = status_updater
+        self._guardrail_enforcer = guardrail_enforcer
+        self._delta_decider = delta_decider
+        self._embedding_handler = embedding_handler
+        self._completion_builder = completion_builder
+        self._event_emitter = event_emitter
+
+    def _emit(self, name: str, transition: GraphTransition, run_id: str) -> None:
+        if self._event_emitter is not None:
+            try:
+                self._event_emitter(name, transition, run_id)
+            except Exception:  # pragma: no cover - defensive best effort
+                pass
 
     def run(
         self,
-        state: Mapping[str, Any] | MutableMapping[str, Any],
-        meta: Mapping[str, Any] | MutableMapping[str, Any],
+        state: StateMapping,
+        meta: StateMapping | None = None,
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        working_state = self._prepare_state(state, meta)
-        working_state["ingest_action"] = "pending"
-        working_state["transitions"] = {}
-        graph_run_id = str(_generate_uuid7())
-        working_state["graph_run_id"] = graph_run_id
-        transitions: Dict[str, GraphTransition] = {}
-        artifacts: Dict[str, Any] = dict(working_state.get("artifacts", {}))
-        control: Dict[str, Any] = working_state["control"]
+        working_state: Dict[str, Any] = dict(state)
+        meta_payload = dict(meta or {})
+        working_state["meta"] = meta_payload
+        working_state.setdefault("artifacts", {})
+        working_state.setdefault("transitions", {})
+        run_id = working_state.setdefault("graph_run_id", str(uuid4()))
 
-        node_sequence = (
-            GraphNode("crawler.frontier", self._run_frontier),
-            GraphNode("crawler.fetch", self._run_fetch),
-            GraphNode("crawler.parse", self._run_parse),
-            GraphNode("crawler.normalize", self._run_normalize),
-            GraphNode("crawler.delta", self._run_delta),
-            GraphNode("crawler.gating", self._run_gating),
-            GraphNode("crawler.ingest_decision", self._run_ingestion),
-            GraphNode("crawler.store", self._run_store),
-            GraphNode("rag.upsert", self._run_upsert),
-            GraphNode("rag.retire", self._run_retire),
+        nodes = (
+            GraphNode("normalize", self._run_normalize),
+            GraphNode("update_status_normalized", self._run_update_status),
+            GraphNode("enforce_guardrails", self._run_guardrails),
+            GraphNode("decide_delta", self._run_delta),
+            GraphNode("trigger_embedding", self._run_trigger_embedding),
         )
 
+        transitions: Dict[str, GraphTransition] = {}
+        continue_flow = True
         last_transition: Optional[GraphTransition] = None
-        should_continue = True
 
-        for node in node_sequence:
-            if not should_continue:
+        for node in nodes:
+            if not continue_flow:
                 break
-            outcome, should_continue = node.execute(working_state, artifacts, control)
-            transitions[node.name] = outcome
-            last_transition = outcome
-            self._emit_event(node.name, outcome, graph_run_id)
+            try:
+                transition, continue_flow = node.execute(working_state)
+            except Exception as exc:  # pragma: no cover - orchestrated error path
+                transition = self._handle_node_error(working_state, node, exc)
+                continue_flow = False
+            transitions[node.name] = transition
+            last_transition = transition
+            self._emit(node.name, transition, run_id)
+
+        finish_transition, _ = self._run_finish(working_state)
+        transitions["finish"] = finish_transition
+        self._emit("finish", finish_transition, run_id)
 
         working_state["transitions"] = {
-            node: payload.to_dict() for node, payload in transitions.items()
+            name: payload.to_dict() for name, payload in transitions.items()
         }
-        working_state["artifacts"] = artifacts
-
-        summary = self._select_summary_transition(
-            transitions,
-            last_transition,
-        )
-
+        summary = finish_transition if finish_transition else last_transition
         result = {
-            "decision": working_state.get("ingest_action"),
+            "decision": summary.decision if summary else None,
             "reason": summary.reason if summary else None,
             "attributes": dict(summary.attributes) if summary else {},
-            "graph_run_id": graph_run_id,
+            "graph_run_id": run_id,
             "transitions": {
-                node: payload.to_dict() for node, payload in transitions.items()
+                name: payload.to_dict() for name, payload in transitions.items()
             },
         }
+        working_state["result"] = result
         return working_state, result
 
-    def start_crawl(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        updated["transitions"] = {}
-        updated["artifacts"] = {}
-        updated.pop("graph_run_id", None)
-        control = dict(updated.get("control", {}))
-        review_value = _get_review_value(control)
-        control["force_retire"] = False
-        control["recompute_delta"] = False
-        control["mode"] = control.get("mode", "ingest")
-        control["dry_run"] = bool(control.get("dry_run", False))
-        _set_review_value(control, review_value)
-        updated["control"] = control
-        updated["ingest_action"] = "pending"
-        updated["gating_score"] = 0.0
-        updated["content_hash"] = None
-        return updated
+    def _require(self, state: Dict[str, Any], key: str) -> Any:
+        if key not in state:
+            raise KeyError(f"state_missing_{key}")
+        return state[key]
 
-    def shadow_mode_on(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        control["shadow_mode"] = True
-        updated["control"] = control
-        return updated
+    def _artifacts(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        artifacts = state.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            state["artifacts"] = artifacts
+        return artifacts
 
-    def shadow_mode_off(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        control["shadow_mode"] = False
-        updated["control"] = control
-        return updated
-
-    def approve_ingest(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        _set_review_value(control, "approved")
-        updated["control"] = control
-        return updated
-
-    def reject_ingest(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        _set_review_value(control, "rejected")
-        updated["control"] = control
-        updated["ingest_action"] = "skip"
-        return updated
-
-    def policy_update(
-        self,
-        state: Mapping[str, Any] | MutableMapping[str, Any],
-        *,
-        limits: Optional[GuardrailLimits] = None,
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        revision = control.get("policy_revision", 0)
-        control["policy_revision"] = revision + 1
-        updated["control"] = control
-        if limits is not None:
-            gating_input = dict(updated.get("gating_input", {}))
-            gating_input["limits"] = limits
-            updated["gating_input"] = gating_input
-        return updated
-
-    def retire(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        control["force_retire"] = True
-        updated["control"] = control
-        updated["ingest_action"] = "retire"
-        return updated
-
-    def recompute_delta(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        updated = self._copy_state(state)
-        control = dict(updated.get("control", {}))
-        control["recompute_delta"] = True
-        updated["control"] = control
-        return updated
-
-    def _prepare_state(
-        self,
-        state: Mapping[str, Any] | MutableMapping[str, Any],
-        meta: Mapping[str, Any] | MutableMapping[str, Any],
-    ) -> Dict[str, Any]:
-        base = dict(state)
-        meta_mapping = _ensure_mapping(meta)
-        for key in RequiredStateKeys:
-            if key not in base:
-                base[key] = meta_mapping.get(key)
-        if not isinstance(base.get("transitions"), dict):
-            base["transitions"] = {}
-        if not isinstance(base.get("artifacts"), dict):
-            base["artifacts"] = {}
-        control = dict(base.get("control", {}))
-        review_value = _get_review_value(control)
-        control.setdefault("shadow_mode", False)
-        control.setdefault("force_retire", False)
-        control.setdefault("policy_revision", 0)
-        control.setdefault("recompute_delta", False)
-        control.setdefault("mode", "ingest")
-        control.setdefault("dry_run", False)
-        _set_review_value(control, review_value)
-        base["control"] = control
-        base["ingest_action"] = "pending"
-        if base.get("gating_score") is None:
-            base["gating_score"] = 0.0
-        missing_required = [
-            key
-            for key in ("tenant_id", "case_id", "workflow_id")
-            if base.get(key) in {None, ""}
-        ]
-        if missing_required:
-            raise KeyError(
-                "missing_required_state_keys",
-                tuple(sorted(missing_required)),
-            )
-        return base
-
-    def _copy_state(
-        self, state: Mapping[str, Any] | MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        copied = dict(state)
-        if "control" in copied and isinstance(copied["control"], Mapping):
-            copied["control"] = dict(copied["control"])
-        if "transitions" in copied and isinstance(copied["transitions"], Mapping):
-            copied["transitions"] = dict(copied["transitions"])
-        if "artifacts" in copied and isinstance(copied["artifacts"], Mapping):
-            copied["artifacts"] = dict(copied["artifacts"])
-        return copied
-
-    def _emit_event(
-        self, node: str, transition: GraphTransition, graph_run_id: str
-    ) -> None:
-        if self.event_emitter is None:
-            return
-        try:
-            self.event_emitter(node, transition, graph_run_id)
-        except Exception:
-            # Observability hooks must not break graph execution.
-            pass
-
-    def _missing_artifact(
-        self,
-        artifact: str,
-        *,
-        reason: Optional[str] = None,
-    ) -> GraphTransition:
-        description = reason or f"{artifact}_missing"
-        return _transition(
-            "missing_artifact",
-            description,
-            attributes={"artifact": artifact, "severity": "error"},
-        )
-
-    def _build_chunk(
-        self,
-        decision: Decision,
-        artifacts: Mapping[str, Any],
-        state: Mapping[str, Any],
-        *,
-        lifecycle_state: Optional[str | LifecycleState] = None,
-        lifecycle_changed_at: Optional[datetime] = None,
-        lifecycle_reason: Optional[str] = None,
-    ) -> Optional[Chunk]:
-        chunk_meta_obj = decision.attributes.get("chunk_meta")
-        meta_model: Optional[ChunkMeta]
-        if isinstance(chunk_meta_obj, ChunkMeta):
-            meta_model = chunk_meta_obj
-        elif isinstance(chunk_meta_obj, Mapping):
-            try:
-                meta_model = ChunkMeta.model_validate(chunk_meta_obj)
-            except Exception:
-                meta_model = None
-        else:
-            meta_model = None
-        if meta_model is None:
-            return None
-
-        meta_payload = meta_model.model_dump(exclude_none=True)
-
-        for key in ("tenant_id", "case_id", "workflow_id", "collection_id"):
-            value = meta_payload.get(key) or state.get(key)
-            if value is not None:
-                meta_payload[key] = str(value)
-
-        document_id = meta_payload.get("document_id")
-        if document_id is None:
-            fallback_id = state.get("document_id")
-            if fallback_id is not None:
-                meta_payload["document_id"] = str(fallback_id)
-        if not meta_payload.get("document_id"):
-            meta_payload.pop("document_id", None)
-
-        adapter_metadata = decision.attributes.get("adapter_metadata")
-        if isinstance(adapter_metadata, Mapping):
-            meta_payload.setdefault("adapter_metadata", dict(adapter_metadata))
-
-        lifecycle_value: Optional[str] = None
-        if isinstance(lifecycle_state, LifecycleState):
-            lifecycle_value = lifecycle_state.value
-        elif isinstance(lifecycle_state, str) and lifecycle_state:
-            lifecycle_value = lifecycle_state
-
-        if lifecycle_value is not None:
-            meta_payload["lifecycle_state"] = lifecycle_value
-            if lifecycle_changed_at is not None:
-                meta_payload["lifecycle_changed_at"] = lifecycle_changed_at.astimezone(
-                    timezone.utc
-                ).isoformat()
-            elif "lifecycle_changed_at" in meta_payload:
-                meta_payload.pop("lifecycle_changed_at", None)
-            reason_value = (lifecycle_reason or "").strip()
-            if reason_value:
-                meta_payload["lifecycle_reason"] = reason_value
-            elif "lifecycle_reason" in meta_payload:
-                meta_payload.pop("lifecycle_reason", None)
-
-        primary_text: str = ""
-        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
-        if (
-            parse_result is not None
-            and isinstance(parse_result, ParseResult)
-            and parse_result.content is not None
-        ):
-            primary_text = parse_result.content.primary_text or ""
-
-        if not primary_text:
-            normalized: Optional[NormalizedDocument] = artifacts.get(
-                "normalized_document"
-            )
-            if isinstance(normalized, NormalizedDocument):
-                blob = normalized.blob
-                payload = getattr(blob, "decoded_payload", None)
-                if callable(payload):
-                    try:
-                        decoded = payload()
-                    except Exception:
-                        decoded = None
-                    if isinstance(decoded, (bytes, bytearray)):
-                        try:
-                            primary_text = decoded.decode("utf-8", errors="ignore")
-                        except Exception:
-                            primary_text = ""
-
-        if "\x00" in primary_text:
-            primary_text = primary_text.replace("\x00", " ")
-
-        return Chunk(
-            content=primary_text, meta=meta_payload, embedding=None, parents=None
-        )
-
-    def _run_frontier(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        params = state.get("frontier_input", {})
-        descriptor: SourceDescriptor = params.get("descriptor")
-        signals: Optional[CrawlSignals] = params.get("signals")
-        robots = params.get("robots")
-        host_policy = params.get("host_policy")
-        host_state = params.get("host_state")
-        now = params.get("now")
-
-        decision = self.frontier_decider(
-            descriptor,
-            signals,
-            robots=robots,
-            host_policy=host_policy,
-            host_state=host_state,
-            now=now,
-        )
-        artifacts["frontier_decision"] = decision
-        attributes = {
-            "earliest_visit_at": _datetime_to_iso(decision.earliest_visit_at),
-            "policy_events": list(decision.policy_events),
-        }
-        if decision.action is not FrontierAction.ENQUEUE:
-            attributes["severity"] = "warn"
-        outcome = _transition(
-            decision.action.value, decision.reason, attributes=attributes
-        )
-        should_continue = decision.action is FrontierAction.ENQUEUE
-        if not should_continue:
-            state["ingest_action"] = decision.action.value
-        return outcome, should_continue
-
-    def _run_fetch(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        params = state.get("fetch_input", {})
-        request: FetchRequest = params.get("request")
-        status_code = params.get("status_code")
-        body = params.get("body")
-        headers = params.get("headers")
-        elapsed = params.get("elapsed")
-        retries = params.get("retries", 0)
-        limits = params.get("limits")
-        failure = params.get("failure")
-        retry_reason = params.get("retry_reason")
-        downloaded_bytes = params.get("downloaded_bytes")
-        backoff_total_ms = params.get("backoff_total_ms", 0.0)
-
-        result = self.fetch_evaluator(
-            request,
-            status_code=status_code,
-            body=body,
-            headers=headers,
-            elapsed=elapsed,
-            retries=retries,
-            limits=limits,
-            failure=failure,
-            retry_reason=retry_reason,
-            downloaded_bytes=downloaded_bytes,
-            backoff_total_ms=backoff_total_ms,
-        )
-        artifacts["fetch_result"] = result
-        attributes = {
-            "status_code": result.metadata.status_code,
-            "bytes_downloaded": result.telemetry.bytes_downloaded,
-            "policy_events": list(result.policy_events),
-        }
-        should_continue = result.status is FetchStatus.FETCHED
-        if not should_continue:
-            attributes["severity"] = "error"
-        outcome = _transition(
-            result.status.value,
-            result.detail or result.status.value,
-            attributes=attributes,
-        )
-        if not should_continue:
-            state["ingest_action"] = result.status.value
-        return outcome, should_continue
-
-    def _run_parse(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        fetch_result: Optional[FetchResult] = artifacts.get("fetch_result")
-        if fetch_result is None:
-            outcome = self._missing_artifact("fetch_result")
-            state["ingest_action"] = "error"
-            return outcome, False
-        params = state.get("parse_input", {})
-        status: ParseStatus = params.get("status")
-        content: Optional[ParserContent] = params.get("content")
-        stats: Optional[ParserStats] = params.get("stats")
-        diagnostics = params.get("diagnostics")
-
-        parse_result = self.parse_builder(
-            fetch_result,
-            status=status,
-            content=content,
-            stats=stats,
-            diagnostics=diagnostics,
-        )
-        artifacts["parse_result"] = parse_result
-        attributes = {
-            "status": parse_result.status.value,
-            "media_type": (
-                parse_result.content.media_type if parse_result.content else None
-            ),
-        }
-        should_continue = parse_result.status is ParseStatus.PARSED
-        if not should_continue:
-            attributes["severity"] = "error"
-            state["ingest_action"] = "skip"
-        outcome = _transition(
-            parse_result.status.value, parse_result.status.value, attributes=attributes
-        )
-        return outcome, should_continue
-
-    def _run_normalize(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
-        if parse_result is None:
-            outcome = self._missing_artifact("parse_result")
-            state["ingest_action"] = "error"
-            return outcome, False
-        params = state.get("normalize_input", {})
-        source: NormalizedSource = params.get("source")
-        document_id = params.get("document_id")
-        tags = params.get("tags")
-        tenant_id = state.get("tenant_id")
-        workflow_id = state.get("workflow_id")
-
-        normalized = self.normalizer(
-            parse_result=parse_result,
-            source=source,
-            tenant_id=tenant_id,
-            workflow_id=workflow_id,
-            document_id=document_id,
-            tags=tags,
-        )
-        artifacts["normalized_document"] = normalized
-        state["origin_uri"] = normalized.meta.origin_uri
-        provider_reference = resolve_provider_reference(normalized)
-        state["provider"] = provider_reference.provider
-        state["external_id"] = provider_reference.external_id
-        attributes = {
-            "document_id": str(normalized.ref.document_id),
-            "media_type": getattr(normalized.blob, "media_type", None),
-        }
-        outcome = _transition("normalized", "normalized", attributes=attributes)
-        return outcome, True
-
-    def _run_delta(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
-        if normalized is None:
-            outcome = self._missing_artifact("normalized_document")
-            state["ingest_action"] = "error"
-            return outcome, False
-        params = state.get("delta_input", {})
-        previous_hash = params.get("previous_content_hash")
-        previous_version = params.get("previous_version")
-        binary_payload = params.get("binary_payload")
-        algorithm = params.get("hash_algorithm", "sha256")
-        parse_result: Optional[ParseResult] = artifacts.get("parse_result")
-        primary_text: Optional[str] = None
-        if (
-            parse_result is not None
-            and parse_result.status is ParseStatus.PARSED
-            and parse_result.content is not None
-        ):
-            primary_text = parse_result.content.primary_text
-
-        decision = self.delta_evaluator(
-            normalized,
-            primary_text=primary_text,
-            previous_content_hash=previous_hash,
-            previous_version=previous_version,
-            binary_payload=binary_payload,
-            hash_algorithm=algorithm,
-        )
-        artifacts["delta_decision"] = decision
-        state["content_hash"] = decision.signatures.content_hash
-        attributes = {
-            "status": decision.status.value,
-            "content_hash": decision.signatures.content_hash,
-            "version": decision.version,
-            "parent_document_id": decision.parent_document_id,
-        }
-        if control.get("recompute_delta"):
-            attributes["recomputed"] = True
-            control["recompute_delta_recent"] = True
-            control["recompute_delta"] = False
-        outcome = _transition(
-            decision.status.value, decision.reason, attributes=attributes
-        )
-        return outcome, True
-
-    def _run_gating(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        initial_review = _get_review_value(control)
-        if initial_review == "approved":
-            decision = GuardrailDecision.from_legacy(
-                GuardrailStatus.ALLOW,
-                "manual_approved",
-                ("manual_approved",),
-            )
-            _set_review_value(control, None)
-        elif initial_review == "rejected":
-            decision = GuardrailDecision.from_legacy(
-                GuardrailStatus.DENY,
-                "manual_rejected",
-                ("manual_rejected",),
-            )
-        else:
-            params = state.get("gating_input", {})
-            limits: Optional[GuardrailLimits] = params.get("limits")
-            signals: Optional[GuardrailSignals] = params.get("signals")
-            decision = self.guardrail_enforcer(limits=limits, signals=signals)
-            if decision.status is GuardrailStatus.DENY and initial_review != "rejected":
-                _set_review_value(control, "required")
-
-        artifacts["guardrail_decision"] = decision
-        allowed = decision.status is GuardrailStatus.ALLOW
-        params = state.get("gating_input", {})
-        score = params.get("score")
-        if score is None:
-            score = 1.0 if allowed else 0.0
-        state["gating_score"] = float(score)
-        resolved_review = _get_review_value(control) or initial_review
-        attributes = {
-            "status": decision.status.value,
-            "policy_events": list(decision.policy_events),
-            "review": resolved_review,
-            "mode": control.get("mode"),
-            "dry_run": bool(control.get("dry_run")),
-        }
-        if decision.status is GuardrailStatus.DENY:
-            attributes["severity"] = (
-                "warn" if resolved_review != "rejected" else "error"
-            )
-        outcome = _transition(
-            decision.status.value, decision.reason, attributes=attributes
-        )
-        should_continue = allowed
-        if not allowed and resolved_review == "rejected":
-            state["ingest_action"] = "skip"
-        return outcome, should_continue
-
-    def _run_ingestion(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
-        if normalized is None:
-            outcome = self._missing_artifact("normalized_document")
-            state["ingest_action"] = "error"
-            return outcome, False
-        delta_decision: Optional[DeltaDecision] = artifacts.get("delta_decision")
-        if delta_decision is None:
-            outcome = self._missing_artifact("delta_decision")
-            state["ingest_action"] = "error"
-            return outcome, False
-        lifecycle = self._resolve_lifecycle_decision(
-            state.get("lifecycle_decision"),
-            force_retire=bool(control.get("force_retire")),
-        )
-        conflict_note = None
-        recompute_recent = control.pop("recompute_delta_recent", False)
-        if control.get("force_retire") and (
-            control.get("recompute_delta") or recompute_recent
-        ):
-            conflict_note = "retire_overrides_recompute"
-            control["recompute_delta"] = False
-        ingestion = self.ingestion_builder(
-            normalized,
-            delta_decision,
+    def _run_normalize(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        raw_reference = self._require(state, "raw_document")
+        normalized = self._normalizer(
+            raw_reference=raw_reference,
+            tenant_id=self._require(state, "tenant_id"),
             case_id=state.get("case_id"),
-            lifecycle=lifecycle,
+            request_id=state.get("request_id") or state.get("meta", {}).get("request_id"),
         )
-        artifacts["ingestion_decision"] = ingestion
-        status = IngestionStatus(ingestion.decision)
-        state["ingest_action"] = status.value
-        ingestion_attrs = ingestion.attributes
-        chunk_meta = ingestion_attrs.get("chunk_meta")
-        adapter_metadata: Mapping[str, object] = ingestion_attrs.get(
-            "adapter_metadata", {}
-        )
-        if chunk_meta is not None:
-            state["external_id"] = getattr(chunk_meta, "external_id", None)
-            state["content_hash"] = getattr(chunk_meta, "content_hash", None)
-        if isinstance(adapter_metadata, Mapping):
-            provider = adapter_metadata.get("provider")
-            if provider:
-                state["provider"] = provider
-            origin = adapter_metadata.get("origin_uri")
-            if origin:
-                state["origin_uri"] = origin
-        review_state = control.get("review")
-        dry_run = bool(control.get("dry_run"))
-        mode = control.get("mode", "ingest")
-        blocked: list[str] = []
-        if review_state == "required":
-            blocked.append("review_required")
-        if dry_run:
-            blocked.append("dry_run")
-        lifecycle_state = ingestion_attrs.get("lifecycle_state", LifecycleState.ACTIVE)
-        if not isinstance(lifecycle_state, LifecycleState):
-            lifecycle_state = LifecycleState(lifecycle_state)
-        policy_events = ingestion_attrs.get("policy_events", ())
-        if not isinstance(policy_events, Sequence):
-            policy_events = (policy_events,) if policy_events else ()
-        else:
-            policy_events = tuple(policy_events)
-        attributes = {
-            "status": status.value,
-            "lifecycle_state": lifecycle_state.value,
-            "policy_events": list(policy_events),
-            "mode": mode,
-            "review": review_state,
-            "dry_run": dry_run,
-        }
-        if conflict_note:
-            attributes["conflict_resolution"] = conflict_note
-        if blocked:
-            attributes["blocked"] = blocked[0] if len(blocked) == 1 else tuple(blocked)
-        store_allowed = (
-            status is IngestionStatus.UPSERT
-            and not blocked
-            and mode in {"store_only", "ingest"}
-        )
-        upsert_allowed = (
-            status is IngestionStatus.UPSERT
-            and not blocked
-            and mode == "ingest"
-            and not control.get("shadow_mode")
-        )
-        attributes["store_allowed"] = store_allowed
-        attributes["upsert_allowed"] = upsert_allowed
-        outcome = _transition(status.value, ingestion.reason, attributes=attributes)
-        continue_to_store = status is IngestionStatus.UPSERT
-        continue_to_retire = status is IngestionStatus.RETIRE
-        return outcome, continue_to_store or continue_to_retire
-
-    def _resolve_lifecycle_decision(
-        self,
-        lifecycle: Optional[LifecycleDecision],
-        *,
-        force_retire: bool,
-    ) -> LifecycleDecision:
-        """Normalize lifecycle input to the crawler decision contract."""
-
-        if isinstance(lifecycle, LifecycleDecision):
-            return lifecycle
-        if force_retire:
-            return LifecycleDecision(
-                state=LifecycleState.RETIRED,
-                reason="force_retire",
-                policy_events=("manual_retire",),
-            )
-        return LifecycleDecision(LifecycleState.ACTIVE, "active")
-
-    def _run_store(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
-        status = _ingestion_status(ingestion) if ingestion else None
-        if status is not IngestionStatus.UPSERT:
-            outcome = _transition(
-                "skip",
-                "not_applicable",
-                attributes={
-                    "mode": control.get("mode"),
-                    "review": control.get("review"),
-                    "dry_run": bool(control.get("dry_run")),
-                },
-            )
-            return outcome, True
-
-        normalized: Optional[NormalizedDocument] = artifacts.get("normalized_document")
-        if normalized is None:
-            missing = self._missing_artifact("normalized_document")
-            attributes = dict(missing.attributes)
-            attributes.update(
-                {
-                    "mode": control.get("mode"),
-                    "review": control.get("review"),
-                    "dry_run": bool(control.get("dry_run")),
-                }
-            )
-            outcome = _transition(
-                missing.decision, missing.reason, attributes=attributes
-            )
-            return outcome, False
-
-        mode = control.get("mode", "ingest")
-        review_state = control.get("review")
-        dry_run = bool(control.get("dry_run"))
-        attributes = {
-            "mode": mode,
-            "review": review_state,
-            "dry_run": dry_run,
-        }
-
-        if review_state == "required":
-            attributes["severity"] = "warn"
-            artifacts["store_result"] = None
-            outcome = _transition("skip", "review_required", attributes=attributes)
-            return outcome, True
-
-        if dry_run:
-            artifacts["store_result"] = None
-            outcome = _transition("skip", "dry_run", attributes=attributes)
-            return outcome, True
-
-        if mode not in {"store_only", "ingest"}:
-            artifacts["store_result"] = None
-            outcome = _transition("skip", "mode_disabled", attributes=attributes)
-            return outcome, True
-
-        repository = _resolve_documents_repository()
-        stored_document = repository.upsert(normalized)
-        store_result = {
-            "status": "stored",
-            "tenant_id": stored_document.ref.tenant_id,
-            "document_id": str(stored_document.ref.document_id),
-            "version": stored_document.ref.version,
-            "workflow_id": stored_document.ref.workflow_id,
-            "collection_id": (
-                str(stored_document.ref.collection_id)
-                if stored_document.ref.collection_id
-                else None
-            ),
-        }
-        if store_result.get("version") is None:
-            store_result.pop("version")
-        if store_result.get("collection_id") is None:
-            store_result.pop("collection_id")
-        artifacts["store_result"] = store_result
-        attributes["result"] = store_result
-        outcome = _transition("stored", "document_stored", attributes=attributes)
-        return outcome, True
-
-    def _run_upsert(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
-        mode = control.get("mode", "ingest")
-        dry_run = bool(control.get("dry_run"))
-        review_state = control.get("review")
-        status = _ingestion_status(ingestion) if ingestion else None
-        if status is not IngestionStatus.UPSERT:
-            outcome = _transition(
-                "skip",
-                "not_applicable",
-                attributes={
-                    "shadow_mode": control.get("shadow_mode", False),
-                    "mode": mode,
-                    "dry_run": dry_run,
-                    "review": review_state,
-                },
-            )
-            return outcome, True
-
-        if review_state == "required":
-            attributes = {
-                "shadow_mode": control.get("shadow_mode", False),
-                "mode": mode,
-                "dry_run": dry_run,
-                "review": review_state,
-                "severity": "warn",
-            }
-            outcome = _transition("skip", "review_required", attributes=attributes)
-            return outcome, True
-
-        if dry_run:
-            attributes = {
-                "shadow_mode": control.get("shadow_mode", False),
-                "mode": mode,
-                "dry_run": True,
-                "review": review_state,
-            }
-            outcome = _transition("skip", "dry_run", attributes=attributes)
-            return outcome, True
-
-        if mode != "ingest":
-            attributes = {
-                "shadow_mode": control.get("shadow_mode", False),
-                "mode": mode,
-                "dry_run": dry_run,
-                "review": review_state,
-            }
-            outcome = _transition("skip", "mode_disabled", attributes=attributes)
-            return outcome, True
-
-        if control.get("shadow_mode"):
-            artifacts["upsert_result"] = None
-            outcome = _transition(
-                "shadow_skip",
-                "shadow_mode",
-                attributes={
-                    "shadow_mode": True,
-                    "mode": mode,
-                    "dry_run": dry_run,
-                    "review": review_state,
-                },
-            )
-            return outcome, True
-
-        chunk = self._build_chunk(ingestion, artifacts, state)
-        if chunk is None:
-            upsert_result = {"status": "skipped", "reason": "missing_chunk"}
-            artifacts["upsert_result"] = upsert_result
-            outcome = _transition(
-                "skip",
-                "missing_chunk",
-                attributes={
-                    "result": upsert_result,
-                    "mode": mode,
-                    "dry_run": dry_run,
-                    "review": review_state,
-                    "shadow_mode": False,
-                },
-            )
-            return outcome, True
-
-        handler = self.upsert_handler if callable(self.upsert_handler) else None
-        if handler:
-            try:
-                handler_result = handler(ingestion)
-            except Exception as exc:  # pragma: no cover - defensive handler guard
-                upsert_result = {"status": "error", "error": str(exc)}
-            else:
-                if isinstance(handler_result, Mapping):
-                    upsert_result = dict(handler_result)
-                else:
-                    upsert_result = {"status": str(handler_result)}
-        else:
-            vector_client_instance = _resolve_vector_client()
-            written = vector_client_instance.upsert_chunks([chunk])
-            upsert_result = {
-                "status": "upserted",
-                "chunks_written": int(written),
-            }
-        document_id = chunk.meta.get("document_id") if chunk.meta else None
-        if document_id is not None:
-            upsert_result.setdefault("document_id", str(document_id))
-        tenant_id = chunk.meta.get("tenant_id") if chunk.meta else None
-        if tenant_id is not None:
-            upsert_result.setdefault("tenant_id", str(tenant_id))
-        artifacts["upsert_result"] = upsert_result
-        outcome = _transition(
-            "upsert",
-            "upsert_dispatched",
+        artifacts = self._artifacts(state)
+        artifacts["normalized_document"] = normalized
+        transition = _transition(
+            "normalized",
+            "document_normalized",
             attributes={
-                "result": upsert_result,
-                "mode": mode,
-                "dry_run": dry_run,
-                "review": review_state,
-                "shadow_mode": False,
+                "severity": "info",
+                "document": normalized.to_dict(),
             },
         )
-        return outcome, True
+        return transition, True
 
-    def _run_retire(
-        self,
-        state: Dict[str, Any],
-        artifacts: Dict[str, Any],
-        control: Dict[str, Any],
-    ) -> Tuple[GraphTransition, bool]:
-        ingestion: Optional[Decision] = artifacts.get("ingestion_decision")
-        status = _ingestion_status(ingestion) if ingestion else None
-        if status is not IngestionStatus.RETIRE:
-            outcome = _transition("skip", "not_applicable", attributes={})
-            return outcome, False
+    def _run_update_status(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts[
+            "normalized_document"
+        ]
+        status = self._status_updater(
+            tenant_id=normalized.tenant_id,
+            document_id=normalized.document_id,
+            status="normalized",
+            previous_status=state.get("previous_status"),
+            workflow_id=normalized.document.ref.workflow_id,
+            reason="document_normalized",
+        )
+        artifacts["status_update"] = status
+        transition = _transition(
+            "status_updated",
+            "lifecycle_normalized",
+            attributes={"severity": "info", "result": status.to_dict()},
+        )
+        return transition, True
 
-        changed_at = datetime.now(timezone.utc)
-        retire_reason = ingestion.reason
-        lifecycle_state = ingestion.attributes.get(
-            "lifecycle_state", LifecycleState.RETIRED.value
+    def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts[
+            "normalized_document"
+        ]
+        decision = self._guardrail_enforcer(
+            normalized_document=normalized,
+            config=state.get("guardrails"),
         )
-        chunk = self._build_chunk(
-            ingestion,
-            artifacts,
-            state,
-            lifecycle_state=lifecycle_state,
-            lifecycle_changed_at=changed_at,
-            lifecycle_reason=retire_reason,
+        artifacts["guardrail_decision"] = decision
+        if not decision.allowed:
+            status = self._status_updater(
+                tenant_id=normalized.tenant_id,
+                document_id=normalized.document_id,
+                status="deleted",
+                workflow_id=normalized.document.ref.workflow_id,
+                reason=decision.reason,
+                policy_events=decision.attributes.get("policy_events"),
+            )
+            artifacts.setdefault("status_updates", []).append(status)
+        transition = _transition(
+            decision.decision,
+            decision.reason,
+            attributes=decision.attributes,
         )
-        vector_client_instance = _resolve_vector_client()
-        result = _retire_payload(
-            ingestion,
-            chunk=chunk,
-            vector_client_instance=vector_client_instance,
-        )
-        artifacts["retire_result"] = result
-        outcome = _transition("retire", ingestion.reason, attributes={"result": result})
-        return outcome, False
+        continue_flow = decision.allowed
+        return transition, continue_flow
 
-    def _select_summary_transition(
-        self,
-        transitions: Mapping[str, GraphTransition],
-        last_transition: Optional[GraphTransition],
-    ) -> Optional[GraphTransition]:
-        preferred_order = (
-            "crawler.ingest_decision",
-            "crawler.gating",
-            "crawler.delta",
-            "crawler.normalize",
-            "crawler.parse",
-            "crawler.fetch",
-            "crawler.frontier",
+    def _run_delta(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts[
+            "normalized_document"
+        ]
+        decision = self._delta_decider(
+            normalized_document=normalized,
+            baseline=state.get("baseline"),
         )
-        severity_rank = {"error": 3, "warn": 2, "info": 1}
-        best_transition: Optional[GraphTransition] = None
-        best_severity = -1
-        best_order_score = -1
-        for name, payload in transitions.items():
-            severity = str(payload.attributes.get("severity", "info"))
-            severity_score = severity_rank.get(severity, 1)
-            order_score = 0
-            if name in preferred_order:
-                order_score = len(preferred_order) - preferred_order.index(name)
-            if severity_score > best_severity or (
-                severity_score == best_severity and order_score > best_order_score
-            ):
-                best_transition = payload
-                best_severity = severity_score
-                best_order_score = order_score
-        if best_transition is not None:
-            return best_transition
-        for key in preferred_order:
-            payload = transitions.get(key)
-            if payload:
-                return payload
-        return last_transition
+        artifacts["delta_decision"] = decision
+        status_update = self._status_updater(
+            tenant_id=normalized.tenant_id,
+            document_id=normalized.document_id,
+            status="active",
+            workflow_id=normalized.document.ref.workflow_id,
+            reason=decision.reason,
+        )
+        artifacts.setdefault("status_updates", []).append(status_update)
+        transition = _transition(
+            decision.decision,
+            decision.reason,
+            attributes=decision.attributes,
+        )
+        return transition, True
+
+    def _run_trigger_embedding(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts[
+            "normalized_document"
+        ]
+        delta: Optional[ai_core_api.DeltaDecision] = artifacts.get("delta_decision")
+        if delta is None:
+            transition = _transition(
+                "skipped",
+                "delta_missing",
+                attributes={"severity": "warn"},
+            )
+            return transition, True
+        if delta.decision not in {"new", "changed"}:
+            transition = _transition(
+                "skipped",
+                "delta_not_applicable",
+                attributes={"severity": "info", "delta": delta.decision},
+            )
+            return transition, True
+        embedding_state = state.get("embedding") or {}
+        result = self._embedding_handler(
+            normalized_document=normalized,
+            embedding_profile=embedding_state.get("profile"),
+            tenant_id=normalized.tenant_id,
+            case_id=state.get("case_id"),
+            request_id=state.get("request_id"),
+            vector_client=embedding_state.get("client"),
+            vector_client_factory=embedding_state.get("client_factory"),
+        )
+        artifacts["embedding_result"] = result
+        transition = _transition(
+            "embedding_triggered",
+            "embedding_enqueued",
+            attributes={"severity": "info", "result": result.to_dict()},
+        )
+        return transition, True
+
+    def _run_finish(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: Optional[NormalizedDocumentPayload] = artifacts.get(
+            "normalized_document"
+        )
+        guardrail: Optional[ai_core_api.GuardrailDecision] = artifacts.get(
+            "guardrail_decision"
+        )
+        delta: Optional[ai_core_api.DeltaDecision] = artifacts.get("delta_decision")
+        embedding_result: Optional[EmbeddingResult] = artifacts.get("embedding_result")
+
+        if normalized is None:
+            transition = _transition(
+                "error",
+                "normalization_missing",
+                attributes={"severity": "error"},
+            )
+            return transition, False
+
+        if guardrail is None:
+            guardrail = ai_core_api.GuardrailDecision(
+                decision="allow", reason="default", attributes={"severity": "info"}
+            )
+        if delta is None:
+            delta = ai_core_api.DeltaDecision(
+                decision="unknown",
+                reason="delta_missing",
+                attributes={"severity": "warn"},
+            )
+
+        payload = self._completion_builder(
+            normalized_document=normalized,
+            decision=delta,
+            guardrails=guardrail,
+            embedding_result=embedding_result.to_dict() if embedding_result else None,
+        )
+        failure = artifacts.get("failure")
+        severity = guardrail.attributes.get("severity", "info")
+        decision_value = delta.decision
+        reason_value = delta.reason
+        if failure:
+            severity = "error"
+            decision_value = failure.get("decision", "error")
+            reason_value = failure.get("reason", guardrail.reason)
+            payload["failure"] = dict(failure)
+        elif not guardrail.allowed:
+            severity = "error"
+            decision_value = "denied"
+            reason_value = guardrail.reason
+        transition = _transition(
+            decision_value,
+            reason_value,
+            attributes={"severity": severity, "result": dict(payload)},
+        )
+        state["summary"] = payload
+        return transition, False
+
+    def _handle_node_error(
+        self, working_state: Dict[str, Any], node: GraphNode, exc: Exception
+    ) -> GraphTransition:
+        artifacts = self._artifacts(working_state)
+        artifacts.setdefault("errors", []).append(
+            {
+                "node": node.name,
+                "error": repr(exc),
+                "traceback": traceback.format_exc(),
+            }
+        )
+        artifacts["failure"] = {"decision": "error", "reason": f"{node.name}_failed"}
+        normalized = artifacts.get("normalized_document")
+        if isinstance(normalized, NormalizedDocumentPayload):
+            try:
+                status: LifecycleStatusUpdate = self._status_updater(
+                    tenant_id=normalized.tenant_id,
+                    document_id=normalized.document_id,
+                    status="deleted",
+                    workflow_id=normalized.document.ref.workflow_id,
+                    reason=f"{node.name}_failed",
+                )
+                artifacts.setdefault("status_updates", []).append(status)
+            except Exception:  # pragma: no cover - best effort
+                pass
+        return _transition(
+            "error",
+            f"{node.name}_failed",
+            attributes={"severity": "error", "error": repr(exc)},
+        )
 
 
 GRAPH = CrawlerIngestionGraph()
 
 
 def build_graph() -> CrawlerIngestionGraph:
-    """Return the shared crawler ingestion graph instance."""
-
     return GRAPH
 
 
-def run(
-    state: Mapping[str, Any] | MutableMapping[str, Any],
-    meta: Mapping[str, Any] | MutableMapping[str, Any],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Module-level convenience delegating to :data:`GRAPH`."""
-
+def run(state: StateMapping, meta: StateMapping | None = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return GRAPH.run(state, meta)
 
 
-__all__ = ["CrawlerIngestionGraph", "GRAPH", "build_graph", "run"]
+__all__ = ["CrawlerIngestionGraph", "GRAPH", "build_graph", "run", "GraphTransition"]
