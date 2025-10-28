@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Dict, Mapping, Optional, Protocol, Tuple
+from typing import Dict, Mapping, Optional, Protocol
 
 from documents.contracts import NormalizedDocument
 
@@ -14,14 +14,9 @@ from .errors import CrawlerError, ErrorClass
 from .normalizer import document_parser_stats, resolve_provider_reference
 from .retire import LifecycleDecision, LifecycleState
 
-from django.conf import settings
-
 from ai_core.rag.ingestion_contracts import (
-    ChunkMeta,
-    CrawlerIngestionPayload,
     IngestionAction,
-    IngestionProfileResolution,
-    resolve_ingestion_profile,
+    build_crawler_ingestion_payload,
 )
 
 IngestionStatus = IngestionAction
@@ -76,72 +71,22 @@ def build_ingestion_decision(
     adapter_impl = adapter or DefaultCrawlerIngestionAdapter()
     adapter_metadata = adapter_impl.build_metadata(document)
 
-    if lifecycle_decision.should_retire:
-        chunk_meta, profile_binding = _build_chunk_meta(
-            document,
-            delta.signatures.content_hash,
-            normalized_case_id,
-            embedding_profile,
-            resolve_profile=False,
-            lifecycle_state=lifecycle_decision.state,
-        )
-        payload = CrawlerIngestionPayload(
-            action=IngestionAction.RETIRE,
-            lifecycle_state=lifecycle_decision.state.value,
-            policy_events=tuple(lifecycle_decision.policy_events),
-            adapter_metadata=adapter_metadata,
-            document_id=str(document.ref.document_id),
-            workflow_id=document.ref.workflow_id,
-            tenant_id=document.ref.tenant_id,
-            case_id=normalized_case_id,
-            content_hash=delta.signatures.content_hash,
-            chunk_meta=chunk_meta,
-            embedding_profile=(
-                profile_binding.profile_id
-                if profile_binding is not None
-                else chunk_meta.embedding_profile
-            ),
-            vector_space_id=(
-                profile_binding.resolution.vector_space.id
-                if profile_binding is not None
-                else chunk_meta.vector_space_id
-            ),
-            delta_status=delta.status.value,
-        )
-        attributes = dict(payload.as_mapping())
-        attributes["lifecycle_state"] = lifecycle_decision.state
-        return Decision(payload.action.value, lifecycle_decision.reason, attributes)
-
-    chunk_meta, profile_binding = _build_chunk_meta(
-        document,
-        delta.signatures.content_hash,
-        normalized_case_id,
-        embedding_profile,
-        lifecycle_state=lifecycle_decision.state,
+    action = (
+        IngestionAction.RETIRE
+        if lifecycle_decision.should_retire
+        else IngestionAction.UPSERT
     )
 
-    payload = CrawlerIngestionPayload(
-        action=IngestionAction.UPSERT,
-        lifecycle_state=lifecycle_decision.state.value,
-        policy_events=tuple(lifecycle_decision.policy_events),
-        adapter_metadata=adapter_metadata,
-        document_id=str(document.ref.document_id),
-        workflow_id=document.ref.workflow_id,
-        tenant_id=document.ref.tenant_id,
+    payload = build_crawler_ingestion_payload(
+        document=document,
+        signatures=delta.signatures,
         case_id=normalized_case_id,
-        content_hash=delta.signatures.content_hash,
-        chunk_meta=chunk_meta,
-        embedding_profile=(
-            profile_binding.profile_id
-            if profile_binding is not None
-            else chunk_meta.embedding_profile
-        ),
-        vector_space_id=(
-            profile_binding.resolution.vector_space.id
-            if profile_binding is not None
-            else chunk_meta.vector_space_id
-        ),
-        delta_status=delta.status.value,
+        action=action,
+        lifecycle_state=lifecycle_decision.state,
+        policy_events=lifecycle_decision.policy_events,
+        adapter_metadata=adapter_metadata,
+        embedding_profile=embedding_profile,
+        delta_status=delta.status,
     )
 
     reason = (
@@ -150,59 +95,6 @@ def build_ingestion_decision(
     attributes = dict(payload.as_mapping())
     attributes["lifecycle_state"] = lifecycle_decision.state
     return Decision(payload.action.value, reason, attributes)
-
-
-def _build_chunk_meta(
-    document: NormalizedDocument,
-    content_hash: str,
-    case_id: str,
-    embedding_profile: Optional[str],
-    *,
-    resolve_profile: bool = True,
-    lifecycle_state: LifecycleState = LifecycleState.ACTIVE,
-) -> Tuple[ChunkMeta, Optional[IngestionProfileResolution]]:
-    profile_binding: Optional[IngestionProfileResolution]
-    profile_id: Optional[str]
-    vector_space_id: Optional[str]
-
-    if resolve_profile:
-        profile_binding = _resolve_profile(embedding_profile)
-        profile_id = profile_binding.profile_id
-        vector_space_id = profile_binding.resolution.vector_space.id
-    else:
-        profile_binding = None
-        profile_id = str(embedding_profile) if embedding_profile else None
-        vector_space_id = None
-    external = resolve_provider_reference(document)
-    chunk_meta = ChunkMeta(
-        tenant_id=document.ref.tenant_id,
-        case_id=case_id,
-        source="crawler",
-        hash=document.checksum,
-        external_id=external.external_id,
-        content_hash=content_hash,
-        embedding_profile=profile_id,
-        vector_space_id=vector_space_id,
-        process="crawler",
-        workflow_id=document.ref.workflow_id,
-        collection_id=(
-            str(document.ref.collection_id)
-            if document.ref.collection_id is not None
-            else None
-        ),
-        document_id=str(document.ref.document_id),
-        lifecycle_state=lifecycle_state.value,
-    )
-    return chunk_meta, profile_binding
-
-
-def _resolve_profile(
-    embedding_profile: Optional[str],
-) -> IngestionProfileResolution:
-    if embedding_profile is None:
-        default_profile = getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
-        embedding_profile = str(default_profile)
-    return resolve_ingestion_profile(embedding_profile)
 
 
 def _require_identifier(value: Optional[str], field: str) -> str:

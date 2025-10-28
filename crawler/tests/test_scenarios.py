@@ -7,6 +7,8 @@ from typing import Dict, Mapping, Optional, Sequence, Tuple
 from uuid import NAMESPACE_URL, uuid5
 from urllib.parse import urlsplit
 
+import pytest
+
 from ai_core.rag.ingestion_contracts import ChunkMeta
 
 from crawler.contracts import Decision, NormalizedSource, normalize_source
@@ -48,6 +50,21 @@ from crawler.parser import (
 )
 from documents.parsers import ParsedTextBlock
 from crawler.retire import evaluate_lifecycle
+
+
+@pytest.fixture(autouse=True)
+def _stub_profile_resolution(monkeypatch):
+    from types import SimpleNamespace
+
+    fake_resolution = SimpleNamespace(
+        vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
+    )
+    monkeypatch.setattr(
+        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
+        lambda embedding_profile: SimpleNamespace(
+            profile_id="profile-test", resolution=fake_resolution
+        ),
+    )
 
 TENANT_ID = "tenant-main"
 WORKFLOW_ID = "wf-e2e"
