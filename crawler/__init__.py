@@ -79,10 +79,10 @@ from .policies import (
 )
 from .ingestion import (
     DefaultCrawlerIngestionAdapter,
-    IngestionStatus,
     build_ingestion_decision,
     build_ingestion_error,
 )
+from ai_core.rag.ingestion_contracts import IngestionAction
 from .lifecycle_model import (
     ALLOWED_TRANSITIONS,
     FINAL_STATUSES,
@@ -163,7 +163,7 @@ __all__ = [
     "PolicyRegistry",
     "ProviderPolicy",
     "build_policy_registry",
-    "IngestionStatus",
+    "IngestionAction",
     "build_ingestion_decision",
     "build_ingestion_error",
     "DefaultCrawlerIngestionAdapter",

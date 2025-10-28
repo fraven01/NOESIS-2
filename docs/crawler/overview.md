@@ -67,7 +67,7 @@ flowchart TD
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
 | `crawler.normalizer` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocument` (mit `documents.contracts.DocumentMeta`, `ProviderReference`) |
 | `crawler.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
-| `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionStatus`, `ChunkMeta`, `DefaultCrawlerIngestionAdapter` |
+| `crawler.ingestion` | Übergabe an RAG-Ingestion & Lifecycle | `IngestionAction`, `ChunkMeta`, `DefaultCrawlerIngestionAdapter` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
 ## Normalisierung & Delta
