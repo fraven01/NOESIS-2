@@ -8,6 +8,7 @@ import re
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Iterable, Mapping, Optional, Sequence, Tuple
+from uuid import UUID
 
 from documents.contract_utils import normalize_string
 from documents.contracts import (
@@ -41,7 +42,7 @@ def build_normalized_document(
     source: NormalizedSource,
     tenant_id: str,
     workflow_id: str,
-    document_id: str,
+    document_id: UUID | str,
     tags: Optional[Sequence[str]] = None,
 ) -> ContractsNormalizedDocument:
     """Compose a :class:`documents.contracts.NormalizedDocument` instance."""
@@ -56,6 +57,11 @@ def build_normalized_document(
         raise ValueError("canonical_source_mismatch")
 
     normalized_tags = tuple(tags) if tags else ()
+    document_tags = _compose_document_tags(
+        normalized_tags,
+        source.provider_tags,
+        parse_result.fetch,
+    )
     parser_stats = dict(_parser_stats_mapping(stats))
     normalized_text = normalized_primary_text(content.primary_text)
     if normalized_text:
@@ -71,7 +77,7 @@ def build_normalized_document(
         workflow_id=_require_identifier(workflow_id, "workflow_id"),
         title=content.title,
         language=content.content_language,
-        tags=list(normalized_tags),
+        tags=list(document_tags),
         origin_uri=canonical_source,
         parse_stats=parser_stats,
         external_ref=build_external_reference(
@@ -141,6 +147,7 @@ def normalized_primary_text(text: Optional[str]) -> str:
 
 
 _HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_TAG_SANITIZE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
 def _require_identifier(value: Optional[str], field: str) -> str:
@@ -198,5 +205,82 @@ def _build_inline_blob(media_type: str, payload: bytes) -> InlineBlob:
         sha256=checksum,
         size=len(payload),
     )
+
+
+def _compose_document_tags(
+    base_tags: Sequence[str],
+    provider_tags: Mapping[str, str],
+    fetch_result: "FetchResult",
+) -> Tuple[str, ...]:
+    tags: list[str] = list(base_tags)
+    tags.extend(_provider_tag_aliases(provider_tags))
+    tags.extend(_robots_tags(fetch_result))
+    return tuple(tags)
+
+
+def _provider_tag_aliases(provider_tags: Mapping[str, str]) -> Tuple[str, ...]:
+    aliases: list[str] = []
+    for raw_key, raw_value in provider_tags.items():
+        key = _sanitize_tag_component(raw_key)
+        value = _sanitize_tag_component(raw_value)
+        if key and value:
+            aliases.append(f"provider.{key}.{value}")
+    return tuple(aliases)
+
+
+def _robots_tags(fetch_result: "FetchResult") -> Tuple[str, ...]:
+    tags: list[str] = []
+    for event in getattr(fetch_result, "policy_events", ()):
+        if event.startswith("robots_"):
+            suffix = event[len("robots_") :]
+            suffix_tag = _sanitize_tag_component(suffix)
+            if suffix_tag:
+                tags.append(f"robots.{suffix_tag}")
+    request_metadata = getattr(fetch_result.request, "metadata", {})
+    if isinstance(request_metadata, Mapping):
+        tags.extend(_robots_metadata_tags(request_metadata.get("robots")))
+    return tuple(tags)
+
+
+def _robots_metadata_tags(raw_value: Optional[object]) -> Tuple[str, ...]:
+    if raw_value is None:
+        return ()
+    tags: list[str] = []
+    if isinstance(raw_value, Mapping):
+        for raw_key, raw_hint in raw_value.items():
+            key = _sanitize_tag_component(raw_key)
+            hint = _sanitize_tag_component(raw_hint)
+            if key and hint:
+                tags.append(f"robots.{key}.{hint}")
+            elif key:
+                tags.append(f"robots.{key}")
+    elif isinstance(raw_value, str):
+        hint = _sanitize_tag_component(raw_value)
+        if hint:
+            tags.append(f"robots.{hint}")
+    elif isinstance(raw_value, Iterable) and not isinstance(raw_value, (bytes, bytearray)):
+        for entry in raw_value:
+            hint = _sanitize_tag_component(entry)
+            if hint:
+                tags.append(f"robots.{hint}")
+    else:
+        hint = _sanitize_tag_component(raw_value)
+        if hint:
+            tags.append(f"robots.{hint}")
+    return tuple(tags)
+
+
+def _sanitize_tag_component(value: object) -> Optional[str]:
+    if value is None:
+        return None
+    normalized = normalize_string(str(value))
+    if not normalized:
+        return None
+    sanitized = _TAG_SANITIZE_RE.sub("-", normalized.lower())
+    sanitized = sanitized.strip("-._")
+    if not sanitized:
+        return None
+    sanitized = re.sub(r"-{2,}", "-", sanitized)
+    return sanitized
 
 
