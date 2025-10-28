@@ -1,15 +1,14 @@
-"""Delta and deduplication decisions for normalized crawler documents."""
+"""Delta and deduplication helpers for crawler ingestion flows."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from types import MappingProxyType
+from typing import Mapping, Optional
 
 from documents.contracts import NormalizedDocument
 from documents.normalization import document_payload_bytes, normalized_primary_text
-
-from .contracts import Decision
 
 from ai_core.rag.vector_client import (
     DedupSignatures as DeltaSignatures,
@@ -17,6 +16,7 @@ from ai_core.rag.vector_client import (
     build_dedup_signatures,
     extract_primary_text_hash,
 )
+
 
 NearDuplicateSignature = _NearDuplicateSignature
 
@@ -31,8 +31,12 @@ class DeltaStatus(str, Enum):
 
 
 @dataclass(frozen=True)
-class DeltaDecision(Decision):
+class DeltaDecision:
     """Result of the delta evaluation using the shared decision payload."""
+
+    decision: str
+    reason: str
+    attributes: Mapping[str, object] = field(default_factory=dict)
 
     @classmethod
     def from_legacy(
@@ -43,11 +47,13 @@ class DeltaDecision(Decision):
         reason: str,
         parent_document_id: Optional[str] = None,
     ) -> "DeltaDecision":
-        attributes = {
+        attributes: Mapping[str, object] = MappingProxyType(
+            {
             "signatures": signatures,
             "version": version,
             "parent_document_id": parent_document_id,
-        }
+            }
+        )
         return cls(status.value, reason, attributes)
 
     @property
@@ -56,15 +62,33 @@ class DeltaDecision(Decision):
 
     @property
     def signatures(self) -> DeltaSignatures:
-        return self.attributes["signatures"]
+        return self.attributes["signatures"]  # type: ignore[index]
 
     @property
     def version(self) -> Optional[int]:
-        return self.attributes.get("version")
+        return self.attributes.get("version")  # type: ignore[return-value]
 
     @property
     def parent_document_id(self) -> Optional[str]:
-        return self.attributes.get("parent_document_id")
+        return self.attributes.get("parent_document_id")  # type: ignore[return-value]
+
+    def __post_init__(self) -> None:
+        decision = (self.decision or "").strip()
+        if not decision:
+            raise ValueError("decision_required")
+        reason = (self.reason or "").strip()
+        if not reason:
+            raise ValueError("reason_required")
+        object.__setattr__(self, "decision", decision)
+        object.__setattr__(self, "reason", reason)
+
+        raw_attributes = self.attributes or {}
+        if isinstance(raw_attributes, Mapping):
+            object.__setattr__(
+                self, "attributes", MappingProxyType(dict(raw_attributes))
+            )
+        else:
+            raise TypeError("attributes_must_be_mapping")
 
 
 def evaluate_delta(
@@ -105,12 +129,18 @@ def evaluate_delta(
     if previous_content_hash == signatures.content_hash:
         version = previous_version if previous_version is not None else 1
         return DeltaDecision.from_legacy(
-            DeltaStatus.UNCHANGED, signatures, version, "hash_match"
+            DeltaStatus.UNCHANGED,
+            signatures,
+            version,
+            "hash_match",
         )
 
     version = (previous_version or 0) + 1
     return DeltaDecision.from_legacy(
-        DeltaStatus.CHANGED, signatures, version, "hash_mismatch"
+        DeltaStatus.CHANGED,
+        signatures,
+        version,
+        "hash_mismatch",
     )
 
 

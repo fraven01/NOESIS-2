@@ -7,18 +7,20 @@ from datetime import timedelta
 from typing import Any, Callable, Dict, Mapping, Optional, Sequence
 from urllib.parse import urlparse
 
-from crawler.delta import DeltaDecision, evaluate_delta
+from crawler.errors import CrawlerError, ErrorClass
 
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals, QuotaLimits, QuotaUsage
 from ai_core.rag.ingestion_contracts import ChunkMeta, resolve_ingestion_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import PgVectorClient, get_default_client
+from ai_core.rag.delta import DeltaDecision, evaluate_delta
 
 from documents.api import NormalizedDocumentPayload
 
 
 GuardrailDecision = guardrails_middleware.GuardrailDecision
+GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 
 
 def _build_quota_limits(config: Mapping[str, Any] | None) -> Optional[QuotaLimits]:
@@ -110,10 +112,11 @@ def enforce_guardrails(
 
     limits = _build_guardrail_limits(config)
     signals = _build_guardrail_signals(normalized_document, config)
+    builder = error_builder or _build_guardrail_error
     decision = guardrails_middleware.enforce_guardrails(
         limits=limits,
         signals=signals,
-        error_builder=error_builder,
+        error_builder=builder,
     )
 
     banned_terms = tuple(str(term).lower() for term in (config or {}).get("banned_terms", ()))
@@ -127,6 +130,25 @@ def enforce_guardrails(
                     {"policy_events": ("term_blocked",), "term": term},
                 )
     return decision
+
+
+def _build_guardrail_error(
+    category: GuardrailErrorCategory,
+    reason: str,
+    signals: GuardrailSignals,
+    attributes: Mapping[str, Any],
+) -> CrawlerError:
+    error_class = {
+        GuardrailErrorCategory.POLICY_DENY: ErrorClass.POLICY_DENY,
+        GuardrailErrorCategory.TIMEOUT: ErrorClass.TIMEOUT,
+    }.get(category, ErrorClass.POLICY_DENY)
+    return CrawlerError(
+        error_class=error_class,
+        reason=reason,
+        source=signals.canonical_source,
+        provider=signals.provider,
+        attributes=dict(attributes or {}),
+    )
 
 
 def decide_delta(

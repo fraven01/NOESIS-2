@@ -136,8 +136,8 @@ Alle Fehler werden auf das gemeinsame Vokabular aus `crawler.errors.ErrorClass` 
 | `upstream_429` | HTTP 429 nach Retries | `http.status_code=429`, `retry_reason=status_429` |
 | `ingestion_failure` | RAG-Ingestion (Adapter-/Upsert-Fehler) | `ingest.error_code`, `http.status_code` |
 
-Der Helper `crawler.ingestion.build_ingestion_error(...)` erstellt konsistente Fehlerobjekte für Ingestion-Failures und ergänzt
-automatisch `error_code`/`status_code`. Fetcher- und Parser-Ergebnisse liefern ihre Fehler über die jeweiligen Contract-Klassen.
+Guardrail-Denies verwenden den zentralen Builder aus `ai_core.api.enforce_guardrails`, der
+`CrawlerError`-Payloads inklusive `error_class` erzeugt. Fetcher- und Parser-Ergebnisse liefern ihre Fehler über die jeweiligen Contract-Klassen, während der LangGraph Ingestion-Fehler als `failure`-Artefakt im State protokolliert.
 
 ## Metriken pro Phase
 | Span | Metrik | Typ | Labels | Beschreibung |
