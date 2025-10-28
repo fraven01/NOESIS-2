@@ -69,7 +69,6 @@ from .delta import (
     DeltaSignatures,
     DeltaStatus,
     NearDuplicateSignature,
-    DEFAULT_NEAR_DUPLICATE_THRESHOLD,
     evaluate_delta,
 )
 from .policies import (
@@ -159,7 +158,6 @@ __all__ = [
     "DeltaSignatures",
     "DeltaStatus",
     "NearDuplicateSignature",
-    "DEFAULT_NEAR_DUPLICATE_THRESHOLD",
     "evaluate_delta",
     "HostPolicy",
     "PolicyRegistry",

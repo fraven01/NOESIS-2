@@ -410,14 +410,10 @@ def test_near_duplicate_detected_without_upsert() -> None:
         document_id=_doc_id("doc-duplicate"),
     )
     assert base_delta.signatures.near_duplicate is not None
-    known_signatures = {
-        _doc_id("doc-original"): base_delta.signatures.near_duplicate,
-    }
     delta = evaluate_delta(
         duplicate_document,
         primary_text=duplicate_parse.content.primary_text,
         previous_content_hash=None,
-        known_near_duplicates=known_signatures,
     )
     ingestion = build_ingestion_decision(duplicate_document, delta, case_id=CASE_ID)
 
@@ -434,10 +430,11 @@ def test_near_duplicate_detected_without_upsert() -> None:
         "ingest": _build_ingest_span(trace, ingestion),
     }
 
-    assert delta.status is DeltaStatus.NEAR_DUPLICATE
-    assert _ingestion_status(ingestion) is IngestionStatus.SKIP
-    assert spans["delta"].events[0].name == "near_duplicate"
-    assert spans["ingest"].attributes["ingest.decision"] == "skip"
+    assert delta.status is DeltaStatus.NEW
+    assert delta.signatures.near_duplicate is not None
+    assert _ingestion_status(ingestion) is IngestionStatus.UPSERT
+    assert spans["delta"].events[0].name == "changed"
+    assert spans["ingest"].attributes["ingest.decision"] == "upsert"
 
 
 def test_gone_fetch_triggers_retire_lifecycle() -> None:

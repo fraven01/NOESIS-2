@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import atexit
+import hashlib
 import json
 import math
 import os
@@ -54,6 +55,179 @@ logger.info(
     "module_loaded",
     extra={"module": __name__, "path": os.path.abspath(__file__)},
 )
+
+
+_HASH_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_NEAR_DUPLICATE_TOKEN_RE = re.compile(r"\w+")
+_PRIMARY_TEXT_HASH_KEYS = {"sha256": "crawler.primary_text_hash_sha256"}
+
+
+@dataclass(frozen=True)
+class NearDuplicateSignature:
+    """Set-based token signature used for near-duplicate checks."""
+
+    fingerprint: str
+    tokens: Tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        normalized_tokens = tuple(_normalize_dedup_token_sequence(self.tokens))
+        object.__setattr__(self, "tokens", normalized_tokens)
+        if not self.fingerprint:
+            raise ValueError("near_duplicate_fingerprint_required")
+
+
+@dataclass(frozen=True)
+class DedupSignatures:
+    """Stable signatures describing a document for deduplication."""
+
+    content_hash: str
+    near_duplicate: Optional[NearDuplicateSignature] = None
+
+    def __post_init__(self) -> None:
+        if not self.content_hash:
+            raise ValueError("content_hash_required")
+
+
+@dataclass(frozen=True)
+class NearDuplicateMatch:
+    """Result of comparing a signature with known near-duplicates."""
+
+    document_id: str
+    similarity: float
+
+
+def _normalize_dedup_token_sequence(tokens: Sequence[str]) -> Tuple[str, ...]:
+    normalized = tuple(
+        sorted({token.strip().lower() for token in tokens if token and token.strip()})
+    )
+    if not normalized:
+        raise ValueError("near_duplicate_tokens_required")
+    return normalized
+
+
+def _tokenize_near_duplicate_text(text: str) -> Tuple[str, ...]:
+    return tuple(_NEAR_DUPLICATE_TOKEN_RE.findall(text.lower()))
+
+
+def compute_near_duplicate_signature(
+    primary_text: Optional[str],
+) -> Optional[NearDuplicateSignature]:
+    """Return a stable token signature for *primary_text* if available."""
+
+    text = (primary_text or "").strip()
+    if not text:
+        return None
+    tokens = _tokenize_near_duplicate_text(text)
+    if not tokens:
+        return None
+    normalized_tokens = tuple(sorted(set(tokens)))
+    fingerprint_source = "\u001f".join(normalized_tokens)
+    fingerprint = hashlib.sha1(fingerprint_source.encode("utf-8")).hexdigest()
+    return NearDuplicateSignature(fingerprint=fingerprint, tokens=normalized_tokens)
+
+
+def _hash_payload(payload: bytes, algorithm: str) -> str:
+    try:
+        hasher = hashlib.new(algorithm)
+    except ValueError as exc:
+        raise ValueError("unsupported_hash_algorithm") from exc
+    hasher.update(payload)
+    return hasher.hexdigest()
+
+
+def extract_primary_text_hash(
+    parse_stats: Mapping[str, object] | None, algorithm: str
+) -> Optional[str]:
+    """Return the stored primary text hash encoded in *parse_stats*."""
+
+    key = _PRIMARY_TEXT_HASH_KEYS.get(algorithm.lower())
+    if key is None:
+        return None
+    if not isinstance(parse_stats, Mapping):
+        return None
+    raw = parse_stats.get(key)
+    if not isinstance(raw, str):
+        return None
+    candidate = raw.strip().lower()
+    if not candidate:
+        return None
+    if not _HASH_HEX_RE.fullmatch(candidate):
+        return None
+    return candidate
+
+
+def compute_content_hash(
+    *,
+    normalized_primary_text: str,
+    stored_primary_text_hash: Optional[str],
+    payload_bytes: bytes,
+    algorithm: str = "sha256",
+) -> str:
+    """Return a deterministic content hash for crawler documents."""
+
+    if normalized_primary_text:
+        payload = normalized_primary_text.encode("utf-8")
+        return _hash_payload(payload, algorithm)
+    if stored_primary_text_hash:
+        return stored_primary_text_hash
+    return _hash_payload(payload_bytes, algorithm)
+
+
+def build_dedup_signatures(
+    *,
+    primary_text: Optional[str],
+    normalized_primary_text: str,
+    stored_primary_text_hash: Optional[str],
+    payload_bytes: bytes,
+    algorithm: str = "sha256",
+) -> DedupSignatures:
+    """Compose deduplication signatures for crawler payloads."""
+
+    content_hash = compute_content_hash(
+        normalized_primary_text=normalized_primary_text,
+        stored_primary_text_hash=stored_primary_text_hash,
+        payload_bytes=payload_bytes,
+        algorithm=algorithm,
+    )
+    near_signature = compute_near_duplicate_signature(primary_text)
+    return DedupSignatures(content_hash=content_hash, near_duplicate=near_signature)
+
+
+def match_near_duplicate(
+    signature: Optional[NearDuplicateSignature],
+    known: Optional[Mapping[str, NearDuplicateSignature]],
+    *,
+    threshold: float,
+    exclude: Optional[str] = None,
+) -> Optional[NearDuplicateMatch]:
+    """Compare *signature* with known near-duplicates and return the best match."""
+
+    if signature is None or not known:
+        return None
+    best_id: Optional[str] = None
+    best_similarity = 0.0
+    signature_tokens = set(signature.tokens)
+    for doc_id, candidate in known.items():
+        if exclude is not None and doc_id == exclude:
+            continue
+        similarity = _jaccard_similarity(signature_tokens, set(candidate.tokens))
+        if similarity > best_similarity:
+            best_id = doc_id
+            best_similarity = similarity
+    if best_id is None or best_similarity < threshold:
+        return None
+    return NearDuplicateMatch(best_id, best_similarity)
+
+
+def _jaccard_similarity(left: Iterable[str], right: Iterable[str]) -> float:
+    set_left = set(left)
+    set_right = set(right)
+    if not set_left and not set_right:
+        return 1.0
+    union = set_left | set_right
+    if not union:
+        return 0.0
+    return len(set_left & set_right) / len(union)
 
 
 # Welche Filter-Schlüssel sind erlaubt und worauf mappen sie?

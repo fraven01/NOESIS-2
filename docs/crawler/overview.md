@@ -12,8 +12,9 @@ Aufbau der übrigen App-Dokumentationen.
 - Streamt Inhalte über den HTTP-Fetcher ein, erzwingt Sicherheits-Limits und
   mappt Response-Metadaten in strukturierte Fetch-Ergebnisse.
 - Normalisiert Parser-Ausgaben zu konsistenten Dokument-Artefakten, berechnet
-  Delta- und Near-Duplicate-Signaturen und entscheidet, ob ein Upsert,
-  Skip oder Retire ausgelöst wird.
+  Delta- und Near-Duplicate-Signaturen und liefert Basis-Metadaten an den
+  zentralen Dedup-Service. Skip- oder Replace-Entscheidungen erfolgen erst im
+  `ai_core.rag.vector_client`.
 - Übergibt finale Payloads an die Ingestion, aktualisiert Lifecycle-Timelines
   und emittiert Telemetrie laut [Crawler Observability](../observability/crawler-langfuse.md).
 
@@ -46,9 +47,9 @@ flowchart TD
   External-Referenzen. Parser-Statistiken werden für Downstream-Systeme
   konserviert.【F:crawler/normalizer.py†L1-L129】【F:crawler/normalizer.py†L153-L229】
 - **Delta (`crawler.delta.evaluate_delta`)** berechnet Content-Hashes und
-  Near-Duplicate-Signaturen, vergleicht Vorgängerversionen und entscheidet über
-  `new`, `changed`, `unchanged` oder `near_duplicate`. Thresholds sind
-  konfigurierbar und nutzen Jaccard-Similarity auf Token-Sets.【F:crawler/delta.py†L1-L126】【F:crawler/delta.py†L130-L206】
+  Near-Duplicate-Signaturen, vergleicht Vorgängerversionen und liefert die
+  Metadaten an den gemeinsamen Dedup-Service. Skip- oder Replace-Aktionen
+  passieren downstream im `vector_client`.【F:crawler/delta.py†L1-L114】【F:ai_core/rag/vector_client.py†L60-L220】
 - **Ingestion (`crawler.ingestion.build_ingestion_decision`)** erzeugt strukturierte
   Payloads mit Tenant-, Workflow- und Content-Metadaten. Ergebnisse werden als
   `upsert`, `skip` oder `retire` markiert und enthalten Lifecycle-State sowie
@@ -79,9 +80,9 @@ flowchart TD
   `normalizer.bytes_in`, damit Langfuse und Dead-Letter-Payloads denselben
   Zahlenraum teilen.【F:crawler/normalizer.py†L153-L214】
 - Delta-Bewertungen nutzen `evaluate_delta` und speichern Content-Hashes sowie
-  Near-Duplicate-Signaturen für spätere Vergleiche. Das Standard-Limit von 0.92
-  kann pro Quelle angepasst werden, um strengere Duplikat-Erkennung zu
-  aktivieren.【F:crawler/delta.py†L60-L126】【F:crawler/delta.py†L130-L206】
+  Near-Duplicate-Signaturen für spätere Vergleiche. Die tatsächliche
+  Skip/Replace-Logik liegt im gemeinsamen Dedup-Service (`match_near_duplicate`)
+  des Vector-Clients.【F:crawler/delta.py†L70-L114】【F:ai_core/rag/vector_client.py†L60-L220】
 
 ## Ingestion, Retire & Lifecycle
 - `build_ingestion_decision` kombiniert Normalizer-Output, Delta-Status und
