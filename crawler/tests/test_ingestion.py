@@ -32,6 +32,21 @@ from documents.parsers import ParsedTextBlock
 from uuid import uuid4
 
 
+@pytest.fixture(autouse=True)
+def _stub_profile_resolution(monkeypatch):
+    from types import SimpleNamespace
+
+    fake_resolution = SimpleNamespace(
+        vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
+    )
+    monkeypatch.setattr(
+        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
+        lambda embedding_profile: SimpleNamespace(
+            profile_id="profile-test", resolution=fake_resolution
+        ),
+    )
+
+
 def _make_fetch_result(canonical_source: str, payload: bytes) -> FetchResult:
     request = FetchRequest(
         canonical_source=canonical_source,

@@ -34,7 +34,7 @@ def _stub_profile_resolution(monkeypatch):
         vector_space=SimpleNamespace(id="vs-test", schema="public", dimension=1536)
     )
     monkeypatch.setattr(
-        "crawler.ingestion._resolve_profile",
+        "ai_core.rag.ingestion_contracts.resolve_ingestion_profile",
         lambda embedding_profile: SimpleNamespace(
             profile_id="profile-test", resolution=fake_resolution
         ),

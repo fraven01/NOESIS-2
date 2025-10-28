@@ -14,6 +14,11 @@ from ai_core.tools import InputError
 
 from pydantic import BaseModel, ConfigDict
 
+from documents.contracts import NormalizedDocument
+from documents.providers import parse_provider_reference
+
+from ai_core.rag.vector_client import DedupSignatures
+
 from .schemas import Chunk
 
 from .vector_space_resolver import (
@@ -231,6 +236,130 @@ __all__ = [
     "ChunkMeta",
     "IngestionAction",
     "CrawlerIngestionPayload",
+    "build_crawler_ingestion_payload",
     "resolve_ingestion_profile",
     "ensure_embedding_dimensions",
 ]
+
+
+def build_crawler_ingestion_payload(
+    *,
+    document: NormalizedDocument,
+    signatures: DedupSignatures,
+    case_id: str,
+    action: IngestionAction,
+    lifecycle_state: object,
+    policy_events: Iterable[object] = (),
+    adapter_metadata: Mapping[str, object] | None = None,
+    embedding_profile: str | None = None,
+    delta_status: object | None = None,
+) -> CrawlerIngestionPayload:
+    """Compose a :class:`CrawlerIngestionPayload` from crawler planning hints."""
+
+    normalized_case_id = _require_identifier(case_id, "case_id")
+    lifecycle_value = _normalize_lifecycle_state(lifecycle_state)
+    policy_tuple = _normalize_policy_events(policy_events)
+    frozen_adapter_metadata = _freeze_adapter_metadata(adapter_metadata)
+
+    profile_id: str | None
+    vector_space_id: str | None
+
+    if action is IngestionAction.RETIRE:
+        profile_id = _coerce_optional_string(embedding_profile)
+        vector_space_id = None
+    else:
+        profile_binding = _resolve_embedding_profile(embedding_profile)
+        profile_id = profile_binding.profile_id
+        vector_space_id = profile_binding.resolution.vector_space.id
+
+    provider = parse_provider_reference(document.meta)
+
+    chunk_meta = ChunkMeta(
+        tenant_id=document.ref.tenant_id,
+        case_id=normalized_case_id,
+        source="crawler",
+        hash=document.checksum,
+        external_id=provider.external_id,
+        content_hash=signatures.content_hash,
+        embedding_profile=profile_id,
+        vector_space_id=vector_space_id,
+        process="crawler",
+        workflow_id=document.ref.workflow_id,
+        collection_id=(
+            str(document.ref.collection_id)
+            if document.ref.collection_id is not None
+            else None
+        ),
+        document_id=str(document.ref.document_id),
+        lifecycle_state=lifecycle_value,
+    )
+
+    return CrawlerIngestionPayload(
+        action=action,
+        lifecycle_state=lifecycle_value,
+        policy_events=policy_tuple,
+        adapter_metadata=frozen_adapter_metadata,
+        document_id=str(document.ref.document_id),
+        workflow_id=document.ref.workflow_id,
+        tenant_id=document.ref.tenant_id,
+        case_id=normalized_case_id,
+        content_hash=signatures.content_hash,
+        chunk_meta=chunk_meta,
+        embedding_profile=profile_id,
+        vector_space_id=vector_space_id,
+        delta_status=_coerce_optional_string(delta_status),
+    )
+
+
+def _freeze_adapter_metadata(
+    metadata: Mapping[str, object] | None,
+) -> Mapping[str, object]:
+    if metadata is None:
+        return MappingProxyType({})
+    if isinstance(metadata, MappingProxyType):
+        return metadata
+    if not isinstance(metadata, Mapping):
+        return MappingProxyType(dict(metadata))
+    return MappingProxyType(dict(metadata))
+
+
+def _normalize_policy_events(events: Iterable[object]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for event in events:
+        text = _coerce_optional_string(event)
+        if text:
+            normalized.append(text)
+    return tuple(normalized)
+
+
+def _normalize_lifecycle_state(value: object) -> str:
+    candidate = _coerce_optional_string(value)
+    if candidate:
+        return candidate
+    return "active"
+
+
+def _require_identifier(value: str | None, field: str) -> str:
+    candidate = (value or "").strip()
+    if not candidate:
+        raise ValueError(f"{field}_required")
+    return candidate
+
+
+def _coerce_optional_string(value: object | None) -> str | None:
+    if value is None:
+        return None
+    raw = getattr(value, "value", value)
+    text = str(raw).strip()
+    return text or None
+
+
+def _resolve_embedding_profile(
+    embedding_profile: str | None,
+) -> IngestionProfileResolution:
+    from django.conf import settings
+
+    if embedding_profile is None:
+        default_profile = getattr(settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard")
+        embedding_profile = str(default_profile)
+    return resolve_ingestion_profile(embedding_profile)
