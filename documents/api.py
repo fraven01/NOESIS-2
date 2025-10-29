@@ -58,6 +58,20 @@ def _coerce_payload_bytes(value: Any) -> bytes:
     raise TypeError("payload_bytes_type")
 
 
+def _extract_charset(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        for param in candidate.split(";")[1:]:
+            key, _, param_value = param.partition("=")
+            if key.strip().lower() == "charset":
+                encoding = param_value.strip().strip('"').strip("'")
+                if encoding:
+                    return encoding
+    return None
+
+
 def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
     if encoding_hint:
         try:
@@ -89,6 +103,22 @@ def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
     encoding_hint = raw_reference.get("payload_encoding") or raw_reference.get(
         "content_encoding"
     )
+    if encoding_hint is None:
+        metadata = raw_reference.get("metadata")
+        metadata_mapping: Optional[Mapping[str, Any]] = (
+            metadata if isinstance(metadata, Mapping) else None
+        )
+
+        for candidate in (
+            raw_reference.get("content_type"),
+            raw_reference.get("media_type"),
+            raw_reference.get("mime_type"),
+            metadata_mapping.get("content_type") if metadata_mapping else None,
+            metadata_mapping.get("content-type") if metadata_mapping else None,
+        ):
+            encoding_hint = _extract_charset(candidate)
+            if encoding_hint:
+                break
     content = _decode_payload_text(payload_bytes, encoding_hint)
     return payload_bytes, content
 
