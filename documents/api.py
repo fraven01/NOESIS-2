@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -39,6 +40,87 @@ def _normalize_text(payload: Any) -> str:
         except UnicodeDecodeError as exc:  # pragma: no cover - defensive guard
             raise ValueError("raw_content_decode_error") from exc
     raise TypeError("raw_content_type")
+
+
+def _coerce_payload_bytes(value: Any) -> bytes:
+    if isinstance(value, bytes):
+        return value
+    if isinstance(value, bytearray):
+        return bytes(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return b""
+        try:
+            return base64.b64decode(candidate, validate=True)
+        except (binascii.Error, ValueError):
+            return candidate.encode("utf-8")
+    raise TypeError("payload_bytes_type")
+
+
+def _extract_charset(value: Any) -> Optional[str]:
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        for param in candidate.split(";")[1:]:
+            key, _, param_value = param.partition("=")
+            if key.strip().lower() == "charset":
+                encoding = param_value.strip().strip('"').strip("'")
+                if encoding:
+                    return encoding
+    return None
+
+
+def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
+    if encoding_hint:
+        try:
+            return payload.decode(encoding_hint)
+        except (LookupError, UnicodeDecodeError):
+            pass
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError:
+        return payload.decode("utf-8", errors="replace")
+
+
+def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
+    if "content" in raw_reference:
+        content = _normalize_text(raw_reference.get("content"))
+        return content.encode("utf-8"), content
+
+    payload_bytes: Optional[bytes] = None
+    if "payload_bytes" in raw_reference:
+        payload_bytes = _coerce_payload_bytes(raw_reference.get("payload_bytes"))
+    elif "payload_base64" in raw_reference:
+        base64_value = raw_reference.get("payload_base64")
+        if isinstance(base64_value, (str, bytes, bytearray)):
+            payload_bytes = _coerce_payload_bytes(base64_value)
+
+    if payload_bytes is None:
+        raise ValueError("raw_content_missing")
+
+    encoding_hint = raw_reference.get("payload_encoding") or raw_reference.get(
+        "content_encoding"
+    )
+    if encoding_hint is None:
+        metadata = raw_reference.get("metadata")
+        metadata_mapping: Optional[Mapping[str, Any]] = (
+            metadata if isinstance(metadata, Mapping) else None
+        )
+
+        for candidate in (
+            raw_reference.get("content_type"),
+            raw_reference.get("media_type"),
+            raw_reference.get("mime_type"),
+            metadata_mapping.get("content_type") if metadata_mapping else None,
+            metadata_mapping.get("content-type") if metadata_mapping else None,
+        ):
+            encoding_hint = _extract_charset(candidate)
+            if encoding_hint:
+                break
+    content = _decode_payload_text(payload_bytes, encoding_hint)
+    return payload_bytes, content
 
 
 def _coerce_uuid(value: Any) -> UUID:
@@ -114,7 +196,7 @@ def normalize_from_raw(
     if not isinstance(raw_reference, Mapping):
         raise TypeError("raw_reference_mapping_required")
 
-    content = _normalize_text(raw_reference.get("content"))
+    payload_bytes, content = _resolve_payload(raw_reference)
     media_type = str(
         raw_reference.get("media_type")
         or raw_reference.get("content_type")
@@ -123,7 +205,6 @@ def normalize_from_raw(
         or "text/plain"
     ).strip().lower()
 
-    payload_bytes = content.encode("utf-8")
     checksum = hashlib.sha256(payload_bytes).hexdigest()
     payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
 

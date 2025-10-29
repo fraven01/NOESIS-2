@@ -8,61 +8,56 @@ Aufbau der übrigen App-Dokumentationen.
 ## Zweck
 - Erstellt deterministische Frontier-Entscheidungen auf Basis von Robots-,
   Politeness- und Failure-Signalen, damit Quellen nur dann besucht werden, wenn
-  es Policies erlauben und Recrawl-Intervalle eingehalten werden.
-- Streamt Inhalte über den HTTP-Fetcher ein, erzwingt Sicherheits-Limits und
-  mappt Response-Metadaten in strukturierte Fetch-Ergebnisse.
-- Normalisiert Parser-Ausgaben zu konsistenten Dokument-Artefakten, berechnet
-  Delta- und Near-Duplicate-Signaturen und liefert Basis-Metadaten an den
-  zentralen Dedup-Service. Skip- oder Replace-Entscheidungen erfolgen erst im
-  `ai_core.rag.vector_client`.
-- Übergibt finale Payloads an die Ingestion, aktualisiert Lifecycle-Timelines
-  und emittiert Telemetrie laut [Crawler Observability](../observability/crawler-langfuse.md).
+  es Policies erlauben und Recrawl-Intervalle eingehalten werden.【F:crawler/frontier.py†L14-L218】
+- Führt Fetches ausschließlich im Worker aus, kapselt Limits und Telemetrie in
+  `FetchResult` und übergibt Rohbytes samt Headern direkt an den AI-Core-Task
+  `run_ingestion_graph`. Persistenz, Parsing und Lifecycle bleiben komplett im
+  AI-Core.【F:crawler/worker.py†L1-L174】
+- Der LangGraph orchestriert Guardrails, Normalisierung, Lifecycle und Delta
+  über die Documents- und Guardrails-APIs. Follow-up-Aktionen (z. B. Embedding)
+  werden nachgelagert ausgelöst und protokolliert.【F:ai_core/graphs/crawler_ingestion_graph.py†L1-L210】【F:ai_core/tasks.py†L1576-L1597】
+- Telemetrie und Policy-Events laufen Ende-zu-Ende über Langfuse; der Worker
+  liefert dafür nur noch Fetch-Daten und IDs, während AI-Core die Dokument- und
+  Delta-Metriken erzeugt.【F:crawler/worker.py†L105-L174】
 
 ## Pipeline
 ```mermaid
 flowchart TD
-    F[Frontier] --> G[Guardrails]
-    G --> H[HTTP Fetch]
-    H --> P[Parser]
-    P --> N[Normalizer]
-    N --> D[Delta]
-    D --> I[Ingestion]
-    I --> L[Lifecycle]
+    F[Frontier Scheduler] --> W[Crawler Worker]
+    W --> Q[Celery Task run_ingestion_graph]
+    Q --> G[Guardrails Node]
+    G --> N[Normalization Node]
+    N --> L[Lifecycle Node]
+    L --> D[Delta Node]
+    D --> E[Downstream Events]
 ```
 
 - **Frontier (`crawler.frontier.decide_frontier_action`)** bewertet Robots,
   Host-Politeness und Recrawl-Signale. Rückgaben wie `enqueue`, `defer`, `skip`
   oder `retire` enthalten Gründe und optionale Policy-Events, um Scheduling und
   Blacklisting nachvollziehbar zu machen.【F:crawler/frontier.py†L14-L122】【F:crawler/frontier.py†L164-L218】
-- **Guardrails (`ai_core.api.enforce_guardrails`)** prüfen Host- und
-  Tenant-Quoten, MIME-Blacklists sowie Dokumentgrößen, bevor Fetch und Parser
-  Ressourcen verbrauchen. Deny-Entscheidungen liefern einen `CrawlerError` mit
-  konsistenter Error-Class.【F:ai_core/api.py†L61-L121】【F:ai_core/middleware/guardrails.py†L1-L217】
-- **HTTP Fetch (`crawler.http_fetcher.HttpFetcher`)** kapselt Streaming-Fetches
-  mit Retry-Policy, Politeness-Delays und Limit-Prüfungen für Bytes, Timeout und
-  MIME-Whitelist. Response-Details werden in `FetchResult` und
-  `FetchTelemetry` gespiegelt.【F:crawler/http_fetcher.py†L1-L126】【F:crawler/fetcher.py†L1-L119】
-- **Parser & Normalizer (`documents.api.normalize_from_raw`)**
-  erzeugen `NormalizedDocumentPayload` inklusive Meta-, Content- und
-  External-Referenzen. Parser-Statistiken werden für Downstream-Systeme
-  konserviert.【F:documents/api.py†L137-L205】【F:documents/normalization.py†L35-L160】
-- **Delta (`ai_core.rag.delta.evaluate_delta`)** berechnet Content-Hashes und
-  Near-Duplicate-Signaturen, vergleicht Vorgängerversionen und liefert die
-  Metadaten an den gemeinsamen Dedup-Service. Skip- oder Replace-Aktionen
-  passieren downstream im `vector_client`.【F:ai_core/rag/delta.py†L1-L111】【F:ai_core/rag/vector_client.py†L60-L220】
-- **Ingestion (`ai_core.graphs.crawler_ingestion_graph`)** orchestriert Normalisierung,
-  Guardrails, Delta-Entscheidungen und Embedding-Trigger über die geteilten Service-APIs.
-  Ergebnisse werden als `upsert`, `skip` oder `retire` markiert und enthalten Lifecycle-States
-  sowie Policy-Events.【F:ai_core/graphs/crawler_ingestion_graph.py†L1-L211】【F:ai_core/api.py†L123-L247】
-- **Lifecycle (`documents.repository.DocumentLifecycleStore`)** verfolgt
-  dokumentweite Zustandswechsel zentral und validiert zulässige
-  Übergänge. Telemetrie-Attribute werden direkt im Repository persistiert und
-  anschließend vom Crawler nur noch weitergereicht.【F:documents/repository.py†L160-L238】
+- **Crawler Worker (`crawler.worker.CrawlerWorker`)** validiert Politeness- und
+  Frontier-Vorgaben, ruft den HTTP-Fetcher auf und publiziert das Ergebnis
+  vollständig an den AI-Core Task. Es existiert keine lokale Parsing- oder
+  Persistenzlogik mehr.【F:crawler/worker.py†L1-L174】【F:crawler/http_fetcher.py†L1-L200】
+- **Celery Task (`ai_core.tasks.run_ingestion_graph`)** bildet den Übergabepunkt
+  in den AI-Core. Er injiziert Tenant-, Case- und Crawl-Metadaten und startet den
+  LangGraph-Orchestrator.【F:ai_core/tasks.py†L1576-L1597】
+- **Guardrails (`ai_core.api.enforce_guardrails`)** prüfen Limits und Policies auf
+  Basis der vom Worker gelieferten Metadaten sowie der Dokumentstatistiken. Bei
+  Verstößen erzeugen sie strukturierte `CrawlerError` Payloads.【F:ai_core/api.py†L61-L170】
+- **Normalisierung (`documents.api.normalize_from_raw`)** verarbeitet Raw-Bytes
+  aus dem Worker, rekonstruiert Text und Metadaten und erzeugt deterministische
+  `NormalizedDocumentPayload` Objekte.【F:documents/api.py†L105-L205】
+- **Lifecycle & Delta** werden im Graph sequenziell ausgeführt, triggern
+  Statusupdates und entscheiden, ob nachgelagerte Schritte (Embedding, Deltas)
+  erforderlich sind. Policy-Events und Telemetrie landen in Langfuse.【F:ai_core/graphs/crawler_ingestion_graph.py†L161-L209】【F:ai_core/api.py†L123-L247】
 
 ## Kernverträge & Artefakte
 | Modul | Verantwortung | Schlüsselklassen |
 | --- | --- | --- |
 | `crawler.frontier` | Robots-Compliance, Recrawl-Intervalle, Failure-Backoff | `FrontierDecision`, `RobotsPolicy`, `HostPolitenessPolicy` |
+| `crawler.worker` | Fetch & Übergabe an AI-Core Task | `CrawlerWorker`, `WorkerPublishResult` |
 | `ai_core.middleware.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `GuardrailDecision` |
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
@@ -72,14 +67,14 @@ flowchart TD
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
 ## Normalisierung & Delta
-- Parser-Ergebnisse müssen `ParserContent` liefern; ohne Text wird ein
-  `binary_payload_ref` erwartet, ansonsten schlägt die Normalisierung fehl. Das
-  garantiert, dass entweder Text oder Binärdaten für Hashing und Ingestion
-  vorhanden sind.【F:documents/parsers.py†L120-L214】
-- Parser-Statistiken werden in `NormalizedDocumentPayload.document.meta.parse_stats`
-  übernommen. Die Normalisierung ergänzt Kennzahlen wie
-  `normalizer.bytes_in`, damit Langfuse und Dead-Letter-Payloads denselben
-  Zahlenraum teilen.【F:documents/normalization.py†L120-L214】
+- Der Worker liefert Rohbytes via `payload_base64` bzw. `payload_bytes`. Die
+  Normalisierung dekodiert diese anhand optionaler Encoding-Hinweise und stellt
+  sicher, dass Text, Checksums und Metadaten deterministisch aufgebaut werden –
+  auch ohne vorgelagerten Parserlauf im Crawler.【F:documents/api.py†L105-L205】【F:documents/tests/test_api.py†L1-L48】
+- Parser- und Normalizer-Statistiken landen wie bisher in
+  `NormalizedDocumentPayload.document.meta.parse_stats`. Die Normalisierung
+  ergänzt Kennzahlen wie `normalizer.bytes_in`, womit Langfuse und Dead-Letter
+  dieselbe Datengrundlage teilen.【F:documents/normalization.py†L120-L214】
 - Delta-Bewertungen nutzen `ai_core.rag.delta.evaluate_delta` und speichern Content-Hashes sowie
   Near-Duplicate-Signaturen für spätere Vergleiche. Die tatsächliche
   Skip/Replace-Logik liegt im gemeinsamen Dedup-Service (`match_near_duplicate`)

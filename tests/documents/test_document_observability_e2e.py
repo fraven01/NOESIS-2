@@ -36,8 +36,9 @@ from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _configure_logging() -> None:
+@pytest.fixture(autouse=True)
+def _configure_logging(settings) -> None:
+    settings.LOGGING_ALLOW_UNMASKED_CONTEXT = True
     configure_logging()
 
 
