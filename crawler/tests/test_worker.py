@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 from types import SimpleNamespace
 
 from crawler.errors import CrawlerError, ErrorClass
@@ -99,8 +98,8 @@ def test_worker_publishes_ingestion_task() -> None:
     assert raw_document["document_id"] == "doc-1"
     assert raw_document["metadata"]["provider"] == "docs"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
-    encoded_payload = base64.b64encode(fetch_result.payload).decode("ascii")
-    assert raw_document["payload_base64"] == encoded_payload
+    assert raw_document["payload_bytes"] == fetch_result.payload
+    assert "payload_base64" not in raw_document
     assert state_payload["guardrails"] == overrides["guardrails"]
     assert meta_payload["trace_id"] == "trace-1"
     assert meta_payload["idempotency_key"] == "idemp-1"

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
@@ -137,12 +136,9 @@ class CrawlerWorker:
         if result.metadata.content_length is not None and "content_length" not in raw_meta:
             raw_meta["content_length"] = result.metadata.content_length
 
-        payload_bytes = bytes(result.payload or b"")
-        payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
-
         raw_document: dict[str, Any] = {
             "metadata": raw_meta,
-            "payload_base64": payload_base64,
+            "payload_bytes": bytes(result.payload or b""),
         }
         if document_id is not None:
             raw_document["document_id"] = document_id

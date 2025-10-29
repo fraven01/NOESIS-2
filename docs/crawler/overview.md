@@ -67,8 +67,9 @@ flowchart TD
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
 ## Normalisierung & Delta
-- Der Worker liefert Rohbytes via `payload_base64` bzw. `payload_bytes`. Die
-  Normalisierung dekodiert diese anhand optionaler Encoding-Hinweise und stellt
+- Der Worker liefert Rohbytes direkt via `payload_bytes`. Für Altpfade bleibt
+  `payload_base64` als Fallback lesbar. Die Normalisierung dekodiert diese
+  anhand optionaler Encoding-Hinweise und stellt
   sicher, dass Text, Checksums und Metadaten deterministisch aufgebaut werden –
   auch ohne vorgelagerten Parserlauf im Crawler.【F:documents/api.py†L105-L205】【F:documents/tests/test_api.py†L1-L48】
 - Parser- und Normalizer-Statistiken landen wie bisher in
