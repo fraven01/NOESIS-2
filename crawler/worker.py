@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import base64
+import hashlib
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping, Optional
 
+from ai_core.infra import object_store
 from ai_core.tasks import run_ingestion_graph
 
 from .errors import CrawlerError
@@ -138,11 +139,17 @@ class CrawlerWorker:
             raw_meta["content_length"] = result.metadata.content_length
 
         payload_bytes = bytes(result.payload or b"")
-        payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
+        payload_path = self._persist_payload(
+            payload_bytes,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id or raw_meta.get("document_id"),
+        )
 
         raw_document: dict[str, Any] = {
             "metadata": raw_meta,
-            "payload_base64": payload_base64,
+            "payload_path": payload_path,
         }
         if document_id is not None:
             raw_document["document_id"] = document_id
@@ -152,6 +159,45 @@ class CrawlerWorker:
         state["raw_document"] = raw_document
         state.setdefault("fetch", self._summarize_fetch(result))
         return state
+
+    def _persist_payload(
+        self,
+        payload: bytes,
+        *,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+    ) -> str:
+        safe_tenant = self._safe_identifier(tenant_id, "tenant")
+        safe_case = self._safe_identifier(case_id, "case")
+        safe_crawl = self._safe_identifier(crawl_id, "crawl") if crawl_id else None
+        safe_document = (
+            self._safe_identifier(document_id, "document") if document_id else None
+        )
+
+        digest = hashlib.sha256(payload).hexdigest()
+        path_parts = [safe_tenant, safe_case, "crawler", "raw"]
+        if safe_crawl:
+            path_parts.append(safe_crawl)
+        if safe_document:
+            path_parts.append(safe_document)
+        filename = f"{digest}.bin"
+        relative_path = "/".join((*path_parts, filename))
+        object_store.put_bytes(relative_path, payload)
+        return relative_path
+
+    @staticmethod
+    def _safe_identifier(value: Optional[str], prefix: str) -> str:
+        if value:
+            candidate = str(value).strip()
+            if candidate:
+                try:
+                    return object_store.sanitize_identifier(candidate)
+                except ValueError:
+                    pass
+        fallback = f"{prefix}-{hashlib.sha256(str(value or '').encode('utf-8')).hexdigest()[:12]}"
+        return object_store.sanitize_identifier(fallback)
 
     def _compose_meta(
         self,

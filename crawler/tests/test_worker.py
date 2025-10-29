@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import base64
 from types import SimpleNamespace
 
+from ai_core.infra import object_store
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
     FetchMetadata,
@@ -62,7 +62,7 @@ class _StubTask:
         return SimpleNamespace(id="task-123")
 
 
-def test_worker_publishes_ingestion_task() -> None:
+def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     fetch_result = _build_fetch_result(payload=b"hello world")
     fetcher = _StubFetcher(fetch_result)
     task = _StubTask()
@@ -72,6 +72,8 @@ def test_worker_publishes_ingestion_task() -> None:
     overrides = {"guardrails": {"max_document_bytes": 1024}}
     metadata = {"provider": "docs", "tags": ["hr"]}
     meta_overrides = {"trace_id": "trace-1"}
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     publish_result = worker.process(
         request,
@@ -99,8 +101,10 @@ def test_worker_publishes_ingestion_task() -> None:
     assert raw_document["document_id"] == "doc-1"
     assert raw_document["metadata"]["provider"] == "docs"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
-    encoded_payload = base64.b64encode(fetch_result.payload).decode("ascii")
-    assert raw_document["payload_base64"] == encoded_payload
+    payload_path = raw_document["payload_path"]
+    assert payload_path.endswith(".bin")
+    stored_payload = (object_store.BASE_PATH / payload_path).read_bytes()
+    assert stored_payload == fetch_result.payload
     assert state_payload["guardrails"] == overrides["guardrails"]
     assert meta_payload["trace_id"] == "trace-1"
     assert meta_payload["idempotency_key"] == "idemp-1"

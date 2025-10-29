@@ -7,10 +7,13 @@ import binascii
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from os import PathLike
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, MutableMapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from ai_core.infra import object_store
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -84,15 +87,60 @@ def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+def _validate_object_store_path(value: str) -> str:
+    """Return a safe object store path relative to :mod:`ai_core.infra.object_store`."""
+
+    candidate = Path(value)
+    if candidate.is_absolute() or candidate.anchor:
+        raise ValueError("payload_path_invalid")
+
+    base_path = object_store.BASE_PATH.resolve()
+    try:
+        resolved = (base_path / candidate).resolve()
+    except RuntimeError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if not resolved.is_relative_to(base_path):
+        raise ValueError("payload_path_invalid")
+
+    try:
+        relative_path = resolved.relative_to(base_path)
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if str(relative_path) == ".":
+        raise ValueError("payload_path_invalid")
+
+    return relative_path.as_posix()
+
+
 def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
     if "content" in raw_reference:
         content = _normalize_text(raw_reference.get("content"))
         return content.encode("utf-8"), content
 
     payload_bytes: Optional[bytes] = None
-    if "payload_bytes" in raw_reference:
+    if "payload_path" in raw_reference:
+        payload_path = raw_reference.get("payload_path")
+        if isinstance(payload_path, (str, PathLike)):
+            candidate = str(payload_path).strip()
+            if candidate:
+                try:
+                    normalized_path = _validate_object_store_path(candidate)
+                except ValueError as exc:
+                    raise ValueError("payload_path_invalid") from exc
+                try:
+                    payload_bytes = object_store.read_bytes(normalized_path)
+                except FileNotFoundError as exc:  # pragma: no cover - defensive guard
+                    raise ValueError("raw_content_missing") from exc
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    raise ValueError("payload_path_invalid") from exc
+        elif payload_path is not None:
+            raise TypeError("payload_path_type")
+
+    if payload_bytes is None and "payload_bytes" in raw_reference:
         payload_bytes = _coerce_payload_bytes(raw_reference.get("payload_bytes"))
-    elif "payload_base64" in raw_reference:
+    elif payload_bytes is None and "payload_base64" in raw_reference:
         base64_value = raw_reference.get("payload_base64")
         if isinstance(base64_value, (str, bytes, bytearray)):
             payload_bytes = _coerce_payload_bytes(base64_value)

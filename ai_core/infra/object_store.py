@@ -49,6 +49,7 @@ def safe_filename(value: str) -> str:
 
 def put_bytes(path: str, data: bytes) -> Path:
     """Persist raw bytes to the object store."""
+
     target = _full_path(path)
     target.write_bytes(data)
     return target
@@ -60,6 +61,13 @@ def write_bytes(path: str, data: bytes) -> None:
     abs_path = BASE_PATH / path
     abs_path.parent.mkdir(parents=True, exist_ok=True)
     abs_path.write_bytes(data)
+
+
+def read_bytes(path: str) -> bytes:
+    """Load raw bytes from the object store."""
+
+    target = BASE_PATH / path
+    return target.read_bytes()
 
 
 def read_json(path: str) -> Any:
