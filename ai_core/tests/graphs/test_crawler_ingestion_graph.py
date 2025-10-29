@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-import pytest
-
 from uuid import uuid4
 
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
+from ai_core.graphs.document_service import DocumentLifecycleService
+from documents import api as documents_api
 from documents.api import normalize_from_raw
 
 
@@ -143,3 +143,80 @@ def test_embedding_failure_marks_error_and_status() -> None:
     assert errors and errors[0]["node"] == "trigger_embedding"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "trigger_embedding_failed" for status in statuses)
+
+
+class RecordingDocumentLifecycleService(DocumentLifecycleService):
+    def __init__(self) -> None:
+        self.normalize_calls: list[dict[str, object]] = []
+        self.status_calls: list[dict[str, object]] = []
+
+    def normalize_from_raw(
+        self,
+        *,
+        raw_reference,
+        tenant_id: str,
+        case_id: str | None = None,
+        request_id: str | None = None,
+    ):
+        self.normalize_calls.append(
+            {
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "request_id": request_id,
+            }
+        )
+        return documents_api.normalize_from_raw(
+            raw_reference=raw_reference,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            request_id=request_id,
+        )
+
+    def update_lifecycle_status(
+        self,
+        *,
+        tenant_id: str,
+        document_id,
+        status: str,
+        previous_status: str | None = None,
+        workflow_id: str | None = None,
+        reason: str | None = None,
+        policy_events=None,
+    ):
+        self.status_calls.append(
+            {
+                "tenant_id": tenant_id,
+                "document_id": str(document_id),
+                "status": status,
+                "workflow_id": workflow_id,
+                "reason": reason,
+            }
+        )
+        return documents_api.update_lifecycle_status(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            status=status,
+            previous_status=previous_status,
+            workflow_id=workflow_id,
+            reason=reason,
+            policy_events=policy_events,
+        )
+
+
+def test_document_service_adapter_is_injected() -> None:
+    service = RecordingDocumentLifecycleService()
+    graph = CrawlerIngestionGraph(document_service=service)
+    state = _build_state(request_id=None)
+
+    updated_state, result = graph.run(state, {"request_id": "req-custom"})
+
+    assert result["decision"]
+    assert service.normalize_calls == [
+        {"tenant_id": "tenant", "case_id": "case", "request_id": "req-custom"}
+    ]
+    assert service.status_calls  # status transitions flowed through the adapter
+    # ensure artifacts originate from adapter results
+    statuses = updated_state["artifacts"].get("status_updates", [])
+    recorded_ids = {call["reason"] for call in service.status_calls if call["reason"]}
+    assert recorded_ids
+    assert all(status.to_dict()["reason"] in recorded_ids for status in statuses)
