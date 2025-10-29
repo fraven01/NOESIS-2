@@ -9,8 +9,8 @@ from uuid import uuid4
 
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
-from documents import api as documents_api
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
+from .document_service import DocumentLifecycleService, DocumentsApiLifecycleService
 
 StateMapping = Mapping[str, Any] | MutableMapping[str, Any]
 
@@ -66,16 +66,14 @@ class CrawlerIngestionGraph:
     def __init__(
         self,
         *,
-        normalizer: Callable[..., documents_api.NormalizedDocumentPayload] = documents_api.normalize_from_raw,
-        status_updater: Callable[..., documents_api.LifecycleStatusUpdate] = documents_api.update_lifecycle_status,
+        document_service: DocumentLifecycleService = DocumentsApiLifecycleService(),
         guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision] = ai_core_api.enforce_guardrails,
         delta_decider: Callable[..., ai_core_api.DeltaDecision] = ai_core_api.decide_delta,
         embedding_handler: Callable[..., EmbeddingResult] = ai_core_api.trigger_embedding,
         completion_builder: Callable[..., Mapping[str, Any]] = ai_core_api.build_completion_payload,
         event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None,
     ) -> None:
-        self._normalizer = normalizer
-        self._status_updater = status_updater
+        self._document_service = document_service
         self._guardrail_enforcer = guardrail_enforcer
         self._delta_decider = delta_decider
         self._embedding_handler = embedding_handler
@@ -159,7 +157,7 @@ class CrawlerIngestionGraph:
 
     def _run_normalize(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         raw_reference = self._require(state, "raw_document")
-        normalized = self._normalizer(
+        normalized = self._document_service.normalize_from_raw(
             raw_reference=raw_reference,
             tenant_id=self._require(state, "tenant_id"),
             case_id=state.get("case_id"),
@@ -182,7 +180,7 @@ class CrawlerIngestionGraph:
         normalized: NormalizedDocumentPayload = artifacts[
             "normalized_document"
         ]
-        status = self._status_updater(
+        status = self._document_service.update_lifecycle_status(
             tenant_id=normalized.tenant_id,
             document_id=normalized.document_id,
             status="normalized",
@@ -209,7 +207,7 @@ class CrawlerIngestionGraph:
         )
         artifacts["guardrail_decision"] = decision
         if not decision.allowed:
-            status = self._status_updater(
+            status = self._document_service.update_lifecycle_status(
                 tenant_id=normalized.tenant_id,
                 document_id=normalized.document_id,
                 status="deleted",
@@ -236,7 +234,7 @@ class CrawlerIngestionGraph:
             baseline=state.get("baseline"),
         )
         artifacts["delta_decision"] = decision
-        status_update = self._status_updater(
+        status_update = self._document_service.update_lifecycle_status(
             tenant_id=normalized.tenant_id,
             document_id=normalized.document_id,
             status="active",
@@ -361,7 +359,7 @@ class CrawlerIngestionGraph:
         normalized = artifacts.get("normalized_document")
         if isinstance(normalized, NormalizedDocumentPayload):
             try:
-                status: LifecycleStatusUpdate = self._status_updater(
+                status: LifecycleStatusUpdate = self._document_service.update_lifecycle_status(
                     tenant_id=normalized.tenant_id,
                     document_id=normalized.document_id,
                     status="deleted",
@@ -378,7 +376,7 @@ class CrawlerIngestionGraph:
         )
 
 
-GRAPH = CrawlerIngestionGraph()
+GRAPH = CrawlerIngestionGraph(document_service=DocumentsApiLifecycleService())
 
 
 def build_graph() -> CrawlerIngestionGraph:
