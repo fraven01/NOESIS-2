@@ -8,6 +8,7 @@ import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, MutableMapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -86,6 +87,33 @@ def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
+def _validate_object_store_path(value: str) -> str:
+    """Return a safe object store path relative to :mod:`ai_core.infra.object_store`."""
+
+    candidate = Path(value)
+    if candidate.is_absolute() or candidate.anchor:
+        raise ValueError("payload_path_invalid")
+
+    base_path = object_store.BASE_PATH.resolve()
+    try:
+        resolved = (base_path / candidate).resolve()
+    except RuntimeError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if not resolved.is_relative_to(base_path):
+        raise ValueError("payload_path_invalid")
+
+    try:
+        relative_path = resolved.relative_to(base_path)
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if str(relative_path) == ".":
+        raise ValueError("payload_path_invalid")
+
+    return relative_path.as_posix()
+
+
 def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
     if "content" in raw_reference:
         content = _normalize_text(raw_reference.get("content"))
@@ -98,7 +126,11 @@ def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
             candidate = str(payload_path).strip()
             if candidate:
                 try:
-                    payload_bytes = object_store.read_bytes(candidate)
+                    normalized_path = _validate_object_store_path(candidate)
+                except ValueError as exc:
+                    raise ValueError("payload_path_invalid") from exc
+                try:
+                    payload_bytes = object_store.read_bytes(normalized_path)
                 except FileNotFoundError as exc:  # pragma: no cover - defensive guard
                     raise ValueError("raw_content_missing") from exc
                 except Exception as exc:  # pragma: no cover - defensive guard

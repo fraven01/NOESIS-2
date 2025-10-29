@@ -65,6 +65,41 @@ def test_normalize_from_raw_accepts_payload_path(tmp_path, monkeypatch) -> None:
     assert result.payload_bytes == payload
 
 
+def test_normalize_from_raw_rejects_payload_path_outside_store(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path / "store")
+    (tmp_path / "secret.bin").write_bytes(b"shh")
+
+    with pytest.raises(ValueError):
+        normalize_from_raw(
+            raw_reference={
+                "payload_path": "../secret.bin",
+                "metadata": {
+                    "provider": "crawler",
+                    "origin_uri": "https://example.com",
+                },
+            },
+            tenant_id="tenant-x",
+        )
+
+
+def test_normalize_from_raw_rejects_absolute_payload_path(tmp_path, monkeypatch) -> None:
+    absolute_path = tmp_path / "secret.bin"
+    absolute_path.write_text("hidden", encoding="utf-8")
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path / "store")
+
+    with pytest.raises(ValueError):
+        normalize_from_raw(
+            raw_reference={
+                "payload_path": str(absolute_path),
+                "metadata": {
+                    "provider": "crawler",
+                    "origin_uri": "https://example.com",
+                },
+            },
+            tenant_id="tenant-x",
+        )
+
+
 def test_normalize_from_raw_uses_charset_from_content_type_metadata() -> None:
     payload = "Grüße aus Köln".encode("iso-8859-1")
 
