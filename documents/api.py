@@ -7,10 +7,12 @@ import binascii
 import hashlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from os import PathLike
 from types import MappingProxyType
 from typing import Any, Mapping, MutableMapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
+from ai_core.infra import object_store
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -90,9 +92,23 @@ def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
         return content.encode("utf-8"), content
 
     payload_bytes: Optional[bytes] = None
-    if "payload_bytes" in raw_reference:
+    if "payload_path" in raw_reference:
+        payload_path = raw_reference.get("payload_path")
+        if isinstance(payload_path, (str, PathLike)):
+            candidate = str(payload_path).strip()
+            if candidate:
+                try:
+                    payload_bytes = object_store.read_bytes(candidate)
+                except FileNotFoundError as exc:  # pragma: no cover - defensive guard
+                    raise ValueError("raw_content_missing") from exc
+                except Exception as exc:  # pragma: no cover - defensive guard
+                    raise ValueError("payload_path_invalid") from exc
+        elif payload_path is not None:
+            raise TypeError("payload_path_type")
+
+    if payload_bytes is None and "payload_bytes" in raw_reference:
         payload_bytes = _coerce_payload_bytes(raw_reference.get("payload_bytes"))
-    elif "payload_base64" in raw_reference:
+    elif payload_bytes is None and "payload_base64" in raw_reference:
         base64_value = raw_reference.get("payload_base64")
         if isinstance(base64_value, (str, bytes, bytearray)):
             payload_bytes = _coerce_payload_bytes(base64_value)

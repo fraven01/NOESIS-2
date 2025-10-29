@@ -7,6 +7,7 @@ import hashlib
 
 import pytest
 
+from ai_core.infra import object_store
 from documents.api import normalize_from_raw
 
 
@@ -40,6 +41,27 @@ def test_normalize_from_raw_accepts_payload_base64() -> None:
     )
 
     assert result.primary_text == "Plain content"
+    assert result.payload_bytes == payload
+
+
+def test_normalize_from_raw_accepts_payload_path(tmp_path, monkeypatch) -> None:
+    payload = b"Binary via path"
+    relative_path = "tenant-x/case-default/crawler/raw/doc.bin"
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    target = object_store.BASE_PATH / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(payload)
+
+    result = normalize_from_raw(
+        raw_reference={
+            "payload_path": relative_path,
+            "metadata": {"provider": "crawler", "origin_uri": "https://example.com"},
+        },
+        tenant_id="tenant-x",
+    )
+
+    assert result.primary_text == "Binary via path"
     assert result.payload_bytes == payload
 
 
