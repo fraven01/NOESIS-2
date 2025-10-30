@@ -162,6 +162,9 @@ def _build_metadata_snapshot(doc: NormalizedDocument, checksum: str) -> dict:
     language = getattr(doc.meta, "language", None)
     if language:
         payload["language"] = language
+    pipeline_config = getattr(doc.meta, "pipeline_config", None)
+    if isinstance(pipeline_config, dict):
+        payload["pipeline_config"] = dict(pipeline_config)
 
     return payload
 
@@ -207,12 +210,14 @@ def _rebuild_document_from_meta(
     if media_type:
         ext_ref["media_type"] = str(media_type)
 
+    pipeline_config = meta.get("pipeline_config")
     doc_meta = DocumentMeta(
         tenant_id=tenant_id,
         workflow_id=workflow_id,
         external_ref=ext_ref or None,
         title=str(meta.get("title")) if meta.get("title") else None,
         language=str(meta.get("language")) if meta.get("language") else None,
+        pipeline_config=pipeline_config if isinstance(pipeline_config, dict) else None,
     )
 
     created_at = None

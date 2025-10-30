@@ -396,6 +396,13 @@ class DocumentMeta(BaseModel):
             "framework-provided counters."
         ),
     )
+    pipeline_config: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description=(
+            "Optional runtime overrides for the document pipeline configuration "
+            "(string keyed, JSON-serialisable values)."
+        ),
+    )
 
     @field_validator("tenant_id", mode="before")
     @classmethod
@@ -518,6 +525,23 @@ class DocumentMeta(BaseModel):
                 nested[key_str] = cls._coerce_parse_stat_value(raw)
             return nested
         raise ValueError("parse_stats_value")
+
+    @field_validator("pipeline_config", mode="before")
+    @classmethod
+    def _normalize_pipeline_config(
+        cls, value: Optional[Mapping[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        if value is None:
+            return None
+        if not isinstance(value, Mapping):
+            raise TypeError("pipeline_config_type")
+        normalized: Dict[str, Any] = {}
+        for key, raw in value.items():
+            key_str = normalize_string(str(key))
+            if not key_str:
+                raise ValueError("pipeline_config_key")
+            normalized[key_str] = raw
+        return normalized
 
 
 class AssetRef(BaseModel):

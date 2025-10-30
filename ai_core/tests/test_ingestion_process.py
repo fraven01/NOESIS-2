@@ -195,3 +195,117 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
         assert step_state["cleaned"] is True
         assert step_state.get("path") is None
     assert status_state["steps"]["upsert"]["cleaned"] is True
+
+
+def test_process_document_copies_pipeline_config_to_state(monkeypatch, tmp_path):
+    tenant = "tenant-pipeline"
+    case = "case-pipeline"
+    tenant_schema = tenant
+    document_uuid = uuid4()
+    document_id = str(document_uuid)
+
+    store_path = tmp_path / "store"
+    monkeypatch.setattr(object_store, "BASE_PATH", store_path)
+
+    repository = InMemoryDocumentsRepository()
+    workflow_id = case.replace(":", "_")
+    payload = b"payload for pipeline overrides"
+    encoded = base64.b64encode(payload).decode("ascii")
+    checksum = hashlib.sha256(payload).hexdigest()
+    blob = InlineBlob(
+        type="inline",
+        media_type="text/plain",
+        base64=encoded,
+        sha256=checksum,
+        size=len(payload),
+    )
+    document_ref = DocumentRef(
+        tenant_id=tenant,
+        workflow_id=workflow_id,
+        document_id=document_uuid,
+    )
+    document_meta = DocumentMeta(
+        tenant_id=tenant,
+        workflow_id=workflow_id,
+        pipeline_config={"enable_ocr": True},
+    )
+    normalized_document = NormalizedDocument(
+        ref=document_ref,
+        meta=document_meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=datetime.now(timezone.utc),
+        source="upload",
+    )
+    repository.upsert(normalized_document)
+
+    import ai_core.services as services_module
+
+    monkeypatch.setattr(
+        services_module,
+        "_get_documents_repository",
+        lambda: repository,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        services_module, "_DOCUMENTS_REPOSITORY", repository, raising=False
+    )
+
+    vector_space = SimpleNamespace(
+        id="global",
+        schema="public",
+        backend="pgvector",
+        dimension=1536,
+    )
+    binding = SimpleNamespace(
+        profile_id="standard",
+        resolution=SimpleNamespace(vector_space=vector_space),
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "resolve_ingestion_profile",
+        lambda profile: binding,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        ingestion,
+        "ensure_vector_space_schema",
+        lambda _: False,
+        raising=False,
+    )
+
+    captured: dict[str, object] = {}
+
+    class CaptureConfig(Exception):
+        pass
+
+    def capture_build_config(*, state=None, meta=None):
+        captured["state"] = state
+        captured["meta"] = meta
+        raise CaptureConfig
+
+    monkeypatch.setattr(
+        ingestion,
+        "_build_document_pipeline_config",
+        capture_build_config,
+        raising=False,
+    )
+
+    process_document.request = SimpleNamespace(retries=0, called_directly=True)
+
+    def fake_retry(*args, **kwargs):
+        raise CaptureConfig
+
+    monkeypatch.setattr(process_document, "retry", fake_retry, raising=False)
+    with pytest.raises(CaptureConfig):
+        process_document(
+            tenant,
+            case,
+            document_id,
+            "standard",
+            tenant_schema=tenant_schema,
+        )
+
+    assert captured["meta"]["pipeline_config"] == {"enable_ocr": True}
+    assert captured["state"]["pipeline_config"] == {"enable_ocr": True}
+    assert captured["state"]["meta"]["pipeline_config"] == {"enable_ocr": True}
