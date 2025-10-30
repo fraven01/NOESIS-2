@@ -40,11 +40,13 @@ class CrawlerWorker:
         fetcher: Any,
         *,
         ingestion_task: Optional[IngestionTask] = None,
+        ingestion_event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
     ) -> None:
         if ingestion_task is None:
             ingestion_task = run_ingestion_graph
         self._fetcher = fetcher
         self._ingestion_task = ingestion_task
+        self._ingestion_event_emitter = ingestion_event_emitter
 
     def process(
         self,
@@ -92,6 +94,10 @@ class CrawlerWorker:
             frontier_state=frontier_state,
             meta_overrides=meta_overrides,
         )
+        if self._ingestion_event_emitter is not None:
+            meta_payload.setdefault(
+                "ingestion_event_emitter", self._ingestion_event_emitter
+            )
 
         async_result = self._ingestion_task.delay(payload_state, meta_payload)
         task_id = getattr(async_result, "id", None)

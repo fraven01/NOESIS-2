@@ -1587,6 +1587,14 @@ def ingestion_run(
     return {"status": "queued", "queued_at": queued_at}
 
 
+def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
+    if isinstance(meta, MappingABC):
+        candidate = meta.get("ingestion_event_emitter")
+        if callable(candidate):
+            return candidate
+    return None
+
+
 @shared_task(
     base=ScopedTask,
     queue="ingestion",
@@ -1611,7 +1619,8 @@ def run_ingestion_graph(
                 if isinstance(nested_candidate, str) and nested_candidate.strip():
                     raw_payload_path = nested_candidate.strip()
 
-    graph = build_graph()
+    event_emitter = _resolve_event_emitter(meta)
+    graph = build_graph(event_emitter=event_emitter)
     try:
         _, result = graph.run(state, meta or {})
         serialized_result = _jsonify_for_task(result)

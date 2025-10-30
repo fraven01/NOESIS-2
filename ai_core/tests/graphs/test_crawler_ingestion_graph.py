@@ -229,6 +229,30 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
     ]
 
 
+def test_guardrail_denied_emits_event_callback() -> None:
+    recorded_events: list[tuple[str, Mapping[str, object]]] = []
+
+    def _capture_event(name: str, payload: Mapping[str, object]) -> None:
+        recorded_events.append((name, dict(payload)))
+
+    graph = CrawlerIngestionGraph(event_emitter=_capture_event)
+    state = _build_state(
+        guardrails={"max_document_bytes": 8},
+        raw_document={"content": "deny" * 10},
+    )
+    state["raw_document"]["content"] = "deny" * 10  # type: ignore[index]
+
+    updated_state, _ = graph.run(state, {})
+
+    guardrail_events = [payload for name, payload in recorded_events if name == "guardrail_denied"]
+    assert guardrail_events, "guardrail_denied event not captured"
+    payload = guardrail_events[0]
+    assert payload["reason"] == "document_too_large"
+    assert payload["policy_events"] == ["max_document_bytes"]
+    normalized_payload = updated_state["artifacts"]["normalized_document"]
+    assert payload["document_id"] == normalized_payload.document_id
+
+
 def test_delta_unchanged_skips_embedding() -> None:
     repository = InMemoryDocumentsRepository()
     baseline_payload = normalize_from_raw(
