@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-import pytest
-
 from uuid import uuid4
 
+import pytest
+
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
+
 from ai_core.graphs.document_service import DocumentLifecycleService
 from documents import api as documents_api
 from documents.api import normalize_from_raw
+from documents.repository import DocumentsRepository
 
 
 class StubVectorClient:
@@ -18,6 +20,23 @@ class StubVectorClient:
         chunk_list = list(chunks)
         self.upserted.extend(chunk_list)
         return len(chunk_list)
+
+
+class RecordingRepository(DocumentsRepository):
+    def __init__(self) -> None:
+        self.upserts: list[dict[str, object]] = []
+
+    def upsert(self, doc, workflow_id=None):  # type: ignore[override]
+        self.upserts.append({
+            "document_id": str(doc.ref.document_id),
+            "workflow_id": workflow_id,
+        })
+        return doc
+
+
+class FailingRepository(DocumentsRepository):
+    def upsert(self, doc, workflow_id=None):  # type: ignore[override]
+        raise RuntimeError("upsert_failed")
 
 
 def _build_state(content: str = "Example document", **overrides) -> dict[str, object]:
@@ -56,6 +75,7 @@ def test_orchestrates_nominal_flow() -> None:
     assert transitions["update_status_normalized"]["decision"] == "status_updated"
     assert transitions["enforce_guardrails"]["decision"] == "allow"
     assert transitions["decide_delta"]["decision"] == "new"
+    assert transitions["persist_document"]["decision"] == "persisted"
     assert transitions["trigger_embedding"]["decision"] == "embedding_triggered"
     assert transitions["finish"]["decision"] == "new"
     assert result["decision"] == "new"
@@ -65,6 +85,7 @@ def test_orchestrates_nominal_flow() -> None:
     assert summary["guardrails"]["decision"] == "allow"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "no_previous_hash" for status in statuses)
+    assert "persisted_document" in updated_state["artifacts"]
 
 
 def test_guardrail_denied_short_circuits() -> None:
@@ -80,6 +101,7 @@ def test_guardrail_denied_short_circuits() -> None:
 
     transitions = result["transitions"]
     assert "decide_delta" not in transitions
+    assert "persist_document" not in transitions
     assert "trigger_embedding" not in transitions
     assert transitions["enforce_guardrails"]["decision"] == "deny"
     assert transitions["finish"]["decision"] == "denied"
@@ -108,8 +130,41 @@ def test_delta_unchanged_skips_embedding() -> None:
     summary = updated_state["summary"]
     assert "embedding" not in summary
     assert result["decision"] == "unchanged"
+    transitions = result["transitions"]
+    assert transitions["persist_document"]["decision"] == "persisted"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "hash_match" for status in statuses)
+
+
+def test_repository_upsert_invoked() -> None:
+    repository = RecordingRepository()
+    graph = CrawlerIngestionGraph(repository=repository)
+    state = _build_state()
+
+    updated_state, result = graph.run(state, {})
+
+    assert result["transitions"]["persist_document"]["decision"] == "persisted"
+    assert repository.upserts
+    assert updated_state["artifacts"].get("persisted_document")
+
+
+def test_repository_upsert_failure_records_error() -> None:
+    graph = CrawlerIngestionGraph(repository=FailingRepository())
+    state = _build_state()
+
+    updated_state, result = graph.run(state, {})
+
+    assert result["decision"] == "error"
+    transitions = result["transitions"]
+    assert transitions["persist_document"]["decision"] == "error"
+    artifacts = updated_state["artifacts"]
+    assert artifacts.get("persistence_failure", {}).get("type") == "RuntimeError"
+    assert artifacts.get("persistence_errors")
+    statuses = artifacts.get("status_updates", [])
+    assert any(
+        status.to_dict().get("reason") == "persist_document_failed"
+        for status in statuses
+    )
 
 
 @pytest.mark.parametrize(
