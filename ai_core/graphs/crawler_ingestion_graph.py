@@ -327,7 +327,9 @@ class CrawlerIngestionGraph:
             if isinstance(candidate, str):
                 value = candidate.strip()
                 return (value,) if value else ()
-            if isinstance(candidate, Iterable) and not isinstance(candidate, (bytes, bytearray)):
+            if isinstance(candidate, Iterable) and not isinstance(
+                candidate, (bytes, bytearray)
+            ):
                 collected = []
                 for item in candidate:
                     if not item:
@@ -348,7 +350,9 @@ class CrawlerIngestionGraph:
                 if key == "policy_events":
                     events = _collect_policy_events(value)
                     if events:
-                        policy_events = ai_core_api._merge_policy_events(policy_events, events)
+                        policy_events = ai_core_api._merge_policy_events(
+                            policy_events, events
+                        )
                 else:
                     merged[key] = value
 

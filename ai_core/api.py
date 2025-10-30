@@ -165,9 +165,7 @@ def enforce_guardrails(
                     attrs["policy_events"] = _merge_policy_events(
                         denied.policy_events, frontier_events
                     )
-                    return GuardrailDecision(
-                        denied.decision, denied.reason, attrs
-                    )
+                    return GuardrailDecision(denied.decision, denied.reason, attrs)
                 return denied
 
     return GuardrailDecision(decision.decision, decision.reason, attributes)
@@ -251,7 +249,7 @@ def _merge_policy_events(
 
 
 def _project_frontier_state(
-    frontier_state: Optional[Mapping[str, Any]]
+    frontier_state: Optional[Mapping[str, Any]],
 ) -> Dict[str, Any]:
     if not isinstance(frontier_state, Mapping):
         return {}
