@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import Mapping
 
 import pytest
 
@@ -24,6 +25,7 @@ def _build_fetch_result(
     status: FetchStatus = FetchStatus.FETCHED,
     payload: bytes | None = b"payload",
     error: CrawlerError | None = None,
+    request_metadata: Mapping[str, object] | None = None,
 ) -> FetchResult:
     metadata = FetchMetadata(
         status_code=200,
@@ -36,6 +38,7 @@ def _build_fetch_result(
     request = FetchRequest(
         canonical_source="https://example.com/docs",
         politeness=PolitenessContext(host="example.com"),
+        metadata=request_metadata or {},
     )
     return FetchResult(
         status=status,
@@ -181,6 +184,32 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     assert meta_payload["trace_id"] == "trace-1"
     assert meta_payload["idempotency_key"] == "idemp-1"
     assert meta_payload["crawl_id"] == "crawl-1"
+
+
+def test_worker_propagates_trace_id_from_request_metadata(
+    tmp_path, monkeypatch
+) -> None:
+    fetch_result = _build_fetch_result(
+        payload=b"payload", request_metadata={"trace_id": "trace-from-request"}
+    )
+    fetcher = _StubFetcher(fetch_result)
+    task = _StubTask()
+    worker = CrawlerWorker(fetcher, ingestion_task=task)
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    publish_result = worker.process(
+        fetch_result.request,
+        tenant_id="tenant-a",
+        document_metadata={"source": "crawler"},
+    )
+
+    assert publish_result.published
+    assert len(task.calls) == 1
+    _, meta_payload = task.calls[0]
+    assert meta_payload["tenant_id"] == "tenant-a"
+    assert meta_payload["trace_id"] == "trace-from-request"
+    assert "request_id" not in meta_payload
 
 
 def test_worker_returns_failure_without_publishing() -> None:
