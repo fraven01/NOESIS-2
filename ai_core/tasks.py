@@ -1622,6 +1622,87 @@ def _build_ingestion_graph(event_emitter: Optional[Any]):
     return build_graph()
 
 
+def _coerce_str(value: Any | None) -> Optional[str]:
+    """Return a stripped string representation when possible."""
+
+    if value is None:
+        return None
+    if isinstance(value, str):
+        candidate = value.strip()
+        return candidate or None
+    try:
+        text = str(value)
+    except Exception:
+        return None
+    return text.strip() or None
+
+
+def _extract_from_mapping(mapping: Any, key: str) -> Optional[str]:
+    if not isinstance(mapping, MappingABC):
+        return None
+    return _coerce_str(mapping.get(key))
+
+
+def _resolve_document_id(
+    state: Mapping[str, Any], meta: Optional[Mapping[str, Any]]
+) -> Optional[str]:
+    """Try to resolve the document identifier from meta/state payloads."""
+
+    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
+
+    for source in (meta, state_meta, state):
+        candidate = _extract_from_mapping(source, "document_id")
+        if candidate:
+            return candidate
+
+    raw_document = state.get("raw_document") if isinstance(state, MappingABC) else None
+    if isinstance(raw_document, MappingABC):
+        for key in ("document_id", "external_id", "id"):
+            candidate = _coerce_str(raw_document.get(key))
+            if candidate:
+                return candidate
+        raw_metadata = raw_document.get("metadata")
+        if isinstance(raw_metadata, MappingABC):
+            for key in ("document_id", "external_id", "id"):
+                candidate = _coerce_str(raw_metadata.get(key))
+                if candidate:
+                    return candidate
+
+    return None
+
+
+def _resolve_trace_context(
+    state: Mapping[str, Any], meta: Optional[Mapping[str, Any]]
+) -> Dict[str, Optional[str]]:
+    """Collect identifiers required for tracing metadata."""
+
+    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
+
+    tenant_id = _coerce_str(
+        _extract_from_mapping(meta, "tenant_id")
+        or _extract_from_mapping(state_meta, "tenant_id")
+        or _extract_from_mapping(state, "tenant_id")
+    )
+    case_id = _coerce_str(
+        _extract_from_mapping(meta, "case_id")
+        or _extract_from_mapping(state_meta, "case_id")
+        or _extract_from_mapping(state, "case_id")
+    )
+    trace_id = _coerce_str(
+        _extract_from_mapping(meta, "trace_id")
+        or _extract_from_mapping(state_meta, "trace_id")
+        or _extract_from_mapping(state, "trace_id")
+    )
+    document_id = _resolve_document_id(state, meta)
+
+    return {
+        "tenant_id": tenant_id,
+        "case_id": case_id,
+        "trace_id": trace_id,
+        "document_id": document_id,
+    }
+
+
 @shared_task(
     base=ScopedTask,
     queue="ingestion",
@@ -1648,6 +1729,35 @@ def run_ingestion_graph(
 
     event_emitter = _resolve_event_emitter(meta)
     graph = _build_ingestion_graph(event_emitter)
+    trace_context = _resolve_trace_context(state, meta)
+
+    task_request = getattr(run_ingestion_graph, "request", None)
+    task_identifier = None
+    if task_request is not None:
+        task_identifier = _coerce_str(getattr(task_request, "id", None))
+
+    metadata: Dict[str, str] = {
+        key: value
+        for key, value in (
+            ("trace_id", trace_context.get("trace_id")),
+            ("tenant_id", trace_context.get("tenant_id")),
+            ("case_id", trace_context.get("case_id")),
+            ("document_id", trace_context.get("document_id")),
+        )
+        if value
+    }
+    if task_identifier:
+        metadata["celery.task_id"] = task_identifier
+
+    observability_helpers.start_trace(
+        name="crawler.ingestion",
+        user_id=trace_context.get("tenant_id"),
+        session_id=trace_context.get("case_id"),
+        metadata=metadata or None,
+    )
+    if task_identifier:
+        update_observation(metadata={"celery.task_id": task_identifier})
+
     try:
         _, result = graph.run(state, meta or {})
         serialized_result = _jsonify_for_task(result)
@@ -1655,7 +1765,10 @@ def run_ingestion_graph(
             raise TypeError("ingestion_result_serialization_error")
         return serialized_result
     finally:
-        if raw_payload_path:
-            from .ingestion import cleanup_raw_payload_artifact
+        try:
+            observability_helpers.end_trace()
+        finally:
+            if raw_payload_path:
+                from .ingestion import cleanup_raw_payload_artifact
 
-            cleanup_raw_payload_artifact(raw_payload_path)
+                cleanup_raw_payload_artifact(raw_payload_path)

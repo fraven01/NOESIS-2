@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
-from ai_core.infra.observability import emit_event
+from ai_core.infra.observability import emit_event, observe_span, update_observation
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
 from documents.repository import DocumentsRepository
@@ -117,6 +117,105 @@ class CrawlerIngestionGraph:
         self._embedding_handler = embedding_handler
         self._completion_builder = completion_builder
         self._event_emitter = event_emitter
+
+    def _normalized_from_state(
+        self, state: Mapping[str, Any]
+    ) -> Optional[NormalizedDocumentPayload]:
+        artifacts = state.get("artifacts")
+        if isinstance(artifacts, Mapping):
+            candidate = artifacts.get("normalized_document")
+            if isinstance(candidate, NormalizedDocumentPayload):
+                return candidate
+        return None
+
+    def _collect_span_metadata(self, state: Dict[str, Any]) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        containers: list[Mapping[str, Any]] = []
+
+        meta_payload = state.get("meta")
+        if isinstance(meta_payload, Mapping):
+            containers.append(meta_payload)
+        containers.append(state)
+
+        raw_document = state.get("raw_document")
+        if isinstance(raw_document, Mapping):
+            containers.append(raw_document)
+            raw_meta = raw_document.get("metadata")
+            if isinstance(raw_meta, Mapping):
+                containers.append(raw_meta)
+
+        def _first(key: str) -> Optional[Any]:
+            for container in containers:
+                value = container.get(key)
+                if value is None:
+                    continue
+                if isinstance(value, str):
+                    stripped = value.strip()
+                    if not stripped:
+                        continue
+                    return stripped
+                return value
+            return None
+
+        for key in ("tenant_id", "case_id", "trace_id", "workflow_id"):
+            candidate = _first(key)
+            if candidate is not None:
+                metadata.setdefault(key, candidate)
+
+        if "document_id" not in metadata:
+            for container in containers:
+                for field in ("document_id", "external_id", "id"):
+                    value = container.get(field)
+                    if value is None:
+                        continue
+                    if isinstance(value, str):
+                        stripped = value.strip()
+                        if not stripped:
+                            continue
+                        value = stripped
+                    metadata.setdefault("document_id", value)
+                    if "document_id" in metadata:
+                        break
+                if "document_id" in metadata:
+                    break
+
+        normalized = self._normalized_from_state(state)
+        if normalized is not None:
+            metadata.setdefault("tenant_id", normalized.tenant_id)
+            metadata.setdefault("document_id", normalized.document_id)
+            workflow = getattr(normalized.document.ref, "workflow_id", None)
+            if workflow:
+                metadata.setdefault("workflow_id", workflow)
+            normalized_meta = normalized.metadata
+            if isinstance(normalized_meta, Mapping):
+                case_candidate = normalized_meta.get("case_id")
+                if isinstance(case_candidate, str):
+                    case_candidate = case_candidate.strip()
+                if case_candidate:
+                    metadata.setdefault("case_id", case_candidate)
+
+        graph_run_id = state.get("graph_run_id")
+        if isinstance(graph_run_id, str) and graph_run_id.strip():
+            metadata.setdefault("graph_run_id", graph_run_id.strip())
+
+        return {key: value for key, value in metadata.items() if value not in (None, "")}
+
+    def _annotate_span(
+        self,
+        state: Dict[str, Any],
+        *,
+        phase: str,
+        extra: Optional[Mapping[str, Any]] = None,
+    ) -> None:
+        metadata = self._collect_span_metadata(state)
+        metadata["phase"] = phase
+        if extra:
+            for key, value in extra.items():
+                if value is None:
+                    continue
+                metadata[key] = value
+        if metadata:
+            update_observation(metadata=metadata)
 
     def _emit(
         self,
@@ -250,7 +349,9 @@ class CrawlerIngestionGraph:
             state.setdefault("previous_status", lifecycle_text)
         return baseline
 
+    @observe_span(name="crawler.ingestion.normalize")
     def _run_normalize(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="normalize")
         raw_reference = self._require(state, "raw_document")
         normalized = self._document_service.normalize_from_raw(
             raw_reference=raw_reference,
@@ -261,6 +362,7 @@ class CrawlerIngestionGraph:
         )
         artifacts = self._artifacts(state)
         artifacts["normalized_document"] = normalized
+        self._annotate_span(state, phase="normalize", extra={"status": "normalized"})
         transition = _transition(
             "normalized",
             "document_normalized",
@@ -271,7 +373,9 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    @observe_span(name="crawler.ingestion.update_status")
     def _run_update_status(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="update_status")
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         status = self._document_service.update_lifecycle_status(
@@ -283,6 +387,11 @@ class CrawlerIngestionGraph:
             reason="document_normalized",
         )
         artifacts["status_update"] = status
+        self._annotate_span(
+            state,
+            phase="update_status",
+            extra={"status": getattr(status, "status", None)},
+        )
         transition = _transition(
             "status_updated",
             "lifecycle_normalized",
@@ -384,7 +493,9 @@ class CrawlerIngestionGraph:
 
         return merged or None
 
+    @observe_span(name="crawler.ingestion.guardrails")
     def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="guardrails")
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         config, limits, signals, error_builder = self._resolve_guardrail_state(state)
@@ -409,6 +520,11 @@ class CrawlerIngestionGraph:
             decision.decision,
             decision.reason,
             attributes=attributes,
+        )
+        self._annotate_span(
+            state,
+            phase="guardrails",
+            extra={"decision": decision.decision, "allowed": decision.allowed},
         )
         if not decision.allowed:
             emit_event(
@@ -444,7 +560,9 @@ class CrawlerIngestionGraph:
         continue_flow = decision.allowed
         return transition, continue_flow
 
+    @observe_span(name="crawler.ingestion.delta")
     def _run_delta(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="delta")
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         baseline_input: Dict[str, Any] = {}
@@ -480,11 +598,18 @@ class CrawlerIngestionGraph:
             decision.reason,
             attributes=decision.attributes,
         )
+        self._annotate_span(
+            state,
+            phase="delta",
+            extra={"decision": decision.decision},
+        )
         return transition, True
 
+    @observe_span(name="crawler.ingestion.persist")
     def _run_persist_document(
         self, state: Dict[str, Any]
     ) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="persist_document")
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         try:
@@ -500,6 +625,11 @@ class CrawlerIngestionGraph:
             artifacts["persistence_failure"] = error_payload
             raise
         artifacts["persisted_document"] = persisted
+        self._annotate_span(
+            state,
+            phase="persist_document",
+            extra={"status": "persisted"},
+        )
         transition = _transition(
             "persisted",
             "document_upserted",
@@ -510,13 +640,20 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    @observe_span(name="crawler.ingestion.trigger_embedding")
     def _run_trigger_embedding(
         self, state: Dict[str, Any]
     ) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="trigger_embedding")
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         delta: Optional[ai_core_api.DeltaDecision] = artifacts.get("delta_decision")
         if delta is None:
+            self._annotate_span(
+                state,
+                phase="trigger_embedding",
+                extra={"outcome": "skipped", "reason": "delta_missing"},
+            )
             transition = _transition(
                 "skipped",
                 "delta_missing",
@@ -524,6 +661,11 @@ class CrawlerIngestionGraph:
             )
             return transition, True
         if delta.decision not in {"new", "changed"}:
+            self._annotate_span(
+                state,
+                phase="trigger_embedding",
+                extra={"outcome": "skipped", "delta": delta.decision},
+            )
             transition = _transition(
                 "skipped",
                 "delta_not_applicable",
@@ -541,6 +683,11 @@ class CrawlerIngestionGraph:
             vector_client_factory=embedding_state.get("client_factory"),
         )
         artifacts["embedding_result"] = result
+        self._annotate_span(
+            state,
+            phase="trigger_embedding",
+            extra={"outcome": result.status},
+        )
         transition = _transition(
             "embedding_triggered",
             "embedding_enqueued",
