@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Mapping
+from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -7,9 +9,13 @@ import pytest
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 
 from ai_core.graphs.document_service import DocumentLifecycleService
+from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from documents import api as documents_api
 from documents.api import normalize_from_raw
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+
+
+pytestmark = pytest.mark.django_db
 
 
 class StubVectorClient:
@@ -42,16 +48,93 @@ class FailingRepository(DocumentsRepository):
 
 
 def _build_state(content: str = "Example document", **overrides) -> dict[str, object]:
-    state: dict[str, object] = {
-        "tenant_id": overrides.get("tenant_id", "tenant"),
-        "case_id": overrides.get("case_id", "case"),
-        "request_id": overrides.get("request_id", "req-1"),
-        "raw_document": {
-            "document_id": overrides.get("document_id", f"doc-{uuid4()}"),
+    tenant_id = overrides.get("tenant_id", "tenant")
+    case_id = overrides.get("case_id", "case")
+    request_id = overrides.get("request_id", "req-1")
+    origin_uri = overrides.get("origin_uri", "https://example.com/document")
+    provider = overrides.get("provider", "web")
+    content_type = overrides.get("content_type", "text/plain")
+    document_id = overrides.get("document_id", f"doc-{uuid4()}")
+
+    raw_document_override = overrides.get("raw_document")
+    if raw_document_override is not None:
+        raw_document = dict(raw_document_override)
+        metadata = dict(raw_document.get("metadata") or {})
+        metadata.setdefault("source", metadata.get("source", "crawler"))
+        metadata.setdefault("origin_uri", origin_uri)
+        metadata.setdefault("provider", provider)
+        metadata.setdefault("content_type", content_type)
+        raw_document["metadata"] = metadata
+        raw_document.setdefault("document_id", document_id)
+        raw_document.setdefault("content", content)
+    else:
+        raw_document = {
+            "document_id": document_id,
             "content": content,
-            "metadata": {"source": "crawler"},
-        },
-        "guardrails": overrides.get("guardrails", {"max_document_bytes": 4096}),
+            "metadata": {
+                "source": "crawler",
+                "origin_uri": origin_uri,
+                "provider": provider,
+                "content_type": content_type,
+            },
+        }
+
+    guardrail_overrides = overrides.get("guardrails") or {}
+    if isinstance(guardrail_overrides, Mapping):
+        guardrail_overrides = dict(guardrail_overrides)
+    else:
+        guardrail_overrides = {}
+
+    limits_override = guardrail_overrides.get("limits")
+    if not isinstance(limits_override, GuardrailLimits):
+        limit_bytes = overrides.get("max_document_bytes")
+        if limit_bytes is None:
+            limit_bytes = guardrail_overrides.get("max_document_bytes")
+        limits_override = GuardrailLimits(max_document_bytes=limit_bytes)
+
+    raw_content = raw_document.get("content")
+    if isinstance(raw_content, bytes):
+        body_bytes = raw_content
+    else:
+        body_bytes = str(raw_content or "").encode("utf-8")
+
+    canonical_source = raw_document.get("metadata", {}).get("origin_uri")
+    host = urlparse(canonical_source).hostname if canonical_source else None
+    signals_override = guardrail_overrides.get("signals")
+    if not isinstance(signals_override, GuardrailSignals):
+        signals_override = GuardrailSignals(
+            tenant_id=tenant_id,
+            provider=raw_document.get("metadata", {}).get("provider"),
+            canonical_source=canonical_source,
+            host=host,
+            document_bytes=len(body_bytes),
+            mime_type=raw_document.get("metadata", {}).get("content_type"),
+        )
+
+    error_builder_override = guardrail_overrides.get("error_builder")
+    config_override = {
+        key: value
+        for key, value in guardrail_overrides.items()
+        if key not in {"limits", "signals", "error_builder"}
+    }
+    if not config_override:
+        config_override = None
+
+    guardrail_context: dict[str, object] = {
+        "limits": limits_override,
+        "signals": signals_override,
+    }
+    if error_builder_override is not None:
+        guardrail_context["error_builder"] = error_builder_override
+    if config_override:
+        guardrail_context["config"] = config_override
+
+    state: dict[str, object] = {
+        "tenant_id": tenant_id,
+        "case_id": case_id,
+        "request_id": request_id,
+        "raw_document": raw_document,
+        "guardrails": guardrail_context,
         "baseline": overrides.get("baseline", {}),
         "embedding": overrides.get(
             "embedding",
@@ -92,8 +175,17 @@ def test_orchestrates_nominal_flow() -> None:
     assert "persisted_document" in updated_state["artifacts"]
 
 
-def test_guardrail_denied_short_circuits() -> None:
+def test_guardrail_denied_short_circuits(monkeypatch) -> None:
     graph = CrawlerIngestionGraph()
+    recorded_events: list[tuple[str, Mapping[str, object]]] = []
+
+    def _record_event(name: str, payload: Mapping[str, object]) -> None:
+        recorded_events.append((name, dict(payload)))
+
+    monkeypatch.setattr(
+        "ai_core.graphs.crawler_ingestion_graph.emit_event",
+        _record_event,
+    )
     state = _build_state(
         guardrails={"max_document_bytes": 8},
         raw_document={"content": "Very long content"},
@@ -117,6 +209,15 @@ def test_guardrail_denied_short_circuits() -> None:
     assert any(
         status.to_dict().get("reason") == "document_too_large" for status in statuses
     )
+    assert recorded_events == [
+        (
+            "crawler_guardrail_denied",
+            {
+                "reason": "document_too_large",
+                "policy_events": ["max_document_bytes"],
+            },
+        )
+    ]
 
 
 def test_delta_unchanged_skips_embedding() -> None:

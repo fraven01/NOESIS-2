@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
+from ai_core.infra.observability import emit_event
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
 from documents.repository import DocumentsRepository
@@ -18,6 +19,7 @@ from .document_service import (
     DocumentsApiLifecycleService,
     DocumentsRepositoryAdapter,
 )
+from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 
 StateMapping = Mapping[str, Any] | MutableMapping[str, Any]
 
@@ -274,15 +276,62 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    def _resolve_guardrail_state(
+        self, state: Dict[str, Any]
+    ) -> Tuple[
+        Optional[Mapping[str, Any]],
+        Optional[GuardrailLimits],
+        Optional[GuardrailSignals],
+        Optional[Callable[..., Any]],
+    ]:
+        guardrail_state = state.get("guardrails")
+        config: Optional[Mapping[str, Any]] = None
+        limits: Optional[GuardrailLimits] = None
+        signals: Optional[GuardrailSignals] = None
+        error_builder: Optional[Callable[..., Any]] = None
+
+        if isinstance(guardrail_state, Mapping):
+            maybe_limits = guardrail_state.get("limits")
+            if isinstance(maybe_limits, GuardrailLimits):
+                limits = maybe_limits
+            maybe_signals = guardrail_state.get("signals")
+            if isinstance(maybe_signals, GuardrailSignals):
+                signals = maybe_signals
+            maybe_builder = guardrail_state.get("error_builder")
+            if callable(maybe_builder):
+                error_builder = maybe_builder
+            config_candidate = guardrail_state.get("config")
+            if isinstance(config_candidate, Mapping):
+                config = config_candidate
+            elif limits is None and signals is None:
+                config = guardrail_state
+        elif isinstance(guardrail_state, GuardrailLimits):
+            limits = guardrail_state
+        elif isinstance(guardrail_state, GuardrailSignals):
+            signals = guardrail_state
+
+        return config, limits, signals, error_builder
+
     def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
+        config, limits, signals, error_builder = self._resolve_guardrail_state(state)
         decision = self._guardrail_enforcer(
             normalized_document=normalized,
-            config=state.get("guardrails"),
+            config=config,
+            limits=limits,
+            signals=signals,
+            error_builder=error_builder,
         )
         artifacts["guardrail_decision"] = decision
         if not decision.allowed:
+            emit_event(
+                "crawler_guardrail_denied",
+                {
+                    "reason": decision.reason,
+                    "policy_events": list(decision.policy_events),
+                },
+            )
             status = self._document_service.update_lifecycle_status(
                 tenant_id=normalized.tenant_id,
                 document_id=normalized.document_id,

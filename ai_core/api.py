@@ -118,12 +118,14 @@ def enforce_guardrails(
     *,
     normalized_document: NormalizedDocumentPayload,
     config: Optional[Mapping[str, Any]] = None,
+    limits: GuardrailLimits | None = None,
+    signals: GuardrailSignals | None = None,
     error_builder: Optional[guardrails_middleware.ErrorBuilder] = None,
 ) -> GuardrailDecision:
     """Apply guardrail evaluation using the shared middleware implementation."""
 
-    limits = _build_guardrail_limits(config)
-    signals = _build_guardrail_signals(normalized_document, config)
+    limits = limits or _build_guardrail_limits(config)
+    signals = signals or _build_guardrail_signals(normalized_document, config)
     builder = error_builder or _build_guardrail_error
     decision = guardrails_middleware.enforce_guardrails(
         limits=limits,

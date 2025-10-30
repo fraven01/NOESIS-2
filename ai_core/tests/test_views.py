@@ -18,9 +18,10 @@ from ai_core.infra import object_store, rate_limit
 from ai_core.graph import registry
 import ai_core.nodes.retrieve as retrieve
 from ai_core.nodes.retrieve import RetrieveInput
-from ai_core.schemas import RagQueryRequest
+from ai_core.schemas import CrawlerRunRequest, RagQueryRequest
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
+from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
 from common.constants import (
@@ -1797,6 +1798,46 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
     payload = response.json()
     assert payload["code"] == "retrieval_inconsistent_metadata"
     assert "reindex required" in payload["detail"]
+
+
+def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
+    def _fail_enforce(*args, **kwargs):  # pragma: no cover - safety guard
+        raise AssertionError("guardrails enforcement should be delegated to the graph")
+
+    monkeypatch.setattr(views.guardrails_middleware, "enforce_guardrails", _fail_enforce)
+
+    request = CrawlerRunRequest.model_validate(
+        {
+            "mode": "manual",
+            "workflow_id": "wf-manual",
+            "origins": [
+                {
+                    "url": "https://example.org/doc",
+                    "content": "hello world",
+                    "content_type": "text/plain",
+                    "fetch": False,
+                }
+            ],
+        }
+    )
+    meta = {"tenant_id": "tenant-guard", "case_id": "case-guard"}
+
+    builds = views._build_crawler_state(meta, request)
+    assert len(builds) == 1
+    guardrails = builds[0].state.get("guardrails")
+    assert isinstance(guardrails, dict)
+    limits = guardrails.get("limits")
+    signals = guardrails.get("signals")
+    assert isinstance(limits, GuardrailLimits)
+    assert limits.max_document_bytes is None
+    assert isinstance(signals, GuardrailSignals)
+    assert signals.canonical_source == "https://example.org/doc"
+    assert signals.host == "example.org"
+    assert signals.document_bytes == len("hello world".encode("utf-8"))
+    assert guardrails.get("error_builder") is views._build_guardrail_error
+    gating_input = builds[0].state.get("gating_input", {})
+    assert gating_input.get("limits") is limits
+    assert gating_input.get("signals") is signals
 
 
 @pytest.mark.django_db

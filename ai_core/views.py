@@ -113,7 +113,6 @@ from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
 
 
-GuardrailStatus = guardrails_middleware.GuardrailStatus
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 
 # Import graphs so they are available via module globals for Legacy views.
@@ -1790,34 +1789,11 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        guardrail_decision = guardrails_middleware.enforce_guardrails(
-            limits=limits,
-            signals=guardrail_signals,
-            error_builder=_build_guardrail_error,
-        )
-        if guardrail_decision.status is GuardrailStatus.DENY:
-            emit_event(
-                "crawler_guardrail_denied",
-                {
-                    "reason": guardrail_decision.reason,
-                    "policy_events": list(guardrail_decision.policy_events),
-                },
-            )
-            raise CrawlerRunError(
-                "Crawler guardrails denied the document.",
-                code="crawler_guardrail_denied",
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                details={
-                    "fetch_used": fetch_used,
-                    "http_status": http_status,
-                    "fetched_bytes": fetched_bytes,
-                    "media_type_effective": effective_content_type,
-                    "fetch_elapsed": fetch_elapsed,
-                    "fetch_retries": fetch_retries,
-                    "fetch_retry_reason": fetch_retry_reason,
-                    "fetch_backoff_total_ms": fetch_backoff_total_ms,
-                },
-            )
+        guardrail_payload = {
+            "limits": limits,
+            "signals": guardrail_signals,
+            "error_builder": _build_guardrail_error,
+        }
 
         try:
             decoded = body_bytes.decode("utf-8", errors="replace")
@@ -1874,6 +1850,7 @@ def _build_crawler_state(
             "normalize_input": normalize_input,
             "delta_input": {},
             "gating_input": gating_input,
+            "guardrails": guardrail_payload,
             "document_id": document_id,
             "collection_id": request_data.collection_id,
         }
