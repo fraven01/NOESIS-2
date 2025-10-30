@@ -28,8 +28,9 @@ class _ObjectStoreModule(ModuleType):
 
 # Expose BASE_PATH for static analyzers, then rely on the module property at runtime.
 BASE_PATH: Path = _defaults.BASE_PATH
-sys.modules[__name__].__class__ = _ObjectStoreModule
-delattr(sys.modules[__name__], "BASE_PATH")
+_module = sys.modules[__name__]
+delattr(_module, "BASE_PATH")
+_module.__class__ = _ObjectStoreModule
 
 
 __all__ = [
