@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+from ai_core import tasks as ai_tasks
+from ai_core.graphs.crawler_ingestion_graph import GraphTransition
 from ai_core.infra import object_store
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
@@ -62,6 +64,69 @@ class _StubTask:
     def delay(self, state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
         self.calls.append((state, meta))
         return SimpleNamespace(id="task-123")
+
+
+def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
+    fetch_result = _build_fetch_result(payload=b"payload")
+    fetcher = _StubFetcher(fetch_result)
+
+    events: list[tuple[str, dict[str, object]]] = []
+
+    def event_callback(name: str, payload: dict[str, object]) -> None:
+        events.append((name, payload))
+
+    class _ExecutingTask:
+        def delay(self, state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
+            ai_tasks.run_ingestion_graph(state, meta)
+            return SimpleNamespace(id="task-456")
+
+    def _build_graph(*, event_emitter=None):  # type: ignore[no-untyped-def]
+        class _GuardrailGraph:
+            def __init__(self, emitter):
+                self._emitter = emitter
+
+            def run(self, state, meta):  # type: ignore[no-untyped-def]
+                run_id = state.get("graph_run_id", "test-run")
+                transition = GraphTransition(
+                    decision="denied",
+                    reason="policy_denied",
+                    attributes={"policy_events": ("max_document_bytes",)},
+                )
+                if callable(self._emitter):
+                    payload = {
+                        "transition": transition.to_dict(),
+                        "run_id": run_id,
+                        "document_id": state.get("raw_document", {}).get("document_id"),
+                        "reason": transition.reason,
+                        "policy_events": ["max_document_bytes"],
+                    }
+                    self._emitter("guardrail_denied", payload)
+                return state, transition.to_dict()
+
+        return _GuardrailGraph(event_emitter)
+
+    monkeypatch.setattr(ai_tasks, "build_graph", _build_graph)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    worker = CrawlerWorker(
+        fetcher,
+        ingestion_task=_ExecutingTask(),
+        ingestion_event_emitter=event_callback,
+    )
+
+    worker.process(
+        fetch_result.request,
+        tenant_id="tenant-a",
+        case_id="case-b",
+        document_id="doc-1",
+    )
+
+    guardrail_events = [payload for name, payload in events if name == "guardrail_denied"]
+    assert guardrail_events, "expected guardrail_denied event"
+    payload = guardrail_events[0]
+    assert payload["document_id"] == "doc-1"
+    assert payload["reason"] == "policy_denied"
+    assert payload["policy_events"] == ["max_document_bytes"]
 
 
 def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:

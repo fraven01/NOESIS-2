@@ -93,7 +93,7 @@ class CrawlerIngestionGraph:
         completion_builder: Callable[
             ..., Mapping[str, Any]
         ] = ai_core_api.build_completion_payload,
-        event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None,
+        event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
     ) -> None:
         self._document_service = document_service
         persistence_candidate = document_persistence
@@ -118,10 +118,23 @@ class CrawlerIngestionGraph:
         self._completion_builder = completion_builder
         self._event_emitter = event_emitter
 
-    def _emit(self, name: str, transition: GraphTransition, run_id: str) -> None:
+    def _emit(
+        self,
+        name: str,
+        transition: GraphTransition,
+        run_id: str,
+        *,
+        context: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         if self._event_emitter is not None:
             try:
-                self._event_emitter(name, transition, run_id)
+                payload: Dict[str, Any] = {
+                    "transition": transition.to_dict(),
+                    "run_id": run_id,
+                }
+                if context:
+                    payload.update(dict(context))
+                self._event_emitter(name, payload)
             except Exception:  # pragma: no cover - defensive best effort
                 pass
 
@@ -385,6 +398,18 @@ class CrawlerIngestionGraph:
             frontier_state=frontier_state,
         )
         artifacts["guardrail_decision"] = decision
+        attributes = dict(decision.attributes)
+        policy_events = list(decision.policy_events)
+        if policy_events:
+            attributes.setdefault("policy_events", policy_events)
+        if "severity" not in attributes:
+            attributes["severity"] = "error" if not decision.allowed else "info"
+        attributes.setdefault("document_id", normalized.document_id)
+        transition = _transition(
+            decision.decision,
+            decision.reason,
+            attributes=attributes,
+        )
         if not decision.allowed:
             emit_event(
                 "crawler_guardrail_denied",
@@ -402,11 +427,20 @@ class CrawlerIngestionGraph:
                 policy_events=decision.attributes.get("policy_events"),
             )
             artifacts.setdefault("status_updates", []).append(status)
-        transition = _transition(
-            decision.decision,
-            decision.reason,
-            attributes=decision.attributes,
-        )
+            context_payload = {
+                "document_id": normalized.document_id,
+                "tenant_id": normalized.tenant_id,
+                "reason": decision.reason,
+                "policy_events": policy_events,
+            }
+            run_id = str(state.get("graph_run_id") or "")
+            if run_id:
+                self._emit(
+                    "guardrail_denied",
+                    transition,
+                    run_id,
+                    context=context_payload,
+                )
         continue_flow = decision.allowed
         return transition, continue_flow
 
@@ -608,8 +642,21 @@ class CrawlerIngestionGraph:
 GRAPH = CrawlerIngestionGraph(document_service=DocumentsApiLifecycleService())
 
 
-def build_graph() -> CrawlerIngestionGraph:
-    return GRAPH
+def build_graph(
+    *, event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None
+) -> CrawlerIngestionGraph:
+    if event_emitter is None:
+        return GRAPH
+    return CrawlerIngestionGraph(
+        document_service=GRAPH._document_service,  # type: ignore[attr-defined]
+        repository=GRAPH._repository,  # type: ignore[attr-defined]
+        document_persistence=GRAPH._document_persistence,  # type: ignore[attr-defined]
+        guardrail_enforcer=GRAPH._guardrail_enforcer,  # type: ignore[attr-defined]
+        delta_decider=GRAPH._delta_decider,  # type: ignore[attr-defined]
+        embedding_handler=GRAPH._embedding_handler,  # type: ignore[attr-defined]
+        completion_builder=GRAPH._completion_builder,  # type: ignore[attr-defined]
+        event_emitter=event_emitter,
+    )
 
 
 def run(
