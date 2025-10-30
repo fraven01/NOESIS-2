@@ -5,7 +5,6 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-import importlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from os import PathLike
@@ -43,11 +42,7 @@ def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
         return store
     if _OBJECT_STORE_OVERRIDE is not None:
         return _OBJECT_STORE_OVERRIDE
-    try:
-        return get_default_object_store()
-    except RuntimeError:
-        importlib.import_module("ai_core.infra.object_store")
-        return get_default_object_store()
+    return get_default_object_store()
 
 
 def _normalize_mapping(
