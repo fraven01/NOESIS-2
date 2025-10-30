@@ -276,9 +276,7 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
-    def _resolve_guardrail_state(
-        self, state: Dict[str, Any]
-    ) -> Tuple[
+    def _resolve_guardrail_state(self, state: Dict[str, Any]) -> Tuple[
         Optional[Mapping[str, Any]],
         Optional[GuardrailLimits],
         Optional[GuardrailSignals],

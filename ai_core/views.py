@@ -2426,9 +2426,10 @@ class CrawlerIngestionRunnerView(APIView):
             guardrail_decision = None
             if isinstance(artifacts, Mapping):
                 guardrail_decision = artifacts.get("guardrail_decision")
-            guardrail_denied = isinstance(
-                guardrail_decision, guardrails_middleware.GuardrailDecision
-            ) and not guardrail_decision.allowed
+            guardrail_denied = (
+                isinstance(guardrail_decision, guardrails_middleware.GuardrailDecision)
+                and not guardrail_decision.allowed
+            )
             if guardrail_denied:
                 guardrail_state: Mapping[str, object] = {}
                 candidate_state = result_state.get("guardrails")
@@ -2558,7 +2559,10 @@ class CrawlerIngestionRunnerView(APIView):
             telemetry_payload.append(telemetry_entry)
 
         if guardrail_exception is not None:
-            payload = {"detail": str(guardrail_exception), "code": guardrail_exception.code}
+            payload = {
+                "detail": str(guardrail_exception),
+                "code": guardrail_exception.code,
+            }
             payload.update(guardrail_exception.details)
             response = Response(payload, status=guardrail_exception.status_code)
             return apply_std_headers(response, meta)

@@ -1807,7 +1807,9 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     def _fail_enforce(*args, **kwargs):  # pragma: no cover - safety guard
         raise AssertionError("guardrails enforcement should be delegated to the graph")
 
-    monkeypatch.setattr(views.guardrails_middleware, "enforce_guardrails", _fail_enforce)
+    monkeypatch.setattr(
+        views.guardrails_middleware, "enforce_guardrails", _fail_enforce
+    )
 
     request = CrawlerRunRequest.model_validate(
         {
