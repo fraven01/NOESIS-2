@@ -5,7 +5,8 @@ import httpx
 import pytest
 
 from crawler.errors import ErrorClass
-from crawler.fetcher import FetchStatus, FetcherLimits, FetchRequest, PolitenessContext
+from crawler.fetcher import FetchStatus, FetchRequest, PolitenessContext
+from common.guardrails import FetcherLimits
 from crawler.http_fetcher import FetchRetryPolicy, HttpFetcher, HttpFetcherConfig
 
 

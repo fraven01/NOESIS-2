@@ -15,8 +15,9 @@ from .router_validation import (
     map_router_error_to_status,
     validate_search_inputs,
 )
+from common.guardrails import FetcherLimits
+
 from .guardrails import (
-    FetcherLimits,
     GuardrailLimits,
     GuardrailSignals,
     QuotaLimits,

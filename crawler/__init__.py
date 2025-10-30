@@ -30,10 +30,10 @@ from .fetcher import (
     FetchResult,
     FetchStatus,
     FetchTelemetry,
-    FetcherLimits,
     PolitenessContext,
     evaluate_fetch_response,
 )
+from common.guardrails import FetcherLimits
 from .errors import CrawlerError, ErrorClass
 from .http_fetcher import FetchRetryPolicy, HttpFetcher, HttpFetcherConfig
 from .policies import (

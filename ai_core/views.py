@@ -55,9 +55,9 @@ from crawler.fetcher import (
     FetchFailure,
     FetchRequest,
     FetchStatus,
-    FetcherLimits,
     PolitenessContext,
 )
+from common.guardrails import FetcherLimits
 from crawler.frontier import (
     CrawlSignals,
     FrontierAction,
