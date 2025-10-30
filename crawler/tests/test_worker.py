@@ -108,6 +108,7 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     assert payload_path.endswith(".bin")
     stored_payload = (object_store.BASE_PATH / payload_path).read_bytes()
     assert stored_payload == fetch_result.payload
+    assert state_payload["raw_payload_path"] == payload_path
     assert state_payload["guardrails"] == overrides["guardrails"]
     assert meta_payload["trace_id"] == "trace-1"
     assert meta_payload["idempotency_key"] == "idemp-1"

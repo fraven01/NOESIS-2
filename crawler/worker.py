@@ -176,6 +176,7 @@ class CrawlerWorker:
             raw_document["document_id"] = raw_meta["document_id"]
 
         state["raw_document"] = raw_document
+        state.setdefault("raw_payload_path", payload_path)
         state.setdefault("fetch", self._summarize_fetch(result))
         return state
 

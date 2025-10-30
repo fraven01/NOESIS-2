@@ -1599,9 +1599,27 @@ def run_ingestion_graph(
 ) -> Dict[str, Any]:
     """Execute the crawler ingestion LangGraph orchestration."""
 
+    raw_payload_path: Optional[str] = None
+    if isinstance(state, MappingABC):
+        candidate = state.get("raw_payload_path")
+        if isinstance(candidate, str) and candidate.strip():
+            raw_payload_path = candidate.strip()
+        else:
+            raw_document = state.get("raw_document")
+            if isinstance(raw_document, MappingABC):
+                nested_candidate = raw_document.get("payload_path")
+                if isinstance(nested_candidate, str) and nested_candidate.strip():
+                    raw_payload_path = nested_candidate.strip()
+
     graph = build_graph()
-    _, result = graph.run(state, meta or {})
-    serialized_result = _jsonify_for_task(result)
-    if not isinstance(serialized_result, dict):
-        raise TypeError("ingestion_result_serialization_error")
-    return serialized_result
+    try:
+        _, result = graph.run(state, meta or {})
+        serialized_result = _jsonify_for_task(result)
+        if not isinstance(serialized_result, dict):
+            raise TypeError("ingestion_result_serialization_error")
+        return serialized_result
+    finally:
+        if raw_payload_path:
+            from .ingestion import cleanup_raw_payload_artifact
+
+            cleanup_raw_payload_artifact(raw_payload_path)

@@ -745,3 +745,46 @@ def test_ingest_raw_rejects_unsafe_meta(tmp_path, monkeypatch):
             tasks.ingest_raw.request = original_request
         else:
             delattr(tasks.ingest_raw, "request")
+
+
+def test_run_ingestion_graph_cleans_raw_payload(tmp_path, monkeypatch):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    raw_path = "tenant/case/crawler/raw/sample.bin"
+    object_store.put_bytes(raw_path, b"payload")
+
+    class DummyGraph:
+        def run(self, state, meta):  # pragma: no cover - simple stub
+            return dict(state), {"status": "ok"}
+
+    monkeypatch.setattr(tasks, "build_graph", lambda: DummyGraph())
+
+    state = {
+        "raw_payload_path": raw_path,
+        "raw_document": {"payload_path": raw_path},
+    }
+
+    result = tasks.run_ingestion_graph(state, {})
+    assert result == {"status": "ok"}
+    assert not (tmp_path / raw_path).exists()
+
+
+def test_run_ingestion_graph_cleans_raw_payload_on_error(tmp_path, monkeypatch):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    raw_path = "tenant/case/crawler/raw/error.bin"
+    object_store.put_bytes(raw_path, b"payload")
+
+    class FailingGraph:
+        def run(self, state, meta):  # pragma: no cover - simple stub
+            raise RuntimeError("boom")
+
+    monkeypatch.setattr(tasks, "build_graph", lambda: FailingGraph())
+
+    state = {
+        "raw_payload_path": raw_path,
+        "raw_document": {"payload_path": raw_path},
+    }
+
+    with pytest.raises(RuntimeError):
+        tasks.run_ingestion_graph(state, {})
+
+    assert not (tmp_path / raw_path).exists()

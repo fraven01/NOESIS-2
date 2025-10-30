@@ -172,6 +172,14 @@ def _cleanup_artifacts(paths: Iterable[Optional[str]]) -> List[str]:
     return removed
 
 
+def cleanup_raw_payload_artifact(raw_payload_path: Optional[str]) -> List[str]:
+    """Remove the persisted raw payload, returning the removed paths."""
+
+    if not raw_payload_path:
+        return []
+    return _cleanup_artifacts([raw_payload_path])
+
+
 def _mark_cleaned(
     tenant: str,
     case: str,
