@@ -43,6 +43,7 @@ __all__ = [
 
 _CONTEXT_FIELDS: tuple[str, ...] = (
     "trace_id",
+    "span_id",
     "case_id",
     "tenant",
     "key_alias",
