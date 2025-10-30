@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import inspect
 import math
 import os
 import re
@@ -1595,6 +1596,32 @@ def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
     return None
 
 
+def _callable_accepts_kwarg(func: Any, keyword: str) -> bool:
+    """Return True when the callable supports the provided keyword argument."""
+    try:
+        signature = inspect.signature(func)
+    except (TypeError, ValueError):  # pragma: no cover - non introspectable callables
+        return True
+    for parameter in signature.parameters.values():
+        if parameter.kind == inspect.Parameter.VAR_KEYWORD:
+            return True
+        if (
+            parameter.name == keyword
+            and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        ):
+            return True
+    return False
+
+
+def _build_ingestion_graph(event_emitter: Optional[Any]):
+    """Invoke build_graph while remaining compatible with older test stubs."""
+    if event_emitter is None:
+        return build_graph()
+    if _callable_accepts_kwarg(build_graph, "event_emitter"):
+        return build_graph(event_emitter=event_emitter)
+    return build_graph()
+
+
 @shared_task(
     base=ScopedTask,
     queue="ingestion",
@@ -1620,7 +1647,7 @@ def run_ingestion_graph(
                     raw_payload_path = nested_candidate.strip()
 
     event_emitter = _resolve_event_emitter(meta)
-    graph = build_graph(event_emitter=event_emitter)
+    graph = _build_ingestion_graph(event_emitter)
     try:
         _, result = graph.run(state, meta or {})
         serialized_result = _jsonify_for_task(result)
