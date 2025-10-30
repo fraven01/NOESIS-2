@@ -8,7 +8,11 @@ from uuid import UUID
 from documents import api as documents_api
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
-from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+from documents.repository import (
+    DocumentLifecycleStore,
+    DocumentsRepository,
+    InMemoryDocumentsRepository,
+)
 from common.object_store import ObjectStore, get_default_object_store
 
 
@@ -58,14 +62,23 @@ class DocumentsApiLifecycleService:
         *,
         repository: Optional[DocumentsRepository] = None,
         object_store: ObjectStore | None = None,
+        lifecycle_store: DocumentLifecycleStore | None = None,
     ) -> None:
         self._repository = repository
         self._object_store = object_store
+        self._lifecycle_store = lifecycle_store
 
     def _resolve_object_store(self) -> ObjectStore:
         if self._object_store is not None:
             return self._object_store
         return get_default_object_store()
+
+    def _resolve_lifecycle_store(self) -> DocumentLifecycleStore:
+        if self._lifecycle_store is not None:
+            return self._lifecycle_store
+        from documents.repository import DEFAULT_LIFECYCLE_STORE
+
+        return DEFAULT_LIFECYCLE_STORE
 
     def normalize_from_raw(
         self,
@@ -94,15 +107,34 @@ class DocumentsApiLifecycleService:
         reason: Optional[str] = None,
         policy_events: Optional[Mapping[str, Any] | Sequence[str]] = None,
     ) -> LifecycleStatusUpdate:
-        return documents_api.update_lifecycle_status(
-            tenant_id=tenant_id,
-            document_id=document_id,
-            status=status,
-            previous_status=previous_status,
-            workflow_id=workflow_id,
-            reason=reason,
-            policy_events=policy_events,
-        )
+        store = self._resolve_lifecycle_store()
+        try:
+            return documents_api.update_lifecycle_status(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                status=status,
+                previous_status=previous_status,
+                workflow_id=workflow_id,
+                reason=reason,
+                policy_events=policy_events,
+                store=store,
+            )
+        except RuntimeError as exc:
+            message = str(exc)
+            if "Database access not allowed" not in message:
+                raise
+            fallback_store = DocumentLifecycleStore()
+            self._lifecycle_store = fallback_store
+            return documents_api.update_lifecycle_status(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                status=status,
+                previous_status=previous_status,
+                workflow_id=workflow_id,
+                reason=reason,
+                policy_events=policy_events,
+                store=fallback_store,
+            )
 
     @property
     def repository(self) -> Optional[DocumentsRepository]:
