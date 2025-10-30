@@ -13,6 +13,7 @@ from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 from ai_core.graphs.document_service import DocumentLifecycleService
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from documents import api as documents_api
+from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
@@ -195,6 +196,11 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
         "ai_core.graphs.crawler_ingestion_graph.emit_event",
         _record_event,
     )
+    monkeypatch.setattr(
+        document_metrics,
+        "GUARDRAIL_DENIAL_REASON_TOTAL",
+        document_metrics._FallbackCounterVec(),
+    )
     state = _build_state(
         guardrails={"max_document_bytes": 8},
         raw_document={"content": "Very long content"},
@@ -227,6 +233,21 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
             },
         )
     ]
+    guardrail_counter = document_metrics.GUARDRAIL_DENIAL_REASON_TOTAL
+    guardrail_decision = updated_state["artifacts"]["guardrail_decision"]
+    normalized_payload = updated_state["artifacts"]["normalized_document"]
+
+    def _label(value: str | None) -> str:
+        candidate = (value or "").strip()
+        return candidate or "unknown"
+
+    expected_labels = {
+        "reason": _label(guardrail_decision.reason),
+        "workflow_id": _label(normalized_payload.document.ref.workflow_id),
+        "tenant_id": _label(normalized_payload.tenant_id),
+        "source": _label(normalized_payload.document.source),
+    }
+    assert guardrail_counter.value(**expected_labels) == 1.0
 
 
 def test_guardrail_denied_emits_event_callback() -> None:
