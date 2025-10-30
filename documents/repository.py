@@ -12,7 +12,7 @@ from uuid import UUID
 
 from django.apps import apps
 from django.conf import settings
-from django.core.exceptions import ImproperlyConfigured
+from django.core.exceptions import AppRegistryNotReady, ImproperlyConfigured
 from django.db import transaction
 from django.utils.module_loading import import_string
 
@@ -724,7 +724,7 @@ def _load_default_lifecycle_store() -> DocumentLifecycleStore:
         store_class = import_string(class_path)
         store_instance = store_class()
         return store_instance
-    except Exception:  # pragma: no cover - defensive fallback
+    except (ImproperlyConfigured, AppRegistryNotReady):  # pragma: no cover - lazy config
         logger.warning(
             "lifecycle_store_init_failed",
             extra={"class_path": class_path},
