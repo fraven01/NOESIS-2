@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 
-from ai_core.infra.object_store import FilesystemObjectStore
+from common.object_store import FilesystemObjectStore
 from documents.api import normalize_from_raw
 
 

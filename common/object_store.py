@@ -84,3 +84,15 @@ __all__ = [
     "get_default_object_store",
     "set_default_object_store_factory",
 ]
+
+
+class FilesystemObjectStore:
+    """Lazy proxy returning the default filesystem-backed object store."""
+
+    def __new__(cls, *args: Any, **kwargs: Any) -> ObjectStore:  # noqa: D401
+        from common.object_store_defaults import FilesystemObjectStore as _Impl
+
+        return _Impl(*args, **kwargs)
+
+
+__all__.append("FilesystemObjectStore")
