@@ -66,9 +66,7 @@ def test_normalize_from_raw_accepts_payload_path(tmp_path) -> None:
     assert result.payload_bytes == payload
 
 
-def test_normalize_from_raw_rejects_payload_path_outside_store(
-    tmp_path
-) -> None:
+def test_normalize_from_raw_rejects_payload_path_outside_store(tmp_path) -> None:
     store = FilesystemObjectStore(lambda: tmp_path / "store")
     (tmp_path / "secret.bin").write_bytes(b"shh")
 
@@ -86,9 +84,7 @@ def test_normalize_from_raw_rejects_payload_path_outside_store(
         )
 
 
-def test_normalize_from_raw_rejects_absolute_payload_path(
-    tmp_path
-) -> None:
+def test_normalize_from_raw_rejects_absolute_payload_path(tmp_path) -> None:
     absolute_path = tmp_path / "secret.bin"
     absolute_path.write_text("hidden", encoding="utf-8")
     store = FilesystemObjectStore(lambda: tmp_path / "store")

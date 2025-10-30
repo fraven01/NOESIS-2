@@ -26,7 +26,10 @@ class _ObjectStoreModule(ModuleType):
         _defaults.BASE_PATH = value
 
 
+# Expose BASE_PATH for static analyzers, then rely on the module property at runtime.
+BASE_PATH: Path = _defaults.BASE_PATH
 sys.modules[__name__].__class__ = _ObjectStoreModule
+delattr(sys.modules[__name__], "BASE_PATH")
 
 
 __all__ = [
