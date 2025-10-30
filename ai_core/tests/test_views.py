@@ -21,6 +21,7 @@ from ai_core.nodes.retrieve import RetrieveInput
 from ai_core.schemas import CrawlerRunRequest, RagQueryRequest
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
+from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
@@ -39,6 +40,8 @@ from common.constants import (
     X_TRACE_ID_HEADER,
 )
 from common.middleware import RequestLogContextMiddleware
+from crawler.errors import CrawlerError, ErrorClass
+from rest_framework import status
 
 
 @pytest.fixture(autouse=True)
@@ -1838,6 +1841,110 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     gating_input = builds[0].state.get("gating_input", {})
     assert gating_input.get("limits") is limits
     assert gating_input.get("signals") is signals
+
+
+@pytest.mark.django_db
+def test_crawler_runner_guardrail_denial_returns_413(
+    client, monkeypatch, test_tenant_schema_name
+):
+    class _GuardrailDenyGraph:
+        def __init__(self) -> None:
+            self.upsert_handler = None
+
+        def start_crawl(self, state):
+            cloned = dict(state)
+            cloned.setdefault("artifacts", {})
+            return cloned
+
+        def run(self, state, meta):
+            result_state = dict(state)
+            artifacts = result_state.setdefault("artifacts", {})
+            error = CrawlerError(
+                error_class=ErrorClass.POLICY_DENY,
+                reason="document_too_large",
+                source=state.get("origin_uri"),
+                provider=state.get("provider"),
+                attributes={"limit_bytes": 10, "document_bytes": 24},
+            )
+            decision = guardrails_middleware.GuardrailDecision(
+                decision="deny",
+                reason="document_too_large",
+                attributes={
+                    "policy_events": ("max_document_bytes",),
+                    "error": error,
+                },
+            )
+            artifacts["guardrail_decision"] = decision
+            result = {
+                "graph_run_id": "run-denied",
+                "decision": "denied",
+                "reason": decision.reason,
+                "attributes": {"severity": "error"},
+                "transitions": {
+                    "enforce_guardrails": {
+                        "decision": decision.decision,
+                        "reason": decision.reason,
+                        "attributes": {"severity": "error"},
+                    },
+                    "finish": {
+                        "decision": "denied",
+                        "reason": decision.reason,
+                        "attributes": {"severity": "error"},
+                    },
+                },
+            }
+            summary = {
+                "guardrails": {
+                    "decision": decision.decision,
+                    "reason": decision.reason,
+                    "attributes": dict(decision.attributes),
+                }
+            }
+            result_state["summary"] = summary
+            return result_state, result
+
+    monkeypatch.setattr(
+        views,
+        "crawler_ingestion_graph",
+        SimpleNamespace(build_graph=lambda: _GuardrailDenyGraph()),
+    )
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-crawl",
+    }
+
+    payload = {
+        "mode": "manual",
+        "workflow_id": "crawler-denied",
+        "max_document_bytes": 10,
+        "origins": [
+            {
+                "url": "https://example.com/docs/denied",
+                "content": "denied payload",
+                "content_type": "text/plain",
+                "fetch": False,
+            }
+        ],
+    }
+
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+
+    response = client.post(
+        "/ai/rag/crawler/run/",
+        data=json.dumps(payload),
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == status.HTTP_413_REQUEST_ENTITY_TOO_LARGE
+    body = response.json()
+    assert body["code"] == "crawler_guardrail_denied"
+    assert body["reason"] == "document_too_large"
+    assert body["origin"] == "https://example.com/docs/denied"
+    assert body["policy_events"] == ["max_document_bytes"]
+    assert body["attributes"]["error"]["error_class"] == "policy_deny"
+    assert body["limits"]["max_document_bytes"] == 10
 
 
 @pytest.mark.django_db
