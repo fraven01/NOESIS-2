@@ -10,7 +10,14 @@ from uuid import uuid4
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
-from .document_service import DocumentLifecycleService, DocumentsApiLifecycleService
+from documents.contracts import NormalizedDocument
+from documents.repository import DocumentsRepository
+from .document_service import (
+    DocumentLifecycleService,
+    DocumentPersistenceService,
+    DocumentsApiLifecycleService,
+    DocumentsRepositoryAdapter,
+)
 
 StateMapping = Mapping[str, Any] | MutableMapping[str, Any]
 
@@ -67,6 +74,8 @@ class CrawlerIngestionGraph:
         self,
         *,
         document_service: DocumentLifecycleService = DocumentsApiLifecycleService(),
+        repository: DocumentsRepository | None = None,
+        document_persistence: DocumentPersistenceService | None = None,
         guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision] = ai_core_api.enforce_guardrails,
         delta_decider: Callable[..., ai_core_api.DeltaDecision] = ai_core_api.decide_delta,
         embedding_handler: Callable[..., EmbeddingResult] = ai_core_api.trigger_embedding,
@@ -74,6 +83,19 @@ class CrawlerIngestionGraph:
         event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None,
     ) -> None:
         self._document_service = document_service
+        persistence_candidate = document_persistence
+        if persistence_candidate is None:
+            service_repository = getattr(document_service, "repository", None)
+            if hasattr(document_service, "upsert_normalized") and service_repository is not None:
+                persistence_candidate = document_service  # type: ignore[assignment]
+            else:
+                persistence_candidate = DocumentsRepositoryAdapter(
+                    repository=repository
+                )
+        if repository is None and hasattr(persistence_candidate, "repository"):
+            repository = getattr(persistence_candidate, "repository")
+        self._repository = repository
+        self._document_persistence = persistence_candidate
         self._guardrail_enforcer = guardrail_enforcer
         self._delta_decider = delta_decider
         self._embedding_handler = embedding_handler
@@ -104,6 +126,7 @@ class CrawlerIngestionGraph:
             GraphNode("update_status_normalized", self._run_update_status),
             GraphNode("enforce_guardrails", self._run_guardrails),
             GraphNode("decide_delta", self._run_delta),
+            GraphNode("persist_document", self._run_persist_document),
             GraphNode("trigger_embedding", self._run_trigger_embedding),
         )
 
@@ -246,6 +269,34 @@ class CrawlerIngestionGraph:
             decision.decision,
             decision.reason,
             attributes=decision.attributes,
+        )
+        return transition, True
+
+    def _run_persist_document(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts[
+            "normalized_document"
+        ]
+        try:
+            persisted: NormalizedDocument = self._document_persistence.upsert_normalized(
+                normalized=normalized
+            )
+        except Exception as exc:
+            error_payload = {
+                "error": repr(exc),
+                "type": exc.__class__.__name__,
+            }
+            artifacts.setdefault("persistence_errors", []).append(error_payload)
+            artifacts["persistence_failure"] = error_payload
+            raise
+        artifacts["persisted_document"] = persisted
+        transition = _transition(
+            "persisted",
+            "document_upserted",
+            attributes={
+                "severity": "info",
+                "document": persisted.model_dump(),
+            },
         )
         return transition, True
 
