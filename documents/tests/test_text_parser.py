@@ -71,10 +71,14 @@ def test_text_parser_sniffs_utf8_payload_without_media_type() -> None:
 
 def test_dispatcher_uses_text_parser_as_fallback() -> None:
     class _RejectingParser:
-        def can_handle(self, document: object) -> bool:  # pragma: no cover - simple guard
+        def can_handle(
+            self, document: object
+        ) -> bool:  # pragma: no cover - simple guard
             return False
 
-        def parse(self, document: object, config: object) -> object:  # pragma: no cover - unused
+        def parse(
+            self, document: object, config: object
+        ) -> object:  # pragma: no cover - unused
             raise AssertionError("should not be called")
 
     registry = ParserRegistry([_RejectingParser()])
