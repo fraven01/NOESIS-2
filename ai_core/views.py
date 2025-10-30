@@ -4,7 +4,7 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 from pathlib import Path
@@ -113,7 +113,6 @@ from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
 
 
-GuardrailStatus = guardrails_middleware.GuardrailStatus
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 
 # Import graphs so they are available via module globals for Legacy views.
@@ -224,6 +223,58 @@ def _build_guardrail_error(
         provider=signals.provider,
         attributes=dict(attributes or {}),
     )
+
+
+def _serialise_guardrail_component(value: object) -> object:
+    """Best-effort conversion of guardrail metadata into JSON-safe values."""
+
+    if value is None:
+        return None
+
+    candidate = value
+
+    if hasattr(candidate, "model_dump"):
+        try:
+            candidate = candidate.model_dump()
+        except Exception:  # pragma: no cover - defensive
+            pass
+
+    if is_dataclass(candidate):
+        try:
+            candidate = asdict(candidate)
+        except Exception:  # pragma: no cover - defensive
+            candidate = dict(getattr(candidate, "__dict__", {}))
+    elif hasattr(candidate, "__dict__") and not isinstance(
+        candidate, (str, bytes, bytearray)
+    ):
+        candidate = dict(getattr(candidate, "__dict__", {}))
+
+    if isinstance(candidate, Mapping):
+        processed = {
+            str(key): _serialise_guardrail_component(value)
+            for key, value in candidate.items()
+        }
+        return services._make_json_safe(processed)
+
+    if isinstance(candidate, (list, tuple, set)):
+        processed_list = [_serialise_guardrail_component(item) for item in candidate]
+        return services._make_json_safe(processed_list)
+
+    return services._make_json_safe(candidate)
+
+
+def _serialise_guardrail_attributes(
+    attributes: Mapping[str, object] | None,
+) -> dict[str, object]:
+    """Serialise guardrail decision attributes, including error payloads."""
+
+    if not attributes:
+        return {}
+
+    return {
+        str(key): _serialise_guardrail_component(value)
+        for key, value in dict(attributes).items()
+    }
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
@@ -1790,34 +1841,11 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        guardrail_decision = guardrails_middleware.enforce_guardrails(
-            limits=limits,
-            signals=guardrail_signals,
-            error_builder=_build_guardrail_error,
-        )
-        if guardrail_decision.status is GuardrailStatus.DENY:
-            emit_event(
-                "crawler_guardrail_denied",
-                {
-                    "reason": guardrail_decision.reason,
-                    "policy_events": list(guardrail_decision.policy_events),
-                },
-            )
-            raise CrawlerRunError(
-                "Crawler guardrails denied the document.",
-                code="crawler_guardrail_denied",
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                details={
-                    "fetch_used": fetch_used,
-                    "http_status": http_status,
-                    "fetched_bytes": fetched_bytes,
-                    "media_type_effective": effective_content_type,
-                    "fetch_elapsed": fetch_elapsed,
-                    "fetch_retries": fetch_retries,
-                    "fetch_retry_reason": fetch_retry_reason,
-                    "fetch_backoff_total_ms": fetch_backoff_total_ms,
-                },
-            )
+        guardrail_payload = {
+            "limits": limits,
+            "signals": guardrail_signals,
+            "error_builder": _build_guardrail_error,
+        }
 
         try:
             decoded = body_bytes.decode("utf-8", errors="replace")
@@ -1874,6 +1902,7 @@ def _build_crawler_state(
             "normalize_input": normalize_input,
             "delta_input": {},
             "gating_input": gating_input,
+            "guardrails": guardrail_payload,
             "document_id": document_id,
             "collection_id": request_data.collection_id,
         }
@@ -2284,6 +2313,7 @@ class CrawlerIngestionRunnerView(APIView):
         transitions_payload: list[dict[str, object]] = []
         telemetry_payload: list[dict[str, object]] = []
         errors_payload: list[dict[str, object]] = []
+        guardrail_exception: CrawlerRunError | None = None
 
         raw_header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not raw_header_idempotency:
@@ -2393,6 +2423,73 @@ class CrawlerIngestionRunnerView(APIView):
             if isinstance(upsert_result, dict):
                 ingestion_run_id = upsert_result.get("ingestion_run_id")
 
+            guardrail_decision = None
+            if isinstance(artifacts, Mapping):
+                guardrail_decision = artifacts.get("guardrail_decision")
+            guardrail_denied = isinstance(
+                guardrail_decision, guardrails_middleware.GuardrailDecision
+            ) and not guardrail_decision.allowed
+            if guardrail_denied:
+                guardrail_state: Mapping[str, object] = {}
+                candidate_state = result_state.get("guardrails")
+                if isinstance(candidate_state, Mapping):
+                    guardrail_state = candidate_state
+                else:
+                    original_state = build.state.get("guardrails")
+                    if isinstance(original_state, Mapping):
+                        guardrail_state = original_state
+
+                details_payload: dict[str, object] = {
+                    "origin": build.origin,
+                    "provider": build.provider,
+                    "document_id": build.document_id,
+                    "workflow_id": result_state.get("workflow_id"),
+                    "decision": guardrail_decision.decision,
+                    "reason": guardrail_decision.reason,
+                    "policy_events": list(guardrail_decision.policy_events),
+                    "attributes": _serialise_guardrail_attributes(
+                        getattr(guardrail_decision, "attributes", None)
+                    ),
+                    "limits": _serialise_guardrail_component(
+                        guardrail_state.get("limits") if guardrail_state else None
+                    ),
+                    "signals": _serialise_guardrail_component(
+                        guardrail_state.get("signals") if guardrail_state else None
+                    ),
+                    "graph_run_id": result.get("graph_run_id"),
+                    "transitions": _serialise_guardrail_component(
+                        result.get("transitions")
+                    ),
+                    "summary": _serialise_guardrail_component(
+                        result_state.get("summary")
+                    ),
+                    "fetch_used": build.fetch_used,
+                    "http_status": build.http_status,
+                    "fetched_bytes": build.fetched_bytes,
+                    "media_type_effective": build.media_type_effective,
+                    "fetch_elapsed": build.fetch_elapsed,
+                    "fetch_retries": build.fetch_retries,
+                    "fetch_retry_reason": build.fetch_retry_reason,
+                    "fetch_backoff_total_ms": build.fetch_backoff_total_ms,
+                }
+
+                filtered_details = {
+                    key: value
+                    for key, value in details_payload.items()
+                    if value is not None
+                }
+
+                guardrail_exception = CrawlerRunError(
+                    (
+                        f"Guardrails denied origin '{build.origin}' due to "
+                        f"{guardrail_decision.reason}."
+                    ),
+                    code="crawler_guardrail_denied",
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    details=filtered_details,
+                )
+                break
+
             origin_snapshot = {
                 "workflow_id": result_state.get("workflow_id"),
                 "document_id": result_state.get("normalize_input", {}).get(
@@ -2459,6 +2556,12 @@ class CrawlerIngestionRunnerView(APIView):
             if build.snapshot_sha256:
                 telemetry_entry["snapshot_sha256"] = build.snapshot_sha256
             telemetry_payload.append(telemetry_entry)
+
+        if guardrail_exception is not None:
+            payload = {"detail": str(guardrail_exception), "code": guardrail_exception.code}
+            payload.update(guardrail_exception.details)
+            response = Response(payload, status=guardrail_exception.status_code)
+            return apply_std_headers(response, meta)
 
         response_payload = {
             "workflow_id": workflow_id,
