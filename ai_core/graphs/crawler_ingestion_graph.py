@@ -11,6 +11,7 @@ from uuid import uuid4
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
 from ai_core.infra.observability import emit_event, observe_span, update_observation
+from documents import metrics as document_metrics
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
 from documents.repository import DocumentsRepository
@@ -527,6 +528,20 @@ class CrawlerIngestionGraph:
             extra={"decision": decision.decision, "allowed": decision.allowed},
         )
         if not decision.allowed:
+            reason_label = (decision.reason or "").strip() or "unknown"
+            workflow_label = (
+                (normalized.document.ref.workflow_id or "").strip() or "unknown"
+            )
+            tenant_label = (normalized.tenant_id or "").strip() or "unknown"
+            source_label = (
+                (normalized.document.source or "").strip() or "unknown"
+            )
+            document_metrics.GUARDRAIL_DENIAL_REASON_TOTAL.inc(
+                reason=reason_label,
+                workflow_id=workflow_label,
+                tenant_id=tenant_label,
+                source=source_label,
+            )
             emit_event(
                 "crawler_guardrail_denied",
                 {

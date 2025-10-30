@@ -164,6 +164,11 @@ if _PromCounter is not None:  # pragma: no cover - exercised in integration envi
         "Number of caption attempts evaluated for acceptance.",
         ["workflow_id"],
     )
+    GUARDRAIL_DENIAL_REASON_TOTAL = _PromCounter(
+        "guardrail_denial_reason_total",
+        "Number of documents denied by guardrails grouped by reason, workflow and tenant.",
+        ["reason", "workflow_id", "tenant_id", "source"],
+    )
 else:  # pragma: no cover - exercised through direct inspection in unit tests
     DOCUMENT_OPERATION_TOTAL = _FallbackCounterVec()
     ASSET_OPERATION_TOTAL = _FallbackCounterVec()
@@ -177,6 +182,7 @@ else:  # pragma: no cover - exercised through direct inspection in unit tests
     PIPELINE_OCR_TRIGGER_TOTAL = _FallbackCounterVec()
     PIPELINE_CAPTION_HITS_TOTAL = _FallbackCounterVec()
     PIPELINE_CAPTION_ATTEMPTS_TOTAL = _FallbackCounterVec()
+    GUARDRAIL_DENIAL_REASON_TOTAL = _FallbackCounterVec()
 
 
 if (
