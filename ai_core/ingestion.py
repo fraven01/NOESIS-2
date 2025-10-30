@@ -155,21 +155,74 @@ def _ensure_step(
     return result, False
 
 
+def _normalize_object_store_relative_path(path: str, base_path: Path) -> Path:
+    """Validate *path* is within the object store and return the normalized value."""
+
+    candidate = Path(path)
+    if candidate.is_absolute() or candidate.anchor:
+        raise ValueError("payload_path_invalid")
+
+    try:
+        resolved = (base_path / candidate).resolve()
+    except RuntimeError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if not resolved.is_relative_to(base_path):
+        raise ValueError("payload_path_invalid")
+
+    try:
+        relative_path = resolved.relative_to(base_path)
+    except ValueError as exc:  # pragma: no cover - defensive guard
+        raise ValueError("payload_path_invalid") from exc
+
+    if str(relative_path) == ".":
+        raise ValueError("payload_path_invalid")
+
+    return relative_path
+
+
 def _cleanup_artifacts(paths: Iterable[Optional[str]]) -> List[str]:
     removed: List[str] = []
-    seen = set()
+    seen: set[str] = set()
+    base_path = object_store.BASE_PATH.resolve()
     for path in paths:
-        if not path or path in seen:
+        if not path:
             continue
-        seen.add(path)
-        target = object_store.BASE_PATH / path
+
+        candidate = str(path).strip()
+        if not candidate:
+            continue
+
+        try:
+            normalized_path = _normalize_object_store_relative_path(candidate, base_path)
+        except ValueError:
+            log.warning(
+                "Skipping invalid object store path during cleanup",
+                extra={"path": candidate},
+            )
+            continue
+
+        normalized_key = normalized_path.as_posix()
+        if normalized_key in seen:
+            continue
+        seen.add(normalized_key)
+
+        target = base_path / normalized_path
         try:
             if target.exists():
                 target.unlink()
-                removed.append(path)
+                removed.append(normalized_key)
         except Exception:
-            log.exception("Failed to cleanup artifact", extra={"path": path})
+            log.exception("Failed to cleanup artifact", extra={"path": normalized_key})
     return removed
+
+
+def cleanup_raw_payload_artifact(raw_payload_path: Optional[str]) -> List[str]:
+    """Remove the persisted raw payload, returning the removed paths."""
+
+    if not raw_payload_path:
+        return []
+    return _cleanup_artifacts([raw_payload_path])
 
 
 def _mark_cleaned(
