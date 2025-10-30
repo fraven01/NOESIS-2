@@ -1587,12 +1587,6 @@ def ingestion_run(
     return {"status": "queued", "queued_at": queued_at}
 
 
-@shared_task(
-    base=ScopedTask,
-    queue="ingestion",
-    accepts_scope=True,
-    name="ai_core.tasks.run_ingestion_graph",
-)
 def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
     if isinstance(meta, MappingABC):
         candidate = meta.get("ingestion_event_emitter")
@@ -1601,6 +1595,12 @@ def _resolve_event_emitter(meta: Optional[Mapping[str, Any]] = None):
     return None
 
 
+@shared_task(
+    base=ScopedTask,
+    queue="ingestion",
+    accepts_scope=True,
+    name="ai_core.tasks.run_ingestion_graph",
+)
 def run_ingestion_graph(
     state: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
