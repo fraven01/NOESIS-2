@@ -197,6 +197,11 @@ DOCUMENTS_REPOSITORY_CLASS = env(
     default="ai_core.adapters.object_store_repository.ObjectStoreDocumentsRepository",
 )
 
+DOCUMENT_LIFECYCLE_STORE_CLASS = env(
+    "DOCUMENT_LIFECYCLE_STORE_CLASS",
+    default="documents.repository.PersistentDocumentLifecycleStore",
+)
+
 
 # Crawler HTTP adapter defaults
 CRAWLER_HTTP_USER_AGENT = env("CRAWLER_HTTP_USER_AGENT", default="noesis-crawler/1.0")
