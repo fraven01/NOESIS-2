@@ -23,9 +23,13 @@ from ai_core.rag.delta import DeltaDecision, evaluate_delta
 
 from documents.api import NormalizedDocumentPayload
 
+from common.logging import get_log_context, get_logger
 
 GuardrailDecision = guardrails_middleware.GuardrailDecision
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
+
+
+logger = get_logger(__name__)
 
 
 def _build_quota_limits(config: Mapping[str, Any] | None) -> Optional[QuotaLimits]:
@@ -200,6 +204,8 @@ def decide_delta(
 
     baseline = baseline or {}
     previous_hash = baseline.get("content_hash") or baseline.get("checksum")
+    baseline_primary_text = baseline.get("primary_text")
+    baseline_payload = baseline.get("payload_bytes")
     previous_version = baseline.get("version")
     if previous_version is not None:
         try:
@@ -207,11 +213,11 @@ def decide_delta(
         except (TypeError, ValueError):
             previous_version = None
 
-    primary_text = baseline.get("primary_text")
+    primary_text = baseline_primary_text
     if not isinstance(primary_text, str):
         primary_text = normalized_document.primary_text
 
-    binary_payload = baseline.get("payload_bytes")
+    binary_payload = baseline_payload
     if not isinstance(binary_payload, (bytes, bytearray)):
         binary_payload = normalized_document.payload_bytes
 
@@ -224,15 +230,93 @@ def decide_delta(
     )
 
     frontier_payload = _project_frontier_state(frontier_state)
-    if not frontier_payload:
-        return decision
+    if frontier_payload:
+        attributes: Dict[str, Any] = dict(decision.attributes)
+        attributes.setdefault("frontier", frontier_payload)
+        policy_events = tuple(frontier_payload.get("policy_events", ()))
+        if policy_events:
+            attributes["policy_events"] = _merge_policy_events((), policy_events)
+        decision = DeltaDecision(decision.decision, decision.reason, attributes)
 
-    attributes: Dict[str, Any] = dict(decision.attributes)
-    attributes.setdefault("frontier", frontier_payload)
-    policy_events = tuple(frontier_payload.get("policy_events", ()))
+    changed_fields: list[str] = []
+    if isinstance(baseline_primary_text, str) and (
+        baseline_primary_text != normalized_document.primary_text
+    ):
+        changed_fields.append("primary_text")
+    if isinstance(baseline_payload, (bytes, bytearray)) and (
+        bytes(baseline_payload) != normalized_document.payload_bytes
+    ):
+        changed_fields.append("payload_bytes")
+
+    signatures = decision.attributes.get("signatures")
+    content_hash = None
+    if signatures is not None:
+        content_hash = getattr(signatures, "content_hash", None)
+    if previous_hash and content_hash and previous_hash != content_hash:
+        changed_fields.append("content_hash")
+
+    if (
+        previous_version is not None
+        and decision.version is not None
+        and decision.version != previous_version
+    ):
+        changed_fields.append("version")
+
+    log_context = get_log_context()
+    metadata = normalized_document.metadata
+    document = normalized_document.document
+    log_payload: Dict[str, Any] = {
+        "decision": decision.decision,
+        "reason": decision.reason,
+        "changed_fields": tuple(changed_fields),
+        "tenant_id": document.ref.tenant_id,
+        "document_id": normalized_document.document_id,
+        "workflow_id": document.ref.workflow_id,
+        "case_id": metadata.get("case_id"),
+        "request_id": metadata.get("request_id"),
+        "origin_uri": metadata.get("origin_uri"),
+        "provider": metadata.get("provider"),
+        "source": metadata.get("source") or document.source,
+        "content_hash": content_hash,
+        "baseline_content_hash": previous_hash,
+        "version": decision.version,
+        "baseline_version": previous_version,
+    }
+
+    if signatures is not None and getattr(signatures, "near_duplicate", None):
+        near_duplicate = getattr(signatures, "near_duplicate", None)
+        if getattr(near_duplicate, "fingerprint", None):
+            log_payload["near_duplicate_fingerprint"] = near_duplicate.fingerprint
+
+    policy_events = decision.attributes.get("policy_events")
     if policy_events:
-        attributes["policy_events"] = _merge_policy_events((), policy_events)
-    return DeltaDecision(decision.decision, decision.reason, attributes)
+        log_payload["policy_events"] = tuple(policy_events)
+
+    trace_id = log_context.get("trace_id") or metadata.get("trace_id")
+    span_id = log_context.get("span_id")
+    if trace_id:
+        log_payload["trace_id"] = trace_id
+    if span_id:
+        log_payload["span_id"] = span_id
+
+    context_case = log_context.get("case_id")
+    if context_case and not log_payload.get("case_id"):
+        log_payload["case_id"] = context_case
+    context_tenant = log_context.get("tenant") or log_context.get("tenant_id")
+    if context_tenant:
+        log_payload.setdefault("tenant_id", context_tenant)
+
+    if frontier_payload:
+        log_payload["frontier"] = frontier_payload
+
+    filtered_payload = {
+        key: value for key, value in log_payload.items() if value is not None
+    }
+    filtered_payload["changed_fields"] = tuple(changed_fields)
+
+    logger.info("crawler.decide_delta", extra=filtered_payload)
+
+    return decision
 
 
 def _merge_policy_events(
