@@ -312,16 +312,36 @@ class CrawlerIngestionGraph:
 
         return config, limits, signals, error_builder
 
+    def _resolve_frontier_state(
+        self, state: Dict[str, Any]
+    ) -> Optional[Mapping[str, Any]]:
+        """Merge state and meta frontier payloads into a single mapping."""
+
+        merged: Dict[str, Any] = {}
+        meta_payload = state.get("meta")
+        if isinstance(meta_payload, Mapping):
+            meta_frontier = meta_payload.get("frontier")
+            if isinstance(meta_frontier, Mapping):
+                merged.update(dict(meta_frontier))
+
+        state_frontier = state.get("frontier")
+        if isinstance(state_frontier, Mapping):
+            merged.update(dict(state_frontier))
+
+        return merged or None
+
     def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         config, limits, signals, error_builder = self._resolve_guardrail_state(state)
+        frontier_state = self._resolve_frontier_state(state)
         decision = self._guardrail_enforcer(
             normalized_document=normalized,
             config=config,
             limits=limits,
             signals=signals,
             error_builder=error_builder,
+            frontier_state=frontier_state,
         )
         artifacts["guardrail_decision"] = decision
         if not decision.allowed:
@@ -369,6 +389,7 @@ class CrawlerIngestionGraph:
         decision = self._delta_decider(
             normalized_document=normalized,
             baseline=baseline_input,
+            frontier_state=self._resolve_frontier_state(state),
         )
         artifacts["delta_decision"] = decision
         status_update = self._document_service.update_lifecycle_status(

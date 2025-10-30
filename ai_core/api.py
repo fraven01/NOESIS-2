@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence
+from datetime import datetime, timedelta
+from typing import Any, Callable, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlparse
 
 from crawler.errors import CrawlerError, ErrorClass
@@ -121,6 +121,7 @@ def enforce_guardrails(
     limits: GuardrailLimits | None = None,
     signals: GuardrailSignals | None = None,
     error_builder: Optional[guardrails_middleware.ErrorBuilder] = None,
+    frontier_state: Optional[Mapping[str, Any]] = None,
 ) -> GuardrailDecision:
     """Apply guardrail evaluation using the shared middleware implementation."""
 
@@ -133,6 +134,19 @@ def enforce_guardrails(
         error_builder=builder,
     )
 
+    frontier_payload = _project_frontier_state(frontier_state)
+    attributes: Dict[str, Any] = dict(decision.attributes)
+    if frontier_payload:
+        attributes.setdefault("frontier", frontier_payload)
+
+    if frontier_payload:
+        frontier_events = tuple(frontier_payload.get("policy_events", ()))
+    else:
+        frontier_events = ()
+    merged_events = _merge_policy_events(decision.policy_events, frontier_events)
+    if merged_events:
+        attributes["policy_events"] = merged_events
+
     banned_terms = tuple(
         str(term).lower() for term in (config or {}).get("banned_terms", ())
     )
@@ -140,12 +154,23 @@ def enforce_guardrails(
         text = normalized_document.primary_text.lower()
         for term in banned_terms:
             if term and term in text:
-                return GuardrailDecision(
+                denied = GuardrailDecision(
                     "deny",
                     "term_blocked",
                     {"policy_events": ("term_blocked",), "term": term},
                 )
-    return decision
+                if frontier_payload:
+                    attrs = dict(denied.attributes)
+                    attrs["frontier"] = frontier_payload
+                    attrs["policy_events"] = _merge_policy_events(
+                        denied.policy_events, frontier_events
+                    )
+                    return GuardrailDecision(
+                        denied.decision, denied.reason, attrs
+                    )
+                return denied
+
+    return GuardrailDecision(decision.decision, decision.reason, attributes)
 
 
 def _build_guardrail_error(
@@ -171,6 +196,7 @@ def decide_delta(
     *,
     normalized_document: NormalizedDocumentPayload,
     baseline: Optional[Mapping[str, Any]] = None,
+    frontier_state: Optional[Mapping[str, Any]] = None,
 ) -> DeltaDecision:
     """Evaluate delta against previous signatures using crawler heuristics."""
 
@@ -191,13 +217,84 @@ def decide_delta(
     if not isinstance(binary_payload, (bytes, bytearray)):
         binary_payload = normalized_document.payload_bytes
 
-    return evaluate_delta(
+    decision = evaluate_delta(
         normalized_document.document,
         primary_text=primary_text,
         previous_content_hash=previous_hash,
         previous_version=previous_version,
         binary_payload=bytes(binary_payload),
     )
+
+    frontier_payload = _project_frontier_state(frontier_state)
+    if not frontier_payload:
+        return decision
+
+    attributes: Dict[str, Any] = dict(decision.attributes)
+    attributes.setdefault("frontier", frontier_payload)
+    policy_events = tuple(frontier_payload.get("policy_events", ()))
+    if policy_events:
+        attributes["policy_events"] = _merge_policy_events((), policy_events)
+    return DeltaDecision(decision.decision, decision.reason, attributes)
+
+
+def _merge_policy_events(
+    existing: Iterable[str], extras: Iterable[str]
+) -> Tuple[str, ...]:
+    seen: Dict[str, None] = {}
+    for event in (*existing, *extras):
+        if not event:
+            continue
+        key = str(event).strip()
+        if key:
+            seen.setdefault(key, None)
+    return tuple(seen.keys())
+
+
+def _project_frontier_state(
+    frontier_state: Optional[Mapping[str, Any]]
+) -> Dict[str, Any]:
+    if not isinstance(frontier_state, Mapping):
+        return {}
+
+    def _serialise(value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, (str, int, float, bool)):
+            return value
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, Mapping):
+            projected: Dict[str, Any] = {}
+            for key, inner in value.items():
+                serialised = _serialise(inner)
+                if serialised is None:
+                    continue
+                cleaned = serialised
+                if cleaned in ((), {}, None):
+                    continue
+                projected[str(key)] = cleaned
+            return projected
+        if isinstance(value, Sequence) and not isinstance(value, (bytes, bytearray)):
+            items = []
+            for entry in value:
+                serialised = _serialise(entry)
+                if serialised is None:
+                    continue
+                if serialised in ((), {}, None):
+                    continue
+                items.append(serialised)
+            return tuple(items)
+        return str(value)
+
+    projected: Dict[str, Any] = {}
+    for key, value in frontier_state.items():
+        serialised = _serialise(value)
+        if serialised is None:
+            continue
+        if serialised in ((), {}, None):
+            continue
+        projected[str(key)] = serialised
+    return projected
 
 
 @dataclass(frozen=True)

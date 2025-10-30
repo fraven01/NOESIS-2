@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Mapping
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import ai_core.api as ai_api
 import pytest
 
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
@@ -47,7 +49,12 @@ class FailingRepository(DocumentsRepository):
         raise RuntimeError("upsert_failed")
 
 
-def _build_state(content: str = "Example document", **overrides) -> dict[str, object]:
+def _build_state(
+    content: str = "Example document",
+    *,
+    frontier: Mapping[str, object] | None = None,
+    **overrides,
+) -> dict[str, object]:
     tenant_id = overrides.get("tenant_id", "tenant")
     case_id = overrides.get("case_id", "case")
     request_id = overrides.get("request_id", "req-1")
@@ -144,6 +151,8 @@ def _build_state(content: str = "Example document", **overrides) -> dict[str, ob
             },
         ),
     }
+    if frontier is not None:
+        state["frontier"] = dict(frontier)
     return state
 
 
@@ -394,3 +403,72 @@ def test_document_service_adapter_is_injected() -> None:
     recorded_ids = {call["reason"] for call in service.status_calls if call["reason"]}
     assert recorded_ids
     assert all(status.to_dict()["reason"] in recorded_ids for status in statuses)
+
+
+def test_guardrail_frontier_state_propagation() -> None:
+    recorded: dict[str, object] = {}
+
+    def _stub_guardrails(**kwargs):  # type: ignore[no-untyped-def]
+        recorded["frontier_state"] = kwargs.get("frontier_state")
+        return ai_api.enforce_guardrails(**kwargs)
+
+    graph = CrawlerIngestionGraph(guardrail_enforcer=_stub_guardrails)
+    state = _build_state(frontier={"policy_events": ["robots_disallow"]})
+    meta = {"frontier": {"slot": "default"}}
+
+    updated_state, result = graph.run(state, meta)
+
+    assert recorded["frontier_state"] == {
+        "slot": "default",
+        "policy_events": ["robots_disallow"],
+    }
+    guardrail_attrs = result["transitions"]["enforce_guardrails"]["attributes"]
+    assert guardrail_attrs["policy_events"] == ("robots_disallow",)
+    summary_attrs = updated_state["summary"]["guardrails"]["attributes"]
+    assert summary_attrs["frontier"]["slot"] == "default"
+    assert summary_attrs["frontier"]["policy_events"] == ("robots_disallow",)
+
+
+def test_delta_includes_meta_frontier_backoff() -> None:
+    graph = CrawlerIngestionGraph()
+    scheduled_at = datetime(2024, 1, 1, 12, 0, tzinfo=timezone.utc)
+    meta = {
+        "frontier": {
+            "earliest_visit_at": scheduled_at,
+            "policy_events": ("failure_backoff",),
+            "decision": "defer",
+        }
+    }
+    state = _build_state()
+
+    updated_state, result = graph.run(state, meta)
+
+    delta_attrs = result["transitions"]["decide_delta"]["attributes"]
+    assert delta_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
+    assert delta_attrs["frontier"]["decision"] == "defer"
+    assert delta_attrs["policy_events"] == ("failure_backoff",)
+    summary_attrs = updated_state["summary"]["delta"]["attributes"]
+    assert summary_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
+
+
+def test_guardrail_denied_merges_frontier_policy_events() -> None:
+    graph = CrawlerIngestionGraph()
+    state = _build_state(
+        guardrails={"max_document_bytes": 8},
+        raw_document={"content": "Very long content"},
+        frontier={"policy_events": ["robots_disallow"]},
+    )
+    state["raw_document"]["content"] = "deny" * 10  # type: ignore[index]
+
+    updated_state, result = graph.run(state, {})
+
+    guardrail_attrs = result["transitions"]["enforce_guardrails"]["attributes"]
+    assert guardrail_attrs["policy_events"] == (
+        "max_document_bytes",
+        "robots_disallow",
+    )
+    summary_attrs = updated_state["summary"]["guardrails"]["attributes"]
+    assert summary_attrs["policy_events"] == (
+        "max_document_bytes",
+        "robots_disallow",
+    )
