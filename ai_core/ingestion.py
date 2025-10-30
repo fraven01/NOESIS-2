@@ -24,7 +24,6 @@ from documents import (
     PptxDocumentParser,
     ParsedResult,
     ParsedTextBlock,
-    TextDocumentParser,
 )
 
 from . import tasks as pipe
@@ -379,7 +378,8 @@ def _build_parser_dispatcher() -> ParserDispatcher:
     registry.register(DocxDocumentParser())
     registry.register(PptxDocumentParser())
     registry.register(PdfDocumentParser())
-    registry.register(TextDocumentParser())
+    text_parser_cls = getattr(import_module("documents.parsers_text"), "TextDocumentParser")
+    registry.register(text_parser_cls())
     return ParserDispatcher(registry)
 
 
@@ -732,19 +732,7 @@ def process_document(
         current_step = "parse"
         state["current_step"] = current_step
         _write_pipeline_state(tenant, case, document_id, state)
-        try:
-            parsed_result = dispatcher.parse(normalized_document, pipeline_config)
-        except Exception as exc:  # pragma: no cover - fallback for plain text
-            message = str(exc)
-            fallback_parser = TextDocumentParser()
-            if "no_parser_found" in message and fallback_parser.can_handle(
-                normalized_document
-            ):
-                parsed_result = fallback_parser.parse(
-                    normalized_document, pipeline_config
-                )
-            else:
-                raise
+        parsed_result = dispatcher.parse(normalized_document, pipeline_config)
         parse_artifact, reused = _ensure_step(
             tenant,
             case,

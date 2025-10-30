@@ -129,18 +129,12 @@ class DocumentsApiLifecycleService:
             message = str(exc)
             if "Database access not allowed" not in message:
                 raise
-            fallback_store = DocumentLifecycleStore()
-            self._lifecycle_store = fallback_store
-            return documents_api.update_lifecycle_status(
-                tenant_id=tenant_id,
-                document_id=document_id,
-                status=status,
-                previous_status=previous_status,
-                workflow_id=workflow_id,
-                reason=reason,
-                policy_events=policy_events,
-                store=fallback_store,
-            )
+            raise RuntimeError(
+                "document_lifecycle_store_unavailable: persistent lifecycle "
+                "store requires database access. Configure a "
+                "PersistentDocumentLifecycleStore or pass an explicit store "
+                "to DocumentsApiLifecycleService.",
+            ) from exc
 
     @property
     def repository(self) -> Optional[DocumentsRepository]:

@@ -136,11 +136,8 @@ class CrawlerWorker:
         raw_meta: dict[str, Any] = dict(document_metadata or {})
         raw_meta.setdefault("origin_uri", request.canonical_source)
 
-        source_value = str(raw_meta.get("source", "")).strip()
-        if source_value:
-            raw_meta["source"] = source_value
-        else:
-            raw_meta["source"] = "crawler"
+        resolved_source = self._resolve_source(raw_meta, ingestion_overrides)
+        raw_meta["source"] = resolved_source
 
         provider_value = str(raw_meta.get("provider", "")).strip()
         if provider_value:
@@ -187,6 +184,40 @@ class CrawlerWorker:
         state.setdefault("raw_payload_path", payload_path)
         state.setdefault("fetch", self._summarize_fetch(result))
         return state
+
+    def _resolve_source(
+        self,
+        metadata: Mapping[str, Any],
+        ingestion_overrides: Optional[Mapping[str, Any]],
+    ) -> str:
+        candidate = self._normalize_source_value(metadata.get("source"))
+        if candidate:
+            return candidate
+
+        if ingestion_overrides:
+            override_candidate = self._normalize_source_value(
+                ingestion_overrides.get("source")
+            )
+            if override_candidate:
+                return override_candidate
+            raw_document = ingestion_overrides.get("raw_document")
+            if isinstance(raw_document, Mapping):
+                metadata_override = raw_document.get("metadata")
+                if isinstance(metadata_override, Mapping):
+                    nested_candidate = self._normalize_source_value(
+                        metadata_override.get("source")
+                    )
+                    if nested_candidate:
+                        return nested_candidate
+
+        raise ValueError("document_metadata.source_required")
+
+    @staticmethod
+    def _normalize_source_value(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = str(value).strip()
+        return normalized or None
 
     def _persist_payload(
         self,
