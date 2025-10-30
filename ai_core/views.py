@@ -6,11 +6,12 @@ import re
 import uuid
 from dataclasses import dataclass
 from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING
 from pathlib import Path
 from types import ModuleType
 from importlib import import_module
 from urllib.parse import urlsplit
-from uuid import uuid4
+from uuid import uuid4, uuid5
 
 from django.conf import settings
 from django.db import connection
@@ -106,6 +107,13 @@ except Exception:  # defensive: don't break module import if graphs change
 
 
 from . import services
+
+# Optional hooks for tests to provide lifecycle stores without
+# importing heavy dependencies at module import time.
+DOCUMENTS_LIFECYCLE_STORE: object | None = None
+
+if TYPE_CHECKING:  # pragma: no cover - type checking only
+    from documents.repository import DocumentLifecycleStore, DocumentsRepository
 
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
 from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
@@ -1344,6 +1352,143 @@ def _serialise_json_value(value: object) -> object:
     return value
 
 
+def _resolve_lifecycle_store() -> object | None:
+    """Return the document lifecycle store used for baseline lookups."""
+
+    store = globals().get("DOCUMENTS_LIFECYCLE_STORE")
+    if store is not None:
+        return store
+    try:
+        from documents import api as documents_api  # local import to avoid cycles
+    except Exception:  # pragma: no cover - defensive import guard
+        return None
+    return getattr(documents_api, "DEFAULT_LIFECYCLE_STORE", None)
+
+
+def _resolve_document_uuid(identifier: object) -> uuid.UUID | None:
+    """Best-effort conversion mirroring :mod:`documents.api` behaviour."""
+
+    if isinstance(identifier, uuid.UUID):
+        return identifier
+    if identifier is None:
+        return None
+    try:
+        candidate = str(identifier).strip()
+    except Exception:  # pragma: no cover - defensive
+        candidate = str(identifier)
+    if not candidate:
+        return None
+    try:
+        return uuid.UUID(candidate)
+    except (TypeError, ValueError):
+        return uuid5(uuid.NAMESPACE_URL, candidate)
+
+
+def _load_baseline_context(
+    tenant_id: object,
+    workflow_id: object,
+    document_identifier: object,
+    repository: object | None,
+    lifecycle_store: object | None,
+) -> tuple[dict[str, object], str | None]:
+    """Fetch baseline metadata for the crawler graph state."""
+
+    baseline: dict[str, object] = {}
+    previous_status: str | None = None
+
+    tenant: str | None = None
+    if tenant_id is not None:
+        tenant_candidate = str(tenant_id).strip()
+        if tenant_candidate:
+            tenant = tenant_candidate
+    if not tenant:
+        return baseline, previous_status
+
+    document_uuid = _resolve_document_uuid(document_identifier)
+    if document_uuid is None:
+        return baseline, previous_status
+
+    workflow: str | None = None
+    if workflow_id is not None:
+        workflow_candidate = str(workflow_id).strip()
+        if workflow_candidate:
+            workflow = workflow_candidate
+
+    if repository is not None and hasattr(repository, "get"):
+        try:
+            existing = repository.get(  # type: ignore[attr-defined]
+                tenant,
+                document_uuid,
+                prefer_latest=True,
+                workflow_id=workflow,
+            )
+        except NotImplementedError:
+            existing = None
+        except Exception:  # pragma: no cover - best effort logging
+            logger.debug(
+                "crawler.baseline.repository_lookup_failed",
+                extra={"tenant_id": tenant, "document_id": str(document_identifier)},
+                exc_info=True,
+            )
+            existing = None
+
+        if existing is not None:
+            checksum = getattr(existing, "checksum", None)
+            if checksum:
+                checksum_str = str(checksum)
+                baseline.setdefault("checksum", checksum_str)
+                baseline.setdefault("content_hash", checksum_str)
+            ref = getattr(existing, "ref", None)
+            if ref is not None:
+                document_ref_id = getattr(ref, "document_id", None)
+                if document_ref_id is not None:
+                    baseline.setdefault("document_id", str(document_ref_id))
+                collection_id = getattr(ref, "collection_id", None)
+                if collection_id is not None:
+                    baseline.setdefault("collection_id", str(collection_id))
+                version = getattr(ref, "version", None)
+                if version:
+                    baseline.setdefault("version", version)
+            lifecycle_state = getattr(existing, "lifecycle_state", None)
+            if lifecycle_state:
+                lifecycle_text = str(lifecycle_state)
+                baseline.setdefault("lifecycle_state", lifecycle_text)
+                if previous_status is None:
+                    previous_status = lifecycle_text
+
+    if lifecycle_store is not None:
+        getter = getattr(lifecycle_store, "get_document_state", None)
+        if callable(getter):
+            try:
+                record = getter(  # type: ignore[misc]
+                    tenant_id=tenant,
+                    document_id=document_uuid,
+                    workflow_id=workflow,
+                )
+            except Exception:  # pragma: no cover - best effort logging
+                logger.debug(
+                    "crawler.baseline.lifecycle_lookup_failed",
+                    extra={"tenant_id": tenant, "document_id": str(document_identifier)},
+                    exc_info=True,
+                )
+                record = None
+
+            if record is not None:
+                state_value = getattr(record, "state", None)
+                if state_value:
+                    state_text = str(state_value)
+                    baseline.setdefault("lifecycle_state", state_text)
+                    previous_status = state_text
+                reason_value = getattr(record, "reason", None)
+                if reason_value:
+                    baseline.setdefault("previous_reason", str(reason_value))
+                events = getattr(record, "policy_events", None)
+                if events:
+                    baseline.setdefault("policy_events", tuple(events))
+
+    return baseline, previous_status
+
+
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
 
@@ -1435,6 +1580,12 @@ def _build_crawler_state(
     workflow_id = request_data.workflow_id or workflow_default or meta.get("tenant_id")
     if not workflow_id:
         raise ValueError("workflow_id could not be resolved for the crawler run")
+
+    try:
+        repository = services._get_documents_repository()
+    except Exception:
+        repository = None
+    lifecycle_store = _resolve_lifecycle_store()
 
     builds: list[CrawlerStateBuild] = []
     for origin in request_data.origins or []:
@@ -1740,6 +1891,17 @@ def _build_crawler_state(
         if request_data.recompute_delta:
             control["recompute_delta"] = True
         state["control"] = control
+
+        baseline_data, previous_status = _load_baseline_context(
+            meta.get("tenant_id"),
+            workflow_id,
+            document_id,
+            repository,
+            lifecycle_store,
+        )
+        state["baseline"] = baseline_data
+        if previous_status:
+            state["previous_status"] = previous_status
 
         builds.append(
             CrawlerStateBuild(

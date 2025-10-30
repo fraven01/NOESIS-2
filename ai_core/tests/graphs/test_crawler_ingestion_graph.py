@@ -9,7 +9,7 @@ from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 from ai_core.graphs.document_service import DocumentLifecycleService
 from documents import api as documents_api
 from documents.api import normalize_from_raw
-from documents.repository import DocumentsRepository
+from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
 
 class StubVectorClient:
@@ -114,15 +114,21 @@ def test_guardrail_denied_short_circuits() -> None:
 
 
 def test_delta_unchanged_skips_embedding() -> None:
-    graph = CrawlerIngestionGraph()
-    baseline_doc = normalize_from_raw(
+    repository = InMemoryDocumentsRepository()
+    baseline_payload = normalize_from_raw(
         raw_reference={"content": "Persistent"}, tenant_id="tenant"
     )
+    repository.upsert(
+        baseline_payload.document,
+        workflow_id=baseline_payload.document.ref.workflow_id,
+    )
+
+    graph = CrawlerIngestionGraph(repository=repository)
     client = StubVectorClient()
     state = _build_state(
         content="Persistent",
-        baseline={"checksum": baseline_doc.checksum},
         vector_client=client,
+        document_id=str(baseline_payload.document.ref.document_id),
     )
 
     updated_state, result = graph.run(state, {})
@@ -134,6 +140,9 @@ def test_delta_unchanged_skips_embedding() -> None:
     assert transitions["persist_document"]["decision"] == "persisted"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "hash_match" for status in statuses)
+    baseline_state = updated_state.get("baseline")
+    assert isinstance(baseline_state, dict)
+    assert baseline_state.get("checksum") == baseline_payload.document.checksum
 
 
 def test_repository_upsert_invoked() -> None:
