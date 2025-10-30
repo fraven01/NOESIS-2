@@ -207,8 +207,66 @@ _CONFIG_FIELD_NAMES = {
 }
 
 
-def _build_document_pipeline_config() -> DocumentPipelineConfig:
-    """Build a pipeline config instance honouring Django settings overrides."""
+def _extract_pipeline_config_overrides(
+    source: Mapping[str, object] | None,
+    *,
+    source_name: str,
+) -> Dict[str, object]:
+    """Return validated pipeline config overrides from ``source``.
+
+    ``source`` may contain an optional ``pipeline_config`` mapping. Only keys that
+    are present in :data:`_CONFIG_FIELD_NAMES` are accepted. Any malformed input
+    results in :class:`InputError`.
+    """
+
+    if not isinstance(source, Mapping):
+        return {}
+
+    candidate = source.get("pipeline_config")
+    if candidate is None:
+        return {}
+    if not isinstance(candidate, Mapping):
+        raise InputError(
+            "invalid_pipeline_config_override",
+            "Pipeline config overrides must be provided as an object.",
+            context={"source": source_name, "received_type": type(candidate).__name__},
+        )
+
+    invalid_keys = [key for key in candidate.keys() if key not in _CONFIG_FIELD_NAMES]
+    if invalid_keys:
+        raise InputError(
+            "invalid_pipeline_config_override",
+            "Unsupported pipeline config overrides provided.",
+            context={
+                "source": source_name,
+                "invalid_keys": sorted(str(key) for key in invalid_keys),
+            },
+        )
+
+    overrides: Dict[str, object] = {}
+    for key in candidate:
+        if not isinstance(key, str):
+            raise InputError(
+                "invalid_pipeline_config_override",
+                "Pipeline config override keys must be strings.",
+                context={"source": source_name, "invalid_key_type": type(key).__name__},
+            )
+        overrides[key] = candidate[key]
+    return overrides
+
+
+def _build_document_pipeline_config(
+    *,
+    state: Mapping[str, object] | None = None,
+    meta: Mapping[str, object] | None = None,
+) -> DocumentPipelineConfig:
+    """Build a :class:`DocumentPipelineConfig` instance.
+
+    The resulting configuration respects global Django settings overrides and
+    optional runtime overrides supplied via ``state`` or ``meta``. Runtime
+    overrides must be provided under a ``pipeline_config`` mapping and may only
+    contain keys declared in :data:`_CONFIG_FIELD_NAMES`.
+    """
 
     config_kwargs: Dict[str, object] = {}
 
@@ -236,6 +294,23 @@ def _build_document_pipeline_config() -> DocumentPipelineConfig:
         for field in _CONFIG_FIELD_NAMES:
             if field in overrides:
                 config_kwargs[field] = overrides[field]
+
+    runtime_overrides: Dict[str, object] = {}
+    runtime_overrides.update(
+        _extract_pipeline_config_overrides(state, source_name="state")
+    )
+    if isinstance(state, Mapping):
+        runtime_overrides.update(
+            _extract_pipeline_config_overrides(
+                state.get("meta"), source_name="state.meta"
+            )
+        )
+    runtime_overrides.update(
+        _extract_pipeline_config_overrides(meta, source_name="meta")
+    )
+
+    if runtime_overrides:
+        config_kwargs.update(runtime_overrides)
 
     return DocumentPipelineConfig(**config_kwargs)
 
@@ -577,7 +652,7 @@ def process_document(
         }
         _write_pipeline_state(tenant, case, document_id, state)
 
-        pipeline_config = _build_document_pipeline_config()
+        pipeline_config = _build_document_pipeline_config(state=state, meta=meta)
         dispatcher = _build_parser_dispatcher()
         current_step = "parse"
         state["current_step"] = current_step
