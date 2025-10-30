@@ -8,7 +8,11 @@ import pytest
 from django.db import connection
 from django_tenants.utils import schema_context
 
-from documents.repository import ACTIVE_STATE, RETIRED_STATE, PersistentDocumentLifecycleStore
+from documents.repository import (
+    ACTIVE_STATE,
+    RETIRED_STATE,
+    PersistentDocumentLifecycleStore,
+)
 
 
 @pytest.mark.django_db

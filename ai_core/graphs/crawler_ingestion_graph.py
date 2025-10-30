@@ -64,7 +64,9 @@ def _transition(
     *,
     attributes: Optional[Mapping[str, Any]] = None,
 ) -> GraphTransition:
-    return GraphTransition(decision=decision, reason=reason, attributes=attributes or {})
+    return GraphTransition(
+        decision=decision, reason=reason, attributes=attributes or {}
+    )
 
 
 class CrawlerIngestionGraph:
@@ -76,17 +78,28 @@ class CrawlerIngestionGraph:
         document_service: DocumentLifecycleService = DocumentsApiLifecycleService(),
         repository: DocumentsRepository | None = None,
         document_persistence: DocumentPersistenceService | None = None,
-        guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision] = ai_core_api.enforce_guardrails,
-        delta_decider: Callable[..., ai_core_api.DeltaDecision] = ai_core_api.decide_delta,
-        embedding_handler: Callable[..., EmbeddingResult] = ai_core_api.trigger_embedding,
-        completion_builder: Callable[..., Mapping[str, Any]] = ai_core_api.build_completion_payload,
+        guardrail_enforcer: Callable[
+            ..., ai_core_api.GuardrailDecision
+        ] = ai_core_api.enforce_guardrails,
+        delta_decider: Callable[
+            ..., ai_core_api.DeltaDecision
+        ] = ai_core_api.decide_delta,
+        embedding_handler: Callable[
+            ..., EmbeddingResult
+        ] = ai_core_api.trigger_embedding,
+        completion_builder: Callable[
+            ..., Mapping[str, Any]
+        ] = ai_core_api.build_completion_payload,
         event_emitter: Optional[Callable[[str, GraphTransition, str], None]] = None,
     ) -> None:
         self._document_service = document_service
         persistence_candidate = document_persistence
         if persistence_candidate is None:
             service_repository = getattr(document_service, "repository", None)
-            if hasattr(document_service, "upsert_normalized") and service_repository is not None:
+            if (
+                hasattr(document_service, "upsert_normalized")
+                and service_repository is not None
+            ):
                 persistence_candidate = document_service  # type: ignore[assignment]
             else:
                 persistence_candidate = DocumentsRepositoryAdapter(
@@ -227,7 +240,8 @@ class CrawlerIngestionGraph:
             raw_reference=raw_reference,
             tenant_id=self._require(state, "tenant_id"),
             case_id=state.get("case_id"),
-            request_id=state.get("request_id") or state.get("meta", {}).get("request_id"),
+            request_id=state.get("request_id")
+            or state.get("meta", {}).get("request_id"),
         )
         artifacts = self._artifacts(state)
         artifacts["normalized_document"] = normalized
@@ -243,9 +257,7 @@ class CrawlerIngestionGraph:
 
     def _run_update_status(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts[
-            "normalized_document"
-        ]
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         status = self._document_service.update_lifecycle_status(
             tenant_id=normalized.tenant_id,
             document_id=normalized.document_id,
@@ -264,9 +276,7 @@ class CrawlerIngestionGraph:
 
     def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts[
-            "normalized_document"
-        ]
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         decision = self._guardrail_enforcer(
             normalized_document=normalized,
             config=state.get("guardrails"),
@@ -292,17 +302,14 @@ class CrawlerIngestionGraph:
 
     def _run_delta(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts[
-            "normalized_document"
-        ]
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         baseline_input: Dict[str, Any] = {}
         existing_baseline = state.get("baseline")
         if isinstance(existing_baseline, Mapping):
             baseline_input.update(dict(existing_baseline))
 
-        needs_repository = (
-            (not baseline_input.get("checksum"))
-            or not state.get("previous_status")
+        needs_repository = (not baseline_input.get("checksum")) or not state.get(
+            "previous_status"
         )
         if needs_repository:
             repository_baseline = self._load_repository_baseline(state, normalized)
@@ -330,14 +337,14 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
-    def _run_persist_document(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+    def _run_persist_document(
+        self, state: Dict[str, Any]
+    ) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts[
-            "normalized_document"
-        ]
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         try:
-            persisted: NormalizedDocument = self._document_persistence.upsert_normalized(
-                normalized=normalized
+            persisted: NormalizedDocument = (
+                self._document_persistence.upsert_normalized(normalized=normalized)
             )
         except Exception as exc:
             error_payload = {
@@ -358,11 +365,11 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
-    def _run_trigger_embedding(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+    def _run_trigger_embedding(
+        self, state: Dict[str, Any]
+    ) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts[
-            "normalized_document"
-        ]
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         delta: Optional[ai_core_api.DeltaDecision] = artifacts.get("delta_decision")
         if delta is None:
             transition = _transition(
@@ -468,12 +475,14 @@ class CrawlerIngestionGraph:
         normalized = artifacts.get("normalized_document")
         if isinstance(normalized, NormalizedDocumentPayload):
             try:
-                status: LifecycleStatusUpdate = self._document_service.update_lifecycle_status(
-                    tenant_id=normalized.tenant_id,
-                    document_id=normalized.document_id,
-                    status="deleted",
-                    workflow_id=normalized.document.ref.workflow_id,
-                    reason=f"{node.name}_failed",
+                status: LifecycleStatusUpdate = (
+                    self._document_service.update_lifecycle_status(
+                        tenant_id=normalized.tenant_id,
+                        document_id=normalized.document_id,
+                        status="deleted",
+                        workflow_id=normalized.document.ref.workflow_id,
+                        reason=f"{node.name}_failed",
+                    )
                 )
                 artifacts.setdefault("status_updates", []).append(status)
             except Exception:  # pragma: no cover - best effort
@@ -492,7 +501,9 @@ def build_graph() -> CrawlerIngestionGraph:
     return GRAPH
 
 
-def run(state: StateMapping, meta: StateMapping | None = None) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def run(
+    state: StateMapping, meta: StateMapping | None = None
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     return GRAPH.run(state, meta)
 
 

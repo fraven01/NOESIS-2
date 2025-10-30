@@ -92,6 +92,26 @@ from ai_core.graphs import (
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 
+# Re-export normalize_meta so tests can monkeypatch via ai_core.views
+from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
+from ai_core.infra.observability import emit_event, record_span
+from pydantic import ValidationError
+
+from . import services
+from .infra import object_store, rate_limit
+from .infra.resp import apply_std_headers
+from .ingestion import partition_document_ids as partition_document_ids  # test hook
+from .ingestion import run_ingestion as run_ingestion  # re-export for tests
+from .ingestion_status import (
+    get_latest_ingestion_run,
+)
+from .rag.hard_delete import hard_delete
+from .rag.ingestion_contracts import (
+    resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
+)
+from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
+from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
+
 
 GuardrailStatus = guardrails_middleware.GuardrailStatus
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
@@ -106,33 +126,12 @@ except Exception:  # defensive: don't break module import if graphs change
     pass
 
 
-from . import services
-
 # Optional hooks for tests to provide lifecycle stores without
 # importing heavy dependencies at module import time.
 DOCUMENTS_LIFECYCLE_STORE: object | None = None
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
-    from documents.repository import DocumentLifecycleStore, DocumentsRepository
-
-# Re-export normalize_meta so tests can monkeypatch via ai_core.views
-from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
-from .ingestion import run_ingestion as run_ingestion  # re-export for tests
-from .ingestion import partition_document_ids as partition_document_ids  # test hook
-from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
-from .rag.ingestion_contracts import (
-    resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
-)
-from .infra import object_store, rate_limit
-from ai_core.infra.observability import emit_event, record_span
-from .ingestion_status import (
-    get_latest_ingestion_run,
-)
-from .rag.hard_delete import hard_delete
-from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
-from pydantic import ValidationError
-
-from .infra.resp import apply_std_headers
+    pass
 
 
 logger = get_logger(__name__)
@@ -1468,7 +1467,10 @@ def _load_baseline_context(
             except Exception:  # pragma: no cover - best effort logging
                 logger.debug(
                     "crawler.baseline.lifecycle_lookup_failed",
-                    extra={"tenant_id": tenant, "document_id": str(document_identifier)},
+                    extra={
+                        "tenant_id": tenant,
+                        "document_id": str(document_identifier),
+                    },
                     exc_info=True,
                 )
                 record = None

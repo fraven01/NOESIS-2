@@ -135,7 +135,10 @@ class CrawlerWorker:
             raw_meta["etag"] = result.metadata.etag
         if result.metadata.last_modified and "last_modified" not in raw_meta:
             raw_meta["last_modified"] = result.metadata.last_modified
-        if result.metadata.content_length is not None and "content_length" not in raw_meta:
+        if (
+            result.metadata.content_length is not None
+            and "content_length" not in raw_meta
+        ):
             raw_meta["content_length"] = result.metadata.content_length
 
         payload_bytes = bytes(result.payload or b"")

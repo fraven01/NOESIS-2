@@ -173,7 +173,9 @@ class DocumentLifecycleStore:
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self._documents: Dict[Tuple[str, Optional[str], UUID], DocumentLifecycleRecord] = {}
+        self._documents: Dict[
+            Tuple[str, Optional[str], UUID], DocumentLifecycleRecord
+        ] = {}
         self._ingestion_runs: Dict[Tuple[str, str], IngestionRunRecord] = {}
 
     # Document lifecycle -------------------------------------------------
@@ -437,13 +439,10 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
 
         with transaction.atomic():
             try:
-                instance = (
-                    model.objects.select_for_update()
-                    .get(
-                        tenant_id=tenant_id,
-                        document_id=document_id,
-                        workflow_id=workflow_key,
-                    )
+                instance = model.objects.select_for_update().get(
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    workflow_id=workflow_key,
                 )
             except model.DoesNotExist:  # type: ignore[attr-defined]
                 instance = None
@@ -555,7 +554,9 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             instance.document_ids = list(normalized_ids)
             instance.invalid_document_ids = list(normalized_invalid)
             instance.trace_id = _normalize_optional_string(trace_id) or ""
-            instance.embedding_profile = _normalize_optional_string(embedding_profile) or ""
+            instance.embedding_profile = (
+                _normalize_optional_string(embedding_profile) or ""
+            )
             instance.source = _normalize_optional_string(source) or ""
             instance.error = ""
             instance.started_at = ""
@@ -587,9 +588,8 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
 
         with transaction.atomic():
             try:
-                instance = (
-                    model.objects.select_for_update()
-                    .get(tenant=tenant, case=case)
+                instance = model.objects.select_for_update().get(
+                    tenant=tenant, case=case
                 )
             except model.DoesNotExist:  # type: ignore[attr-defined]
                 return None
@@ -635,9 +635,8 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
 
         with transaction.atomic():
             try:
-                instance = (
-                    model.objects.select_for_update()
-                    .get(tenant=tenant, case=case)
+                instance = model.objects.select_for_update().get(
+                    tenant=tenant, case=case
                 )
             except model.DoesNotExist:  # type: ignore[attr-defined]
                 return None
@@ -677,7 +676,9 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             status=instance.status,
             queued_at=instance.queued_at,
             document_ids=_stored_identifier_sequence(instance.document_ids),
-            invalid_document_ids=_stored_identifier_sequence(instance.invalid_document_ids),
+            invalid_document_ids=_stored_identifier_sequence(
+                instance.invalid_document_ids
+            ),
             trace_id=_stored_reason(instance.trace_id),
             embedding_profile=_stored_reason(instance.embedding_profile),
             source=_stored_reason(instance.source),
@@ -725,7 +726,9 @@ def _load_default_lifecycle_store() -> DocumentLifecycleStore:
         return store_instance
     except Exception:  # pragma: no cover - defensive fallback
         logger.warning(
-            "lifecycle_store_init_failed", extra={"class_path": class_path}, exc_info=True
+            "lifecycle_store_init_failed",
+            extra={"class_path": class_path},
+            exc_info=True,
         )
         return DocumentLifecycleStore()
 

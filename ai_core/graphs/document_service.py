@@ -120,9 +120,7 @@ class DocumentsApiLifecycleService:
         if self._repository is None:
             raise RuntimeError("documents_repository_not_configured")
         workflow_id = normalized.document.ref.workflow_id
-        return self._repository.upsert(
-            normalized.document, workflow_id=workflow_id
-        )
+        return self._repository.upsert(normalized.document, workflow_id=workflow_id)
 
 
 class DocumentsRepositoryAdapter(DocumentPersistenceService):
@@ -147,9 +145,7 @@ class DocumentsRepositoryAdapter(DocumentPersistenceService):
         normalized: NormalizedDocumentPayload,
     ) -> NormalizedDocument:
         workflow_id = normalized.document.ref.workflow_id
-        return self._repository.upsert(
-            normalized.document, workflow_id=workflow_id
-        )
+        return self._repository.upsert(normalized.document, workflow_id=workflow_id)
 
 
 __all__ = [

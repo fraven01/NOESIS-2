@@ -27,10 +27,12 @@ class RecordingRepository(DocumentsRepository):
         self.upserts: list[dict[str, object]] = []
 
     def upsert(self, doc, workflow_id=None):  # type: ignore[override]
-        self.upserts.append({
-            "document_id": str(doc.ref.document_id),
-            "workflow_id": workflow_id,
-        })
+        self.upserts.append(
+            {
+                "document_id": str(doc.ref.document_id),
+                "workflow_id": workflow_id,
+            }
+        )
         return doc
 
 
@@ -84,7 +86,9 @@ def test_orchestrates_nominal_flow() -> None:
     assert summary["embedding"]["status"] == "upserted"
     assert summary["guardrails"]["decision"] == "allow"
     statuses = updated_state["artifacts"].get("status_updates", [])
-    assert any(status.to_dict().get("reason") == "no_previous_hash" for status in statuses)
+    assert any(
+        status.to_dict().get("reason") == "no_previous_hash" for status in statuses
+    )
     assert "persisted_document" in updated_state["artifacts"]
 
 
@@ -110,7 +114,9 @@ def test_guardrail_denied_short_circuits() -> None:
     assert summary["guardrails"]["decision"] == "deny"
     assert "embedding" not in summary
     statuses = updated_state["artifacts"].get("status_updates", [])
-    assert any(status.to_dict().get("reason") == "document_too_large" for status in statuses)
+    assert any(
+        status.to_dict().get("reason") == "document_too_large" for status in statuses
+    )
 
 
 def test_delta_unchanged_skips_embedding() -> None:
@@ -206,7 +212,10 @@ def test_embedding_failure_marks_error_and_status() -> None:
     errors = updated_state["artifacts"].get("errors") or []
     assert errors and errors[0]["node"] == "trigger_embedding"
     statuses = updated_state["artifacts"].get("status_updates", [])
-    assert any(status.to_dict().get("reason") == "trigger_embedding_failed" for status in statuses)
+    assert any(
+        status.to_dict().get("reason") == "trigger_embedding_failed"
+        for status in statuses
+    )
 
 
 class RecordingDocumentLifecycleService(DocumentLifecycleService):

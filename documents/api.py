@@ -20,7 +20,11 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
-from documents.repository import DocumentLifecycleRecord, DocumentLifecycleStore, DEFAULT_LIFECYCLE_STORE
+from documents.repository import (
+    DocumentLifecycleRecord,
+    DocumentLifecycleStore,
+    DEFAULT_LIFECYCLE_STORE,
+)
 
 
 _OBJECT_STORE_OVERRIDE: ObjectStore | None = None
@@ -41,7 +45,9 @@ def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
     return get_default_object_store()
 
 
-def _normalize_mapping(value: Mapping[str, Any] | MutableMapping[str, Any] | None) -> Mapping[str, Any]:
+def _normalize_mapping(
+    value: Mapping[str, Any] | MutableMapping[str, Any] | None,
+) -> Mapping[str, Any]:
     if value is None:
         return MappingProxyType({})
     if not isinstance(value, Mapping):
@@ -132,7 +138,9 @@ def _validate_object_store_path(value: str, store: ObjectStore) -> str:
     return relative_path.as_posix()
 
 
-def _resolve_payload(raw_reference: Mapping[str, Any], store: ObjectStore) -> tuple[bytes, str]:
+def _resolve_payload(
+    raw_reference: Mapping[str, Any], store: ObjectStore
+) -> tuple[bytes, str]:
     if "content" in raw_reference:
         content = _normalize_text(raw_reference.get("content"))
         return content.encode("utf-8"), content
@@ -265,19 +273,25 @@ def normalize_from_raw(
 
     store = _resolve_object_store(object_store)
     payload_bytes, content = _resolve_payload(raw_reference, store)
-    media_type = str(
-        raw_reference.get("media_type")
-        or raw_reference.get("content_type")
-        or raw_reference.get("mime_type")
-        or raw_reference.get("metadata", {}).get("media_type")
-        or "text/plain"
-    ).strip().lower()
+    media_type = (
+        str(
+            raw_reference.get("media_type")
+            or raw_reference.get("content_type")
+            or raw_reference.get("mime_type")
+            or raw_reference.get("metadata", {}).get("media_type")
+            or "text/plain"
+        )
+        .strip()
+        .lower()
+    )
 
     checksum = hashlib.sha256(payload_bytes).hexdigest()
     payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
 
     metadata = _normalize_mapping(raw_reference.get("metadata"))
-    workflow_id = str(metadata.get("workflow_id") or raw_reference.get("workflow_id") or "crawler")
+    workflow_id = str(
+        metadata.get("workflow_id") or raw_reference.get("workflow_id") or "crawler"
+    )
     workflow_id = workflow_id.strip() or "crawler"
 
     document_id = _coerce_uuid(raw_reference.get("document_id"))
@@ -300,7 +314,9 @@ def normalize_from_raw(
     )
 
     external_ref: dict[str, str] = {}
-    provider = str(metadata.get("provider") or raw_reference.get("provider") or "crawler").strip()
+    provider = str(
+        metadata.get("provider") or raw_reference.get("provider") or "crawler"
+    ).strip()
     if provider:
         external_ref["provider"] = provider
     external_id = metadata.get("external_id") or raw_reference.get("external_id")
@@ -368,7 +384,9 @@ def normalize_from_raw(
         document=document,
         primary_text=content.strip(),
         payload_bytes=payload_bytes,
-        metadata=MappingProxyType({k: v for k, v in metadata_payload.items() if v is not None}),
+        metadata=MappingProxyType(
+            {k: v for k, v in metadata_payload.items() if v is not None}
+        ),
     )
 
 
@@ -422,4 +440,3 @@ __all__ = [
     "normalize_from_raw",
     "update_lifecycle_status",
 ]
-

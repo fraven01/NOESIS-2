@@ -13,7 +13,17 @@ from dataclasses import asdict, is_dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Dict,
+    Iterable,
+    Iterator,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 try:
     import tiktoken  # type: ignore
@@ -234,7 +244,9 @@ def _jsonify_for_task(value: Any) -> Any:
         return {str(key): _jsonify_for_task(item) for key, item in value.items()}
     if isinstance(value, set):
         return [_jsonify_for_task(item) for item in value]
-    if isinstance(value, SequenceABC) and not isinstance(value, (str, bytes, bytearray)):
+    if isinstance(value, SequenceABC) and not isinstance(
+        value, (str, bytes, bytearray)
+    ):
         return [_jsonify_for_task(item) for item in value]
     if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray)):
         try:

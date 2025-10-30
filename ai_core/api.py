@@ -10,7 +10,12 @@ from urllib.parse import urlparse
 from crawler.errors import CrawlerError, ErrorClass
 
 from ai_core.middleware import guardrails as guardrails_middleware
-from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals, QuotaLimits, QuotaUsage
+from ai_core.rag.guardrails import (
+    GuardrailLimits,
+    GuardrailSignals,
+    QuotaLimits,
+    QuotaUsage,
+)
 from ai_core.rag.ingestion_contracts import ChunkMeta, resolve_ingestion_profile
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import PgVectorClient, get_default_client
@@ -63,12 +68,19 @@ def _build_guardrail_limits(config: Mapping[str, Any] | None) -> GuardrailLimits
     host_blocklist: Sequence[str] = tuple(config.get("host_blocklist") or ())
 
     return GuardrailLimits(
-        max_document_bytes=int(config["max_document_bytes"])
-        if "max_document_bytes" in config and config["max_document_bytes"] is not None
-        else None,
+        max_document_bytes=(
+            int(config["max_document_bytes"])
+            if "max_document_bytes" in config
+            and config["max_document_bytes"] is not None
+            else None
+        ),
         processing_time_limit=processing_timedelta,
-        mime_blacklist=frozenset(str(entry).strip().lower() for entry in mime_blacklist if entry),
-        host_blocklist=frozenset(str(entry).strip().lower() for entry in host_blocklist if entry),
+        mime_blacklist=frozenset(
+            str(entry).strip().lower() for entry in mime_blacklist if entry
+        ),
+        host_blocklist=frozenset(
+            str(entry).strip().lower() for entry in host_blocklist if entry
+        ),
         tenant_quota=_build_quota_limits(config.get("tenant_quota")),
         host_quota=_build_quota_limits(config.get("host_quota")),
     )
@@ -119,7 +131,9 @@ def enforce_guardrails(
         error_builder=builder,
     )
 
-    banned_terms = tuple(str(term).lower() for term in (config or {}).get("banned_terms", ()))
+    banned_terms = tuple(
+        str(term).lower() for term in (config or {}).get("banned_terms", ())
+    )
     if decision.allowed and banned_terms:
         text = normalized_document.primary_text.lower()
         for term in banned_terms:
@@ -204,7 +218,9 @@ class EmbeddingResult:
         }
 
 
-def _resolve_vector_client(factory: Optional[Callable[[], PgVectorClient]] = None) -> PgVectorClient:
+def _resolve_vector_client(
+    factory: Optional[Callable[[], PgVectorClient]] = None,
+) -> PgVectorClient:
     if factory is None:
         return get_default_client()
     client = factory()
@@ -237,7 +253,9 @@ def trigger_embedding(
         case_id=str(case),
         source=document.source or "crawler",
         hash=document.checksum,
-        external_id=(document.meta.external_ref or {}).get("external_id", str(document.ref.document_id)),
+        external_id=(document.meta.external_ref or {}).get(
+            "external_id", str(document.ref.document_id)
+        ),
         content_hash=document.checksum,
         embedding_profile=profile_resolution.profile_id,
         vector_space_id=profile_resolution.resolution.vector_space.id,
@@ -314,4 +332,3 @@ __all__ = [
     "enforce_guardrails",
     "trigger_embedding",
 ]
-

@@ -49,9 +49,9 @@ class DeltaDecision:
     ) -> "DeltaDecision":
         attributes: Mapping[str, object] = MappingProxyType(
             {
-            "signatures": signatures,
-            "version": version,
-            "parent_document_id": parent_document_id,
+                "signatures": signatures,
+                "version": version,
+                "parent_document_id": parent_document_id,
             }
         )
         return cls(status.value, reason, attributes)

@@ -277,7 +277,9 @@ def _robots_metadata_tags(raw_value: Optional[object]) -> Tuple[str, ...]:
         hint = _sanitize_tag_component(raw_value)
         if hint:
             tags.append(f"robots.{hint}")
-    elif isinstance(raw_value, Iterable) and not isinstance(raw_value, (bytes, bytearray)):
+    elif isinstance(raw_value, Iterable) and not isinstance(
+        raw_value, (bytes, bytearray)
+    ):
         for entry in raw_value:
             hint = _sanitize_tag_component(entry)
             if hint:
@@ -311,4 +313,3 @@ __all__ = [
     "normalized_primary_text",
     "resolve_provider_reference",
 ]
-

@@ -64,4 +64,3 @@ class DocumentIngestionRun(models.Model):
             models.Index(fields=("tenant", "case")),
             models.Index(fields=("tenant", "run_id")),
         ]
-

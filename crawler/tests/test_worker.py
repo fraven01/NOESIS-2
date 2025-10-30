@@ -48,7 +48,9 @@ class _StubFetcher:
         self.result = result
         self.requests: list[FetchRequest] = []
 
-    def fetch(self, request: FetchRequest) -> FetchResult:  # pragma: no cover - simple passthrough
+    def fetch(
+        self, request: FetchRequest
+    ) -> FetchResult:  # pragma: no cover - simple passthrough
         self.requests.append(request)
         return self.result
 
@@ -112,7 +114,9 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
 
 
 def test_worker_returns_failure_without_publishing() -> None:
-    fetch_error = CrawlerError(ErrorClass.TIMEOUT, "timeout", source="https://example.com")
+    fetch_error = CrawlerError(
+        ErrorClass.TIMEOUT, "timeout", source="https://example.com"
+    )
     fetch_result = _build_fetch_result(
         status=FetchStatus.TEMPORARY_ERROR,
         payload=None,
