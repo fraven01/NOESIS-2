@@ -26,6 +26,8 @@ class DocumentLifecycleService(Protocol):
         tenant_id: str,
         case_id: Optional[str] = None,
         request_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
         """Normalize crawler payloads into canonical :class:`NormalizedDocument` objects."""
 
@@ -87,12 +89,16 @@ class DocumentsApiLifecycleService:
         tenant_id: str,
         case_id: Optional[str] = None,
         request_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
         return documents_api.normalize_from_raw(
             raw_reference=raw_reference,
             tenant_id=tenant_id,
             case_id=case_id,
             request_id=request_id,
+            workflow_id=workflow_id,
+            source=source,
             object_store=self._resolve_object_store(),
         )
 

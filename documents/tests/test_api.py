@@ -125,3 +125,49 @@ def test_normalize_from_raw_uses_charset_from_content_type_metadata() -> None:
 def test_normalize_from_raw_requires_payload() -> None:
     with pytest.raises(ValueError):
         normalize_from_raw(raw_reference={}, tenant_id="tenant-x")
+
+
+def test_normalize_from_raw_uses_metadata_source_and_workflow() -> None:
+    payload = b"Metadata overrides"
+
+    result = normalize_from_raw(
+        raw_reference={
+            "payload_bytes": payload,
+            "metadata": {
+                "provider": "upload",
+                "origin_uri": "https://example.com/from-upload",
+                "workflow_id": "upload-flow",
+                "source": "upload",
+            },
+        },
+        tenant_id="tenant-x",
+    )
+
+    assert result.document.ref.workflow_id == "upload-flow"
+    assert result.document.source == "upload"
+    assert result.metadata["workflow_id"] == "upload-flow"
+    assert result.metadata["source"] == "upload"
+
+
+def test_normalize_from_raw_prefers_explicit_parameters() -> None:
+    payload = b"Parameter overrides"
+
+    result = normalize_from_raw(
+        raw_reference={
+            "payload_bytes": payload,
+            "metadata": {
+                "provider": "integration",
+                "origin_uri": "https://example.com/from-integration",
+                "workflow_id": "meta-flow",
+                "source": "crawler",
+            },
+        },
+        tenant_id="tenant-x",
+        workflow_id="param-flow",
+        source="integration",
+    )
+
+    assert result.document.ref.workflow_id == "param-flow"
+    assert result.document.source == "integration"
+    assert result.metadata["workflow_id"] == "param-flow"
+    assert result.metadata["source"] == "integration"

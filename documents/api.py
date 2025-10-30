@@ -99,6 +99,13 @@ def _extract_charset(value: Any) -> Optional[str]:
     return None
 
 
+def _coerce_optional_string(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
     if encoding_hint:
         try:
@@ -264,6 +271,8 @@ def normalize_from_raw(
     tenant_id: str,
     case_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    workflow_id: Optional[str] = None,
+    source: Optional[str] = None,
     object_store: ObjectStore | None = None,
 ) -> NormalizedDocumentPayload:
     """Normalize crawler raw payloads into a :class:`NormalizedDocument`."""
@@ -289,10 +298,19 @@ def normalize_from_raw(
     payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
 
     metadata = _normalize_mapping(raw_reference.get("metadata"))
-    workflow_id = str(
-        metadata.get("workflow_id") or raw_reference.get("workflow_id") or "crawler"
+    resolved_workflow_id = (
+        _coerce_optional_string(workflow_id)
+        or _coerce_optional_string(metadata.get("workflow_id"))
+        or _coerce_optional_string(raw_reference.get("workflow_id"))
+        or "crawler"
     )
-    workflow_id = workflow_id.strip() or "crawler"
+
+    resolved_source = (
+        _coerce_optional_string(source)
+        or _coerce_optional_string(metadata.get("source"))
+        or _coerce_optional_string(raw_reference.get("source"))
+        or "crawler"
+    )
 
     document_id = _coerce_uuid(raw_reference.get("document_id"))
     collection_id = metadata.get("collection_id")
@@ -307,7 +325,7 @@ def normalize_from_raw(
 
     document_ref = DocumentRef(
         tenant_id=tenant_id,
-        workflow_id=workflow_id,
+        workflow_id=resolved_workflow_id,
         document_id=document_id,
         collection_id=collection_id,
         version=version_str,
@@ -315,7 +333,7 @@ def normalize_from_raw(
 
     external_ref: dict[str, str] = {}
     provider = str(
-        metadata.get("provider") or raw_reference.get("provider") or "crawler"
+        metadata.get("provider") or raw_reference.get("provider") or resolved_source
     ).strip()
     if provider:
         external_ref["provider"] = provider
@@ -343,7 +361,7 @@ def normalize_from_raw(
 
     doc_meta = DocumentMeta(
         tenant_id=tenant_id,
-        workflow_id=workflow_id,
+        workflow_id=resolved_workflow_id,
         title=metadata.get("title"),
         language=metadata.get("language"),
         tags=normalized_tags,
@@ -366,18 +384,19 @@ def normalize_from_raw(
         blob=blob,
         checksum=checksum,
         created_at=_timestamp(),
-        source=str(raw_reference.get("source") or "crawler"),
+        source=resolved_source,
         lifecycle_state="active",
         assets=[],
     )
 
     metadata_payload: dict[str, Any] = {
         "tenant_id": tenant_id,
-        "workflow_id": workflow_id,
+        "workflow_id": resolved_workflow_id,
         "case_id": case_id,
         "request_id": request_id,
         "provider": provider or None,
         "origin_uri": doc_meta.origin_uri,
+        "source": resolved_source,
     }
 
     return NormalizedDocumentPayload(
