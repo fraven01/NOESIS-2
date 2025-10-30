@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 
-from ai_core.infra import object_store
+from ai_core.infra.object_store import FilesystemObjectStore
 from documents.api import normalize_from_raw
 
 
@@ -44,12 +44,12 @@ def test_normalize_from_raw_accepts_payload_base64() -> None:
     assert result.payload_bytes == payload
 
 
-def test_normalize_from_raw_accepts_payload_path(tmp_path, monkeypatch) -> None:
+def test_normalize_from_raw_accepts_payload_path(tmp_path) -> None:
     payload = b"Binary via path"
     relative_path = "tenant-x/case-default/crawler/raw/doc.bin"
 
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-    target = object_store.BASE_PATH / relative_path
+    store = FilesystemObjectStore(lambda: tmp_path)
+    target = store.BASE_PATH / relative_path
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(payload)
 
@@ -59,6 +59,7 @@ def test_normalize_from_raw_accepts_payload_path(tmp_path, monkeypatch) -> None:
             "metadata": {"provider": "crawler", "origin_uri": "https://example.com"},
         },
         tenant_id="tenant-x",
+        object_store=store,
     )
 
     assert result.primary_text == "Binary via path"
@@ -66,9 +67,9 @@ def test_normalize_from_raw_accepts_payload_path(tmp_path, monkeypatch) -> None:
 
 
 def test_normalize_from_raw_rejects_payload_path_outside_store(
-    tmp_path, monkeypatch
+    tmp_path
 ) -> None:
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path / "store")
+    store = FilesystemObjectStore(lambda: tmp_path / "store")
     (tmp_path / "secret.bin").write_bytes(b"shh")
 
     with pytest.raises(ValueError):
@@ -81,15 +82,16 @@ def test_normalize_from_raw_rejects_payload_path_outside_store(
                 },
             },
             tenant_id="tenant-x",
+            object_store=store,
         )
 
 
 def test_normalize_from_raw_rejects_absolute_payload_path(
-    tmp_path, monkeypatch
+    tmp_path
 ) -> None:
     absolute_path = tmp_path / "secret.bin"
     absolute_path.write_text("hidden", encoding="utf-8")
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path / "store")
+    store = FilesystemObjectStore(lambda: tmp_path / "store")
 
     with pytest.raises(ValueError):
         normalize_from_raw(
@@ -101,6 +103,7 @@ def test_normalize_from_raw_rejects_absolute_payload_path(
                 },
             },
             tenant_id="tenant-x",
+            object_store=store,
         )
 
 
