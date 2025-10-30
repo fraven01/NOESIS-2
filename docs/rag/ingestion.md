@@ -80,6 +80,12 @@ flowchart LR
 - `ai_core.rag.ensure_embedding_dimensions()` stoppt das Upsert, sobald `len(embedding)` nicht mit der Vector-Space-Dimension übereinstimmt, und markiert den Lauf mit `INGEST_VECTOR_DIMENSION_MISMATCH` inklusive `tenant_id`, `process`, `doc_class` und Profil im Dead Letter.
 - **Collection-Scope (optional):** Upload, Ingestion und Queries akzeptieren `collection_id`. Scope-Priorität: `filters.collection_ids` > Body-Feld > `X-Collection-ID` Header. Der Header ergänzt fehlende Werte, überschreibt aber niemals Body/Filter. Persistiert wird die Collection in `documents`, `chunks` und `embeddings`; Idempotenz greift pro Collection, sodass identische Chunks in unterschiedlichen Collections nebeneinander existieren dürfen.
 
+## Provider, Source & Process
+
+- **Provider** benennt das Quellsystem oder den Datenbestand (z.B. `web`, `servicenow`). Der Wert wird in `DocumentMeta.external_ref['provider']` geschrieben und steuert Deduplizierung sowie Auditing. Für Crawler-Läufe gilt der Default `web`, sofern kein Provider übergeben wird.
+- **Source** kennzeichnet den Ingestion-Kanal (`crawler`, `upload`, `integration`, `other`). Der Wert steckt sowohl in `NormalizedDocument.source` als auch im Metadaten-Payload des Ingestion-Workers und bleibt damit unabhängig vom Provider.
+- **Process** ist ein Geschäftsprozess-Alias (z.B. `review`, `customer-support`), der Embedding-Profile auflöst. Wird kein Prozess gesetzt, fällt die Ingestion auf den jeweiligen Source-Wert zurück. Neue Ingestion-Pfade müssen daher mindestens Source und Provider explizit setzen; für produktive Routen ist außerdem ein passender Process-Alias Pflicht.
+
 ## Fehlertoleranz und Deduplizierung
 - Jeder Datensatz erhält einen SHA-256-Hash aus `(tenant_id, source, content)`. Der Hash wird vor Upsert geprüft; Matches werden übersprungen, auch wenn der Startbestand leer ist.
 - Bei Rate-Limits markiert der Worker den Batch als „retry“ und wartet laut Backoff. Nach fünf Fehlversuchen landet der Eintrag in einer Dead-Letter-Queue zur manuellen Prüfung.

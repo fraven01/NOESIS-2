@@ -15,6 +15,7 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from common.object_store import ObjectStore, get_default_object_store
 from documents.contracts import (
+    DEFAULT_PROVIDER_BY_SOURCE,
     DocumentMeta,
     DocumentRef,
     InlineBlob,
@@ -332,16 +333,24 @@ def normalize_from_raw(
     )
 
     external_ref: dict[str, str] = {}
-    provider = str(
-        metadata.get("provider") or raw_reference.get("provider") or resolved_source
-    ).strip()
+    provider = (
+        _coerce_optional_string(metadata.get("provider"))
+        or _coerce_optional_string(raw_reference.get("provider"))
+        or DEFAULT_PROVIDER_BY_SOURCE.get(resolved_source)
+        or resolved_source
+    )
+    provider = _coerce_optional_string(provider)
     if provider:
         external_ref["provider"] = provider
-    external_id = metadata.get("external_id") or raw_reference.get("external_id")
+    external_id = (
+        _coerce_optional_string(metadata.get("external_id"))
+        or _coerce_optional_string(raw_reference.get("external_id"))
+    )
     if external_id:
-        external_ref["external_id"] = str(external_id).strip()
-    else:
-        external_ref["external_id"] = f"{provider}:{document_id}"
+        external_ref["external_id"] = external_id
+    elif document_id is not None:
+        fallback_provider = provider or resolved_source or "unknown"
+        external_ref["external_id"] = f"{fallback_provider}:{document_id}"
     if case_id:
         external_ref["case_id"] = str(case_id)
 

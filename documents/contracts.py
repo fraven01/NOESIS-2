@@ -1,4 +1,18 @@
-"""Contracts for normalized documents and assets."""
+"""Contracts for normalized documents and assets.
+
+Terminology used across ingestion flows:
+
+- **provider** – Canonical name of the upstream system that supplied or
+  generated the document (e.g. ``web``, ``servicenow``). The value is persisted
+  inside :attr:`DocumentMeta.external_ref` under the ``provider`` key.
+- **source** – Channel that handed the document to the NOESIS ingestion stack.
+  Valid values describe the transport such as ``crawler`` or ``upload`` and are
+  stored on :class:`NormalizedDocument.source`.
+- **process** – Business process alias that steers routing and embedding
+  profiles. It is propagated alongside ingestion metadata (e.g. chunk
+  envelopes) and defaults to the ``source`` when callers do not provide an
+  explicit value.
+"""
 
 from __future__ import annotations
 
@@ -21,6 +35,7 @@ from typing import (
     Any,
     Mapping,
 )
+from types import MappingProxyType
 from uuid import UUID
 
 from pydantic import (
@@ -80,6 +95,18 @@ CaptionSource = Literal[
 _STRICT_CHECKSUMS: ContextVar[bool] = ContextVar("STRICT_CHECKSUMS", default=False)
 _ASSET_MEDIA_GUARD: ContextVar[Optional[Tuple[str, ...]]] = ContextVar(
     "ASSET_MEDIA_GUARD", default=None
+)
+
+
+# Default provider names resolved from ingestion sources. Callers may override
+# these values via metadata overrides passed to the ingestion interfaces.
+DEFAULT_PROVIDER_BY_SOURCE = MappingProxyType(
+    {
+        "crawler": "web",
+        "upload": "upload",
+        "integration": "integration",
+        "other": "other",
+    }
 )
 
 
@@ -384,7 +411,10 @@ class DocumentMeta(BaseModel):
         default=None,
         description=(
             "Optional external reference identifiers provided by source systems "
-            "(<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced)."
+            "(<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced). "
+            "The keys `provider` and `external_id` capture the upstream system and "
+            "its native identifier. Additional provider specific attributes must "
+            "use the `provider_tag:` prefix."
         ),
     )
     parse_stats: Optional[Dict[str, Any]] = Field(
@@ -824,7 +854,12 @@ class NormalizedDocument(BaseModel):
     )
     source: Optional[Literal["upload", "crawler", "integration", "other"]] = Field(
         default=None,
-        description="Source channel through which the document entered the system.",
+        description=(
+            "Ingestion channel describing how the document entered the platform "
+            "(e.g. `crawler`, `upload`). This is distinct from "
+            "`meta.external_ref['provider']`, which names the upstream system or "
+            "integration."
+        ),
     )
     lifecycle_state: Literal["active", "retired", "deleted"] = Field(
         default="active",

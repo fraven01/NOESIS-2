@@ -29,7 +29,7 @@
         }
       ],
       "default": null,
-      "description": "Optional external reference identifiers provided by source systems (<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced).",
+      "description": "Optional external reference identifiers provided by source systems (<= 16 entries; keys <= 128 chars, values <= 512 chars; limits enforced). The keys `provider` and `external_id` capture the upstream system and its native identifier. Additional provider specific attributes must use the `provider_tag:` prefix.",
       "title": "External Ref"
     },
     "language": {

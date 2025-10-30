@@ -102,6 +102,7 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     raw_document = state_payload["raw_document"]
     assert raw_document["document_id"] == "doc-1"
     assert raw_document["metadata"]["provider"] == "docs"
+    assert raw_document["metadata"]["source"] == "crawler"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
     payload_path = raw_document["payload_path"]
     assert payload_path.endswith(".bin")
@@ -134,3 +135,23 @@ def test_worker_returns_failure_without_publishing() -> None:
     assert publish_result.status == FetchStatus.TEMPORARY_ERROR.value
     assert publish_result.error is fetch_error
     assert task.calls == []
+
+
+def test_worker_sets_default_provider_and_source(tmp_path, monkeypatch) -> None:
+    fetch_result = _build_fetch_result(payload=b"payload")
+    fetcher = _StubFetcher(fetch_result)
+    task = _StubTask()
+    worker = CrawlerWorker(fetcher, ingestion_task=task)
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    publish_result = worker.process(
+        fetch_result.request,
+        tenant_id="tenant-a",
+    )
+
+    assert publish_result.published
+    state_payload, _ = task.calls[0]
+    metadata = state_payload["raw_document"]["metadata"]
+    assert metadata["provider"] == "web"
+    assert metadata["source"] == "crawler"
