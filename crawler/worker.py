@@ -59,6 +59,7 @@ class CrawlerWorker:
         crawl_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
         request_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
         frontier_state: Optional[Mapping[str, Any]] = None,
         document_id: Optional[str] = None,
         document_metadata: Optional[Mapping[str, Any]] = None,
@@ -74,6 +75,8 @@ class CrawlerWorker:
                 fetch_result=result,
                 error=result.error,
             )
+
+        propagated_trace_id = self._resolve_trace_id(trace_id, request)
 
         payload_state = self._compose_state(
             result,
@@ -93,6 +96,7 @@ class CrawlerWorker:
             crawl_id=crawl_id,
             idempotency_key=idempotency_key,
             request_id=request_id,
+            trace_id=propagated_trace_id,
             frontier_state=frontier_state,
             meta_overrides=meta_overrides,
         )
@@ -266,6 +270,7 @@ class CrawlerWorker:
         crawl_id: Optional[str],
         idempotency_key: Optional[str],
         request_id: Optional[str],
+        trace_id: Optional[str],
         frontier_state: Optional[Mapping[str, Any]],
         meta_overrides: Optional[Mapping[str, Any]],
     ) -> dict[str, Any]:
@@ -275,12 +280,27 @@ class CrawlerWorker:
             "crawl_id": crawl_id,
             "idempotency_key": idempotency_key,
             "request_id": request_id,
+            "trace_id": trace_id,
         }
         if frontier_state:
             payload.setdefault("frontier", dict(frontier_state))
         if meta_overrides:
             payload.update(dict(meta_overrides))
         return {key: value for key, value in payload.items() if value is not None}
+
+    @staticmethod
+    def _resolve_trace_id(
+        provided_trace_id: Optional[str], request: FetchRequest
+    ) -> Optional[str]:
+        if provided_trace_id:
+            candidate = str(provided_trace_id).strip()
+            if candidate:
+                return candidate
+        metadata_trace = request.metadata.get("trace_id")
+        if metadata_trace is None:
+            return None
+        candidate = str(metadata_trace).strip()
+        return candidate or None
 
     def _summarize_fetch(self, result: FetchResult) -> dict[str, Any]:
         telemetry = result.telemetry
