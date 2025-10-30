@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 import traceback
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
@@ -310,16 +311,74 @@ class CrawlerIngestionGraph:
 
         return config, limits, signals, error_builder
 
+    def _resolve_frontier_state(
+        self, state: Dict[str, Any]
+    ) -> Optional[Mapping[str, Any]]:
+        """Merge state and meta frontier payloads into a single mapping."""
+
+        def _collect_policy_events(candidate: Any) -> Tuple[str, ...]:
+            if candidate is None:
+                return ()
+            if isinstance(candidate, Mapping):
+                maybe_events = candidate.get("policy_events")
+                if maybe_events is candidate:
+                    return ()
+                return _collect_policy_events(maybe_events)
+            if isinstance(candidate, str):
+                value = candidate.strip()
+                return (value,) if value else ()
+            if isinstance(candidate, Iterable) and not isinstance(candidate, (bytes, bytearray)):
+                collected = []
+                for item in candidate:
+                    if not item:
+                        continue
+                    value = str(item).strip()
+                    if value:
+                        collected.append(value)
+                return tuple(collected)
+            value = str(candidate).strip()
+            return (value,) if value else ()
+
+        merged: Dict[str, Any] = {}
+        policy_events: Tuple[str, ...] = ()
+
+        def _merge_frontier(frontier: Mapping[str, Any]) -> None:
+            nonlocal policy_events
+            for key, value in frontier.items():
+                if key == "policy_events":
+                    events = _collect_policy_events(value)
+                    if events:
+                        policy_events = ai_core_api._merge_policy_events(policy_events, events)
+                else:
+                    merged[key] = value
+
+        meta_payload = state.get("meta")
+        if isinstance(meta_payload, Mapping):
+            meta_frontier = meta_payload.get("frontier")
+            if isinstance(meta_frontier, Mapping):
+                _merge_frontier(dict(meta_frontier))
+
+        state_frontier = state.get("frontier")
+        if isinstance(state_frontier, Mapping):
+            _merge_frontier(dict(state_frontier))
+
+        if policy_events:
+            merged["policy_events"] = list(policy_events)
+
+        return merged or None
+
     def _run_guardrails(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         config, limits, signals, error_builder = self._resolve_guardrail_state(state)
+        frontier_state = self._resolve_frontier_state(state)
         decision = self._guardrail_enforcer(
             normalized_document=normalized,
             config=config,
             limits=limits,
             signals=signals,
             error_builder=error_builder,
+            frontier_state=frontier_state,
         )
         artifacts["guardrail_decision"] = decision
         if not decision.allowed:
@@ -367,6 +426,7 @@ class CrawlerIngestionGraph:
         decision = self._delta_decider(
             normalized_document=normalized,
             baseline=baseline_input,
+            frontier_state=self._resolve_frontier_state(state),
         )
         artifacts["delta_decision"] = decision
         status_update = self._document_service.update_lifecycle_status(
