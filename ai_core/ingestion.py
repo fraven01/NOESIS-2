@@ -575,6 +575,22 @@ def process_document(
         if normalized_document.ref.collection_id is not None:
             meta["collection_id"] = str(normalized_document.ref.collection_id)
 
+        pipeline_config_overrides = getattr(
+            normalized_document.meta, "pipeline_config", None
+        )
+        normalized_pipeline_config: Dict[str, object] | None = None
+        if isinstance(pipeline_config_overrides, Mapping):
+            normalized_pipeline_config = dict(pipeline_config_overrides)
+            meta["pipeline_config"] = dict(normalized_pipeline_config)
+        elif isinstance(state.get("pipeline_config"), Mapping):
+            normalized_pipeline_config = dict(state["pipeline_config"])
+        else:
+            existing_meta = state.get("meta")
+            if isinstance(existing_meta, Mapping):
+                existing_meta_override = existing_meta.get("pipeline_config")
+                if isinstance(existing_meta_override, Mapping):
+                    normalized_pipeline_config = dict(existing_meta_override)
+
         title = getattr(normalized_document.meta, "title", None)
         if title:
             meta["title"] = title
@@ -641,7 +657,7 @@ def process_document(
             _meta_store_path(tenant, case, document_id), sanitized_meta_json
         )
 
-        state["meta"] = {
+        state_meta: Dict[str, object] = {
             "external_id": external_id,
             "embedding_profile": resolved_profile_id,
             "vector_space_id": vector_space_id,
@@ -650,6 +666,10 @@ def process_document(
             "content_hash": normalized_document.checksum,
             "document_id": str(normalized_document.ref.document_id),
         }
+        if normalized_pipeline_config is not None:
+            state_meta["pipeline_config"] = dict(normalized_pipeline_config)
+            state["pipeline_config"] = dict(normalized_pipeline_config)
+        state["meta"] = state_meta
         _write_pipeline_state(tenant, case, document_id, state)
 
         pipeline_config = _build_document_pipeline_config(state=state, meta=meta)

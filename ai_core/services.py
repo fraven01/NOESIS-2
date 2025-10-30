@@ -1034,6 +1034,7 @@ def _build_document_meta(
         "crawl_timestamp",
         "external_ref",
         "parse_stats",
+        "pipeline_config",
     )
     for field in optional_fields:
         if field in metadata_obj:
