@@ -1,8 +1,15 @@
+import base64
+import hashlib
+from datetime import datetime, timezone
+from uuid import uuid4
+
 import pytest
 
 from ai_core.rag.embedding_config import reset_embedding_configuration_cache
 from ai_core.rag.ingestion_contracts import (
+    IngestionAction,
     IngestionContractErrorCode,
+    build_crawler_ingestion_payload,
     ensure_embedding_dimensions,
     resolve_ingestion_profile,
 )
@@ -12,6 +19,8 @@ from ai_core.rag.vector_space_resolver import (
     VectorSpaceResolverErrorCode,
 )
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.vector_client import DedupSignatures
+from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
 
 
 @pytest.fixture(autouse=True)
@@ -33,6 +42,40 @@ def _configure_embeddings(settings) -> None:
             "chunk_hard_limit": 512,
         }
     }
+
+
+def _make_normalized_document(
+    *, source: str = "crawler", workflow_id: str = "wf-doc"
+) -> NormalizedDocument:
+    payload = b"dummy content"
+    encoded = base64.b64encode(payload).decode("ascii")
+    checksum = hashlib.sha256(payload).hexdigest()
+    blob = InlineBlob(
+        type="inline",
+        media_type="text/plain",
+        base64=encoded,
+        sha256=checksum,
+        size=len(payload),
+    )
+    document_ref = DocumentRef(
+        tenant_id="tenant-a",
+        workflow_id=workflow_id,
+        document_id=uuid4(),
+    )
+    document_meta = DocumentMeta(
+        tenant_id="tenant-a",
+        workflow_id=workflow_id,
+        origin_uri="https://example.com/doc",
+        external_ref={"provider": source, "external_id": "ext-1"},
+    )
+    return NormalizedDocument(
+        ref=document_ref,
+        meta=document_meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=datetime.now(timezone.utc),
+        source=source,
+    )
 
 
 def test_resolve_ingestion_profile_success(settings) -> None:
@@ -122,3 +165,44 @@ def test_ensure_embedding_dimensions_raises_on_mismatch() -> None:
     assert error.context["observed_dimension"] == 1
     assert error.context["chunk_index"] == 0
     assert error.context["external_id"] == "doc-1"
+
+
+def test_build_crawler_ingestion_payload_uses_document_source(settings) -> None:
+    _configure_embeddings(settings)
+    document = _make_normalized_document(source="upload", workflow_id="wf-upload")
+    signatures = DedupSignatures(content_hash=document.checksum)
+
+    payload = build_crawler_ingestion_payload(
+        document=document,
+        signatures=signatures,
+        case_id="case-1",
+        action=IngestionAction.UPSERT,
+        lifecycle_state="active",
+        embedding_profile="standard",
+    )
+
+    assert payload.chunk_meta is not None
+    assert payload.chunk_meta.source == "upload"
+    assert payload.chunk_meta.process == "upload"
+    assert payload.chunk_meta.workflow_id == "wf-upload"
+
+
+def test_build_crawler_ingestion_payload_allows_source_overrides(settings) -> None:
+    _configure_embeddings(settings)
+    document = _make_normalized_document(source="crawler", workflow_id="wf-crawler")
+    signatures = DedupSignatures(content_hash=document.checksum)
+
+    payload = build_crawler_ingestion_payload(
+        document=document,
+        signatures=signatures,
+        case_id="case-2",
+        action=IngestionAction.UPSERT,
+        lifecycle_state="active",
+        embedding_profile="standard",
+        source="integration",
+        process="sync",
+    )
+
+    assert payload.chunk_meta is not None
+    assert payload.chunk_meta.source == "integration"
+    assert payload.chunk_meta.process == "sync"

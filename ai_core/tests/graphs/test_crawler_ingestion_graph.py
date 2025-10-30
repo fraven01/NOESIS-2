@@ -340,12 +340,16 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
         tenant_id: str,
         case_id: str | None = None,
         request_id: str | None = None,
+        workflow_id: str | None = None,
+        source: str | None = None,
     ):
         self.normalize_calls.append(
             {
                 "tenant_id": tenant_id,
                 "case_id": case_id,
                 "request_id": request_id,
+                "workflow_id": workflow_id,
+                "source": source,
             }
         )
         return documents_api.normalize_from_raw(
@@ -353,6 +357,8 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
             tenant_id=tenant_id,
             case_id=case_id,
             request_id=request_id,
+            workflow_id=workflow_id,
+            source=source,
         )
 
     def update_lifecycle_status(
@@ -395,7 +401,13 @@ def test_document_service_adapter_is_injected() -> None:
 
     assert result["decision"]
     assert service.normalize_calls == [
-        {"tenant_id": "tenant", "case_id": "case", "request_id": "req-custom"}
+        {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "request_id": "req-custom",
+            "workflow_id": None,
+            "source": None,
+        }
     ]
     assert service.status_calls  # status transitions flowed through the adapter
     # ensure artifacts originate from adapter results

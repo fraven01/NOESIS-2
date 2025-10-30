@@ -253,6 +253,8 @@ def build_crawler_ingestion_payload(
     adapter_metadata: Mapping[str, object] | None = None,
     embedding_profile: str | None = None,
     delta_status: object | None = None,
+    source: str | None = None,
+    process: str | None = None,
 ) -> CrawlerIngestionPayload:
     """Compose a :class:`CrawlerIngestionPayload` from crawler planning hints."""
 
@@ -274,16 +276,23 @@ def build_crawler_ingestion_payload(
 
     provider = parse_provider_reference(document.meta)
 
+    resolved_source = (
+        _coerce_optional_string(source)
+        or _coerce_optional_string(getattr(document, "source", None))
+        or "crawler"
+    )
+    resolved_process = _coerce_optional_string(process) or resolved_source
+
     chunk_meta = ChunkMeta(
         tenant_id=document.ref.tenant_id,
         case_id=normalized_case_id,
-        source="crawler",
+        source=resolved_source,
         hash=document.checksum,
         external_id=provider.external_id,
         content_hash=signatures.content_hash,
         embedding_profile=profile_id,
         vector_space_id=vector_space_id,
-        process="crawler",
+        process=resolved_process,
         workflow_id=document.ref.workflow_id,
         collection_id=(
             str(document.ref.collection_id)
