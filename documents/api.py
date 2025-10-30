@@ -50,7 +50,6 @@ def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
         return get_default_object_store()
 
 
-
 def _normalize_mapping(
     value: Mapping[str, Any] | MutableMapping[str, Any] | None,
 ) -> Mapping[str, Any]:
