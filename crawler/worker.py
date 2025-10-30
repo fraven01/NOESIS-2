@@ -8,6 +8,7 @@ from typing import Any, Callable, Mapping, Optional
 
 from ai_core.infra import object_store
 from ai_core.tasks import run_ingestion_graph
+from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
 
 from .errors import CrawlerError
 from .fetcher import FetchRequest, FetchResult, FetchStatus
@@ -126,7 +127,22 @@ class CrawlerWorker:
 
         raw_meta: dict[str, Any] = dict(document_metadata or {})
         raw_meta.setdefault("origin_uri", request.canonical_source)
-        raw_meta.setdefault("provider", raw_meta.get("provider", "web"))
+
+        source_value = str(raw_meta.get("source", "")).strip()
+        if source_value:
+            raw_meta["source"] = source_value
+        else:
+            raw_meta["source"] = "crawler"
+
+        provider_value = str(raw_meta.get("provider", "")).strip()
+        if provider_value:
+            raw_meta["provider"] = provider_value
+        else:
+            default_provider = DEFAULT_PROVIDER_BY_SOURCE.get(
+                raw_meta["source"], raw_meta["source"]
+            )
+            if default_provider:
+                raw_meta["provider"] = default_provider
         if result.metadata.content_type and "content_type" not in raw_meta:
             raw_meta["content_type"] = result.metadata.content_type
         if result.metadata.status_code is not None and "status_code" not in raw_meta:

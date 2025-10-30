@@ -588,7 +588,7 @@
         }
       ],
       "default": null,
-      "description": "Source channel through which the document entered the system.",
+      "description": "Ingestion channel describing how the document entered the platform (e.g. `crawler`, `upload`). This is distinct from `meta.external_ref['provider']`, which names the upstream system or integration.",
       "title": "Source"
     }
   },

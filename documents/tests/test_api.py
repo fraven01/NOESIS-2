@@ -171,3 +171,21 @@ def test_normalize_from_raw_prefers_explicit_parameters() -> None:
     assert result.document.source == "integration"
     assert result.metadata["workflow_id"] == "param-flow"
     assert result.metadata["source"] == "integration"
+
+
+def test_normalize_from_raw_applies_provider_default_for_crawler() -> None:
+    payload = b"Default semantics"
+
+    result = normalize_from_raw(
+        raw_reference={
+            "payload_bytes": payload,
+            "metadata": {"origin_uri": "https://example.com/default"},
+        },
+        tenant_id="tenant-x",
+    )
+
+    assert result.document.source == "crawler"
+    assert result.metadata["source"] == "crawler"
+    assert result.metadata["provider"] == "web"
+    external_ref = result.document.meta.external_ref or {}
+    assert external_ref.get("provider") == "web"
