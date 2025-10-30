@@ -378,7 +378,9 @@ def _build_parser_dispatcher() -> ParserDispatcher:
     registry.register(DocxDocumentParser())
     registry.register(PptxDocumentParser())
     registry.register(PdfDocumentParser())
-    text_parser_cls = getattr(import_module("documents.parsers_text"), "TextDocumentParser")
+    text_parser_cls = getattr(
+        import_module("documents.parsers_text"), "TextDocumentParser"
+    )
     registry.register(text_parser_cls())
     return ParserDispatcher(registry)
 

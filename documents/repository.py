@@ -724,7 +724,10 @@ def _load_default_lifecycle_store() -> DocumentLifecycleStore:
         store_class = import_string(class_path)
         store_instance = store_class()
         return store_instance
-    except (ImproperlyConfigured, AppRegistryNotReady):  # pragma: no cover - lazy config
+    except (
+        ImproperlyConfigured,
+        AppRegistryNotReady,
+    ):  # pragma: no cover - lazy config
         logger.warning(
             "lifecycle_store_init_failed",
             extra={"class_path": class_path},

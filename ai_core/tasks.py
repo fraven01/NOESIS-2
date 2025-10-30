@@ -1605,9 +1605,9 @@ def _callable_accepts_kwarg(func: Any, keyword: str) -> bool:
     for parameter in signature.parameters.values():
         if parameter.kind == inspect.Parameter.VAR_KEYWORD:
             return True
-        if (
-            parameter.name == keyword
-            and parameter.kind in (inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY)
+        if parameter.name == keyword and parameter.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
         ):
             return True
     return False
