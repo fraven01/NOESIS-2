@@ -6,8 +6,9 @@ from structlog.testing import capture_logs
 from django.conf import settings
 
 from ai_core import tasks
-from ai_core.infra import object_store
 from ai_core import segmentation
+from ai_core.infra import object_store
+from ai_core.infra import observability as observability_module
 from ai_core.segmentation import segment_markdown_blocks
 from ai_core.rag import metrics, vector_client
 from ai_core.rag.schemas import Chunk
@@ -788,3 +789,125 @@ def test_run_ingestion_graph_cleans_raw_payload_on_error(tmp_path, monkeypatch):
         tasks.run_ingestion_graph(state, {})
 
     assert not (tmp_path / raw_path).exists()
+
+
+@pytest.mark.django_db
+def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    class FakeSpan:
+        def __init__(self, tracer, name, attributes):
+            self._tracer = tracer
+            self.name = name
+            self.attributes = dict(attributes or {})
+
+        def __enter__(self):
+            self._tracer.stack.append(self)
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            self._tracer.stack.pop()
+            self._tracer.completed_spans.append(
+                {"name": self.name, "attributes": dict(self.attributes)}
+            )
+            return False
+
+        def is_recording(self):
+            return True
+
+        def set_attribute(self, key, value):
+            self.attributes[key] = value
+
+        def add_event(self, event_name, attributes=None):
+            return None
+
+    class FakeTracer:
+        def __init__(self):
+            self.stack = []
+            self.completed_spans = []
+
+        def start_as_current_span(self, name, attributes=None):
+            return FakeSpan(self, name, attributes or {})
+
+        @property
+        def current_span(self):
+            return self.stack[-1] if self.stack else None
+
+    tracer = FakeTracer()
+
+    monkeypatch.setattr(observability_module, "tracing_enabled", lambda: True)
+    monkeypatch.setattr(observability_module, "_get_tracer", lambda: tracer)
+    monkeypatch.setattr(
+        observability_module,
+        "_get_current_span",
+        lambda: tracer.current_span,
+    )
+
+    document_id = str(uuid.uuid4())
+    state = {
+        "tenant_id": "tenant-1",
+        "case_id": "case-1",
+        "request_id": "req-1",
+        "raw_document": {
+            "document_id": document_id,
+            "content": "Document body",
+            "metadata": {
+                "source": "crawler",
+                "origin_uri": "https://example.com/document",
+                "provider": "web",
+                "content_type": "text/plain",
+            },
+        },
+        "embedding": {"profile": "standard"},
+    }
+    meta = {
+        "trace_id": "trace-123",
+        "tenant_id": "tenant-1",
+        "case_id": "case-1",
+        "document_id": document_id,
+    }
+
+    original_request = getattr(tasks.run_ingestion_graph, "request", None)
+    tasks.run_ingestion_graph.request = SimpleNamespace(id="celery-123")
+    try:
+        result = tasks.run_ingestion_graph(dict(state), meta)
+    finally:
+        if original_request is not None:
+            tasks.run_ingestion_graph.request = original_request
+        else:
+            delattr(tasks.run_ingestion_graph, "request")
+
+    assert result["decision"]
+
+    span_names = [span["name"] for span in tracer.completed_spans]
+    expected_names = {
+        "crawler.ingestion",
+        "crawler.ingestion.normalize",
+        "crawler.ingestion.update_status",
+        "crawler.ingestion.guardrails",
+        "crawler.ingestion.delta",
+        "crawler.ingestion.persist",
+        "crawler.ingestion.trigger_embedding",
+    }
+    for expected in expected_names:
+        assert expected in span_names
+
+    root_span = next(
+        span for span in tracer.completed_spans if span["name"] == "crawler.ingestion"
+    )
+    attributes = root_span["attributes"]
+    assert attributes["meta.tenant_id"] == "tenant-1"
+    assert attributes["meta.case_id"] == "case-1"
+    assert attributes["meta.document_id"] == document_id
+    assert attributes["meta.trace_id"] == "trace-123"
+    assert attributes["meta.celery.task_id"] == "celery-123"
+
+    normalize_span = next(
+        span
+        for span in tracer.completed_spans
+        if span["name"] == "crawler.ingestion.normalize"
+    )
+    normalize_attrs = normalize_span["attributes"]
+    assert normalize_attrs["meta.phase"] == "normalize"
+    assert normalize_attrs["meta.tenant_id"] == "tenant-1"
+    assert normalize_attrs["meta.document_id"] == document_id
