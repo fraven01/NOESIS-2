@@ -11,7 +11,7 @@ from crawler.fetcher import (
     PolitenessContext,
     evaluate_fetch_response,
 )
-from ai_core.rag.guardrails import FetcherLimits as SharedFetcherLimits
+from common.guardrails import FetcherLimits as SharedFetcherLimits
 
 
 def make_request(url: str = "https://example.com/foo") -> FetchRequest:
