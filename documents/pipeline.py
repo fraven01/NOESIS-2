@@ -246,6 +246,14 @@ class DocumentProcessingMetadata(BaseModel):
     created_at: datetime = Field(
         ..., description="UTC timestamp when the document was ingested"
     )
+    trace_id: Optional[str] = Field(
+        default=None,
+        description="Trace identifier correlating logs and telemetry",
+    )
+    span_id: Optional[str] = Field(
+        default=None,
+        description="Span identifier correlating logs and telemetry",
+    )
 
     @field_validator("tenant_id", mode="before")
     @classmethod
@@ -261,7 +269,7 @@ class DocumentProcessingMetadata(BaseModel):
             raise ValueError("metadata_required_string")
         return normalize_workflow_id(str(value))
 
-    @field_validator("case_id", "version", mode="before")
+    @field_validator("case_id", "version", "trace_id", "span_id", mode="before")
     @classmethod
     def _normalise_optional_strings(cls, value: Optional[str]) -> Optional[str]:
         return normalize_optional_string(value)
@@ -281,6 +289,8 @@ class DocumentProcessingMetadata(BaseModel):
         document,
         *,
         case_id: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
     ) -> "DocumentProcessingMetadata":
         """Build metadata from a :class:`NormalizedDocument` instance."""
 
@@ -290,6 +300,25 @@ class DocumentProcessingMetadata(BaseModel):
             source = document.source
         except AttributeError as exc:  # pragma: no cover - defensive guard
             raise TypeError("metadata_document_invalid") from exc
+
+        def _coalesce_trace(source_obj: Any) -> None:
+            nonlocal trace_id, span_id
+            if source_obj is None:
+                return
+            if isinstance(source_obj, Mapping):
+                trace_id = trace_id or source_obj.get("trace_id")
+                span_id = span_id or source_obj.get("span_id")
+                return
+            candidate_trace = getattr(source_obj, "trace_id", None)
+            candidate_span = getattr(source_obj, "span_id", None)
+            trace_id = trace_id or candidate_trace
+            span_id = span_id or candidate_span
+
+        meta = getattr(document, "meta", None)
+        _coalesce_trace(document)
+        _coalesce_trace(meta)
+        graph_state = getattr(meta, "graph_state", None) if meta is not None else None
+        _coalesce_trace(graph_state)
 
         workflow_id = getattr(ref, "workflow_id", None)
         if workflow_id is None and hasattr(document, "meta"):
@@ -306,6 +335,8 @@ class DocumentProcessingMetadata(BaseModel):
             version=getattr(ref, "version", None),
             source=source,
             created_at=created_at,
+            trace_id=trace_id,
+            span_id=span_id,
         )
 
 
@@ -315,6 +346,14 @@ class DocumentProcessingContext:
 
     metadata: DocumentProcessingMetadata
     state: ProcessingState = ProcessingState.INGESTED
+    trace_id: Optional[str] = None
+    span_id: Optional[str] = None
+
+    def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
+        if self.metadata.trace_id is not None:
+            object.__setattr__(self, "trace_id", self.metadata.trace_id)
+        if self.metadata.span_id is not None:
+            object.__setattr__(self, "span_id", self.metadata.span_id)
 
     def __repr__(self) -> str:  # pragma: no cover - human convenience
         return (
@@ -327,7 +366,11 @@ class DocumentProcessingContext:
             f"document_id={self.metadata.document_id!r}, "
             f"version={self.metadata.version!r}, "
             f"source={self.metadata.source!r}, "
-            f"created_at={self.metadata.created_at!r}))"
+            f"created_at={self.metadata.created_at!r}, "
+            f"trace_id={self.metadata.trace_id!r}, "
+            f"span_id={self.metadata.span_id!r})), "
+            f"trace_id={self.trace_id!r}, "
+            f"span_id={self.span_id!r})"
         )
 
     def transition(
@@ -343,7 +386,12 @@ class DocumentProcessingContext:
             )
         except ValueError as exc:  # pragma: no cover - defensive guard
             raise ValueError("processing_state_invalid") from exc
-        return DocumentProcessingContext(metadata=self.metadata, state=state)
+        return DocumentProcessingContext(
+            metadata=self.metadata,
+            state=state,
+            trace_id=self.trace_id,
+            span_id=self.span_id,
+        )
 
     @classmethod
     def from_document(
@@ -352,11 +400,23 @@ class DocumentProcessingContext:
         *,
         case_id: Optional[str] = None,
         initial_state: ProcessingState | str = ProcessingState.INGESTED,
+        trace_id: Optional[str] = None,
+        span_id: Optional[str] = None,
     ) -> "DocumentProcessingContext":
-        metadata = DocumentProcessingMetadata.from_document(document, case_id=case_id)
+        metadata = DocumentProcessingMetadata.from_document(
+            document,
+            case_id=case_id,
+            trace_id=trace_id,
+            span_id=span_id,
+        )
         if not isinstance(initial_state, ProcessingState):
             initial_state = ProcessingState(initial_state)
-        return cls(metadata=metadata, state=initial_state)
+        return cls(
+            metadata=metadata,
+            state=initial_state,
+            trace_id=metadata.trace_id,
+            span_id=metadata.span_id,
+        )
 
 
 @dataclass(frozen=True)
@@ -1046,6 +1106,8 @@ class DocumentProcessingOrchestrator:
         current_state = context.state
 
         with log_context(
+            trace_id=context.trace_id,
+            span_id=context.span_id,
             tenant=metadata.tenant_id,
             collection_id=(
                 str(metadata.collection_id) if metadata.collection_id else None

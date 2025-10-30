@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from importlib import import_module
 from typing import Optional, get_args
@@ -270,10 +271,14 @@ def test_processing_context_with_case_override_preserves_values():
         document,
         case_id="  CASE-123  ",
         initial_state=ProcessingState.PARSED_TEXT,
+        trace_id=" trace-xyz ",
+        span_id=" span-uvw ",
     )
 
     assert context.state is ProcessingState.PARSED_TEXT
     assert context.metadata.case_id == "CASE-123"
+    assert context.trace_id == "trace-xyz"
+    assert context.span_id == "span-uvw"
 
     for next_state in (
         ProcessingState.ASSETS_EXTRACTED,
@@ -284,6 +289,8 @@ def test_processing_context_with_case_override_preserves_values():
         assert context.metadata.case_id == "CASE-123"
         assert context.metadata.workflow_id == document.ref.workflow_id
         assert context.metadata.collection_id == document.ref.collection_id
+        assert context.trace_id == "trace-xyz"
+        assert context.span_id == "span-uvw"
 
 
 def test_processing_context_repr_contains_state_and_metadata():
@@ -293,6 +300,43 @@ def test_processing_context_repr_contains_state_and_metadata():
     assert "DocumentProcessingContext" in representation
     assert f"state='{context.state.value}'" in representation
     assert str(document.ref.document_id) in representation
+
+
+def test_orchestrator_binds_trace_and_span_in_log_context(monkeypatch):
+    metrics.reset_metrics()
+    repository, storage, document, _ = _prepare_repository_document()
+    parser = RecordingParser()
+    chunker = RecordingChunker()
+    orchestrator = DocumentProcessingOrchestrator(
+        parser=parser,
+        repository=repository,
+        storage=storage,
+        captioner=DeterministicCaptioner(),
+        chunker=chunker,
+    )
+
+    captured: list[dict[str, object]] = []
+
+    @contextmanager
+    def _capture_log_context(**kwargs):
+        captured.append(kwargs)
+        yield
+
+    monkeypatch.setattr("documents.pipeline.log_context", _capture_log_context)
+
+    context = DocumentProcessingContext.from_document(
+        document,
+        trace_id="trace-log",
+        span_id="span-log",
+    )
+
+    orchestrator.process(document, context=context)
+
+    assert captured, "expected log_context to be invoked"
+    bound = captured[0]
+    assert bound["trace_id"] == "trace-log"
+    assert bound["span_id"] == "span-log"
+    assert bound["tenant"] == context.metadata.tenant_id
 
 
 def test_require_document_contracts(monkeypatch):
@@ -406,6 +450,48 @@ def test_metadata_uses_workflow_from_meta_when_missing_on_ref():
     assert metadata.tenant_id == "tenant-1"
     assert metadata.case_id == "case"
     assert metadata.created_at == created_at
+
+
+def test_metadata_coalesces_trace_and_span_sources():
+    document_id = uuid4()
+    created_at = datetime.now(timezone.utc)
+
+    class _GraphState:
+        trace_id = " trace-123 "
+        span_id = " span-456 "
+
+    document = type(
+        "DocStub",
+        (),
+        {
+            "ref": type(
+                "RefStub",
+                (),
+                {
+                    "tenant_id": "tenant-1",
+                    "workflow_id": "workflow-1",
+                    "document_id": document_id,
+                    "collection_id": None,
+                    "version": None,
+                },
+            )(),
+            "meta": type(
+                "MetaStub",
+                (),
+                {
+                    "workflow_id": "workflow-1",
+                    "graph_state": _GraphState(),
+                },
+            )(),
+            "created_at": created_at,
+            "source": "upload",
+        },
+    )()
+
+    metadata = DocumentProcessingMetadata.from_document(document)
+
+    assert metadata.trace_id == "trace-123"
+    assert metadata.span_id == "span-456"
 
 
 def test_persist_parsed_document_stores_assets_and_stats():
