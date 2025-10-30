@@ -7,8 +7,9 @@ from enum import Enum
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Optional, Tuple
 
+from common.guardrails import FetcherLimits
+
 from ai_core.rag.guardrails import (
-    FetcherLimits,
     GuardrailLimits,
     GuardrailSignals,
     QuotaLimits,

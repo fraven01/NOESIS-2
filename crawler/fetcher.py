@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, Mapping, Optional, Sequence, Tuple
 
-from ai_core.rag.guardrails import FetcherLimits
+from common.guardrails import FetcherLimits
 
 from .errors import CrawlerError, ErrorClass
 
