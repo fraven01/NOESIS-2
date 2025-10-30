@@ -44,6 +44,7 @@ from .parsers_html import HtmlDocumentParser  # noqa: F401
 from .parsers_markdown import MarkdownDocumentParser  # noqa: F401
 from .parsers_pdf import PdfDocumentParser  # noqa: F401
 from .parsers_pptx import PptxDocumentParser  # noqa: F401
+from .parsers_text import TextDocumentParser  # noqa: F401
 from .providers import (  # noqa: F401
     ProviderReference,
     build_external_reference,
@@ -89,6 +90,7 @@ __all__ = [
     "MarkdownDocumentParser",
     "PdfDocumentParser",
     "PptxDocumentParser",
+    "TextDocumentParser",
     "ProviderReference",
     "build_external_reference",
     "parse_provider_reference",
