@@ -244,7 +244,9 @@ def test_guardrail_denied_emits_event_callback() -> None:
 
     updated_state, _ = graph.run(state, {})
 
-    guardrail_events = [payload for name, payload in recorded_events if name == "guardrail_denied"]
+    guardrail_events = [
+        payload for name, payload in recorded_events if name == "guardrail_denied"
+    ]
     assert guardrail_events, "guardrail_denied event not captured"
     payload = guardrail_events[0]
     assert payload["reason"] == "document_too_large"

@@ -121,7 +121,9 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
         document_id="doc-1",
     )
 
-    guardrail_events = [payload for name, payload in events if name == "guardrail_denied"]
+    guardrail_events = [
+        payload for name, payload in events if name == "guardrail_denied"
+    ]
     assert guardrail_events, "expected guardrail_denied event"
     payload = guardrail_events[0]
     assert payload["document_id"] == "doc-1"

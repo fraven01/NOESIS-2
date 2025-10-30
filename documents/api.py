@@ -342,10 +342,9 @@ def normalize_from_raw(
     provider = _coerce_optional_string(provider)
     if provider:
         external_ref["provider"] = provider
-    external_id = (
-        _coerce_optional_string(metadata.get("external_id"))
-        or _coerce_optional_string(raw_reference.get("external_id"))
-    )
+    external_id = _coerce_optional_string(
+        metadata.get("external_id")
+    ) or _coerce_optional_string(raw_reference.get("external_id"))
     if external_id:
         external_ref["external_id"] = external_id
     elif document_id is not None:

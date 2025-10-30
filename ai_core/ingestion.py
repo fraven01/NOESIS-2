@@ -194,7 +194,9 @@ def _cleanup_artifacts(paths: Iterable[Optional[str]]) -> List[str]:
             continue
 
         try:
-            normalized_path = _normalize_object_store_relative_path(candidate, base_path)
+            normalized_path = _normalize_object_store_relative_path(
+                candidate, base_path
+            )
         except ValueError:
             log.warning(
                 "Skipping invalid object store path during cleanup",

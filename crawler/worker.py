@@ -40,7 +40,9 @@ class CrawlerWorker:
         fetcher: Any,
         *,
         ingestion_task: Optional[IngestionTask] = None,
-        ingestion_event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+        ingestion_event_emitter: Optional[
+            Callable[[str, Mapping[str, Any]], None]
+        ] = None,
     ) -> None:
         if ingestion_task is None:
             ingestion_task = run_ingestion_graph

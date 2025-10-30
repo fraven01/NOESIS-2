@@ -20,7 +20,12 @@ from ai_core.rag.vector_space_resolver import (
 )
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import DedupSignatures
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
 
 
 @pytest.fixture(autouse=True)
