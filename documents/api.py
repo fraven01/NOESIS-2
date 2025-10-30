@@ -13,7 +13,7 @@ from types import MappingProxyType
 from typing import Any, Mapping, MutableMapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
-from ai_core.infra import object_store
+from common.object_store import ObjectStore, get_default_object_store
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -21,6 +21,24 @@ from documents.contracts import (
     NormalizedDocument,
 )
 from documents.repository import DocumentLifecycleRecord, DocumentLifecycleStore, DEFAULT_LIFECYCLE_STORE
+
+
+_OBJECT_STORE_OVERRIDE: ObjectStore | None = None
+
+
+def set_object_store(store: ObjectStore | None) -> None:
+    """Override the object store used by :mod:`documents.api`."""
+
+    global _OBJECT_STORE_OVERRIDE
+    _OBJECT_STORE_OVERRIDE = store
+
+
+def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
+    if store is not None:
+        return store
+    if _OBJECT_STORE_OVERRIDE is not None:
+        return _OBJECT_STORE_OVERRIDE
+    return get_default_object_store()
 
 
 def _normalize_mapping(value: Mapping[str, Any] | MutableMapping[str, Any] | None) -> Mapping[str, Any]:
@@ -87,14 +105,14 @@ def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
         return payload.decode("utf-8", errors="replace")
 
 
-def _validate_object_store_path(value: str) -> str:
-    """Return a safe object store path relative to :mod:`ai_core.infra.object_store`."""
+def _validate_object_store_path(value: str, store: ObjectStore) -> str:
+    """Return a safe object store path relative to the configured object store."""
 
     candidate = Path(value)
     if candidate.is_absolute() or candidate.anchor:
         raise ValueError("payload_path_invalid")
 
-    base_path = object_store.BASE_PATH.resolve()
+    base_path = store.BASE_PATH.resolve()
     try:
         resolved = (base_path / candidate).resolve()
     except RuntimeError as exc:  # pragma: no cover - defensive guard
@@ -114,7 +132,7 @@ def _validate_object_store_path(value: str) -> str:
     return relative_path.as_posix()
 
 
-def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
+def _resolve_payload(raw_reference: Mapping[str, Any], store: ObjectStore) -> tuple[bytes, str]:
     if "content" in raw_reference:
         content = _normalize_text(raw_reference.get("content"))
         return content.encode("utf-8"), content
@@ -126,11 +144,11 @@ def _resolve_payload(raw_reference: Mapping[str, Any]) -> tuple[bytes, str]:
             candidate = str(payload_path).strip()
             if candidate:
                 try:
-                    normalized_path = _validate_object_store_path(candidate)
+                    normalized_path = _validate_object_store_path(candidate, store)
                 except ValueError as exc:
                     raise ValueError("payload_path_invalid") from exc
                 try:
-                    payload_bytes = object_store.read_bytes(normalized_path)
+                    payload_bytes = store.read_bytes(normalized_path)
                 except FileNotFoundError as exc:  # pragma: no cover - defensive guard
                     raise ValueError("raw_content_missing") from exc
                 except Exception as exc:  # pragma: no cover - defensive guard
@@ -238,13 +256,15 @@ def normalize_from_raw(
     tenant_id: str,
     case_id: Optional[str] = None,
     request_id: Optional[str] = None,
+    object_store: ObjectStore | None = None,
 ) -> NormalizedDocumentPayload:
     """Normalize crawler raw payloads into a :class:`NormalizedDocument`."""
 
     if not isinstance(raw_reference, Mapping):
         raise TypeError("raw_reference_mapping_required")
 
-    payload_bytes, content = _resolve_payload(raw_reference)
+    store = _resolve_object_store(object_store)
+    payload_bytes, content = _resolve_payload(raw_reference, store)
     media_type = str(
         raw_reference.get("media_type")
         or raw_reference.get("content_type")
@@ -398,6 +418,7 @@ def update_lifecycle_status(
 __all__ = [
     "LifecycleStatusUpdate",
     "NormalizedDocumentPayload",
+    "set_object_store",
     "normalize_from_raw",
     "update_lifecycle_status",
 ]

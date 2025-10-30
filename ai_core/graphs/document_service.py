@@ -9,6 +9,7 @@ from documents import api as documents_api
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+from common.object_store import ObjectStore, get_default_object_store
 
 
 class DocumentLifecycleService(Protocol):
@@ -56,8 +57,15 @@ class DocumentsApiLifecycleService:
         self,
         *,
         repository: Optional[DocumentsRepository] = None,
+        object_store: ObjectStore | None = None,
     ) -> None:
         self._repository = repository
+        self._object_store = object_store
+
+    def _resolve_object_store(self) -> ObjectStore:
+        if self._object_store is not None:
+            return self._object_store
+        return get_default_object_store()
 
     def normalize_from_raw(
         self,
@@ -72,6 +80,7 @@ class DocumentsApiLifecycleService:
             tenant_id=tenant_id,
             case_id=case_id,
             request_id=request_id,
+            object_store=self._resolve_object_store(),
         )
 
     def update_lifecycle_status(
@@ -98,6 +107,10 @@ class DocumentsApiLifecycleService:
     @property
     def repository(self) -> Optional[DocumentsRepository]:
         return self._repository
+
+    @property
+    def object_store(self) -> ObjectStore:
+        return self._resolve_object_store()
 
     def upsert_normalized(
         self,
