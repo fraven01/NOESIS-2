@@ -1849,7 +1849,7 @@ def _build_crawler_state(
 
         try:
             decoded = body_bytes.decode("utf-8", errors="replace")
-        except Exception:  # pragma: no cover - defensive
+        except (UnicodeDecodeError, LookupError):  # pragma: no cover - defensive
             decoded = body_bytes.decode("latin-1", errors="replace")
         decoded = _sanitize_primary_text(decoded)
 

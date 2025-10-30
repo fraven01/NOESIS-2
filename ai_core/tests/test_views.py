@@ -41,6 +41,8 @@ from common.constants import (
 )
 from common.middleware import RequestLogContextMiddleware
 from crawler.errors import CrawlerError, ErrorClass
+from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
+from crawler.frontier import FrontierAction
 from rest_framework import status
 
 
@@ -50,6 +52,15 @@ def _reset_log_context():
         yield
     finally:
         common_logging.clear_log_context()
+
+
+@pytest.fixture(autouse=True)
+def _set_infra_env(monkeypatch):
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm.local")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "test-public")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("LITELLM_API_KEY", "test-key")
 
 
 class DummyRedis:
@@ -1843,6 +1854,122 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     gating_input = builds[0].state.get("gating_input", {})
     assert gating_input.get("limits") is limits
     assert gating_input.get("signals") is signals
+
+
+def test_build_crawler_state_decodes_utf8_payload(monkeypatch):
+    payload = "café".encode("utf-8")
+
+    def _decide_frontier(descriptor, signals):
+        return SimpleNamespace(
+            action=FrontierAction.ENQUEUE, reason=None, policy_events=()
+        )
+
+    class _StubFetcher:
+        def __init__(self, config):
+            self.config = config
+
+        def fetch(self, request):
+            metadata = FetchMetadata(
+                status_code=200,
+                content_type="text/plain",
+                etag=None,
+                last_modified=None,
+                content_length=len(payload),
+            )
+            telemetry = FetchTelemetry(latency=0.1, bytes_downloaded=len(payload))
+            return FetchResult(
+                status=FetchStatus.FETCHED,
+                request=request,
+                payload=payload,
+                metadata=metadata,
+                telemetry=telemetry,
+            )
+
+    monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
+    monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
+    monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(views, "record_span", lambda *a, **k: None)
+    monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
+
+    request = CrawlerRunRequest.model_validate(
+        {
+            "mode": "manual",
+            "workflow_id": "wf-fetch",
+            "origins": [
+                {
+                    "url": "https://example.org/utf8",
+                    "fetch": True,
+                }
+            ],
+        }
+    )
+    meta = {"tenant_id": "tenant-fetch", "case_id": "case-fetch"}
+
+    builds = views._build_crawler_state(meta, request)
+    assert len(builds) == 1
+    primary_text = builds[0].state["parse_input"]["content"].primary_text
+    assert primary_text == "café"
+
+
+def test_build_crawler_state_decodes_with_latin1_fallback(monkeypatch):
+    class _Utf8FailureBytes(bytes):
+        def decode(self, encoding="utf-8", errors="strict"):
+            if encoding == "utf-8":
+                raise UnicodeDecodeError("utf-8", b"", 0, 1, "boom")
+            return super().decode(encoding, errors)
+
+    payload = _Utf8FailureBytes(b"\xff\xfe")
+
+    def _decide_frontier(descriptor, signals):
+        return SimpleNamespace(
+            action=FrontierAction.ENQUEUE, reason=None, policy_events=()
+        )
+
+    class _StubFetcher:
+        def __init__(self, config):
+            self.config = config
+
+        def fetch(self, request):
+            metadata = FetchMetadata(
+                status_code=200,
+                content_type="application/octet-stream",
+                etag=None,
+                last_modified=None,
+                content_length=len(payload),
+            )
+            telemetry = FetchTelemetry(latency=0.1, bytes_downloaded=len(payload))
+            return FetchResult(
+                status=FetchStatus.FETCHED,
+                request=request,
+                payload=payload,
+                metadata=metadata,
+                telemetry=telemetry,
+            )
+
+    monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
+    monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
+    monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(views, "record_span", lambda *a, **k: None)
+    monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
+
+    request = CrawlerRunRequest.model_validate(
+        {
+            "mode": "manual",
+            "workflow_id": "wf-fallback",
+            "origins": [
+                {
+                    "url": "https://example.org/binary",
+                    "fetch": True,
+                }
+            ],
+        }
+    )
+    meta = {"tenant_id": "tenant-binary", "case_id": "case-binary"}
+
+    builds = views._build_crawler_state(meta, request)
+    assert len(builds) == 1
+    primary_text = builds[0].state["parse_input"]["content"].primary_text
+    assert primary_text == "ÿþ"
 
 
 @pytest.mark.django_db
