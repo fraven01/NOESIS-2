@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from ai_core import tasks as ai_tasks
 from ai_core.graphs.crawler_ingestion_graph import GraphTransition
 from ai_core.infra import object_store
@@ -119,6 +121,7 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
         tenant_id="tenant-a",
         case_id="case-b",
         document_id="doc-1",
+        document_metadata={"source": "crawler"},
     )
 
     guardrail_events = [payload for name, payload in events if name == "guardrail_denied"]
@@ -137,7 +140,7 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
 
     request = fetch_result.request
     overrides = {"guardrails": {"max_document_bytes": 1024}}
-    metadata = {"provider": "docs", "tags": ["hr"]}
+    metadata = {"provider": "docs", "tags": ["hr"], "source": "integration"}
     meta_overrides = {"trace_id": "trace-1"}
 
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -167,7 +170,7 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     raw_document = state_payload["raw_document"]
     assert raw_document["document_id"] == "doc-1"
     assert raw_document["metadata"]["provider"] == "docs"
-    assert raw_document["metadata"]["source"] == "crawler"
+    assert raw_document["metadata"]["source"] == "integration"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
     payload_path = raw_document["payload_path"]
     assert payload_path.endswith(".bin")
@@ -203,7 +206,7 @@ def test_worker_returns_failure_without_publishing() -> None:
     assert task.calls == []
 
 
-def test_worker_sets_default_provider_and_source(tmp_path, monkeypatch) -> None:
+def test_worker_sets_default_provider_from_source(tmp_path, monkeypatch) -> None:
     fetch_result = _build_fetch_result(payload=b"payload")
     fetcher = _StubFetcher(fetch_result)
     task = _StubTask()
@@ -214,6 +217,7 @@ def test_worker_sets_default_provider_and_source(tmp_path, monkeypatch) -> None:
     publish_result = worker.process(
         fetch_result.request,
         tenant_id="tenant-a",
+        document_metadata={"source": "crawler"},
     )
 
     assert publish_result.published
@@ -221,3 +225,20 @@ def test_worker_sets_default_provider_and_source(tmp_path, monkeypatch) -> None:
     metadata = state_payload["raw_document"]["metadata"]
     assert metadata["provider"] == "web"
     assert metadata["source"] == "crawler"
+
+
+def test_worker_raises_without_source_metadata(tmp_path, monkeypatch) -> None:
+    fetch_result = _build_fetch_result(payload=b"payload")
+    fetcher = _StubFetcher(fetch_result)
+    task = _StubTask()
+    worker = CrawlerWorker(fetcher, ingestion_task=task)
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    with pytest.raises(ValueError) as excinfo:
+        worker.process(
+            fetch_result.request,
+            tenant_id="tenant-a",
+        )
+
+    assert str(excinfo.value) == "document_metadata.source_required"
