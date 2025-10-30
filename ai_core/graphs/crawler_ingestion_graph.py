@@ -178,6 +178,49 @@ class CrawlerIngestionGraph:
             state["artifacts"] = artifacts
         return artifacts
 
+    def _load_repository_baseline(
+        self, state: Dict[str, Any], normalized: NormalizedDocumentPayload
+    ) -> Dict[str, Any]:
+        repository = self._repository
+        if repository is None:
+            return {}
+        try:
+            existing = repository.get(
+                normalized.tenant_id,
+                normalized.document.ref.document_id,
+                prefer_latest=True,
+                workflow_id=normalized.document.ref.workflow_id,
+            )
+        except (AttributeError, NotImplementedError):
+            return {}
+        except Exception:
+            return {}
+        if existing is None:
+            return {}
+
+        baseline: Dict[str, Any] = {}
+        checksum = getattr(existing, "checksum", None)
+        if checksum:
+            baseline.setdefault("checksum", checksum)
+            baseline.setdefault("content_hash", checksum)
+        ref = getattr(existing, "ref", None)
+        if ref is not None:
+            document_id = getattr(ref, "document_id", None)
+            if document_id is not None:
+                baseline.setdefault("document_id", str(document_id))
+            collection_id = getattr(ref, "collection_id", None)
+            if collection_id is not None:
+                baseline.setdefault("collection_id", str(collection_id))
+            version = getattr(ref, "version", None)
+            if version:
+                baseline.setdefault("version", version)
+        lifecycle_state = getattr(existing, "lifecycle_state", None)
+        if lifecycle_state:
+            lifecycle_text = str(lifecycle_state)
+            baseline.setdefault("lifecycle_state", lifecycle_text)
+            state.setdefault("previous_status", lifecycle_text)
+        return baseline
+
     def _run_normalize(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         raw_reference = self._require(state, "raw_document")
         normalized = self._document_service.normalize_from_raw(
@@ -252,9 +295,24 @@ class CrawlerIngestionGraph:
         normalized: NormalizedDocumentPayload = artifacts[
             "normalized_document"
         ]
+        baseline_input: Dict[str, Any] = {}
+        existing_baseline = state.get("baseline")
+        if isinstance(existing_baseline, Mapping):
+            baseline_input.update(dict(existing_baseline))
+
+        needs_repository = (
+            (not baseline_input.get("checksum"))
+            or not state.get("previous_status")
+        )
+        if needs_repository:
+            repository_baseline = self._load_repository_baseline(state, normalized)
+            for key, value in repository_baseline.items():
+                baseline_input.setdefault(key, value)
+
+        state["baseline"] = baseline_input
         decision = self._delta_decider(
             normalized_document=normalized,
-            baseline=state.get("baseline"),
+            baseline=baseline_input,
         )
         artifacts["delta_decision"] = decision
         status_update = self._document_service.update_lifecycle_status(
