@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any, Callable, Protocol, runtime_checkable
 
@@ -37,6 +38,7 @@ class ObjectStore(Protocol):
 
 
 _ObjectStoreFactory: Callable[[], ObjectStore] | None = None
+_BOOTSTRAP_MODULES: tuple[str, ...] = ("common.object_store_defaults",)
 
 
 def set_default_object_store_factory(factory: Callable[[], ObjectStore]) -> None:
@@ -46,8 +48,27 @@ def set_default_object_store_factory(factory: Callable[[], ObjectStore]) -> None
     _ObjectStoreFactory = factory
 
 
+def _bootstrap_default_factory() -> None:
+    global _ObjectStoreFactory
+
+    if _ObjectStoreFactory is not None:
+        return
+
+    for module_name in _BOOTSTRAP_MODULES:
+        try:
+            importlib.import_module(module_name)
+        except ModuleNotFoundError:  # pragma: no cover - defensive guard
+            continue
+
+        if _ObjectStoreFactory is not None:
+            break
+
+
 def get_default_object_store() -> ObjectStore:
     """Return the configured default :class:`ObjectStore`."""
+
+    if _ObjectStoreFactory is None:
+        _bootstrap_default_factory()
 
     if _ObjectStoreFactory is None:
         raise RuntimeError("object_store_factory_not_configured")
