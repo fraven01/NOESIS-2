@@ -204,9 +204,7 @@ def test_processing_phase_coerce_aliases():
         DocumentProcessingPhase.coerce(DocumentProcessingPhase.FULL)
         is DocumentProcessingPhase.FULL
     )
-    assert (
-        DocumentProcessingPhase.coerce(None) is DocumentProcessingPhase.FULL
-    )
+    assert DocumentProcessingPhase.coerce(None) is DocumentProcessingPhase.FULL
 
 
 @pytest.mark.parametrize(

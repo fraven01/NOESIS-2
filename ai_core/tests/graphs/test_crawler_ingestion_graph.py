@@ -164,9 +164,7 @@ def _build_state(
         ),
         "normalized_document_input": normalized_payload.document,
     }
-    state.setdefault(
-        "document_id", str(normalized_payload.document.ref.document_id)
-    )
+    state.setdefault("document_id", str(normalized_payload.document.ref.document_id))
     if frontier is not None:
         state["frontier"] = dict(frontier)
     return state
@@ -401,10 +399,7 @@ def test_embedding_failure_marks_error_and_status() -> None:
     errors = updated_state["artifacts"].get("errors") or []
     assert errors and errors[0]["node"] == "ingest"
     statuses = updated_state["artifacts"].get("status_updates", [])
-    assert any(
-        status.to_dict().get("reason") == "ingest_failed"
-        for status in statuses
-    )
+    assert any(status.to_dict().get("reason") == "ingest_failed" for status in statuses)
 
 
 class RecordingDocumentLifecycleService(DocumentLifecycleService):

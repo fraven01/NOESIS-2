@@ -845,6 +845,7 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     )
 
     document_id = str(uuid.uuid4())
+
     class _StubVectorClient:
         def upsert_chunks(self, chunks):  # type: ignore[no-untyped-def]
             return len(list(chunks))

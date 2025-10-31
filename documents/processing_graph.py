@@ -44,7 +44,9 @@ except ModuleNotFoundError:  # pragma: no cover - fallback for test environments
                     try:
                         current = mapping[key]
                     except KeyError as exc:  # pragma: no cover - defensive guard
-                        raise RuntimeError(f"conditional_missing:{current}:{key}") from exc
+                        raise RuntimeError(
+                            f"conditional_missing:{current}:{key}"
+                        ) from exc
                 else:  # pragma: no cover - defensive guard
                     raise RuntimeError(f"transition_invalid:{current}:{kind}")
             return state
@@ -93,7 +95,9 @@ class DocumentProcessingPhase(str, Enum):
     FULL = "full"
 
     @classmethod
-    def coerce(cls, value: Optional[str | "DocumentProcessingPhase"]) -> "DocumentProcessingPhase":
+    def coerce(
+        cls, value: Optional[str | "DocumentProcessingPhase"]
+    ) -> "DocumentProcessingPhase":
         if value is None:
             return cls.FULL
         if isinstance(value, cls):
@@ -214,15 +218,13 @@ def build_document_processing_graph(
         config = state.config
         metadata = context.metadata
 
-        chunk_done = (
-            pipeline_module._state_rank(current_state)
-            >= pipeline_module._state_rank(pipeline_module.ProcessingState.CHUNKED)
-        )
-        assets_done = (
-            pipeline_module._state_rank(current_state)
-            >= pipeline_module._state_rank(
-                pipeline_module.ProcessingState.ASSETS_EXTRACTED
-            )
+        chunk_done = pipeline_module._state_rank(
+            current_state
+        ) >= pipeline_module._state_rank(pipeline_module.ProcessingState.CHUNKED)
+        assets_done = pipeline_module._state_rank(
+            current_state
+        ) >= pipeline_module._state_rank(
+            pipeline_module.ProcessingState.ASSETS_EXTRACTED
         )
 
         should_parse = not chunk_done or not assets_done
@@ -315,10 +317,9 @@ def build_document_processing_graph(
         metadata = context.metadata
         workflow_id = metadata.workflow_id
 
-        caption_done = (
-            pipeline_module._state_rank(context.state)
-            >= pipeline_module._state_rank(pipeline_module.ProcessingState.CAPTIONED)
-        )
+        caption_done = pipeline_module._state_rank(
+            context.state
+        ) >= pipeline_module._state_rank(pipeline_module.ProcessingState.CAPTIONED)
 
         if config.enable_asset_captions and not caption_done:
 
@@ -396,10 +397,9 @@ def build_document_processing_graph(
         metadata = context.metadata
         workflow_id = metadata.workflow_id
 
-        chunk_done = (
-            pipeline_module._state_rank(context.state)
-            >= pipeline_module._state_rank(pipeline_module.ProcessingState.CHUNKED)
-        )
+        chunk_done = pipeline_module._state_rank(
+            context.state
+        ) >= pipeline_module._state_rank(pipeline_module.ProcessingState.CHUNKED)
         if chunk_done:
             return state
 
@@ -481,7 +481,9 @@ def build_document_processing_graph(
 
         return _route
 
-    def _checkpoint_node(name: str) -> Callable[[DocumentProcessingState], DocumentProcessingState]:
+    def _checkpoint_node(
+        name: str,
+    ) -> Callable[[DocumentProcessingState], DocumentProcessingState]:
         def _runner(state: DocumentProcessingState) -> DocumentProcessingState:
             state.mark_phase(name)
             return state

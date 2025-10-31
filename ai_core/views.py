@@ -2556,15 +2556,16 @@ class CrawlerIngestionRunnerView(APIView):
 
             origin_snapshot = {
                 "workflow_id": result_state.get("workflow_id"),
-                "document_id": normalized_document_id or result_state.get("document_id"),
+                "document_id": normalized_document_id
+                or result_state.get("document_id"),
                 "origin_uri": result_state.get("origin_uri"),
                 "provider": result_state.get("provider"),
                 "tags": list(normalized_tags),
                 "snapshot_requested": build.snapshot_requested,
                 "snapshot_label": build.snapshot_label,
             }
-            content_hash_value = (
-                normalized_content_hash or result_state.get("content_hash")
+            content_hash_value = normalized_content_hash or result_state.get(
+                "content_hash"
             )
             origin_snapshot["content_hash"] = content_hash_value
             if build.snapshot_path:

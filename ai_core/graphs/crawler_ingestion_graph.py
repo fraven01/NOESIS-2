@@ -285,7 +285,9 @@ class CrawlerIngestionGraph:
         if isinstance(graph_run_id, str) and graph_run_id.strip():
             metadata.setdefault("graph_run_id", graph_run_id.strip())
 
-        return {key: value for key, value in metadata.items() if value not in (None, "")}
+        return {
+            key: value for key, value in metadata.items() if value not in (None, "")
+        }
 
     def _annotate_span(
         self,
@@ -413,14 +415,20 @@ class CrawlerIngestionGraph:
         if not isinstance(normalized_input, NormalizedDocument):
             raise KeyError("normalized_document_input_missing")
 
-        review_value = str(state.get("review") or state.get("control", {}).get("review") or "")
+        review_value = str(
+            state.get("review") or state.get("control", {}).get("review") or ""
+        )
         review_value = review_value.strip().lower()
         if review_value == "required":
             tags = list(normalized_input.meta.tags or [])
             if "pending_review" not in tags:
                 tags.append("pending_review")
-                meta_copy = normalized_input.meta.model_copy(update={"tags": tags}, deep=True)
-                normalized_input = normalized_input.model_copy(update={"meta": meta_copy}, deep=True)
+                meta_copy = normalized_input.meta.model_copy(
+                    update={"tags": tags}, deep=True
+                )
+                normalized_input = normalized_input.model_copy(
+                    update={"meta": meta_copy}, deep=True
+                )
 
         payload_bytes = document_payload_bytes(normalized_input)
         try:
@@ -657,12 +665,10 @@ class CrawlerIngestionGraph:
         if not decision.allowed:
             reason_label = (decision.reason or "").strip() or "unknown"
             workflow_label = (
-                (normalized.document.ref.workflow_id or "").strip() or "unknown"
-            )
+                normalized.document.ref.workflow_id or ""
+            ).strip() or "unknown"
             tenant_label = (normalized.tenant_id or "").strip() or "unknown"
-            source_label = (
-                (normalized.document.source or "").strip() or "unknown"
-            )
+            source_label = (normalized.document.source or "").strip() or "unknown"
             document_metrics.GUARDRAIL_DENIAL_REASON_TOTAL.inc(
                 reason=reason_label,
                 workflow_id=workflow_label,
@@ -709,7 +715,9 @@ class CrawlerIngestionGraph:
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         dry_run = bool(state.get("dry_run"))
-        review_value = str(state.get("review") or state.get("control", {}).get("review") or "")
+        review_value = str(
+            state.get("review") or state.get("control", {}).get("review") or ""
+        )
         review_value = review_value.strip().lower()
         if dry_run:
             run_until = DocumentProcessingPhase.PARSE_ONLY
@@ -933,7 +941,9 @@ class CrawlerIngestionGraph:
         )
 
         pipeline_error = artifacts.get("document_pipeline_error")
-        review_value = str(state.get("review") or state.get("control", {}).get("review") or "").strip()
+        review_value = str(
+            state.get("review") or state.get("control", {}).get("review") or ""
+        ).strip()
         handler = getattr(self, "upsert_handler", None)
         if (
             callable(handler)

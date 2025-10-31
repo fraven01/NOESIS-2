@@ -2235,7 +2235,7 @@ def test_crawler_runner_propagates_idempotency_key(
             updated["normalized_document_input"] = {
                 "ref": {"document_id": updated.get("document_id")},
                 "meta": {"tags": []},
-                "checksum": f"hash-{updated['document_id']}"
+                "checksum": f"hash-{updated['document_id']}",
             }
             updated["transitions"] = {"crawler.ingest_decision": {"decision": "upsert"}}
             updated["ingest_action"] = "upsert"

@@ -1113,9 +1113,7 @@ class DocumentProcessingOrchestrator:
             ),
             workflow_id=workflow_id,
         ):
-            log_extra_entry(
-                **document_log_fields(document), state=context.state.value
-            )
+            log_extra_entry(**document_log_fields(document), state=context.state.value)
             graph_state = DocumentProcessingState(
                 document=document,
                 config=self.config,
