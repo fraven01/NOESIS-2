@@ -12,12 +12,16 @@ from types import ModuleType
 from importlib import import_module
 from urllib.parse import urlsplit
 from uuid import uuid4, uuid5
+import base64
+
+from datetime import timezone as datetime_timezone
 
 from django.conf import settings
 from django.db import connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, HttpResponse
+from django.utils import timezone
 
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -65,10 +69,10 @@ from crawler.frontier import (
     decide_frontier_action,
 )
 from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
-from documents.parsers import ParseStatus, ParserContent, compute_parser_stats
 from documents.contract_utils import (
     normalize_media_type as normalize_document_media_type,
 )
+from documents.contracts import InlineBlob, NormalizedDocument
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
@@ -1702,6 +1706,7 @@ def _build_crawler_state(
         fetch_backoff_total_ms: float | None = None
         snapshot_path: str | None = None
         snapshot_sha256: str | None = None
+        etag_value: str | None = None
 
         if need_fetch:
             decision = decide_frontier_action(descriptor, CrawlSignals())
@@ -1810,6 +1815,7 @@ def _build_crawler_state(
             )
             if failure is not None:
                 fetch_input["failure"] = failure
+            etag_value = getattr(fetch_result.metadata, "etag", None)
         else:
             if origin.content is None:
                 raise ValueError(
@@ -1847,35 +1853,59 @@ def _build_crawler_state(
             "error_builder": _build_guardrail_error,
         }
 
-        try:
-            decoded = body_bytes.decode("utf-8", errors="replace")
-        except (UnicodeDecodeError, LookupError):  # pragma: no cover - defensive
-            decoded = body_bytes.decode("latin-1", errors="replace")
-        decoded = _sanitize_primary_text(decoded)
-
-        parse_content = ParserContent(
-            media_type=effective_content_type,
-            primary_text=decoded,
-            title=origin.title or request_data.title,
-            content_language=origin.language or request_data.language,
-        )
-        parse_stats = compute_parser_stats(
-            primary_text=decoded,
-            extraction_path="crawler.manual",
-        )
-        parse_input = {
-            "status": ParseStatus.PARSED,
-            "content": parse_content,
-            "stats": parse_stats,
-        }
-
-        normalize_input = {
-            "source": source,
-            "document_id": document_id,
-            "tags": tags,
-        }
-
         gating_input = {"limits": limits, "signals": guardrail_signals}
+
+        fetched_at = timezone.now().astimezone(datetime_timezone.utc)
+        document_uuid = _resolve_document_uuid(document_id)
+        if document_uuid is None:
+            document_uuid = uuid4()
+        document_id = str(document_uuid)
+
+        collection_uuid = _resolve_document_uuid(
+            request_data.collection_id if request_data.collection_id else None
+        )
+
+        encoded_payload = base64.b64encode(body_bytes).decode("ascii")
+        blob = InlineBlob(
+            type="inline",
+            media_type=effective_content_type,
+            base64=encoded_payload,
+            sha256=hashlib.sha256(body_bytes).hexdigest(),
+            size=len(body_bytes),
+        )
+
+        external_ref: dict[str, str] = {
+            "provider": source.provider,
+            "external_id": source.external_id,
+        }
+        original_requested_id = origin.document_id or request_data.document_id
+        if original_requested_id:
+            external_ref["crawler_document_id"] = str(original_requested_id)
+        if etag_value:
+            external_ref["etag"] = str(etag_value)
+
+        normalized_document_input = NormalizedDocument(
+            ref={
+                "tenant_id": str(meta.get("tenant_id")),
+                "workflow_id": str(workflow_id),
+                "document_id": document_uuid,
+                "collection_id": collection_uuid,
+            },
+            meta={
+                "tenant_id": str(meta.get("tenant_id")),
+                "workflow_id": str(workflow_id),
+                "title": origin.title or request_data.title,
+                "language": origin.language or request_data.language,
+                "tags": list(tags),
+                "origin_uri": source.canonical_source,
+                "crawl_timestamp": fetched_at,
+                "external_ref": external_ref,
+            },
+            blob=blob,
+            checksum=blob.sha256,
+            created_at=fetched_at,
+            source="crawler",
+        )
 
         if snapshot_requested and body_bytes:
             tenant_id = str(meta.get("tenant_id"))
@@ -1883,7 +1913,7 @@ def _build_crawler_state(
             snapshot_path, snapshot_sha256 = _write_snapshot(
                 tenant=tenant_id,
                 case=case_id,
-                payload=body_bytes,
+                payload=blob.decoded_payload(),
             )
         else:
             snapshot_path = None
@@ -1898,13 +1928,12 @@ def _build_crawler_state(
             "provider": source.provider,
             "frontier_input": frontier_input,
             "fetch_input": fetch_input,
-            "parse_input": parse_input,
-            "normalize_input": normalize_input,
             "delta_input": {},
             "gating_input": gating_input,
             "guardrails": guardrail_payload,
             "document_id": document_id,
             "collection_id": request_data.collection_id,
+            "normalized_document_input": normalized_document_input,
         }
         control: dict[str, object] = {
             "snapshot": snapshot_requested,
@@ -2491,19 +2520,53 @@ class CrawlerIngestionRunnerView(APIView):
                 )
                 break
 
+            normalized_input = result_state.get("normalized_document_input")
+            normalized_document_id: str | None = None
+            normalized_tags: Sequence[str] = ()
+            normalized_content_hash: str | None = None
+            if isinstance(normalized_input, NormalizedDocument):
+                normalized_document_id = str(normalized_input.ref.document_id)
+                normalized_tags = tuple(normalized_input.meta.tags or [])
+                normalized_content_hash = normalized_input.checksum
+            elif isinstance(normalized_input, Mapping):
+                ref_candidate = normalized_input.get("ref")
+                if isinstance(ref_candidate, Mapping):
+                    ref_document_id = ref_candidate.get("document_id")
+                    if ref_document_id is not None:
+                        normalized_document_id = str(ref_document_id)
+                tags_candidate = normalized_input.get("meta")
+                if isinstance(tags_candidate, Mapping):
+                    meta_tags = tags_candidate.get("tags")
+                    if isinstance(meta_tags, Sequence) and not isinstance(
+                        meta_tags, (str, bytes, bytearray)
+                    ):
+                        normalized_tags = tuple(str(tag) for tag in meta_tags)
+                    checksum_candidate = tags_candidate.get("checksum")
+                    if isinstance(checksum_candidate, str):
+                        normalized_content_hash = checksum_candidate
+                checksum_value = normalized_input.get("checksum")
+                if isinstance(checksum_value, str):
+                    normalized_content_hash = checksum_value
+                elif isinstance(normalized_input.get("tags"), Sequence):
+                    tags_value = normalized_input.get("tags")
+                    if isinstance(tags_value, Sequence) and not isinstance(
+                        tags_value, (str, bytes, bytearray)
+                    ):
+                        normalized_tags = tuple(str(tag) for tag in tags_value)
+
             origin_snapshot = {
                 "workflow_id": result_state.get("workflow_id"),
-                "document_id": result_state.get("normalize_input", {}).get(
-                    "document_id"
-                )
-                or result_state.get("document_id"),
+                "document_id": normalized_document_id or result_state.get("document_id"),
                 "origin_uri": result_state.get("origin_uri"),
                 "provider": result_state.get("provider"),
-                "content_hash": result_state.get("content_hash"),
-                "tags": list(result_state.get("normalize_input", {}).get("tags", ())),
+                "tags": list(normalized_tags),
                 "snapshot_requested": build.snapshot_requested,
                 "snapshot_label": build.snapshot_label,
             }
+            content_hash_value = (
+                normalized_content_hash or result_state.get("content_hash")
+            )
+            origin_snapshot["content_hash"] = content_hash_value
             if build.snapshot_path:
                 origin_snapshot["snapshot_path"] = build.snapshot_path
             if build.snapshot_sha256:

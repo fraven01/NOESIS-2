@@ -44,6 +44,7 @@ from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
 from crawler.frontier import FrontierAction
 from rest_framework import status
+from documents.contracts import NormalizedDocument
 
 
 @pytest.fixture(autouse=True)
@@ -1856,7 +1857,7 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     assert gating_input.get("signals") is signals
 
 
-def test_build_crawler_state_decodes_utf8_payload(monkeypatch):
+def test_build_crawler_state_builds_normalized_document(monkeypatch):
     payload = "café".encode("utf-8")
 
     def _decide_frontier(descriptor, signals):
@@ -1893,7 +1894,6 @@ def test_build_crawler_state_decodes_utf8_payload(monkeypatch):
 
     request = CrawlerRunRequest.model_validate(
         {
-            "mode": "manual",
             "workflow_id": "wf-fetch",
             "origins": [
                 {
@@ -1907,11 +1907,16 @@ def test_build_crawler_state_decodes_utf8_payload(monkeypatch):
 
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
-    primary_text = builds[0].state["parse_input"]["content"].primary_text
-    assert primary_text == "café"
+    normalized = builds[0].state.get("normalized_document_input")
+    assert isinstance(normalized, NormalizedDocument)
+    assert normalized.meta.origin_uri == "https://example.org/utf8"
+    assert normalized.meta.tags == []
+    assert normalized.source == "crawler"
+    assert normalized.blob.media_type == "text/plain"
+    assert normalized.blob.decoded_payload() == payload
 
 
-def test_build_crawler_state_decodes_with_latin1_fallback(monkeypatch):
+def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     class _Utf8FailureBytes(bytes):
         def decode(self, encoding="utf-8", errors="strict"):
             if encoding == "utf-8":
@@ -1954,7 +1959,6 @@ def test_build_crawler_state_decodes_with_latin1_fallback(monkeypatch):
 
     request = CrawlerRunRequest.model_validate(
         {
-            "mode": "manual",
             "workflow_id": "wf-fallback",
             "origins": [
                 {
@@ -1968,8 +1972,11 @@ def test_build_crawler_state_decodes_with_latin1_fallback(monkeypatch):
 
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
-    primary_text = builds[0].state["parse_input"]["content"].primary_text
-    assert primary_text == "ÿþ"
+    normalized = builds[0].state.get("normalized_document_input")
+    assert isinstance(normalized, NormalizedDocument)
+    assert normalized.blob.media_type == "application/octet-stream"
+    assert normalized.blob.size == len(payload)
+    assert normalized.blob.decoded_payload() == payload
 
 
 @pytest.mark.django_db
@@ -2106,9 +2113,10 @@ def test_crawler_runner_manual_multi_origin(
             control = dict(cloned.get("control", {}))
             control.setdefault("shadow_mode", True)
             cloned["control"] = control
-            cloned["normalize_input"] = {
-                "document_id": cloned.get("document_id"),
-                "tags": control.get("tags", []),
+            cloned["normalized_document_input"] = {
+                "ref": {"document_id": cloned.get("document_id")},
+                "meta": {"tags": control.get("tags", [])},
+                "checksum": f"hash-{cloned['document_id']}",
             }
             cloned["transitions"] = {
                 "crawler.fetch": {"decision": "skipped"},
@@ -2116,7 +2124,6 @@ def test_crawler_runner_manual_multi_origin(
             }
             cloned["ingest_action"] = "upsert"
             cloned["gating_score"] = 0.95
-            cloned["content_hash"] = f"hash-{cloned['document_id']}"
             return cloned
 
         def run(self, state, meta):
@@ -2225,7 +2232,11 @@ def test_crawler_runner_propagates_idempotency_key(
         def start_crawl(self, state):  # type: ignore[no-untyped-def]
             updated = dict(state)
             updated.setdefault("control", {})
-            updated["normalize_input"] = {"document_id": updated.get("document_id")}
+            updated["normalized_document_input"] = {
+                "ref": {"document_id": updated.get("document_id")},
+                "meta": {"tags": []},
+                "checksum": f"hash-{updated['document_id']}"
+            }
             updated["transitions"] = {"crawler.ingest_decision": {"decision": "upsert"}}
             updated["ingest_action"] = "upsert"
             updated["gating_score"] = 1.0

@@ -51,6 +51,11 @@ from .parsers import (
     ParsedTextBlock,
     ParserDispatcher,
 )
+from .processing_graph import (
+    DocumentProcessingPhase,
+    DocumentProcessingState,
+    build_document_processing_graph,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - imported for typing only
     from .captioning import MultimodalCaptioner
@@ -1053,8 +1058,6 @@ class DocumentProcessingOrchestrator:
         chunker: DocumentChunker,
         config: Optional[DocumentPipelineConfig] = None,
     ) -> None:
-        from .captioning import AssetExtractionPipeline
-
         parse_fn = getattr(parser, "parse", None)
         if not callable(parse_fn):
             raise TypeError("parser_missing_parse")
@@ -1067,11 +1070,12 @@ class DocumentProcessingOrchestrator:
         self.captioner = captioner
         self.chunker = chunker
         self.config = config or DocumentPipelineConfig()
-        self._caption_pipeline = AssetExtractionPipeline(
-            repository=repository,
-            storage=storage,
-            captioner=captioner,
-            config=self.config,
+        self._graph = build_document_processing_graph(
+            parser=self._parser,
+            repository=self.repository,
+            storage=self.storage,
+            captioner=self.captioner,
+            chunker=self.chunker,
         )
 
     def process(
@@ -1080,6 +1084,7 @@ class DocumentProcessingOrchestrator:
         *,
         context: Optional[DocumentProcessingContext] = None,
         case_id: Optional[str] = None,
+        run_until: DocumentProcessingPhase | str | None = None,
     ) -> DocumentProcessingOutcome:
         document_stats = dict(getattr(document.meta, "parse_stats", {}) or {})
         stats_state = _state_from_stats(document_stats)
@@ -1099,12 +1104,6 @@ class DocumentProcessingOrchestrator:
         metadata = context.metadata
         workflow_id = metadata.workflow_id
 
-        parse_artifact: Optional[DocumentParseArtifact] = None
-        chunk_artifact: Optional[DocumentChunkArtifact] = None
-        parsed_result: Optional[ParsedResult] = None
-        current_document = document
-        current_state = context.state
-
         with log_context(
             trace_id=context.trace_id,
             span_id=context.span_id,
@@ -1114,232 +1113,27 @@ class DocumentProcessingOrchestrator:
             ),
             workflow_id=workflow_id,
         ):
-            log_extra_entry(**document_log_fields(document), state=current_state.value)
+            log_extra_entry(
+                **document_log_fields(document), state=context.state.value
+            )
+            graph_state = DocumentProcessingState(
+                document=document,
+                config=self.config,
+                context=context,
+                run_until=run_until,
+            )
+            final_state: DocumentProcessingState = graph_state
             try:
-                chunk_done = _state_rank(current_state) >= _state_rank(
-                    ProcessingState.CHUNKED
-                )
-                assets_done = _state_rank(current_state) >= _state_rank(
-                    ProcessingState.ASSETS_EXTRACTED
-                )
-
-                should_parse = not chunk_done or not assets_done
-
-                if should_parse:
-
-                    def _parse_action() -> ParsedResult:
-                        log_extra_entry(phase="parse")
-                        result = self._parser.parse(document, self.config)
-                        log_extra_exit(
-                            parsed_blocks=len(result.text_blocks),
-                            parsed_assets=len(result.assets),
-                        )
-                        return result
-
-                    parsed_result = _run_phase(
-                        "parse.dispatch",
-                        "pipeline.parse",
-                        workflow_id=workflow_id,
-                        attributes={
-                            "tenant_id": metadata.tenant_id,
-                            "document_id": str(metadata.document_id),
-                        },
-                        action=_parse_action,
-                    )
-
-                    parse_artifact = persist_parsed_document(
-                        context,
-                        document,
-                        parsed_result,
-                        repository=self.repository,
-                        storage=self.storage,
-                    )
-                    context = parse_artifact.asset_context
-                    current_state = context.state
-                    stats = parse_artifact.statistics
-                    ocr_triggers = len(stats.get("ocr.triggered_pages", []) or [])
-                    _observe_counts(
-                        workflow_id=workflow_id,
-                        blocks=int(stats.get("parse.blocks.total", 0)),
-                        assets=int(stats.get("parse.assets.total", 0)),
-                        ocr_triggers=ocr_triggers,
-                    )
-                    current_document = self.repository.get(
-                        metadata.tenant_id,
-                        metadata.document_id,
-                        version=metadata.version,
-                        workflow_id=workflow_id,
-                    )
-                    if current_document is None:
-                        raise RuntimeError("document_missing_after_parse")
-                    document_stats = dict(
-                        getattr(current_document.meta, "parse_stats", {}) or {}
-                    )
-                else:
-                    current_document = (
-                        self.repository.get(
-                            metadata.tenant_id,
-                            metadata.document_id,
-                            version=metadata.version,
-                            workflow_id=workflow_id,
-                        )
-                        or current_document
-                    )
-
-                caption_done = _state_rank(current_state) >= _state_rank(
-                    ProcessingState.CAPTIONED
-                )
-
-                if self.config.enable_asset_captions and not caption_done:
-
-                    def _caption_action() -> Any:
-                        log_extra_entry(phase="caption")
-                        result = self._caption_pipeline.process_document(
-                            current_document
-                        )
-                        log_extra_exit(asset_count=len(result.assets))
-                        return result
-
-                    current_document = _run_phase(
-                        "assets.caption.process",
-                        "pipeline.assets.caption",
-                        workflow_id=workflow_id,
-                        attributes={"document_id": str(metadata.document_id)},
-                        action=_caption_action,
-                    )
-
-                    image_assets = [
-                        asset
-                        for asset in current_document.assets
-                        if is_image_mediatype(getattr(asset, "media_type", ""))
-                    ]
-                    attempts = len(image_assets)
-                    hits = sum(
-                        1
-                        for asset in image_assets
-                        if asset.caption_method == "vlm_caption"
-                    )
-                    ocr_fallbacks = sum(
-                        1
-                        for asset in image_assets
-                        if asset.caption_method == "ocr_only"
-                    )
-                    hit_rate = hits / attempts if attempts else 0.0
-                    updates = {
-                        "caption.state": ProcessingState.CAPTIONED.value,
-                        "caption.total_assets": attempts,
-                        "caption.vlm_hits": hits,
-                        "caption.ocr_fallbacks": ocr_fallbacks,
-                        "caption.hit_rate": hit_rate,
-                    }
-                    current_document = _update_document_stats(
-                        current_document,
-                        updates,
-                        repository=self.repository,
-                        workflow_id=workflow_id,
-                    )
-                    document_stats = dict(
-                        getattr(current_document.meta, "parse_stats", {}) or {}
-                    )
-                    context = context.transition(ProcessingState.CAPTIONED)
-                    current_state = context.state
-                    _observe_caption_metrics(
-                        workflow_id=workflow_id,
-                        hits=hits,
-                        attempts=attempts,
-                    )
-                elif not self.config.enable_asset_captions and not caption_done:
-                    current_document = _update_document_stats(
-                        current_document,
-                        {"caption.state": ProcessingState.CAPTIONED.value},
-                        repository=self.repository,
-                        workflow_id=workflow_id,
-                    )
-                    document_stats = dict(
-                        getattr(current_document.meta, "parse_stats", {}) or {}
-                    )
-                    context = context.transition(ProcessingState.CAPTIONED)
-                    current_state = context.state
-
-                chunk_done = _state_rank(current_state) >= _state_rank(
-                    ProcessingState.CHUNKED
-                )
-
-                if not chunk_done:
-                    if parsed_result is None:
-
-                        def _parse_refresh() -> ParsedResult:
-                            log_extra_entry(phase="parse")
-                            result = self._parser.parse(current_document, self.config)
-                            log_extra_exit(
-                                parsed_blocks=len(result.text_blocks),
-                                parsed_assets=len(result.assets),
-                            )
-                            return result
-
-                        parsed_result = _run_phase(
-                            "parse.dispatch",
-                            "pipeline.parse",
-                            workflow_id=workflow_id,
-                            attributes={
-                                "tenant_id": metadata.tenant_id,
-                                "document_id": str(metadata.document_id),
-                                "retry": True,
-                            },
-                            action=_parse_refresh,
-                        )
-
-                    def _chunk_action() -> (
-                        Tuple[Sequence[Mapping[str, Any]], Mapping[str, Any]]
-                    ):
-                        log_extra_entry(phase="chunk")
-                        result = self.chunker.chunk(
-                            current_document,
-                            parsed_result,
-                            context=context,
-                            config=self.config,
-                        )
-                        chunks, stats = result
-                        log_extra_exit(chunk_count=len(chunks))
-                        return result
-
-                    chunks, chunk_stats = _run_phase(
-                        "chunk.generate",
-                        "pipeline.chunk",
-                        workflow_id=workflow_id,
-                        attributes={"document_id": str(metadata.document_id)},
-                        action=_chunk_action,
-                    )
-
-                    chunk_stats = dict(chunk_stats or {})
-                    chunk_stats["chunk.state"] = ProcessingState.CHUNKED.value
-                    chunk_stats.setdefault("chunk.count", len(chunks))
-
-                    current_document = _update_document_stats(
-                        current_document,
-                        chunk_stats,
-                        repository=self.repository,
-                        workflow_id=workflow_id,
-                    )
-                    document_stats = dict(
-                        getattr(current_document.meta, "parse_stats", {}) or {}
-                    )
-                    context = context.transition(ProcessingState.CHUNKED)
-                    current_state = context.state
-
-                    chunk_artifact = DocumentChunkArtifact(
-                        context=context,
-                        chunks=tuple(chunks),
-                        statistics=chunk_stats,
-                    )
+                final_state = self._graph.invoke(graph_state)
             finally:
-                log_extra_exit(final_state=current_state.value)
+                final_context = final_state.context.state
+                log_extra_exit(final_state=final_context.value)
 
         return DocumentProcessingOutcome(
-            document=current_document,
-            context=context,
-            parse_artifact=parse_artifact,
-            chunk_artifact=chunk_artifact,
+            document=final_state.document,
+            context=final_state.context,
+            parse_artifact=final_state.parse_artifact,
+            chunk_artifact=final_state.chunk_artifact,
         )
 
 
