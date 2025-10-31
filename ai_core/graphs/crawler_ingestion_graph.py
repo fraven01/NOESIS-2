@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 import traceback
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
 from uuid import uuid4
 
@@ -14,7 +15,28 @@ from ai_core.infra.observability import emit_event, observe_span, update_observa
 from documents import metrics as document_metrics
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
+from documents.normalization import document_payload_bytes, normalized_primary_text
+from documents.pipeline import (
+    DocumentPipelineConfig,
+    DocumentProcessingContext,
+    require_document_components,
+)
+from documents.processing_graph import (
+    DocumentProcessingPhase,
+    DocumentProcessingState,
+    build_document_processing_graph,
+)
 from documents.repository import DocumentsRepository
+from documents.parsers import ParserDispatcher, ParserRegistry
+from documents.cli import SimpleDocumentChunker
+from documents import (
+    DocxDocumentParser,
+    HtmlDocumentParser,
+    MarkdownDocumentParser,
+    PdfDocumentParser,
+    PptxDocumentParser,
+    TextDocumentParser,
+)
 from .document_service import (
     DocumentLifecycleService,
     DocumentPersistenceService,
@@ -95,6 +117,11 @@ class CrawlerIngestionGraph:
             ..., Mapping[str, Any]
         ] = ai_core_api.build_completion_payload,
         event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None,
+        parser_dispatcher: ParserDispatcher | None = None,
+        storage: Any | None = None,
+        captioner: Any | None = None,
+        chunker: Any | None = None,
+        pipeline_config: DocumentPipelineConfig | None = None,
     ) -> None:
         self._document_service = document_service
         persistence_candidate = document_persistence
@@ -118,6 +145,65 @@ class CrawlerIngestionGraph:
         self._embedding_handler = embedding_handler
         self._completion_builder = completion_builder
         self._event_emitter = event_emitter
+
+        components = require_document_components()
+
+        if parser_dispatcher is None:
+            registry = ParserRegistry(
+                [
+                    MarkdownDocumentParser(),
+                    HtmlDocumentParser(),
+                    DocxDocumentParser(),
+                    PptxDocumentParser(),
+                    PdfDocumentParser(),
+                    TextDocumentParser(),
+                ]
+            )
+            parser_dispatcher = ParserDispatcher(registry)
+        self._parser_dispatcher = parser_dispatcher
+
+        if storage is None and self._repository is not None:
+            storage = getattr(self._repository, "storage", None)
+            if storage is None:
+                storage = getattr(self._repository, "_storage", None)
+        if storage is None:
+            storage_candidate = components.storage
+            try:
+                storage = storage_candidate()  # type: ignore[call-arg]
+            except Exception:
+                storage = storage_candidate
+        self._storage = storage
+
+        if captioner is None:
+            captioner_cls = components.captioner
+            try:
+                captioner = captioner_cls()  # type: ignore[call-arg]
+            except Exception:
+                captioner = captioner_cls
+        self._captioner = captioner
+
+        if chunker is None:
+            chunker = SimpleDocumentChunker()
+        self._chunker = chunker
+
+        self._pipeline_config = pipeline_config or DocumentPipelineConfig()
+
+        if self._repository is None:
+            raise RuntimeError("documents_repository_not_configured")
+        if self._storage is None:
+            raise RuntimeError("documents_storage_not_configured")
+        if self._captioner is None:
+            raise RuntimeError("documents_captioner_not_configured")
+
+        self._document_graph = build_document_processing_graph(
+            parser=self._parser_dispatcher,
+            repository=self._repository,
+            storage=self._storage,
+            captioner=self._captioner,
+            chunker=self._chunker,
+        )
+
+        self.upsert_handler: Optional[Callable[[Any], Any]] = None
 
     def _normalized_from_state(
         self, state: Mapping[str, Any]
@@ -250,13 +336,21 @@ class CrawlerIngestionGraph:
         working_state.setdefault("transitions", {})
         run_id = working_state.setdefault("graph_run_id", str(uuid4()))
 
+        artifacts = working_state.setdefault("artifacts", {})
+        try:
+            normalized_payload = self._ensure_normalized_payload(working_state)
+        except Exception as exc:
+            artifacts.setdefault("failure", {"decision": "error", "reason": str(exc)})
+            raise
+
+        working_state["content_hash"] = normalized_payload.checksum
+
         nodes = (
-            GraphNode("normalize", self._run_normalize),
             GraphNode("update_status_normalized", self._run_update_status),
             GraphNode("enforce_guardrails", self._run_guardrails),
-            GraphNode("decide_delta", self._run_delta),
-            GraphNode("persist_document", self._run_persist_document),
-            GraphNode("trigger_embedding", self._run_trigger_embedding),
+            GraphNode("document_pipeline", self._run_document_pipeline),
+            GraphNode("ingest_decision", self._run_ingest_decision),
+            GraphNode("ingest", self._run_ingestion),
         )
 
         transitions: Dict[str, GraphTransition] = {}
@@ -307,6 +401,62 @@ class CrawlerIngestionGraph:
             state["artifacts"] = artifacts
         return artifacts
 
+    def _ensure_normalized_payload(
+        self, state: Dict[str, Any]
+    ) -> NormalizedDocumentPayload:
+        artifacts = self._artifacts(state)
+        existing = artifacts.get("normalized_document")
+        if isinstance(existing, NormalizedDocumentPayload):
+            return existing
+
+        normalized_input = state.get("normalized_document_input")
+        if not isinstance(normalized_input, NormalizedDocument):
+            raise KeyError("normalized_document_input_missing")
+
+        review_value = str(state.get("review") or state.get("control", {}).get("review") or "")
+        review_value = review_value.strip().lower()
+        if review_value == "required":
+            tags = list(normalized_input.meta.tags or [])
+            if "pending_review" not in tags:
+                tags.append("pending_review")
+                meta_copy = normalized_input.meta.model_copy(update={"tags": tags}, deep=True)
+                normalized_input = normalized_input.model_copy(update={"meta": meta_copy}, deep=True)
+
+        payload_bytes = document_payload_bytes(normalized_input)
+        try:
+            primary_text = payload_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            primary_text = payload_bytes.decode("latin-1", errors="ignore")
+        primary_text = normalized_primary_text(primary_text)
+
+        metadata_payload: Dict[str, Any] = {
+            "tenant_id": normalized_input.meta.tenant_id,
+            "workflow_id": normalized_input.meta.workflow_id,
+            "case_id": state.get("case_id"),
+            "request_id": state.get("request_id")
+            or state.get("meta", {}).get("request_id"),
+            "source": normalized_input.source,
+        }
+        metadata = MappingProxyType(
+            {key: value for key, value in metadata_payload.items() if value is not None}
+        )
+
+        payload = NormalizedDocumentPayload(
+            document=normalized_input,
+            primary_text=primary_text,
+            payload_bytes=payload_bytes,
+            metadata=metadata,
+        )
+        artifacts["normalized_document"] = payload
+        state["normalized_document_input"] = normalized_input
+
+        if "repository_baseline" not in artifacts:
+            baseline = self._load_repository_baseline(state, payload)
+            if baseline:
+                artifacts["repository_baseline"] = baseline
+
+        return payload
+
     def _load_repository_baseline(
         self, state: Dict[str, Any], normalized: NormalizedDocumentPayload
     ) -> Dict[str, Any]:
@@ -349,30 +499,6 @@ class CrawlerIngestionGraph:
             baseline.setdefault("lifecycle_state", lifecycle_text)
             state.setdefault("previous_status", lifecycle_text)
         return baseline
-
-    @observe_span(name="crawler.ingestion.normalize")
-    def _run_normalize(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
-        self._annotate_span(state, phase="normalize")
-        raw_reference = self._require(state, "raw_document")
-        normalized = self._document_service.normalize_from_raw(
-            raw_reference=raw_reference,
-            tenant_id=self._require(state, "tenant_id"),
-            case_id=state.get("case_id"),
-            request_id=state.get("request_id")
-            or state.get("meta", {}).get("request_id"),
-        )
-        artifacts = self._artifacts(state)
-        artifacts["normalized_document"] = normalized
-        self._annotate_span(state, phase="normalize", extra={"status": "normalized"})
-        transition = _transition(
-            "normalized",
-            "document_normalized",
-            attributes={
-                "severity": "info",
-                "document": normalized.to_dict(),
-            },
-        )
-        return transition, True
 
     @observe_span(name="crawler.ingestion.update_status")
     def _run_update_status(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
@@ -575,31 +701,146 @@ class CrawlerIngestionGraph:
         continue_flow = decision.allowed
         return transition, continue_flow
 
-    @observe_span(name="crawler.ingestion.delta")
-    def _run_delta(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
-        self._annotate_span(state, phase="delta")
+    @observe_span(name="crawler.ingestion.document_pipeline")
+    def _run_document_pipeline(
+        self, state: Dict[str, Any]
+    ) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
-        baseline_input: Dict[str, Any] = {}
+        dry_run = bool(state.get("dry_run"))
+        review_value = str(state.get("review") or state.get("control", {}).get("review") or "")
+        review_value = review_value.strip().lower()
+        if dry_run:
+            run_until = DocumentProcessingPhase.PARSE_ONLY
+        elif review_value == "required":
+            run_until = DocumentProcessingPhase.PARSE_AND_PERSIST
+        else:
+            run_until = DocumentProcessingPhase.FULL
+
+        self._annotate_span(
+            state,
+            phase="document_pipeline",
+            extra={"run_until": run_until.value},
+        )
+
+        case_id = state.get("case_id")
+        trace_id = state.get("trace_id") or state.get("meta", {}).get("trace_id")
+        span_id = state.get("span_id") or state.get("meta", {}).get("span_id")
+
+        context = DocumentProcessingContext.from_document(
+            normalized.document,
+            case_id=str(case_id) if case_id else None,
+            trace_id=str(trace_id) if trace_id else None,
+            span_id=str(span_id) if span_id else None,
+        )
+
+        pipeline_state = DocumentProcessingState(
+            document=normalized.document,
+            config=self._pipeline_config,
+            context=context,
+            run_until=run_until,
+        )
+
+        baseline = artifacts.get("repository_baseline")
+        if not isinstance(baseline, Mapping):
+            baseline = self._load_repository_baseline(state, normalized)
+            if baseline:
+                artifacts["repository_baseline"] = baseline
+
+        try:
+            result_state = self._document_graph.invoke(pipeline_state)
+        except Exception as exc:
+            artifacts["document_pipeline_error"] = repr(exc)
+            artifacts.setdefault(
+                "failure",
+                {"decision": "error", "reason": "document_pipeline_failed"},
+            )
+            self._annotate_span(
+                state,
+                phase="document_pipeline",
+                extra={"error": repr(exc)},
+            )
+            raise
+
+        artifacts["document_pipeline_phase"] = result_state.phase
+        artifacts["document_processing_context"] = result_state.context
+        artifacts["parse_artifact"] = result_state.parse_artifact
+        artifacts["chunk_artifact"] = result_state.chunk_artifact
+        if result_state.error is not None:
+            artifacts["document_pipeline_error"] = repr(result_state.error)
+        artifacts["document_pipeline_run_until"] = run_until.value
+
+        updated_payload = NormalizedDocumentPayload(
+            document=result_state.document,
+            primary_text=normalized.primary_text,
+            payload_bytes=normalized.payload_bytes,
+            metadata=normalized.metadata,
+        )
+        artifacts["normalized_document"] = updated_payload
+        state["normalized_document_input"] = result_state.document
+
+        extra = {"phase": result_state.phase}
+        if result_state.error is not None:
+            extra["error"] = repr(result_state.error)
+        self._annotate_span(state, phase="document_pipeline", extra=extra)
+
+        if result_state.error is not None:
+            artifacts.setdefault(
+                "failure",
+                {"decision": "error", "reason": "document_pipeline_failed"},
+            )
+            transition = _transition(
+                "error",
+                "document_pipeline_failed",
+                attributes={"severity": "error", "phase": result_state.phase},
+            )
+            return transition, False
+
+        transition = _transition(
+            "processed",
+            "document_pipeline_completed",
+            attributes={
+                "severity": "info",
+                "phase": result_state.phase,
+                "run_until": run_until.value,
+            },
+        )
+        return transition, True
+
+    @observe_span(name="crawler.ingestion.ingest_decision")
+    def _run_ingest_decision(
+        self, state: Dict[str, Any]
+    ) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="ingest_decision")
+        artifacts = self._artifacts(state)
+        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
+
+        baseline = artifacts.get("repository_baseline")
+        if isinstance(baseline, Mapping):
+            baseline_input = dict(baseline)
+        else:
+            baseline_input = {}
+
         existing_baseline = state.get("baseline")
         if isinstance(existing_baseline, Mapping):
             baseline_input.update(dict(existing_baseline))
 
-        needs_repository = (not baseline_input.get("checksum")) or not state.get(
-            "previous_status"
-        )
-        if needs_repository:
+        if not baseline_input.get("checksum") or not state.get("previous_status"):
             repository_baseline = self._load_repository_baseline(state, normalized)
             for key, value in repository_baseline.items():
                 baseline_input.setdefault(key, value)
+            if repository_baseline:
+                artifacts["repository_baseline"] = repository_baseline
 
         state["baseline"] = baseline_input
+
         decision = self._delta_decider(
             normalized_document=normalized,
             baseline=baseline_input,
             frontier_state=self._resolve_frontier_state(state),
         )
         artifacts["delta_decision"] = decision
+
         status_update = self._document_service.update_lifecycle_status(
             tenant_id=normalized.tenant_id,
             document_id=normalized.document_id,
@@ -608,6 +849,10 @@ class CrawlerIngestionGraph:
             reason=decision.reason,
         )
         artifacts.setdefault("status_updates", []).append(status_update)
+
+        ingest_action = "upsert" if decision.decision in {"new", "changed"} else "skip"
+        state["ingest_action"] = ingest_action
+
         transition = _transition(
             decision.decision,
             decision.reason,
@@ -615,58 +860,31 @@ class CrawlerIngestionGraph:
         )
         self._annotate_span(
             state,
-            phase="delta",
+            phase="ingest_decision",
             extra={"decision": decision.decision},
         )
         return transition, True
 
-    @observe_span(name="crawler.ingestion.persist")
-    def _run_persist_document(
-        self, state: Dict[str, Any]
-    ) -> Tuple[GraphTransition, bool]:
-        self._annotate_span(state, phase="persist_document")
+    @observe_span(name="crawler.ingestion.ingest")
+    def _run_ingestion(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
+        self._annotate_span(state, phase="ingest")
         artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
-        try:
-            persisted: NormalizedDocument = (
-                self._document_persistence.upsert_normalized(normalized=normalized)
+        normalized: Optional[NormalizedDocumentPayload] = artifacts.get(
+            "normalized_document"
+        )
+        if not isinstance(normalized, NormalizedDocumentPayload):
+            transition = _transition(
+                "skipped",
+                "normalized_missing",
+                attributes={"severity": "warn"},
             )
-        except Exception as exc:
-            error_payload = {
-                "error": repr(exc),
-                "type": exc.__class__.__name__,
-            }
-            artifacts.setdefault("persistence_errors", []).append(error_payload)
-            artifacts["persistence_failure"] = error_payload
-            raise
-        artifacts["persisted_document"] = persisted
-        self._annotate_span(
-            state,
-            phase="persist_document",
-            extra={"status": "persisted"},
-        )
-        transition = _transition(
-            "persisted",
-            "document_upserted",
-            attributes={
-                "severity": "info",
-                "document": persisted.model_dump(),
-            },
-        )
-        return transition, True
+            return transition, True
 
-    @observe_span(name="crawler.ingestion.trigger_embedding")
-    def _run_trigger_embedding(
-        self, state: Dict[str, Any]
-    ) -> Tuple[GraphTransition, bool]:
-        self._annotate_span(state, phase="trigger_embedding")
-        artifacts = self._artifacts(state)
-        normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         delta: Optional[ai_core_api.DeltaDecision] = artifacts.get("delta_decision")
         if delta is None:
             self._annotate_span(
                 state,
-                phase="trigger_embedding",
+                phase="ingest",
                 extra={"outcome": "skipped", "reason": "delta_missing"},
             )
             transition = _transition(
@@ -678,7 +896,7 @@ class CrawlerIngestionGraph:
         if delta.decision not in {"new", "changed"}:
             self._annotate_span(
                 state,
-                phase="trigger_embedding",
+                phase="ingest",
                 extra={"outcome": "skipped", "delta": delta.decision},
             )
             transition = _transition(
@@ -687,6 +905,7 @@ class CrawlerIngestionGraph:
                 attributes={"severity": "info", "delta": delta.decision},
             )
             return transition, True
+
         embedding_state = state.get("embedding") or {}
         result = self._embedding_handler(
             normalized_document=normalized,
@@ -700,9 +919,29 @@ class CrawlerIngestionGraph:
         artifacts["embedding_result"] = result
         self._annotate_span(
             state,
-            phase="trigger_embedding",
+            phase="ingest",
             extra={"outcome": result.status},
         )
+
+        pipeline_error = artifacts.get("document_pipeline_error")
+        review_value = str(state.get("review") or state.get("control", {}).get("review") or "").strip()
+        handler = getattr(self, "upsert_handler", None)
+        if (
+            callable(handler)
+            and not state.get("dry_run")
+            and not review_value
+            and pipeline_error is None
+        ):
+            decision_payload = SimpleNamespace(
+                attributes={"chunk_meta": result.chunk_meta},
+                payload=result,
+            )
+            try:
+                upsert_result = handler(decision_payload)
+            except Exception as exc:  # pragma: no cover - defensive guard
+                upsert_result = {"status": "error", "error": str(exc)}
+            artifacts["upsert_result"] = upsert_result
+
         transition = _transition(
             "embedding_triggered",
             "embedding_enqueued",
@@ -746,6 +985,15 @@ class CrawlerIngestionGraph:
             guardrails=guardrail,
             embedding_result=embedding_result.to_dict() if embedding_result else None,
         )
+        pipeline_phase = artifacts.get("document_pipeline_phase")
+        if pipeline_phase is not None:
+            payload["pipeline_phase"] = pipeline_phase
+        pipeline_run_until = artifacts.get("document_pipeline_run_until")
+        if pipeline_run_until is not None:
+            payload["pipeline_run_until"] = pipeline_run_until
+        pipeline_error = artifacts.get("document_pipeline_error")
+        if pipeline_error is not None:
+            payload["pipeline_error"] = str(pipeline_error)
         failure = artifacts.get("failure")
         severity = guardrail.attributes.get("severity", "info")
         decision_value = delta.decision
