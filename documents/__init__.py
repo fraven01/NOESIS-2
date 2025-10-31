@@ -16,6 +16,7 @@ from .pipeline import (  # noqa: F401
     require_document_components,
     require_document_contracts,
 )
+from .processing_graph import DocumentProcessingPhase  # noqa: F401
 from .parsers import (  # noqa: F401
     DocumentParser,
     ParseResult,
@@ -62,6 +63,7 @@ __all__ = [
     "DocumentProcessingContext",
     "DocumentProcessingMetadata",
     "DocumentProcessingOutcome",
+    "DocumentProcessingPhase",
     "ProcessingState",
     "persist_parsed_document",
     "require_document_components",

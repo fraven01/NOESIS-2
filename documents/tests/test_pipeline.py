@@ -14,6 +14,7 @@ from documents import (
     DocumentChunkArtifact,
     DocumentParseArtifact,
     DocumentPipelineConfig,
+    DocumentProcessingPhase,
     DocumentProcessingOrchestrator,
     DocumentProcessingContext,
     DocumentProcessingMetadata,
@@ -184,6 +185,28 @@ def test_pipeline_config_flag_combinations():
     assert config.emit_empty_slides is False
     assert config.enable_asset_captions is False
     assert config.ocr_fallback_confidence == pytest.approx(0.25)
+
+
+def test_processing_phase_coerce_aliases():
+    assert (
+        DocumentProcessingPhase.coerce("preview")
+        is DocumentProcessingPhase.PARSE_AND_PERSIST
+    )
+    assert (
+        DocumentProcessingPhase.coerce("Review")
+        is DocumentProcessingPhase.PARSE_PERSIST_AND_CAPTION
+    )
+    assert (
+        DocumentProcessingPhase.coerce("parse-only")
+        is DocumentProcessingPhase.PARSE_ONLY
+    )
+    assert (
+        DocumentProcessingPhase.coerce(DocumentProcessingPhase.FULL)
+        is DocumentProcessingPhase.FULL
+    )
+    assert (
+        DocumentProcessingPhase.coerce(None) is DocumentProcessingPhase.FULL
+    )
 
 
 @pytest.mark.parametrize(
@@ -702,6 +725,58 @@ def test_orchestrator_executes_full_pipeline():
         )
         == 1.0
     )
+
+
+def test_orchestrator_preview_phase_stops_after_persist():
+    metrics.reset_metrics()
+    repository, storage, document, _ = _prepare_repository_document()
+    parser = RecordingParser()
+    chunker = RecordingChunker()
+    orchestrator = DocumentProcessingOrchestrator(
+        parser=parser,
+        repository=repository,
+        storage=storage,
+        captioner=DeterministicCaptioner(),
+        chunker=chunker,
+    )
+
+    outcome = orchestrator.process(document, run_until="preview")
+
+    assert isinstance(outcome.parse_artifact, DocumentParseArtifact)
+    assert outcome.chunk_artifact is None
+    assert outcome.context.state is ProcessingState.ASSETS_EXTRACTED
+    stats = outcome.document.meta.parse_stats or {}
+    assert stats["parse.state"] == ProcessingState.PARSED_TEXT.value
+    assert stats["assets.state"] == ProcessingState.ASSETS_EXTRACTED.value
+    assert "caption.state" not in stats
+    assert chunker.calls == 0
+
+
+def test_orchestrator_review_phase_stops_after_caption():
+    metrics.reset_metrics()
+    repository, storage, document, _ = _prepare_repository_document()
+    parser = RecordingParser()
+    chunker = RecordingChunker()
+    orchestrator = DocumentProcessingOrchestrator(
+        parser=parser,
+        repository=repository,
+        storage=storage,
+        captioner=DeterministicCaptioner(),
+        chunker=chunker,
+    )
+
+    outcome = orchestrator.process(
+        document,
+        run_until=DocumentProcessingPhase.PARSE_PERSIST_AND_CAPTION,
+    )
+
+    assert isinstance(outcome.parse_artifact, DocumentParseArtifact)
+    assert outcome.chunk_artifact is None
+    assert outcome.context.state is ProcessingState.CAPTIONED
+    stats = outcome.document.meta.parse_stats or {}
+    assert stats["caption.state"] == ProcessingState.CAPTIONED.value
+    assert "chunk.state" not in stats
+    assert chunker.calls == 0
 
 
 def test_orchestrator_is_idempotent():
