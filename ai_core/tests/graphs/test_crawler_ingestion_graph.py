@@ -402,6 +402,49 @@ def test_embedding_failure_marks_error_and_status() -> None:
     assert any(status.to_dict().get("reason") == "ingest_failed" for status in statuses)
 
 
+def test_html_content_is_normalized_before_chunking() -> None:
+    graph = CrawlerIngestionGraph()
+    client = StubVectorClient()
+    html_body = """
+    <html>
+      <head>
+        <style>body {color: red;}</style>
+      </head>
+      <body>
+        <header>Header</header>
+        <p>Visible paragraph.</p>
+        <script>console.log('hidden')</script>
+        <p>Trailing paragraph.</p>
+      </body>
+    </html>
+    """
+
+    state = _build_state(
+        content=html_body,
+        content_type="text/html",
+        vector_client=client,
+    )
+
+    updated_state, _ = graph.run(state, {})
+
+    artifacts = updated_state["artifacts"]
+    normalized_payload = artifacts["normalized_document"]
+
+    assert "<script>" in normalized_payload.content_raw
+    assert "console.log" not in normalized_payload.content_normalized
+    assert "console.log" not in normalized_payload.primary_text
+
+    chunk_artifact = artifacts["chunk_artifact"]
+    for chunk in chunk_artifact.chunks:
+        text = chunk.get("text", "")
+        assert "<script>" not in text
+        assert "console.log" not in text
+
+    assert client.upserted, "expected chunk upsert calls"
+    for chunk in client.upserted:
+        assert "<script>" not in chunk.content
+        assert "console.log" not in chunk.content
+
 class RecordingDocumentLifecycleService(DocumentLifecycleService):
     def __init__(self) -> None:
         self.normalize_calls: list[dict[str, object]] = []

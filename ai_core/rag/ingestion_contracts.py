@@ -102,6 +102,8 @@ class CrawlerIngestionPayload(BaseModel):
     embedding_profile: str | None = None
     vector_space_id: str | None = None
     delta_status: str | None = None
+    content_raw: str | None = None
+    content_normalized: str | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -121,6 +123,8 @@ class CrawlerIngestionPayload(BaseModel):
             "embedding_profile": self.embedding_profile,
             "vector_space_id": self.vector_space_id,
             "delta_status": self.delta_status,
+            "content_raw": self.content_raw,
+            "content_normalized": self.content_normalized,
         }
         return MappingProxyType(payload)
 
