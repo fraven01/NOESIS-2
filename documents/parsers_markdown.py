@@ -44,6 +44,7 @@ _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]]+)\]:\s*(.*)$")
 _FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]]+)\]")
 _MULTI_SPACE_RE = re.compile(r"\s+")
 
+
 def _normalise_media_type(value: Optional[str]) -> Optional[str]:
     if not value:
         return None

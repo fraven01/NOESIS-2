@@ -124,4 +124,3 @@ def resolve_image_media_type(
 
 
 __all__ = ["resolve_image_media_type"]
-
