@@ -16,6 +16,7 @@ from documents.contract_utils import (
     normalize_string,
     truncate_text,
 )
+from documents.media_type_resolver import resolve_image_media_type
 from documents.parsers import (
     DocumentParser,
     ParsedAsset,
@@ -111,36 +112,6 @@ def _context_snippet(text: Optional[str]) -> Optional[str]:
         return None
     snippet = truncate_text(text, _CONTEXT_LIMIT)
     return snippet or None
-
-
-def _infer_media_type(file_uri: str) -> str:
-    if file_uri.startswith("data:"):
-        try:
-            prefix = file_uri.split(";", 1)[0]
-            return normalize_media_type(prefix.split(":", 1)[1])
-        except (IndexError, ValueError):
-            return "image/*"
-    parsed = urlparse(file_uri)
-    path = parsed.path or file_uri
-    if not path:
-        return "image/*"
-    lower = path.lower()
-    for extension, media_type in (
-        (".apng", "image/apng"),
-        (".avif", "image/avif"),
-        (".bmp", "image/bmp"),
-        (".gif", "image/gif"),
-        (".jpeg", "image/jpeg"),
-        (".jpg", "image/jpeg"),
-        (".png", "image/png"),
-        (".svg", "image/svg+xml"),
-        (".tif", "image/tiff"),
-        (".tiff", "image/tiff"),
-        (".webp", "image/webp"),
-    ):
-        if lower.endswith(extension):
-            return media_type
-    return "image/*"
 
 
 @dataclass
@@ -241,8 +212,11 @@ class _HtmlState:
         before_text: Optional[str],
         after_text: Optional[str],
         alt_text: Optional[str],
+        declared_media_type: Optional[str] = None,
     ) -> None:
-        media_type = _infer_media_type(file_uri)
+        media_type = resolve_image_media_type(
+            file_uri, declared_type=normalize_optional_string(declared_media_type)
+        )
         before_context = _context_snippet(before_text or self._last_text)
         after_context = _context_snippet(after_text)
         self._asset_counter += 1
@@ -682,6 +656,7 @@ class HtmlDocumentParser(DocumentParser):
                     before_text=state._last_text,
                     after_text=caption_text,
                     alt_text=alt_text or caption_text,
+                    declared_media_type=img.get("type"),
                 )
             caption_el = element.find(".//figcaption")
             if caption_el is not None:
@@ -699,6 +674,7 @@ class HtmlDocumentParser(DocumentParser):
                     before_text=state._last_text,
                     after_text=None,
                     alt_text=alt_text,
+                    declared_media_type=element.get("type"),
                 )
             return
         if tag == "pre":

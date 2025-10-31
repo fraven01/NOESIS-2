@@ -174,6 +174,7 @@ def test_contract_utils_media_type_guard():
 
 def test_contract_utils_media_type_normalization():
     assert normalize_media_type(" Image/PNG ") == "image/png"
+    assert normalize_media_type("image/unspecified") == "image/unspecified"
     with pytest.raises(ValueError):
         normalize_media_type("invalid type")
 

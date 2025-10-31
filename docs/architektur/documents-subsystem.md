@@ -40,7 +40,7 @@ flowchart TD
     C --> D[Erzeuge FileBlob]
     B -- File/External --> D
     D --> E[Persistiere Dokument & Assets]
-    E --> F{Asset media_type == image/*?}
+    E --> F{Asset media_type == image/unspecified?}
     F -- Nein --> G[Keine Captioning-Aktion]
     F -- Ja & text_description fehlt --> H[Kontext bauen & Captioner aufrufen]
     H --> I{Caption Ergebnis?}

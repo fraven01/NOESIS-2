@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-import os
 import re
 from typing import (
     Any,
@@ -17,8 +16,6 @@ from typing import (
     Sequence,
     Tuple,
 )
-from urllib.parse import urlparse
-
 import yaml
 from lxml import html
 from markdown_it import MarkdownIt
@@ -33,6 +30,7 @@ from documents.contract_utils import (
     normalize_string,
     truncate_text,
 )
+from documents.media_type_resolver import resolve_image_media_type
 from documents.parsers import DocumentParser, ParsedAsset, ParsedResult, ParsedTextBlock
 from documents.payloads import extract_payload
 
@@ -45,21 +43,6 @@ _CONTEXT_LIMIT = 512
 _FOOTNOTE_DEF_RE = re.compile(r"^\[\^([^\]]+)\]:\s*(.*)$")
 _FOOTNOTE_REF_RE = re.compile(r"\[\^([^\]]+)\]")
 _MULTI_SPACE_RE = re.compile(r"\s+")
-
-_IMAGE_EXTENSION_FALLBACK = {
-    ".apng": "image/apng",
-    ".avif": "image/avif",
-    ".bmp": "image/bmp",
-    ".gif": "image/gif",
-    ".jpeg": "image/jpeg",
-    ".jpg": "image/jpeg",
-    ".png": "image/png",
-    ".svg": "image/svg+xml",
-    ".tif": "image/tiff",
-    ".tiff": "image/tiff",
-    ".webp": "image/webp",
-}
-
 
 def _normalise_media_type(value: Optional[str]) -> Optional[str]:
     if not value:
@@ -283,21 +266,6 @@ def _context_snippet(text: Optional[str]) -> Optional[str]:
     return snippet or None
 
 
-def _infer_media_type(file_uri: str) -> str:
-    if file_uri.startswith("data:"):
-        try:
-            prefix = file_uri.split(";", 1)[0]
-            return normalize_media_type(prefix.split(":", 1)[1])
-        except (IndexError, ValueError):
-            return "image/*"
-    parsed = urlparse(file_uri)
-    path = parsed.path or file_uri
-    _, extension = os.path.splitext(path.lower())
-    if extension and extension in _IMAGE_EXTENSION_FALLBACK:
-        return _IMAGE_EXTENSION_FALLBACK[extension]
-    return "image/*"
-
-
 def _normalise_code_language(info: str) -> Optional[str]:
     cleaned = normalize_optional_string(info)
     if not cleaned:
@@ -413,8 +381,11 @@ class _MarkdownState:
         before_text: Optional[str],
         after_text: Optional[str],
         alt_text: Optional[str],
+        declared_media_type: Optional[str] = None,
     ) -> None:
-        media_type = _infer_media_type(file_uri)
+        media_type = resolve_image_media_type(
+            file_uri, declared_type=normalize_optional_string(declared_media_type)
+        )
         before_context = _context_snippet(before_text or self._last_text)
         after_context = _context_snippet(after_text)
         asset = _AssetDraft(
@@ -582,8 +553,14 @@ class MarkdownDocumentParser(DocumentParser):
                 if not src:
                     continue
                 alt_text = child.attrGet("alt") or child.content or ""
+                declared_type = child.attrGet("type") or ""
                 before_text = "".join(text_fragments)
-                positions.append((len(before_text), {"src": src, "alt": alt_text}))
+                positions.append(
+                    (
+                        len(before_text),
+                        {"src": src, "alt": alt_text, "type": declared_type},
+                    )
+                )
             elif child.type in {
                 "link_open",
                 "link_close",
@@ -629,6 +606,7 @@ class MarkdownDocumentParser(DocumentParser):
                 before_text=before,
                 after_text=after,
                 alt_text=payload["alt"],
+                declared_media_type=payload.get("type"),
             )
         return full_text
 
@@ -802,6 +780,7 @@ class MarkdownDocumentParser(DocumentParser):
             if not src:
                 continue
             alt_text = img.get("alt") or img.get("title") or ""
+            declared_type = img.get("type")
             after_text = ""
             parent = img.getparent()
             if parent is not None and parent.tag and parent.tag.lower() == "figure":
@@ -817,6 +796,7 @@ class MarkdownDocumentParser(DocumentParser):
                     _collapse_whitespace(after_text) if after_text else after_text
                 ),
                 alt_text=alt_text,
+                declared_media_type=declared_type,
             )
 
     def _consume_html_table(

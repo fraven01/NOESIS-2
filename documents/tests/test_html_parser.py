@@ -5,8 +5,10 @@ import hashlib
 
 from typing import Optional
 
+import httpx
 import pytest
 
+from documents import media_type_resolver
 from documents.contracts import InlineBlob
 from documents.parsers_html import HtmlDocumentParser
 from documents.pipeline import DocumentPipelineConfig
@@ -142,7 +144,11 @@ def test_html_parser_extracts_reader_content() -> None:
         "https://cdn.example.com/images/remote.jpg",
     }
     for asset in assets:
-        assert asset.media_type in {"image/png", "image/jpeg", "image/*"}
+        assert asset.media_type in {
+            "image/png",
+            "image/jpeg",
+            "image/unspecified",
+        }
         if asset.context_before:
             assert len(asset.context_before) <= 512
         if asset.context_after:
@@ -278,3 +284,43 @@ def test_html_parser_readability_fallback_when_summary_empty(monkeypatch) -> Non
     result = parser.parse(document, config=config)
 
     assert any(block.text == "Main content retained." for block in result.text_blocks)
+
+
+def test_html_parser_uses_placeholder_media_type_when_unknown(monkeypatch) -> None:
+    html_source = """
+    <html>
+      <body>
+        <p>Intro</p>
+        <img src="https://assets.example.com/image-resource" alt="mystery" />
+      </body>
+    </html>
+    """
+    document = _DocumentStub(
+        media_type="text/html",
+        blob=_inline_blob_from_text(html_source),
+    )
+    parser = HtmlDocumentParser()
+
+    def _handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "HEAD":
+            return httpx.Response(status_code=200)
+        if request.method == "GET":
+            return httpx.Response(status_code=200)
+        raise AssertionError(f"unexpected method {request.method}")
+
+    transport = httpx.MockTransport(_handler)
+    monkeypatch.setattr(
+        media_type_resolver, "_HTTP_TRANSPORT_OVERRIDE", transport, raising=False
+    )
+    media_type_resolver._resolve_remote_media_type.cache_clear()
+
+    result = parser.parse(document, config={})
+
+    matched_assets = [
+        asset
+        for asset in result.assets
+        if asset.file_uri == "https://assets.example.com/image-resource"
+    ]
+    assert matched_assets, "expected image asset to be captured"
+    assert matched_assets[0].media_type == "image/unspecified"
+    media_type_resolver._resolve_remote_media_type.cache_clear()
