@@ -27,7 +27,7 @@ from documents.processing_graph import (
     build_document_processing_graph,
 )
 from documents.repository import DocumentsRepository
-from documents.parsers import ParserDispatcher, ParserRegistry
+from documents.parsers import ParsedResult, ParserDispatcher, ParserRegistry
 from documents.cli import SimpleDocumentChunker
 from documents import (
     DocxDocumentParser,
@@ -326,6 +326,26 @@ class CrawlerIngestionGraph:
             except Exception:  # pragma: no cover - defensive best effort
                 pass
 
+    @staticmethod
+    def _decode_payload_text(payload: bytes) -> str:
+        if not payload:
+            return ""
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload.decode("latin-1", errors="ignore")
+
+    @staticmethod
+    def _should_prefetch_parse(
+        document: NormalizedDocument, raw_text: str
+    ) -> bool:
+        if not raw_text or not raw_text.strip():
+            return False
+        blob = getattr(document, "blob", None)
+        media_type = getattr(blob, "media_type", "") or ""
+        media_type = media_type.strip().lower()
+        return media_type in {"text/html", "application/xhtml+xml"}
+
     def run(
         self,
         state: StateMapping,
@@ -431,11 +451,29 @@ class CrawlerIngestionGraph:
                 )
 
         payload_bytes = document_payload_bytes(normalized_input)
-        try:
-            primary_text = payload_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            primary_text = payload_bytes.decode("latin-1", errors="ignore")
-        primary_text = normalized_primary_text(primary_text)
+        raw_text = self._decode_payload_text(payload_bytes)
+        primary_text = normalized_primary_text(raw_text)
+
+        parse_result: ParsedResult | None = None
+        if self._should_prefetch_parse(normalized_input, raw_text):
+            try:
+                parse_result = self._parser_dispatcher.parse(
+                    normalized_input, self._pipeline_config
+                )
+            except Exception:
+                parse_result = None
+            else:
+                serialized_blocks = [
+                    block.text.strip()
+                    for block in parse_result.text_blocks
+                    if getattr(block, "text", "").strip()
+                ]
+                if serialized_blocks:
+                    primary_text = normalized_primary_text(
+                        "\n\n".join(serialized_blocks)
+                    )
+        if parse_result is not None:
+            artifacts.setdefault("prefetched_parse_result", parse_result)
 
         metadata_payload: Dict[str, Any] = {
             "tenant_id": normalized_input.meta.tenant_id,
@@ -454,6 +492,8 @@ class CrawlerIngestionGraph:
             primary_text=primary_text,
             payload_bytes=payload_bytes,
             metadata=metadata,
+            content_raw=raw_text,
+            content_normalized=primary_text,
         )
         artifacts["normalized_document"] = payload
         state["normalized_document_input"] = normalized_input
@@ -743,11 +783,16 @@ class CrawlerIngestionGraph:
             span_id=str(span_id) if span_id else None,
         )
 
+        prefetched_parse = artifacts.get("prefetched_parse_result")
+        if not isinstance(prefetched_parse, ParsedResult):
+            prefetched_parse = None
+
         pipeline_state = DocumentProcessingState(
             document=normalized.document,
             config=self._pipeline_config,
             context=context,
             run_until=run_until,
+            parsed_result=prefetched_parse,
         )
 
         baseline = artifacts.get("repository_baseline")
@@ -781,9 +826,11 @@ class CrawlerIngestionGraph:
 
         updated_payload = NormalizedDocumentPayload(
             document=result_state.document,
-            primary_text=normalized.primary_text,
+            primary_text=normalized.content_normalized,
             payload_bytes=normalized.payload_bytes,
             metadata=normalized.metadata,
+            content_raw=normalized.content_raw,
+            content_normalized=normalized.content_normalized,
         )
         artifacts["normalized_document"] = updated_payload
         state["normalized_document_input"] = result_state.document

@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
@@ -26,6 +26,7 @@ from documents.repository import (
     DocumentLifecycleStore,
     DEFAULT_LIFECYCLE_STORE,
 )
+from documents.normalization import normalized_primary_text
 
 
 _OBJECT_STORE_OVERRIDE: ObjectStore | None = None
@@ -228,6 +229,20 @@ class NormalizedDocumentPayload:
     primary_text: str
     payload_bytes: bytes
     metadata: Mapping[str, Any]
+    content_raw: str = field(default="", repr=False)
+    content_normalized: str = field(default="", repr=False)
+
+    def __post_init__(self) -> None:
+        raw_value = self.content_raw or ""
+        normalized_value = self.content_normalized or self.primary_text or ""
+        normalized_value = normalized_value.strip()
+        object.__setattr__(self, "content_raw", raw_value)
+        object.__setattr__(self, "content_normalized", normalized_value)
+        primary_text = (self.primary_text or "").strip()
+        if normalized_value and primary_text != normalized_value:
+            object.__setattr__(self, "primary_text", normalized_value)
+        elif not primary_text and normalized_value:
+            object.__setattr__(self, "primary_text", normalized_value)
 
     @property
     def tenant_id(self) -> str:
@@ -248,6 +263,8 @@ class NormalizedDocumentPayload:
                 "primary_text": self.primary_text,
                 "checksum": self.checksum,
                 "metadata": dict(self.metadata),
+                "content_raw": self.content_raw,
+                "content_normalized": self.content_normalized,
             }
         )
 
@@ -283,12 +300,14 @@ def normalize_from_raw(
 
     store = _resolve_object_store(object_store)
     payload_bytes, content = _resolve_payload(raw_reference, store)
+    metadata_mapping = raw_reference.get("metadata", {})
     media_type = (
         str(
             raw_reference.get("media_type")
             or raw_reference.get("content_type")
             or raw_reference.get("mime_type")
-            or raw_reference.get("metadata", {}).get("media_type")
+            or metadata_mapping.get("media_type")
+            or metadata_mapping.get("content_type")
             or "text/plain"
         )
         .strip()
@@ -407,13 +426,17 @@ def normalize_from_raw(
         "source": resolved_source,
     }
 
+    normalized_text = normalized_primary_text(content)
+
     return NormalizedDocumentPayload(
         document=document,
-        primary_text=content.strip(),
+        primary_text=normalized_text,
         payload_bytes=payload_bytes,
         metadata=MappingProxyType(
             {k: v for k, v in metadata_payload.items() if v is not None}
         ),
+        content_raw=content,
+        content_normalized=normalized_text,
     )
 
 

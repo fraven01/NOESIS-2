@@ -227,7 +227,8 @@ def build_document_processing_graph(
             pipeline_module.ProcessingState.ASSETS_EXTRACTED
         )
 
-        should_parse = not chunk_done or not assets_done
+        existing_result = state.parsed_result
+        should_parse = (not chunk_done or not assets_done) and existing_result is None
 
         if should_parse:
 
@@ -251,6 +252,8 @@ def build_document_processing_graph(
                 action=_parse_action,
             )
             state.parsed_result = parsed_result
+        elif existing_result is not None:
+            state.parsed_result = existing_result
         else:
             state.parsed_result = None
         return state
