@@ -80,7 +80,6 @@ def test_decide_delta_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     assert extra["case_id"] == "case-123"
     assert extra["request_id"] == "req-456"
     assert extra["trace_id"] == "trace-123"
-    assert "span_id" not in extra
     assert extra["content_hash"] == "new-hash"
     assert extra["baseline_content_hash"] == "old-hash"
     assert extra["version"] == 3

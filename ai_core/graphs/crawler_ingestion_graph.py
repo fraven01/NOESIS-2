@@ -326,6 +326,36 @@ class CrawlerIngestionGraph:
             except Exception:  # pragma: no cover - defensive best effort
                 pass
 
+    def start_crawl(self, state: StateMapping) -> Dict[str, Any]:
+        """Legacy bootstrap hook retained for callers expecting the older API."""
+        working_state: Dict[str, Any] = dict(state)
+        control = working_state.get("control")
+        if isinstance(control, Mapping):
+            working_state["control"] = dict(control)
+        elif control is None:
+            working_state["control"] = {}
+        else:
+            try:
+                working_state["control"] = dict(control)  # type: ignore[arg-type]
+            except Exception:
+                working_state["control"] = {}
+
+        artifacts = working_state.get("artifacts")
+        if not isinstance(artifacts, dict):
+            artifacts = {}
+            working_state["artifacts"] = artifacts
+        working_state.setdefault("transitions", {})
+
+        try:
+            self._ensure_normalized_payload(working_state)
+        except Exception:
+            artifacts.setdefault(
+                "failure", {"decision": "error", "reason": "start_crawl_failed"}
+            )
+            raise
+
+        return working_state
+
     def run(
         self,
         state: StateMapping,

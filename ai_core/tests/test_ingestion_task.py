@@ -164,6 +164,7 @@ def _patch_perf_counter(monkeypatch, start: float, end: float) -> None:
     monkeypatch.setattr(ingestion.time, "perf_counter", fake_perf_counter)
 
 
+@pytest.mark.django_db
 def test_run_ingestion_success(monkeypatch):
     (
         dummy_process,
@@ -265,6 +266,7 @@ def test_run_ingestion_success(monkeypatch):
     ]
 
 
+@pytest.mark.django_db
 def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     (
         dummy_process,
@@ -363,6 +365,7 @@ def test_run_ingestion_timeout_dispatches_dead_letters(monkeypatch):
     ]
 
 
+@pytest.mark.django_db
 def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     (
         dummy_process,
@@ -450,6 +453,7 @@ def test_run_ingestion_base_exception_dispatches_dead_letters(monkeypatch):
     ]
 
 
+@pytest.mark.django_db
 def test_run_ingestion_contract_error_includes_context(monkeypatch):
     (
         dummy_process,

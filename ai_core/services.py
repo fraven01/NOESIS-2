@@ -114,12 +114,19 @@ def _make_json_safe(value):  # type: ignore[no-untyped-def]
 
     - Converts uuid.UUID instances to str
     - Recurses into mappings and sequences
+    - Normalises datetime/date instances to ISO strings
     """
     import uuid as _uuid
     from collections.abc import Mapping as _Mapping
+    from dataclasses import asdict, is_dataclass
+    from datetime import date as _date, datetime as _datetime
 
+    if is_dataclass(value) and not isinstance(value, type):
+        return _make_json_safe(asdict(value))
     if isinstance(value, _uuid.UUID):
         return str(value)
+    if isinstance(value, (_datetime, _date)):
+        return value.isoformat()
     if isinstance(value, _Mapping):
         return {
             (str(k) if isinstance(k, _uuid.UUID) else k): _make_json_safe(v)
