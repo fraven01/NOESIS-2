@@ -17,6 +17,7 @@ from ai_core.rag.ingestion_contracts import IngestionContractErrorCode
 from ai_core.tools import InputError
 from common import logging as common_logging
 from common.celery import ContextTask
+from documents.api import normalize_from_raw
 
 
 def test_split_sentences_prefers_sentence_boundaries() -> None:
@@ -844,6 +845,10 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     )
 
     document_id = str(uuid.uuid4())
+    class _StubVectorClient:
+        def upsert_chunks(self, chunks):  # type: ignore[no-untyped-def]
+            return len(list(chunks))
+
     state = {
         "tenant_id": "tenant-1",
         "case_id": "case-1",
@@ -858,8 +863,16 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
                 "content_type": "text/plain",
             },
         },
-        "embedding": {"profile": "standard"},
+        "embedding": {"profile": "standard", "client": _StubVectorClient()},
     }
+    normalized_payload = normalize_from_raw(
+        raw_reference=state["raw_document"],
+        tenant_id=state["tenant_id"],
+        case_id=state["case_id"],
+        request_id=state["request_id"],
+    )
+    state["normalized_document_input"] = normalized_payload.document
+    state["document_id"] = str(normalized_payload.document.ref.document_id)
     meta = {
         "trace_id": "trace-123",
         "tenant_id": "tenant-1",
@@ -882,12 +895,11 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     span_names = [span["name"] for span in tracer.completed_spans]
     expected_names = {
         "crawler.ingestion",
-        "crawler.ingestion.normalize",
         "crawler.ingestion.update_status",
         "crawler.ingestion.guardrails",
-        "crawler.ingestion.delta",
-        "crawler.ingestion.persist",
-        "crawler.ingestion.trigger_embedding",
+        "crawler.ingestion.document_pipeline",
+        "crawler.ingestion.ingest_decision",
+        "crawler.ingestion.ingest",
     }
     for expected in expected_names:
         assert expected in span_names
@@ -902,12 +914,22 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     assert attributes["meta.trace_id"] == "trace-123"
     assert attributes["meta.celery.task_id"] == "celery-123"
 
-    normalize_span = next(
+    pipeline_span = next(
         span
         for span in tracer.completed_spans
-        if span["name"] == "crawler.ingestion.normalize"
+        if span["name"] == "crawler.ingestion.document_pipeline"
     )
-    normalize_attrs = normalize_span["attributes"]
-    assert normalize_attrs["meta.phase"] == "normalize"
-    assert normalize_attrs["meta.tenant_id"] == "tenant-1"
-    assert normalize_attrs["meta.document_id"] == document_id
+    pipeline_attrs = pipeline_span["attributes"]
+    assert pipeline_attrs["meta.phase"] == "chunk_complete"
+    assert pipeline_attrs["meta.tenant_id"] == "tenant-1"
+    assert pipeline_attrs["meta.document_id"] == document_id
+    assert pipeline_attrs["meta.run_until"] == "full"
+
+    ingest_decision_span = next(
+        span
+        for span in tracer.completed_spans
+        if span["name"] == "crawler.ingestion.ingest_decision"
+    )
+    ingest_decision_attrs = ingest_decision_span["attributes"]
+    assert ingest_decision_attrs["meta.phase"] == "ingest_decision"
+    assert ingest_decision_attrs["meta.decision"] == "new"

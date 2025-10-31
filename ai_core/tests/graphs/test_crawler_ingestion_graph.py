@@ -16,6 +16,11 @@ from documents import api as documents_api
 from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+from documents.pipeline import (
+    DocumentChunkArtifact,
+    DocumentParseArtifact,
+    DocumentProcessingContext,
+)
 
 
 pytestmark = pytest.mark.django_db
@@ -31,23 +36,20 @@ class StubVectorClient:
         return len(chunk_list)
 
 
-class RecordingRepository(DocumentsRepository):
-    def __init__(self) -> None:
-        self.upserts: list[dict[str, object]] = []
-
-    def upsert(self, doc, workflow_id=None):  # type: ignore[override]
-        self.upserts.append(
-            {
-                "document_id": str(doc.ref.document_id),
-                "workflow_id": workflow_id,
-            }
-        )
-        return doc
-
-
 class FailingRepository(DocumentsRepository):
     def upsert(self, doc, workflow_id=None):  # type: ignore[override]
         raise RuntimeError("upsert_failed")
+
+    def get(
+        self,
+        tenant_id,
+        document_id,
+        version=None,
+        *,
+        prefer_latest=False,
+        workflow_id=None,
+    ):
+        return None
 
 
 def _build_state(
@@ -137,6 +139,15 @@ def _build_state(
     if config_override:
         guardrail_context["config"] = config_override
 
+    normalized_payload = normalize_from_raw(
+        raw_reference=raw_document,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        request_id=request_id,
+        workflow_id=overrides.get("workflow_id"),
+        source=raw_document.get("metadata", {}).get("source"),
+    )
+
     state: dict[str, object] = {
         "tenant_id": tenant_id,
         "case_id": case_id,
@@ -151,7 +162,11 @@ def _build_state(
                 "client": overrides.get("vector_client"),
             },
         ),
+        "normalized_document_input": normalized_payload.document,
     }
+    state.setdefault(
+        "document_id", str(normalized_payload.document.ref.document_id)
+    )
     if frontier is not None:
         state["frontier"] = dict(frontier)
     return state
@@ -166,12 +181,11 @@ def test_orchestrates_nominal_flow() -> None:
 
     assert updated_state is not state
     transitions = result["transitions"]
-    assert transitions["normalize"]["decision"] == "normalized"
     assert transitions["update_status_normalized"]["decision"] == "status_updated"
     assert transitions["enforce_guardrails"]["decision"] == "allow"
-    assert transitions["decide_delta"]["decision"] == "new"
-    assert transitions["persist_document"]["decision"] == "persisted"
-    assert transitions["trigger_embedding"]["decision"] == "embedding_triggered"
+    assert transitions["document_pipeline"]["decision"] == "processed"
+    assert transitions["ingest_decision"]["decision"] == "new"
+    assert transitions["ingest"]["decision"] == "embedding_triggered"
     assert transitions["finish"]["decision"] == "new"
     assert result["decision"] == "new"
     summary = updated_state["summary"]
@@ -182,7 +196,15 @@ def test_orchestrates_nominal_flow() -> None:
     assert any(
         status.to_dict().get("reason") == "no_previous_hash" for status in statuses
     )
-    assert "persisted_document" in updated_state["artifacts"]
+    artifacts = updated_state["artifacts"]
+    assert isinstance(
+        artifacts["document_processing_context"], DocumentProcessingContext
+    )
+    assert isinstance(artifacts["parse_artifact"], DocumentParseArtifact)
+    assert isinstance(artifacts["chunk_artifact"], DocumentChunkArtifact)
+    assert artifacts["document_pipeline_phase"]
+    assert artifacts["document_pipeline_run_until"] == "full"
+    assert updated_state["ingest_action"] == "upsert"
 
 
 def test_guardrail_denied_short_circuits(monkeypatch) -> None:
@@ -211,9 +233,9 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
     updated_state, result = graph.run(state, {})
 
     transitions = result["transitions"]
-    assert "decide_delta" not in transitions
-    assert "persist_document" not in transitions
-    assert "trigger_embedding" not in transitions
+    assert "document_pipeline" not in transitions
+    assert "ingest_decision" not in transitions
+    assert "ingest" not in transitions
     assert transitions["enforce_guardrails"]["decision"] == "deny"
     assert transitions["finish"]["decision"] == "denied"
     assert result["decision"] == "denied"
@@ -248,6 +270,7 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
         "source": _label(normalized_payload.document.source),
     }
     assert guardrail_counter.value(**expected_labels) == 1.0
+    assert "ingest_action" not in updated_state
 
 
 def test_guardrail_denied_emits_event_callback() -> None:
@@ -300,24 +323,34 @@ def test_delta_unchanged_skips_embedding() -> None:
     assert "embedding" not in summary
     assert result["decision"] == "unchanged"
     transitions = result["transitions"]
-    assert transitions["persist_document"]["decision"] == "persisted"
+    assert transitions["document_pipeline"]["decision"] == "processed"
+    assert transitions["ingest_decision"]["decision"] == "unchanged"
+    assert transitions["ingest"]["decision"] == "skipped"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "hash_match" for status in statuses)
+    assert updated_state["ingest_action"] == "skip"
     baseline_state = updated_state.get("baseline")
     assert isinstance(baseline_state, dict)
     assert baseline_state.get("checksum") == baseline_payload.document.checksum
 
 
 def test_repository_upsert_invoked() -> None:
-    repository = RecordingRepository()
+    repository = InMemoryDocumentsRepository()
     graph = CrawlerIngestionGraph(repository=repository)
     state = _build_state()
 
     updated_state, result = graph.run(state, {})
 
-    assert result["transitions"]["persist_document"]["decision"] == "persisted"
-    assert repository.upserts
-    assert updated_state["artifacts"].get("persisted_document")
+    assert result["transitions"]["document_pipeline"]["decision"] == "processed"
+    artifacts = updated_state["artifacts"]
+    assert artifacts.get("document_pipeline_phase")
+    normalized = artifacts["normalized_document"]
+    persisted = repository.get(
+        tenant_id=normalized.tenant_id,
+        document_id=normalized.document.ref.document_id,
+        workflow_id=normalized.document.ref.workflow_id,
+    )
+    assert persisted is not None
 
 
 def test_repository_upsert_failure_records_error() -> None:
@@ -328,13 +361,12 @@ def test_repository_upsert_failure_records_error() -> None:
 
     assert result["decision"] == "error"
     transitions = result["transitions"]
-    assert transitions["persist_document"]["decision"] == "error"
+    assert transitions["document_pipeline"]["decision"] == "error"
     artifacts = updated_state["artifacts"]
-    assert artifacts.get("persistence_failure", {}).get("type") == "RuntimeError"
-    assert artifacts.get("persistence_errors")
+    assert artifacts.get("document_pipeline_error")
     statuses = artifacts.get("status_updates", [])
     assert any(
-        status.to_dict().get("reason") == "persist_document_failed"
+        status.to_dict().get("reason") == "document_pipeline_failed"
         for status in statuses
     )
 
@@ -367,10 +399,10 @@ def test_embedding_failure_marks_error_and_status() -> None:
 
     assert result["decision"] == "error"
     errors = updated_state["artifacts"].get("errors") or []
-    assert errors and errors[0]["node"] == "trigger_embedding"
+    assert errors and errors[0]["node"] == "ingest"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(
-        status.to_dict().get("reason") == "trigger_embedding_failed"
+        status.to_dict().get("reason") == "ingest_failed"
         for status in statuses
     )
 
@@ -447,15 +479,7 @@ def test_document_service_adapter_is_injected() -> None:
     updated_state, result = graph.run(state, {"request_id": "req-custom"})
 
     assert result["decision"]
-    assert service.normalize_calls == [
-        {
-            "tenant_id": "tenant",
-            "case_id": "case",
-            "request_id": "req-custom",
-            "workflow_id": None,
-            "source": None,
-        }
-    ]
+    assert service.normalize_calls == []
     assert service.status_calls  # status transitions flowed through the adapter
     # ensure artifacts originate from adapter results
     statuses = updated_state["artifacts"].get("status_updates", [])
@@ -502,7 +526,7 @@ def test_delta_includes_meta_frontier_backoff() -> None:
 
     updated_state, result = graph.run(state, meta)
 
-    delta_attrs = result["transitions"]["decide_delta"]["attributes"]
+    delta_attrs = result["transitions"]["ingest_decision"]["attributes"]
     assert delta_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
     assert delta_attrs["frontier"]["decision"] == "defer"
     assert delta_attrs["policy_events"] == ("failure_backoff",)
