@@ -460,6 +460,7 @@ class CrawlerIngestionGraph:
     def _load_repository_baseline(
         self, state: Dict[str, Any], normalized: NormalizedDocumentPayload
     ) -> Dict[str, Any]:
+        state["_baseline_lookup_attempted"] = True
         repository = self._repository
         if repository is None:
             return {}
@@ -825,7 +826,15 @@ class CrawlerIngestionGraph:
         if isinstance(existing_baseline, Mapping):
             baseline_input.update(dict(existing_baseline))
 
-        if not baseline_input.get("checksum") or not state.get("previous_status"):
+        baseline_lookup_attempted = bool(state.get("_baseline_lookup_attempted"))
+
+        should_reload_baseline = False
+        if not baseline_input.get("checksum"):
+            should_reload_baseline = not baseline_lookup_attempted
+        elif not state.get("previous_status"):
+            should_reload_baseline = True
+
+        if should_reload_baseline:
             repository_baseline = self._load_repository_baseline(state, normalized)
             for key, value in repository_baseline.items():
                 baseline_input.setdefault(key, value)
