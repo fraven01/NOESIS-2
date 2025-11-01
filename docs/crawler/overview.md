@@ -23,35 +23,27 @@ Aufbau der übrigen App-Dokumentationen.
 ## Pipeline
 ```mermaid
 flowchart TD
-    F[Frontier Scheduler] --> W[Crawler Worker]
-    W --> Q[Celery Task run_ingestion_graph]
-    Q --> G[Guardrails Node]
-    G --> N[Normalization Node]
-    N --> L[Lifecycle Node]
-    L --> D[Delta Node]
-    D --> E[Downstream Events]
+    U[update_status_normalized] --> G[enforce_guardrails]
+    G --> P[document_pipeline]
+    P --> D[ingest_decision]
+    D --> I[ingest]
 ```
 
-- **Frontier (`crawler.frontier.decide_frontier_action`)** bewertet Robots,
-  Host-Politeness und Recrawl-Signale. Rückgaben wie `enqueue`, `defer`, `skip`
-  oder `retire` enthalten Gründe und optionale Policy-Events, um Scheduling und
-  Blacklisting nachvollziehbar zu machen.【F:crawler/frontier.py†L14-L122】【F:crawler/frontier.py†L164-L218】
-- **Crawler Worker (`crawler.worker.CrawlerWorker`)** validiert Politeness- und
-  Frontier-Vorgaben, ruft den HTTP-Fetcher auf und publiziert das Ergebnis
-  vollständig an den AI-Core Task. Es existiert keine lokale Parsing- oder
-  Persistenzlogik mehr.【F:crawler/worker.py†L1-L174】【F:crawler/http_fetcher.py†L1-L200】
-- **Celery Task (`ai_core.tasks.run_ingestion_graph`)** bildet den Übergabepunkt
-  in den AI-Core. Er injiziert Tenant-, Case- und Crawl-Metadaten und startet den
-  LangGraph-Orchestrator.【F:ai_core/tasks.py†L1576-L1597】
-- **Guardrails (`ai_core.api.enforce_guardrails`)** prüfen Limits und Policies auf
-  Basis der vom Worker gelieferten Metadaten sowie der Dokumentstatistiken. Bei
-  Verstößen erzeugen sie strukturierte `CrawlerError` Payloads.【F:ai_core/api.py†L61-L170】
-- **Normalisierung (`documents.api.normalize_from_raw`)** verarbeitet Raw-Bytes
-  aus dem Worker, rekonstruiert Text und Metadaten und erzeugt deterministische
-  `NormalizedDocumentPayload` Objekte.【F:documents/api.py†L105-L205】
-- **Lifecycle & Delta** werden im Graph sequenziell ausgeführt, triggern
-  Statusupdates und entscheiden, ob nachgelagerte Schritte (Embedding, Deltas)
-  erforderlich sind. Policy-Events und Telemetrie landen in Langfuse.【F:ai_core/graphs/crawler_ingestion_graph.py†L161-L209】【F:ai_core/api.py†L123-L247】
+- **`update_status_normalized`** persistiert den `normalized`-Lifecycle-Status
+  im gemeinsamen Dokument-Store, bevor weitere Schritte laufen, und legt das
+  Ergebnis als Artefakt für spätere Auswertungen ab.【F:ai_core/graphs/crawler_ingestion_graph.py†L552-L576】
+- **`enforce_guardrails`** zieht Limits, Frontier-Kontext und Telemetriedaten
+  heran, um Guardrail-Entscheidungen zu treffen, Policy-Events zu sammeln und
+  Ablehnungen sofort in Lifecycle und Events zu spiegeln.【F:ai_core/graphs/crawler_ingestion_graph.py†L672-L741】
+- **`document_pipeline`** orchestriert Parsing, Chunking und Artefakt-Bildung
+  im Dokument-Graph, aktualisiert den Normalized-Payload und synchronisiert den
+  `NormalizedDocument` im State für nachgelagerte Entscheidungen.【F:ai_core/graphs/crawler_ingestion_graph.py†L760-L864】
+- **`ingest_decision`** kombiniert Delta-Vergleiche, Baseline-Reloads und neue
+  Lifecycle-Einträge, um `new/changed/skip`-Entscheide sowie Folgeaktionen zu
+  bestimmen.【F:ai_core/graphs/crawler_ingestion_graph.py†L866-L930】
+- **`ingest`** triggert Embedding-Aufgaben nur für zulässige Deltas, reichert
+  Observability-Spans an und übergibt optionale Upsert-Handler-Ergebnisse an
+  das Artefakt-Set.【F:ai_core/graphs/crawler_ingestion_graph.py†L932-L1016】
 
 ## Kernverträge & Artefakte
 | Modul | Verantwortung | Schlüsselklassen |
@@ -73,6 +65,12 @@ flowchart TD
   dekodiert sie anhand optionaler Encoding-Hinweise und stellt sicher, dass
   Text, Checksums und Metadaten deterministisch aufgebaut werden – auch ohne
   vorgelagerten Parserlauf im Crawler.【F:crawler/worker.py†L1-L192】【F:documents/api.py†L94-L211】【F:documents/tests/test_api.py†L1-L67】
+- `CrawlerIngestionGraph` erwartet bereits zum Start ein
+  `NormalizedDocument` unter `state["normalized_document_input"]`; fehlt dieser,
+  wird der Graph mit einem Fehler beendet. Upstream-Komponenten wie
+  `documents.api.normalize_from_raw` liefern dafür den vollständigen
+  `NormalizedDocumentPayload`, dessen `document`-Teil vor dem Graph-Aufruf in den
+  State geschrieben wird (z. B. in `ai_core.views.ingest_document`).【F:ai_core/graphs/crawler_ingestion_graph.py†L424-L500】【F:documents/api.py†L286-L386】【F:ai_core/views.py†L1887-L1970】
 - Parser- und Normalizer-Statistiken landen wie bisher in
   `NormalizedDocumentPayload.document.meta.parse_stats`. Die Normalisierung
   ergänzt Kennzahlen wie `normalizer.bytes_in`, womit Langfuse und Dead-Letter
@@ -115,6 +113,17 @@ flowchart TD
   Manual-Override-Signale.【F:crawler/frontier.py†L55-L115】
 
 ## Telemetrie & Fehlerhandhabung
+- Die LangGraph-Knoten `_run_update_status`, `_run_guardrails`,
+  `_run_document_pipeline`, `_run_ingest_decision` und `_run_ingestion`
+  erzeugen strukturierte Artefakte (`status_update`, `guardrail_decision`,
+  `document_pipeline_*`, `delta_decision`, `embedding_result`) sowie
+  Span-Metadaten, die im Task-Ergebnis und in Langfuse wieder auftauchen.【F:ai_core/graphs/crawler_ingestion_graph.py†L552-L1016】
+- Guardrail-Ablehnungen erhöhen das Prometheus-Counter-Feld
+  `guardrail_denial_reason_total` und werden als Events `crawler_guardrail_denied`
+  ausgespielt; diese Metriken bilden die Grundlage für Guardrail-Dashboards.【F:ai_core/graphs/crawler_ingestion_graph.py†L704-L741】【F:documents/metrics.py†L167-L185】
+- `run_ingestion_graph` bereinigt nach dem Graph-Lauf den hinterlegten
+  `raw_payload_path`, sodass Runbooks bei Fehlern gezielt nach dem Artefaktpfad
+  suchen können, bevor der Cleanup greift.【F:ai_core/tasks.py†L1712-L1774】
 - Alle Stufen liefern `policy_events` und optionale `CrawlerError`-Payloads, die
   direkt in Langfuse-Traces und Dead-Letter-Events übernommen werden. Sie
   korrespondieren mit den Pflichtfeldern aus dem Observability-Leitfaden.【F:crawler/fetcher.py†L121-L152】【F:crawler/ingestion.py†L1-L129】
