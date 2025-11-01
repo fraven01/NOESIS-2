@@ -286,6 +286,44 @@ def test_html_parser_readability_fallback_when_summary_empty(monkeypatch) -> Non
     assert any(block.text == "Main content retained." for block in result.text_blocks)
 
 
+def test_html_parser_strips_scripts_and_styles() -> None:
+    html_source = """
+    <html>
+      <head>
+        <title>Noise</title>
+        <style>
+          body { background: black; }
+        </style>
+      </head>
+      <body>
+        <header>Header ignored</header>
+        <p>Visible paragraph.</p>
+        <script type="text/javascript">
+          console.log('should not appear');
+        </script>
+        <p>Second paragraph after script.</p>
+      </body>
+    </html>
+    """
+
+    document = _DocumentStub(
+        media_type="text/html",
+        blob=_inline_blob_from_text(html_source),
+    )
+    parser = HtmlDocumentParser()
+
+    result = parser.parse(document, config={})
+
+    texts = [block.text for block in result.text_blocks]
+    combined = " ".join(texts)
+
+    assert "console.log" not in combined
+    assert "background: black" not in combined
+    assert all("<" not in block for block in texts)
+    assert any("Visible paragraph." in block for block in texts)
+    assert any("Second paragraph" in block for block in texts)
+
+
 def test_html_parser_uses_placeholder_media_type_when_unknown(monkeypatch) -> None:
     html_source = """
     <html>

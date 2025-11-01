@@ -445,8 +445,14 @@ def trigger_embedding(
         lifecycle_state=document.lifecycle_state,
     )
 
+    normalized_content = (
+        normalized_document.content_normalized
+        or normalized_document.primary_text
+        or ""
+    )
+
     chunk_payload = Chunk(
-        content=normalized_document.primary_text or "",
+        content=normalized_content,
         meta={
             "tenant_id": chunk_meta.tenant_id,
             "case_id": chunk_meta.case_id,

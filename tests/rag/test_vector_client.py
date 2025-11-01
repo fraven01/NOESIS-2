@@ -1496,38 +1496,55 @@ def test_upsert_allows_same_external_in_different_collections() -> None:
         },
     )
 
-    assert client.upsert_chunks([chunk_a]) == 1
-    assert client.upsert_chunks([chunk_b]) == 1
+    first_result = client.upsert_chunks([chunk_a])
+    assert int(first_result) == 1
+    second_result = client.upsert_chunks([chunk_b])
+    assert int(second_result) == 1
+    doc_actions = [payload["action"] for payload in second_result.documents]
+    assert doc_actions == ["linked"]
 
     with client._connection() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT COUNT(*)
-                FROM documents
-                WHERE tenant_id = %s AND external_id = %s
-                """,
+                "SELECT id FROM documents WHERE tenant_id = %s AND external_id = %s",
                 (tenant, external_id),
+            )
+            rows = cur.fetchall()
+            assert len(rows) == 1
+            document_id = rows[0][0]
+
+            cur.execute(
+                "SELECT COUNT(*) FROM document_collections WHERE document_id = %s",
+                (document_id,),
             )
             assert cur.fetchone()[0] == 2
 
             cur.execute(
-                "SELECT COUNT(*) FROM chunks WHERE tenant_id = %s AND collection_id = %s",
-                (tenant, collection_a),
+                "SELECT collection_id FROM chunks WHERE document_id = %s ORDER BY collection_id",
+                (document_id,),
             )
-            assert cur.fetchone()[0] == 1
+            chunk_collections = [str(row[0]) for row in cur.fetchall()]
+            assert sorted(chunk_collections) == sorted([collection_a, collection_b])
 
-            cur.execute(
-                "SELECT COUNT(*) FROM chunks WHERE tenant_id = %s AND collection_id = %s",
-                (tenant, collection_b),
-            )
-            assert cur.fetchone()[0] == 1
+    all_results = client.search(
+        "shared chunk",
+        tenant_id=tenant,
+        filters={},
+        top_k=5,
+    )
+    assert len(all_results) == 2
+    assert {
+        chunk.meta.get("collection_id") for chunk in all_results
+    } == {collection_a, collection_b}
 
-            cur.execute(
-                "SELECT COUNT(*) FROM collections WHERE tenant_id = %s",
-                (tenant,),
-            )
-            assert cur.fetchone()[0] >= 2
+    filtered = client.search(
+        "shared chunk",
+        tenant_id=tenant,
+        filters={"collection_ids": [collection_a]},
+        top_k=5,
+    )
+    assert len(filtered) == 1
+    assert filtered[0].meta.get("collection_id") == collection_a
 
 
 def test_upsert_deduplicates_within_collection() -> None:
@@ -1571,7 +1588,7 @@ def test_upsert_deduplicates_within_collection() -> None:
             assert cur.fetchone()[0] == 1
 
 
-def test_upsert_strips_collection_scope_from_metadata() -> None:
+def test_upsert_includes_collection_scope_in_metadata() -> None:
     vector_client.reset_default_client()
     client = vector_client.get_default_client()
     tenant = str(uuid.uuid4())
@@ -1597,7 +1614,7 @@ def test_upsert_strips_collection_scope_from_metadata() -> None:
             )
             doc_metadata = cur.fetchone()[0]
             assert isinstance(doc_metadata, dict)
-            assert "collection_id" not in doc_metadata
+            assert doc_metadata.get("collection_id") == collection_id
 
             cur.execute(
                 "SELECT metadata FROM chunks WHERE tenant_id = %s AND collection_id = %s",

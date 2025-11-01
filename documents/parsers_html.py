@@ -353,6 +353,10 @@ def _render_block(
             pieces.append(text_value)
         for child in element:
             tag = child.tag.lower() if isinstance(child.tag, str) else ""
+            if tag in {"script", "style", "noscript", "template"}:
+                if child.tail:
+                    pieces.append(child.tail)
+                continue
             if tag == "img" and allow_inline_assets:
                 src = normalize_optional_string(child.get("src"))
                 if src:

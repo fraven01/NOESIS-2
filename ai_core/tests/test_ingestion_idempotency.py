@@ -1,5 +1,6 @@
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 from django.core.files.uploadedfile import SimpleUploadedFile
@@ -52,8 +53,19 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         )
         assert response.status_code == 202
         body = response.json()
-        assert body["external_id"] == external_id
-        return body["document_id"]
+        document_id = body["document_id"]
+        tenant_segment = object_store.sanitize_identifier(tenant)
+        case_segment = object_store.sanitize_identifier(case)
+        metadata_path = Path(
+            store_path,
+            tenant_segment,
+            case_segment,
+            "uploads",
+            f"{document_id}.meta.json",
+        )
+        stored_metadata = json.loads(metadata_path.read_text())
+        assert stored_metadata["external_id"] == external_id
+        return document_id
 
     first_doc = upload_document("Hello RAG ingestion!")
     first_result = process_document(
@@ -148,8 +160,19 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
         )
         assert response.status_code == 202
         body = response.json()
-        assert body["external_id"] == external_id
-        return body["document_id"]
+        document_id = body["document_id"]
+        tenant_segment = object_store.sanitize_identifier(tenant)
+        case_segment = object_store.sanitize_identifier(case)
+        metadata_path = Path(
+            store_path,
+            tenant_segment,
+            case_segment,
+            "uploads",
+            f"{document_id}.meta.json",
+        )
+        stored_metadata = json.loads(metadata_path.read_text())
+        assert stored_metadata["external_id"] == external_id
+        return document_id
 
     doc_a = upload_document()
     doc_b = upload_document()

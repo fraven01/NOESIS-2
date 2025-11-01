@@ -27,7 +27,7 @@ from documents.processing_graph import (
     build_document_processing_graph,
 )
 from documents.repository import DocumentsRepository
-from documents.parsers import ParserDispatcher, ParserRegistry
+from documents.parsers import ParsedResult, ParserDispatcher, ParserRegistry
 from documents.cli import SimpleDocumentChunker
 from documents import (
     DocxDocumentParser,
@@ -294,10 +294,14 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         *,
         phase: str,
+        transition: Optional[GraphTransition] = None,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         metadata = self._collect_span_metadata(state)
         metadata["phase"] = phase
+        if transition is not None:
+            metadata.setdefault("decision", transition.decision)
+            metadata.setdefault("reason", transition.reason)
         if extra:
             for key, value in extra.items():
                 if value is None:
@@ -305,6 +309,50 @@ class CrawlerIngestionGraph:
                 metadata[key] = value
         if metadata:
             update_observation(metadata=metadata)
+
+    def _with_transition_metadata(
+        self, transition: GraphTransition, state: Dict[str, Any]
+    ) -> GraphTransition:
+        metadata = self._transition_metadata(state)
+        if not metadata:
+            return transition
+        attributes: Dict[str, Any] = dict(transition.attributes)
+        attributes.update(metadata)
+        return GraphTransition(
+            decision=transition.decision,
+            reason=transition.reason,
+            attributes=attributes,
+        )
+
+    def _transition_metadata(self, state: Dict[str, Any]) -> Dict[str, str]:
+        base_metadata = self._collect_span_metadata(state)
+        metadata: Dict[str, str] = {}
+
+        trace_candidate = base_metadata.get("trace_id")
+        if not trace_candidate:
+            trace_candidate = state.get("trace_id")
+        if not trace_candidate:
+            trace_candidate = state.get("request_id")
+        if isinstance(trace_candidate, str):
+            trace_candidate = trace_candidate.strip()
+        if trace_candidate:
+            metadata["trace_id"] = str(trace_candidate)
+
+        workflow_candidate = base_metadata.get("workflow_id")
+        if not workflow_candidate:
+            workflow_candidate = state.get("workflow_id")
+        if isinstance(workflow_candidate, str):
+            workflow_candidate = workflow_candidate.strip()
+        if workflow_candidate:
+            metadata["workflow_id"] = str(workflow_candidate)
+
+        document_candidate = base_metadata.get("document_id")
+        if not document_candidate:
+            document_candidate = state.get("document_id")
+        if document_candidate:
+            metadata["document_id"] = str(document_candidate)
+
+        return metadata
 
     def _emit(
         self,
@@ -326,6 +374,27 @@ class CrawlerIngestionGraph:
             except Exception:  # pragma: no cover - defensive best effort
                 pass
 
+    @staticmethod
+    def _decode_payload_text(payload: bytes) -> str:
+        if not payload:
+            return ""
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload.decode("latin-1", errors="ignore")
+
+    @staticmethod
+    def _should_prefetch_parse(
+        document: NormalizedDocument, raw_text: str
+    ) -> bool:
+        if not raw_text or not raw_text.strip():
+            return False
+        blob = getattr(document, "blob", None)
+        media_type = getattr(blob, "media_type", "") or ""
+        media_type = media_type.strip().lower()
+        return media_type in {"text/html", "application/xhtml+xml"}
+
+    @observe_span(name="crawler.ingestion.run")
     def start_crawl(self, state: StateMapping) -> Dict[str, Any]:
         """Legacy bootstrap hook retained for callers expecting the older API."""
         working_state: Dict[str, Any] = dict(state)
@@ -376,6 +445,7 @@ class CrawlerIngestionGraph:
             raise
 
         working_state["content_hash"] = normalized_payload.checksum
+        self._annotate_span(working_state, phase="run")
 
         nodes = (
             GraphNode("update_status_normalized", self._run_update_status),
@@ -397,11 +467,15 @@ class CrawlerIngestionGraph:
             except Exception as exc:  # pragma: no cover - orchestrated error path
                 transition = self._handle_node_error(working_state, node, exc)
                 continue_flow = False
+            transition = self._with_transition_metadata(transition, working_state)
             transitions[node.name] = transition
             last_transition = transition
             self._emit(node.name, transition, run_id)
 
         finish_transition, _ = self._run_finish(working_state)
+        finish_transition = self._with_transition_metadata(
+            finish_transition, working_state
+        )
         transitions["finish"] = finish_transition
         self._emit("finish", finish_transition, run_id)
 
@@ -419,6 +493,12 @@ class CrawlerIngestionGraph:
             },
         }
         working_state["result"] = result
+        self._annotate_span(
+            working_state,
+            phase="run",
+            transition=summary,
+            extra={"graph_run_id": run_id},
+        )
         return working_state, result
 
     def _require(self, state: Dict[str, Any], key: str) -> Any:
@@ -461,11 +541,29 @@ class CrawlerIngestionGraph:
                 )
 
         payload_bytes = document_payload_bytes(normalized_input)
-        try:
-            primary_text = payload_bytes.decode("utf-8")
-        except UnicodeDecodeError:
-            primary_text = payload_bytes.decode("latin-1", errors="ignore")
-        primary_text = normalized_primary_text(primary_text)
+        raw_text = self._decode_payload_text(payload_bytes)
+        primary_text = normalized_primary_text(raw_text)
+
+        parse_result: ParsedResult | None = None
+        if self._should_prefetch_parse(normalized_input, raw_text):
+            try:
+                parse_result = self._parser_dispatcher.parse(
+                    normalized_input, self._pipeline_config
+                )
+            except Exception:
+                parse_result = None
+            else:
+                serialized_blocks = [
+                    block.text.strip()
+                    for block in parse_result.text_blocks
+                    if getattr(block, "text", "").strip()
+                ]
+                if serialized_blocks:
+                    primary_text = normalized_primary_text(
+                        "\n\n".join(serialized_blocks)
+                    )
+        if parse_result is not None:
+            artifacts.setdefault("prefetched_parse_result", parse_result)
 
         metadata_payload: Dict[str, Any] = {
             "tenant_id": normalized_input.meta.tenant_id,
@@ -484,6 +582,8 @@ class CrawlerIngestionGraph:
             primary_text=primary_text,
             payload_bytes=payload_bytes,
             metadata=metadata,
+            content_raw=raw_text,
+            content_normalized=primary_text,
         )
         artifacts["normalized_document"] = payload
         state["normalized_document_input"] = normalized_input
@@ -773,11 +873,16 @@ class CrawlerIngestionGraph:
             span_id=str(span_id) if span_id else None,
         )
 
+        prefetched_parse = artifacts.get("prefetched_parse_result")
+        if not isinstance(prefetched_parse, ParsedResult):
+            prefetched_parse = None
+
         pipeline_state = DocumentProcessingState(
             document=normalized.document,
             config=self._pipeline_config,
             context=context,
             run_until=run_until,
+            parsed_result=prefetched_parse,
         )
 
         baseline = artifacts.get("repository_baseline")
@@ -811,9 +916,11 @@ class CrawlerIngestionGraph:
 
         updated_payload = NormalizedDocumentPayload(
             document=result_state.document,
-            primary_text=normalized.primary_text,
+            primary_text=normalized.content_normalized,
             payload_bytes=normalized.payload_bytes,
             metadata=normalized.metadata,
+            content_raw=normalized.content_raw,
+            content_normalized=normalized.content_normalized,
         )
         artifacts["normalized_document"] = updated_payload
         state["normalized_document_input"] = result_state.document
@@ -998,6 +1105,7 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    @observe_span(name="crawler.ingestion.finish")
     def _run_finish(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: Optional[NormalizedDocumentPayload] = artifacts.get(
@@ -1061,6 +1169,16 @@ class CrawlerIngestionGraph:
             reason_value,
             attributes={"severity": severity, "result": dict(payload)},
         )
+        self._annotate_span(
+            state,
+            phase="finish",
+            transition=transition,
+            extra={
+                "severity": severity,
+                "guardrail_decision": guardrail.decision if guardrail else None,
+                "delta_decision": delta.decision if delta else None,
+            },
+        )
         state["summary"] = payload
         return transition, False
 
@@ -1091,11 +1209,12 @@ class CrawlerIngestionGraph:
                 artifacts.setdefault("status_updates", []).append(status)
             except Exception:  # pragma: no cover - best effort
                 pass
-        return _transition(
+        transition = _transition(
             "error",
             f"{node.name}_failed",
             attributes={"severity": "error", "error": repr(exc)},
         )
+        return self._with_transition_metadata(transition, working_state)
 
 
 GRAPH = CrawlerIngestionGraph(document_service=DocumentsApiLifecycleService())
