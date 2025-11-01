@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from ai_core.graphs.upload_ingestion_graph import (
-    GraphTransition,
-    UploadIngestionGraph,
-)
+from collections.abc import Mapping
+
+from ai_core import api as ai_core_api
+from ai_core.graphs.upload_ingestion_graph import GraphTransition, UploadIngestionGraph
+from documents.api import NormalizedDocumentPayload
 
 
 def _scanner(_: bytes, __: dict[str, object]) -> GraphTransition:
@@ -59,4 +60,98 @@ def test_duplicate_upload_skipped() -> None:
     assert first["decision"] == "completed"
     assert second["decision"] == "skip_duplicate"
     assert second["transitions"]["deduplicate"]["decision"] == "skip_duplicate"
+
+
+def test_guardrail_allow_and_delta_merge_policy_events() -> None:
+    guardrail_calls: list[NormalizedDocumentPayload] = []
+    baseline_calls: list[Mapping[str, object]] = []
+
+    def guardrail_stub(
+        *, normalized_document: NormalizedDocumentPayload, **_: object
+    ) -> ai_core_api.GuardrailDecision:
+        guardrail_calls.append(normalized_document)
+        return ai_core_api.GuardrailDecision(
+            "allow",
+            "guardrail_ok",
+            {"policy_events": ("guardrail_allow",)},
+        )
+
+    def delta_stub(
+        *,
+        normalized_document: NormalizedDocumentPayload,
+        baseline: Mapping[str, object],
+        **_: object,
+    ) -> ai_core_api.DeltaDecision:
+        assert guardrail_calls and normalized_document is guardrail_calls[0]
+        baseline_calls.append(baseline)
+        return ai_core_api.DeltaDecision(
+            "new",
+            "delta_new",
+            {"policy_events": ("delta_new",), "version": 1},
+        )
+
+    graph = UploadIngestionGraph(
+        guardrail_enforcer=guardrail_stub,
+        delta_decider=delta_stub,
+    )
+    payload = {
+        "tenant_id": "tenant-a",
+        "uploader_id": "user-1",
+        "file_bytes": b"Hello world",
+        "filename": "example.txt",
+    }
+
+    result = graph.run(payload)
+
+    assert guardrail_calls
+    assert isinstance(guardrail_calls[0], NormalizedDocumentPayload)
+    assert baseline_calls and isinstance(baseline_calls[0], Mapping)
+    transition = result["transitions"]["delta_and_guardrails"]
+    assert transition["decision"] == "upsert"
+    diagnostics = transition["diagnostics"]
+    assert set(diagnostics["policy_events"]) == {"guardrail_allow", "delta_new"}
+    assert diagnostics["guardrail"]["decision"] == "guardrail_allow"
+    assert diagnostics["version"] == 1
+
+
+def test_guardrail_deny_short_circuits_delta() -> None:
+    guardrail_calls: list[NormalizedDocumentPayload] = []
+    delta_called = False
+
+    def guardrail_stub(
+        *, normalized_document: NormalizedDocumentPayload, **_: object
+    ) -> ai_core_api.GuardrailDecision:
+        guardrail_calls.append(normalized_document)
+        return ai_core_api.GuardrailDecision(
+            "deny",
+            "blocked",
+            {"policy_events": ("upload_blocked",), "severity": "error"},
+        )
+
+    def delta_stub(**_: object) -> ai_core_api.DeltaDecision:  # pragma: no cover - should not run
+        nonlocal delta_called
+        delta_called = True
+        return ai_core_api.DeltaDecision("new", "should_not_happen", {})
+
+    graph = UploadIngestionGraph(
+        guardrail_enforcer=guardrail_stub,
+        delta_decider=delta_stub,
+    )
+    payload = {
+        "tenant_id": "tenant-a",
+        "uploader_id": "user-1",
+        "file_bytes": b"Hello world",
+        "filename": "example.txt",
+    }
+
+    result = graph.run(payload)
+
+    assert guardrail_calls and isinstance(guardrail_calls[0], NormalizedDocumentPayload)
+    assert not delta_called
+    assert result["decision"] == "skip_guardrail"
+    transition = result["transitions"]["delta_and_guardrails"]
+    assert transition["decision"] == "skip_guardrail"
+    diagnostics = transition["diagnostics"]
+    assert diagnostics["policy_events"] == ("upload_blocked",)
+    assert diagnostics["allowed"] is False
 
