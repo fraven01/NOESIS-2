@@ -5,6 +5,10 @@ from __future__ import annotations
 import hashlib
 from threading import RLock
 from typing import Dict, Tuple
+from urllib.parse import urlparse
+
+import requests
+from requests import RequestException
 
 from .logging_utils import log_call, log_extra_exit, uri_kind_from_uri
 
@@ -26,10 +30,11 @@ class Storage:
 class InMemoryStorage(Storage):
     """Thread-safe in-memory storage adapter using ``memory://`` URIs."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, http_timeout: float = 10.0) -> None:
         self._lock = RLock()
         self._store: Dict[str, bytes] = {}
         self._counter = 0
+        self._http_timeout = float(http_timeout)
 
     @log_call("storage.put")
     def put(self, data: bytes) -> Tuple[str, str, int]:
@@ -48,18 +53,33 @@ class InMemoryStorage(Storage):
 
     @log_call("storage.get")
     def get(self, uri: str) -> bytes:
-        if not uri.startswith("memory://"):
-            raise ValueError("storage_uri_unsupported")
-        with self._lock:
+        parsed = urlparse(uri)
+        scheme = parsed.scheme.lower()
+        if scheme in {"http", "https"}:
             try:
-                payload = self._store[uri]
-            except KeyError as exc:  # pragma: no cover - defensive guard
-                raise KeyError("storage_uri_missing") from exc
-        log_extra_exit(
-            uri_kind=uri_kind_from_uri(uri),
-            size_bytes=len(payload),
-        )
-        return payload
+                response = requests.get(uri, timeout=self._http_timeout)
+            except RequestException as exc:  # pragma: no cover - network guard
+                raise ValueError("storage_uri_fetch_failed") from exc
+            if response.status_code >= 400:
+                raise ValueError("storage_uri_http_error")
+            payload = response.content
+            log_extra_exit(
+                uri_kind=uri_kind_from_uri(uri),
+                size_bytes=len(payload),
+            )
+            return payload
+        if uri.startswith("memory://"):
+            with self._lock:
+                try:
+                    payload = self._store[uri]
+                except KeyError as exc:  # pragma: no cover - defensive guard
+                    raise KeyError("storage_uri_missing") from exc
+            log_extra_exit(
+                uri_kind=uri_kind_from_uri(uri),
+                size_bytes=len(payload),
+            )
+            return payload
+        raise ValueError("storage_uri_unsupported")
 
 
 __all__ = ["Storage", "InMemoryStorage"]
