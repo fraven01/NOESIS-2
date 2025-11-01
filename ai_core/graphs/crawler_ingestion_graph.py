@@ -371,9 +371,7 @@ class CrawlerIngestionGraph:
                 return text
         return "default"
 
-    def _resolve_chunk_external_id(
-        self, normalized: NormalizedDocumentPayload
-    ) -> str:
+    def _resolve_chunk_external_id(self, normalized: NormalizedDocumentPayload) -> str:
         external_ref = getattr(normalized.document.meta, "external_ref", None) or {}
         candidate = external_ref.get("external_id")
         if isinstance(candidate, str) and candidate.strip():
@@ -486,7 +484,11 @@ class CrawlerIngestionGraph:
     ) -> Tuple[str, Optional[str]]:
         tenant_segment = object_store.sanitize_identifier(str(chunk_meta["tenant_id"]))
         case_segment = object_store.sanitize_identifier(str(chunk_meta["case_id"]))
-        seed = chunk_meta.get("external_id") or chunk_meta.get("document_id") or normalized.checksum
+        seed = (
+            chunk_meta.get("external_id")
+            or chunk_meta.get("document_id")
+            or normalized.checksum
+        )
         try:
             filename = object_store.safe_filename(f"{seed}.txt")
         except Exception:
@@ -502,7 +504,9 @@ class CrawlerIngestionGraph:
         blocks_path: Optional[str] = None
         if blocks_payload:
             blocks_filename = filename.rsplit(".", 1)[0] + ".parsed.json"
-            blocks_path = "/".join([tenant_segment, case_segment, "text", blocks_filename])
+            blocks_path = "/".join(
+                [tenant_segment, case_segment, "text", blocks_filename]
+            )
             object_store.write_json(blocks_path, blocks_payload)
             chunk_meta["parsed_blocks_path"] = blocks_path
             artifacts["chunk_blocks_path"] = blocks_path
@@ -586,7 +590,9 @@ class CrawlerIngestionGraph:
             chunk_count = len(payload)
         if chunk_count is not None:
             artifacts["chunk_count"] = chunk_count
-            self._annotate_span(state, phase="chunk", extra={"chunk.count": chunk_count})
+            self._annotate_span(
+                state, phase="chunk", extra={"chunk.count": chunk_count}
+            )
 
         return ChunkComputation(
             meta=chunk_meta,
@@ -645,7 +651,9 @@ class CrawlerIngestionGraph:
             source=normalized.document.source or "crawler",
             hash=str(chunk_info.meta.get("hash") or normalized.checksum),
             external_id=str(chunk_info.meta["external_id"]),
-            content_hash=str(chunk_info.meta.get("content_hash") or normalized.checksum),
+            content_hash=str(
+                chunk_info.meta.get("content_hash") or normalized.checksum
+            ),
             embedding_profile=chunk_info.profile.profile_id,
             vector_space_id=chunk_info.profile.resolution.vector_space.id,
             workflow_id=workflow_id,
@@ -1411,7 +1419,9 @@ class CrawlerIngestionGraph:
 
         handler = self._embedding_handler
         if chunk_info is not None and handler is ai_core_api.trigger_embedding:
-            result = self._embed_with_chunks(state, normalized, embedding_state, chunk_info)
+            result = self._embed_with_chunks(
+                state, normalized, embedding_state, chunk_info
+            )
         else:
             result = handler(
                 normalized_document=normalized,
