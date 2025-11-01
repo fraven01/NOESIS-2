@@ -15,6 +15,7 @@ from django.conf import settings
 
 
 from ai_core import api as ai_core_api
+from ai_core.infra.observability import emit_event, observe_span, update_observation
 from documents.api import NormalizedDocumentPayload
 from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
 
@@ -157,19 +158,21 @@ class UploadIngestionGraph:
         transitions: dict[str, Mapping[str, Any]] = {}
 
         for node_name in self._RUN_ORDER:
-            started = datetime.now(timezone.utc)
             transition = self._execute_node(node_name, state)
-            ended = datetime.now(timezone.utc)
-            elapsed_ms = (ended - started).total_seconds() * 1000
             telemetry.setdefault("nodes", {})[node_name] = {
-                "took_ms": elapsed_ms,
-                "started_at": started.isoformat(),
-                "ended_at": ended.isoformat(),
+                "span": self._span_name(node_name)
             }
             transitions[node_name] = transition.to_dict()
             state["doc"]["last_transition"] = transition.to_dict()
             state["doc"]["decision"] = transition.decision
             state["doc"]["reason"] = transition.reason
+
+            self._annotate_span(
+                state,
+                phase=node_name,
+                transition=transition,
+            )
+            self._maybe_emit_transition_event(node_name, transition, state)
 
             if node_name == target_node:
                 break
@@ -203,13 +206,16 @@ class UploadIngestionGraph:
             raise UploadIngestionError(f"node_missing:{name}") from exc
         try:
             return handler(state)
-        except UploadIngestionError:
+        except UploadIngestionError as exc:
+            self._handle_node_error(name, exc, state)
             raise
         except Exception as exc:
+            self._handle_node_error(name, exc, state)
             raise UploadIngestionError(f"node_failed:{name}") from exc
 
     # Node: accept_upload ----------------------------------------------------
 
+    @observe_span(name="upload.ingestion.accept_upload")
     def _node_accept_upload(self, state: MutableMapping[str, Any]) -> GraphTransition:
         payload = state["input"]
         tenant_id = self._require_str(payload, "tenant_id")
@@ -302,6 +308,7 @@ class UploadIngestionGraph:
 
     # Node: quarantine_scan --------------------------------------------------
 
+    @observe_span(name="upload.ingestion.quarantine_scan")
     def _node_quarantine_scan(self, state: MutableMapping[str, Any]) -> GraphTransition:
         enabled = getattr(settings, "UPLOAD_QUARANTINE_ENABLED", False)
         if not enabled or self._quarantine_scanner is None:
@@ -320,6 +327,7 @@ class UploadIngestionGraph:
 
     # Node: deduplicate ------------------------------------------------------
 
+    @observe_span(name="upload.ingestion.deduplicate")
     def _node_deduplicate(self, state: MutableMapping[str, Any]) -> GraphTransition:
         binary: bytes = state["ingest"].get("binary", b"")
         tenant_id = state["meta"].get("tenant_id")
@@ -349,6 +357,7 @@ class UploadIngestionGraph:
 
     # Node: parse ------------------------------------------------------------
 
+    @observe_span(name="upload.ingestion.parse")
     def _node_parse(self, state: MutableMapping[str, Any]) -> GraphTransition:
         binary: bytes = state["ingest"].get("binary", b"")
         charset = "utf-8"
@@ -365,6 +374,7 @@ class UploadIngestionGraph:
 
     # Node: normalize --------------------------------------------------------
 
+    @observe_span(name="upload.ingestion.normalize")
     def _node_normalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
         raw_text = state["doc"].get("raw_text", "")
         normalized = " ".join(raw_text.split()) if raw_text else ""
@@ -373,6 +383,7 @@ class UploadIngestionGraph:
 
     # Node: delta and guardrails --------------------------------------------
 
+    @observe_span(name="upload.ingestion.delta_and_guardrails")
     def _node_delta_and_guardrails(self, state: MutableMapping[str, Any]) -> GraphTransition:
         normalized = self._build_normalized_document(state)
         baseline = self._resolve_baseline(state)
@@ -609,6 +620,7 @@ class UploadIngestionGraph:
 
     # Node: persist_document -------------------------------------------------
 
+    @observe_span(name="upload.ingestion.persist_document")
     def _node_persist_document(self, state: MutableMapping[str, Any]) -> GraphTransition:
         payload = {
             "tenant_id": state["meta"].get("tenant_id"),
@@ -647,6 +659,7 @@ class UploadIngestionGraph:
 
     # Node: chunk_and_embed --------------------------------------------------
 
+    @observe_span(name="upload.ingestion.chunk_and_embed")
     def _node_chunk_and_embed(self, state: MutableMapping[str, Any]) -> GraphTransition:
         normalized_text = state["doc"].get("normalized_text", "")
         words = normalized_text.split()
@@ -675,6 +688,7 @@ class UploadIngestionGraph:
 
     # Node: lifecycle_hook ---------------------------------------------------
 
+    @observe_span(name="upload.ingestion.lifecycle_hook")
     def _node_lifecycle_hook(self, state: MutableMapping[str, Any]) -> GraphTransition:
         if self._lifecycle_hook is None:
             return _transition("lifecycle_complete", "hook_skipped")
@@ -691,6 +705,7 @@ class UploadIngestionGraph:
 
     # Node: finalize ---------------------------------------------------------
 
+    @observe_span(name="upload.ingestion.finalize")
     def _node_finalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
         decision = state["doc"].get("decision")
         if decision and decision.startswith("skip"):
@@ -715,8 +730,136 @@ class UploadIngestionGraph:
     def _compute_total_ms(telemetry: Mapping[str, Any]) -> float:
         total = 0.0
         for entry in telemetry.get("nodes", {}).values():
-            total += float(entry.get("took_ms", 0.0))
+            took = entry.get("took_ms")
+            if took in (None, ""):
+                continue
+            try:
+                total += float(took)
+            except (TypeError, ValueError):
+                continue
         return total
+
+    @staticmethod
+    def _span_name(phase: str) -> str:
+        return f"upload.ingestion.{phase}"
+
+    def _annotate_span(
+        self,
+        state: MutableMapping[str, Any],
+        *,
+        phase: str,
+        transition: GraphTransition | None = None,
+        extra: Mapping[str, Any] | None = None,
+    ) -> None:
+        metadata: Dict[str, Any] = {
+            "phase": self._span_name(phase),
+        }
+        meta_state = state.get("meta", {})
+        doc_state = state.get("doc", {})
+
+        tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
+        if tenant_id:
+            metadata["tenant_id"] = tenant_id
+        case_id = self._normalize_optional_str(meta_state.get("case_id"))
+        if case_id:
+            metadata["case_id"] = case_id
+        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
+        if workflow_id:
+            metadata["workflow_id"] = workflow_id
+        document_id = doc_state.get("document_id")
+        if document_id:
+            metadata["document_id"] = str(document_id)
+        decision = doc_state.get("decision")
+        if decision:
+            metadata.setdefault("decision", str(decision))
+        if transition is not None:
+            metadata["decision"] = transition.decision
+            metadata["reason"] = transition.reason
+        if extra:
+            for key, value in extra.items():
+                if value is None:
+                    continue
+                metadata[key] = value
+        if metadata:
+            update_observation(metadata=metadata)
+
+    def _maybe_emit_transition_event(
+        self,
+        phase: str,
+        transition: GraphTransition,
+        state: MutableMapping[str, Any],
+    ) -> None:
+        diagnostics = transition.diagnostics
+        severity = str(diagnostics.get("severity") or "").strip().lower()
+        decision_text = transition.decision.strip().lower()
+        if severity not in {"error"} and "deny" not in decision_text:
+            return
+
+        payload: Dict[str, Any] = {
+            "event": "upload.ingestion.denied"
+            if "deny" in decision_text
+            else "upload.ingestion.error",
+            "phase": self._span_name(phase),
+            "decision": transition.decision,
+            "reason": transition.reason,
+        }
+        payload.update(self._collect_observability_metadata(state))
+        if diagnostics:
+            payload["diagnostics"] = _make_json_safe(diagnostics)
+        emit_event(payload)
+
+    def _handle_node_error(
+        self,
+        phase: str,
+        exc: Exception,
+        state: MutableMapping[str, Any],
+    ) -> None:
+        error_payload = {
+            "event": "upload.ingestion.error",
+            "phase": self._span_name(phase),
+            "error": exc.__class__.__name__,
+            "message": str(exc),
+        }
+        error_payload.update(self._collect_observability_metadata(state))
+        emit_event(error_payload)
+        self._annotate_span(
+            state,
+            phase=phase,
+            extra={
+                "error": exc.__class__.__name__,
+                "error_message": str(exc),
+            },
+        )
+
+    def _collect_observability_metadata(
+        self, state: MutableMapping[str, Any]
+    ) -> Dict[str, Any]:
+        metadata: Dict[str, Any] = {}
+        meta_state = state.get("meta", {})
+        doc_state = state.get("doc", {})
+
+        tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
+        if tenant_id:
+            metadata["tenant_id"] = tenant_id
+        case_id = self._normalize_optional_str(meta_state.get("case_id"))
+        if case_id:
+            metadata["case_id"] = case_id
+        request_id = self._normalize_optional_str(meta_state.get("request_id"))
+        if request_id:
+            metadata["request_id"] = request_id
+        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
+        if workflow_id:
+            metadata["workflow_id"] = workflow_id
+        document_id = doc_state.get("document_id")
+        if document_id:
+            metadata["document_id"] = str(document_id)
+        version = doc_state.get("version")
+        if version:
+            metadata["version"] = str(version)
+        decision = doc_state.get("decision")
+        if decision:
+            metadata["decision"] = str(decision)
+        return metadata
 
     @staticmethod
     def _require_str(payload: Mapping[str, Any], key: str) -> str:
