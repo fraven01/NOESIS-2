@@ -2,14 +2,21 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import mimetypes
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping
 from uuid import uuid4
 
 from django.conf import settings
+
+
+from ai_core import api as ai_core_api
+from documents.api import NormalizedDocumentPayload
+from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
 
 
 # Lightweight transition modelling -----------------------------------------
@@ -90,8 +97,10 @@ class UploadIngestionGraph:
         self,
         *,
         quarantine_scanner: Callable[[bytes, Mapping[str, Any]], GraphTransition] | None = None,
-        guardrail_enforcer: Callable[[Mapping[str, Any]], GraphTransition] | None = None,
-        delta_decider: Callable[[Mapping[str, Any]], GraphTransition] | None = None,
+        guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision]
+        | None = ai_core_api.enforce_guardrails,
+        delta_decider: Callable[..., ai_core_api.DeltaDecision]
+        | None = ai_core_api.decide_delta,
         persistence_handler: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         embedding_handler: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
         lifecycle_hook: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
@@ -174,6 +183,9 @@ class UploadIngestionGraph:
         tenant_id = self._require_str(payload, "tenant_id")
         uploader_id = self._require_str(payload, "uploader_id")
         visibility = self._resolve_visibility(payload.get("visibility"))
+        workflow_id = self._normalize_optional_str(payload.get("workflow_id")) or "upload"
+        case_id = self._normalize_optional_str(payload.get("case_id"))
+        request_id = self._normalize_optional_str(payload.get("request_id"))
 
         file_bytes = payload.get("file_bytes")
         file_uri = payload.get("file_uri")
@@ -236,8 +248,13 @@ class UploadIngestionGraph:
                 "tags": tuple(self._normalize_tags(payload.get("tags"))),
                 "source_key": self._normalize_optional_str(payload.get("source_key")),
                 "filename": filename,
+                "workflow_id": workflow_id,
             }
         )
+        if case_id:
+            state["meta"]["case_id"] = case_id
+        if request_id:
+            state["meta"]["request_id"] = request_id
         state["ingest"].update(
             {
                 "size": len(binary),
@@ -325,28 +342,238 @@ class UploadIngestionGraph:
     # Node: delta and guardrails --------------------------------------------
 
     def _node_delta_and_guardrails(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        payload = {
-            "tenant_id": state["meta"].get("tenant_id"),
-            "content_hash": state["doc"].get("content_hash"),
-            "normalized_text": state["doc"].get("normalized_text"),
-            "version": state["doc"].get("version"),
-        }
+        normalized = self._build_normalized_document(state)
+        baseline = self._resolve_baseline(state)
+        state["doc"]["normalized_document"] = normalized.to_dict()
+        state["doc"]["baseline"] = baseline
+
+        guardrail_transition_dict: Mapping[str, Any] | None = None
         if self._guardrail_enforcer is not None:
-            guardrail = self._guardrail_enforcer(payload)
-            if not isinstance(guardrail, GraphTransition):
-                raise UploadIngestionError("guardrail_transition_invalid")
-            if not guardrail.decision.startswith("allow"):
-                return guardrail
+            guardrail_decision = self._guardrail_enforcer(
+                normalized_document=normalized,
+            )
+            state["doc"]["guardrail_decision"] = {
+                "decision": guardrail_decision.decision,
+                "reason": guardrail_decision.reason,
+                "attributes": dict(guardrail_decision.attributes),
+            }
+            guardrail_transition = self._translate_guardrail_decision(
+                guardrail_decision,
+                normalized,
+            )
+            guardrail_transition_dict = guardrail_transition.to_dict()
+            state["doc"]["guardrail_transition"] = guardrail_transition_dict
+            if guardrail_transition.decision.startswith("skip"):
+                return guardrail_transition
 
-        if self._delta_decider is not None:
-            delta = self._delta_decider(payload)
-            if not isinstance(delta, GraphTransition):
-                raise UploadIngestionError("delta_transition_invalid")
-            state["doc"]["delta"] = delta.to_dict()
-            if delta.decision == "skip_guardrail":
-                return delta
+        if self._delta_decider is None:
+            diagnostics: Dict[str, Any] = {}
+            if guardrail_transition_dict is not None:
+                diagnostics["guardrail"] = guardrail_transition_dict
+            return _transition("upsert", "delta_skipped", diagnostics=diagnostics)
 
-        return _transition("upsert", "delta_ok")
+        delta_decision = self._delta_decider(
+            normalized_document=normalized,
+            baseline=baseline,
+        )
+        state["doc"]["delta_decision"] = {
+            "decision": delta_decision.decision,
+            "reason": delta_decision.reason,
+            "attributes": dict(delta_decision.attributes),
+        }
+        delta_transition = self._translate_delta_decision(
+            delta_decision,
+            normalized,
+            guardrail_transition_dict,
+        )
+        state["doc"]["delta"] = delta_transition.to_dict()
+        return delta_transition
+
+    def _build_normalized_document(
+        self, state: MutableMapping[str, Any]
+    ) -> NormalizedDocumentPayload:
+        tenant_id = state["meta"].get("tenant_id")
+        if not tenant_id:
+            raise UploadIngestionError("tenant_missing_for_guardrail")
+        workflow_id = state["meta"].get("workflow_id") or "upload"
+        filename = state["meta"].get("filename") or "upload"
+        visibility = state["meta"].get("visibility")
+        tags = list(state["meta"].get("tags") or ())
+        uploader_id = state["meta"].get("uploader_id")
+        source_key = state["meta"].get("source_key")
+        case_id = state["meta"].get("case_id")
+        request_id = state["meta"].get("request_id")
+
+        binary: bytes = state["ingest"].get("binary", b"")
+        declared_mime = state["ingest"].get("declared_mime") or "application/octet-stream"
+        content_hash = state["doc"].get("content_hash")
+        if not content_hash:
+            raise UploadIngestionError("content_hash_missing_for_guardrail")
+        normalized_text = state["doc"].get("normalized_text") or ""
+        raw_text = state["doc"].get("raw_text") or normalized_text
+
+        document_id_value = state["doc"].get("document_id") or uuid4()
+        version = state["doc"].get("version")
+
+        external_ref: dict[str, str] = {"provider": "upload"}
+        if source_key:
+            external_ref["external_id"] = str(source_key)
+        if uploader_id:
+            external_ref["uploader_id"] = str(uploader_id)
+
+        meta = DocumentMeta(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            title=filename,
+            tags=tags,
+            origin_uri=self._normalize_optional_str(state["input"].get("origin_uri"))
+            or self._normalize_optional_str(state["input"].get("file_uri")),
+            external_ref=external_ref or None,
+        )
+
+        blob = InlineBlob(
+            type="inline",
+            media_type=declared_mime,
+            base64=base64.b64encode(binary).decode("ascii"),
+            sha256=content_hash,
+            size=len(binary),
+        )
+        normalized_document = NormalizedDocument(
+            ref=DocumentRef(
+                tenant_id=tenant_id,
+                workflow_id=workflow_id,
+                document_id=document_id_value,
+                version=version,
+            ),
+            meta=meta,
+            blob=blob,
+            checksum=content_hash,
+            created_at=datetime.now(timezone.utc),
+            source="upload",
+        )
+
+        metadata_payload = {
+            "tenant_id": tenant_id,
+            "workflow_id": workflow_id,
+            "case_id": case_id,
+            "request_id": request_id,
+            "source": "upload",
+            "visibility": visibility,
+            "filename": filename,
+        }
+
+        metadata = MappingProxyType(
+            {key: value for key, value in metadata_payload.items() if value is not None}
+        )
+
+        return NormalizedDocumentPayload(
+            document=normalized_document,
+            primary_text=normalized_text or raw_text,
+            payload_bytes=binary,
+            metadata=metadata,
+            content_raw=raw_text,
+            content_normalized=normalized_text or raw_text,
+        )
+
+    def _resolve_baseline(self, state: MutableMapping[str, Any]) -> Mapping[str, Any]:
+        baseline_candidate = state["doc"].get("baseline")
+        if not isinstance(baseline_candidate, Mapping):
+            baseline_candidate = state["input"].get("baseline")
+        if isinstance(baseline_candidate, Mapping):
+            return dict(baseline_candidate)
+        return {}
+
+    def _translate_guardrail_decision(
+        self,
+        decision: ai_core_api.GuardrailDecision,
+        normalized: NormalizedDocumentPayload,
+    ) -> GraphTransition:
+        diagnostics: Dict[str, Any] = dict(decision.attributes)
+        policy_events = self._normalize_policy_events(
+            diagnostics.get("policy_events")
+        ) or tuple(decision.policy_events)
+        if policy_events:
+            diagnostics["policy_events"] = policy_events
+        severity = diagnostics.get("severity")
+        if not severity:
+            diagnostics["severity"] = "info" if decision.allowed else "error"
+        diagnostics.setdefault("guardrail_decision", decision.decision)
+        diagnostics.setdefault("tenant_id", normalized.tenant_id)
+        diagnostics.setdefault("document_id", normalized.document_id)
+        diagnostics["allowed"] = decision.allowed
+
+        if not decision.allowed:
+            return _transition("skip_guardrail", decision.reason, diagnostics=diagnostics)
+        return _transition("guardrail_allow", decision.reason, diagnostics=diagnostics)
+
+    def _translate_delta_decision(
+        self,
+        decision: ai_core_api.DeltaDecision,
+        normalized: NormalizedDocumentPayload,
+        guardrail_transition: Mapping[str, Any] | None,
+    ) -> GraphTransition:
+        diagnostics: Dict[str, Any] = dict(decision.attributes)
+        policy_events = self._normalize_policy_events(
+            diagnostics.get("policy_events")
+        )
+        diagnostics["policy_events"] = policy_events
+        diagnostics.setdefault("severity", "info")
+        diagnostics.setdefault("delta_decision", decision.decision)
+        if decision.version is not None:
+            diagnostics.setdefault("version", decision.version)
+        diagnostics.setdefault("tenant_id", normalized.tenant_id)
+        diagnostics.setdefault("document_id", normalized.document_id)
+
+        guardrail_events: tuple[str, ...] = ()
+        if guardrail_transition is not None:
+            diagnostics["guardrail"] = guardrail_transition
+            guardrail_diag = guardrail_transition.get("diagnostics", {})
+            guardrail_events = self._normalize_policy_events(
+                guardrail_diag.get("policy_events")
+            )
+            diagnostics["policy_events"] = self._merge_policy_events(
+                guardrail_events, diagnostics.get("policy_events", ())
+            )
+
+        status = decision.decision.strip().lower()
+        reason = decision.reason or f"delta_{status or 'unknown'}"
+        if status in {"unchanged", "near_duplicate"}:
+            if guardrail_events:
+                diagnostics["policy_events"] = self._merge_policy_events(
+                    guardrail_events, diagnostics.get("policy_events", ())
+                )
+            return _transition("skip_delta", reason, diagnostics=diagnostics)
+
+        return _transition(
+            "upsert",
+            reason if reason else "delta_changed",
+            diagnostics=diagnostics,
+        )
+
+    @staticmethod
+    def _normalize_policy_events(value: Any) -> tuple[str, ...]:
+        if isinstance(value, tuple):
+            return tuple(str(item).strip() for item in value if str(item).strip())
+        if isinstance(value, (list, set)):
+            return tuple(str(item).strip() for item in value if str(item).strip())
+        if value is None:
+            return ()
+        event = str(value).strip()
+        return (event,) if event else ()
+
+    @staticmethod
+    def _merge_policy_events(
+        *sources: Iterable[str],
+    ) -> tuple[str, ...]:
+        seen: Dict[str, None] = {}
+        for source in sources:
+            for event in source:
+                key = str(event).strip()
+                if not key:
+                    continue
+                if key not in seen:
+                    seen[key] = None
+        return tuple(seen.keys())
 
     # Node: persist_document -------------------------------------------------
 
