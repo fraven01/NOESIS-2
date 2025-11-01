@@ -384,9 +384,7 @@ class CrawlerIngestionGraph:
             return payload.decode("latin-1", errors="ignore")
 
     @staticmethod
-    def _should_prefetch_parse(
-        document: NormalizedDocument, raw_text: str
-    ) -> bool:
+    def _should_prefetch_parse(document: NormalizedDocument, raw_text: str) -> bool:
         if not raw_text or not raw_text.strip():
             return False
         blob = getattr(document, "blob", None)

@@ -89,11 +89,15 @@ def normalize_trace_id(
 
     warn_func = warn
     if warn_func is None:
-        warn_func = lambda message: warnings.warn(  # noqa: B023
-            message,
-            DeprecationWarning,
-            stacklevel=2,
-        )
+
+        def _default_warn(message: str) -> None:
+            warnings.warn(
+                message,
+                DeprecationWarning,
+                stacklevel=2,
+            )
+
+        warn_func = _default_warn
 
     raw_trace = meta.get("trace_id")
     if raw_trace is None or (isinstance(raw_trace, str) and raw_trace.strip() == ""):

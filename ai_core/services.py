@@ -479,9 +479,7 @@ def _map_upload_graph_skip(
     """Translate upload graph skip decisions into HTTP error responses."""
 
     diagnostics = transitions.get("accept_upload", {}).get("diagnostics", {})
-    guardrail_diag = transitions.get("delta_and_guardrails", {}).get(
-        "diagnostics", {}
-    )
+    guardrail_diag = transitions.get("delta_and_guardrails", {}).get("diagnostics", {})
 
     if decision == "skip_guardrail":
         policy_events = guardrail_diag.get("policy_events") or ()
@@ -519,8 +517,7 @@ def _map_upload_graph_skip(
         max_bytes = diagnostics.get("max_bytes")
         if isinstance(max_bytes, (int, float)):
             detail = (
-                "Uploaded file exceeds the allowed size of "
-                f"{int(max_bytes)} bytes."
+                "Uploaded file exceeds the allowed size of " f"{int(max_bytes)} bytes."
             )
         else:
             detail = "Uploaded file exceeds the allowed size."

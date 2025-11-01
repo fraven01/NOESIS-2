@@ -9,9 +9,7 @@ import ai_core.graphs.upload_ingestion_graph as upload_ingestion_graph
 from documents.api import NormalizedDocumentPayload
 
 
-def _scanner(
-    _: bytes, __: dict[str, object]
-) -> upload_ingestion_graph.GraphTransition:
+def _scanner(_: bytes, __: dict[str, object]) -> upload_ingestion_graph.GraphTransition:
     return upload_ingestion_graph.GraphTransition(decision="proceed", reason="clean")
 
 
@@ -136,7 +134,9 @@ def test_guardrail_deny_short_circuits_delta() -> None:
             {"policy_events": ("upload_blocked",), "severity": "error"},
         )
 
-    def delta_stub(**_: object) -> ai_core_api.DeltaDecision:  # pragma: no cover - should not run
+    def delta_stub(
+        **_: object,
+    ) -> ai_core_api.DeltaDecision:  # pragma: no cover - should not run
         nonlocal delta_called
         delta_called = True
         return ai_core_api.DeltaDecision("new", "should_not_happen", {})
@@ -206,7 +206,7 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
             "filename": "example.txt",
         }
 
-        result = graph.run(payload)
+        graph.run(payload)
 
         expected = [
             "upload.ingestion.run",
@@ -231,7 +231,10 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
         assert all(entry.get("workflow_id") == workflow_expected for entry in snapshots)
         doc_entries = [entry for entry in snapshots if entry.get("document_id")]
         assert doc_entries
-        assert all(isinstance(entry.get("document_id"), str) and entry["document_id"] for entry in doc_entries)
+        assert all(
+            isinstance(entry.get("document_id"), str) and entry["document_id"]
+            for entry in doc_entries
+        )
         assert recorded.count("upload.ingestion.run") == 1
         assert recorded[-1] == "upload.ingestion.run"
     finally:

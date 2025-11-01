@@ -1533,9 +1533,10 @@ def test_upsert_allows_same_external_in_different_collections() -> None:
         top_k=5,
     )
     assert len(all_results) == 2
-    assert {
-        chunk.meta.get("collection_id") for chunk in all_results
-    } == {collection_a, collection_b}
+    assert {chunk.meta.get("collection_id") for chunk in all_results} == {
+        collection_a,
+        collection_b,
+    }
 
     filtered = client.search(
         "shared chunk",

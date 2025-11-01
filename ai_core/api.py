@@ -446,9 +446,7 @@ def trigger_embedding(
     )
 
     normalized_content = (
-        normalized_document.content_normalized
-        or normalized_document.primary_text
-        or ""
+        normalized_document.content_normalized or normalized_document.primary_text or ""
     )
 
     chunk_payload = Chunk(

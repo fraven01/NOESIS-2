@@ -17,7 +17,12 @@ from django.conf import settings
 from ai_core import api as ai_core_api
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from documents.api import NormalizedDocumentPayload
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
 
 
 # Lightweight transition modelling -----------------------------------------
@@ -41,10 +46,7 @@ class GraphTransition:
 
 def _make_json_safe(value: Any) -> Any:
     if is_dataclass(value):
-        return {
-            f.name: _make_json_safe(getattr(value, f.name))
-            for f in fields(value)
-        }
+        return {f.name: _make_json_safe(getattr(value, f.name)) for f in fields(value)}
     if isinstance(value, Mapping):
         return {
             (str(k) if not isinstance(k, str) else k): _make_json_safe(v)
@@ -71,7 +73,9 @@ def _json_safe_mapping(mapping: Mapping[str, Any] | None) -> Dict[str, Any]:
     }
 
 
-def _transition(decision: str, reason: str, *, diagnostics: Mapping[str, Any] | None = None) -> GraphTransition:
+def _transition(
+    decision: str, reason: str, *, diagnostics: Mapping[str, Any] | None = None
+) -> GraphTransition:
     payload = dict(diagnostics or {})
     payload.setdefault("severity", "info")
     return GraphTransition(decision=decision, reason=reason, diagnostics=payload)
@@ -129,13 +133,21 @@ class UploadIngestionGraph:
     def __init__(
         self,
         *,
-        quarantine_scanner: Callable[[bytes, Mapping[str, Any]], GraphTransition] | None = None,
-        guardrail_enforcer: Callable[..., ai_core_api.GuardrailDecision]
-        | None = ai_core_api.enforce_guardrails,
-        delta_decider: Callable[..., ai_core_api.DeltaDecision]
-        | None = ai_core_api.decide_delta,
-        persistence_handler: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
-        embedding_handler: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        quarantine_scanner: (
+            Callable[[bytes, Mapping[str, Any]], GraphTransition] | None
+        ) = None,
+        guardrail_enforcer: (
+            Callable[..., ai_core_api.GuardrailDecision] | None
+        ) = ai_core_api.enforce_guardrails,
+        delta_decider: (
+            Callable[..., ai_core_api.DeltaDecision] | None
+        ) = ai_core_api.decide_delta,
+        persistence_handler: (
+            Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+        ) = None,
+        embedding_handler: (
+            Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+        ) = None,
         lifecycle_hook: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     ) -> None:
         self._quarantine_scanner = quarantine_scanner
@@ -150,7 +162,9 @@ class UploadIngestionGraph:
     # ------------------------------------------------------------------ API
 
     @observe_span(name="upload.ingestion.run")
-    def run(self, payload: Mapping[str, Any], run_until: str | None = None) -> Mapping[str, Any]:
+    def run(
+        self, payload: Mapping[str, Any], run_until: str | None = None
+    ) -> Mapping[str, Any]:
         """Execute the upload ingestion graph for *payload*."""
 
         state = self._initial_state(payload)
@@ -206,7 +220,9 @@ class UploadIngestionGraph:
 
     # -------------------------------------------------------------- Node impl
 
-    def _execute_node(self, name: str, state: MutableMapping[str, Any]) -> GraphTransition:
+    def _execute_node(
+        self, name: str, state: MutableMapping[str, Any]
+    ) -> GraphTransition:
         try:
             handler = getattr(self, f"_node_{name}")
         except AttributeError as exc:  # pragma: no cover - defensive
@@ -229,7 +245,9 @@ class UploadIngestionGraph:
         uploader_id = self._require_str(payload, "uploader_id")
         trace_id = self._require_str(payload, "trace_id")
         visibility = self._resolve_visibility(payload.get("visibility"))
-        workflow_id = self._normalize_optional_str(payload.get("workflow_id")) or "upload"
+        workflow_id = (
+            self._normalize_optional_str(payload.get("workflow_id")) or "upload"
+        )
         case_id = self._normalize_optional_str(payload.get("case_id"))
 
         file_bytes = payload.get("file_bytes")
@@ -265,7 +283,11 @@ class UploadIngestionGraph:
             return _transition(
                 "skip_oversize",
                 "file_too_large",
-                diagnostics={"max_bytes": size_limit, "size": len(binary), "severity": "warn"},
+                diagnostics={
+                    "max_bytes": size_limit,
+                    "size": len(binary),
+                    "severity": "warn",
+                },
             )
 
         declared_mime = self._normalize_mime(payload.get("declared_mime"))
@@ -338,7 +360,6 @@ class UploadIngestionGraph:
     def _node_deduplicate(self, state: MutableMapping[str, Any]) -> GraphTransition:
         binary: bytes = state["ingest"].get("binary", b"")
         tenant_id = state["meta"].get("tenant_id")
-        visibility = state["meta"].get("visibility")
         content_hash = hashlib.sha256(binary).hexdigest()
         state["ingest"]["content_hash"] = content_hash
 
@@ -361,7 +382,9 @@ class UploadIngestionGraph:
             state["doc"]["version"] = str(version)
 
         state["doc"]["content_hash"] = content_hash
-        return _transition("proceed", "dedupe_ok", diagnostics={"content_hash": content_hash})
+        return _transition(
+            "proceed", "dedupe_ok", diagnostics={"content_hash": content_hash}
+        )
 
     # Node: parse ------------------------------------------------------------
 
@@ -378,7 +401,9 @@ class UploadIngestionGraph:
         snippets = text.splitlines()
         if snippets:
             state["doc"]["snippets"] = snippets[:3]
-        return _transition("parse_complete", "parse_succeeded", diagnostics={"length": len(text)})
+        return _transition(
+            "parse_complete", "parse_succeeded", diagnostics={"length": len(text)}
+        )
 
     # Node: normalize --------------------------------------------------------
 
@@ -387,12 +412,16 @@ class UploadIngestionGraph:
         raw_text = state["doc"].get("raw_text", "")
         normalized = " ".join(raw_text.split()) if raw_text else ""
         state["doc"]["normalized_text"] = normalized
-        return _transition("normalize_complete", "normalized", diagnostics={"length": len(normalized)})
+        return _transition(
+            "normalize_complete", "normalized", diagnostics={"length": len(normalized)}
+        )
 
     # Node: delta and guardrails --------------------------------------------
 
     @observe_span(name="upload.ingestion.delta_and_guardrails", auto_annotate=True)
-    def _node_delta_and_guardrails(self, state: MutableMapping[str, Any]) -> GraphTransition:
+    def _node_delta_and_guardrails(
+        self, state: MutableMapping[str, Any]
+    ) -> GraphTransition:
         normalized = self._build_normalized_document(state)
         baseline = self._resolve_baseline(state)
         state["doc"]["normalized_document"] = normalized.to_dict()
@@ -456,7 +485,9 @@ class UploadIngestionGraph:
         trace_id = state["meta"].get("trace_id")
 
         binary: bytes = state["ingest"].get("binary", b"")
-        declared_mime = state["ingest"].get("declared_mime") or "application/octet-stream"
+        declared_mime = (
+            state["ingest"].get("declared_mime") or "application/octet-stream"
+        )
         content_hash = state["doc"].get("content_hash")
         if not content_hash:
             raise UploadIngestionError("content_hash_missing_for_guardrail")
@@ -554,7 +585,9 @@ class UploadIngestionGraph:
         diagnostics["allowed"] = decision.allowed
 
         if not decision.allowed:
-            return _transition("skip_guardrail", decision.reason, diagnostics=diagnostics)
+            return _transition(
+                "skip_guardrail", decision.reason, diagnostics=diagnostics
+            )
         return _transition("guardrail_allow", decision.reason, diagnostics=diagnostics)
 
     def _translate_delta_decision(
@@ -564,9 +597,7 @@ class UploadIngestionGraph:
         guardrail_transition: Mapping[str, Any] | None,
     ) -> GraphTransition:
         diagnostics: Dict[str, Any] = _json_safe_mapping(decision.attributes)
-        policy_events = self._normalize_policy_events(
-            diagnostics.get("policy_events")
-        )
+        policy_events = self._normalize_policy_events(diagnostics.get("policy_events"))
         diagnostics["policy_events"] = policy_events
         diagnostics.setdefault("severity", "info")
         diagnostics.setdefault("delta_decision", decision.decision)
@@ -629,7 +660,9 @@ class UploadIngestionGraph:
     # Node: persist_document -------------------------------------------------
 
     @observe_span(name="upload.ingestion.persist_document", auto_annotate=True)
-    def _node_persist_document(self, state: MutableMapping[str, Any]) -> GraphTransition:
+    def _node_persist_document(
+        self, state: MutableMapping[str, Any]
+    ) -> GraphTransition:
         payload = {
             "tenant_id": state["meta"].get("tenant_id"),
             "visibility": state["meta"].get("visibility"),
@@ -805,9 +838,7 @@ class UploadIngestionGraph:
             diagnostics=diagnostics,
         )
 
-    def _transition_metadata(
-        self, state: MutableMapping[str, Any]
-    ) -> Dict[str, str]:
+    def _transition_metadata(self, state: MutableMapping[str, Any]) -> Dict[str, str]:
         meta_state = state.get("meta", {})
         doc_state = state.get("doc", {})
         metadata: Dict[str, str] = {}
@@ -836,9 +867,11 @@ class UploadIngestionGraph:
             return
 
         payload: Dict[str, Any] = {
-            "event": "upload.ingestion.denied"
-            if "deny" in decision_text
-            else "upload.ingestion.error",
+            "event": (
+                "upload.ingestion.denied"
+                if "deny" in decision_text
+                else "upload.ingestion.error"
+            ),
             "phase": self._span_name(phase),
             "decision": transition.decision,
             "reason": transition.reason,
@@ -947,4 +980,3 @@ class UploadIngestionGraph:
 
 
 __all__ = ["UploadIngestionGraph", "UploadIngestionError", "GraphTransition"]
-

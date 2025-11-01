@@ -449,6 +449,7 @@ def test_html_content_is_normalized_before_chunking() -> None:
         assert "<script>" not in chunk.content
         assert "console.log" not in chunk.content
 
+
 class RecordingDocumentLifecycleService(DocumentLifecycleService):
     def __init__(self) -> None:
         self.normalize_calls: list[dict[str, object]] = []
@@ -632,7 +633,7 @@ def test_crawler_ingestion_spans(monkeypatch) -> None:
     try:
         graph = module.CrawlerIngestionGraph()
         state = _build_state(vector_client=StubVectorClient())
-        result = graph.run(state, {"trace_id": "trace-span", "workflow_id": "flow-span"})
+        graph.run(state, {"trace_id": "trace-span", "workflow_id": "flow-span"})
 
         expected = [
             "crawler.ingestion.update_status",
@@ -650,7 +651,10 @@ def test_crawler_ingestion_spans(monkeypatch) -> None:
         assert all(entry.get("workflow_id") == "flow-span" for entry in snapshots)
         doc_entries = [entry for entry in snapshots if entry.get("document_id")]
         assert doc_entries
-        assert all(isinstance(entry.get("document_id"), str) and entry["document_id"] for entry in doc_entries)
+        assert all(
+            isinstance(entry.get("document_id"), str) and entry["document_id"]
+            for entry in doc_entries
+        )
         assert recorded.count("crawler.ingestion.run") == 1
         assert recorded[-1] == "crawler.ingestion.run"
     finally:
@@ -673,7 +677,9 @@ def test_crawler_transition_metadata_contains_ids() -> None:
     expected_document_id = str(normalized.document_id)
     doc_ids = {
         attributes["document_id"]
-        for attributes in (transition["attributes"] for transition in transitions.values())
+        for attributes in (
+            transition["attributes"] for transition in transitions.values()
+        )
         if attributes.get("document_id")
     }
     assert expected_document_id in doc_ids

@@ -4460,7 +4460,11 @@ class PgVectorClient:
                         )
                     if relation_inserted:
                         current_action = actions.get(key)
-                        if current_action in {"skipped", "near_duplicate_skipped", None}:
+                        if current_action in {
+                            "skipped",
+                            "near_duplicate_skipped",
+                            None,
+                        }:
                             actions[key] = "linked"
                     document_ids[key] = existing_id
                     doc["collection_id"] = collection_text
@@ -4716,7 +4720,11 @@ class PgVectorClient:
                         )
                     if relation_inserted:
                         current_action = actions.get(key)
-                        if current_action in {"skipped", "near_duplicate_skipped", None}:
+                        if current_action in {
+                            "skipped",
+                            "near_duplicate_skipped",
+                            None,
+                        }:
                             actions[key] = "linked"
                     document_ids[key] = dup_id
                     doc["collection_id"] = collection_text
@@ -5112,7 +5120,9 @@ class PgVectorClient:
             embedding_rows = []
             chunk_count = 0
             for index, chunk in enumerate(doc["chunks"]):
-                raw_chunk_hash = chunk.meta.get("hash") if hasattr(chunk, "meta") else None
+                raw_chunk_hash = (
+                    chunk.meta.get("hash") if hasattr(chunk, "meta") else None
+                )
                 try:
                     chunk_hash = str(raw_chunk_hash or "").strip()
                 except Exception:
@@ -5121,9 +5131,7 @@ class PgVectorClient:
                     chunk_hash = hashlib.sha256(
                         f"{document_id}:{index}".encode("utf-8")
                     ).hexdigest()
-                chunk_namespace = (
-                    f"{tenant_value}:{document_id}:{collection_text or 'global'}:{chunk_hash}"
-                )
+                chunk_namespace = f"{tenant_value}:{document_id}:{collection_text or 'global'}:{chunk_hash}"
                 chunk_id = uuid.uuid5(uuid.NAMESPACE_URL, chunk_namespace)
                 embedding_values = chunk.embedding
                 normalised_embedding = (
