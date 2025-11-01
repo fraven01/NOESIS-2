@@ -216,6 +216,61 @@ def test_rag_upload_external_id_fallback(
 
 
 @pytest.mark.django_db
+def test_rag_upload_guardrail_skip_returns_403(
+    client,
+    monkeypatch,
+    tmp_path,
+    test_tenant_schema_name,
+    documents_repository_stub,
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    class _StubGraph:
+        def __init__(self, *, persistence_handler=None):
+            self.persistence_handler = persistence_handler
+
+        def run(self, payload, run_until=None):
+            assert payload["tenant_id"] == test_tenant_schema_name
+            return {
+                "decision": "skip_guardrail",
+                "reason": "blocked",
+                "transitions": {
+                    "accept_upload": {
+                        "decision": "accepted",
+                        "diagnostics": {},
+                    },
+                    "delta_and_guardrails": {
+                        "decision": "skip_guardrail",
+                        "diagnostics": {"policy_events": ("upload_blocked",)},
+                    },
+                },
+            }
+
+    monkeypatch.setattr("ai_core.services.UploadIngestionGraph", _StubGraph)
+
+    upload = SimpleUploadedFile("blocked.txt", b"deny-me", content_type="text/plain")
+    payload = encode_multipart(BOUNDARY, {"file": upload})
+    response = client.generic(
+        "POST",
+        "/ai/rag/documents/upload/",
+        payload,
+        content_type=MULTIPART_CONTENT,
+        **{
+            META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-guardrail",
+        },
+    )
+
+    assert response.status_code == 403
+    body = response.json()
+    assert body["code"] == "upload_blocked"
+    assert "guardrail" in body["detail"].lower()
+    assert documents_repository_stub.saved == []
+
+
+@pytest.mark.django_db
 def test_rag_upload_without_file_returns_400(
     client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
