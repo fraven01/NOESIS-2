@@ -13,14 +13,13 @@ Observability-Layer.
 @dataclass(frozen=True)
 class GraphNode:
     name: str
-    runner: Callable[[State, Artifacts, Control], tuple[GraphTransition, bool]]
+    runner: Callable[[dict[str, Any]], tuple[GraphTransition, bool]]
 ```
 
-* **State** enthält den vollständigen Crawl-/RAG-Kontext inklusive Ids.
-* **Artifacts** sammeln Zwischenergebnisse und werden zwischen den Knoten
-  weitergereicht.
-* **Control** modelliert Feature-Flags und manuelle Overrides (Shadow Mode,
-  Review, Retire).
+* Der Runner erhält ein `dict[str, Any]`, das den Crawl-/RAG-Kontext,
+  Zwischenartefakte und Kontrollflags kapselt.
+* Jeder Knoten darf das Mapping in-place erweitern und liefert gemeinsam mit dem
+  Transition-Objekt ein `bool`, das den Kontrollfluss steuert.
 
 Ein `GraphTransition` validiert seine Felder beim Erzeugen und erzwingt
 mindestens die Severity `info`. Dadurch können nachgelagerte Komponenten die
@@ -28,21 +27,20 @@ Transitions ohne zusätzliche Guards interpretieren.
 
 ## Crawler-Ingestion-Graph
 
-Der `crawler_ingestion_graph` orchestriert den Crawler-Workflow in folgender
-Reihenfolge:
+Der `crawler_ingestion_graph` orchestriert den Crawler-Workflow in der
+deterministischen Sequenz
+`update_status_normalized → enforce_guardrails → document_pipeline → ingest_decision → ingest → finish`.
 
-1. **Frontier → Fetch → Parse → Normalize → Delta → Guardrails**
-   prüfen, ob und wie ein Dokument verarbeitet werden darf.
-2. **Ingestion Decision** legt fest, ob ein Dokument gespeichert (`UPSERT`),
-   übersprungen oder in den `RETIRE`-Pfad überführt wird.
-3. **Store** ruft `documents.repository.DocumentsRepository.upsert()` auf und
-   persistiert den normalisierten Datensatz inklusive Workflow- und
-   Collection-Kontext.
-4. **Upsert** baut aus den Artefakten einen `Chunk` und schiebt ihn über den
-   Standard-Vector-Client (`ai_core.rag.vector_client.get_default_client()`) in
-   den Zielspace (`upsert_chunks`).
-5. **Retire** aktualisiert bei Bedarf den Lifecycle über
-   `update_lifecycle_state` des Vector-Clients und protokolliert die Entscheidung.
+* **update_status_normalized** sorgt für initiale Status-Updates des Dokuments.
+* **enforce_guardrails** prüft mithilfe von `ai_core.api.enforce_guardrails`,
+  ob Inhalte verarbeitet werden dürfen.
+* **document_pipeline** führt Normalisierung und Chunking durch; sie nutzt
+  `ai_core.api.decide_delta`, um Delta-Entscheidungen zu treffen.
+* **ingest_decision** entscheidet über UPSERT- oder RETIRE-Pfade basierend auf
+  den Guardrail- und Delta-Ergebnissen.
+* **ingest** persistiert Daten und löst `ai_core.api.trigger_embedding` aus, um
+  Embeddings für gültige Dokumente zu erzeugen.
+* **finish** bündelt den Abschlussstatus und Telemetrie-Metadaten.
 
    Die Tests in `ai_core/tests/graphs/test_crawler_ingestion_graph.py` decken
    Guardrail-, Lifecycle- und Embedding-Entscheidungen ab, während
