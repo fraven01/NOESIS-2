@@ -34,34 +34,27 @@ flowchart TD
 
 ```mermaid
 flowchart LR
-    subgraph Crawl
-        F[Frontier]
-        FE[Fetch]
-        P[Parse]
-        N[Normalize]
-        D[Delta]
-        G[Guardrails]
-    end
-    subgraph RAG
-        I[Ingestion Decision]
-        DS[DocumentsRepository.upsert]
-        VC[Vector Client Upsert]
-        R[Retire Updates]
-    end
-    F --> FE --> P --> N --> D --> G --> I
-    I --> DS --> VC --> R
+    USN[update_status_normalized]
+    EG[enforce_guardrails]
+    DP[document_pipeline]
+    ID[ingest_decision]
+    ING[ingest]
+    FIN[finish]
+
+    USN --> EG --> DP --> ID --> ING --> FIN
 ```
 
-- Der Graph verbindet Crawler-Artefakte deterministisch mit der RAG-Pipeline.
-  Die Tests in `ai_core/tests/test_crawler_delta.py` und
-  `ai_core/tests/graphs/test_crawler_ingestion_graph.py` validieren die Übergaben.
-- Der Guardrail- und Retire-Pfad liegt jetzt ausschließlich in den
-  RAG-Test-Suites, damit CI- und QA-Teams eine zentrale Stelle für den
-  End-to-End-Nachweis haben.
+- Die LangGraph-Spans `crawler.ingestion.*` bilden exakt die Reihenfolge
+  `update_status_normalized → enforce_guardrails → document_pipeline →
+  ingest_decision → ingest → finish` ab und verlinken damit Guardrails,
+  Dokument-Repository und Vector-Pipeline nachvollziehbar.
+- Die Tests in `ai_core/tests/test_crawler_delta.py` und
+  `ai_core/tests/graphs/test_crawler_ingestion_graph.py` validieren die
+  Übergaben für alle Schritte inklusive Guardrails und Entscheidungspunkten.
 
 ## Upload → Ingest-Trigger
-- **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen.
-- **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.
+- **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht von der Embedding-Pipeline abhängen. `handle_document_upload` queued dabei sofort den zugehörigen Ingestion-Task, sodass keine manuelle Bestätigung notwendig ist.
+- **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Das Run-Endpoint wird primär für Replays oder geplante Batch-Runs benötigt, weil reguläre Uploads bereits automatisch in der Queue landen. Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.
 - **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
 
 ## Parameter
@@ -107,6 +100,6 @@ flowchart LR
 
 # Schritte
 1. Lade das Dokument via `POST /ai/rag/documents/upload/` hoch, dokumentiere die zurückgegebene `document_id` und prüfe Upload-Fehler (z.B. Tenant-Mismatch, Dateigrößenlimit) sofort im Response.
-2. Stoße den Ingest mit `POST /ai/rag/ingestion/run/` samt Payload `{ "document_ids": [<document_id>] }` an; ein 202-Response signalisiert, dass der Task in der `ingestion` Queue liegt. Bei 4xx-Replies Profil-/Statusfehler korrigieren, bei 5xx erneut triggern oder einen Retry-Job anlegen.
+2. Prüfe, dass der Upload-Handler den Ingestion-Task erfolgreich in die `ingestion` Queue gelegt hat (Langfuse Trace `crawler.ingestion.ingest` oder Celery-Monitoring). Das Endpoint `POST /ai/rag/ingestion/run/` bleibt für Replays und geplante Batch-Runs verfügbar; dort stößt Payload `{ "document_ids": [<document_id>] }` einen neuen Task an.
 3. Überwache den Worker-Lauf (Langfuse Trace `ingestion.*`, Dead-Letter-Queue, Cloud-SQL-Metriken) und führe bei Backpressure-Peaks ein gestaffeltes Retriggering durch, bevor du in Prod ausrollst. Einstellungen wie `BATCH_SIZE` dokumentieren und Alerts im [Langfuse Guide](../observability/langfuse.md) aktivieren.
-4. Für Crawler-Quellen protokolliert der LangGraph die einzelnen Schritte (Frontier → Fetch → Parse → Normalize → Delta → Guardrails → Store → Upsert → Retire) mitsamt der Transition-Metadaten. Die Store-Phase bestätigt das erfolgreiche `DocumentsRepository.upsert`, bevor der Vector-Client den Embedding-Lauf übernimmt und optionale Lifecycle-Updates für Retire-Pfade ausführt.
+4. Für Crawler-Quellen zeigt LangGraph die `crawler.ingestion.*`-Spans exakt in der Reihenfolge `update_status_normalized → enforce_guardrails → document_pipeline → ingest_decision → ingest → finish`. Die Guardrails prüfen den Status vor dem Dokumentlauf, `document_pipeline` schreibt normalisierte Inhalte, `ingest_decision` entscheidet über Upserts versus Retire und `ingest` orchestriert Vector-Updates, bevor `finish` die Laufzeitmetriken abschließt.
