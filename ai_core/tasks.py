@@ -16,6 +16,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import (
     Any,
+    Callable,
     Dict,
     Iterable,
     Iterator,
@@ -1412,6 +1413,9 @@ def upsert(
     meta: Dict[str, str],
     embeddings_path: str,
     tenant_schema: Optional[str] = None,
+    *,
+    vector_client: Optional[Any] = None,
+    vector_client_factory: Optional[Callable[[], Any]] = None,
 ) -> int:
     """Upsert embedded chunks into the vector client."""
     raw_data = object_store.read_json(embeddings_path)
@@ -1549,14 +1553,22 @@ def upsert(
 
     schema = tenant_schema or (meta.get("tenant_schema") if meta else None)
 
-    router = get_default_router()
-    tenant_client = router
-    for_tenant = getattr(router, "for_tenant", None)
-    if callable(for_tenant):
-        try:
-            tenant_client = for_tenant(tenant_id, schema)
-        except TypeError:
-            tenant_client = for_tenant(tenant_id)
+    tenant_client = vector_client
+    if tenant_client is None and callable(vector_client_factory):
+        candidate = vector_client_factory()
+        if candidate is None:
+            tenant_client = None
+        else:
+            tenant_client = candidate
+    if tenant_client is None:
+        router = get_default_router()
+        tenant_client = router
+        for_tenant = getattr(router, "for_tenant", None)
+        if callable(for_tenant):
+            try:
+                tenant_client = for_tenant(tenant_id, schema)
+            except TypeError:
+                tenant_client = for_tenant(tenant_id)
     written = tenant_client.upsert_chunks(chunk_objs)
     return written
 
