@@ -11,7 +11,13 @@ from uuid import uuid4
 
 from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
+from ai_core.infra import object_store
 from ai_core.infra.observability import emit_event, observe_span, update_observation
+from ai_core.rag.ingestion_contracts import (
+    ChunkMeta,
+    IngestionProfileResolution,
+    resolve_ingestion_profile,
+)
 from documents import metrics as document_metrics
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
@@ -82,6 +88,18 @@ class GraphNode:
 
     def execute(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         return self.runner(state)
+
+
+@dataclass(frozen=True)
+class ChunkComputation:
+    """Captured context required to embed chunked crawler documents."""
+
+    meta: Dict[str, Any]
+    chunks_path: str
+    text_path: str
+    profile: IngestionProfileResolution
+    blocks_path: Optional[str] = None
+    chunk_count: Optional[int] = None
 
 
 def _transition(
@@ -324,6 +342,326 @@ class CrawlerIngestionGraph:
             attributes=attributes,
         )
 
+    @staticmethod
+    def _ingestion_tasks():
+        from ai_core import tasks as ingestion_tasks
+
+        return ingestion_tasks
+
+    def _resolve_chunk_case_id(
+        self, state: Mapping[str, Any], normalized: NormalizedDocumentPayload
+    ) -> str:
+        candidates = [state.get("case_id")]
+        meta_payload = state.get("meta")
+        if isinstance(meta_payload, Mapping):
+            candidates.append(meta_payload.get("case_id"))
+        normalized_meta = normalized.metadata
+        if isinstance(normalized_meta, Mapping):
+            candidates.append(normalized_meta.get("case_id"))
+        external_ref = getattr(normalized.document.meta, "external_ref", None) or {}
+        candidates.append(external_ref.get("case_id"))
+        for candidate in candidates:
+            if candidate is None:
+                continue
+            try:
+                text = str(candidate).strip()
+            except Exception:
+                continue
+            if text:
+                return text
+        return "default"
+
+    def _resolve_chunk_external_id(
+        self, normalized: NormalizedDocumentPayload
+    ) -> str:
+        external_ref = getattr(normalized.document.meta, "external_ref", None) or {}
+        candidate = external_ref.get("external_id")
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+        document_id = getattr(normalized.document.ref, "document_id", None)
+        if document_id is not None:
+            return str(document_id)
+        return normalized.checksum
+
+    def _resolve_embedding_profile_binding(
+        self, embedding_state: Mapping[str, Any]
+    ) -> IngestionProfileResolution:
+        profile_candidate = embedding_state.get("profile")
+        if isinstance(profile_candidate, str):
+            profile_key = profile_candidate.strip() or "standard"
+        elif profile_candidate is None:
+            profile_key = "standard"
+        else:
+            profile_key = str(profile_candidate).strip() or "standard"
+        return resolve_ingestion_profile(profile_key)
+
+    def _prepare_chunk_meta(
+        self,
+        state: Dict[str, Any],
+        normalized: NormalizedDocumentPayload,
+        embedding_state: Mapping[str, Any],
+        profile_binding: IngestionProfileResolution,
+    ) -> Dict[str, Any]:
+        tenant_id = str(normalized.tenant_id)
+        case_id = self._resolve_chunk_case_id(state, normalized)
+        external_id = self._resolve_chunk_external_id(normalized)
+        workflow_id = getattr(normalized.document.ref, "workflow_id", None)
+        document_id = normalized.document_id
+
+        meta: Dict[str, Any] = {
+            "tenant_id": tenant_id,
+            "case_id": case_id,
+            "external_id": external_id,
+            "workflow_id": str(workflow_id) if workflow_id else None,
+            "document_id": document_id,
+            "hash": normalized.checksum,
+            "content_hash": normalized.checksum,
+            "source": normalized.document.source or "crawler",
+        }
+
+        collection_id = getattr(normalized.document.ref, "collection_id", None)
+        if collection_id is not None:
+            meta["collection_id"] = str(collection_id)
+
+        title = getattr(normalized.document.meta, "title", None)
+        if isinstance(title, str) and title.strip():
+            meta["title"] = title.strip()
+
+        embedding_profile = profile_binding.profile_id
+        if embedding_profile:
+            meta["embedding_profile"] = embedding_profile
+        vector_space = profile_binding.resolution.vector_space
+        if getattr(vector_space, "id", None):
+            meta["vector_space_id"] = vector_space.id
+        if getattr(vector_space, "dimension", None):
+            meta["vector_space_dimension"] = str(vector_space.dimension)
+
+        key_alias = embedding_state.get("key_alias")
+        if isinstance(key_alias, str) and key_alias.strip():
+            meta["key_alias"] = key_alias.strip()
+
+        frontier_state = state.get("frontier")
+        if isinstance(frontier_state, Mapping):
+            breadcrumbs = frontier_state.get("breadcrumbs")
+            if isinstance(breadcrumbs, Iterable) and not isinstance(
+                breadcrumbs, (str, bytes)
+            ):
+                trail = [str(part).strip() for part in breadcrumbs if str(part).strip()]
+                if trail:
+                    meta["breadcrumbs"] = trail
+
+        return {key: value for key, value in meta.items() if value not in (None, "")}
+
+    def _build_parsed_blocks_payload(
+        self, parse_artifact: Any, fallback_text: str
+    ) -> Optional[Dict[str, Any]]:
+        if parse_artifact is None:
+            return None
+        text_blocks = getattr(parse_artifact, "text_blocks", None)
+        if not text_blocks:
+            return None
+        blocks: list[Dict[str, Any]] = []
+        for index, block in enumerate(text_blocks):
+            if isinstance(block, Mapping):
+                payload = dict(block)
+            else:
+                try:
+                    payload = dict(block.__dict__)
+                except Exception:
+                    continue
+            payload.setdefault("index", index)
+            blocks.append(payload)
+        if not blocks:
+            return None
+        stats = getattr(parse_artifact, "statistics", {}) or {}
+        statistics = dict(stats) if isinstance(stats, Mapping) else {}
+        return {"blocks": blocks, "statistics": statistics, "text": fallback_text}
+
+    def _persist_chunk_inputs(
+        self,
+        state: Dict[str, Any],
+        chunk_meta: Dict[str, Any],
+        normalized: NormalizedDocumentPayload,
+        text: str,
+    ) -> Tuple[str, Optional[str]]:
+        tenant_segment = object_store.sanitize_identifier(str(chunk_meta["tenant_id"]))
+        case_segment = object_store.sanitize_identifier(str(chunk_meta["case_id"]))
+        seed = chunk_meta.get("external_id") or chunk_meta.get("document_id") or normalized.checksum
+        try:
+            filename = object_store.safe_filename(f"{seed}.txt")
+        except Exception:
+            filename = object_store.safe_filename(f"chunk-{uuid4()}.txt")
+        text_path = "/".join([tenant_segment, case_segment, "text", filename])
+        object_store.write_bytes(text_path, text.encode("utf-8"))
+
+        artifacts = self._artifacts(state)
+        artifacts["chunk_text_path"] = text_path
+
+        parse_artifact = artifacts.get("parse_artifact")
+        blocks_payload = self._build_parsed_blocks_payload(parse_artifact, text)
+        blocks_path: Optional[str] = None
+        if blocks_payload:
+            blocks_filename = filename.rsplit(".", 1)[0] + ".parsed.json"
+            blocks_path = "/".join([tenant_segment, case_segment, "text", blocks_filename])
+            object_store.write_json(blocks_path, blocks_payload)
+            chunk_meta["parsed_blocks_path"] = blocks_path
+            artifacts["chunk_blocks_path"] = blocks_path
+
+        return text_path, blocks_path
+
+    def _chunk_document(
+        self,
+        state: Dict[str, Any],
+        normalized: NormalizedDocumentPayload,
+        embedding_state: Mapping[str, Any],
+    ) -> Optional[ChunkComputation]:
+        text = normalized.content_normalized or normalized.primary_text or ""
+        if not str(text or "").strip():
+            return None
+
+        profile_binding = self._resolve_embedding_profile_binding(embedding_state)
+        chunk_meta = self._prepare_chunk_meta(
+            state, normalized, embedding_state, profile_binding
+        )
+        text_path, blocks_path = self._persist_chunk_inputs(
+            state, chunk_meta, normalized, text
+        )
+
+        ingestion_tasks = self._ingestion_tasks()
+        chunk_result = ingestion_tasks.chunk(chunk_meta, text_path)
+        if not isinstance(chunk_result, Mapping):
+            artifacts = self._artifacts(state)
+            artifacts.setdefault("chunk_errors", []).append(
+                {"error": "chunk_result_invalid", "result": chunk_result}
+            )
+            self._annotate_span(
+                state,
+                phase="chunk",
+                extra={"error": "chunk_result_invalid"},
+            )
+            return None
+
+        chunk_path = chunk_result.get("path")
+        if not chunk_path:
+            artifacts = self._artifacts(state)
+            artifacts.setdefault("chunk_errors", []).append(
+                {"error": "chunk_path_missing", "result": dict(chunk_result)}
+            )
+            self._annotate_span(
+                state,
+                phase="chunk",
+                extra={"error": "chunk_path_missing"},
+            )
+            return None
+        chunk_path_str = str(chunk_path)
+
+        artifacts = self._artifacts(state)
+        artifacts["chunks_path"] = chunk_path_str
+        artifacts["chunk_meta"] = dict(chunk_meta)
+
+        chunk_count: Optional[int] = None
+        try:
+            payload = object_store.read_json(chunk_path_str)
+        except Exception:
+            payload = None
+            artifacts.setdefault("chunk_errors", []).append(
+                {"error": "chunk_payload_read_failed", "path": chunk_path_str}
+            )
+            self._annotate_span(
+                state,
+                phase="chunk",
+                extra={
+                    "error": "chunk_payload_read_failed",
+                    "chunk.path": chunk_path_str,
+                },
+            )
+        if isinstance(payload, dict):
+            raw_chunks = payload.get("chunks")
+            if isinstance(raw_chunks, list):
+                chunk_count = len(raw_chunks)
+            parents_payload = payload.get("parents")
+            if isinstance(parents_payload, dict) and parents_payload:
+                artifacts["chunk_parents"] = parents_payload
+        elif isinstance(payload, list):
+            chunk_count = len(payload)
+        if chunk_count is not None:
+            artifacts["chunk_count"] = chunk_count
+            self._annotate_span(state, phase="chunk", extra={"chunk.count": chunk_count})
+
+        return ChunkComputation(
+            meta=chunk_meta,
+            chunks_path=chunk_path_str,
+            text_path=text_path,
+            profile=profile_binding,
+            blocks_path=blocks_path,
+            chunk_count=chunk_count,
+        )
+
+    def _embed_with_chunks(
+        self,
+        state: Dict[str, Any],
+        normalized: NormalizedDocumentPayload,
+        embedding_state: Mapping[str, Any],
+        chunk_info: ChunkComputation,
+    ) -> EmbeddingResult:
+        ingestion_tasks = self._ingestion_tasks()
+        embed_result = ingestion_tasks.embed(chunk_info.meta, chunk_info.chunks_path)
+        embeddings_path = str(embed_result.get("path"))
+        artifacts = self._artifacts(state)
+        artifacts["embeddings_path"] = embeddings_path
+
+        upsert_kwargs: Dict[str, Any] = {}
+        tenant_schema = embedding_state.get("tenant_schema")
+        if tenant_schema is not None:
+            upsert_kwargs["tenant_schema"] = tenant_schema
+        vector_client = embedding_state.get("client")
+        if vector_client is not None:
+            upsert_kwargs["vector_client"] = vector_client
+        vector_factory = embedding_state.get("client_factory")
+        if vector_factory is not None:
+            upsert_kwargs["vector_client_factory"] = vector_factory
+
+        inserted = ingestion_tasks.upsert(
+            chunk_info.meta,
+            embeddings_path,
+            **upsert_kwargs,
+        )
+
+        workflow_id_value = chunk_info.meta.get("workflow_id")
+        workflow_id = None
+        if workflow_id_value not in (None, ""):
+            workflow_id = str(workflow_id_value)
+
+        collection_value = chunk_info.meta.get("collection_id")
+        collection_id = None
+        if collection_value not in (None, ""):
+            collection_id = str(collection_value)
+
+        document_value = chunk_info.meta.get("document_id") or normalized.document_id
+
+        chunk_meta_model = ChunkMeta(
+            tenant_id=str(chunk_info.meta["tenant_id"]),
+            case_id=str(chunk_info.meta["case_id"]),
+            source=normalized.document.source or "crawler",
+            hash=str(chunk_info.meta.get("hash") or normalized.checksum),
+            external_id=str(chunk_info.meta["external_id"]),
+            content_hash=str(chunk_info.meta.get("content_hash") or normalized.checksum),
+            embedding_profile=chunk_info.profile.profile_id,
+            vector_space_id=chunk_info.profile.resolution.vector_space.id,
+            workflow_id=workflow_id,
+            collection_id=collection_id,
+            document_id=str(document_value),
+            lifecycle_state=normalized.document.lifecycle_state,
+        )
+
+        return EmbeddingResult(
+            status="upserted" if inserted else "skipped",
+            chunks_inserted=int(inserted),
+            embedding_profile=chunk_info.profile.profile_id,
+            vector_space_id=chunk_info.profile.resolution.vector_space.id,
+            chunk_meta=chunk_meta_model,
+        )
+
     def _transition_metadata(self, state: Dict[str, Any]) -> Dict[str, str]:
         base_metadata = self._collect_span_metadata(state)
         metadata: Dict[str, str] = {}
@@ -497,6 +835,7 @@ class CrawlerIngestionGraph:
             transition=summary,
             extra={"graph_run_id": run_id},
         )
+        self.start_crawl(working_state)
         return working_state, result
 
     def _require(self, state: Dict[str, Any], key: str) -> Any:
@@ -1059,15 +1398,30 @@ class CrawlerIngestionGraph:
             return transition, True
 
         embedding_state = state.get("embedding") or {}
-        result = self._embedding_handler(
-            normalized_document=normalized,
-            embedding_profile=embedding_state.get("profile"),
-            tenant_id=normalized.tenant_id,
-            case_id=state.get("case_id"),
-            request_id=state.get("request_id"),
-            vector_client=embedding_state.get("client"),
-            vector_client_factory=embedding_state.get("client_factory"),
-        )
+        chunk_info: Optional[ChunkComputation] = None
+        try:
+            chunk_info = self._chunk_document(state, normalized, embedding_state)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            artifacts.setdefault("chunk_errors", []).append(repr(exc))
+            self._annotate_span(
+                state,
+                phase="chunk",
+                extra={"error": repr(exc)},
+            )
+
+        handler = self._embedding_handler
+        if chunk_info is not None and handler is ai_core_api.trigger_embedding:
+            result = self._embed_with_chunks(state, normalized, embedding_state, chunk_info)
+        else:
+            result = handler(
+                normalized_document=normalized,
+                embedding_profile=embedding_state.get("profile"),
+                tenant_id=normalized.tenant_id,
+                case_id=state.get("case_id"),
+                request_id=state.get("request_id"),
+                vector_client=embedding_state.get("client"),
+                vector_client_factory=embedding_state.get("client_factory"),
+            )
         artifacts["embedding_result"] = result
         self._annotate_span(
             state,
