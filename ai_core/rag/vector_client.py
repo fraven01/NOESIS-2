@@ -1209,6 +1209,7 @@ class PgVectorClient:
         filters: Mapping[str, object | None] | None,
         chunk_id: object,
         document_id: object,
+        collection_id: object | None = None,
     ) -> Dict[str, object]:
         enriched = PgVectorClient._strip_collection_scope(meta)
         if "tenant_id" not in enriched and tenant_id:
@@ -1218,6 +1219,8 @@ class PgVectorClient:
             enriched["case_id"] = filter_case_value
         enriched.setdefault("document_id", document_id)
         enriched.setdefault("chunk_id", chunk_id)
+        if collection_id is not None and "collection_id" not in enriched:
+            enriched["collection_id"] = collection_id
         return enriched
 
     @staticmethod
@@ -1233,7 +1236,6 @@ class PgVectorClient:
                 sanitized = {}
         else:
             sanitized = {}
-        sanitized.pop("collection_id", None)
         return sanitized
 
     @staticmethod
@@ -1489,6 +1491,8 @@ class PgVectorClient:
             documents_info.append(doc_payload)
             logger.info("ingestion.doc.result", extra=doc_payload)
             if action == "inserted":
+                metrics.INGESTION_DOCS_INSERTED.inc()
+            elif action == "linked":
                 metrics.INGESTION_DOCS_INSERTED.inc()
             elif action in {"replaced", "near_duplicate_replaced"}:
                 metrics.INGESTION_DOCS_REPLACED.inc()
@@ -3064,6 +3068,7 @@ class PgVectorClient:
                 filters=normalized_filters,
                 chunk_id=entry.get("chunk_id"),
                 document_id=document_id,
+                collection_id=entry.get("collection_id"),
             )
             if doc_hash and not meta.get("hash"):
                 meta["hash"] = doc_hash
@@ -3517,7 +3522,13 @@ class PgVectorClient:
             # backwards compatibility with older call sites/tests.
             tenant_value = chunk.meta.get("tenant_id") or chunk.meta.get("tenant")
             doc_hash = str(chunk.meta.get("hash"))
-            source = chunk.meta.get("source", "")
+            raw_source = chunk.meta.get("source")
+            try:
+                source = str(raw_source).strip()
+            except Exception:
+                source = ""
+            if not source:
+                source = "unknown"
             external_id = chunk.meta.get("external_id")
             raw_collection_id = chunk.meta.get("collection_id")
             raw_doc_class = chunk.meta.get("doc_class")
@@ -4024,6 +4035,12 @@ class PgVectorClient:
         for key, doc in grouped.items():
             tenant_uuid = self._coerce_tenant_uuid(doc["tenant_id"])
             external_id = str(doc["external_id"])
+            try:
+                source_text = str(doc.get("source", "")).strip()
+            except Exception:
+                source_text = ""
+            source = source_text or "unknown"
+            doc["source"] = source
             content_hash = str(doc.get("content_hash", doc.get("hash", "")))
             collection_value = doc.get("collection_id")
             collection_uuid: uuid.UUID | None = None
@@ -4050,12 +4067,24 @@ class PgVectorClient:
                 tenant_uuid,
                 content_hash,
                 external_id,
+                source,
                 workflow_id=workflow_text,
-                collection_uuid=collection_uuid,
             )
             doc["hash"] = storage_hash
             doc["content_hash"] = content_hash
             metadata_dict = self._strip_collection_scope(doc.get("metadata"))
+            relation_actor: str | None = None
+            for actor_key in ("uploader_id", "added_by", "ingested_by"):
+                actor_value = metadata_dict.get(actor_key)
+                if actor_value in {None, ""}:
+                    continue
+                try:
+                    candidate_actor = str(actor_value).strip()
+                except Exception:
+                    candidate_actor = ""
+                if candidate_actor:
+                    relation_actor = candidate_actor
+                    break
             raw_lifecycle = doc.get("lifecycle_state")
             if raw_lifecycle is None:
                 raw_lifecycle = metadata_dict.get("lifecycle_state")
@@ -4236,36 +4265,38 @@ class PgVectorClient:
                 workflow_text
             )
             existing: tuple | None
-            if collection_text is None:
-                select_sql = sql.SQL(
-                    """
-                    SELECT id, hash, metadata, source, lifecycle
-                    FROM {}
-                    WHERE tenant_id = %s
-                      AND collection_id IS NULL
-                      AND {}
-                      AND external_id = %s
-                    LIMIT 1
-                    """
-                ).format(documents_table, workflow_clause)
-                params: list[object] = [tenant_value]
-            else:
-                select_sql = sql.SQL(
-                    """
-                    SELECT id, hash, metadata, source, lifecycle
-                    FROM {}
-                    WHERE tenant_id = %s
-                      AND collection_id = %s
-                      AND {}
-                      AND external_id = %s
-                    LIMIT 1
-                    """
-                ).format(documents_table, workflow_clause)
-                params = [tenant_value, collection_text]
+            select_external_sql = sql.SQL(
+                """
+                SELECT id, hash, metadata, source, lifecycle, collection_id
+                FROM {}
+                WHERE tenant_id = %s
+                  AND {}
+                  AND external_id = %s
+                LIMIT 1
+                """
+            ).format(documents_table, workflow_clause)
+            params: list[object] = [tenant_value]
             params.extend(workflow_params)
             params.append(external_id)
-            cur.execute(select_sql, tuple(params))
+            cur.execute(select_external_sql, tuple(params))
             existing = cur.fetchone()
+            if not existing:
+                select_hash_sql = sql.SQL(
+                    """
+                    SELECT id, hash, metadata, source, lifecycle, collection_id
+                    FROM {}
+                    WHERE tenant_id = %s
+                      AND {}
+                      AND source = %s
+                      AND hash = %s
+                    LIMIT 1
+                    """
+                ).format(documents_table, workflow_clause)
+                hash_params: list[object] = [tenant_value]
+                hash_params.extend(workflow_params)
+                hash_params.extend([source, storage_hash])
+                cur.execute(select_hash_sql, tuple(hash_params))
+                existing = cur.fetchone()
             try:
                 if existing:
                     (
@@ -4274,6 +4305,7 @@ class PgVectorClient:
                         existing_metadata,
                         existing_source,
                         existing_lifecycle,
+                        existing_collection_value,
                     ) = existing
                     metadata_dict = _normalise_document_identity(
                         doc, existing_id, metadata_dict
@@ -4418,6 +4450,18 @@ class PgVectorClient:
                             existing_metadata=existing_metadata,
                             desired_metadata=metadata_dict,
                         )
+                    relation_inserted = False
+                    if collection_uuid is not None:
+                        relation_inserted = self._ensure_document_collection_relation(
+                            cur,
+                            existing_id,
+                            collection_uuid,
+                            added_by=relation_actor,
+                        )
+                    if relation_inserted:
+                        current_action = actions.get(key)
+                        if current_action in {"skipped", "near_duplicate_skipped", None}:
+                            actions[key] = "linked"
                     document_ids[key] = existing_id
                     doc["collection_id"] = collection_text
                     doc["workflow_id"] = workflow_text
@@ -4460,6 +4504,13 @@ class PgVectorClient:
                 )
                 document_ids[key] = document_id
                 actions[key] = "inserted"
+                if collection_uuid is not None:
+                    self._ensure_document_collection_relation(
+                        cur,
+                        document_id,
+                        collection_uuid,
+                        added_by=relation_actor,
+                    )
                 doc["collection_id"] = collection_text
             except UniqueViolation:
                 conn = cur.connection
@@ -4475,10 +4526,9 @@ class PgVectorClient:
                     if collection_text is None:
                         retry_sql = sql.SQL(
                             """
-                            SELECT id, hash, metadata, source, lifecycle
+                            SELECT id, hash, metadata, source, lifecycle, collection_id
                             FROM {}
                             WHERE tenant_id = %s
-                              AND collection_id IS NULL
                               AND {}
                               AND external_id = %s
                             LIMIT 1
@@ -4488,16 +4538,15 @@ class PgVectorClient:
                     else:
                         retry_sql = sql.SQL(
                             """
-                            SELECT id, hash, metadata, source, lifecycle
+                            SELECT id, hash, metadata, source, lifecycle, collection_id
                             FROM {}
                             WHERE tenant_id = %s
-                              AND collection_id = %s
                               AND {}
                               AND external_id = %s
                             LIMIT 1
                             """
                         ).format(documents_table, workflow_clause)
-                        retry_params = [tenant_value, collection_text]
+                        retry_params = [tenant_value]
                     retry_params.extend(workflow_params)
                     retry_params.append(external_id)
                     retry_cur.execute(retry_sql, tuple(retry_params))
@@ -4511,6 +4560,7 @@ class PgVectorClient:
                         dup_metadata,
                         dup_source,
                         dup_lifecycle,
+                        dup_collection_value,
                     ) = duplicate
                     metadata_dict = _normalise_document_identity(
                         doc, dup_id, metadata_dict
@@ -4656,6 +4706,18 @@ class PgVectorClient:
                             desired_metadata=metadata_dict,
                         )
 
+                    relation_inserted = False
+                    if collection_uuid is not None:
+                        relation_inserted = self._ensure_document_collection_relation(
+                            retry_cur,
+                            dup_id,
+                            collection_uuid,
+                            added_by=relation_actor,
+                        )
+                    if relation_inserted:
+                        current_action = actions.get(key)
+                        if current_action in {"skipped", "near_duplicate_skipped", None}:
+                            actions[key] = "linked"
                     document_ids[key] = dup_id
                     doc["collection_id"] = collection_text
                     doc["workflow_id"] = workflow_text
@@ -4757,6 +4819,29 @@ class PgVectorClient:
                     "error": str(exc),
                 },
             )
+
+    def _ensure_document_collection_relation(
+        self,
+        cur,
+        document_uuid: uuid.UUID,
+        collection_uuid: uuid.UUID,
+        *,
+        added_by: str | None = None,
+    ) -> bool:
+        relation_table = self._table("document_collections")
+        actor = (added_by or "system").strip() or "system"
+        timestamp = datetime.now(timezone.utc)
+        cur.execute(
+            sql.SQL(
+                """
+                INSERT INTO {} (document_id, collection_id, added_at, added_by)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (document_id, collection_id) DO NOTHING
+                """
+            ).format(relation_table),
+            (str(document_uuid), str(collection_uuid), timestamp, actor),
+        )
+        return bool(cur.rowcount)
 
     def update_lifecycle_state(
         self,
@@ -4876,50 +4961,43 @@ class PgVectorClient:
         tenant_uuid: uuid.UUID,
         content_hash: str,
         external_id: str,
+        source: str,
         workflow_id: str | None = None,
-        *,
-        collection_uuid: uuid.UUID | None = None,
     ) -> str:
         if not content_hash:
             return content_hash
         tenant_value = str(tenant_uuid)
         documents_table = self._table("documents")
         workflow_clause, workflow_params = self._workflow_predicate_clause(workflow_id)
-        if collection_uuid is None:
-            lookup_sql = sql.SQL(
-                """
-                SELECT external_id
-                FROM {}
-                WHERE tenant_id = %s
-                  AND collection_id IS NULL
-                  AND {}
-                  AND hash = %s
-                LIMIT 1
-                """
-            ).format(documents_table, workflow_clause)
-            params: list[object] = [tenant_value]
-        else:
-            lookup_sql = sql.SQL(
-                """
-                SELECT external_id
-                FROM {}
-                WHERE tenant_id = %s
-                  AND collection_id = %s
-                  AND {}
-                  AND hash = %s
-                LIMIT 1
-                """
-            ).format(documents_table, workflow_clause)
-            params = [tenant_value, str(collection_uuid)]
+        lookup_sql = sql.SQL(
+            """
+            SELECT external_id
+            FROM {}
+            WHERE tenant_id = %s
+              AND {}
+              AND source = %s
+              AND hash = %s
+            LIMIT 1
+            """
+        ).format(documents_table, workflow_clause)
+        params: list[object] = [tenant_value]
         params.extend(workflow_params)
-        params.append(content_hash)
+        params.extend([source, content_hash])
         cur.execute(lookup_sql, tuple(params))
         existing = cur.fetchone()
         if existing:
             existing_external_id = existing[0]
             if existing_external_id and str(existing_external_id) != external_id:
-                suffix = uuid.uuid5(uuid.NAMESPACE_URL, f"external:{external_id}")
-                return f"{content_hash}:{suffix}"
+                logger.debug(
+                    "ingestion.doc.hash_reused",
+                    extra={
+                        "tenant_id": tenant_value,
+                        "source": source,
+                        "hash": content_hash,
+                        "existing_external_id": str(existing_external_id),
+                        "incoming_external_id": external_id,
+                    },
+                )
         return content_hash
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
@@ -5000,23 +5078,53 @@ class PgVectorClient:
             document_id = document_ids[key]
             tenant_value = str(doc.get("tenant_id", ""))
             collection_value = doc.get("collection_id")
+            collection_uuid: uuid.UUID | None = None
+            if collection_value not in {None, "", "None"}:
+                try:
+                    collection_uuid = (
+                        collection_value
+                        if isinstance(collection_value, uuid.UUID)
+                        else uuid.UUID(str(collection_value))
+                    )
+                except (TypeError, ValueError, AttributeError):
+                    collection_uuid = None
+            collection_text = (
+                str(collection_uuid) if collection_uuid is not None else None
+            )
             started = time.perf_counter()
             cur.execute(
                 sql.SQL(
-                    "DELETE FROM {} WHERE chunk_id IN (SELECT id FROM {} WHERE document_id = %s)"
+                    "DELETE FROM {} WHERE chunk_id IN ("
+                    "SELECT id FROM {} WHERE document_id = %s"
+                    " AND collection_id IS NOT DISTINCT FROM %s)"
                 ).format(embeddings_table, chunks_table),
-                (document_id,),
+                (document_id, collection_uuid),
             )
             cur.execute(
-                sql.SQL("DELETE FROM {} WHERE document_id = %s").format(chunks_table),
-                (document_id,),
+                sql.SQL(
+                    "DELETE FROM {} WHERE document_id = %s"
+                    " AND collection_id IS NOT DISTINCT FROM %s"
+                ).format(chunks_table),
+                (document_id, collection_uuid),
             )
 
             chunk_rows = []
             embedding_rows = []
             chunk_count = 0
             for index, chunk in enumerate(doc["chunks"]):
-                chunk_id = uuid.uuid4()
+                raw_chunk_hash = chunk.meta.get("hash") if hasattr(chunk, "meta") else None
+                try:
+                    chunk_hash = str(raw_chunk_hash or "").strip()
+                except Exception:
+                    chunk_hash = ""
+                if not chunk_hash:
+                    chunk_hash = hashlib.sha256(
+                        f"{document_id}:{index}".encode("utf-8")
+                    ).hexdigest()
+                chunk_namespace = (
+                    f"{tenant_value}:{document_id}:{collection_text or 'global'}:{chunk_hash}"
+                )
+                chunk_id = uuid.uuid5(uuid.NAMESPACE_URL, chunk_namespace)
                 embedding_values = chunk.embedding
                 normalised_embedding = (
                     _normalise_vector(embedding_values)
@@ -5046,7 +5154,7 @@ class PgVectorClient:
                         tokens,
                         Json(chunk_metadata),
                         tenant_value,
-                        collection_value,
+                        collection_text,
                     )
                 )
                 chunk_count += 1
@@ -5069,7 +5177,7 @@ class PgVectorClient:
                                 chunk_id,
                                 vector_value,
                                 tenant_value,
-                                collection_value,
+                                collection_text,
                             )
                         )
 

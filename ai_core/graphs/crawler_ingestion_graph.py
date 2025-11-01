@@ -294,10 +294,14 @@ class CrawlerIngestionGraph:
         state: Dict[str, Any],
         *,
         phase: str,
+        transition: Optional[GraphTransition] = None,
         extra: Optional[Mapping[str, Any]] = None,
     ) -> None:
         metadata = self._collect_span_metadata(state)
         metadata["phase"] = phase
+        if transition is not None:
+            metadata.setdefault("decision", transition.decision)
+            metadata.setdefault("reason", transition.reason)
         if extra:
             for key, value in extra.items():
                 if value is None:
@@ -305,6 +309,50 @@ class CrawlerIngestionGraph:
                 metadata[key] = value
         if metadata:
             update_observation(metadata=metadata)
+
+    def _with_transition_metadata(
+        self, transition: GraphTransition, state: Dict[str, Any]
+    ) -> GraphTransition:
+        metadata = self._transition_metadata(state)
+        if not metadata:
+            return transition
+        attributes: Dict[str, Any] = dict(transition.attributes)
+        attributes.update(metadata)
+        return GraphTransition(
+            decision=transition.decision,
+            reason=transition.reason,
+            attributes=attributes,
+        )
+
+    def _transition_metadata(self, state: Dict[str, Any]) -> Dict[str, str]:
+        base_metadata = self._collect_span_metadata(state)
+        metadata: Dict[str, str] = {}
+
+        trace_candidate = base_metadata.get("trace_id")
+        if not trace_candidate:
+            trace_candidate = state.get("trace_id")
+        if not trace_candidate:
+            trace_candidate = state.get("request_id")
+        if isinstance(trace_candidate, str):
+            trace_candidate = trace_candidate.strip()
+        if trace_candidate:
+            metadata["trace_id"] = str(trace_candidate)
+
+        workflow_candidate = base_metadata.get("workflow_id")
+        if not workflow_candidate:
+            workflow_candidate = state.get("workflow_id")
+        if isinstance(workflow_candidate, str):
+            workflow_candidate = workflow_candidate.strip()
+        if workflow_candidate:
+            metadata["workflow_id"] = str(workflow_candidate)
+
+        document_candidate = base_metadata.get("document_id")
+        if not document_candidate:
+            document_candidate = state.get("document_id")
+        if document_candidate:
+            metadata["document_id"] = str(document_candidate)
+
+        return metadata
 
     def _emit(
         self,
@@ -346,6 +394,7 @@ class CrawlerIngestionGraph:
         media_type = media_type.strip().lower()
         return media_type in {"text/html", "application/xhtml+xml"}
 
+    @observe_span(name="crawler.ingestion.run")
     def run(
         self,
         state: StateMapping,
@@ -366,6 +415,7 @@ class CrawlerIngestionGraph:
             raise
 
         working_state["content_hash"] = normalized_payload.checksum
+        self._annotate_span(working_state, phase="run")
 
         nodes = (
             GraphNode("update_status_normalized", self._run_update_status),
@@ -387,11 +437,15 @@ class CrawlerIngestionGraph:
             except Exception as exc:  # pragma: no cover - orchestrated error path
                 transition = self._handle_node_error(working_state, node, exc)
                 continue_flow = False
+            transition = self._with_transition_metadata(transition, working_state)
             transitions[node.name] = transition
             last_transition = transition
             self._emit(node.name, transition, run_id)
 
         finish_transition, _ = self._run_finish(working_state)
+        finish_transition = self._with_transition_metadata(
+            finish_transition, working_state
+        )
         transitions["finish"] = finish_transition
         self._emit("finish", finish_transition, run_id)
 
@@ -409,6 +463,12 @@ class CrawlerIngestionGraph:
             },
         }
         working_state["result"] = result
+        self._annotate_span(
+            working_state,
+            phase="run",
+            transition=summary,
+            extra={"graph_run_id": run_id},
+        )
         return working_state, result
 
     def _require(self, state: Dict[str, Any], key: str) -> Any:
@@ -1015,6 +1075,7 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    @observe_span(name="crawler.ingestion.finish")
     def _run_finish(self, state: Dict[str, Any]) -> Tuple[GraphTransition, bool]:
         artifacts = self._artifacts(state)
         normalized: Optional[NormalizedDocumentPayload] = artifacts.get(
@@ -1078,6 +1139,16 @@ class CrawlerIngestionGraph:
             reason_value,
             attributes={"severity": severity, "result": dict(payload)},
         )
+        self._annotate_span(
+            state,
+            phase="finish",
+            transition=transition,
+            extra={
+                "severity": severity,
+                "guardrail_decision": guardrail.decision if guardrail else None,
+                "delta_decision": delta.decision if delta else None,
+            },
+        )
         state["summary"] = payload
         return transition, False
 
@@ -1108,11 +1179,12 @@ class CrawlerIngestionGraph:
                 artifacts.setdefault("status_updates", []).append(status)
             except Exception:  # pragma: no cover - best effort
                 pass
-        return _transition(
+        transition = _transition(
             "error",
             f"{node.name}_failed",
             attributes={"severity": "error", "error": repr(exc)},
         )
+        return self._with_transition_metadata(transition, working_state)
 
 
 GRAPH = CrawlerIngestionGraph(document_service=DocumentsApiLifecycleService())

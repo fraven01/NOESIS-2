@@ -149,16 +149,19 @@ class UploadIngestionGraph:
 
     # ------------------------------------------------------------------ API
 
+    @observe_span(name="upload.ingestion.run")
     def run(self, payload: Mapping[str, Any], run_until: str | None = None) -> Mapping[str, Any]:
         """Execute the upload ingestion graph for *payload*."""
 
         state = self._initial_state(payload)
+        self._annotate_span(state, phase="run")
         target_node = self._RUN_UNTIL_TO_NODE.get(run_until or "")
         telemetry = state["telemetry"]
         transitions: dict[str, Mapping[str, Any]] = {}
 
         for node_name in self._RUN_ORDER:
             transition = self._execute_node(node_name, state)
+            transition = self._with_transition_metadata(transition, state)
             telemetry.setdefault("nodes", {})[node_name] = {
                 "span": self._span_name(node_name)
             }
@@ -190,6 +193,15 @@ class UploadIngestionGraph:
             "prompt_version": state["meta"].get("prompt_version"),
             "transitions": transitions,
         }
+        self._annotate_span(
+            state,
+            phase="run",
+            extra={
+                "decision": result.get("decision"),
+                "reason": result.get("reason"),
+                "document_id": state["doc"].get("document_id"),
+            },
+        )
         return result
 
     # -------------------------------------------------------------- Node impl
@@ -215,10 +227,10 @@ class UploadIngestionGraph:
         payload = state["input"]
         tenant_id = self._require_str(payload, "tenant_id")
         uploader_id = self._require_str(payload, "uploader_id")
+        trace_id = self._require_str(payload, "trace_id")
         visibility = self._resolve_visibility(payload.get("visibility"))
         workflow_id = self._normalize_optional_str(payload.get("workflow_id")) or "upload"
         case_id = self._normalize_optional_str(payload.get("case_id"))
-        request_id = self._normalize_optional_str(payload.get("request_id"))
 
         file_bytes = payload.get("file_bytes")
         file_uri = payload.get("file_uri")
@@ -278,16 +290,16 @@ class UploadIngestionGraph:
                 "tenant_id": tenant_id,
                 "uploader_id": uploader_id,
                 "visibility": visibility,
+                "source": "upload",
                 "tags": tuple(self._normalize_tags(payload.get("tags"))),
                 "source_key": self._normalize_optional_str(payload.get("source_key")),
                 "filename": filename,
                 "workflow_id": workflow_id,
+                "trace_id": trace_id,
             }
         )
         if case_id:
             state["meta"]["case_id"] = case_id
-        if request_id:
-            state["meta"]["request_id"] = request_id
         state["ingest"].update(
             {
                 "size": len(binary),
@@ -330,7 +342,8 @@ class UploadIngestionGraph:
         content_hash = hashlib.sha256(binary).hexdigest()
         state["ingest"]["content_hash"] = content_hash
 
-        dedupe_key = (tenant_id, visibility, content_hash)
+        source = state["meta"].get("source") or "upload"
+        dedupe_key = (tenant_id, source, content_hash)
         existing = self._dedupe_index.get(dedupe_key)
         if existing is not None:
             state["doc"].update(existing)
@@ -342,7 +355,7 @@ class UploadIngestionGraph:
 
         source_key = state["meta"].get("source_key")
         if source_key:
-            version_key = (tenant_id, visibility, source_key)
+            version_key = (tenant_id, source, source_key)
             version = self._source_versions.get(version_key, 0) + 1
             self._source_versions[version_key] = version
             state["doc"]["version"] = str(version)
@@ -440,7 +453,7 @@ class UploadIngestionGraph:
         uploader_id = state["meta"].get("uploader_id")
         source_key = state["meta"].get("source_key")
         case_id = state["meta"].get("case_id")
-        request_id = state["meta"].get("request_id")
+        trace_id = state["meta"].get("trace_id")
 
         binary: bytes = state["ingest"].get("binary", b"")
         declared_mime = state["ingest"].get("declared_mime") or "application/octet-stream"
@@ -494,7 +507,7 @@ class UploadIngestionGraph:
             "tenant_id": tenant_id,
             "workflow_id": workflow_id,
             "case_id": case_id,
-            "request_id": request_id,
+            "trace_id": trace_id,
             "source": "upload",
             "visibility": visibility,
             "filename": filename,
@@ -639,7 +652,7 @@ class UploadIngestionGraph:
         state["doc"].update({"document_id": document_id, "version": version})
         dedupe_key = (
             state["meta"].get("tenant_id"),
-            state["meta"].get("visibility"),
+            state["meta"].get("source") or "upload",
             state["doc"].get("content_hash"),
         )
         self._dedupe_index[dedupe_key] = {
@@ -778,6 +791,38 @@ class UploadIngestionGraph:
         if metadata:
             update_observation(metadata=metadata)
 
+    def _with_transition_metadata(
+        self, transition: GraphTransition, state: MutableMapping[str, Any]
+    ) -> GraphTransition:
+        metadata = self._transition_metadata(state)
+        if not metadata:
+            return transition
+        diagnostics: Dict[str, Any] = dict(transition.diagnostics)
+        diagnostics.update(metadata)
+        return GraphTransition(
+            decision=transition.decision,
+            reason=transition.reason,
+            diagnostics=diagnostics,
+        )
+
+    def _transition_metadata(
+        self, state: MutableMapping[str, Any]
+    ) -> Dict[str, str]:
+        meta_state = state.get("meta", {})
+        doc_state = state.get("doc", {})
+        metadata: Dict[str, str] = {}
+
+        trace_id = self._normalize_optional_str(meta_state.get("trace_id"))
+        if trace_id:
+            metadata["trace_id"] = trace_id
+        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
+        if workflow_id:
+            metadata["workflow_id"] = workflow_id
+        document_id = doc_state.get("document_id")
+        if document_id:
+            metadata["document_id"] = str(document_id)
+        return metadata
+
     def _maybe_emit_transition_event(
         self,
         phase: str,
@@ -839,9 +884,9 @@ class UploadIngestionGraph:
         case_id = self._normalize_optional_str(meta_state.get("case_id"))
         if case_id:
             metadata["case_id"] = case_id
-        request_id = self._normalize_optional_str(meta_state.get("request_id"))
-        if request_id:
-            metadata["request_id"] = request_id
+        trace_id = self._normalize_optional_str(meta_state.get("trace_id"))
+        if trace_id:
+            metadata["trace_id"] = trace_id
         workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
         if workflow_id:
             metadata["workflow_id"] = workflow_id

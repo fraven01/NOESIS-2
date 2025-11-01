@@ -1216,6 +1216,7 @@ def handle_document_upload(
     document_meta = _build_document_meta(
         meta, metadata_obj, external_id, media_type=_infer_media_type(upload)
     )
+    meta.setdefault("workflow_id", document_meta.workflow_id)
 
     ref_payload: dict[str, object] = {
         "tenant_id": document_meta.tenant_id,
@@ -1247,7 +1248,7 @@ def handle_document_upload(
         "tenant_id": meta["tenant_id"],
         "uploader_id": str(meta.get("key_alias") or meta["case_id"]),
         "case_id": meta["case_id"],
-        "request_id": meta["trace_id"],
+        "trace_id": meta["trace_id"],
         "workflow_id": document_meta.workflow_id,
         "file_bytes": file_bytes,
         "filename": original_name,
@@ -1418,15 +1419,13 @@ def handle_document_upload(
         source="upload",
     )
 
-    idempotent = bool(idempotency_key)
-    response_payload = {
-        "status": "accepted",
-        "document_id": document_id,
+    response_payload: dict[str, object] = {
         "trace_id": meta["trace_id"],
-        "idempotent": idempotent,
-        "external_id": external_id,
-        "ingestion_run_id": ingestion_run_id,
-        "ingestion_status": "queued",
+        "workflow_id": meta["workflow_id"],
     }
+    if document_id:
+        response_payload["document_id"] = document_id
+    if ingestion_run_id:
+        response_payload["ingestion_run_id"] = ingestion_run_id
 
     return Response(response_payload, status=status.HTTP_202_ACCEPTED)
