@@ -57,6 +57,21 @@ flowchart LR
 - **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Das Run-Endpoint wird primär für Replays oder geplante Batch-Runs benötigt, weil reguläre Uploads bereits automatisch in der Queue landen. Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.
 - **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
 
+## Upload-Ingestion-Graph
+
+Direkte Datei-Uploads verwenden `ai_core.graphs.upload_ingestion_graph.UploadIngestionGraph`, um Rohbytes bis zur Persistenz und Embedding-Auslösung deterministisch abzuwickeln. Die Sequenz lautet `accept_upload → quarantine_scan → deduplicate → parse → normalize → delta_and_guardrails → persist_document → chunk_and_embed → lifecycle_hook → finalize` und kann über `run_until` an Marker wie `parse_complete` oder `vector_complete` gestoppt werden.【F:ai_core/graphs/upload_ingestion_graph.py†L60-L208】【F:ai_core/tests/graphs/test_upload_ingestion_graph.py†L25-L54】
+
+1. **accept_upload** validiert Tenant- und Uploader-IDs, erlaubt genau eine Quelle (`file_bytes` oder `file_uri`), erzwingt `UPLOAD_MAX_BYTES`/`UPLOAD_ALLOWED_MIME_TYPES` und legt Metadaten (`tags`, `source_key`, `visibility`, `filename`) im State ab.【F:ai_core/graphs/upload_ingestion_graph.py†L122-L212】
+2. **quarantine_scan** ruft bei aktivem `UPLOAD_QUARANTINE_ENABLED` einen konfigurierten Scanner auf; andernfalls fährt der Graph ohne Befund fort.【F:ai_core/graphs/upload_ingestion_graph.py†L214-L236】
+3. **deduplicate** bildet SHA-256-Hashes, erkennt Wiederholungen pro Graph-Instanz und erhöht Versionsnummern, sobald `source_key` gesetzt ist.【F:ai_core/graphs/upload_ingestion_graph.py†L238-L285】
+4. **parse**/**normalize** dekodieren Text (UTF-8 mit Fallback), schneiden Snippets zu und reduzieren Whitespace für nachgelagerte Entscheider.【F:ai_core/graphs/upload_ingestion_graph.py†L287-L323】
+5. **delta_and_guardrails** verarbeitet optionale Callbacks: Guardrail-Entscheidungen, die nicht mit `allow` beginnen, stoppen sofort; Delta-Entscheidungen können `skip_guardrail` zurückgeben und brechen ebenso ab.【F:ai_core/graphs/upload_ingestion_graph.py†L325-L357】
+6. **persist_document** nutzt entweder den injizierten Persistence-Handler oder vergibt UUID/Version, aktualisiert den Dedup-Cache und stellt `document_id`/`version` bereit.【F:ai_core/graphs/upload_ingestion_graph.py†L359-L408】
+7. **chunk_and_embed** erzeugt einfache Chunks (erste 128 Wörter) und delegiert optional an einen Embedding-Handler; Ergebnis und Chunk-Anzahl landen im State.【F:ai_core/graphs/upload_ingestion_graph.py†L410-L443】
+8. **lifecycle_hook**/**finalize** führen optionale Nachbearbeitung aus und unterscheiden zwischen `completed`- und `skipped`-Läufen, bevor Telemetrie (`nodes.*`, `total_ms`) und Transitionen ins Resultat geschrieben werden.【F:ai_core/graphs/upload_ingestion_graph.py†L445-L492】
+
+Das Resultat enthält `decision`, `reason`, `document_id`, `version`, Snippets, optionale Warnungen und vollständige Node-Telemetrie. Tests decken Nominalpfad, `run_until`-Marker sowie Dubletten ab und sichern damit Regressionen ab.【F:ai_core/graphs/upload_ingestion_graph.py†L146-L206】【F:ai_core/tests/graphs/test_upload_ingestion_graph.py†L12-L54】
+
 ## Parameter
 | Setting | Default | Grenze | Beschreibung |
 | --- | --- | --- | --- |
