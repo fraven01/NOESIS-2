@@ -1,5 +1,6 @@
 import json
 import uuid
+from pathlib import Path
 from uuid import UUID
 
 import pytest
@@ -60,8 +61,16 @@ def test_upload_ingest_query_end2end(
     )
     assert resp.status_code == 202
     body = resp.json()
-    assert body["external_id"] == "doc-e2e"
+    assert body["workflow_id"] == case
     doc_id = body["document_id"]
+
+    tenant_segment = object_store.sanitize_identifier(tenant)
+    case_segment = object_store.sanitize_identifier(case)
+    metadata_path = Path(
+        tmp_path, tenant_segment, case_segment, "uploads", f"{doc_id}.meta.json"
+    )
+    stored_metadata = json.loads(metadata_path.read_text())
+    assert stored_metadata["external_id"] == "doc-e2e"
 
     # Ingestion (direkt Task ausführen; alternativ run_ingestion.delay(...) und warten)
     result = process_document(

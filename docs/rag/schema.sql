@@ -82,10 +82,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS collections_tenant_version_label_uk
     ON {{SCHEMA_NAME}}.collections (tenant_id, version_label)
     WHERE version_label IS NOT NULL AND version_label <> '';
 
--- Dokumente, Chunks und Embeddings speichern `collection_id` als
--- Spalte, nicht mehr (nur) im Metadata JSON. Header/Bodies können das
--- Feld leer lassen; der Persistenzpfad setzt es optional und Indexe
--- kombinieren es mit `tenant_id` für schnelle Scope-Filter.
+-- Dokumente, Chunks und Embeddings speichern weiterhin `collection_id`
+-- als optionale Spalte für schnelle Filter. Die inhaltliche Identität
+-- eines Dokuments wird jedoch pro Tenant/Source dedupliziert; die
+-- Zuordnung zu Collections erfolgt über die Relation
+-- `document_collections`.
 CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.documents (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
@@ -98,6 +99,20 @@ CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.documents (
     lifecycle TEXT NOT NULL DEFAULT 'active',
     deleted_at TIMESTAMP WITH TIME ZONE
 );
+
+CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.document_collections (
+    document_id UUID NOT NULL REFERENCES {{SCHEMA_NAME}}.documents(id) ON DELETE CASCADE,
+    collection_id UUID NOT NULL,
+    added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+    added_by TEXT NOT NULL DEFAULT 'system',
+    PRIMARY KEY (document_id, collection_id)
+);
+
+CREATE INDEX IF NOT EXISTS document_collections_collection_idx
+    ON {{SCHEMA_NAME}}.document_collections (collection_id);
+
+CREATE INDEX IF NOT EXISTS document_collections_document_idx
+    ON {{SCHEMA_NAME}}.document_collections (document_id);
 
 CREATE INDEX IF NOT EXISTS documents_metadata_gin_idx
     ON {{SCHEMA_NAME}}.documents USING GIN (metadata);
@@ -118,54 +133,34 @@ CREATE INDEX IF NOT EXISTS documents_hash_idx
     ON {{SCHEMA_NAME}}.documents (hash);
 
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_collection_idx;
-
-CREATE INDEX IF NOT EXISTS documents_tenant_collection_workflow_idx
-    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, workflow_id);
-
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_collection_workflow_idx;
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_hash_idx;
-
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_hash_null_collection_idx;
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_workflow_hash_null_collection_idx;
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_hash_null_collection_idx
-    ON {{SCHEMA_NAME}}.documents (tenant_id, hash)
-    WHERE collection_id IS NULL AND workflow_id IS NULL;
+CREATE INDEX IF NOT EXISTS documents_tenant_workflow_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, workflow_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_workflow_hash_null_collection_idx
-    ON {{SCHEMA_NAME}}.documents (tenant_id, workflow_id, hash)
-    WHERE collection_id IS NULL AND workflow_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_source_hash_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, source, hash)
+    WHERE workflow_id IS NULL;
 
-DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_collection_hash_idx;
-
--- Duplicate guards now enforce uniqueness per collection and workflow scope.
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_hash_idx
-    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, hash)
-    WHERE collection_id IS NOT NULL AND workflow_id IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_workflow_hash_idx
-    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, workflow_id, hash)
-    WHERE collection_id IS NOT NULL AND workflow_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_workflow_source_hash_idx
+    ON {{SCHEMA_NAME}}.documents (tenant_id, workflow_id, source, hash)
+    WHERE workflow_id IS NOT NULL;
 
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_external_id_uk;
-
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_external_id_null_collection_uk;
-
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_external_id_null_collection_uk
-    ON {{SCHEMA_NAME}}.documents (tenant_id, external_id)
-    WHERE collection_id IS NULL AND workflow_id IS NULL;
-
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_workflow_external_id_null_collection_uk
-    ON {{SCHEMA_NAME}}.documents (tenant_id, workflow_id, external_id)
-    WHERE collection_id IS NULL AND workflow_id IS NOT NULL;
-
 DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_collection_external_id_uk;
+DROP INDEX IF EXISTS {{SCHEMA_NAME}}.documents_tenant_collection_workflow_external_id_uk;
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_external_id_uk
-    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, external_id)
-    WHERE collection_id IS NOT NULL AND workflow_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_external_id_uk
+    ON {{SCHEMA_NAME}}.documents (tenant_id, external_id)
+    WHERE workflow_id IS NULL;
 
-CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_collection_workflow_external_id_uk
-    ON {{SCHEMA_NAME}}.documents (tenant_id, collection_id, workflow_id, external_id)
-    WHERE collection_id IS NOT NULL AND workflow_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS documents_tenant_workflow_external_id_uk
+    ON {{SCHEMA_NAME}}.documents (tenant_id, workflow_id, external_id)
+    WHERE workflow_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS {{SCHEMA_NAME}}.chunks (
     id UUID PRIMARY KEY,

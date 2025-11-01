@@ -20,6 +20,7 @@ def test_nominal_run() -> None:
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
+        "trace_id": "trace-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -41,6 +42,7 @@ def test_run_until_stops_after_marker() -> None:
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
+        "trace_id": "trace-1",
         "file_bytes": b"Hello world",
     }
 
@@ -55,6 +57,7 @@ def test_duplicate_upload_skipped() -> None:
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
+        "trace_id": "trace-1",
         "file_bytes": b"Hello world",
     }
 
@@ -101,6 +104,7 @@ def test_guardrail_allow_and_delta_merge_policy_events() -> None:
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
+        "trace_id": "trace-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -144,6 +148,7 @@ def test_guardrail_deny_short_circuits_delta() -> None:
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
+        "trace_id": "trace-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -164,12 +169,26 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
     import ai_core.infra.observability as observability
 
     recorded: list[str] = []
+    snapshots: list[dict[str, Any]] = []
 
-    def fake_observe_span(name: str, **_kwargs: Any):
+    def fake_observe_span(name: str, auto_annotate: bool = False, **_kwargs: Any):
         def decorator(func):
             def wrapped(*args, **kwargs):
+                result = func(*args, **kwargs)
                 recorded.append(name)
-                return func(*args, **kwargs)
+                if (
+                    name.startswith("upload.ingestion.")
+                    and name != "upload.ingestion.run"
+                    and len(args) >= 2
+                    and isinstance(args[1], Mapping)
+                ):
+                    self = args[0]
+                    state = args[1]
+                    metadata = {"phase": name}
+                    if hasattr(self, "_collect_observability_metadata"):
+                        metadata.update(self._collect_observability_metadata(state))
+                    snapshots.append(metadata)
+                return result
 
             return wrapped
 
@@ -182,13 +201,15 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
         payload = {
             "tenant_id": "tenant-a",
             "uploader_id": "user-1",
+            "trace_id": "trace-1",
             "file_bytes": b"Hello world",
             "filename": "example.txt",
         }
 
-        graph.run(payload)
+        result = graph.run(payload)
 
-        expected = {
+        expected = [
+            "upload.ingestion.run",
             "upload.ingestion.accept_upload",
             "upload.ingestion.quarantine_scan",
             "upload.ingestion.deduplicate",
@@ -199,8 +220,51 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
             "upload.ingestion.chunk_and_embed",
             "upload.ingestion.lifecycle_hook",
             "upload.ingestion.finalize",
-        }
+        ]
 
-        assert expected.issubset(set(recorded))
+        node_expected = expected[1:]
+        phases = [entry.get("phase") for entry in snapshots]
+        assert recorded[: len(node_expected)] == node_expected
+        assert phases == node_expected
+        assert all(entry.get("trace_id") == payload["trace_id"] for entry in snapshots)
+        workflow_expected = payload.get("workflow_id", "upload")
+        assert all(entry.get("workflow_id") == workflow_expected for entry in snapshots)
+        doc_entries = [entry for entry in snapshots if entry.get("document_id")]
+        assert doc_entries
+        assert all(isinstance(entry.get("document_id"), str) and entry["document_id"] for entry in doc_entries)
+        assert recorded.count("upload.ingestion.run") == 1
+        assert recorded[-1] == "upload.ingestion.run"
     finally:
         importlib.reload(upload_ingestion_graph)
+
+
+def test_upload_transition_metadata_contains_ids() -> None:
+    graph = upload_ingestion_graph.UploadIngestionGraph(quarantine_scanner=_scanner)
+    payload = {
+        "tenant_id": "tenant-a",
+        "uploader_id": "user-1",
+        "trace_id": "trace-meta",
+        "workflow_id": "flow-meta",
+        "file_bytes": b"Hello world",
+        "filename": "example.txt",
+    }
+
+    result = graph.run(payload)
+
+    transitions = result["transitions"]
+    for diagnostics in (
+        transition["diagnostics"] for transition in transitions.values()
+    ):
+        assert diagnostics["trace_id"] == "trace-meta"
+        assert diagnostics["workflow_id"] == "flow-meta"
+
+    document_id = str(result["document_id"])
+    assert document_id
+    doc_ids = {
+        diagnostics["document_id"]
+        for diagnostics in (
+            transition["diagnostics"] for transition in transitions.values()
+        )
+        if diagnostics.get("document_id")
+    }
+    assert document_id in doc_ids

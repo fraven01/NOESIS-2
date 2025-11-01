@@ -4,6 +4,7 @@ import io
 import json
 import os
 import re
+from pathlib import Path
 
 import pytest
 from psycopg2 import sql
@@ -277,8 +278,19 @@ def test_rebuild_rag_index_health_check(
         )
         assert response.status_code == 202
         body = response.json()
-        assert body["external_id"] == external_id
-        return body["document_id"]
+        document_id = body["document_id"]
+        tenant_segment = object_store.sanitize_identifier(tenant)
+        case_segment = object_store.sanitize_identifier(case)
+        metadata_path = Path(
+            store_path,
+            tenant_segment,
+            case_segment,
+            "uploads",
+            f"{document_id}.meta.json",
+        )
+        stored_metadata = json.loads(metadata_path.read_text())
+        assert stored_metadata["external_id"] == external_id
+        return document_id
 
     doc_one = _upload(
         "First document for vector index health check.", "index-health-one"

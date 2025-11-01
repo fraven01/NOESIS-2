@@ -5,9 +5,13 @@ from typing import Mapping
 from urllib.parse import urlparse
 from uuid import uuid4
 
+import importlib
+from typing import Any
+
 import ai_core.api as ai_api
 import pytest
 
+import ai_core.graphs.crawler_ingestion_graph as crawler_ingestion_graph
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 
 from ai_core.graphs.document_service import DocumentLifecycleService
@@ -593,3 +597,83 @@ def test_guardrail_denied_merges_frontier_policy_events() -> None:
         "max_document_bytes",
         "robots_disallow",
     )
+
+
+def test_crawler_ingestion_spans(monkeypatch) -> None:
+    import ai_core.infra.observability as observability
+
+    recorded: list[str] = []
+    snapshots: list[dict[str, Any]] = []
+
+    def fake_observe_span(name: str, **_kwargs: Any):
+        def decorator(func):
+            def wrapped(*args, **kwargs):
+                result = func(*args, **kwargs)
+                recorded.append(name)
+                if (
+                    name.startswith("crawler.ingestion.")
+                    and name != "crawler.ingestion.run"
+                    and len(args) >= 2
+                    and isinstance(args[1], Mapping)
+                ):
+                    self = args[0]
+                    state = args[1]
+                    metadata = self._collect_span_metadata(state)
+                    metadata["phase"] = name
+                    snapshots.append(metadata)
+                return result
+
+            return wrapped
+
+        return decorator
+
+    monkeypatch.setattr(observability, "observe_span", fake_observe_span)
+    module = importlib.reload(crawler_ingestion_graph)
+    try:
+        graph = module.CrawlerIngestionGraph()
+        state = _build_state(vector_client=StubVectorClient())
+        result = graph.run(state, {"trace_id": "trace-span", "workflow_id": "flow-span"})
+
+        expected = [
+            "crawler.ingestion.update_status",
+            "crawler.ingestion.guardrails",
+            "crawler.ingestion.document_pipeline",
+            "crawler.ingestion.ingest_decision",
+            "crawler.ingestion.ingest",
+            "crawler.ingestion.finish",
+        ]
+
+        assert recorded[: len(expected)] == expected
+        phases = [entry.get("phase") for entry in snapshots]
+        assert phases == expected
+        assert all(entry.get("trace_id") == "trace-span" for entry in snapshots)
+        assert all(entry.get("workflow_id") == "flow-span" for entry in snapshots)
+        doc_entries = [entry for entry in snapshots if entry.get("document_id")]
+        assert doc_entries
+        assert all(isinstance(entry.get("document_id"), str) and entry["document_id"] for entry in doc_entries)
+        assert recorded.count("crawler.ingestion.run") == 1
+        assert recorded[-1] == "crawler.ingestion.run"
+    finally:
+        importlib.reload(crawler_ingestion_graph)
+
+
+def test_crawler_transition_metadata_contains_ids() -> None:
+    graph = CrawlerIngestionGraph()
+    state = _build_state(vector_client=StubVectorClient())
+    meta = {"trace_id": "trace-meta", "workflow_id": "flow-meta"}
+
+    updated_state, result = graph.run(state, meta)
+
+    transitions = result["transitions"]
+    for attributes in (transition["attributes"] for transition in transitions.values()):
+        assert attributes["trace_id"] == "trace-meta"
+        assert attributes["workflow_id"] == "flow-meta"
+
+    normalized = updated_state["artifacts"]["normalized_document"]
+    expected_document_id = str(normalized.document_id)
+    doc_ids = {
+        attributes["document_id"]
+        for attributes in (transition["attributes"] for transition in transitions.values())
+        if attributes.get("document_id")
+    }
+    assert expected_document_id in doc_ids
