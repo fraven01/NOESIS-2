@@ -61,6 +61,10 @@ from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceEr
 from ai_core.tool_contracts import ContextError as ToolContextError
 from ai_core.tools import InputError
 
+from ai_core.graphs.upload_ingestion_graph import (
+    UploadIngestionError,
+    UploadIngestionGraph,
+)
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -460,6 +464,77 @@ def _persist_collection_scope(
             metadata = {}
         metadata["collection_id"] = collection_id
         object_store.write_json(path, metadata)
+
+
+def _map_upload_graph_skip(
+    decision: str, transitions: Mapping[str, Mapping[str, Any]]
+) -> Response:
+    """Translate upload graph skip decisions into HTTP error responses."""
+
+    diagnostics = transitions.get("accept_upload", {}).get("diagnostics", {})
+    guardrail_diag = transitions.get("delta_and_guardrails", {}).get(
+        "diagnostics", {}
+    )
+
+    if decision == "skip_guardrail":
+        policy_events = guardrail_diag.get("policy_events") or ()
+        if policy_events:
+            policy_text = ", ".join(str(event) for event in policy_events)
+            detail = f"Upload blocked by guardrails: {policy_text}."
+        else:
+            detail = "Upload blocked by guardrails."
+        return _error_response(
+            detail,
+            "upload_blocked",
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    if decision == "skip_duplicate":
+        return _error_response(
+            "Duplicate upload detected for this document.",
+            "duplicate_upload",
+            status.HTTP_409_CONFLICT,
+        )
+
+    if decision == "skip_disallowed_mime":
+        mime = diagnostics.get("mime")
+        if mime:
+            detail = f"MIME type '{mime}' is not allowed for uploads."
+        else:
+            detail = "MIME type is not allowed for uploads."
+        return _error_response(
+            detail,
+            "mime_not_allowed",
+            status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        )
+
+    if decision == "skip_oversize":
+        max_bytes = diagnostics.get("max_bytes")
+        if isinstance(max_bytes, (int, float)):
+            detail = (
+                "Uploaded file exceeds the allowed size of "
+                f"{int(max_bytes)} bytes."
+            )
+        else:
+            detail = "Uploaded file exceeds the allowed size."
+        return _error_response(
+            detail,
+            "file_too_large",
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+        )
+
+    if decision == "skip_invalid_input":
+        return _error_response(
+            "Upload payload is invalid.",
+            "invalid_upload_payload",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    return _error_response(
+        "Upload rejected due to validation failure.",
+        "upload_rejected",
+        status.HTTP_400_BAD_REQUEST,
+    )
 
 
 GRAPH_REQUEST_MODELS = {
@@ -1168,15 +1243,109 @@ def handle_document_upload(
         source="upload",
     )
 
+    graph_payload = {
+        "tenant_id": meta["tenant_id"],
+        "uploader_id": str(meta.get("key_alias") or meta["case_id"]),
+        "case_id": meta["case_id"],
+        "request_id": meta["trace_id"],
+        "workflow_id": document_meta.workflow_id,
+        "file_bytes": file_bytes,
+        "filename": original_name,
+        "declared_mime": blob.media_type,
+        "visibility": metadata_obj.get("visibility"),
+        "tags": metadata_obj.get("tags"),
+        "source_key": metadata_obj.get("external_id"),
+        "origin_uri": metadata_obj.get("origin_uri"),
+    }
+
+    graph_context: dict[str, object] = {}
+
+    def _persist_via_repository(_: Mapping[str, object]) -> dict[str, object]:
+        try:
+            repository = _get_documents_repository()
+            repository.upsert(normalized_document)
+        except Exception:
+            logger.exception(
+                "Failed to persist uploaded document via repository",
+                extra={
+                    "tenant_id": meta.get("tenant_id"),
+                    "case_id": meta.get("case_id"),
+                },
+            )
+            raise UploadIngestionError("document_persistence_failed")
+
+        document_identifier = str(document_ref.document_id)
+        graph_context["document_id"] = document_identifier
+        if document_ref.version is not None:
+            graph_context["version"] = document_ref.version
+        return {"document_id": document_identifier, "version": document_ref.version}
+
     try:
-        repository = _get_documents_repository()
-        repository.upsert(normalized_document)
-    except Exception:
+        graph = UploadIngestionGraph(persistence_handler=_persist_via_repository)
+        graph_result = graph.run(graph_payload, run_until="persist_complete")
+    except UploadIngestionError as exc:
+        reason = str(exc)
+        if reason == "document_persistence_failed":
+            return _error_response(
+                "Failed to persist uploaded document.",
+                "document_persistence_failed",
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        if reason.startswith("input_missing"):
+            return _error_response(
+                "Upload payload is invalid.",
+                "invalid_upload_payload",
+                status.HTTP_400_BAD_REQUEST,
+            )
         logger.exception(
-            "Failed to persist uploaded document via repository",
+            "Upload ingestion graph failed",
             extra={
                 "tenant_id": meta.get("tenant_id"),
                 "case_id": meta.get("case_id"),
+                "reason": reason,
+            },
+        )
+        return _error_response(
+            "Failed to process uploaded document.",
+            "upload_graph_failed",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except Exception:
+        logger.exception(
+            "Unexpected error while running upload ingestion graph",
+            extra={
+                "tenant_id": meta.get("tenant_id"),
+                "case_id": meta.get("case_id"),
+            },
+        )
+        return _error_response(
+            "Failed to process uploaded document.",
+            "upload_graph_failed",
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    decision = str(graph_result.get("decision") or "")
+    transitions = graph_result.get("transitions") or {}
+    if decision.startswith("skip"):
+        logger.info(
+            "Upload ingestion graph skipped document",
+            extra={
+                "tenant_id": meta.get("tenant_id"),
+                "case_id": meta.get("case_id"),
+                "decision": decision,
+                "reason": graph_result.get("reason"),
+            },
+        )
+        return _map_upload_graph_skip(decision, transitions)
+
+    document_id = graph_context.get("document_id")
+    if not isinstance(document_id, str) or not document_id:
+        logger.error(
+            "Upload ingestion graph completed without persisting document",
+            extra={
+                "tenant_id": meta.get("tenant_id"),
+                "case_id": meta.get("case_id"),
+                "graph_decision": decision,
             },
         )
         return _error_response(
@@ -1184,6 +1353,8 @@ def handle_document_upload(
             "document_persistence_failed",
             status.HTTP_503_SERVICE_UNAVAILABLE,
         )
+
+    document_ids = [document_id]
 
     try:
         profile_binding = _resolve_ingestion_profile(
@@ -1208,8 +1379,6 @@ def handle_document_upload(
     resolved_profile_id = profile_binding.profile_id
     ingestion_run_id = uuid4().hex
     queued_at = timezone.now().isoformat()
-    document_id = str(document_uuid)
-    document_ids = [document_id]
 
     try:
         _get_run_ingestion_task().delay(
