@@ -50,11 +50,14 @@ flowchart TD
 | --- | --- | --- |
 | `crawler.frontier` | Robots-Compliance, Recrawl-Intervalle, Failure-Backoff | `FrontierDecision`, `RobotsPolicy`, `HostPolitenessPolicy` |
 | `crawler.worker` | Fetch & Übergabe an AI-Core Task | `CrawlerWorker`, `WorkerPublishResult` |
-| `ai_core.middleware.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `GuardrailDecision` |
+| `ai_core.rag.guardrails` | Tenant/Host-Quoten, MIME- und Host-Blocklisten | `GuardrailLimits`, `GuardrailSignals`, `QuotaLimits` |
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
 | `documents.api` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocumentPayload`, `normalize_from_raw` |
+| `documents.processing_graph` | LangGraph-Orchestrierung von Parsing, Chunking und Artefakt-Phasen | `DocumentProcessingPhase`, `DocumentProcessingState`, `build_document_processing_graph` |
+| `documents.pipeline` | Pipeline-Konfiguration, Kontext und Statusübergänge | `DocumentPipelineConfig`, `DocumentProcessingMetadata`, `DocumentProcessingContext` |
 | `ai_core.rag.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
+| `ai_core.api` | Guardrail-Auswertung, Delta-Entscheidungen & API-Brücke zum Graph | `enforce_guardrails`, `decide_delta`, `trigger_embedding` |
 | `ai_core.graphs.crawler_ingestion_graph` | Übergabe an RAG-Ingestion & Lifecycle | `CrawlerIngestionGraph`, `GraphTransition` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
 
@@ -107,7 +110,7 @@ flowchart TD
   Versuch berechenbar und werden in Telemetrie gespiegelt.【F:crawler/http_fetcher.py†L47-L106】
 - **Guardrails**: `GuardrailLimits` erlauben Quoten pro Tenant oder Host,
   blocken MIME-Typen/Hosts und begrenzen Prozessdauer sowie Dokumentgröße.
-  Überschreitungen erzeugen deterministische Policy-Events.【F:crawler/guardrails.py†L33-L140】【F:crawler/guardrails.py†L170-L232】
+  Überschreitungen erzeugen deterministische Policy-Events.【F:ai_core/rag/guardrails.py†L12-L131】
 - **Recrawl-Intervalle**: `RecrawlFrequency` und `RECRAWL_INTERVALS` definieren
   stündliche bis wöchentliche Frequenzen und berücksichtigen Observed-Change- und
   Manual-Override-Signale.【F:crawler/frontier.py†L55-L115】
@@ -126,7 +129,7 @@ flowchart TD
   suchen können, bevor der Cleanup greift.【F:ai_core/tasks.py†L1712-L1774】
 - Alle Stufen liefern `policy_events` und optionale `CrawlerError`-Payloads, die
   direkt in Langfuse-Traces und Dead-Letter-Events übernommen werden. Sie
-  korrespondieren mit den Pflichtfeldern aus dem Observability-Leitfaden.【F:crawler/fetcher.py†L121-L152】【F:crawler/ingestion.py†L1-L129】
+  korrespondieren mit den Pflichtfeldern aus dem Observability-Leitfaden.【F:crawler/fetcher.py†L121-L152】【F:ai_core/api.py†L121-L195】
 - `FetchTelemetry` speichert Latenz, Bytes und Retry-Gründe. Die Werte fließen in
   Metrics (`crawler_fetch_latency_ms`, `crawler_fetch_bytes_total`) ein und
   werden von Guardrails genutzt, um Backoff-Strategien zu begründen.【F:crawler/fetcher.py†L81-L119】【F:docs/observability/crawler-langfuse.md†L9-L41】
@@ -135,11 +138,12 @@ flowchart TD
   ein.【F:documents/repository.py†L160-L238】
 
 ## Erweiterungshinweise
-- Neue Provider sollten `NormalizedSource.provider_tags` und `ExternalDocumentReference`
-  nutzen, um kanonische IDs zu übertragen. Zusätzliche Tags werden unverändert an
-  die Ingestion übergeben.【F:crawler/normalizer.py†L17-L63】【F:crawler/ingestion.py†L168-L215】
+- Neue Provider sollten Provider-Tags über `ProviderReference` normalisieren und
+  sie im Dokument-Pipeline-Kontext weiterreichen; `DocumentProcessingMetadata`
+  und `DocumentProcessingState` übernehmen die Referenzen unverändert in
+  nachgelagerte Schritte.【F:documents/providers.py†L18-L132】【F:documents/pipeline.py†L229-L399】【F:documents/processing_graph.py†L147-L203】
 - Weitere Guardrails lassen sich über `GuardrailLimits` erweitern; bei neuen
   Violations immer einen passenden `CrawlerError` mit eindeutiger
-  `ErrorClass`-Zuordnung ausgeben.【F:crawler/guardrails.py†L170-L232】【F:crawler/errors.py†L1-L41】
+  `ErrorClass`-Zuordnung ausgeben.【F:ai_core/rag/guardrails.py†L41-L131】【F:crawler/errors.py†L1-L41】
 - Für spezialisierte Recrawl-Logik kann `CrawlSignals.override_recrawl_frequency`
   befüllt werden, ohne die Standardintervalle hart zu ändern.【F:crawler/frontier.py†L67-L114】
