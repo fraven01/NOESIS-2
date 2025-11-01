@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping
+from typing import Any
 
 from ai_core import api as ai_core_api
-from ai_core.graphs.upload_ingestion_graph import GraphTransition, UploadIngestionGraph
+import ai_core.graphs.upload_ingestion_graph as upload_ingestion_graph
 from documents.api import NormalizedDocumentPayload
 
 
-def _scanner(_: bytes, __: dict[str, object]) -> GraphTransition:
-    return GraphTransition(decision="proceed", reason="clean")
+def _scanner(
+    _: bytes, __: dict[str, object]
+) -> upload_ingestion_graph.GraphTransition:
+    return upload_ingestion_graph.GraphTransition(decision="proceed", reason="clean")
 
 
 def test_nominal_run() -> None:
-    graph = UploadIngestionGraph(quarantine_scanner=_scanner)
+    graph = upload_ingestion_graph.UploadIngestionGraph(quarantine_scanner=_scanner)
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
@@ -33,7 +37,7 @@ def test_nominal_run() -> None:
 
 
 def test_run_until_stops_after_marker() -> None:
-    graph = UploadIngestionGraph()
+    graph = upload_ingestion_graph.UploadIngestionGraph()
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
@@ -47,7 +51,7 @@ def test_run_until_stops_after_marker() -> None:
 
 
 def test_duplicate_upload_skipped() -> None:
-    graph = UploadIngestionGraph()
+    graph = upload_ingestion_graph.UploadIngestionGraph()
     payload = {
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
@@ -90,7 +94,7 @@ def test_guardrail_allow_and_delta_merge_policy_events() -> None:
             {"policy_events": ("delta_new",), "version": 1},
         )
 
-    graph = UploadIngestionGraph(
+    graph = upload_ingestion_graph.UploadIngestionGraph(
         guardrail_enforcer=guardrail_stub,
         delta_decider=delta_stub,
     )
@@ -133,7 +137,7 @@ def test_guardrail_deny_short_circuits_delta() -> None:
         delta_called = True
         return ai_core_api.DeltaDecision("new", "should_not_happen", {})
 
-    graph = UploadIngestionGraph(
+    graph = upload_ingestion_graph.UploadIngestionGraph(
         guardrail_enforcer=guardrail_stub,
         delta_decider=delta_stub,
     )
@@ -155,3 +159,48 @@ def test_guardrail_deny_short_circuits_delta() -> None:
     assert diagnostics["policy_events"] == ("upload_blocked",)
     assert diagnostics["allowed"] is False
 
+
+def test_upload_ingestion_spans(monkeypatch) -> None:
+    import ai_core.infra.observability as observability
+
+    recorded: list[str] = []
+
+    def fake_observe_span(name: str, **_kwargs: Any):
+        def decorator(func):
+            def wrapped(*args, **kwargs):
+                recorded.append(name)
+                return func(*args, **kwargs)
+
+            return wrapped
+
+        return decorator
+
+    monkeypatch.setattr(observability, "observe_span", fake_observe_span)
+    module = importlib.reload(upload_ingestion_graph)
+    try:
+        graph = module.UploadIngestionGraph(quarantine_scanner=_scanner)
+        payload = {
+            "tenant_id": "tenant-a",
+            "uploader_id": "user-1",
+            "file_bytes": b"Hello world",
+            "filename": "example.txt",
+        }
+
+        graph.run(payload)
+
+        expected = {
+            "upload.ingestion.accept_upload",
+            "upload.ingestion.quarantine_scan",
+            "upload.ingestion.deduplicate",
+            "upload.ingestion.parse",
+            "upload.ingestion.normalize",
+            "upload.ingestion.delta_and_guardrails",
+            "upload.ingestion.persist_document",
+            "upload.ingestion.chunk_and_embed",
+            "upload.ingestion.lifecycle_hook",
+            "upload.ingestion.finalize",
+        }
+
+        assert expected.issubset(set(recorded))
+    finally:
+        importlib.reload(upload_ingestion_graph)
