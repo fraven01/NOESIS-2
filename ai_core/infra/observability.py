@@ -190,28 +190,84 @@ def tracing_enabled() -> bool:
     return _get_tracer() is not None
 
 
-def observe_span(name: Optional[str] = None) -> Callable[[F], F]:
-    """Decorator that wraps the target in an OpenTelemetry span when available."""
+def observe_span(
+    name: Optional[str] = None,
+    *,
+    auto_annotate: bool = False,
+) -> Callable[[F], F]:
+    """Decorator that wraps the target in an OpenTelemetry span when available.
+
+    When ``auto_annotate`` is ``True`` and the wrapped callable is a bound
+    method whose first argument exposes ``_annotate_span``, the helper will be
+    invoked after the wrapped function returns while the span context is still
+    active. This allows callers to attach metadata to the span before it
+    closes.
+    """
 
     def decorator(func: F) -> F:
         span_name = name or getattr(func, "__name__", "observe")
+        phase = _derive_phase(span_name, getattr(func, "__name__", None))
+
+        def _run(*args: Any, **kwargs: Any):  # type: ignore[misc]
+            result = func(*args, **kwargs)
+            if auto_annotate:
+                _maybe_annotate_span(phase, args, kwargs, result)
+            return result
 
         def wrapped(*args: Any, **kwargs: Any):  # type: ignore[misc]
             if not tracing_enabled():
-                return func(*args, **kwargs)
+                return _run(*args, **kwargs)
             tracer = _get_tracer()
             if tracer is None:
-                return func(*args, **kwargs)
+                return _run(*args, **kwargs)
             try:
                 cm = tracer.start_as_current_span(span_name)
             except Exception:
-                return func(*args, **kwargs)
+                return _run(*args, **kwargs)
             with cm:
-                return func(*args, **kwargs)
+                return _run(*args, **kwargs)
 
         return cast(F, wrapped)
 
     return decorator
+
+
+def _derive_phase(span_name: str, func_name: Optional[str]) -> str:
+    if "." in span_name:
+        return span_name.rsplit(".", 1)[-1]
+    if func_name:
+        if func_name.startswith("_node_"):
+            return func_name[len("_node_") :]
+        return func_name
+    return span_name
+
+
+def _maybe_annotate_span(
+    phase: str,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    result: Any,
+) -> None:
+    if not args:
+        return
+    target = args[0]
+    annotate = getattr(target, "_annotate_span", None)
+    if not callable(annotate):
+        return
+    state = None
+    if len(args) >= 2:
+        state = args[1]
+    if state is None:
+        state = kwargs.get("state")
+    if state is None:
+        return
+    try:
+        annotate(state, phase=phase, transition=result)
+    except TypeError:
+        try:
+            annotate(state, phase=phase)
+        except TypeError:
+            annotate(state, phase=phase, transition=result)
 
 
 def _apply_attributes(span: Any, attributes: dict[str, Any]) -> None:

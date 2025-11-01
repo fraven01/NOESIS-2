@@ -167,11 +167,6 @@ class UploadIngestionGraph:
             state["doc"]["decision"] = transition.decision
             state["doc"]["reason"] = transition.reason
 
-            self._annotate_span(
-                state,
-                phase=node_name,
-                transition=transition,
-            )
             self._maybe_emit_transition_event(node_name, transition, state)
 
             if node_name == target_node:
@@ -215,7 +210,7 @@ class UploadIngestionGraph:
 
     # Node: accept_upload ----------------------------------------------------
 
-    @observe_span(name="upload.ingestion.accept_upload")
+    @observe_span(name="upload.ingestion.accept_upload", auto_annotate=True)
     def _node_accept_upload(self, state: MutableMapping[str, Any]) -> GraphTransition:
         payload = state["input"]
         tenant_id = self._require_str(payload, "tenant_id")
@@ -308,7 +303,7 @@ class UploadIngestionGraph:
 
     # Node: quarantine_scan --------------------------------------------------
 
-    @observe_span(name="upload.ingestion.quarantine_scan")
+    @observe_span(name="upload.ingestion.quarantine_scan", auto_annotate=True)
     def _node_quarantine_scan(self, state: MutableMapping[str, Any]) -> GraphTransition:
         enabled = getattr(settings, "UPLOAD_QUARANTINE_ENABLED", False)
         if not enabled or self._quarantine_scanner is None:
@@ -327,7 +322,7 @@ class UploadIngestionGraph:
 
     # Node: deduplicate ------------------------------------------------------
 
-    @observe_span(name="upload.ingestion.deduplicate")
+    @observe_span(name="upload.ingestion.deduplicate", auto_annotate=True)
     def _node_deduplicate(self, state: MutableMapping[str, Any]) -> GraphTransition:
         binary: bytes = state["ingest"].get("binary", b"")
         tenant_id = state["meta"].get("tenant_id")
@@ -357,7 +352,7 @@ class UploadIngestionGraph:
 
     # Node: parse ------------------------------------------------------------
 
-    @observe_span(name="upload.ingestion.parse")
+    @observe_span(name="upload.ingestion.parse", auto_annotate=True)
     def _node_parse(self, state: MutableMapping[str, Any]) -> GraphTransition:
         binary: bytes = state["ingest"].get("binary", b"")
         charset = "utf-8"
@@ -374,7 +369,7 @@ class UploadIngestionGraph:
 
     # Node: normalize --------------------------------------------------------
 
-    @observe_span(name="upload.ingestion.normalize")
+    @observe_span(name="upload.ingestion.normalize", auto_annotate=True)
     def _node_normalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
         raw_text = state["doc"].get("raw_text", "")
         normalized = " ".join(raw_text.split()) if raw_text else ""
@@ -383,7 +378,7 @@ class UploadIngestionGraph:
 
     # Node: delta and guardrails --------------------------------------------
 
-    @observe_span(name="upload.ingestion.delta_and_guardrails")
+    @observe_span(name="upload.ingestion.delta_and_guardrails", auto_annotate=True)
     def _node_delta_and_guardrails(self, state: MutableMapping[str, Any]) -> GraphTransition:
         normalized = self._build_normalized_document(state)
         baseline = self._resolve_baseline(state)
@@ -620,7 +615,7 @@ class UploadIngestionGraph:
 
     # Node: persist_document -------------------------------------------------
 
-    @observe_span(name="upload.ingestion.persist_document")
+    @observe_span(name="upload.ingestion.persist_document", auto_annotate=True)
     def _node_persist_document(self, state: MutableMapping[str, Any]) -> GraphTransition:
         payload = {
             "tenant_id": state["meta"].get("tenant_id"),
@@ -659,7 +654,7 @@ class UploadIngestionGraph:
 
     # Node: chunk_and_embed --------------------------------------------------
 
-    @observe_span(name="upload.ingestion.chunk_and_embed")
+    @observe_span(name="upload.ingestion.chunk_and_embed", auto_annotate=True)
     def _node_chunk_and_embed(self, state: MutableMapping[str, Any]) -> GraphTransition:
         normalized_text = state["doc"].get("normalized_text", "")
         words = normalized_text.split()
@@ -688,7 +683,7 @@ class UploadIngestionGraph:
 
     # Node: lifecycle_hook ---------------------------------------------------
 
-    @observe_span(name="upload.ingestion.lifecycle_hook")
+    @observe_span(name="upload.ingestion.lifecycle_hook", auto_annotate=True)
     def _node_lifecycle_hook(self, state: MutableMapping[str, Any]) -> GraphTransition:
         if self._lifecycle_hook is None:
             return _transition("lifecycle_complete", "hook_skipped")
@@ -705,7 +700,7 @@ class UploadIngestionGraph:
 
     # Node: finalize ---------------------------------------------------------
 
-    @observe_span(name="upload.ingestion.finalize")
+    @observe_span(name="upload.ingestion.finalize", auto_annotate=True)
     def _node_finalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
         decision = state["doc"].get("decision")
         if decision and decision.startswith("skip"):

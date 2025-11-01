@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping
+from typing import Any
 
 from ai_core import api as ai_core_api
 import ai_core.graphs.upload_ingestion_graph as upload_ingestion_graph
@@ -164,7 +165,7 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
 
     recorded: list[str] = []
 
-    def fake_observe_span(name: str):
+    def fake_observe_span(name: str, **_kwargs: Any):
         def decorator(func):
             def wrapped(*args, **kwargs):
                 recorded.append(name)
