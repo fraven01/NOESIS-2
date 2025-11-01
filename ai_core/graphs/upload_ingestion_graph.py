@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import mimetypes
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping
@@ -36,6 +36,38 @@ class GraphTransition:
             "reason": self.reason,
             "diagnostics": dict(self.diagnostics),
         }
+
+
+def _make_json_safe(value: Any) -> Any:
+    if is_dataclass(value):
+        return {
+            f.name: _make_json_safe(getattr(value, f.name))
+            for f in fields(value)
+        }
+    if isinstance(value, Mapping):
+        return {
+            (str(k) if not isinstance(k, str) else k): _make_json_safe(v)
+            for k, v in value.items()
+        }
+    if isinstance(value, tuple):
+        return tuple(_make_json_safe(item) for item in value)
+    if isinstance(value, list):
+        return [_make_json_safe(item) for item in value]
+    if isinstance(value, set):
+        return tuple(
+            _make_json_safe(item)
+            for item in sorted(value, key=lambda candidate: repr(candidate))
+        )
+    return value
+
+
+def _json_safe_mapping(mapping: Mapping[str, Any] | None) -> Dict[str, Any]:
+    if not mapping:
+        return {}
+    return {
+        (str(key) if not isinstance(key, str) else key): _make_json_safe(value)
+        for key, value in mapping.items()
+    }
 
 
 def _transition(decision: str, reason: str, *, diagnostics: Mapping[str, Any] | None = None) -> GraphTransition:
@@ -355,7 +387,7 @@ class UploadIngestionGraph:
             state["doc"]["guardrail_decision"] = {
                 "decision": guardrail_decision.decision,
                 "reason": guardrail_decision.reason,
-                "attributes": dict(guardrail_decision.attributes),
+                "attributes": _json_safe_mapping(guardrail_decision.attributes),
             }
             guardrail_transition = self._translate_guardrail_decision(
                 guardrail_decision,
@@ -379,7 +411,7 @@ class UploadIngestionGraph:
         state["doc"]["delta_decision"] = {
             "decision": delta_decision.decision,
             "reason": delta_decision.reason,
-            "attributes": dict(delta_decision.attributes),
+            "attributes": _json_safe_mapping(delta_decision.attributes),
         }
         delta_transition = self._translate_delta_decision(
             delta_decision,
@@ -488,7 +520,7 @@ class UploadIngestionGraph:
         decision: ai_core_api.GuardrailDecision,
         normalized: NormalizedDocumentPayload,
     ) -> GraphTransition:
-        diagnostics: Dict[str, Any] = dict(decision.attributes)
+        diagnostics: Dict[str, Any] = _json_safe_mapping(decision.attributes)
         policy_events = self._normalize_policy_events(
             diagnostics.get("policy_events")
         ) or tuple(decision.policy_events)
@@ -512,7 +544,7 @@ class UploadIngestionGraph:
         normalized: NormalizedDocumentPayload,
         guardrail_transition: Mapping[str, Any] | None,
     ) -> GraphTransition:
-        diagnostics: Dict[str, Any] = dict(decision.attributes)
+        diagnostics: Dict[str, Any] = _json_safe_mapping(decision.attributes)
         policy_events = self._normalize_policy_events(
             diagnostics.get("policy_events")
         )
