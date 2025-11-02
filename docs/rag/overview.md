@@ -27,7 +27,7 @@ flowchart LR
 - Loader ziehen Quelldaten aus Dokumenten, APIs oder Datenbanken.
 - Splitter & Chunker erzeugen überlappende Textblöcke; Parameter stehen in [RAG-Ingestion](ingestion.md).
 - Embeddings landen in `pgvector` (siehe [Schema](schema.sql)), inklusive Metadaten pro Tenant.
-- Retriever filtert per `tenant_id` und blendet nicht-aktive Lifecycle-Stände (`documents.lifecycle <> 'active'`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)).
+- Retriever filtert per `tenant_id` und blendet nicht-aktive Lifecycle-Stände (`documents.lifecycle <> 'active'`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)). Die vollständigen Eingabe-/Ausgabeverträge (`RetrieveInput`, `RetrieveOutput`, Meta-Felder) sind im Kapitel [Retrieval Contracts](retrieval-contracts.md) dokumentiert und dienen als Referenz für Tool- und API-Aufrufe.
 
 ## Mandantenfähigkeit
 Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenant_id` trennt Zugriffe und wird vom Retriever gefiltert. Für wachsende Last kann optional ein Silo/Schemas je Tenant aufgebaut werden.

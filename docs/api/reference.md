@@ -342,7 +342,7 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 ```
 
 ### POST `/v1/ai/rag/query/`
-Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augmented_generation`).
+Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augmented_generation`). Die vollständigen Tool-Contracts (`RetrieveInput`, `RetrieveOutput`, Meta-Felder) sind unter [RAG → Retrieval Contracts](../rag/retrieval-contracts.md) dokumentiert.
 
 **Headers**
 - `X-Tenant-Schema` (required)
