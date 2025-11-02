@@ -58,8 +58,249 @@ flowchart TD
 | `documents.pipeline` | Pipeline-Konfiguration, Kontext und Statusübergänge | `DocumentPipelineConfig`, `DocumentProcessingMetadata`, `DocumentProcessingContext` |
 | `ai_core.rag.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
 | `ai_core.api` | Guardrail-Auswertung, Delta-Entscheidungen & API-Brücke zum Graph | `enforce_guardrails`, `decide_delta`, `trigger_embedding` |
+| `ai_core.rag.ingestion_contracts` | Vektor-Payloads & Metadaten | [`CrawlerIngestionPayload`](#crawleringestionpayload), [`ChunkMeta`](#chunkmeta) |
+| `ai_core.schemas` | Run-Requests & Origins | [`CrawlerRunRequest`](#crawlerrunrequest), [`CrawlerOriginConfig`](#crawleroriginconfig), [`CrawlerSnapshotOptions`](#crawlersnapshotoptions), [`CrawlerRunLimits`](#crawlerrunlimits) |
 | `ai_core.graphs.crawler_ingestion_graph` | Übergabe an RAG-Ingestion & Lifecycle | `CrawlerIngestionGraph`, `GraphTransition` |
 | `crawler.errors` | Vereinheitlichtes Fehler-Vokabular | `CrawlerError`, `ErrorClass` |
+
+## Payload- und Run-Verträge
+
+Die folgenden Abschnitte dokumentieren die AI-Core-Verträge, die der Crawler
+beim Übergang in die RAG-Ingestion befüllt. Die Inhalte sind referenzierbar aus
+anderen RAG-Dokumenten und ersetzen lokale Kopien der Schemas.
+
+### CrawlerIngestionPayload {#crawleringestionpayload}
+
+`CrawlerIngestionPayload` kapselt den finalen Entscheid eines Crawl-Laufs und
+wird unverändert an den Vector-Client weitergereicht. Das Modell ist
+`frozen=True` und `extra="forbid"`, sodass nach Validierung keine Felder mehr
+geändert werden können und unbekannte Keys zu einem Pydantic-Fehler
+`extra_forbidden` führen.
+
+#### Felder
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `action` | Entscheidung für Upsert/Skip/Retire | `IngestionAction` (`"upsert"\|"skip"\|"retire"`) | – | Enum-Validierung durch Pydantic | `value_error.enum` |
+| `lifecycle_state` | Zielstatus für Dokument-Lifecycle | `str` | – | Pflichtfeld, Trim nicht automatisch | Standard `type_error.str` |
+| `policy_events` | Telemetrie zu Guardrail/Policy-Verstößen | `tuple[str, ...]` | `()` | Tuple wird eingefroren | `type_error.tuple` |
+| `adapter_metadata` | Durchgereichte Kontextdaten des Adapters | `Mapping[str, object]` | – | Muss Mapping sein, keine Mutation mehr nach Konstruktion | `type_error.mapping` |
+| `document_id` | Referenz auf das normalisierte Dokument | `str` | – | Pflichtfeld | `type_error.str` |
+| `workflow_id` | LangGraph-Workflow, falls vorhanden | `str \| None` | `None` | Optional, wird unverändert übernommen | – |
+| `tenant_id` | Mandantenkontext für nachgelagerte Systeme | `str` | – | Pflichtfeld | `type_error.str` |
+| `case_id` | Fallkontext für Observability/Tracing | `str` | – | Pflichtfeld | `type_error.str` |
+| `content_hash` | Hash des Inhalts für Delta-Entscheide | `str \| None` | `None` | Optional | – |
+| `chunk_meta` | Metadaten für Embedding-Storage | [`ChunkMeta`](#chunkmeta) \| `None` | `None` | Nested-Validierung | Fehler aus `ChunkMeta` |
+| `embedding_profile` | Angefragtes Embedding-Profil | `str \| None` | `None` | Optional; Muss zu `resolve_ingestion_profile` passen | `INGEST_PROFILE_*` (über `InputError`), `type_error.str` |
+| `vector_space_id` | Ziel-Vector-Space | `str \| None` | `None` | Optional; in Kombination mit Profil genutzt | `INGEST_VECTOR_SPACE_UNKNOWN` |
+| `delta_status` | Ergebnis des Delta-Vergleichs (`new`, `changed`, `skip`) | `str \| None` | `None` | Optional | – |
+| `content_raw` | Ursprünglicher Textinhalt | `str \| None` | `None` | Optional | – |
+| `content_normalized` | Normalisierter Textinhalt | `str \| None` | `None` | Optional | – |
+
+> **Hinweis:** Fehlercodes stammen aus `IngestionContractErrorCode` und werden
+über `InputError` geworfen, wenn z. B. `embedding_profile` aufgelöst wird.
+
+#### Beispiele
+
+**Upsert mit Chunk-Metadaten**
+
+```json
+{
+  "action": "upsert",
+  "lifecycle_state": "normalized",
+  "policy_events": ["guardrail.quota.ok"],
+  "adapter_metadata": {"source": "crawler"},
+  "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
+  "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
+  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
+  "content_hash": "sha256:abc123",
+  "chunk_meta": {
+    "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
+    "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
+    "source": "crawler",
+    "hash": "chunk:1",
+    "external_id": "https://example.com/article",
+    "content_hash": "sha256:abc123",
+    "embedding_profile": "default-text",
+    "vector_space_id": "vs_text_default",
+    "process": "knowledge-base"
+  },
+  "embedding_profile": "default-text",
+  "vector_space_id": "vs_text_default",
+  "delta_status": "changed",
+  "content_normalized": "…"
+}
+```
+
+**Skip ohne Chunk-Daten**
+
+```json
+{
+  "action": "skip",
+  "lifecycle_state": "normalized",
+  "policy_events": ["delta.skip.unchanged"],
+  "adapter_metadata": {"source": "crawler"},
+  "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
+  "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
+  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
+  "delta_status": "skip"
+}
+```
+
+**Retire mit Lifecycle-Wechsel**
+
+```json
+{
+  "action": "retire",
+  "lifecycle_state": "retired",
+  "policy_events": ["delta.retire.replaced"],
+  "adapter_metadata": {"source": "crawler"},
+  "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
+  "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
+  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
+  "delta_status": "changed",
+  "content_hash": "sha256:retired"
+}
+```
+
+### ChunkMeta {#chunkmeta}
+
+`ChunkMeta` enthält die Metadaten, die zusammen mit Embeddings gespeichert
+werden. `extra="forbid"` verhindert unbeabsichtigte Zusatzfelder.
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `tenant_id` | Mandanten-ID für den Chunk | `str` | – | Pflichtfeld | `type_error.str` |
+| `case_id` | Case/Trace-Kontext | `str` | – | Pflichtfeld | `type_error.str` |
+| `source` | Ingestion-Kanal (`crawler`, `upload`, …) | `str` | – | Pflichtfeld | `type_error.str` |
+| `hash` | Chunk-Hash (Idempotenz) | `str` | – | Pflichtfeld | `type_error.str` |
+| `external_id` | Primäre Referenz (z. B. URL) | `str` | – | Pflichtfeld | `type_error.str` |
+| `content_hash` | Hash des Inhalts | `str` | – | Pflichtfeld | `type_error.str` |
+| `embedding_profile` | Aufgelöstes Profil | `str \| None` | `None` | Optional | `type_error.str` |
+| `vector_space_id` | Ziel-Vector-Space | `str \| None` | `None` | Optional | `type_error.str` |
+| `process` | Geschäftsprozess/Route | `str \| None` | `None` | Optional | – |
+| `workflow_id` | Graph-Lauf zur Nachverfolgung | `str \| None` | `None` | Optional | – |
+| `parent_ids` | Eltern-Chunks (z. B. Kapitel) | `list[str] \| None` | `None` | Muss Liste sein | `list_type`, `type_error.str` |
+| `collection_id` | Optionale Collection-Referenz | `str \| None` | `None` | Optional | `type_error.str` |
+| `document_id` | Dokument-Referenz (falls abweichend) | `str \| None` | `None` | Optional | – |
+| `lifecycle_state` | Lifecycle des Chunks | `str \| None` | `None` | Optional | – |
+
+### CrawlerRunLimits {#crawlerrunlimits}
+
+`CrawlerRunLimits` definiert optionale Grenzwerte, die während eines Runs
+berücksichtigt werden.
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `max_document_bytes` | Grenzt die Größe normalisierter Dokumente | `int \| None` | `None` | Wird auf `int` gecastet, muss ≥ 0 sein | `invalid_max_document_bytes` |
+
+### CrawlerSnapshotOptions {#crawlersnapshotoptions}
+
+Snapshot-Optionen können als boolescher Schalter oder als Objekt
+übergeben werden. Ein boolescher Wert wird zu `{ "enabled": <bool> }`
+normalisiert.
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | Aktiviert das Schreiben eines Snapshots | `bool` | `False` | Akzeptiert bool oder Mapping | `invalid_snapshot` |
+| `label` | Kennzeichnung des Snapshots | `str \| None` | `None` | Wird getrimmt; leere Strings → `None` | `invalid_snapshot_label` |
+
+### CrawlerOriginConfig {#crawleroriginconfig}
+
+`CrawlerOriginConfig` beschreibt eine einzelne Quelle innerhalb eines Runs. Die
+Validierung stellt sicher, dass Felder konsistent mit den Laufoptionen sind; zusätzliche Keys werden ignoriert.
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `url` | Start-URL oder Identifier der Quelle | `str` | – | Pflichtfeld, Trim | `invalid_origin_url` |
+| `provider` | Überschreibt den Provider (z. B. `web`) | `str \| None` | `None` | Optional, Trim | `invalid_provider` |
+| `document_id` | Optionaler Dokument-Bezeichner | `str \| None` | `None` | Trim, leere Strings → `None` | `invalid_document_id` |
+| `title` | Menschlicher Titel | `str \| None` | `None` | Trim | `invalid_title` |
+| `language` | ISO-Sprachcode | `str \| None` | `None` | Trim | `invalid_language` |
+| `content` | Inline-Inhalt für manuelle Läufe | `str \| None` | `None` | Muss nicht-leerer String sein | `invalid_content` |
+| `content_type` | MIME-Type des Inhalts | `str \| None` | `None` | Optional, Trim | `invalid_content_type` |
+| `fetch` | Überschreibt Fetch-Verhalten | `bool \| None` | `None` | Optional | – |
+| `tags` | Freie Tags (CSV oder Liste) | `list[str] \| None` | `None` | Strings werden getrimmt, leere entfernt | `invalid_tags` |
+| `limits` | Laufzeit-Limits für diese Origin | [`CrawlerRunLimits`](#crawlerrunlimits) \| `None` | `None` | Nested-Validierung | `invalid_max_document_bytes` |
+| `snapshot` | Snapshot-Einstellungen je Origin | [`CrawlerSnapshotOptions`](#crawlersnapshotoptions) \| `None` | `None` | Nested | `invalid_snapshot`, `invalid_snapshot_label` |
+| `review` | Review-Status (required/approved/rejected) | `Literal` \| `None` | `None` | Normalisiert Kleinbuchstaben | `invalid_review` |
+| `dry_run` | Verhindert persistente Änderungen | `bool \| None` | `None` | Optional | – |
+
+### CrawlerRunRequest {#crawlerrunrequest}
+
+Der Run-Request ist der Einstiegspunkt für den Crawler-Graphen. Er erzeugt bei
+Bedarf automatisch eine `origins`-Liste, synchronisiert Review-Flags und
+kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
+
+| Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
+| --- | --- | --- | --- | --- | --- |
+| `workflow_id` | Optionaler Graph-Lauf | `str \| None` | `None` | Trim | `invalid_workflow_id` |
+| `mode` | Betriebsmodus (`live` oder `manual`) | `Literal` | `"live"` | Enum-Validierung | `value_error.enum` |
+| `origins` | Liste vorkonfigurierter Origins | `list[CrawlerOriginConfig] \| None` | `None` | Wird normalisiert, Defaults ergänzt | Fehler aus `CrawlerOriginConfig` |
+| `origin_url` | Kurzform für Single-Origin-Läufe | `str \| None` | `None` | Pflicht, falls `origins` leer | `invalid_origin_url`, `missing_origins` |
+| `provider` | Default-Provider für Origins | `str` | `"web"` | Pflichtfeld | `invalid_provider` |
+| `document_id` | Default-Dokument für `origin_url` | `str \| None` | `None` | Trim | `invalid_document_id` |
+| `title` | Default-Titel | `str \| None` | `None` | Trim | `invalid_title` |
+| `language` | Default-Sprache | `str \| None` | `None` | Trim | `invalid_language` |
+| `content` | Default-Inhalt für manuelle Läufe | `str \| None` | `None` | Muss nicht-leerer String sein | `invalid_content` |
+| `content_type` | Default-MIME-Type | `str` | `"text/html"` | Pflichtfeld | `invalid_content_type` |
+| `fetch` | Default-Fetch-Flag | `bool` | `True` | Muss `False` sein, wenn `mode="manual"` | `invalid_manual_mode`, `content_required_when_fetch_disabled` |
+| `snapshot` | Default-Snapshot-Optionen | [`CrawlerSnapshotOptions`](#crawlersnapshotoptions) | `{ "enabled": false }` | bool oder Objekt | `invalid_snapshot`, `invalid_snapshot_label` |
+| `snapshot_label` | Legacy-Alias für Snapshot-Label | `str \| None` | `None` | Wird mit `snapshot.label` synchronisiert | `invalid_snapshot_label` |
+| `tags` | Default-Tags für Origins | `list[str] \| None` | `None` | CSV oder Liste | `invalid_tags` |
+| `shadow_mode` | Telemetrie ohne Persistenz | `bool` | `False` | – | – |
+| `dry_run` | Unterdrückt persistente Änderungen | `bool` | `False` | Wird in Origins gespiegelt | – |
+| `review` | Default-Review-Status | `Literal \| None` | `None` | Muss zu `manual_review` passen | `invalid_review` |
+| `manual_review` | Historisches Feld, wird gespiegelt | `Literal \| None` | `None` | Muss zu `review` passen | `invalid_review` |
+| `force_retire` | Erzwingt Retire im Delta-Schritt | `bool` | `False` | – | – |
+| `recompute_delta` | Erneutes Delta trotz vorhandenem Hash | `bool` | `False` | – | – |
+| `max_document_bytes` | Kurzform für Limit-Weitergabe | `int \| None` | `None` | ≥ 0, wird zu `CrawlerRunLimits` kopiert | `invalid_max_document_bytes` |
+| `limits` | Default-Limits für Origins | [`CrawlerRunLimits`](#crawlerrunlimits) \| `None` | `None` | Nested-Validierung | `invalid_max_document_bytes` |
+| `collection_id` | Default-Collection für Origins | `str \| None` | `None` | UUID-Validierung | `invalid_collection_id` |
+
+#### Typische Requests
+
+**Standard-Live-Run über `origin_url`**
+
+```json
+{
+  "origin_url": "https://example.com/docs",
+  "workflow_id": "crawler-run-2024-05-18",
+  "provider": "web",
+  "tags": ["public", "docs"],
+  "snapshot": {"enabled": true, "label": "weekly"},
+  "limits": {"max_document_bytes": 5242880}
+}
+```
+
+**Mehrere Origins mit geteilten Defaults**
+
+```json
+{
+  "provider": "servicenow",
+  "content_type": "text/html",
+  "origins": [
+    {"url": "https://instance.service-now.com/kb?id=KB001", "tags": "kb,howto"},
+    {"url": "https://instance.service-now.com/kb?id=KB002", "fetch": false, "content": "<p>Inline Hotfix</p>"}
+  ],
+  "review": "required",
+  "snapshot": true,
+  "max_document_bytes": 2097152
+}
+```
+
+**Manueller Run mit Inline-Inhalt**
+
+```json
+{
+  "mode": "manual",
+  "origin_url": "manual://kb-entry",
+  "content": "Release Notes v1.2",
+  "content_type": "text/plain",
+  "fetch": false,
+  "review": "approved"
+}
+```
 
 ## Normalisierung & Delta
 - Der Worker legt Rohbytes im Object-Store ab und reicht nur noch den Pfad als
