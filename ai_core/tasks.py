@@ -108,6 +108,27 @@ def _build_path(meta: Dict[str, str], *parts: str) -> str:
     return "/".join([tenant, case, *parts])
 
 
+def _resolve_artifact_filename(meta: Mapping[str, Any], kind: str) -> str:
+    """Derive a per-document filename for chunking artifacts."""
+
+    seed: Optional[str] = None
+    for key in ("content_hash", "hash", "external_id", "document_id"):
+        value = meta.get(key)
+        if value in (None, ""):
+            continue
+        candidate = str(value).strip()
+        if candidate:
+            seed = candidate
+            break
+    if seed is None:
+        seed = uuid.uuid4().hex
+    base_name = f"{kind}-{seed}.json"
+    try:
+        return object_store.safe_filename(base_name)
+    except Exception:
+        return object_store.safe_filename(f"{kind}-{uuid.uuid4().hex}.json")
+
+
 class _EmbedSpanMetrics:
     """Accumulate Langfuse span metadata for embedding phases."""
 
@@ -1204,7 +1225,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     limited_parents = limit_parent_payload(parent_nodes)
     payload = {"chunks": chunks, "parents": limited_parents}
-    out_path = _build_path(meta, "embeddings", "chunks.json")
+    chunk_filename = _resolve_artifact_filename(meta, "chunks")
+    out_path = _build_path(meta, "embeddings", chunk_filename)
     object_store.write_json(out_path, payload)
     return {"path": out_path}
 
@@ -1383,7 +1405,8 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             pass
 
         payload = {"chunks": embeddings, "parents": parents}
-        out_path = _build_path(meta, "embeddings", "vectors.json")
+        vectors_filename = _resolve_artifact_filename(meta, "vectors")
+        out_path = _build_path(meta, "embeddings", vectors_filename)
         with _observed_embed_section("write") as write_metrics:
             object_store.write_json(out_path, payload)
             write_metrics.set("chunks_count", len(embeddings))
