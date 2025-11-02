@@ -2,24 +2,21 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from common.object_store import ObjectStore, get_default_object_store
 from documents.contracts import (
-    DEFAULT_PROVIDER_BY_SOURCE,
     DocumentMeta,
     DocumentRef,
     InlineBlob,
     NormalizedDocument,
+    NormalizedDocumentInputV1,
 )
 from documents.repository import (
     DocumentLifecycleRecord,
@@ -47,79 +44,6 @@ def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
     return get_default_object_store()
 
 
-def _normalize_mapping(
-    value: Mapping[str, Any] | MutableMapping[str, Any] | None,
-) -> Mapping[str, Any]:
-    if value is None:
-        return MappingProxyType({})
-    if not isinstance(value, Mapping):
-        if isinstance(value, MutableMapping):
-            value = dict(value)
-        else:
-            raise TypeError("metadata_mapping_required")
-    return MappingProxyType(dict(value))
-
-
-def _normalize_text(payload: Any) -> str:
-    if isinstance(payload, str):
-        return payload
-    if isinstance(payload, bytes):
-        try:
-            return payload.decode("utf-8")
-        except UnicodeDecodeError as exc:  # pragma: no cover - defensive guard
-            raise ValueError("raw_content_decode_error") from exc
-    raise TypeError("raw_content_type")
-
-
-def _coerce_payload_bytes(value: Any) -> bytes:
-    if isinstance(value, bytes):
-        return value
-    if isinstance(value, bytearray):
-        return bytes(value)
-    if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate:
-            return b""
-        try:
-            return base64.b64decode(candidate, validate=True)
-        except (binascii.Error, ValueError):
-            return candidate.encode("utf-8")
-    raise TypeError("payload_bytes_type")
-
-
-def _extract_charset(value: Any) -> Optional[str]:
-    if isinstance(value, str):
-        candidate = value.strip()
-        if not candidate:
-            return None
-        for param in candidate.split(";")[1:]:
-            key, _, param_value = param.partition("=")
-            if key.strip().lower() == "charset":
-                encoding = param_value.strip().strip('"').strip("'")
-                if encoding:
-                    return encoding
-    return None
-
-
-def _coerce_optional_string(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
-
-
-def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
-    if encoding_hint:
-        try:
-            return payload.decode(encoding_hint)
-        except (LookupError, UnicodeDecodeError):
-            pass
-    try:
-        return payload.decode("utf-8")
-    except UnicodeDecodeError:
-        return payload.decode("utf-8", errors="replace")
-
-
 def _validate_object_store_path(value: str, store: ObjectStore) -> str:
     """Return a safe object store path relative to the configured object store."""
 
@@ -145,65 +69,6 @@ def _validate_object_store_path(value: str, store: ObjectStore) -> str:
         raise ValueError("payload_path_invalid")
 
     return relative_path.as_posix()
-
-
-def _resolve_payload(
-    raw_reference: Mapping[str, Any], store: ObjectStore
-) -> tuple[bytes, str]:
-    if "content" in raw_reference:
-        content = _normalize_text(raw_reference.get("content"))
-        return content.encode("utf-8"), content
-
-    payload_bytes: Optional[bytes] = None
-    if "payload_path" in raw_reference:
-        payload_path = raw_reference.get("payload_path")
-        if isinstance(payload_path, (str, PathLike)):
-            candidate = str(payload_path).strip()
-            if candidate:
-                try:
-                    normalized_path = _validate_object_store_path(candidate, store)
-                except ValueError as exc:
-                    raise ValueError("payload_path_invalid") from exc
-                try:
-                    payload_bytes = store.read_bytes(normalized_path)
-                except FileNotFoundError as exc:  # pragma: no cover - defensive guard
-                    raise ValueError("raw_content_missing") from exc
-                except Exception as exc:  # pragma: no cover - defensive guard
-                    raise ValueError("payload_path_invalid") from exc
-        elif payload_path is not None:
-            raise TypeError("payload_path_type")
-
-    if payload_bytes is None and "payload_bytes" in raw_reference:
-        payload_bytes = _coerce_payload_bytes(raw_reference.get("payload_bytes"))
-    elif payload_bytes is None and "payload_base64" in raw_reference:
-        base64_value = raw_reference.get("payload_base64")
-        if isinstance(base64_value, (str, bytes, bytearray)):
-            payload_bytes = _coerce_payload_bytes(base64_value)
-
-    if payload_bytes is None:
-        raise ValueError("raw_content_missing")
-
-    encoding_hint = raw_reference.get("payload_encoding") or raw_reference.get(
-        "content_encoding"
-    )
-    if encoding_hint is None:
-        metadata = raw_reference.get("metadata")
-        metadata_mapping: Optional[Mapping[str, Any]] = (
-            metadata if isinstance(metadata, Mapping) else None
-        )
-
-        for candidate in (
-            raw_reference.get("content_type"),
-            raw_reference.get("media_type"),
-            raw_reference.get("mime_type"),
-            metadata_mapping.get("content_type") if metadata_mapping else None,
-            metadata_mapping.get("content-type") if metadata_mapping else None,
-        ):
-            encoding_hint = _extract_charset(candidate)
-            if encoding_hint:
-                break
-    content = _decode_payload_text(payload_bytes, encoding_hint)
-    return payload_bytes, content
 
 
 def _coerce_uuid(value: Any) -> UUID:
@@ -299,80 +164,46 @@ def normalize_from_raw(
         raise TypeError("raw_reference_mapping_required")
 
     store = _resolve_object_store(object_store)
-    payload_bytes, content = _resolve_payload(raw_reference, store)
-    metadata_mapping = raw_reference.get("metadata", {})
-    media_type_candidate = str(
-        raw_reference.get("media_type")
-        or raw_reference.get("content_type")
-        or raw_reference.get("mime_type")
-        or metadata_mapping.get("media_type")
-        or metadata_mapping.get("content_type")
-        or metadata_mapping.get("content-type")
-        or "text/plain"
-    ).strip()
-    media_type = media_type_candidate.split(";", 1)[0].strip().lower()
-    if not media_type:
-        media_type = "text/plain"
-
-    checksum = hashlib.sha256(payload_bytes).hexdigest()
-    payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
-
-    metadata = _normalize_mapping(raw_reference.get("metadata"))
-    resolved_workflow_id = (
-        _coerce_optional_string(workflow_id)
-        or _coerce_optional_string(metadata.get("workflow_id"))
-        or _coerce_optional_string(raw_reference.get("workflow_id"))
-        or "crawler"
-    )
-
-    resolved_source = (
-        _coerce_optional_string(source)
-        or _coerce_optional_string(metadata.get("source"))
-        or _coerce_optional_string(raw_reference.get("source"))
-        or "crawler"
-    )
-
-    document_id = _coerce_uuid(raw_reference.get("document_id"))
-    collection_id = metadata.get("collection_id")
-    if collection_id is not None:
-        try:
-            collection_id = UUID(str(collection_id))
-        except (TypeError, ValueError):  # pragma: no cover - defensive guard
-            collection_id = None
-
-    version = metadata.get("version")
-    version_str = str(version).strip() if version else None
-
-    document_ref = DocumentRef(
+    contract = NormalizedDocumentInputV1.from_raw(
+        raw_reference=raw_reference,
         tenant_id=tenant_id,
-        workflow_id=resolved_workflow_id,
+        case_id=case_id,
+        request_id=request_id,
+        workflow_id=workflow_id,
+        source=source,
+    )
+
+    def _read_from_store(path: str) -> bytes:
+        normalized_path = _validate_object_store_path(path, store)
+        try:
+            return store.read_bytes(normalized_path)
+        except FileNotFoundError as exc:  # pragma: no cover - defensive guard
+            raise ValueError("raw_content_missing") from exc
+        except Exception as exc:  # pragma: no cover - defensive guard
+            raise ValueError("payload_path_invalid") from exc
+
+    object_reader = _read_from_store if contract.requires_object_store else None
+    try:
+        payload_bytes = contract.resolve_payload_bytes(
+            object_store_reader=object_reader
+        )
+    except ValueError as exc:
+        if str(exc) == "object_store_reader_required":
+            raise ValueError("payload_path_invalid") from exc
+        raise
+
+    content = contract.resolve_payload_text(payload_bytes=payload_bytes)
+    checksum = contract.compute_checksum(payload_bytes)
+    payload_base64 = contract.payload_base64(payload_bytes)
+
+    document_id = _coerce_uuid(contract.document_id)
+    document_ref = DocumentRef(
+        tenant_id=contract.tenant_id,
+        workflow_id=contract.workflow_id,
         document_id=document_id,
-        collection_id=collection_id,
-        version=version_str,
+        collection_id=contract.collection_id,
+        version=contract.version,
     )
-
-    external_ref: dict[str, str] = {}
-    provider = (
-        _coerce_optional_string(metadata.get("provider"))
-        or _coerce_optional_string(raw_reference.get("provider"))
-        or DEFAULT_PROVIDER_BY_SOURCE.get(resolved_source)
-        or resolved_source
-    )
-    provider = _coerce_optional_string(provider)
-    if provider:
-        external_ref["provider"] = provider
-    external_id = _coerce_optional_string(
-        metadata.get("external_id")
-    ) or _coerce_optional_string(raw_reference.get("external_id"))
-    if external_id:
-        external_ref["external_id"] = external_id
-    elif document_id is not None:
-        fallback_provider = provider or resolved_source or "unknown"
-        external_ref["external_id"] = f"{fallback_provider}:{document_id}"
-    if case_id:
-        external_ref["case_id"] = str(case_id)
-
-    origin_uri = metadata.get("origin_uri") or raw_reference.get("origin_uri")
 
     parse_stats: dict[str, Any] = {
         "parser.character_count": len(content),
@@ -380,29 +211,23 @@ def normalize_from_raw(
         "crawler.primary_text_hash_sha256": checksum,
     }
 
-    tags = metadata.get("tags") or ()
-    if isinstance(tags, (list, tuple, set)):
-        normalized_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-    else:
-        normalized_tags = []
-
     doc_meta = DocumentMeta(
-        tenant_id=tenant_id,
-        workflow_id=resolved_workflow_id,
-        title=metadata.get("title"),
-        language=metadata.get("language"),
-        tags=normalized_tags,
-        origin_uri=str(origin_uri).strip() or None,
-        external_ref=external_ref,
+        tenant_id=contract.tenant_id,
+        workflow_id=contract.workflow_id,
+        title=contract.title,
+        language=contract.language,
+        tags=contract.tags,
+        origin_uri=contract.origin_uri,
+        external_ref=contract.build_external_reference(document_id),
         parse_stats=parse_stats,
     )
 
     blob = InlineBlob(
         type="inline",
-        media_type=media_type or "text/plain",
+        media_type=contract.media_type,
         base64=payload_base64,
         sha256=checksum,
-        size=len(payload_bytes),
+        size=contract.payload_size(payload_bytes),
     )
 
     document = NormalizedDocument(
@@ -411,20 +236,10 @@ def normalize_from_raw(
         blob=blob,
         checksum=checksum,
         created_at=_timestamp(),
-        source=resolved_source,
+        source=contract.source,
         lifecycle_state="active",
         assets=[],
     )
-
-    metadata_payload: dict[str, Any] = {
-        "tenant_id": tenant_id,
-        "workflow_id": resolved_workflow_id,
-        "case_id": case_id,
-        "request_id": request_id,
-        "provider": provider or None,
-        "origin_uri": doc_meta.origin_uri,
-        "source": resolved_source,
-    }
 
     normalized_text = normalized_primary_text(content)
 
@@ -432,9 +247,7 @@ def normalize_from_raw(
         document=document,
         primary_text=normalized_text,
         payload_bytes=payload_bytes,
-        metadata=MappingProxyType(
-            {k: v for k, v in metadata_payload.items() if v is not None}
-        ),
+        metadata=contract.metadata_payload,
         content_raw=content,
         content_normalized=normalized_text,
     )

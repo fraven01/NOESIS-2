@@ -6,6 +6,7 @@ import base64
 import hashlib
 
 import pytest
+from pydantic import ValidationError
 
 from common.object_store import FilesystemObjectStore
 from documents.api import normalize_from_raw
@@ -42,6 +43,20 @@ def test_normalize_from_raw_accepts_payload_base64() -> None:
 
     assert result.primary_text == "Plain content"
     assert result.payload_bytes == payload
+
+
+def test_normalize_from_raw_rejects_string_payload_bytes() -> None:
+    with pytest.raises(ValidationError):
+        normalize_from_raw(
+            raw_reference={
+                "payload_bytes": "VGVzdCBjb250ZW50",
+                "metadata": {
+                    "provider": "crawler",
+                    "origin_uri": "https://example.com/base64",
+                },
+            },
+            tenant_id="tenant-x",
+        )
 
 
 def test_normalize_from_raw_accepts_payload_path(tmp_path) -> None:
