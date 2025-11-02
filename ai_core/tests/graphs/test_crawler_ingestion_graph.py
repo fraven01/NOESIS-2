@@ -19,6 +19,7 @@ from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from documents import api as documents_api
 from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
+from documents.contracts import NormalizedDocumentInputV1
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 from documents.pipeline import (
     DocumentChunkArtifact,
@@ -143,7 +144,7 @@ def _build_state(
     if config_override:
         guardrail_context["config"] = config_override
 
-    normalized_payload = normalize_from_raw(
+    contract = NormalizedDocumentInputV1.from_raw(
         raw_reference=raw_document,
         tenant_id=tenant_id,
         case_id=case_id,
@@ -151,6 +152,7 @@ def _build_state(
         workflow_id=overrides.get("workflow_id"),
         source=raw_document.get("metadata", {}).get("source"),
     )
+    normalized_payload = normalize_from_raw(contract=contract)
 
     state: dict[str, object] = {
         "tenant_id": tenant_id,
@@ -303,9 +305,11 @@ def test_guardrail_denied_emits_event_callback() -> None:
 
 def test_delta_unchanged_skips_embedding() -> None:
     repository = InMemoryDocumentsRepository()
-    baseline_payload = normalize_from_raw(
-        raw_reference={"content": "Persistent"}, tenant_id="tenant"
+    baseline_contract = NormalizedDocumentInputV1.from_raw(
+        raw_reference={"content": "Persistent"},
+        tenant_id="tenant",
     )
+    baseline_payload = normalize_from_raw(contract=baseline_contract)
     repository.upsert(
         baseline_payload.document,
         workflow_id=baseline_payload.document.ref.workflow_id,
@@ -458,30 +462,18 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
     def normalize_from_raw(
         self,
         *,
-        raw_reference,
-        tenant_id: str,
-        case_id: str | None = None,
-        request_id: str | None = None,
-        workflow_id: str | None = None,
-        source: str | None = None,
+        contract: NormalizedDocumentInputV1,
     ):
         self.normalize_calls.append(
             {
-                "tenant_id": tenant_id,
-                "case_id": case_id,
-                "request_id": request_id,
-                "workflow_id": workflow_id,
-                "source": source,
+                "tenant_id": contract.tenant_id,
+                "case_id": contract.case_id,
+                "request_id": contract.request_id,
+                "workflow_id": contract.workflow_id,
+                "source": contract.source,
             }
         )
-        return documents_api.normalize_from_raw(
-            raw_reference=raw_reference,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            request_id=request_id,
-            workflow_id=workflow_id,
-            source=source,
-        )
+        return documents_api.normalize_from_raw(contract=contract)
 
     def update_lifecycle_status(
         self,

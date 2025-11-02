@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,28 +149,15 @@ class LifecycleStatusUpdate:
 
 def normalize_from_raw(
     *,
-    raw_reference: Mapping[str, Any],
-    tenant_id: str,
-    case_id: Optional[str] = None,
-    request_id: Optional[str] = None,
-    workflow_id: Optional[str] = None,
-    source: Optional[str] = None,
+    contract: NormalizedDocumentInputV1,
     object_store: ObjectStore | None = None,
 ) -> NormalizedDocumentPayload:
     """Normalize crawler raw payloads into a :class:`NormalizedDocument`."""
 
-    if not isinstance(raw_reference, Mapping):
-        raise TypeError("raw_reference_mapping_required")
+    if not isinstance(contract, NormalizedDocumentInputV1):
+        raise TypeError("normalized_document_input_required")
 
     store = _resolve_object_store(object_store)
-    contract = NormalizedDocumentInputV1.from_raw(
-        raw_reference=raw_reference,
-        tenant_id=tenant_id,
-        case_id=case_id,
-        request_id=request_id,
-        workflow_id=workflow_id,
-        source=source,
-    )
 
     def _read_from_store(path: str) -> bytes:
         normalized_path = _validate_object_store_path(path, store)
@@ -222,12 +208,13 @@ def normalize_from_raw(
         parse_stats=parse_stats,
     )
 
+    payload_size = contract.payload_size(payload_bytes)
     blob = InlineBlob(
         type="inline",
         media_type=contract.media_type,
         base64=payload_base64,
         sha256=checksum,
-        size=contract.payload_size(payload_bytes),
+        size=payload_size,
     )
 
     document = NormalizedDocument(
@@ -243,11 +230,30 @@ def normalize_from_raw(
 
     normalized_text = normalized_primary_text(content)
 
+    metadata: dict[str, Any] = dict(contract.metadata_payload)
+    metadata.update(
+        {
+            "document_id": str(document_id),
+            "collection_id": str(contract.collection_id)
+            if contract.collection_id is not None
+            else None,
+            "external_id": contract.external_id,
+            "version": contract.version,
+            "media_type": contract.media_type,
+            "payload_size": payload_size,
+        }
+    )
+
+    if contract.tags:
+        metadata["tags"] = list(contract.tags)
+
+    metadata = {k: v for k, v in metadata.items() if v is not None}
+
     return NormalizedDocumentPayload(
         document=document,
         primary_text=normalized_text,
         payload_bytes=payload_bytes,
-        metadata=contract.metadata_payload,
+        metadata=MappingProxyType(metadata),
         content_raw=content,
         content_normalized=normalized_text,
     )
@@ -297,6 +303,7 @@ def update_lifecycle_status(
 
 
 __all__ = [
+    "NormalizedDocumentInputV1",
     "LifecycleStatusUpdate",
     "NormalizedDocumentPayload",
     "set_object_store",
