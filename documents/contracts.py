@@ -34,9 +34,10 @@ from typing import (
     Union,
     Any,
     Mapping,
+    MutableMapping,
 )
 from types import MappingProxyType
-from uuid import UUID
+from uuid import UUID, uuid4, uuid5, NAMESPACE_URL
 
 from pydantic import (
     BaseModel,
@@ -109,6 +110,204 @@ DEFAULT_PROVIDER_BY_SOURCE = MappingProxyType(
     }
 )
 
+
+class NormalizedDocumentInputV1(BaseModel):
+    """Validated input contract for raw document normalization (version 1)."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        title="Normalized Document Input V1",
+        description=(
+            "Captures raw document references together with ingestion context "
+            "such as tenant, workflow, source and provider metadata."
+        ),
+    )
+
+    raw_reference: Mapping[str, Any] = Field(
+        description="Raw document reference describing payload and metadata.",
+    )
+    tenant_id: str = Field(description="Tenant identifier owning the document payload.")
+    workflow_id: Optional[str] = Field(
+        default=None,
+        description="Optional override for the workflow identifier associated with the payload.",
+    )
+    source: Optional[str] = Field(
+        default=None,
+        description="Optional override for the ingestion source (e.g. crawler, upload).",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Optional override naming the upstream provider supplying the payload.",
+    )
+    external_id: Optional[str] = Field(
+        default=None,
+        description="Optional override for the upstream external identifier.",
+    )
+    collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional collection identifier for grouped documents.",
+    )
+    case_id: Optional[str] = Field(
+        default=None,
+        description="Optional business case identifier associated with the payload.",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Optional request identifier propagated during ingestion.",
+    )
+    document_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional override for the normalized document identifier.",
+    )
+    media_type: Optional[str] = Field(
+        default=None,
+        description="Optional override for the payload media type.",
+    )
+    metadata: Mapping[str, Any] = Field(
+        default_factory=dict,
+        description="Normalized metadata mapping extracted from the raw reference.",
+    )
+
+    _SOURCE_CHOICES = frozenset(DEFAULT_PROVIDER_BY_SOURCE.keys())
+
+    @staticmethod
+    def _ensure_mapping(
+        value: Mapping[str, Any] | MutableMapping[str, Any] | None,
+    ) -> Mapping[str, Any]:
+        if value is None:
+            return MappingProxyType({})
+        if isinstance(value, Mapping):
+            return MappingProxyType(dict(value))
+        if isinstance(value, MutableMapping):
+            return MappingProxyType(dict(value))
+        raise TypeError("metadata_mapping_required")
+
+    @staticmethod
+    def _coerce_document_id(value: Any) -> UUID:
+        if isinstance(value, UUID):
+            return value
+        if value is None:
+            return uuid4()
+        try:
+            return UUID(str(value))
+        except (TypeError, ValueError):
+            return uuid5(NAMESPACE_URL, str(value))
+
+    @field_validator("raw_reference", mode="before")
+    @classmethod
+    def _normalize_raw_reference(
+        cls, value: Mapping[str, Any] | MutableMapping[str, Any]
+    ) -> Mapping[str, Any]:
+        if isinstance(value, Mapping):
+            return MappingProxyType(dict(value))
+        if isinstance(value, MutableMapping):
+            return MappingProxyType(dict(value))
+        raise TypeError("raw_reference_mapping_required")
+
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def _normalize_tenant_id(cls, value: str) -> str:
+        return normalize_tenant(value)
+
+    @field_validator("case_id", "request_id", mode="before")
+    @classmethod
+    def _normalize_optional_ids(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
+
+    @model_validator(mode="after")
+    def _populate_defaults(self) -> "NormalizedDocumentInputV1":
+        raw = self.raw_reference
+
+        if not any(
+            key in raw and raw.get(key) is not None
+            for key in ("content", "payload_path", "payload_bytes", "payload_base64")
+        ):
+            raise ValueError("raw_content_missing")
+
+        metadata_mapping = self._ensure_mapping(raw.get("metadata"))
+        object.__setattr__(self, "metadata", metadata_mapping)
+
+        document_identifier = self.document_id or raw.get("document_id")
+        object.__setattr__(
+            self,
+            "document_id",
+            self._coerce_document_id(document_identifier),
+        )
+
+        collection_candidate = self.collection_id or metadata_mapping.get("collection_id")
+        collection_value = None
+        if collection_candidate is not None:
+            try:
+                collection_value = UUID(str(collection_candidate))
+            except (TypeError, ValueError):
+                collection_value = None
+        object.__setattr__(self, "collection_id", collection_value)
+
+        workflow_candidate = (
+            self.workflow_id
+            or metadata_mapping.get("workflow_id")
+            or raw.get("workflow_id")
+            or "crawler"
+        )
+        object.__setattr__(
+            self,
+            "workflow_id",
+            normalize_workflow_id(str(workflow_candidate)),
+        )
+
+        source_candidate = (
+            self.source
+            or metadata_mapping.get("source")
+            or raw.get("source")
+            or "crawler"
+        )
+        source_normalized = normalize_optional_string(str(source_candidate)) or "crawler"
+        source_normalized = source_normalized.lower()
+        if source_normalized not in self._SOURCE_CHOICES:
+            raise ValueError("source_invalid")
+        object.__setattr__(self, "source", source_normalized)
+
+        provider_candidate = (
+            self.provider
+            or metadata_mapping.get("provider")
+            or raw.get("provider")
+            or DEFAULT_PROVIDER_BY_SOURCE.get(source_normalized)
+            or source_normalized
+        )
+        provider_normalized = normalize_optional_string(str(provider_candidate))
+        if provider_normalized is None:
+            raise ValueError("provider_required")
+        object.__setattr__(self, "provider", provider_normalized)
+
+        external_candidate = (
+            self.external_id
+            or metadata_mapping.get("external_id")
+            or raw.get("external_id")
+        )
+        if external_candidate is None:
+            external_candidate = f"{provider_normalized}:{self.document_id}"
+        external_normalized = normalize_optional_string(str(external_candidate))
+        if external_normalized is None:
+            raise ValueError("external_id_required")
+        object.__setattr__(self, "external_id", external_normalized)
+
+        media_candidate = (
+            self.media_type
+            or raw.get("media_type")
+            or raw.get("content_type")
+            or raw.get("mime_type")
+            or metadata_mapping.get("media_type")
+            or metadata_mapping.get("content_type")
+            or metadata_mapping.get("content-type")
+            or "text/plain"
+        )
+        media_candidate_str = str(media_candidate).split(";", 1)[0]
+        if not media_candidate_str.strip():
+            media_candidate_str = "text/plain"
+        media_normalized = normalize_media_type(media_candidate_str)
+        object.__setattr__(self, "media_type", media_normalized)
+
+        return self
 
 def _decode_base64(value: str) -> bytes:
     try:

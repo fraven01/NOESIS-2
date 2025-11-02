@@ -18,6 +18,7 @@ from ai_core.tools import InputError
 from common import logging as common_logging
 from common.celery import ContextTask
 from documents.api import normalize_from_raw
+from documents.contracts import NormalizedDocumentInputV1
 
 
 def test_split_sentences_prefers_sentence_boundaries() -> None:
@@ -896,10 +897,12 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
         "embedding": {"profile": "standard", "client": _StubVectorClient()},
     }
     normalized_payload = normalize_from_raw(
-        raw_reference=state["raw_document"],
-        tenant_id=state["tenant_id"],
-        case_id=state["case_id"],
-        request_id=state["request_id"],
+        document_input=NormalizedDocumentInputV1(
+            raw_reference=state["raw_document"],
+            tenant_id=state["tenant_id"],
+            case_id=state["case_id"],
+            request_id=state["request_id"],
+        )
     )
     state["normalized_document_input"] = normalized_payload.document
     state["document_id"] = str(normalized_payload.document.ref.document_id)

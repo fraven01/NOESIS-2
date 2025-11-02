@@ -19,6 +19,7 @@ from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from documents import api as documents_api
 from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
+from documents.contracts import NormalizedDocumentInputV1
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 from documents.pipeline import (
     DocumentChunkArtifact,
@@ -143,13 +144,16 @@ def _build_state(
     if config_override:
         guardrail_context["config"] = config_override
 
-    normalized_payload = normalize_from_raw(
+    document_input = NormalizedDocumentInputV1(
         raw_reference=raw_document,
         tenant_id=tenant_id,
         case_id=case_id,
         request_id=request_id,
         workflow_id=overrides.get("workflow_id"),
         source=raw_document.get("metadata", {}).get("source"),
+    )
+    normalized_payload = normalize_from_raw(
+        document_input=document_input,
     )
 
     state: dict[str, object] = {
@@ -304,7 +308,10 @@ def test_guardrail_denied_emits_event_callback() -> None:
 def test_delta_unchanged_skips_embedding() -> None:
     repository = InMemoryDocumentsRepository()
     baseline_payload = normalize_from_raw(
-        raw_reference={"content": "Persistent"}, tenant_id="tenant"
+        document_input=NormalizedDocumentInputV1(
+            raw_reference={"content": "Persistent"},
+            tenant_id="tenant",
+        )
     )
     repository.upsert(
         baseline_payload.document,
@@ -465,6 +472,14 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
         workflow_id: str | None = None,
         source: str | None = None,
     ):
+        document_input = NormalizedDocumentInputV1(
+            raw_reference=raw_reference,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            request_id=request_id,
+            workflow_id=workflow_id,
+            source=source,
+        )
         self.normalize_calls.append(
             {
                 "tenant_id": tenant_id,
@@ -475,12 +490,7 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
             }
         )
         return documents_api.normalize_from_raw(
-            raw_reference=raw_reference,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            request_id=request_id,
-            workflow_id=workflow_id,
-            source=source,
+            document_input=document_input,
         )
 
     def update_lifecycle_status(

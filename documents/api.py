@@ -10,16 +10,16 @@ from datetime import datetime, timezone
 from os import PathLike
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Mapping, MutableMapping, Optional
+from typing import Any, Mapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from common.object_store import ObjectStore, get_default_object_store
 from documents.contracts import (
-    DEFAULT_PROVIDER_BY_SOURCE,
     DocumentMeta,
     DocumentRef,
     InlineBlob,
     NormalizedDocument,
+    NormalizedDocumentInputV1,
 )
 from documents.repository import (
     DocumentLifecycleRecord,
@@ -45,19 +45,6 @@ def _resolve_object_store(store: ObjectStore | None = None) -> ObjectStore:
     if _OBJECT_STORE_OVERRIDE is not None:
         return _OBJECT_STORE_OVERRIDE
     return get_default_object_store()
-
-
-def _normalize_mapping(
-    value: Mapping[str, Any] | MutableMapping[str, Any] | None,
-) -> Mapping[str, Any]:
-    if value is None:
-        return MappingProxyType({})
-    if not isinstance(value, Mapping):
-        if isinstance(value, MutableMapping):
-            value = dict(value)
-        else:
-            raise TypeError("metadata_mapping_required")
-    return MappingProxyType(dict(value))
 
 
 def _normalize_text(payload: Any) -> str:
@@ -99,13 +86,6 @@ def _extract_charset(value: Any) -> Optional[str]:
                 if encoding:
                     return encoding
     return None
-
-
-def _coerce_optional_string(value: Any) -> Optional[str]:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
 
 
 def _decode_payload_text(payload: bytes, encoding_hint: Optional[str]) -> str:
@@ -285,92 +265,37 @@ class LifecycleStatusUpdate:
 
 def normalize_from_raw(
     *,
-    raw_reference: Mapping[str, Any],
-    tenant_id: str,
-    case_id: Optional[str] = None,
-    request_id: Optional[str] = None,
-    workflow_id: Optional[str] = None,
-    source: Optional[str] = None,
+    document_input: NormalizedDocumentInputV1,
     object_store: ObjectStore | None = None,
 ) -> NormalizedDocumentPayload:
-    """Normalize crawler raw payloads into a :class:`NormalizedDocument`."""
-
-    if not isinstance(raw_reference, Mapping):
-        raise TypeError("raw_reference_mapping_required")
+    """Normalize raw payloads described by :class:`NormalizedDocumentInputV1`."""
 
     store = _resolve_object_store(object_store)
+    raw_reference = document_input.raw_reference
     payload_bytes, content = _resolve_payload(raw_reference, store)
-    metadata_mapping = raw_reference.get("metadata", {})
-    media_type_candidate = str(
-        raw_reference.get("media_type")
-        or raw_reference.get("content_type")
-        or raw_reference.get("mime_type")
-        or metadata_mapping.get("media_type")
-        or metadata_mapping.get("content_type")
-        or metadata_mapping.get("content-type")
-        or "text/plain"
-    ).strip()
-    media_type = media_type_candidate.split(";", 1)[0].strip().lower()
-    if not media_type:
-        media_type = "text/plain"
 
     checksum = hashlib.sha256(payload_bytes).hexdigest()
     payload_base64 = base64.b64encode(payload_bytes).decode("ascii")
 
-    metadata = _normalize_mapping(raw_reference.get("metadata"))
-    resolved_workflow_id = (
-        _coerce_optional_string(workflow_id)
-        or _coerce_optional_string(metadata.get("workflow_id"))
-        or _coerce_optional_string(raw_reference.get("workflow_id"))
-        or "crawler"
-    )
-
-    resolved_source = (
-        _coerce_optional_string(source)
-        or _coerce_optional_string(metadata.get("source"))
-        or _coerce_optional_string(raw_reference.get("source"))
-        or "crawler"
-    )
-
-    document_id = _coerce_uuid(raw_reference.get("document_id"))
-    collection_id = metadata.get("collection_id")
-    if collection_id is not None:
-        try:
-            collection_id = UUID(str(collection_id))
-        except (TypeError, ValueError):  # pragma: no cover - defensive guard
-            collection_id = None
+    metadata = document_input.metadata
 
     version = metadata.get("version")
     version_str = str(version).strip() if version else None
 
     document_ref = DocumentRef(
-        tenant_id=tenant_id,
-        workflow_id=resolved_workflow_id,
-        document_id=document_id,
-        collection_id=collection_id,
+        tenant_id=document_input.tenant_id,
+        workflow_id=document_input.workflow_id,
+        document_id=document_input.document_id,
+        collection_id=document_input.collection_id,
         version=version_str,
     )
 
-    external_ref: dict[str, str] = {}
-    provider = (
-        _coerce_optional_string(metadata.get("provider"))
-        or _coerce_optional_string(raw_reference.get("provider"))
-        or DEFAULT_PROVIDER_BY_SOURCE.get(resolved_source)
-        or resolved_source
-    )
-    provider = _coerce_optional_string(provider)
-    if provider:
-        external_ref["provider"] = provider
-    external_id = _coerce_optional_string(
-        metadata.get("external_id")
-    ) or _coerce_optional_string(raw_reference.get("external_id"))
-    if external_id:
-        external_ref["external_id"] = external_id
-    elif document_id is not None:
-        fallback_provider = provider or resolved_source or "unknown"
-        external_ref["external_id"] = f"{fallback_provider}:{document_id}"
-    if case_id:
-        external_ref["case_id"] = str(case_id)
+    external_ref: dict[str, str] = {
+        "provider": document_input.provider,
+        "external_id": document_input.external_id,
+    }
+    if document_input.case_id:
+        external_ref["case_id"] = document_input.case_id
 
     origin_uri = metadata.get("origin_uri") or raw_reference.get("origin_uri")
 
@@ -387,8 +312,8 @@ def normalize_from_raw(
         normalized_tags = []
 
     doc_meta = DocumentMeta(
-        tenant_id=tenant_id,
-        workflow_id=resolved_workflow_id,
+        tenant_id=document_input.tenant_id,
+        workflow_id=document_input.workflow_id,
         title=metadata.get("title"),
         language=metadata.get("language"),
         tags=normalized_tags,
@@ -399,7 +324,7 @@ def normalize_from_raw(
 
     blob = InlineBlob(
         type="inline",
-        media_type=media_type or "text/plain",
+        media_type=document_input.media_type,
         base64=payload_base64,
         sha256=checksum,
         size=len(payload_bytes),
@@ -411,19 +336,19 @@ def normalize_from_raw(
         blob=blob,
         checksum=checksum,
         created_at=_timestamp(),
-        source=resolved_source,
+        source=document_input.source,
         lifecycle_state="active",
         assets=[],
     )
 
     metadata_payload: dict[str, Any] = {
-        "tenant_id": tenant_id,
-        "workflow_id": resolved_workflow_id,
-        "case_id": case_id,
-        "request_id": request_id,
-        "provider": provider or None,
+        "tenant_id": document_input.tenant_id,
+        "workflow_id": document_input.workflow_id,
+        "case_id": document_input.case_id,
+        "request_id": document_input.request_id,
+        "provider": document_input.provider,
         "origin_uri": doc_meta.origin_uri,
-        "source": resolved_source,
+        "source": document_input.source,
     }
 
     normalized_text = normalized_primary_text(content)
