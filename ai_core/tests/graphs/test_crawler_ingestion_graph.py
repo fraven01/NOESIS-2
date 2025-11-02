@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import importlib
-from typing import Any, Mapping
+from typing import Any
 
 import ai_core.api as ai_api
 import pytest
@@ -57,7 +57,9 @@ class FailingRepository(DocumentsRepository):
         return None
 
 
-def _descriptor_from_raw(raw_document: Mapping[str, object]) -> DocumentBlobDescriptorV1:
+def _descriptor_from_raw(
+    raw_document: Mapping[str, object],
+) -> DocumentBlobDescriptorV1:
     if "payload_bytes" in raw_document:
         return DocumentBlobDescriptorV1(payload_bytes=raw_document["payload_bytes"])
     if "payload_base64" in raw_document:

@@ -234,9 +234,11 @@ def normalize_from_raw(
     metadata.update(
         {
             "document_id": str(document_id),
-            "collection_id": str(contract.collection_id)
-            if contract.collection_id is not None
-            else None,
+            "collection_id": (
+                str(contract.collection_id)
+                if contract.collection_id is not None
+                else None
+            ),
             "external_id": contract.external_id,
             "version": contract.version,
             "media_type": contract.media_type,

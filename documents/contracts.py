@@ -766,11 +766,15 @@ class DocumentBlobDescriptorV1(BaseModel):
         return payload
 
     def payload_size(self, payload_bytes: Optional[bytes] = None) -> int:
-        data = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        data = (
+            payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        )
         return len(data)
 
     def payload_base64_value(self, payload_bytes: Optional[bytes] = None) -> str:
-        data = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        data = (
+            payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        )
         return base64.b64encode(data).decode("ascii")
 
 
@@ -783,7 +787,9 @@ class NormalizedDocumentInputV1(BaseModel):
         description="Input contract capturing metadata and payload sources for ingestion.",
     )
 
-    tenant_id: str = Field(description="Tenant identifier responsible for the document.")
+    tenant_id: str = Field(
+        description="Tenant identifier responsible for the document."
+    )
     workflow_id: Optional[str] = Field(
         default=None,
         description="Workflow identifier grouping the ingestion request.",
@@ -969,7 +975,9 @@ class NormalizedDocumentInputV1(BaseModel):
             provider = DEFAULT_PROVIDER_BY_SOURCE.get(source) or source
         self.provider = provider
 
-        metadata_external_id = self.metadata.get("external_id") if self.metadata else None
+        metadata_external_id = (
+            self.metadata.get("external_id") if self.metadata else None
+        )
         if self.external_id is None and metadata_external_id is not None:
             self.external_id = normalize_optional_string(str(metadata_external_id))
 
@@ -1017,7 +1025,9 @@ class NormalizedDocumentInputV1(BaseModel):
                         normalized_media_type = None
             if normalized_media_type is None:
                 normalized_media_type = "text/plain"
-            self.blob = self.blob.model_copy(update={"media_type": normalized_media_type})
+            self.blob = self.blob.model_copy(
+                update={"media_type": normalized_media_type}
+            )
 
         if self.blob.encoding is None:
             encoding_hint = None
@@ -1094,7 +1104,9 @@ class NormalizedDocumentInputV1(BaseModel):
             return payload.decode("utf-8", errors="replace")
 
     def compute_checksum(self, payload_bytes: Optional[bytes] = None) -> str:
-        payload = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        payload = (
+            payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        )
         return hashlib.sha256(payload).hexdigest()
 
     def payload_base64(self, payload_bytes: Optional[bytes] = None) -> str:
@@ -1208,11 +1220,7 @@ class NormalizedDocumentInputV1(BaseModel):
                 or metadata.get("workflow_id")
                 or raw_reference.get("workflow_id")
             ),
-            source=(
-                source
-                or metadata.get("source")
-                or raw_reference.get("source")
-            ),
+            source=(source or metadata.get("source") or raw_reference.get("source")),
             provider=provider,
             external_id=external_id,
             document_id=raw_reference.get("document_id"),
@@ -1224,10 +1232,13 @@ class NormalizedDocumentInputV1(BaseModel):
             language=language,
             metadata=metadata,
             external_ref=external_ref,
-            request_id=request_id or metadata.get("request_id") or raw_reference.get("request_id"),
+            request_id=request_id
+            or metadata.get("request_id")
+            or raw_reference.get("request_id"),
             version=version,
             blob=descriptor,
         )
+
 
 class Asset(BaseModel):
     """Representation of an extracted multimodal asset."""
