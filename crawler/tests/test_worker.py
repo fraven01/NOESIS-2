@@ -7,6 +7,7 @@ import pytest
 
 from ai_core import tasks as ai_tasks
 from ai_core.graphs.crawler_ingestion_graph import GraphTransition
+from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
@@ -93,9 +94,14 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
             def run(self, state, meta):  # type: ignore[no-untyped-def]
                 run_id = state.get("graph_run_id", "test-run")
                 transition = GraphTransition(
-                    decision="denied",
-                    reason="policy_denied",
-                    attributes={"policy_events": ("max_document_bytes",)},
+                    StandardTransitionResult(
+                        phase="guardrails",
+                        decision="denied",
+                        reason="policy_denied",
+                        guardrail=None,
+                        severity="error",
+                        context={"policy_events": ("max_document_bytes",)},
+                    )
                 )
                 if callable(self._emitter):
                     payload = {
@@ -106,7 +112,14 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
                         "policy_events": ["max_document_bytes"],
                     }
                     self._emitter("guardrail_denied", payload)
-                return state, transition.to_dict()
+                return state, {
+                    "decision": transition.decision,
+                    "reason": transition.reason,
+                    "severity": transition.severity,
+                    "phase": transition.phase,
+                    "graph_run_id": run_id,
+                    "transitions": {"enforce_guardrails": transition.result},
+                }
 
         return _GuardrailGraph(event_emitter)
 

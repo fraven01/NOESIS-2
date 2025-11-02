@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
@@ -11,6 +11,19 @@ from uuid import uuid4
 
 from ai_core.api import EmbeddingResult
 from ai_core import api as ai_core_api
+from ai_core.graphs.transition_contracts import (
+    DeltaSection,
+    EmbeddingSection,
+    GraphTransition,
+    GuardrailSection,
+    LifecycleSection,
+    PipelineSection,
+    StandardTransitionResult,
+    build_delta_section,
+    build_embedding_section,
+    build_guardrail_section,
+    build_lifecycle_section,
+)
 from ai_core.infra import object_store
 from ai_core.infra import observability as observability_module
 from ai_core.infra.observability import (
@@ -60,31 +73,6 @@ StateMapping = Mapping[str, Any] | MutableMapping[str, Any]
 
 
 @dataclass(frozen=True)
-class GraphTransition:
-    """Standard transition payload returned by graph nodes."""
-
-    decision: str
-    reason: str
-    attributes: Mapping[str, Any] = field(default_factory=dict)
-
-    def __post_init__(self) -> None:
-        if not str(self.decision or "").strip():
-            raise ValueError("decision_required")
-        if not str(self.reason or "").strip():
-            raise ValueError("reason_required")
-        attributes = dict(self.attributes or {})
-        attributes.setdefault("severity", "info")
-        object.__setattr__(self, "attributes", attributes)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return {
-            "decision": self.decision,
-            "reason": self.reason,
-            "attributes": dict(self.attributes),
-        }
-
-
-@dataclass(frozen=True)
 class GraphNode:
     """Tie a node name to an execution callable."""
 
@@ -108,14 +96,49 @@ class ChunkComputation:
 
 
 def _transition(
+    *,
+    phase: str,
     decision: str,
     reason: str,
-    *,
-    attributes: Optional[Mapping[str, Any]] = None,
+    severity: Optional[str] = None,
+    context: Optional[Mapping[str, Any]] = None,
+    pipeline: Optional[PipelineSection] = None,
+    lifecycle: Optional[LifecycleSection] = None,
+    delta: Optional[DeltaSection | ai_core_api.DeltaDecision] = None,
+    guardrail: Optional[GuardrailSection | ai_core_api.GuardrailDecision] = None,
+    embedding: Optional[EmbeddingSection | EmbeddingResult] = None,
 ) -> GraphTransition:
-    return GraphTransition(
-        decision=decision, reason=reason, attributes=attributes or {}
+    delta_section: Optional[DeltaSection]
+    if isinstance(delta, DeltaSection) or delta is None:
+        delta_section = delta
+    else:
+        delta_section = build_delta_section(delta)
+
+    guardrail_section: Optional[GuardrailSection]
+    if isinstance(guardrail, GuardrailSection) or guardrail is None:
+        guardrail_section = guardrail
+    else:
+        guardrail_section = build_guardrail_section(guardrail)
+
+    embedding_section: Optional[EmbeddingSection]
+    if isinstance(embedding, EmbeddingSection) or embedding is None:
+        embedding_section = embedding
+    else:
+        embedding_section = build_embedding_section(embedding)
+
+    result = StandardTransitionResult(
+        phase=phase,  # type: ignore[arg-type]
+        decision=decision,
+        reason=reason,
+        severity=severity or "info",
+        pipeline=pipeline,
+        lifecycle=lifecycle,
+        delta=delta_section,
+        guardrail=guardrail_section,
+        embedding=embedding_section,
+        context=dict(context or {}),
     )
+    return GraphTransition(result)
 
 
 class CrawlerIngestionGraph:
@@ -345,13 +368,7 @@ class CrawlerIngestionGraph:
         metadata = self._transition_metadata(state)
         if not metadata:
             return transition
-        attributes: Dict[str, Any] = dict(transition.attributes)
-        attributes.update(metadata)
-        return GraphTransition(
-            decision=transition.decision,
-            reason=transition.reason,
-            attributes=attributes,
-        )
+        return transition.with_context(metadata)
 
     @staticmethod
     def _ingestion_tasks():
@@ -835,18 +852,21 @@ class CrawlerIngestionGraph:
         self._emit("finish", finish_transition, run_id)
 
         working_state["transitions"] = {
-            name: payload.to_dict() for name, payload in transitions.items()
+            name: payload.result for name, payload in transitions.items()
         }
         summary = finish_transition if finish_transition else last_transition
-        result = {
+        result: Dict[str, Any] = {
             "decision": summary.decision if summary else None,
             "reason": summary.reason if summary else None,
-            "attributes": dict(summary.attributes) if summary else {},
+            "severity": summary.severity if summary else None,
             "graph_run_id": run_id,
             "transitions": {
-                name: payload.to_dict() for name, payload in transitions.items()
+                name: payload.result for name, payload in transitions.items()
             },
         }
+        if summary is not None:
+            result["phase"] = summary.phase
+            result["context"] = dict(summary.context)
         working_state["result"] = result
         self._annotate_span(
             working_state,
@@ -1015,9 +1035,12 @@ class CrawlerIngestionGraph:
             extra={"status": getattr(status, "status", None)},
         )
         transition = _transition(
-            "status_updated",
-            "lifecycle_normalized",
-            attributes={"severity": "info", "result": status.to_dict()},
+            phase="update_status",
+            decision="status_updated",
+            reason="lifecycle_normalized",
+            severity="info",
+            lifecycle=build_lifecycle_section(status),
+            context={"lifecycle": dict(status.to_dict())},
         )
         return transition, True
 
@@ -1131,17 +1154,20 @@ class CrawlerIngestionGraph:
             frontier_state=frontier_state,
         )
         artifacts["guardrail_decision"] = decision
-        attributes = dict(decision.attributes)
-        policy_events = list(decision.policy_events)
-        if policy_events:
-            attributes.setdefault("policy_events", policy_events)
-        if "severity" not in attributes:
-            attributes["severity"] = "error" if not decision.allowed else "info"
-        attributes.setdefault("document_id", normalized.document_id)
+        context: Dict[str, Any] = {
+            key: value
+            for key, value in decision.attributes.items()
+            if key != "policy_events"
+        }
+        policy_events = tuple(decision.policy_events)
+        context.setdefault("document_id", normalized.document_id)
         transition = _transition(
-            decision.decision,
-            decision.reason,
-            attributes=attributes,
+            phase="guardrails",
+            decision=decision.decision,
+            reason=decision.reason,
+            severity="error" if not decision.allowed else "info",
+            guardrail=build_guardrail_section(decision),
+            context=context,
         )
         self._annotate_span(
             state,
@@ -1174,14 +1200,14 @@ class CrawlerIngestionGraph:
                 status="deleted",
                 workflow_id=normalized.document.ref.workflow_id,
                 reason=decision.reason,
-                policy_events=decision.attributes.get("policy_events"),
+                policy_events=decision.policy_events,
             )
             artifacts.setdefault("status_updates", []).append(status)
             context_payload = {
                 "document_id": normalized.document_id,
                 "tenant_id": normalized.tenant_id,
                 "reason": decision.reason,
-                "policy_events": policy_events,
+                "policy_events": list(policy_events),
             }
             run_id = str(state.get("graph_run_id") or "")
             if run_id:
@@ -1292,20 +1318,27 @@ class CrawlerIngestionGraph:
                 {"decision": "error", "reason": "document_pipeline_failed"},
             )
             transition = _transition(
-                "error",
-                "document_pipeline_failed",
-                attributes={"severity": "error", "phase": result_state.phase},
+                phase="document_pipeline",
+                decision="error",
+                reason="document_pipeline_failed",
+                severity="error",
+                pipeline=PipelineSection(
+                    phase=result_state.phase,
+                    run_until=run_until,
+                    error=repr(result_state.error),
+                ),
             )
             return transition, False
 
         transition = _transition(
-            "processed",
-            "document_pipeline_completed",
-            attributes={
-                "severity": "info",
-                "phase": result_state.phase,
-                "run_until": run_until.value,
-            },
+            phase="document_pipeline",
+            decision="processed",
+            reason="document_pipeline_completed",
+            severity="info",
+            pipeline=PipelineSection(
+                phase=result_state.phase,
+                run_until=run_until,
+            ),
         )
         return transition, True
 
@@ -1364,9 +1397,11 @@ class CrawlerIngestionGraph:
         state["ingest_action"] = ingest_action
 
         transition = _transition(
-            decision.decision,
-            decision.reason,
-            attributes=decision.attributes,
+            phase="ingest_decision",
+            decision=decision.decision,
+            reason=decision.reason,
+            delta=decision,
+            lifecycle=build_lifecycle_section(status_update),
         )
         self._annotate_span(
             state,
@@ -1384,9 +1419,10 @@ class CrawlerIngestionGraph:
         )
         if not isinstance(normalized, NormalizedDocumentPayload):
             transition = _transition(
-                "skipped",
-                "normalized_missing",
-                attributes={"severity": "warn"},
+                phase="ingest",
+                decision="skipped",
+                reason="normalized_missing",
+                severity="warn",
             )
             return transition, True
 
@@ -1398,9 +1434,10 @@ class CrawlerIngestionGraph:
                 extra={"outcome": "skipped", "reason": "delta_missing"},
             )
             transition = _transition(
-                "skipped",
-                "delta_missing",
-                attributes={"severity": "warn"},
+                phase="ingest",
+                decision="skipped",
+                reason="delta_missing",
+                severity="warn",
             )
             return transition, True
         if delta.decision not in {"new", "changed"}:
@@ -1410,9 +1447,12 @@ class CrawlerIngestionGraph:
                 extra={"outcome": "skipped", "delta": delta.decision},
             )
             transition = _transition(
-                "skipped",
-                "delta_not_applicable",
-                attributes={"severity": "info", "delta": delta.decision},
+                phase="ingest",
+                decision="skipped",
+                reason="delta_not_applicable",
+                severity="info",
+                delta=delta,
+                context={"delta_decision": delta.decision},
             )
             return transition, True
 
@@ -1472,9 +1512,12 @@ class CrawlerIngestionGraph:
             artifacts["upsert_result"] = upsert_result
 
         transition = _transition(
-            "embedding_triggered",
-            "embedding_enqueued",
-            attributes={"severity": "info", "result": result.to_dict()},
+            phase="ingest",
+            decision="embedding_triggered",
+            reason="embedding_enqueued",
+            severity="info",
+            embedding=result,
+            delta=delta,
         )
         return transition, True
 
@@ -1492,9 +1535,10 @@ class CrawlerIngestionGraph:
 
         if normalized is None:
             transition = _transition(
-                "error",
-                "normalization_missing",
-                attributes={"severity": "error"},
+                phase="finish",
+                decision="error",
+                reason="normalization_missing",
+                severity="error",
             )
             return transition, False
 
@@ -1525,7 +1569,12 @@ class CrawlerIngestionGraph:
         if pipeline_error is not None:
             payload["pipeline_error"] = str(pipeline_error)
         failure = artifacts.get("failure")
-        severity = guardrail.attributes.get("severity", "info")
+        raw_severity = guardrail.attributes.get("severity")
+        severity = (
+            str(raw_severity).strip().lower()
+            if isinstance(raw_severity, str) and raw_severity.strip()
+            else ("error" if not guardrail.allowed else "info")
+        )
         decision_value = delta.decision
         reason_value = delta.reason
         if failure:
@@ -1538,9 +1587,14 @@ class CrawlerIngestionGraph:
             decision_value = "denied"
             reason_value = guardrail.reason
         transition = _transition(
-            decision_value,
-            reason_value,
-            attributes={"severity": severity, "result": dict(payload)},
+            phase="finish",
+            decision=decision_value,
+            reason=reason_value,
+            severity=severity,
+            guardrail=guardrail,
+            delta=delta,
+            embedding=embedding_result,
+            context={"result": dict(payload)},
         )
         self._annotate_span(
             state,
@@ -1582,10 +1636,19 @@ class CrawlerIngestionGraph:
                 artifacts.setdefault("status_updates", []).append(status)
             except Exception:  # pragma: no cover - best effort
                 pass
+        phase_alias = {
+            "update_status_normalized": "update_status",
+            "enforce_guardrails": "guardrails",
+            "document_pipeline": "document_pipeline",
+            "ingest_decision": "ingest_decision",
+            "ingest": "ingest",
+        }
         transition = _transition(
-            "error",
-            f"{node.name}_failed",
-            attributes={"severity": "error", "error": repr(exc)},
+            phase=phase_alias.get(node.name, "finish"),
+            decision="error",
+            reason=f"{node.name}_failed",
+            severity="error",
+            context={"error": repr(exc)},
         )
         return self._with_transition_metadata(transition, working_state)
 

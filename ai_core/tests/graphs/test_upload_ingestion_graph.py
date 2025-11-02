@@ -6,11 +6,15 @@ from typing import Any
 
 from ai_core import api as ai_core_api
 import ai_core.graphs.upload_ingestion_graph as upload_ingestion_graph
+from ai_core.graphs.transition_contracts import StandardTransitionResult
 from documents.api import NormalizedDocumentPayload
 
 
 def _scanner(_: bytes, __: dict[str, object]) -> upload_ingestion_graph.GraphTransition:
-    return upload_ingestion_graph.GraphTransition(decision="proceed", reason="clean")
+    result = StandardTransitionResult(
+        phase="quarantine_scan", decision="proceed", reason="clean"
+    )
+    return upload_ingestion_graph.GraphTransition(result)
 
 
 def test_nominal_run() -> None:
@@ -27,11 +31,11 @@ def test_nominal_run() -> None:
 
     assert result["decision"] == "completed"
     transitions = result["transitions"]
-    assert transitions["accept_upload"]["decision"] == "accepted"
-    assert transitions["deduplicate"]["decision"] == "proceed"
-    assert transitions["parse"]["decision"] == "parse_complete"
-    assert transitions["normalize"]["decision"] == "normalize_complete"
-    assert transitions["persist_document"]["decision"] == "persist_complete"
+    assert transitions["accept_upload"].decision == "accepted"
+    assert transitions["deduplicate"].decision == "proceed"
+    assert transitions["parse"].decision == "parse_complete"
+    assert transitions["normalize"].decision == "normalize_complete"
+    assert transitions["persist_document"].decision == "persist_complete"
     assert result["document_id"]
 
 
@@ -47,7 +51,7 @@ def test_run_until_stops_after_marker() -> None:
     result = graph.run(payload, run_until="parse_complete")
 
     assert "chunk_and_embed" not in result["transitions"]
-    assert result["transitions"]["parse"]["decision"] == "parse_complete"
+    assert result["transitions"]["parse"].decision == "parse_complete"
 
 
 def test_duplicate_upload_skipped() -> None:
@@ -64,7 +68,7 @@ def test_duplicate_upload_skipped() -> None:
 
     assert first["decision"] == "completed"
     assert second["decision"] == "skip_duplicate"
-    assert second["transitions"]["deduplicate"]["decision"] == "skip_duplicate"
+    assert second["transitions"]["deduplicate"].decision == "skip_duplicate"
 
 
 def test_guardrail_allow_and_delta_merge_policy_events() -> None:
@@ -113,11 +117,15 @@ def test_guardrail_allow_and_delta_merge_policy_events() -> None:
     assert isinstance(guardrail_calls[0], NormalizedDocumentPayload)
     assert baseline_calls and isinstance(baseline_calls[0], Mapping)
     transition = result["transitions"]["delta_and_guardrails"]
-    assert transition["decision"] == "upsert"
-    diagnostics = transition["diagnostics"]
-    assert set(diagnostics["policy_events"]) == {"guardrail_allow", "delta_new"}
-    assert diagnostics["guardrail"]["decision"] == "guardrail_allow"
-    assert diagnostics["version"] == 1
+    assert transition.decision == "upsert"
+    context = transition.context
+    assert set(context.get("policy_events", ())) == {"guardrail_allow", "delta_new"}
+    guardrail_section = transition.guardrail
+    assert guardrail_section is not None
+    assert guardrail_section.decision == "allow"
+    delta_section = transition.delta
+    assert delta_section is not None
+    assert delta_section.attributes.get("version") == 1
 
 
 def test_guardrail_deny_short_circuits_delta() -> None:
@@ -159,10 +167,12 @@ def test_guardrail_deny_short_circuits_delta() -> None:
     assert not delta_called
     assert result["decision"] == "skip_guardrail"
     transition = result["transitions"]["delta_and_guardrails"]
-    assert transition["decision"] == "skip_guardrail"
-    diagnostics = transition["diagnostics"]
-    assert diagnostics["policy_events"] == ("upload_blocked",)
-    assert diagnostics["allowed"] is False
+    assert transition.decision == "skip_guardrail"
+    context = transition.context
+    assert context.get("policy_events") == ("upload_blocked",)
+    guardrail_section = transition.guardrail
+    assert guardrail_section is not None
+    assert guardrail_section.allowed is False
 
 
 def test_upload_ingestion_spans(monkeypatch) -> None:
@@ -255,19 +265,15 @@ def test_upload_transition_metadata_contains_ids() -> None:
     result = graph.run(payload)
 
     transitions = result["transitions"]
-    for diagnostics in (
-        transition["diagnostics"] for transition in transitions.values()
-    ):
-        assert diagnostics["trace_id"] == "trace-meta"
-        assert diagnostics["workflow_id"] == "flow-meta"
+    for context in (transition.context for transition in transitions.values()):
+        assert context["trace_id"] == "trace-meta"
+        assert context["workflow_id"] == "flow-meta"
 
     document_id = str(result["document_id"])
     assert document_id
     doc_ids = {
-        diagnostics["document_id"]
-        for diagnostics in (
-            transition["diagnostics"] for transition in transitions.values()
-        )
-        if diagnostics.get("document_id")
+        context["document_id"]
+        for context in (transition.context for transition in transitions.values())
+        if context.get("document_id")
     }
     assert document_id in doc_ids
