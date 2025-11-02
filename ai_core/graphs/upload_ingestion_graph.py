@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import mimetypes
-from dataclasses import dataclass, field, fields, is_dataclass
+from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
@@ -361,7 +361,9 @@ class UploadIngestionGraph:
         enabled = getattr(settings, "UPLOAD_QUARANTINE_ENABLED", False)
         if not enabled or self._quarantine_scanner is None:
             return _transition(
-                phase="quarantine_scan", decision="proceed", reason="quarantine_disabled"
+                phase="quarantine_scan",
+                decision="proceed",
+                reason="quarantine_disabled",
             )
 
         binary = state["ingest"].get("binary", b"")

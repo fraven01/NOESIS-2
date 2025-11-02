@@ -90,7 +90,9 @@ class EmbeddingSection(BaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True, frozen=True)
 
     @field_serializer("result")
-    def _serialise_result(self, value: EmbeddingResult, _: Mapping[str, Any]) -> Dict[str, Any]:
+    def _serialise_result(
+        self, value: EmbeddingResult, _: Mapping[str, Any]
+    ) -> Dict[str, Any]:
         return value.to_dict()
 
 
