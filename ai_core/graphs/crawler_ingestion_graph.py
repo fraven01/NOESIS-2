@@ -9,10 +9,15 @@ from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
 from uuid import uuid4
 
-from ai_core import api as ai_core_api
 from ai_core.api import EmbeddingResult
+from ai_core import api as ai_core_api
 from ai_core.infra import object_store
-from ai_core.infra.observability import emit_event, observe_span, update_observation
+from ai_core.infra import observability as observability_module
+from ai_core.infra.observability import (
+    emit_event,
+    observe_span,
+    update_observation,
+)
 from ai_core.rag.ingestion_contracts import (
     ChunkMeta,
     IngestionProfileResolution,
@@ -326,7 +331,13 @@ class CrawlerIngestionGraph:
                     continue
                 metadata[key] = value
         if metadata:
+            span = observability_module._get_current_span()
+            span_name = getattr(span, "name", None) if span is not None else None
             update_observation(metadata=metadata)
+            expected_name = f"crawler.ingestion.{phase}"
+            if span_name == expected_name:
+                recorded = state.setdefault("_span_phases", set())
+                recorded.add(phase)
 
     def _with_transition_metadata(
         self, transition: GraphTransition, state: Dict[str, Any]

@@ -395,6 +395,35 @@ def test_chunk_uses_structured_blocks_and_limit(settings) -> None:
         shutil.rmtree(stored_root)
 
 
+def test_chunk_assigns_unique_hashes_per_chunk(tmp_path, monkeypatch, settings) -> None:
+    settings.RAG_CHUNK_TARGET_TOKENS = 3
+    monkeypatch.setattr(tasks.object_store, "BASE_PATH", tmp_path)
+
+    meta = {
+        "tenant_id": "tenant-unique",
+        "case_id": "case-unique",
+        "external_id": "doc-unique",
+    }
+    text_path = tasks._build_path(meta, "text", "doc.txt")
+    payload = "eins zwei drei vier fuenf sechs sieben acht neun zehn"
+    object_store.put_bytes(text_path, payload.encode("utf-8"))
+
+    with tasks.force_whitespace_tokenizer():
+        first_result = tasks.chunk(meta, text_path)
+        second_result = tasks.chunk(meta, text_path)
+
+    first_chunks = object_store.read_json(first_result["path"]).get("chunks", [])
+    second_chunks = object_store.read_json(second_result["path"]).get("chunks", [])
+
+    first_hashes = [entry["meta"]["hash"] for entry in first_chunks]
+    assert len(first_hashes) > 1
+    assert len(first_hashes) == len(set(first_hashes))
+    assert all(len(value) == 64 for value in first_hashes)
+
+    second_hashes = [entry["meta"]["hash"] for entry in second_chunks]
+    assert first_hashes == second_hashes
+
+
 def test_chunk_hard_limit_scales_with_profile_capacity(settings) -> None:
     settings.RAG_VECTOR_STORES = {
         "global": {"backend": "pgvector", "schema": "rag", "dimension": 1536}

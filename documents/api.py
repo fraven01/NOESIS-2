@@ -301,18 +301,18 @@ def normalize_from_raw(
     store = _resolve_object_store(object_store)
     payload_bytes, content = _resolve_payload(raw_reference, store)
     metadata_mapping = raw_reference.get("metadata", {})
-    media_type = (
-        str(
-            raw_reference.get("media_type")
-            or raw_reference.get("content_type")
-            or raw_reference.get("mime_type")
-            or metadata_mapping.get("media_type")
-            or metadata_mapping.get("content_type")
-            or "text/plain"
-        )
-        .strip()
-        .lower()
-    )
+    media_type_candidate = str(
+        raw_reference.get("media_type")
+        or raw_reference.get("content_type")
+        or raw_reference.get("mime_type")
+        or metadata_mapping.get("media_type")
+        or metadata_mapping.get("content_type")
+        or metadata_mapping.get("content-type")
+        or "text/plain"
+    ).strip()
+    media_type = media_type_candidate.split(";", 1)[0].strip().lower()
+    if not media_type:
+        media_type = "text/plain"
 
     checksum = hashlib.sha256(payload_bytes).hexdigest()
     payload_base64 = base64.b64encode(payload_bytes).decode("ascii")

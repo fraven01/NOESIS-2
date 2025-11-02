@@ -94,7 +94,7 @@ def test_embed_emits_span_metadata(monkeypatch):
 
     result = tasks.embed(meta, "chunks.json")
 
-    assert result["path"].endswith("vectors.json")
+    assert "vectors-" in result["path"] and result["path"].endswith(".json")
     assert written["payload"]["chunks"]
 
     assert set(span_calls) >= {

@@ -1118,19 +1118,21 @@ class PgVectorClient:
         Dict[str, object],
         object | None,
         object | None,
+        object | None,
         float,
     ]:
         # Support both tuple/sequence-shaped rows and mapping-shaped rows
         # returned by different query execution paths in tests and adapters.
         # When a mapping is provided, extract fields by name.
         if isinstance(row, Mapping):
-            # Expected keys: id, text, metadata, hash, document_id and either
-            # distance (vector) or lscore (lexical)
+            # Expected keys: id, text, metadata, hash, document_id,
+            # optional collection_id and either distance (vector) or lscore (lexical)
             chunk_id = row.get("id")
             text_value = row.get("text")
             metadata_value = row.get("metadata")
             doc_hash = row.get("hash")
             doc_id = row.get("document_id")
+            collection_id = row.get("collection_id")
             score_candidate = PgVectorClient._extract_score_from_row(row, kind=kind)
             fallback = 1.0 if kind == "vector" else 0.0
             try:
@@ -1149,12 +1151,13 @@ class PgVectorClient:
                 metadata_dict,
                 doc_hash,
                 doc_id,
+                collection_id,
                 score_float,
             )
 
         row_tuple = tuple(row)
         length = len(row_tuple)
-        if length != 6:
+        if length not in {6, 7}:
             key = (kind, length)
             if key not in PgVectorClient._ROW_SHAPE_WARNINGS:
                 logger.warning(
@@ -1163,12 +1166,12 @@ class PgVectorClient:
                     row_len=length,
                 )
                 PgVectorClient._ROW_SHAPE_WARNINGS.add(key)
-        padded_list: List[object] = list((row_tuple + (None,) * 6)[:6])
+        padded_list: List[object] = list((row_tuple + (None,) * 7)[:7])
 
         metadata_dict = _coerce_metadata_map(padded_list[2])
         padded_list[2] = metadata_dict
 
-        score_value = padded_list[5]
+        score_value = padded_list[-1]
         fallback = 1.0 if kind == "vector" else 0.0
         try:
             score_float = float(score_value) if score_value is not None else fallback
@@ -1183,6 +1186,7 @@ class PgVectorClient:
             metadata_dict,
             padded_list[3],
             padded_list[4],
+            padded_list[5],
             score_float,
         )
 
@@ -1194,9 +1198,10 @@ class PgVectorClient:
             if value is not None:
                 return value
         if isinstance(row, Sequence) and not isinstance(row, (str, bytes, bytearray)):
+            # Take the last element as score to support both 6- and 7-column shapes
             try:
-                return row[5]
-            except IndexError:
+                return row[-1]
+            except Exception:
                 return None
         return None
 
@@ -1211,7 +1216,7 @@ class PgVectorClient:
         document_id: object,
         collection_id: object | None = None,
     ) -> Dict[str, object]:
-        enriched = PgVectorClient._strip_collection_scope(meta)
+        enriched = PgVectorClient._strip_collection_scope(meta, remove_collection=True)
         if "tenant_id" not in enriched and tenant_id:
             enriched["tenant_id"] = tenant_id
         filter_case_value = (filters or {}).get("case_id", case_id)
@@ -1220,11 +1225,20 @@ class PgVectorClient:
         enriched.setdefault("document_id", document_id)
         enriched.setdefault("chunk_id", chunk_id)
         if collection_id is not None and "collection_id" not in enriched:
-            enriched["collection_id"] = collection_id
+            try:
+                enriched["collection_id"] = (
+                    collection_id
+                    if isinstance(collection_id, (str, bytes, bytearray))
+                    else str(collection_id)
+                )
+            except Exception:
+                enriched["collection_id"] = str(collection_id)
         return enriched
 
     @staticmethod
-    def _strip_collection_scope(metadata: object) -> Dict[str, object]:
+    def _strip_collection_scope(
+        metadata: object, *, remove_collection: bool = False
+    ) -> Dict[str, object]:
         if isinstance(metadata, Mapping):
             sanitized = dict(metadata)
         elif isinstance(metadata, Sequence) and not isinstance(
@@ -1236,6 +1250,8 @@ class PgVectorClient:
                 sanitized = {}
         else:
             sanitized = {}
+        if remove_collection:
+            sanitized.pop("collection_id", None)
         return sanitized
 
     @staticmethod
@@ -1944,7 +1960,7 @@ class PgVectorClient:
                             distance_operator_value = distance_operator
                             vector_sql = _build_vector_sql(
                                 where_sql,
-                                "c.id,\n                                    c.text,\n                                    c.metadata,\n                                    d.hash,\n                                    d.id,\n                                    e.embedding "
+                                "c.id,\n                                    c.text,\n                                    c.metadata,\n                                    d.hash,\n                                    d.id,\n                                    c.collection_id,\n                                    e.embedding "
                                 + f"{distance_operator} %s::vector AS distance",
                                 "distance",
                             )
@@ -2084,6 +2100,7 @@ class PgVectorClient:
                                 c.metadata,
                                 d.hash,
                                 d.id,
+                                c.collection_id,
                                 similarity(c.text_norm, %s) AS lscore
                             FROM chunks c
                             JOIN documents d ON c.document_id = d.id
@@ -2455,6 +2472,7 @@ class PgVectorClient:
                                         c.metadata,
                                         d.hash,
                                         d.id,
+                                        c.collection_id,
                                         similarity(c.text_norm, %s) AS lscore
                                     FROM chunks c
                                     JOIN documents d ON c.document_id = d.id
@@ -2836,6 +2854,7 @@ class PgVectorClient:
                 metadata,
                 doc_hash,
                 document_id,
+                collection_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="vector")
             text_value = text_value or ""
@@ -2852,12 +2871,15 @@ class PgVectorClient:
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
                     "document_id": document_id,
+                    "collection_id": collection_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
                     "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_identifier
+            if entry.get("collection_id") is None and collection_id is not None:
+                entry["collection_id"] = collection_id
             if not entry.get("metadata"):
                 entry["metadata"] = metadata_dict
             if entry.get("document_id") is None and document_id is not None:
@@ -2899,6 +2921,7 @@ class PgVectorClient:
                 metadata,
                 doc_hash,
                 document_id,
+                collection_id,
                 score_raw,
             ) = self._normalise_result_row(row, kind="lexical")
             text_value = text_value or ""
@@ -2914,12 +2937,15 @@ class PgVectorClient:
                     "metadata": metadata_dict,
                     "doc_hash": doc_hash,
                     "document_id": document_id,
+                    "collection_id": collection_id,
                     "vscore": 0.0,
                     "lscore": 0.0,
                     "_allow_below_cutoff": False,
                 },
             )
             entry["chunk_id"] = chunk_identifier
+            if entry.get("collection_id") is None and collection_id is not None:
+                entry["collection_id"] = collection_id
 
             if not entry.get("metadata"):
                 entry["metadata"] = metadata_dict
@@ -4073,6 +4099,11 @@ class PgVectorClient:
             doc["hash"] = storage_hash
             doc["content_hash"] = content_hash
             metadata_dict = self._strip_collection_scope(doc.get("metadata"))
+            metadata_dict.setdefault("external_id", external_id)
+            if collection_uuid is not None:
+                metadata_dict["collection_id"] = str(collection_uuid)
+            else:
+                metadata_dict.pop("collection_id", None)
             relation_actor: str | None = None
             for actor_key in ("uploader_id", "added_by", "ingested_by"):
                 actor_value = metadata_dict.get(actor_key)
@@ -4265,6 +4296,7 @@ class PgVectorClient:
                 workflow_text
             )
             existing: tuple | None
+            matched_by_hash = False
             select_external_sql = sql.SQL(
                 """
                 SELECT id, hash, metadata, source, lifecycle, collection_id
@@ -4297,6 +4329,29 @@ class PgVectorClient:
                 hash_params.extend([source, storage_hash])
                 cur.execute(select_hash_sql, tuple(hash_params))
                 existing = cur.fetchone()
+                matched_by_hash = existing is not None
+            if existing and matched_by_hash:
+                existing_metadata_map = _coerce_metadata_map(existing[2])
+                existing_external = existing_metadata_map.get("external_id")
+                desired_external = metadata_dict.get("external_id", external_id)
+                try:
+                    existing_external_text = (
+                        str(existing_external).strip() if existing_external else ""
+                    )
+                except Exception:
+                    existing_external_text = ""
+                try:
+                    desired_external_text = (
+                        str(desired_external).strip() if desired_external else ""
+                    )
+                except Exception:
+                    desired_external_text = ""
+                if (
+                    existing_external_text
+                    and desired_external_text
+                    and existing_external_text != desired_external_text
+                ):
+                    existing = None
             try:
                 if existing:
                     (
@@ -4611,6 +4666,13 @@ class PgVectorClient:
                     metadata_mismatch = _metadata_parent_nodes_differ(
                         existing_metadata_map, metadata_dict
                     )
+                    if metadata_mismatch and _content_hash_matches(
+                        existing_metadata_map,
+                        metadata_dict,
+                        existing_fallback=dup_hash,
+                        desired_fallback=storage_hash,
+                    ):
+                        metadata_mismatch = False
                     needs_update = (
                         str(dup_hash) != storage_hash
                         or (
@@ -5006,6 +5068,11 @@ class PgVectorClient:
                         "incoming_external_id": external_id,
                     },
                 )
+                # Avoid unique (tenant_id, source, hash) collisions by deriving a
+                # stable per-document storage hash when content is shared across
+                # different external_ids.
+                composite = f"{content_hash}|{external_id}"
+                return hashlib.sha256(composite.encode("utf-8")).hexdigest()
         return content_hash
 
     def _coerce_tenant_uuid(self, tenant_id: object) -> uuid.UUID:
@@ -5131,7 +5198,10 @@ class PgVectorClient:
                     chunk_hash = hashlib.sha256(
                         f"{document_id}:{index}".encode("utf-8")
                     ).hexdigest()
-                chunk_namespace = f"{tenant_value}:{document_id}:{collection_text or 'global'}:{chunk_hash}"
+                chunk_namespace = (
+                    f"{tenant_value}:{document_id}:{collection_text or 'global'}:"
+                    f"{index}:{chunk_hash}"
+                )
                 chunk_id = uuid.uuid5(uuid.NAMESPACE_URL, chunk_namespace)
                 embedding_values = chunk.embedding
                 normalised_embedding = (
@@ -5152,7 +5222,9 @@ class PgVectorClient:
                         },
                     )
                 tokens = self._estimate_tokens(chunk.content)
-                chunk_metadata = self._strip_collection_scope(chunk.meta)
+                chunk_metadata = self._strip_collection_scope(
+                    chunk.meta, remove_collection=True
+                )
                 chunk_rows.append(
                     (
                         chunk_id,
