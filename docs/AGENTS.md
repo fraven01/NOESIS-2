@@ -27,3 +27,8 @@
 - Neue Asset-Adapter: deterministische Hashes, optionale Caption-Provider respektieren.
 - Konfigurierbare Guards ergänzen: Schwellen, Whitelists, Feature-Toggles.
 - Persistenz-Erweiterungen nur via versionierte Contracts und reversible Migrationen.
+
+## Tool-Verträge & Schemas
+- Tool- und Agenten-Implementierungen verwenden `ToolContext`, `*Input`, `*Output` und `ToolError` gemäß der [Tool-Verträge des AI Core](agents/tool-contracts.md).
+- Pflichtfelder wie `tenant_id`, `request_id` und optionale Idempotenzschlüssel sind dort beschrieben; Fehlercodes orientieren sich an `ToolErrorType`.
+- JSON-Schemas können über `model_json_schema()` direkt aus den Pydantic-Modellen erzeugt und als Referenz für API-/Tool-Autor:innen genutzt werden.

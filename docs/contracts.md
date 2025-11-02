@@ -1,6 +1,6 @@
 # Data Contracts
 
-The `noesis_docs` directory contains the data contracts for the NOESIS 2 platform. These contracts are defined as Pydantic models and are used to ensure data consistency and validation across the application.
+The `noesis_docs` directory contains the data contracts for the NOESIS 2 platform. These contracts are defined as Pydantic models and are used to ensure data consistency and validation across the application. Shared tool envelopes are documented in [Tool-Verträge des AI Core](agents/tool-contracts.md) and can be exported as JSON-Schema via `model_json_schema()` for downstream consumers.
 
 ## Purpose
 
