@@ -684,7 +684,7 @@ class DocumentBlobDescriptorV1(BaseModel):
         if isinstance(value, memoryview):
             return bytes(value)
         if isinstance(value, str):
-            return value.encode("utf-8")
+            raise ValueError("payload_bytes_string_disallowed")
         raise TypeError("payload_bytes_type")
 
     @field_validator("payload_base64", mode="before")
