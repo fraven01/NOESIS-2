@@ -963,7 +963,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             )
 
         try:
-            response = Response(result)
+            response = Response(_make_json_safe(result))
         except TypeError:
             logger.exception(
                 "graph.response_serialization_error",
