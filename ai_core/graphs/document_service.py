@@ -7,7 +7,7 @@ from uuid import UUID
 
 from documents import api as documents_api
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
-from documents.contracts import NormalizedDocument
+from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
 from documents.repository import (
     DocumentLifecycleStore,
     DocumentsRepository,
@@ -93,12 +93,14 @@ class DocumentsApiLifecycleService:
         source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
         return documents_api.normalize_from_raw(
-            raw_reference=raw_reference,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            request_id=request_id,
-            workflow_id=workflow_id,
-            source=source,
+            document_input=NormalizedDocumentInputV1(
+                raw_reference=raw_reference,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                request_id=request_id,
+                workflow_id=workflow_id,
+                source=source,
+            ),
             object_store=self._resolve_object_store(),
         )
 

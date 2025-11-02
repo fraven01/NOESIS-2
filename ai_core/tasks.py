@@ -35,7 +35,7 @@ except Exception:  # pragma: no cover - optional dependency
 from celery import shared_task
 from ai_core.graphs.crawler_ingestion_graph import build_graph
 from documents.api import normalize_from_raw
-from documents.contracts import NormalizedDocument
+from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
 from ai_core.infra import observability as observability_helpers
 from ai_core.infra.observability import (
     observe_span,
@@ -1915,11 +1915,14 @@ def run_ingestion_graph(
             request_id = _coerce_str(_extract_from_mapping(state, "request_id"))
             if tenant_id:
                 try:
-                    normalized_payload = normalize_from_raw(
+                    document_input = NormalizedDocumentInputV1(
                         raw_reference=raw_reference,
                         tenant_id=tenant_id,
                         case_id=case_id,
                         request_id=request_id,
+                    )
+                    normalized_payload = normalize_from_raw(
+                        document_input=document_input,
                     )
                     working_state["normalized_document_input"] = (
                         normalized_payload.document
