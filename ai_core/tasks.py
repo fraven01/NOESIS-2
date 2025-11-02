@@ -34,6 +34,10 @@ except Exception:  # pragma: no cover - optional dependency
 
 from celery import shared_task
 from ai_core.graphs.crawler_ingestion_graph import build_graph
+from ai_core.graphs.transition_contracts import (
+    GraphTransition,
+    StandardTransitionResult,
+)
 from documents.api import normalize_from_raw
 from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
 from ai_core.infra import observability as observability_helpers
@@ -1794,36 +1798,90 @@ def _build_base_span_metadata(
     return attributes
 
 
+def _coerce_transition_result(
+    transition: object,
+) -> StandardTransitionResult | None:
+    if isinstance(transition, GraphTransition):
+        return transition.result
+    if isinstance(transition, StandardTransitionResult):
+        return transition
+    if isinstance(transition, MappingABC):
+        try:
+            return StandardTransitionResult.model_validate(transition)
+        except ValidationError:
+            return None
+    return None
+
+
 def _collect_transition_attributes(
-    transition: Mapping[str, Any], phase: str
+    transition: StandardTransitionResult, phase: str
 ) -> Dict[str, Any]:
-    attributes: Dict[str, Any] = {"meta.phase": phase}
-    transition_attrs = transition.get("attributes")
-    if isinstance(transition_attrs, MappingABC):
-        if phase == "document_pipeline":
-            phase_value = _coerce_str(transition_attrs.get("phase"))
-            if phase_value:
-                attributes["meta.phase"] = phase_value
-            run_until = _coerce_str(transition_attrs.get("run_until"))
-            if run_until:
-                attributes["meta.run_until"] = run_until
-        elif phase == "update_status":
-            result_payload = transition_attrs.get("result")
-            if isinstance(result_payload, MappingABC):
-                status = _coerce_str(result_payload.get("status"))
-                if status:
-                    attributes["meta.status"] = status
-        elif phase == "ingest":
-            result_payload = transition_attrs.get("result")
-            if isinstance(result_payload, MappingABC):
-                outcome = _coerce_str(result_payload.get("status"))
-                if outcome:
-                    attributes["meta.outcome"] = outcome
-        elif phase == "guardrails":
-            allowed = transition_attrs.get("allowed")
+    attributes: Dict[str, Any] = {}
+    pipeline_phase = None
+    if transition.pipeline and transition.pipeline.phase:
+        pipeline_phase = _coerce_str(transition.pipeline.phase)
+    phase_value = pipeline_phase or _coerce_str(transition.phase)
+    attributes["meta.phase"] = phase_value or phase
+
+    severity_value = _coerce_str(transition.severity)
+    if severity_value:
+        attributes["meta.severity"] = severity_value
+
+    context_payload = transition.context
+    if isinstance(context_payload, MappingABC):
+        document_id = _coerce_str(context_payload.get("document_id"))
+        if document_id:
+            attributes["meta.document_id"] = document_id
+
+    if phase == "document_pipeline":
+        pipeline_payload = transition.pipeline
+        if pipeline_payload is not None:
+            run_until = getattr(pipeline_payload, "run_until", None)
+            run_until_label = None
+            if run_until is not None:
+                if hasattr(run_until, "value"):
+                    run_until_label = _coerce_str(getattr(run_until, "value", None))
+                if not run_until_label:
+                    run_until_label = _coerce_str(run_until)
+            if run_until_label:
+                attributes["meta.run_until"] = run_until_label
+            if pipeline_payload.phase:
+                phase_label = _coerce_str(pipeline_payload.phase)
+                if phase_label:
+                    attributes["meta.phase"] = phase_label
+                    attributes["meta.pipeline_phase"] = phase_label
+    elif phase == "update_status":
+        lifecycle_payload = transition.lifecycle
+        if lifecycle_payload is not None:
+            status = _coerce_str(lifecycle_payload.status)
+            if status:
+                attributes["meta.status"] = status
+    elif phase == "ingest":
+        embedding_section = transition.embedding
+        if embedding_section is not None:
+            embedding_result = getattr(embedding_section, "result", None)
+            outcome = _coerce_str(getattr(embedding_result, "status", None))
+            if outcome:
+                attributes["meta.outcome"] = outcome
+        delta_section = transition.delta
+        if delta_section is not None:
+            delta_decision = _coerce_str(delta_section.decision)
+            if delta_decision:
+                attributes.setdefault("meta.delta", delta_decision)
+    elif phase == "guardrails":
+        guardrail_payload = transition.guardrail
+        if guardrail_payload is not None:
+            allowed = getattr(guardrail_payload, "allowed", None)
             if isinstance(allowed, bool):
                 attributes["meta.allowed"] = allowed
-    decision_value = _coerce_str(transition.get("decision"))
+    elif phase == "ingest_decision":
+        delta_section = transition.delta
+        if delta_section is not None:
+            delta_decision = _coerce_str(delta_section.decision)
+            if delta_decision:
+                attributes["meta.delta"] = delta_decision
+
+    decision_value = _coerce_str(transition.decision)
     if phase in {"guardrails", "ingest_decision"} and decision_value:
         attributes["meta.decision"] = decision_value
     return attributes
@@ -1865,8 +1923,8 @@ def _ensure_ingestion_phase_spans(
         if phase in recorded_phases:
             continue
 
-        transition = transitions.get(transition_key)
-        if not isinstance(transition, MappingABC):
+        transition = _coerce_transition_result(transitions.get(transition_key))
+        if transition is None:
             continue
 
         attributes = dict(base_metadata)

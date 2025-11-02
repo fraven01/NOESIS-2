@@ -61,6 +61,10 @@ from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceEr
 from ai_core.tool_contracts import ContextError as ToolContextError
 from ai_core.tools import InputError
 
+from ai_core.graphs.transition_contracts import (
+    GraphTransition,
+    StandardTransitionResult,
+)
 from ai_core.graphs.upload_ingestion_graph import (
     UploadIngestionError,
     UploadIngestionGraph,
@@ -125,6 +129,11 @@ def _make_json_safe(value):  # type: ignore[no-untyped-def]
     from dataclasses import asdict, is_dataclass
     from datetime import date as _date, datetime as _datetime
 
+    if hasattr(value, "model_dump"):
+        try:
+            return _make_json_safe(value.model_dump())
+        except Exception:  # pragma: no cover - defensive conversion
+            pass
     if is_dataclass(value) and not isinstance(value, type):
         return _make_json_safe(asdict(value))
     if isinstance(value, _uuid.UUID):
@@ -473,16 +482,38 @@ def _persist_collection_scope(
         object_store.write_json(path, metadata)
 
 
+def _coerce_transition_result(
+    transition: object,
+) -> StandardTransitionResult | None:
+    if isinstance(transition, GraphTransition):
+        return transition.result
+    if isinstance(transition, StandardTransitionResult):
+        return transition
+    if isinstance(transition, Mapping):
+        try:
+            return StandardTransitionResult.model_validate(transition)
+        except ValidationError:
+            return None
+    return None
+
+
 def _map_upload_graph_skip(
-    decision: str, transitions: Mapping[str, Mapping[str, Any]]
+    decision: str, transitions: Mapping[str, object]
 ) -> Response:
     """Translate upload graph skip decisions into HTTP error responses."""
 
-    diagnostics = transitions.get("accept_upload", {}).get("diagnostics", {})
-    guardrail_diag = transitions.get("delta_and_guardrails", {}).get("diagnostics", {})
+    accept_transition = _coerce_transition_result(transitions.get("accept_upload"))
+    guardrail_transition = _coerce_transition_result(
+        transitions.get("delta_and_guardrails")
+    )
+    guardrail_section = guardrail_transition.guardrail if guardrail_transition else None
 
     if decision == "skip_guardrail":
-        policy_events = guardrail_diag.get("policy_events") or ()
+        policy_events: tuple[str, ...]
+        if guardrail_section is not None:
+            policy_events = guardrail_section.policy_events
+        else:
+            policy_events = ()
         if policy_events:
             policy_text = ", ".join(str(event) for event in policy_events)
             detail = f"Upload blocked by guardrails: {policy_text}."
@@ -502,7 +533,13 @@ def _map_upload_graph_skip(
         )
 
     if decision == "skip_disallowed_mime":
-        mime = diagnostics.get("mime")
+        mime = None
+        if accept_transition is not None:
+            context = accept_transition.context
+            if isinstance(context, Mapping):
+                candidate = context.get("mime")
+                if candidate is not None:
+                    mime = str(candidate)
         if mime:
             detail = f"MIME type '{mime}' is not allowed for uploads."
         else:
@@ -514,11 +551,15 @@ def _map_upload_graph_skip(
         )
 
     if decision == "skip_oversize":
-        max_bytes = diagnostics.get("max_bytes")
-        if isinstance(max_bytes, (int, float)):
-            detail = (
-                "Uploaded file exceeds the allowed size of " f"{int(max_bytes)} bytes."
-            )
+        max_bytes: int | None = None
+        if accept_transition is not None:
+            context = accept_transition.context
+            if isinstance(context, Mapping):
+                candidate = context.get("max_bytes")
+                if isinstance(candidate, (int, float)):
+                    max_bytes = int(candidate)
+        if max_bytes is not None:
+            detail = f"Uploaded file exceeds the allowed size of {max_bytes} bytes."
         else:
             detail = "Uploaded file exceeds the allowed size."
         return _error_response(
