@@ -22,7 +22,12 @@ class DocumentLifecycleService(Protocol):
     def normalize_from_raw(
         self,
         *,
-        contract: NormalizedDocumentInputV1,
+        raw_reference: Mapping[str, Any],
+        tenant_id: str,
+        case_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
         """Normalize crawler payloads into canonical :class:`NormalizedDocument` objects."""
 
@@ -80,8 +85,21 @@ class DocumentsApiLifecycleService:
     def normalize_from_raw(
         self,
         *,
-        contract: NormalizedDocumentInputV1,
+        raw_reference: Mapping[str, Any],
+        tenant_id: str,
+        case_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
+        contract = NormalizedDocumentInputV1.from_raw(
+            raw_reference=raw_reference,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            request_id=request_id,
+            workflow_id=workflow_id,
+            source=source,
+        )
         return documents_api.normalize_from_raw(
             contract=contract,
             object_store=self._resolve_object_store(),

@@ -1753,6 +1753,16 @@ def _resolve_trace_context(
         or _extract_from_mapping(state_meta, "case_id")
         or _extract_from_mapping(state, "case_id")
     )
+    request_id = _coerce_str(
+        _extract_from_mapping(meta, "request_id")
+        or _extract_from_mapping(state_meta, "request_id")
+        or _extract_from_mapping(state, "request_id")
+    )
+    workflow_id = _coerce_str(
+        _extract_from_mapping(meta, "workflow_id")
+        or _extract_from_mapping(state_meta, "workflow_id")
+        or _extract_from_mapping(state, "workflow_id")
+    )
     trace_id = _coerce_str(
         _extract_from_mapping(meta, "trace_id")
         or _extract_from_mapping(state_meta, "trace_id")
@@ -1763,6 +1773,8 @@ def _resolve_trace_context(
     return {
         "tenant_id": tenant_id,
         "case_id": case_id,
+        "request_id": request_id,
+        "workflow_id": workflow_id,
         "trace_id": trace_id,
         "document_id": document_id,
     }
@@ -1891,6 +1903,7 @@ def run_ingestion_graph(
     event_emitter = _resolve_event_emitter(meta)
     graph = _build_ingestion_graph(event_emitter)
     trace_context = _resolve_trace_context(state, meta)
+    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
 
     # Ensure the graph receives a normalized document input when only a
     # raw_document reference is provided by the caller. This mirrors the
@@ -1912,7 +1925,27 @@ def run_ingestion_graph(
             case_id = trace_context.get("case_id") or _coerce_str(
                 _extract_from_mapping(state, "case_id")
             )
-            request_id = _coerce_str(_extract_from_mapping(state, "request_id"))
+            request_id = trace_context.get("request_id") or _coerce_str(
+                _extract_from_mapping(state, "request_id")
+            )
+            raw_metadata = raw_reference.get("metadata")
+            if not isinstance(raw_metadata, MappingABC):
+                raw_metadata = None
+            workflow_id = _coerce_str(
+                trace_context.get("workflow_id")
+                or _extract_from_mapping(meta, "workflow_id")
+                or _extract_from_mapping(state_meta, "workflow_id")
+                or _extract_from_mapping(state, "workflow_id")
+                or _extract_from_mapping(raw_reference, "workflow_id")
+                or _extract_from_mapping(raw_metadata, "workflow_id")
+            )
+            source = _coerce_str(
+                _extract_from_mapping(meta, "source")
+                or _extract_from_mapping(state_meta, "source")
+                or _extract_from_mapping(state, "source")
+                or _extract_from_mapping(raw_reference, "source")
+                or _extract_from_mapping(raw_metadata, "source")
+            )
             if tenant_id:
                 try:
                     contract = NormalizedDocumentInputV1.from_raw(
@@ -1920,6 +1953,8 @@ def run_ingestion_graph(
                         tenant_id=tenant_id,
                         case_id=case_id,
                         request_id=request_id,
+                        workflow_id=workflow_id,
+                        source=source,
                     )
                     normalized_payload = normalize_from_raw(contract=contract)
                     working_state["normalized_document_input"] = (

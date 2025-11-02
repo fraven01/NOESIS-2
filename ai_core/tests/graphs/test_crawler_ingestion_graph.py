@@ -462,8 +462,21 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
     def normalize_from_raw(
         self,
         *,
-        contract: NormalizedDocumentInputV1,
+        raw_reference: Mapping[str, object],
+        tenant_id: str,
+        case_id: str | None = None,
+        request_id: str | None = None,
+        workflow_id: str | None = None,
+        source: str | None = None,
     ):
+        contract = NormalizedDocumentInputV1.from_raw(
+            raw_reference=raw_reference,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            request_id=request_id,
+            workflow_id=workflow_id,
+            source=source,
+        )
         self.normalize_calls.append(
             {
                 "tenant_id": contract.tenant_id,
