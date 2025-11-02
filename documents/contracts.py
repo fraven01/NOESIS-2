@@ -25,15 +25,17 @@ from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import (
     Annotated,
+    Any,
+    Callable,
     Dict,
     Iterable,
     List,
     Literal,
+    Mapping,
+    MutableMapping,
     Optional,
     Tuple,
     Union,
-    Any,
-    Mapping,
 )
 from types import MappingProxyType
 from uuid import UUID
@@ -43,9 +45,9 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
+    TypeAdapter,
     field_validator,
     model_validator,
-    TypeAdapter,
 )
 
 from .contract_utils import (
@@ -115,6 +117,21 @@ def _decode_base64(value: str) -> bytes:
         return base64.b64decode(value, validate=True)
     except Exception as exc:  # pragma: no cover - propagate message
         raise ValueError("base64_invalid") from exc
+
+
+def _extract_charset_param(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    for param in candidate.split(";")[1:]:
+        key, _, param_value = param.partition("=")
+        if key.strip().lower() == "charset":
+            encoding = param_value.strip().strip('"').strip("'")
+            if encoding:
+                return encoding
+    return None
 
 
 def set_strict_checksums(enabled: bool = True) -> None:
@@ -609,6 +626,608 @@ class AssetRef(BaseModel):
     def _coerce_uuid_fields(cls, value):
         return _coerce_uuid(value)
 
+
+class DocumentBlobDescriptorV1(BaseModel):
+    """Descriptor describing the payload supplied for ingestion."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        title="Document Blob Descriptor (v1)",
+        description="Structured payload descriptor supporting inline text, raw bytes or stored objects.",
+    )
+
+    _payload_cache: Optional[bytes] = PrivateAttr(default=None)
+
+    inline_text: Optional[str] = Field(
+        default=None,
+        description="Inline UTF-8 text payload supplied directly by the caller.",
+    )
+    payload_bytes: Optional[bytes] = Field(
+        default=None,
+        description="Binary payload supplied as bytes.",
+    )
+    payload_base64: Optional[str] = Field(
+        default=None,
+        description="Payload provided as a base64 encoded string.",
+    )
+    object_store_path: Optional[str] = Field(
+        default=None,
+        description="Relative object store path pointing to the payload.",
+    )
+    media_type: Optional[str] = Field(
+        default=None,
+        description="Media type of the payload (type/subtype).",
+    )
+    encoding: Optional[str] = Field(
+        default=None,
+        description="Explicit character encoding hint for textual payloads.",
+    )
+
+    @field_validator("inline_text", mode="before")
+    @classmethod
+    def _coerce_inline_text(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        return str(value)
+
+    @field_validator("payload_bytes", mode="before")
+    @classmethod
+    def _coerce_payload_bytes(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, bytes):
+            return value
+        if isinstance(value, bytearray):
+            return bytes(value)
+        if isinstance(value, memoryview):
+            return bytes(value)
+        if isinstance(value, str):
+            return value.encode("utf-8")
+        raise TypeError("payload_bytes_type")
+
+    @field_validator("payload_base64", mode="before")
+    @classmethod
+    def _normalize_base64(cls, value):
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            value = bytes(value).decode("ascii", errors="ignore")
+        return str(value).strip()
+
+    @field_validator("object_store_path", mode="before")
+    @classmethod
+    def _normalize_object_path(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, (bytes, bytearray, memoryview)):
+            value = bytes(value).decode("utf-8", errors="ignore")
+        return normalize_optional_string(str(value))
+
+    @field_validator("media_type", mode="before")
+    @classmethod
+    def _normalize_media_type_field(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        candidate = str(value).split(";", 1)[0].strip()
+        if not candidate:
+            return None
+        try:
+            return normalize_media_type(candidate)
+        except ValueError:
+            return None
+
+    @field_validator("encoding", mode="before")
+    @classmethod
+    def _normalize_encoding(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
+
+    @model_validator(mode="after")
+    def _validate_sources(self) -> "DocumentBlobDescriptorV1":
+        provided = sum(
+            1
+            for candidate in (
+                self.inline_text,
+                self.payload_bytes,
+                self.payload_base64,
+                self.object_store_path,
+            )
+            if candidate is not None
+        )
+        if provided == 0:
+            raise ValueError("raw_content_missing")
+        if provided > 1:
+            raise ValueError("blob_source_ambiguous")
+        return self
+
+    @property
+    def requires_object_store(self) -> bool:
+        return self.object_store_path is not None
+
+    def resolve_payload_bytes(
+        self, *, object_store_reader: Optional[Callable[[str], bytes]] = None
+    ) -> bytes:
+        if self._payload_cache is not None:
+            return self._payload_cache
+        if self.inline_text is not None:
+            payload = self.inline_text.encode("utf-8")
+        elif self.payload_bytes is not None:
+            payload = self.payload_bytes
+        elif self.payload_base64 is not None:
+            payload = _decode_base64(self.payload_base64)
+        elif self.object_store_path is not None:
+            if object_store_reader is None:
+                raise ValueError("object_store_reader_required")
+            payload = object_store_reader(self.object_store_path)
+        else:  # pragma: no cover - defensive guard
+            raise ValueError("raw_content_missing")
+        self._payload_cache = payload
+        return payload
+
+    def payload_size(self, payload_bytes: Optional[bytes] = None) -> int:
+        data = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        return len(data)
+
+    def payload_base64_value(self, payload_bytes: Optional[bytes] = None) -> str:
+        data = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        return base64.b64encode(data).decode("ascii")
+
+
+class NormalizedDocumentInputV1(BaseModel):
+    """Ingestion contract for raw document payloads."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        title="Normalized Document Input v1",
+        description="Input contract capturing metadata and payload sources for ingestion.",
+    )
+
+    tenant_id: str = Field(description="Tenant identifier responsible for the document.")
+    workflow_id: Optional[str] = Field(
+        default=None,
+        description="Workflow identifier grouping the ingestion request.",
+    )
+    source: Optional[str] = Field(
+        default=None,
+        description="Channel that supplied the document payload (crawler, upload, …).",
+    )
+    provider: Optional[str] = Field(
+        default=None,
+        description="Canonical upstream provider name if known.",
+    )
+    external_id: Optional[str] = Field(
+        default=None,
+        description="External identifier assigned by the upstream system.",
+    )
+    document_id: Any = Field(
+        default=None,
+        description="Optional stable document identifier supplied by the caller.",
+    )
+    collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional collection identifier the document belongs to.",
+    )
+    case_id: Optional[str] = Field(
+        default=None,
+        description="Optional business case identifier supplied alongside the document.",
+    )
+    tags: List[str] = Field(
+        default_factory=list,
+        description="Optional set of tags attached to the document for retrieval.",
+    )
+    origin_uri: Optional[str] = Field(
+        default=None,
+        description="Original URI describing the payload source.",
+    )
+    title: Optional[str] = Field(
+        default=None,
+        description="Optional human readable title for the document.",
+    )
+    language: Optional[str] = Field(
+        default=None,
+        description="Optional BCP-47 language tag describing the primary language.",
+    )
+    metadata: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Opaque metadata mapping forwarded by the ingestion caller.",
+    )
+    external_ref: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Additional provider specific reference attributes.",
+    )
+    request_id: Optional[str] = Field(
+        default=None,
+        description="Optional request identifier for traceability.",
+    )
+    version: Optional[str] = Field(
+        default=None,
+        description="Optional document version label supplied by the caller.",
+    )
+    blob: DocumentBlobDescriptorV1 = Field(
+        description="Descriptor pointing to the raw payload contents.",
+    )
+
+    @field_validator("tenant_id", mode="before")
+    @classmethod
+    def _normalize_tenant_id(cls, value: str) -> str:
+        return normalize_tenant(value)
+
+    @field_validator("workflow_id", mode="before")
+    @classmethod
+    def _normalize_workflow(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return normalize_workflow_id(value)
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalize_source(cls, value: Optional[str]) -> Optional[str]:
+        normalized = normalize_optional_string(value)
+        return normalized.lower() if normalized else None
+
+    @field_validator("provider", "external_id", "case_id", "request_id", mode="before")
+    @classmethod
+    def _normalize_optional_identifiers(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
+
+    @field_validator("collection_id", mode="before")
+    @classmethod
+    def _coerce_collection_id(cls, value):
+        if value is None:
+            return None
+        try:
+            return _coerce_uuid(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("tags", mode="before")
+    @classmethod
+    def _normalize_tags_field(cls, value):
+        if value is None:
+            return []
+        if isinstance(value, (list, tuple, set)):
+            items = value
+        else:
+            items = [value]
+        return normalize_tags(str(item) for item in items)
+
+    @field_validator("origin_uri", mode="before")
+    @classmethod
+    def _normalize_origin_uri(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_optional_string(value)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _normalize_title_field(cls, value: Optional[str]) -> Optional[str]:
+        return normalize_title(value)
+
+    @field_validator("language", mode="before")
+    @classmethod
+    def _normalize_language(cls, value: Optional[str]) -> Optional[str]:
+        normalized = normalize_optional_string(value)
+        if normalized is None:
+            return None
+        if not is_bcp47_like(normalized):
+            raise ValueError("language_invalid")
+        return normalized
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _normalize_metadata(cls, value):
+        if value is None:
+            return {}
+        if isinstance(value, Mapping):
+            return dict(value)
+        if isinstance(value, MutableMapping):
+            return dict(value)
+        raise TypeError("metadata_mapping_required")
+
+    @field_validator("external_ref", mode="before")
+    @classmethod
+    def _normalize_external_ref(cls, value):
+        if value is None:
+            return {}
+        if not isinstance(value, Mapping):
+            raise TypeError("external_ref_mapping_required")
+        normalized: Dict[str, str] = {}
+        for key, candidate in value.items():
+            normalized_key = normalize_optional_string(str(key))
+            if not normalized_key:
+                continue
+            normalized_value = normalize_optional_string(str(candidate))
+            if normalized_value is None:
+                continue
+            normalized[normalized_key] = normalized_value
+        return normalized
+
+    @field_validator("version", mode="before")
+    @classmethod
+    def _normalize_version_field(cls, value: Optional[str]) -> Optional[str]:
+        normalized = normalize_optional_string(value)
+        if normalized is None:
+            return None
+        if len(normalized) > 64:
+            raise ValueError("version_too_long")
+        if not _VERSION_RE.fullmatch(normalized):
+            raise ValueError("version_invalid")
+        return normalized
+
+    @model_validator(mode="after")
+    def _apply_defaults(self) -> "NormalizedDocumentInputV1":
+        source = self.source or "crawler"
+        self.source = source
+
+        if self.workflow_id is None:
+            self.workflow_id = source
+
+        metadata_provider = self.metadata.get("provider") if self.metadata else None
+        provider = self.provider
+        if provider is None and metadata_provider is not None:
+            provider = normalize_optional_string(str(metadata_provider))
+        if not provider:
+            provider = DEFAULT_PROVIDER_BY_SOURCE.get(source) or source
+        self.provider = provider
+
+        metadata_external_id = self.metadata.get("external_id") if self.metadata else None
+        if self.external_id is None and metadata_external_id is not None:
+            self.external_id = normalize_optional_string(str(metadata_external_id))
+
+        if not self.tags:
+            metadata_tags = self.metadata.get("tags") if self.metadata else None
+            if metadata_tags:
+                if isinstance(metadata_tags, (list, tuple, set)):
+                    tag_iter = metadata_tags
+                else:
+                    tag_iter = [metadata_tags]
+                self.tags = normalize_tags(str(tag) for tag in tag_iter)
+
+        metadata_origin = self.metadata.get("origin_uri") if self.metadata else None
+        if self.origin_uri is None and metadata_origin is not None:
+            self.origin_uri = normalize_optional_string(str(metadata_origin))
+
+        metadata_case = self.metadata.get("case_id") if self.metadata else None
+        if self.case_id is None and metadata_case is not None:
+            self.case_id = normalize_optional_string(str(metadata_case))
+
+        metadata_title = self.metadata.get("title") if self.metadata else None
+        if self.title is None and metadata_title is not None:
+            self.title = normalize_title(metadata_title)
+
+        metadata_language = self.metadata.get("language") if self.metadata else None
+        if self.language is None and metadata_language is not None:
+            normalized_language = normalize_optional_string(str(metadata_language))
+            if normalized_language and is_bcp47_like(normalized_language):
+                self.language = normalized_language
+
+        if self.blob.media_type is None:
+            candidate = None
+            for key in ("media_type", "content_type", "mime_type"):
+                raw_value = self.metadata.get(key)
+                if raw_value:
+                    candidate = str(raw_value)
+                    break
+            normalized_media_type = None
+            if candidate:
+                candidate = candidate.split(";", 1)[0].strip()
+                if candidate:
+                    try:
+                        normalized_media_type = normalize_media_type(candidate)
+                    except ValueError:
+                        normalized_media_type = None
+            if normalized_media_type is None:
+                normalized_media_type = "text/plain"
+            self.blob = self.blob.model_copy(update={"media_type": normalized_media_type})
+
+        if self.blob.encoding is None:
+            encoding_hint = None
+            for key in ("payload_encoding", "content_encoding"):
+                raw_value = self.metadata.get(key)
+                if raw_value:
+                    encoding_hint = normalize_optional_string(str(raw_value))
+                    if encoding_hint:
+                        break
+            if encoding_hint is None:
+                for key in ("media_type", "content_type", "mime_type"):
+                    raw_value = self.metadata.get(key)
+                    encoding_hint = _extract_charset_param(raw_value)
+                    if encoding_hint:
+                        break
+            if encoding_hint:
+                self.blob = self.blob.model_copy(update={"encoding": encoding_hint})
+
+        return self
+
+    @property
+    def metadata_map(self) -> Mapping[str, Any]:
+        return MappingProxyType(dict(self.metadata))
+
+    @property
+    def media_type(self) -> str:
+        return self.blob.media_type or "text/plain"
+
+    @property
+    def encoding_hint(self) -> Optional[str]:
+        if self.blob.encoding:
+            return self.blob.encoding
+        for key in ("payload_encoding", "content_encoding"):
+            raw_value = self.metadata.get(key)
+            if raw_value:
+                candidate = normalize_optional_string(str(raw_value))
+                if candidate:
+                    return candidate
+        for key in ("media_type", "content_type", "mime_type"):
+            raw_value = self.metadata.get(key)
+            encoding = _extract_charset_param(str(raw_value)) if raw_value else None
+            if encoding:
+                return encoding
+        return None
+
+    @property
+    def requires_object_store(self) -> bool:
+        return self.blob.requires_object_store
+
+    @property
+    def object_store_path(self) -> Optional[str]:
+        return self.blob.object_store_path
+
+    def resolve_payload_bytes(
+        self, *, object_store_reader: Optional[Callable[[str], bytes]] = None
+    ) -> bytes:
+        return self.blob.resolve_payload_bytes(object_store_reader=object_store_reader)
+
+    def resolve_payload_text(self, payload_bytes: Optional[bytes] = None) -> str:
+        if self.blob.inline_text is not None:
+            return self.blob.inline_text
+        payload = payload_bytes
+        if payload is None:
+            payload = self.resolve_payload_bytes()
+        encoding_hint = self.encoding_hint
+        if encoding_hint:
+            try:
+                return payload.decode(encoding_hint)
+            except (LookupError, UnicodeDecodeError):
+                pass
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload.decode("utf-8", errors="replace")
+
+    def compute_checksum(self, payload_bytes: Optional[bytes] = None) -> str:
+        payload = payload_bytes if payload_bytes is not None else self.resolve_payload_bytes()
+        return hashlib.sha256(payload).hexdigest()
+
+    def payload_base64(self, payload_bytes: Optional[bytes] = None) -> str:
+        return self.blob.payload_base64_value(payload_bytes)
+
+    def payload_size(self, payload_bytes: Optional[bytes] = None) -> int:
+        return self.blob.payload_size(payload_bytes)
+
+    def build_external_reference(self, document_id: Optional[UUID]) -> Dict[str, str]:
+        reference = dict(self.external_ref)
+        provider = self.provider or self.source or "unknown"
+        reference.setdefault("provider", provider)
+        if self.external_id:
+            reference.setdefault("external_id", self.external_id)
+        elif document_id is not None:
+            reference.setdefault("external_id", f"{provider}:{document_id}")
+        if self.case_id:
+            reference.setdefault("case_id", self.case_id)
+        return reference
+
+    @property
+    def metadata_payload(self) -> Mapping[str, Any]:
+        payload = {
+            "tenant_id": self.tenant_id,
+            "workflow_id": self.workflow_id,
+            "case_id": self.case_id,
+            "request_id": self.request_id,
+            "provider": self.provider,
+            "origin_uri": self.origin_uri,
+            "source": self.source,
+        }
+        return MappingProxyType({k: v for k, v in payload.items() if v is not None})
+
+    @classmethod
+    def from_raw(
+        cls,
+        *,
+        raw_reference: Mapping[str, Any],
+        tenant_id: str,
+        case_id: Optional[str] = None,
+        request_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> "NormalizedDocumentInputV1":
+        metadata_raw = raw_reference.get("metadata")
+        if metadata_raw is None:
+            metadata: Dict[str, Any] = {}
+        elif isinstance(metadata_raw, Mapping):
+            metadata = dict(metadata_raw)
+        elif isinstance(metadata_raw, MutableMapping):
+            metadata = dict(metadata_raw)
+        else:
+            raise TypeError("metadata_mapping_required")
+
+        blob_media_type = (
+            raw_reference.get("media_type")
+            or raw_reference.get("content_type")
+            or raw_reference.get("mime_type")
+            or metadata.get("media_type")
+            or metadata.get("content_type")
+            or metadata.get("mime_type")
+        )
+        blob_encoding = (
+            raw_reference.get("payload_encoding")
+            or raw_reference.get("content_encoding")
+            or metadata.get("payload_encoding")
+            or metadata.get("content_encoding")
+        )
+
+        payload_base64 = raw_reference.get("payload_base64")
+        if isinstance(payload_base64, (bytes, bytearray, memoryview)):
+            payload_base64 = bytes(payload_base64).decode("ascii", errors="ignore")
+
+        object_path = raw_reference.get("payload_path")
+        if object_path is not None and not isinstance(object_path, str):
+            object_path = str(object_path)
+
+        descriptor = DocumentBlobDescriptorV1(
+            inline_text=raw_reference.get("content"),
+            payload_bytes=raw_reference.get("payload_bytes"),
+            payload_base64=payload_base64,
+            object_store_path=object_path,
+            media_type=blob_media_type,
+            encoding=blob_encoding,
+        )
+
+        provider = (
+            metadata.get("provider")
+            or raw_reference.get("provider")
+            or DEFAULT_PROVIDER_BY_SOURCE.get(source or metadata.get("source", ""))
+        )
+
+        external_id = metadata.get("external_id") or raw_reference.get("external_id")
+
+        tags = metadata.get("tags") or raw_reference.get("tags")
+
+        origin_uri = metadata.get("origin_uri") or raw_reference.get("origin_uri")
+
+        title = metadata.get("title") or raw_reference.get("title")
+
+        language = metadata.get("language") or raw_reference.get("language")
+
+        external_ref = metadata.get("external_ref") or raw_reference.get("external_ref")
+
+        version = metadata.get("version") or raw_reference.get("version")
+
+        return cls(
+            tenant_id=tenant_id,
+            workflow_id=(
+                workflow_id
+                or metadata.get("workflow_id")
+                or raw_reference.get("workflow_id")
+            ),
+            source=(
+                source
+                or metadata.get("source")
+                or raw_reference.get("source")
+            ),
+            provider=provider,
+            external_id=external_id,
+            document_id=raw_reference.get("document_id"),
+            collection_id=metadata.get("collection_id"),
+            case_id=case_id or metadata.get("case_id") or raw_reference.get("case_id"),
+            tags=tags,
+            origin_uri=origin_uri,
+            title=title,
+            language=language,
+            metadata=metadata,
+            external_ref=external_ref,
+            request_id=request_id or metadata.get("request_id") or raw_reference.get("request_id"),
+            version=version,
+            blob=descriptor,
+        )
 
 class Asset(BaseModel):
     """Representation of an extracted multimodal asset."""
