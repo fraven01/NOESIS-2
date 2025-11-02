@@ -111,17 +111,38 @@ def _build_path(meta: Dict[str, str], *parts: str) -> str:
 def _resolve_artifact_filename(meta: Mapping[str, Any], kind: str) -> str:
     """Derive a per-document filename for chunking artifacts."""
 
-    seed: Optional[str] = None
-    for key in ("content_hash", "hash", "external_id", "document_id"):
-        value = meta.get(key)
+    def _normalise(value: Any) -> Optional[str]:
         if value in (None, ""):
-            continue
+            return None
         candidate = str(value).strip()
-        if candidate:
-            seed = candidate
+        if not candidate:
+            return None
+        try:
+            return object_store.sanitize_identifier(candidate)
+        except Exception:
+            return None
+
+    hash_seed: Optional[str] = None
+    for key in ("content_hash", "hash"):
+        hash_seed = _normalise(meta.get(key))
+        if hash_seed:
             break
-    if seed is None:
-        seed = uuid.uuid4().hex
+
+    identifier_seed: Optional[str] = None
+    for key in ("external_id", "document_id"):
+        identifier_seed = _normalise(meta.get(key))
+        if identifier_seed:
+            break
+
+    seeds = [component for component in (hash_seed, identifier_seed) if component]
+    if not seeds:
+        seeds = [_normalise(meta.get("id"))]
+    seeds = [component for component in seeds if component]
+
+    if not seeds:
+        seeds = [uuid.uuid4().hex]
+
+    seed = "-".join(seeds)
     base_name = f"{kind}-{seed}.json"
     try:
         return object_store.safe_filename(base_name)
