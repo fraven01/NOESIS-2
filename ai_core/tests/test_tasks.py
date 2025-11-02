@@ -18,7 +18,7 @@ from ai_core.tools import InputError
 from common import logging as common_logging
 from common.celery import ContextTask
 from documents.api import normalize_from_raw
-from documents.contracts import NormalizedDocumentInputV1
+from documents.contracts import DocumentBlobDescriptorV1, NormalizedDocumentInputV1
 
 
 def test_split_sentences_prefers_sentence_boundaries() -> None:
@@ -896,11 +896,13 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
         },
         "embedding": {"profile": "standard", "client": _StubVectorClient()},
     }
-    contract = NormalizedDocumentInputV1.from_raw(
-        raw_reference=state["raw_document"],
+    contract = NormalizedDocumentInputV1(
         tenant_id=state["tenant_id"],
         case_id=state["case_id"],
         request_id=state["request_id"],
+        document_id=document_id,
+        metadata=dict(state["raw_document"]["metadata"]),
+        blob=DocumentBlobDescriptorV1(inline_text=state["raw_document"]["content"]),
     )
     normalized_payload = normalize_from_raw(contract=contract)
     state["normalized_document_input"] = normalized_payload.document

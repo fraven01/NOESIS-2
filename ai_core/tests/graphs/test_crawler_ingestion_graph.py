@@ -6,7 +6,7 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import importlib
-from typing import Any
+from typing import Any, Mapping
 
 import ai_core.api as ai_api
 import pytest
@@ -19,7 +19,7 @@ from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from documents import api as documents_api
 from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
-from documents.contracts import NormalizedDocumentInputV1
+from documents.contracts import DocumentBlobDescriptorV1, NormalizedDocumentInputV1
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 from documents.pipeline import (
     DocumentChunkArtifact,
@@ -55,6 +55,43 @@ class FailingRepository(DocumentsRepository):
         workflow_id=None,
     ):
         return None
+
+
+def _descriptor_from_raw(raw_document: Mapping[str, object]) -> DocumentBlobDescriptorV1:
+    if "payload_bytes" in raw_document:
+        return DocumentBlobDescriptorV1(payload_bytes=raw_document["payload_bytes"])
+    if "payload_base64" in raw_document:
+        return DocumentBlobDescriptorV1(payload_base64=raw_document["payload_base64"])
+    if "payload_path" in raw_document:
+        return DocumentBlobDescriptorV1(
+            object_store_path=str(raw_document["payload_path"])
+        )
+    content = raw_document.get("content")
+    if isinstance(content, bytes):
+        return DocumentBlobDescriptorV1(payload_bytes=content)
+    return DocumentBlobDescriptorV1(inline_text=str(content or ""))
+
+
+def _build_contract(
+    raw_document: Mapping[str, object],
+    *,
+    tenant_id: str,
+    case_id: str | None,
+    request_id: str | None,
+    workflow_id: str | None = None,
+    source: str | None = None,
+) -> NormalizedDocumentInputV1:
+    metadata = dict(raw_document.get("metadata") or {})
+    return NormalizedDocumentInputV1(
+        tenant_id=tenant_id,
+        case_id=case_id,
+        request_id=request_id,
+        workflow_id=workflow_id,
+        source=source,
+        metadata=metadata,
+        document_id=raw_document.get("document_id"),
+        blob=_descriptor_from_raw(raw_document),
+    )
 
 
 def _build_state(
@@ -144,8 +181,8 @@ def _build_state(
     if config_override:
         guardrail_context["config"] = config_override
 
-    contract = NormalizedDocumentInputV1.from_raw(
-        raw_reference=raw_document,
+    contract = _build_contract(
+        raw_document,
         tenant_id=tenant_id,
         case_id=case_id,
         request_id=request_id,
@@ -305,9 +342,10 @@ def test_guardrail_denied_emits_event_callback() -> None:
 
 def test_delta_unchanged_skips_embedding() -> None:
     repository = InMemoryDocumentsRepository()
-    baseline_contract = NormalizedDocumentInputV1.from_raw(
-        raw_reference={"content": "Persistent"},
+    baseline_contract = NormalizedDocumentInputV1(
         tenant_id="tenant",
+        metadata={"content_type": "text/plain", "provider": "crawler"},
+        blob=DocumentBlobDescriptorV1(inline_text="Persistent"),
     )
     baseline_payload = normalize_from_raw(contract=baseline_contract)
     repository.upsert(
@@ -469,8 +507,8 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
         workflow_id: str | None = None,
         source: str | None = None,
     ):
-        contract = NormalizedDocumentInputV1.from_raw(
-            raw_reference=raw_reference,
+        contract = _build_contract(
+            raw_reference,
             tenant_id=tenant_id,
             case_id=case_id,
             request_id=request_id,

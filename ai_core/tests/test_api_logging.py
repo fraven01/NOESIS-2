@@ -10,7 +10,7 @@ from ai_core import api as ai_api
 from ai_core.rag.delta import DeltaDecision
 from ai_core.rag.vector_client import DedupSignatures
 from documents.api import normalize_from_raw
-from documents.contracts import NormalizedDocumentInputV1
+from documents.contracts import DocumentBlobDescriptorV1, NormalizedDocumentInputV1
 
 
 class _CapturingLogger:
@@ -23,20 +23,18 @@ class _CapturingLogger:
 
 @pytest.mark.django_db
 def test_decide_delta_logging(monkeypatch: pytest.MonkeyPatch) -> None:
-    contract = NormalizedDocumentInputV1.from_raw(
-        raw_reference={
-            "document_id": str(uuid4()),
-            "content": "Updated document body",
-            "metadata": {
-                "source": "crawler",
-                "origin_uri": "https://example.com/resource",
-                "provider": "web",
-                "content_type": "text/plain",
-            },
-        },
+    contract = NormalizedDocumentInputV1(
         tenant_id="tenant-xyz",
         case_id="case-123",
         request_id="req-456",
+        metadata={
+            "source": "crawler",
+            "origin_uri": "https://example.com/resource",
+            "provider": "web",
+            "content_type": "text/plain",
+        },
+        document_id=str(uuid4()),
+        blob=DocumentBlobDescriptorV1(inline_text="Updated document body"),
     )
     normalized = normalize_from_raw(contract=contract)
 
