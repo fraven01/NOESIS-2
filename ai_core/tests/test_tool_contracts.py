@@ -31,10 +31,10 @@ class _TestOutput(BaseModel):
 def test_tool_result_roundtrip() -> None:
     context = ToolContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        request_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
         now_iso=datetime(2024, 5, 4, 12, 30, tzinfo=timezone.utc),
+        run_id="run-1",
     )
     tool_input = _TestInput(query="hello")
     tool_output = _TestOutput(result="world")
@@ -106,30 +106,30 @@ def test_tool_context_datetime_strictness() -> None:
     with pytest.raises(ValueError):
         ToolContext(
             tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            request_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
             trace_id="trace-1",
             invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
             now_iso=datetime(2024, 5, 4, 12, 30),
+            run_id="run-1",
         )
 
     context_z = ToolContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        request_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
         now_iso=datetime.fromisoformat("2024-05-04T12:30:00+00:00"),
+        run_id="run-1",
     )
 
     assert context_z.now_iso.tzinfo is timezone.utc
 
     context_with_z = ToolContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-        request_id="bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
         now_iso=datetime.strptime("2024-05-04T12:30:00Z", "%Y-%m-%dT%H:%M:%SZ").replace(
             tzinfo=timezone.utc
         ),
+        run_id="run-1",
     )
 
     assert context_with_z.now_iso.tzinfo is timezone.utc

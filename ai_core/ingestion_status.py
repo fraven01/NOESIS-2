@@ -58,6 +58,7 @@ class RedisIngestionStatusStore:
         invalid_document_ids: Iterable[str],
         queued_at: str,
         trace_id: str | None = None,
+        collection_id: str | None = None,
         embedding_profile: str | None = None,
         source: str | None = None,
     ) -> dict[str, object]:
@@ -72,6 +73,7 @@ class RedisIngestionStatusStore:
         }
         optional_values = {
             "trace_id": trace_id,
+            "collection_id": collection_id,
             "embedding_profile": embedding_profile,
             "source": source,
         }
@@ -210,6 +212,7 @@ def record_ingestion_run_queued(
     *,
     queued_at: str,
     trace_id: str | None = None,
+    collection_id: str | None = None,
     embedding_profile: str | None = None,
     source: str | None = None,
     invalid_document_ids: Iterable[str] | None = None,
@@ -224,6 +227,7 @@ def record_ingestion_run_queued(
         invalid_document_ids=_as_iterable(invalid_document_ids),
         queued_at=queued_at,
         trace_id=trace_id,
+        collection_id=collection_id,
         embedding_profile=embedding_profile,
         source=source,
     )

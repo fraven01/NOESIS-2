@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import uuid
-from typing import Any, Mapping
+import warnings
+from typing import Any, Mapping, MutableMapping
 
 from django.http import HttpRequest, HttpResponse
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from ai_core.ids.contracts import normalize_trace_id
 from ai_core.infra.resp import apply_std_headers
 
 
@@ -14,6 +17,7 @@ class RequestContextMiddleware:
 
     TRACEPARENT_HEADER = "HTTP_TRACEPARENT"
     TRACE_ID_HEADER = "HTTP_X_TRACE_ID"
+    REQUEST_ID_HEADER = "HTTP_X_REQUEST_ID"
     CASE_ID_HEADER = "HTTP_X_CASE_ID"
     TENANT_ID_HEADER = "HTTP_X_TENANT_ID"
     KEY_ALIAS_HEADER = "HTTP_X_KEY_ALIAS"
@@ -38,8 +42,8 @@ class RequestContextMiddleware:
 
     def _gather_metadata(self, request: HttpRequest) -> dict[str, Mapping[str, str]]:
         headers = request.META
+        trace_id, span_id = self._resolve_trace_and_span(request)
         traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
-        trace_id, span_id = self._resolve_trace_and_span(headers, traceparent)
 
         tenant_id = self._normalize_header(headers.get(self.TENANT_ID_HEADER))
         case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
@@ -88,25 +92,51 @@ class RequestContextMiddleware:
 
         return {"log_context": log_context, "response_meta": response_meta}
 
-    def _resolve_trace_and_span(
-        self, headers: Mapping[str, Any], traceparent: str | None
-    ) -> tuple[str, str | None]:
+    def _resolve_trace_and_span(self, request: HttpRequest) -> tuple[str, str | None]:
+        """Resolve trace and span IDs from headers, query params, and body."""
+        meta: MutableMapping[str, Any] = {}
+        span_id: str | None = None
+
+        # 1. Headers
+        headers = request.META
+        meta["trace_id"] = self._normalize_header(headers.get(self.TRACE_ID_HEADER))
+        meta["request_id"] = self._normalize_header(headers.get(self.REQUEST_ID_HEADER))
+
+        traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
         if traceparent:
             parts = traceparent.split("-")
             if len(parts) >= 4:
-                trace_id = self._normalize_trace_id(parts[1])
-                span_id = self._normalize_span_id(parts[2])
-                if trace_id and span_id:
-                    return trace_id, span_id
+                meta["trace_id"] = self._normalize_w3c_id(parts[1])
+                span_id = self._normalize_w3c_id(parts[2])
 
-        candidate = self._normalize_header(headers.get(self.TRACE_ID_HEADER))
-        if candidate:
-            normalized = self._normalize_trace_id(candidate)
-            if normalized:
-                return normalized, None
+        # 2. Query Parameters
+        if not meta.get("trace_id") and not meta.get("request_id"):
+            meta["trace_id"] = request.GET.get("trace_id")
+            meta["request_id"] = request.GET.get("request_id")
 
-        generated_trace_id = uuid.uuid4().hex
-        return generated_trace_id, uuid.uuid4().hex[:16]
+        # 3. Request Body (for JSON content type)
+        if (
+            not meta.get("trace_id")
+            and not meta.get("request_id")
+            and "application/json" in (request.content_type or "")
+            and request.body
+        ):
+            try:
+                data = json.loads(request.body)
+                if isinstance(data, dict):
+                    meta["trace_id"] = data.get("trace_id")
+                    meta["request_id"] = data.get("request_id")
+            except json.JSONDecodeError:
+                pass  # Ignore malformed JSON
+
+        try:
+            trace_id = normalize_trace_id(meta, warn=warnings.warn)
+        except ValueError:
+            trace_id = uuid.uuid4().hex
+            if not span_id:
+                span_id = uuid.uuid4().hex[:16]
+
+        return trace_id, span_id
 
     @staticmethod
     def _normalize_header(value: Any) -> str | None:
@@ -118,16 +148,7 @@ class RequestContextMiddleware:
         return str(value)
 
     @staticmethod
-    def _normalize_trace_id(value: str | None) -> str | None:
-        if not value:
-            return None
-        normalized = value.replace("-", "").strip().lower()
-        if normalized:
-            return normalized
-        return None
-
-    @staticmethod
-    def _normalize_span_id(value: str | None) -> str | None:
+    def _normalize_w3c_id(value: str | None) -> str | None:
         if not value:
             return None
         normalized = value.replace("-", "").strip().lower()

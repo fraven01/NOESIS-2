@@ -661,10 +661,15 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         if hasattr(request, "_request") and request._request is not request:
             setattr(request._request, "tool_context", tool_context)
 
+    run_id = uuid4().hex
+    workflow_id = normalized_meta.get("workflow_id") or normalized_meta.get("case_id")
+
     context = GraphContext(
         tenant_id=normalized_meta["tenant_id"],
         case_id=normalized_meta["case_id"],
         trace_id=normalized_meta["trace_id"],
+        workflow_id=workflow_id,
+        run_id=run_id,
         graph_name=normalized_meta["graph_name"],
         graph_version=normalized_meta["graph_version"],
     )
@@ -676,6 +681,8 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         "tenant.id": context.tenant_id,
         "case.id": context.case_id,
         "graph.version": context.graph_version,
+        "workflow.id": context.workflow_id,
+        "run.id": context.run_id,
     }
     if ledger_identifier:
         base_observation_metadata["ledger.id"] = ledger_identifier
@@ -717,6 +724,8 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 metadata={
                     "trace_id": context.trace_id,
                     "version": context.graph_version,
+                    "workflow_id": context.workflow_id,
+                    "run_id": context.run_id,
                 },
             )
             trace_started = True
@@ -1087,6 +1096,7 @@ def start_ingestion_run(
         to_dispatch,
         queued_at=queued_at,
         trace_id=meta["trace_id"],
+        collection_id=collection_scope,
         embedding_profile=resolved_profile_id,
         source="manual",
         invalid_document_ids=invalid_document_ids,
@@ -1289,12 +1299,16 @@ def handle_document_upload(
         source="upload",
     )
 
+    ingestion_run_id = uuid4().hex
+
     graph_payload = {
         "tenant_id": meta["tenant_id"],
         "uploader_id": str(meta.get("key_alias") or meta["case_id"]),
         "case_id": meta["case_id"],
         "trace_id": meta["trace_id"],
         "workflow_id": document_meta.workflow_id,
+        "ingestion_run_id": ingestion_run_id,
+        "collection_id": metadata_obj.get("collection_id"),
         "file_bytes": file_bytes,
         "filename": original_name,
         "declared_mime": blob.media_type,
@@ -1460,6 +1474,7 @@ def handle_document_upload(
         document_ids,
         queued_at=queued_at,
         trace_id=meta["trace_id"],
+        collection_id=metadata_obj.get("collection_id"),
         embedding_profile=resolved_profile_id,
         source="upload",
     )

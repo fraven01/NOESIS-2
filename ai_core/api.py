@@ -273,7 +273,6 @@ def decide_delta(
         "document_id": normalized_document.document_id,
         "workflow_id": document.ref.workflow_id,
         "case_id": metadata.get("case_id"),
-        "request_id": metadata.get("request_id"),
         "origin_uri": metadata.get("origin_uri"),
         "provider": metadata.get("provider"),
         "source": metadata.get("source") or document.source,
@@ -416,7 +415,6 @@ def trigger_embedding(
     embedding_profile: Optional[str] = None,
     tenant_id: Optional[str] = None,
     case_id: Optional[str] = None,
-    request_id: Optional[str] = None,
     vector_client: Optional[PgVectorClient] = None,
     vector_client_factory: Optional[Callable[[], PgVectorClient]] = None,
 ) -> EmbeddingResult:
@@ -463,7 +461,6 @@ def trigger_embedding(
             "workflow_id": chunk_meta.workflow_id,
             "document_id": chunk_meta.document_id,
             "lifecycle_state": chunk_meta.lifecycle_state,
-            "request_id": request_id,
         },
     )
 

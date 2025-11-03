@@ -37,6 +37,8 @@ class GraphContext:
     tenant_id: str
     case_id: str
     trace_id: str
+    workflow_id: str
+    run_id: str
     graph_name: str
     graph_version: str = "v0"
 

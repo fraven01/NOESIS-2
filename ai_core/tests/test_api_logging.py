@@ -26,7 +26,6 @@ def test_decide_delta_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     contract = NormalizedDocumentInputV1(
         tenant_id="tenant-xyz",
         case_id="case-123",
-        request_id="req-456",
         metadata={
             "source": "crawler",
             "origin_uri": "https://example.com/resource",
@@ -78,7 +77,6 @@ def test_decide_delta_logging(monkeypatch: pytest.MonkeyPatch) -> None:
     assert extra["tenant_id"] == "tenant-xyz"
     assert extra["document_id"] == normalized.document_id
     assert extra["case_id"] == "case-123"
-    assert extra["request_id"] == "req-456"
     assert extra["trace_id"] == "trace-123"
     assert extra["content_hash"] == "new-hash"
     assert extra["baseline_content_hash"] == "old-hash"

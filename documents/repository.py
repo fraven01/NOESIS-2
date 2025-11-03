@@ -248,6 +248,7 @@ class DocumentLifecycleStore:
         invalid_document_ids: Iterable[str],
         queued_at: str,
         trace_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
         embedding_profile: Optional[str] = None,
         source: Optional[str] = None,
     ) -> Dict[str, object]:
@@ -526,6 +527,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         invalid_document_ids: Iterable[str],
         queued_at: str,
         trace_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
         embedding_profile: Optional[str] = None,
         source: Optional[str] = None,
     ) -> Dict[str, object]:
@@ -554,6 +556,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             instance.document_ids = list(normalized_ids)
             instance.invalid_document_ids = list(normalized_invalid)
             instance.trace_id = _normalize_optional_string(trace_id) or ""
+            instance.collection_id = _normalize_optional_string(collection_id) or ""
             instance.embedding_profile = (
                 _normalize_optional_string(embedding_profile) or ""
             )

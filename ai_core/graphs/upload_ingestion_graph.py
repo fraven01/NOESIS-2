@@ -325,6 +325,9 @@ class UploadIngestionGraph:
                 diagnostics={"mime": declared_mime, "allowed": allowlist},
             )
 
+        ingestion_run_id = self._require_str(payload, "ingestion_run_id")
+        collection_id = self._normalize_optional_str(payload.get("collection_id"))
+
         state["meta"].update(
             {
                 "tenant_id": tenant_id,
@@ -336,10 +339,13 @@ class UploadIngestionGraph:
                 "filename": filename,
                 "workflow_id": workflow_id,
                 "trace_id": trace_id,
+                "ingestion_run_id": ingestion_run_id,
             }
         )
         if case_id:
             state["meta"]["case_id"] = case_id
+        if collection_id:
+            state["meta"]["collection_id"] = collection_id
         state["ingest"].update(
             {
                 "size": len(binary),
@@ -387,7 +393,8 @@ class UploadIngestionGraph:
         state["ingest"]["content_hash"] = content_hash
 
         source = state["meta"].get("source") or "upload"
-        dedupe_key = (tenant_id, source, content_hash)
+        collection_id = state["meta"].get("collection_id")
+        dedupe_key = (tenant_id, source, content_hash, collection_id)
         existing = self._dedupe_index.get(dedupe_key)
         if existing is not None:
             state["doc"].update(existing)
@@ -749,6 +756,7 @@ class UploadIngestionGraph:
             state["meta"].get("tenant_id"),
             state["meta"].get("source") or "upload",
             state["doc"].get("content_hash"),
+            state["meta"].get("collection_id"),
         )
         self._dedupe_index[dedupe_key] = {
             "document_id": document_id,
@@ -880,12 +888,14 @@ class UploadIngestionGraph:
         tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
         if tenant_id:
             metadata["tenant_id"] = tenant_id
-        case_id = self._normalize_optional_str(meta_state.get("case_id"))
-        if case_id:
-            metadata["case_id"] = case_id
         workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
         if workflow_id:
             metadata["workflow_id"] = workflow_id
+        ingestion_run_id = self._normalize_optional_str(
+            meta_state.get("ingestion_run_id")
+        )
+        if ingestion_run_id:
+            metadata["ingestion_run_id"] = ingestion_run_id
         document_id = doc_state.get("document_id")
         if document_id:
             metadata["document_id"] = str(document_id)
@@ -922,6 +932,11 @@ class UploadIngestionGraph:
         workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
         if workflow_id:
             metadata["workflow_id"] = workflow_id
+        ingestion_run_id = self._normalize_optional_str(
+            meta_state.get("ingestion_run_id")
+        )
+        if ingestion_run_id:
+            metadata["ingestion_run_id"] = ingestion_run_id
         document_id = doc_state.get("document_id")
         if document_id:
             metadata["document_id"] = str(document_id)
@@ -996,6 +1011,11 @@ class UploadIngestionGraph:
         workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
         if workflow_id:
             metadata["workflow_id"] = workflow_id
+        ingestion_run_id = self._normalize_optional_str(
+            meta_state.get("ingestion_run_id")
+        )
+        if ingestion_run_id:
+            metadata["ingestion_run_id"] = ingestion_run_id
         document_id = doc_state.get("document_id")
         if document_id:
             metadata["document_id"] = str(document_id)

@@ -842,10 +842,6 @@ class NormalizedDocumentInputV1(BaseModel):
         default_factory=dict,
         description="Additional provider specific reference attributes.",
     )
-    request_id: Optional[str] = Field(
-        default=None,
-        description="Optional request identifier for traceability.",
-    )
     version: Optional[str] = Field(
         default=None,
         description="Optional document version label supplied by the caller.",
@@ -872,7 +868,7 @@ class NormalizedDocumentInputV1(BaseModel):
         normalized = normalize_optional_string(value)
         return normalized.lower() if normalized else None
 
-    @field_validator("provider", "external_id", "case_id", "request_id", mode="before")
+    @field_validator("provider", "external_id", "case_id", mode="before")
     @classmethod
     def _normalize_optional_identifiers(cls, value: Optional[str]) -> Optional[str]:
         return normalize_optional_string(value)
@@ -1133,7 +1129,6 @@ class NormalizedDocumentInputV1(BaseModel):
             "tenant_id": self.tenant_id,
             "workflow_id": self.workflow_id,
             "case_id": self.case_id,
-            "request_id": self.request_id,
             "provider": self.provider,
             "origin_uri": self.origin_uri,
             "source": self.source,
@@ -1147,7 +1142,6 @@ class NormalizedDocumentInputV1(BaseModel):
         raw_reference: Mapping[str, Any],
         tenant_id: str,
         case_id: Optional[str] = None,
-        request_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> "NormalizedDocumentInputV1":
@@ -1232,9 +1226,6 @@ class NormalizedDocumentInputV1(BaseModel):
             language=language,
             metadata=metadata,
             external_ref=external_ref,
-            request_id=request_id
-            or metadata.get("request_id")
-            or raw_reference.get("request_id"),
             version=version,
             blob=descriptor,
         )

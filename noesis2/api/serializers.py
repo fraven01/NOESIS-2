@@ -21,6 +21,8 @@ class IdempotentResponseSerializer(serializers.Serializer):
 class IntakeRequestSerializer(serializers.Serializer):
     """Request body accepted by the agent intake endpoint."""
 
+    tenant_id = serializers.CharField(required=True)
+    trace_id = serializers.CharField(required=True)
     prompt = serializers.CharField(required=False, allow_blank=True)
     metadata = serializers.DictField(
         child=serializers.JSONField(),

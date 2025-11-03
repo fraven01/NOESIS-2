@@ -12,6 +12,9 @@ class DocumentLifecycleState(models.Model):
     document_id = models.UUIDField()
     workflow_id = models.CharField(max_length=255, blank=True, default="")
     state = models.CharField(max_length=32)
+    trace_id = models.CharField(max_length=255, blank=True, default="")
+    run_id = models.CharField(max_length=255, blank=True, default="")
+    ingestion_run_id = models.CharField(max_length=255, blank=True, default="")
     changed_at = models.DateTimeField()
     reason = models.TextField(blank=True, default="")
     policy_events = models.JSONField(blank=True, default=list)
@@ -35,6 +38,7 @@ class DocumentIngestionRun(models.Model):
 
     tenant = models.CharField(max_length=255)
     case = models.CharField(max_length=255)
+    collection_id = models.CharField(max_length=255, blank=True, default="")
     run_id = models.CharField(max_length=255)
     status = models.CharField(max_length=32)
     queued_at = models.CharField(max_length=64)

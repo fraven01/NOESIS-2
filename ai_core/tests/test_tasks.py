@@ -883,7 +883,6 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     state = {
         "tenant_id": "tenant-1",
         "case_id": "case-1",
-        "request_id": "req-1",
         "raw_document": {
             "document_id": document_id,
             "content": "Document body",
@@ -899,7 +898,6 @@ def test_run_ingestion_graph_emits_trace_and_spans(monkeypatch, tmp_path):
     contract = NormalizedDocumentInputV1(
         tenant_id=state["tenant_id"],
         case_id=state["case_id"],
-        request_id=state["request_id"],
         document_id=document_id,
         metadata=dict(state["raw_document"]["metadata"]),
         blob=DocumentBlobDescriptorV1(inline_text=state["raw_document"]["content"]),

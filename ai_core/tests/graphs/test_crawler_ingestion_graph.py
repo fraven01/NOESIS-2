@@ -79,7 +79,6 @@ def _build_contract(
     *,
     tenant_id: str,
     case_id: str | None,
-    request_id: str | None,
     workflow_id: str | None = None,
     source: str | None = None,
 ) -> NormalizedDocumentInputV1:
@@ -87,7 +86,6 @@ def _build_contract(
     return NormalizedDocumentInputV1(
         tenant_id=tenant_id,
         case_id=case_id,
-        request_id=request_id,
         workflow_id=workflow_id,
         source=source,
         metadata=metadata,
@@ -104,7 +102,6 @@ def _build_state(
 ) -> dict[str, object]:
     tenant_id = overrides.get("tenant_id", "tenant")
     case_id = overrides.get("case_id", "case")
-    request_id = overrides.get("request_id", "req-1")
     origin_uri = overrides.get("origin_uri", "https://example.com/document")
     provider = overrides.get("provider", "web")
     content_type = overrides.get("content_type", "text/plain")
@@ -187,7 +184,6 @@ def _build_state(
         raw_document,
         tenant_id=tenant_id,
         case_id=case_id,
-        request_id=request_id,
         workflow_id=overrides.get("workflow_id"),
         source=raw_document.get("metadata", {}).get("source"),
     )
@@ -196,7 +192,6 @@ def _build_state(
     state: dict[str, object] = {
         "tenant_id": tenant_id,
         "case_id": case_id,
-        "request_id": request_id,
         "raw_document": raw_document,
         "guardrails": guardrail_context,
         "baseline": overrides.get("baseline", {}),
@@ -220,7 +215,7 @@ def test_orchestrates_nominal_flow() -> None:
     client = StubVectorClient()
     state = _build_state(vector_client=client)
 
-    updated_state, result = graph.run(state, {"request_id": "req-1"})
+    updated_state, result = graph.run(state, {})
 
     assert updated_state is not state
     transitions = result["transitions"]
@@ -505,7 +500,6 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
         raw_reference: Mapping[str, object],
         tenant_id: str,
         case_id: str | None = None,
-        request_id: str | None = None,
         workflow_id: str | None = None,
         source: str | None = None,
     ):
@@ -513,7 +507,6 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
             raw_reference,
             tenant_id=tenant_id,
             case_id=case_id,
-            request_id=request_id,
             workflow_id=workflow_id,
             source=source,
         )
@@ -521,7 +514,6 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
             {
                 "tenant_id": contract.tenant_id,
                 "case_id": contract.case_id,
-                "request_id": contract.request_id,
                 "workflow_id": contract.workflow_id,
                 "source": contract.source,
             }
@@ -562,9 +554,9 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
 def test_document_service_adapter_is_injected() -> None:
     service = RecordingDocumentLifecycleService()
     graph = CrawlerIngestionGraph(document_service=service)
-    state = _build_state(request_id=None)
+    state = _build_state()
 
-    updated_state, result = graph.run(state, {"request_id": "req-custom"})
+    updated_state, result = graph.run(state, {})
 
     assert result["decision"]
     assert service.normalize_calls == []

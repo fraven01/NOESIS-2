@@ -293,6 +293,32 @@ def test_intake_persists_state_and_headers(
     assert state["meta"]["case_id"] == "case-123"
 
 
+@pytest.mark.django_db
+def test_write_route_without_trace_id_gets_one(
+    client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(
+        views, "_run_graph", lambda request, graph: Response({"ok": True})
+    )
+
+    headers = {
+        META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-no-trace",
+    }
+
+    response = client.post(
+        "/v1/ai/intake/",
+        data={},
+        content_type="application/json",
+        **headers,
+    )
+
+    assert response.status_code == 200
+    assert X_TRACE_ID_HEADER in response
+    assert response[X_TRACE_ID_HEADER]
+
+
 def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -405,6 +431,8 @@ def _graph_context(tenant: str, case_id: str) -> GraphContext:
         tenant_id=tenant,
         case_id=case_id,
         trace_id="test-trace",
+        workflow_id="test-workflow",
+        run_id="test-run",
         graph_name="info_intake",
     )
 

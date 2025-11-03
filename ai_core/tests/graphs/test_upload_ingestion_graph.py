@@ -23,6 +23,7 @@ def test_nominal_run() -> None:
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
         "trace_id": "trace-1",
+        "ingestion_run_id": "run-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -45,6 +46,8 @@ def test_run_until_stops_after_marker() -> None:
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
         "trace_id": "trace-1",
+        "ingestion_run_id": "run-1",
+        "collection_id": None,
         "file_bytes": b"Hello world",
     }
 
@@ -60,6 +63,7 @@ def test_duplicate_upload_skipped() -> None:
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
         "trace_id": "trace-1",
+        "ingestion_run_id": "run-1",
         "file_bytes": b"Hello world",
     }
 
@@ -107,6 +111,7 @@ def test_guardrail_allow_and_delta_merge_policy_events() -> None:
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
         "trace_id": "trace-1",
+        "ingestion_run_id": "run-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -157,6 +162,7 @@ def test_guardrail_deny_short_circuits_delta() -> None:
         "tenant_id": "tenant-a",
         "uploader_id": "user-1",
         "trace_id": "trace-1",
+        "ingestion_run_id": "run-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }
@@ -212,6 +218,7 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
             "tenant_id": "tenant-a",
             "uploader_id": "user-1",
             "trace_id": "trace-1",
+            "ingestion_run_id": "run-1",
             "file_bytes": b"Hello world",
             "filename": "example.txt",
         }
@@ -258,6 +265,7 @@ def test_upload_transition_metadata_contains_ids() -> None:
         "uploader_id": "user-1",
         "trace_id": "trace-meta",
         "workflow_id": "flow-meta",
+        "ingestion_run_id": "run-1",
         "file_bytes": b"Hello world",
         "filename": "example.txt",
     }

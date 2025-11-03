@@ -15,6 +15,8 @@ def test_load_returns_empty_when_state_file_absent(tmp_path, monkeypatch) -> Non
         tenant_id="tenant-123",
         case_id="case-456",
         trace_id="trace-789",
+        workflow_id="test-workflow",
+        run_id="test-run",
         graph_name="info_intake",
     )
 
@@ -28,6 +30,8 @@ def test_save_persists_state_under_sanitized_path(tmp_path, monkeypatch) -> None
         tenant_id="Tenant One",
         case_id="Case:01",
         trace_id="trace-abc",
+        workflow_id="test-workflow",
+        run_id="test-run",
         graph_name="retrieval_augmented_generation",
     )
     state = {"step": "complete", "nested": {"value": 3}}

@@ -11,7 +11,7 @@ except ImportError:  # pragma: no cover - fallback for <3.12
     from typing_extensions import TypeAliasType
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ai_core.tools.errors import ToolErrorType
 
@@ -30,7 +30,6 @@ class ToolContext(BaseModel):
         "examples": [
             {
                 "tenant_id": "5aa31da6-9278-4da0-9f1a-61b8d3edc5cc",
-                "request_id": "8607a8d9-0f3f-43df-bf86-37e845e1574c",
                 "trace_id": "trace-123",
                 "invocation_id": "0f4e6712-6d04-4514-b6cb-943b0667d45c",
                 "now_iso": "2024-05-03T12:34:56.123456+00:00",
@@ -42,7 +41,6 @@ class ToolContext(BaseModel):
     }
 
     tenant_id: UUID
-    request_id: UUID
     trace_id: str
     invocation_id: UUID
     now_iso: datetime
@@ -52,6 +50,15 @@ class ToolContext(BaseModel):
     locale: Optional[str] = None
     safety_mode: Optional[str] = None
     auth: Optional[dict[str, Any]] = None
+
+    # New fields
+    run_id: Optional[str] = None
+    ingestion_run_id: Optional[str] = None
+    workflow_id: Optional[str] = None
+    collection_id: Optional[str] = None
+    document_id: Optional[str] = None
+    document_version_id: Optional[str] = None
+    case_id: Optional[str] = None
 
     @field_validator("now_iso")
     @classmethod
@@ -63,6 +70,14 @@ class ToolContext(BaseModel):
         if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
             raise ValueError("now_iso must include timezone information")
         return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def check_run_ids(self) -> "ToolContext":
+        if self.run_id is None and self.ingestion_run_id is None:
+            raise ValueError("Either run_id or ingestion_run_id must be provided.")
+        if self.run_id is not None and self.ingestion_run_id is not None:
+            raise ValueError("Only one of run_id or ingestion_run_id can be provided.")
+        return self
 
 
 class ToolErrorMeta(BaseModel):

@@ -707,6 +707,8 @@ INTAKE_REQUEST_EXAMPLE = OpenApiExample(
     summary="Initial workflow context",
     description="Submit the first intake payload to capture tenant metadata and workflow scope.",
     value={
+        "tenant_id": "acme",
+        "trace_id": "f82c8a4f3f94484a8b1c9d03b1f65e10",
         "prompt": "Starte Intake für Projekt Kickoff",
         "metadata": {"project": "acme-kickoff", "initiator": "alex@example.com"},
         "scope": "kickoff",
@@ -748,6 +750,8 @@ RAG_QUERY_REQUEST_EXAMPLE = OpenApiExample(
     summary="Execute retrieval for a question",
     description="Submit a question, optional pre-composed query and metadata to the production retrieval graph.",
     value={
+        "tenant_id": "acme",
+        "trace_id": "6cdb89f6-8826-4f9b-8c82-1f14b3d4c21b",
         "question": "Welche Reisekosten gelten für Consultants?",
         "filters": {"doc_class": "policy", "process": "travel"},
         "visibility": "tenant",
@@ -809,6 +813,8 @@ RAG_QUERY_CURL = _curl(
 RAG_QUERY_REQUEST = inline_serializer(
     name="RagQueryRequest",
     fields={
+        "tenant_id": serializers.CharField(required=True),
+        "trace_id": serializers.CharField(required=True),
         "question": serializers.CharField(required=False),
         "query": serializers.CharField(required=False),
         "filters": serializers.JSONField(required=False),

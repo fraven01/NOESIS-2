@@ -250,6 +250,7 @@ class CrawlerIngestionGraph:
         )
 
         self.upsert_handler: Optional[Callable[[Any], Any]] = None
+        self._dedupe_index: dict[tuple[str, str, str, str], Mapping[str, Any]] = {}
 
     def _normalized_from_state(
         self, state: Mapping[str, Any]
@@ -705,8 +706,6 @@ class CrawlerIngestionGraph:
         trace_candidate = base_metadata.get("trace_id")
         if not trace_candidate:
             trace_candidate = state.get("trace_id")
-        if not trace_candidate:
-            trace_candidate = state.get("request_id")
         if isinstance(trace_candidate, str):
             trace_candidate = trace_candidate.strip()
         if trace_candidate:
@@ -945,8 +944,6 @@ class CrawlerIngestionGraph:
             "tenant_id": normalized_input.meta.tenant_id,
             "workflow_id": normalized_input.meta.workflow_id,
             "case_id": state.get("case_id"),
-            "request_id": state.get("request_id")
-            or state.get("meta", {}).get("request_id"),
             "source": normalized_input.source,
         }
         metadata = MappingProxyType(
@@ -1479,7 +1476,6 @@ class CrawlerIngestionGraph:
                 embedding_profile=embedding_state.get("profile"),
                 tenant_id=normalized.tenant_id,
                 case_id=state.get("case_id"),
-                request_id=state.get("request_id"),
                 vector_client=embedding_state.get("client"),
                 vector_client_factory=embedding_state.get("client_factory"),
             )

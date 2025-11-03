@@ -25,7 +25,6 @@ class DocumentLifecycleService(Protocol):
         raw_reference: Mapping[str, Any],
         tenant_id: str,
         case_id: Optional[str] = None,
-        request_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
@@ -88,7 +87,6 @@ class DocumentsApiLifecycleService:
         raw_reference: Mapping[str, Any],
         tenant_id: str,
         case_id: Optional[str] = None,
-        request_id: Optional[str] = None,
         workflow_id: Optional[str] = None,
         source: Optional[str] = None,
     ) -> NormalizedDocumentPayload:
@@ -96,7 +94,6 @@ class DocumentsApiLifecycleService:
             raw_reference=raw_reference,
             tenant_id=tenant_id,
             case_id=case_id,
-            request_id=request_id,
             workflow_id=workflow_id,
             source=source,
         )
