@@ -25,6 +25,7 @@ flowchart LR
 ```
 
 - Worker binden das Langfuse Python SDK (`langfuse.decorators`, Async-Callbacks) ein. Jeder Task sendet `trace_id`, `tenant_id`, `operation`.
+- Die Service-Schicht generiert `run_id` (Graph-Läufe) bzw. `ingestion_run_id` (Upload/Ingestion) und injiziert sie in ToolContext und Langfuse-Tags; `workflow_id` bleibt optionaler Business-Schlüssel.
 - LangGraph nutzt das integrierte Observability-Plugin; Nodes melden `span`-Informationen inklusive Input/Output-Metadaten.
 - Ingestion sendet Batch-Statistiken (`batch_size`, `duration`, `cost_estimate`) über Custom Metrics.
 - LiteLLM aktiviert Model-Trace per ENV `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_KEY`; Sampling wird über `LANGFUSE_SAMPLE_RATE` (0.05 Prod, 0.25 Staging) gesteuert.
@@ -38,7 +39,9 @@ flowchart LR
 ## Felder und Sampling
 | Feld | Quelle | Beschreibung |
 | --- | --- | --- |
-| `trace_id` | Django Request ID | Verbindet Web, Celery, LangGraph |
+| `trace_id` | Middleware-Resolver | Verbindet Web, Celery, LangGraph; Quelle: Header `X-Trace-Id`/`X-Request-ID`, Query, Body oder `traceparent`. |
+| `run_id` | Service-Schicht | Eindeutige ID pro Graph-Ausführung (`run_*`). |
+| `ingestion_run_id` | Service-Schicht | Eindeutige ID pro Upload-/Ingestion-Run (`ingest_*`). |
 | `tenant_id` | Celery Task Meta | Steuert RLS und Filter |
 | `operation` | Task- oder Node-Name | `ingestion.embed`, `agent.reason`, `liteLLM.call` |
 | `cost_total` | LiteLLM | Aggregierte Kosten pro Request |

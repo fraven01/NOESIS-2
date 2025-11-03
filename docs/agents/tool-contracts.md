@@ -11,10 +11,16 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 | Feld | Typ | Pflicht? | Validierung / Hinweise |
 | --- | --- | --- | --- |
 | `tenant_id` | `UUID` | ja | Mandantenkennzeichen, wird aus Request-Header übernommen. |
-| `trace_id` | `UUID` | ja | Korrelierte Anfrage-ID über Service- und Agentenebenen hinweg. |
-| `trace_id` | `str` | ja | Freitext für Log- und Trace-Verknüpfung. |
+| `trace_id` | `str` | ja | Korrelierte Trace-ID; Middleware liest `X-Trace-Id`, `X-Request-ID`, Query- oder Body-Feld sowie `traceparent`. |
 | `invocation_id` | `UUID` | ja | Eindeutige ID pro Tool-Ausführung. |
 | `now_iso` | `datetime` | ja | Muss timezone-aware sein; Validator erzwingt UTC-Konvertierung. |
+| `run_id` | `str\|None` | bedingt | Graph-Lauf-ID für Agenten/RAG-Flows; genau eins von `run_id`/`ingestion_run_id` muss gesetzt sein. |
+| `ingestion_run_id` | `str\|None` | bedingt | Upload-/Ingestion-Lauf-ID; exklusiv zu `run_id`. |
+| `workflow_id` | `str\|None` | optional | Optionale Workflow-Kennung (Graph-Name oder Business-Prozess). |
+| `collection_id` | `str\|None` | optional | Logischer Dokument-Scope für Deduplikation & Filter. |
+| `document_id` | `str\|None` | optional | Dokument-Referenz, falls bekannt. |
+| `document_version_id` | `str\|None` | optional | Versionierte Dokument-Kennung. |
+| `case_id` | `str\|None` | optional | Business-Kontext (z. B. CRM- oder Ticket-ID). |
 | `idempotency_key` | `str\|None` | optional | Wiederverwendungskennung zur Deduplikation. |
 | `timeouts_ms` | `PositiveInt\|None` | optional | Gesamtzeitbudget in Millisekunden (>0). |
 | `budget_tokens` | `int\|None` | optional | Modellbudget in Token. |
@@ -27,15 +33,21 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 ```json
 {
   "tenant_id": "5aa31da6-9278-4da0-9f1a-61b8d3edc5cc",
-  "trace_id": "8607a8d9-0f3f-43df-bf86-37e845e1574c",
+  "request_id": "8607a8d9-0f3f-43df-bf86-37e845e1574c",
   "trace_id": "trace-123",
+  "run_id": "graph_run_cfe213",
+  "workflow_id": "retrieval_augmented_generation",
   "invocation_id": "0f4e6712-6d04-4514-b6cb-943b0667d45c",
   "now_iso": "2024-05-03T12:34:56.123456+00:00",
+  "collection_id": "hr-onboarding",
+  "case_id": "crm-7421",
   "locale": "de-DE",
   "timeouts_ms": 120000,
   "budget_tokens": 4096
 }
 ```
+
+**Hinweis:** Ein Modell-Validator erzwingt, dass exakt eine der IDs `run_id` oder `ingestion_run_id` vorhanden ist. Client- und Service-Schichten erzeugen passende Werte (`run_...` für Graph-Ausführungen, `ingest_...` für Uploads) und spiegeln sie in Langfuse-Tags sowie Persistenzschichten wider.
 
 ## ToolResult & ToolResultMeta
 
