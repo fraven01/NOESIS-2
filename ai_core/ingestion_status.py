@@ -28,13 +28,13 @@ class RedisIngestionStatusStore:
             self._redis = _redis_client()
         return self._redis
 
-    def _key(self, tenant: str, case: str) -> str:
-        tenant_key = str(tenant).strip()
+    def _key(self, tenant_id: str, case: str) -> str:
+        tenant_key = str(tenant_id).strip()
         case_key = str(case).strip()
         return f"{self._key_prefix}:{tenant_key}:{case_key}"
 
-    def _load(self, tenant: str, case: str) -> dict[str, object] | None:
-        raw = self._client().get(self._key(tenant, case))
+    def _load(self, tenant_id: str, case: str) -> dict[str, object] | None:
+        raw = self._client().get(self._key(tenant_id, case))
         if raw is None:
             return None
         try:
@@ -45,13 +45,13 @@ class RedisIngestionStatusStore:
             return None
         return payload
 
-    def _persist(self, tenant: str, case: str, payload: dict[str, object]) -> None:
-        self._client().set(self._key(tenant, case), json.dumps(payload))
+    def _persist(self, tenant_id: str, case: str, payload: dict[str, object]) -> None:
+        self._client().set(self._key(tenant_id, case), json.dumps(payload))
 
     def record_ingestion_run_queued(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         document_ids: Iterable[str],
@@ -71,6 +71,9 @@ class RedisIngestionStatusStore:
             "document_ids": list(normalized_ids),
             "invalid_document_ids": list(normalized_invalid),
         }
+        tenant_identifier = _normalize_identifier(tenant_id)
+        if tenant_identifier is not None:
+            payload["tenant_id"] = tenant_identifier
         optional_values = {
             "trace_id": trace_id,
             "collection_id": collection_id,
@@ -82,36 +85,39 @@ class RedisIngestionStatusStore:
             if normalized is not None:
                 payload[key] = normalized
 
-        self._persist(tenant, case, payload)
+        self._persist(tenant_id, case, payload)
         return payload
 
     def mark_ingestion_run_running(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         started_at: str,
         document_ids: Iterable[str],
     ) -> dict[str, object] | None:
-        payload = self._load(tenant, case)
+        payload = self._load(tenant_id, case)
         if payload is None or payload.get("run_id") != run_id:
             return None
 
         payload["status"] = "running"
         payload["started_at"] = str(started_at)
+        tenant_identifier = _normalize_identifier(tenant_id)
+        if tenant_identifier is not None:
+            payload.setdefault("tenant_id", tenant_identifier)
 
         normalized_ids = _normalize_sequence(document_ids)
         if normalized_ids:
             payload["document_ids"] = list(normalized_ids)
 
-        self._persist(tenant, case, payload)
+        self._persist(tenant_id, case, payload)
         return payload
 
     def mark_ingestion_run_completed(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         finished_at: str,
@@ -124,7 +130,7 @@ class RedisIngestionStatusStore:
         document_ids: Iterable[str],
         error: str | None,
     ) -> dict[str, object] | None:
-        payload = self._load(tenant, case)
+        payload = self._load(tenant_id, case)
         if payload is None or payload.get("run_id") != run_id:
             return None
 
@@ -148,14 +154,22 @@ class RedisIngestionStatusStore:
             payload["error"] = normalized_error
         else:
             payload.pop("error", None)
+        tenant_identifier = _normalize_identifier(tenant_id)
+        if tenant_identifier is not None:
+            payload.setdefault("tenant_id", tenant_identifier)
 
-        self._persist(tenant, case, payload)
+        self._persist(tenant_id, case, payload)
         return payload
 
-    def get_ingestion_run(self, *, tenant: str, case: str) -> dict[str, object] | None:
-        payload = self._load(tenant, case)
+    def get_ingestion_run(
+        self, *, tenant_id: str, case: str
+    ) -> dict[str, object] | None:
+        payload = self._load(tenant_id, case)
         if payload is None:
             return None
+        tenant_identifier = _normalize_identifier(tenant_id)
+        if tenant_identifier is not None:
+            payload.setdefault("tenant_id", tenant_identifier)
         document_ids = payload.get("document_ids")
         if not isinstance(document_ids, list):
             payload["document_ids"] = list(_normalize_sequence(document_ids or ()))
@@ -205,7 +219,7 @@ def _as_iterable(values: Iterable[str] | None) -> Iterable[str]:
 
 
 def record_ingestion_run_queued(
-    tenant: str,
+    tenant_id: str,
     case: str,
     run_id: str,
     document_ids: Sequence[str],
@@ -220,7 +234,7 @@ def record_ingestion_run_queued(
     """Persist a queued ingestion run entry for later status lookups."""
 
     return _LIFECYCLE_STORE.record_ingestion_run_queued(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
         document_ids=_as_iterable(document_ids),
@@ -234,7 +248,7 @@ def record_ingestion_run_queued(
 
 
 def mark_ingestion_run_running(
-    tenant: str,
+    tenant_id: str,
     case: str,
     run_id: str,
     *,
@@ -244,7 +258,7 @@ def mark_ingestion_run_running(
     """Update the persisted status when the worker begins processing."""
 
     return _LIFECYCLE_STORE.mark_ingestion_run_running(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
         started_at=started_at,
@@ -253,7 +267,7 @@ def mark_ingestion_run_running(
 
 
 def mark_ingestion_run_completed(
-    tenant: str,
+    tenant_id: str,
     case: str,
     run_id: str,
     *,
@@ -270,7 +284,7 @@ def mark_ingestion_run_completed(
     """Persist the final state of an ingestion run."""
 
     return _LIFECYCLE_STORE.mark_ingestion_run_completed(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
         finished_at=finished_at,
@@ -285,10 +299,10 @@ def mark_ingestion_run_completed(
     )
 
 
-def get_latest_ingestion_run(tenant: str, case: str) -> dict[str, object] | None:
+def get_latest_ingestion_run(tenant_id: str, case: str) -> dict[str, object] | None:
     """Return the latest recorded ingestion run for the tenant/case pair."""
 
-    payload = _LIFECYCLE_STORE.get_ingestion_run(tenant=tenant, case=case)
+    payload = _LIFECYCLE_STORE.get_ingestion_run(tenant_id=tenant_id, case=case)
     if payload is None:
         return None
     if "run_id" not in payload:

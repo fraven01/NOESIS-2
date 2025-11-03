@@ -116,13 +116,14 @@ def test_rag_upload_persists_file_and_metadata(
     assert saved_document.blob.media_type == "text/plain"
 
     status_payload = ingestion_status_store.get_ingestion_run(
-        tenant=test_tenant_schema_name,
+        tenant_id=test_tenant_schema_name,
         case="case-123",
     )
     assert status_payload is not None
     assert status_payload["run_id"] == body["ingestion_run_id"]
     assert status_payload["status"] == "queued"
     assert status_payload["document_ids"] == [body["document_id"]]
+    assert status_payload["tenant_id"] == test_tenant_schema_name
 
 
 @pytest.mark.django_db

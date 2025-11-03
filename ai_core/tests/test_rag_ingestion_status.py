@@ -23,10 +23,10 @@ def test_rag_ingestion_status_returns_latest_run(
 
     run_id = "run-123"
     record_ingestion_run_queued(
-        tenant,
-        case,
-        run_id,
-        ["doc-1", "doc-2"],
+        tenant_id=tenant,
+        case=case,
+        run_id=run_id,
+        document_ids=["doc-1", "doc-2"],
         queued_at="2024-01-01T00:00:00Z",
         trace_id="trace-abc",
         embedding_profile="standard",
@@ -34,15 +34,15 @@ def test_rag_ingestion_status_returns_latest_run(
         invalid_document_ids=["missing-doc"],
     )
     mark_ingestion_run_running(
-        tenant,
-        case,
-        run_id,
+        tenant_id=tenant,
+        case=case,
+        run_id=run_id,
         started_at="2024-01-01T00:01:00Z",
     )
     mark_ingestion_run_completed(
-        tenant,
-        case,
-        run_id,
+        tenant_id=tenant,
+        case=case,
+        run_id=run_id,
         finished_at="2024-01-01T00:02:00Z",
         duration_ms=120.5,
         inserted_documents=2,

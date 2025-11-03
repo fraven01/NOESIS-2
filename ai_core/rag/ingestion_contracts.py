@@ -74,6 +74,7 @@ class ChunkMeta(BaseModel):
     collection_id: str | None = None
     document_id: str | None = None
     lifecycle_state: str | None = None
+    trace_id: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 

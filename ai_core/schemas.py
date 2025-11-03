@@ -68,6 +68,7 @@ class RagIngestionRunRequest(BaseModel):
     priority: Literal["low", "normal", "high"] = "normal"
     embedding_profile: str
     collection_id: str | None = None
+    source: str = "ingestion"
 
     @field_validator("document_ids", mode="after")
     @classmethod
@@ -117,6 +118,14 @@ class RagIngestionRunRequest(BaseModel):
     @classmethod
     def _normalise_collection_id(cls, value: object) -> str | None:
         return _normalise_optional_uuid(value, "collection_id")
+
+    @field_validator("source", mode="before")
+    @classmethod
+    def _normalise_source(cls, value: object) -> str:
+        if value is None:
+            return "ingestion"
+        text = str(value).strip()
+        return text or "ingestion"
 
 
 class RagHardDeleteAdminRequest(BaseModel):

@@ -222,8 +222,8 @@ def test_run_ingestion_success(monkeypatch):
     assert response["duration_ms"] == pytest.approx(500.0)
 
     assert dummy_process.calls == [
-        ("tenant-a", "case-b", "doc-1", "standard", None),
-        ("tenant-a", "case-b", "doc-2", "standard", None),
+        ("tenant-a", "case-b", "doc-1", "standard", None, "trace-xyz"),
+        ("tenant-a", "case-b", "doc-2", "standard", None, "trace-xyz"),
     ]
     assert len(captured_signatures) == 1
     assert len(captured_signatures[0]) == len(valid_ids)

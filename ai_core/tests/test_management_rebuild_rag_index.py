@@ -259,7 +259,7 @@ def test_rebuild_rag_index_health_check(
         "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
     )
 
-    def _upload(content: str, external_id: str) -> str:
+    def _upload(content: str, external_id: str) -> tuple[str, str]:
         upload = SimpleUploadedFile(
             f"{external_id}.txt", content.encode("utf-8"), content_type="text/plain"
         )
@@ -279,6 +279,7 @@ def test_rebuild_rag_index_health_check(
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]
+        trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
         case_segment = object_store.sanitize_identifier(case)
         metadata_path = Path(
@@ -290,12 +291,12 @@ def test_rebuild_rag_index_health_check(
         )
         stored_metadata = json.loads(metadata_path.read_text())
         assert stored_metadata["external_id"] == external_id
-        return document_id
+        return document_id, trace_id
 
-    doc_one = _upload(
+    doc_one, trace_one = _upload(
         "First document for vector index health check.", "index-health-one"
     )
-    doc_two = _upload(
+    doc_two, trace_two = _upload(
         "Second, completely different document for the same test.", "index-health-two"
     )
 
@@ -305,6 +306,7 @@ def test_rebuild_rag_index_health_check(
         doc_one,
         "standard",
         tenant_schema=tenant,
+        trace_id=trace_one,
     )
     second_result = process_document(
         tenant,
@@ -312,6 +314,7 @@ def test_rebuild_rag_index_health_check(
         doc_two,
         "standard",
         tenant_schema=tenant,
+        trace_id=trace_two,
     )
 
     assert first_result["inserted"] == 1

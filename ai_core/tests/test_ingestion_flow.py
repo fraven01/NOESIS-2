@@ -63,6 +63,7 @@ def test_upload_ingest_query_end2end(
     body = resp.json()
     assert body["workflow_id"] == case
     doc_id = body["document_id"]
+    trace_id = body["trace_id"]
 
     tenant_segment = object_store.sanitize_identifier(tenant)
     case_segment = object_store.sanitize_identifier(case)
@@ -79,6 +80,7 @@ def test_upload_ingest_query_end2end(
         doc_id,
         "standard",
         tenant_schema=tenant,
+        trace_id=trace_id,
     )
     assert result["written"] >= 1
     assert result["embedding_profile"] == "standard"

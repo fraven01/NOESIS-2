@@ -1466,10 +1466,10 @@ def handle_document_upload(
         )
 
     record_ingestion_run_queued(
-        meta["tenant_id"],
-        meta["case_id"],
-        ingestion_run_id,
-        document_ids,
+        tenant_id=meta["tenant_id"],
+        case=meta["case_id"],
+        run_id=ingestion_run_id,
+        document_ids=document_ids,
         queued_at=queued_at,
         trace_id=meta["trace_id"],
         collection_id=metadata_obj.get("collection_id"),

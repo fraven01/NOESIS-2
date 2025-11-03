@@ -1034,9 +1034,9 @@ def run_ingestion(
         vector_space_id=vector_space_id,
     )
     mark_ingestion_run_running(
-        tenant,
-        case,
-        run_id,
+        tenant_id=tenant,
+        case=case,
+        run_id=run_id,
         started_at=timezone.now().isoformat(),
         document_ids=dispatch_ids,
     )
@@ -1210,9 +1210,9 @@ def run_ingestion(
         response["error"] = str(failure)
 
     mark_ingestion_run_completed(
-        tenant,
-        case,
-        run_id,
+        tenant_id=tenant,
+        case=case,
+        run_id=run_id,
         finished_at=finished_at,
         duration_ms=duration_ms,
         inserted_documents=inserted,

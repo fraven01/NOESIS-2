@@ -34,7 +34,7 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
     )
 
-    def upload_document(content: str) -> str:
+    def upload_document(content: str) -> tuple[str, str]:
         upload = SimpleUploadedFile(
             "hello.txt", content.encode("utf-8"), content_type="text/plain"
         )
@@ -54,6 +54,7 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]
+        trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
         case_segment = object_store.sanitize_identifier(case)
         metadata_path = Path(
@@ -65,15 +66,16 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         )
         stored_metadata = json.loads(metadata_path.read_text())
         assert stored_metadata["external_id"] == external_id
-        return document_id
+        return document_id, trace_id
 
-    first_doc = upload_document("Hello RAG ingestion!")
+    first_doc, first_trace = upload_document("Hello RAG ingestion!")
     first_result = process_document(
         tenant,
         case,
         first_doc,
         "standard",
         tenant_schema=tenant,
+        trace_id=first_trace,
     )
 
     assert first_result["external_id"] == external_id
@@ -84,13 +86,14 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     assert first_result["written"] == 1
     assert first_result["embedding_profile"] == "standard"
 
-    second_doc = upload_document("Hello RAG ingestion!")
+    second_doc, second_trace = upload_document("Hello RAG ingestion!")
     second_result = process_document(
         tenant,
         case,
         second_doc,
         "standard",
         tenant_schema=tenant,
+        trace_id=second_trace,
     )
 
     assert second_result["external_id"] == external_id
@@ -105,13 +108,14 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     assert second_result["action"] in {"skipped", "near_duplicate_skipped"}
     assert second_result["written"] == 0
 
-    third_doc = upload_document("Hello RAG ingestion version two!")
+    third_doc, third_trace = upload_document("Hello RAG ingestion version two!")
     third_result = process_document(
         tenant,
         case,
         third_doc,
         "standard",
         tenant_schema=tenant,
+        trace_id=third_trace,
     )
 
     assert third_result["external_id"] == external_id
@@ -141,7 +145,7 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
         "ai_core.views.run_ingestion", SimpleNamespace(delay=lambda *a, **k: None)
     )
 
-    def upload_document() -> str:
+    def upload_document() -> tuple[str, str]:
         upload = SimpleUploadedFile(
             "hello.txt", content.encode("utf-8"), content_type="text/plain"
         )
@@ -161,6 +165,7 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]
+        trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
         case_segment = object_store.sanitize_identifier(case)
         metadata_path = Path(
@@ -172,17 +177,29 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
         )
         stored_metadata = json.loads(metadata_path.read_text())
         assert stored_metadata["external_id"] == external_id
-        return document_id
+        return document_id, trace_id
 
-    doc_a = upload_document()
-    doc_b = upload_document()
+    doc_a, trace_a = upload_document()
+    doc_b, trace_b = upload_document()
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_a = executor.submit(
-            process_document, tenant, case, doc_a, "standard", tenant_schema=tenant
+            process_document,
+            tenant,
+            case,
+            doc_a,
+            "standard",
+            tenant_schema=tenant,
+            trace_id=trace_a,
         )
         future_b = executor.submit(
-            process_document, tenant, case, doc_b, "standard", tenant_schema=tenant
+            process_document,
+            tenant,
+            case,
+            doc_b,
+            "standard",
+            tenant_schema=tenant,
+            trace_id=trace_b,
         )
         res_a = future_a.result()
         res_b = future_b.result()
