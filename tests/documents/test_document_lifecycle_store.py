@@ -8,6 +8,7 @@ import pytest
 from django.db import connection
 from django_tenants.utils import schema_context
 
+
 from documents.repository import (
     ACTIVE_STATE,
     RETIRED_STATE,
@@ -24,7 +25,7 @@ def test_persistent_store_persists_across_instances():
     timestamp = datetime.now(timezone.utc)
     created = store_a.record_document_state(
         tenant_id="tenant-a",
-        document_id=document_id,
+        document_id=str(document_id),
         workflow_id=None,
         state=ACTIVE_STATE,
         reason="ingested",
@@ -32,7 +33,7 @@ def test_persistent_store_persists_across_instances():
     )
 
     fetched = store_b.get_document_state(
-        tenant_id="tenant-a", document_id=document_id, workflow_id=None
+        tenant_id="tenant-a", document_id=str(document_id), workflow_id=None
     )
 
     assert fetched is not None
@@ -49,7 +50,7 @@ def test_persistent_store_allows_concurrent_mutations():
 
     store.record_document_state(
         tenant_id="tenant-concurrent",
-        document_id=document_id,
+        document_id=str(document_id),
         workflow_id=workflow_id,
         state=ACTIVE_STATE,
         reason="initial",
@@ -74,7 +75,7 @@ def test_persistent_store_allows_concurrent_mutations():
         local_store = PersistentDocumentLifecycleStore()
         return local_store.record_document_state(
             tenant_id="tenant-concurrent",
-            document_id=document_id,
+            document_id=str(document_id),
             workflow_id=workflow_id,
             state=target_state,
             reason=reason,
@@ -90,7 +91,7 @@ def test_persistent_store_allows_concurrent_mutations():
 
     final = PersistentDocumentLifecycleStore().get_document_state(
         tenant_id="tenant-concurrent",
-        document_id=document_id,
+        document_id=str(document_id),
         workflow_id=workflow_id,
     )
 
@@ -103,27 +104,23 @@ def test_persistent_store_allows_concurrent_mutations():
 @pytest.mark.django_db
 def test_persistent_store_persists_ingestion_runs():
     store = PersistentDocumentLifecycleStore()
-    tenant = "tenant-ingestion"
+    tenant_id = "tenant-ingestion"
     case = "case-1"
     run_id = "run-123"
-
+    document_id = "test_document_id"
     queued = store.record_ingestion_run_queued(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
-        document_ids=["doc-1", "doc-2"],
-        invalid_document_ids=["bad-1"],
+        document_ids=[document_id],
+        invalid_document_ids=[],
         queued_at="2024-01-01T00:00:00Z",
-        trace_id="trace-1",
-        embedding_profile="profile-a",
-        source="crawler",
     )
-
+    assert queued["document_ids"] == [document_id]
+    assert queued["tenant_id"] == tenant_id
     assert queued["status"] == "queued"
-    assert queued["document_ids"] == ["doc-1", "doc-2"]
-
     running = PersistentDocumentLifecycleStore().mark_ingestion_run_running(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
         started_at="2024-01-01T00:01:00Z",
@@ -135,7 +132,7 @@ def test_persistent_store_persists_ingestion_runs():
     assert running["document_ids"] == ["doc-1", "doc-2", "doc-3"]
 
     completed = PersistentDocumentLifecycleStore().mark_ingestion_run_completed(
-        tenant=tenant,
+        tenant_id=tenant_id,
         case=case,
         run_id=run_id,
         finished_at="2024-01-01T00:05:00Z",

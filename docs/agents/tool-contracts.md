@@ -11,7 +11,7 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 | Feld | Typ | Pflicht? | Validierung / Hinweise |
 | --- | --- | --- | --- |
 | `tenant_id` | `UUID` | ja | Mandantenkennzeichen, wird aus Request-Header übernommen. |
-| `request_id` | `UUID` | ja | Korrelierte Anfrage-ID über Service- und Agentenebenen hinweg. |
+| `trace_id` | `UUID` | ja | Korrelierte Anfrage-ID über Service- und Agentenebenen hinweg. |
 | `trace_id` | `str` | ja | Freitext für Log- und Trace-Verknüpfung. |
 | `invocation_id` | `UUID` | ja | Eindeutige ID pro Tool-Ausführung. |
 | `now_iso` | `datetime` | ja | Muss timezone-aware sein; Validator erzwingt UTC-Konvertierung. |
@@ -27,7 +27,7 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 ```json
 {
   "tenant_id": "5aa31da6-9278-4da0-9f1a-61b8d3edc5cc",
-  "request_id": "8607a8d9-0f3f-43df-bf86-37e845e1574c",
+  "trace_id": "8607a8d9-0f3f-43df-bf86-37e845e1574c",
   "trace_id": "trace-123",
   "invocation_id": "0f4e6712-6d04-4514-b6cb-943b0667d45c",
   "now_iso": "2024-05-03T12:34:56.123456+00:00",

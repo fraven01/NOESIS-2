@@ -57,10 +57,10 @@ class HeaderTenantRoutingMiddleware:
 class RequestLogContextMiddleware:
     """Bind request metadata to the logging context for the request lifecycle."""
 
-    _HEADER_MAP = {
+    _CONTEXT_MAPPING = {
         "trace_id": META_TRACE_ID_KEY,
         "case_id": META_CASE_ID_KEY,
-        "tenant": META_TENANT_ID_KEY,
+        "tenant_id": META_TENANT_ID_KEY,
         "key_alias": META_KEY_ALIAS_KEY,
     }
 
@@ -84,7 +84,7 @@ class RequestLogContextMiddleware:
         context: dict[str, str] = {}
         meta = getattr(request, "META", {})
 
-        for key, header in self._HEADER_MAP.items():
+        for key, header in self._CONTEXT_MAPPING.items():
             value = meta.get(header)
             if value:
                 context[key] = self._normalize(value)

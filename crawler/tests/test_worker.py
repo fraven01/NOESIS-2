@@ -169,12 +169,12 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
         case_id="case-b",
         crawl_id="crawl-1",
         idempotency_key="idemp-1",
-        request_id="req-1",
         frontier_state={"slot": "default"},
         document_id="doc-1",
         document_metadata=metadata,
         ingestion_overrides=overrides,
         meta_overrides=meta_overrides,
+        trace_id="trace-1",
     )
 
     assert publish_result.status == "published"

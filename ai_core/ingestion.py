@@ -553,7 +553,10 @@ def process_document(
     document_id: str,
     embedding_profile: str,
     tenant_schema: Optional[str] = None,
+    trace_id: Optional[str] = None,
+    **kwargs,
 ) -> Dict[str, object]:
+    kwargs.pop("session_salt", None)
     started = time.perf_counter()
     state = _load_pipeline_state(tenant, case, document_id)
     state["attempts"] = int(state.get("attempts", 0)) + 1
@@ -626,11 +629,21 @@ def process_document(
             "workflow_id": normalized_document.ref.workflow_id,
             "content_hash": normalized_document.checksum,
             "document_id": str(normalized_document.ref.document_id),
+            "trace_id": trace_id,
         }
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
         if normalized_document.ref.collection_id is not None:
             meta["collection_id"] = str(normalized_document.ref.collection_id)
+
+        if not meta.get("tenant_id"):
+            raise InputError(
+                "missing_tenant_id", "tenant_id is required in document meta"
+            )
+        if not meta.get("trace_id"):
+            raise InputError(
+                "missing_trace_id", "trace_id is required in document meta"
+            )
 
         pipeline_config_overrides = getattr(
             normalized_document.meta, "pipeline_config", None
@@ -963,6 +976,13 @@ def run_ingestion(
     session_salt: Optional[str] = None,  # noqa: ARG001 - propagated by ScopedTask
     session_scope: Optional[Tuple[str, str, str]] = None,  # noqa: ARG001 - unused hook
 ) -> Dict[str, object]:
+    if not tenant:
+        raise InputError("missing_tenant_id", "tenant_id is required")
+    if not run_id:
+        raise InputError("missing_run_id", "run_id is required")
+    if not trace_id:
+        raise InputError("missing_trace_id", "trace_id is required")
+
     valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
     dispatch_ids = list(valid_ids if valid_ids else document_ids)
     doc_count = len(valid_ids)
@@ -1038,6 +1058,7 @@ def run_ingestion(
                     doc_id,
                     resolved_profile_id,
                     tenant_schema,
+                    trace_id,
                 )
                 for doc_id in valid_ids
             )

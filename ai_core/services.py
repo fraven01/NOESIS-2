@@ -1090,16 +1090,14 @@ def start_ingestion_run(
     )
 
     record_ingestion_run_queued(
-        meta["tenant_id"],
-        meta["case_id"],
-        ingestion_run_id,
-        to_dispatch,
+        tenant_id=meta["tenant_id"],
+        case=meta["case_id"],
+        run_id=ingestion_run_id,
+        document_ids=to_dispatch,
         queued_at=queued_at,
         trace_id=meta["trace_id"],
-        collection_id=collection_scope,
-        embedding_profile=resolved_profile_id,
-        source="manual",
-        invalid_document_ids=invalid_document_ids,
+        embedding_profile=validated_data.embedding_profile,
+        source=validated_data.source,
     )
 
     idempotent = bool(idempotency_key)

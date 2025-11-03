@@ -29,14 +29,17 @@ class DocumentLifecycleState(models.Model):
             )
         ]
         indexes = [
-            models.Index(fields=("tenant_id", "workflow_id")),
+            models.Index(
+                fields=("tenant_id", "workflow_id"),
+                name="doc_lifecycle_tenant_wf_idx",
+            ),
         ]
 
 
 class DocumentIngestionRun(models.Model):
     """Persistent metadata for the last ingestion run per tenant/case."""
 
-    tenant = models.CharField(max_length=255)
+    tenant_id = models.CharField(max_length=255)
     case = models.CharField(max_length=255)
     collection_id = models.CharField(max_length=255, blank=True, default="")
     run_id = models.CharField(max_length=255)
@@ -61,10 +64,16 @@ class DocumentIngestionRun(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("tenant", "case"), name="document_ingestion_run_unique_case"
+                fields=("tenant_id", "case"), name="document_ingestion_run_unique_case"
             )
         ]
         indexes = [
-            models.Index(fields=("tenant", "case")),
-            models.Index(fields=("tenant", "run_id")),
+            models.Index(
+                fields=("tenant_id", "case"),
+                name="doc_ing_run_tenant_case_idx",
+            ),
+            models.Index(
+                fields=("tenant_id", "run_id"),
+                name="doc_ing_run_tenant_run_idx",
+            ),
         ]

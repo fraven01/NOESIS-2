@@ -45,12 +45,14 @@ _CONTEXT_FIELDS: tuple[str, ...] = (
     "trace_id",
     "span_id",
     "case_id",
-    "tenant",
+    "tenant_id",
     "key_alias",
     "collection_id",
     "workflow_id",
     "run_id",
     "ingestion_run_id",
+    "document_id",
+    "document_version_id",
 )
 _LOG_CONTEXT: contextvars.ContextVar[dict[str, str] | None] = contextvars.ContextVar(
     "log_context", default=None
@@ -280,7 +282,18 @@ def _ensure_trace_keys(
     context = get_log_context()
     if context:
         mask = _masking_enabled()
-        for field in ("trace_id", "case_id", "tenant", "key_alias"):
+        for field in (
+            "trace_id",
+            "case_id",
+            "tenant_id",
+            "key_alias",
+            "collection_id",
+            "workflow_id",
+            "run_id",
+            "ingestion_run_id",
+            "document_id",
+            "document_version_id",
+        ):
             value = event_dict.get(field)
             if value not in (None, ""):
                 continue
@@ -288,9 +301,6 @@ def _ensure_trace_keys(
             if raw_value is None:
                 continue
             event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
-
-    if "tenant" in event_dict and "tenant_id" not in event_dict:
-        event_dict["tenant_id"] = event_dict["tenant"]
 
     for key in ("trace_id", "span_id", "case_id", "tenant_id"):
         event_dict.setdefault(key, None)
@@ -568,7 +578,7 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
         context = get_log_context()
         if context:
             mask = _masking_enabled()
-            for field in ("trace_id", "case_id", "tenant", "key_alias"):
+            for field in _CONTEXT_FIELDS:
                 current_value = event_dict.get(field)
                 if current_value not in (None, ""):
                     continue
@@ -576,17 +586,6 @@ class _ContextAwareBoundLogger(structlog.stdlib.BoundLogger):
                 if raw_value is None:
                     continue
                 event_dict[field] = mask_value(raw_value) if mask else str(raw_value)
-
-            if "tenant_id" not in event_dict:
-                tenant_value = event_dict.get("tenant")
-                if tenant_value is None:
-                    tenant_raw = context.get("tenant")
-                    if tenant_raw is not None:
-                        tenant_value = (
-                            mask_value(tenant_raw) if mask else str(tenant_raw)
-                        )
-                if tenant_value is not None:
-                    event_dict["tenant_id"] = tenant_value
 
         if event is not None:
             event_dict["event"] = event
@@ -895,6 +894,12 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
         "span_id": None,
         "case_id": None,
         "tenant_id": None,
+        "workflow_id": None,
+        "run_id": None,
+        "ingestion_run_id": None,
+        "collection_id": None,
+        "document_id": None,
+        "document_version_id": None,
     }
 
     if name and name.startswith("ai_core"):

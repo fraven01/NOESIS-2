@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import warnings
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, MutableMapping, Sequence, TypedDict
 
@@ -14,9 +13,6 @@ K_REQUIRED_SPAN_ATTRS: Sequence[str] = (
 )
 """Common span attributes required for observability."""
 
-REQUEST_ID_DEPRECATED = True
-"""Flag indicating the deprecated `request_id` field is still mapped for compatibility."""
-
 
 class MetaIds(TypedDict, total=False):
     """Metadata IDs provided by callers."""
@@ -26,7 +22,6 @@ class MetaIds(TypedDict, total=False):
     workflow_id: str
     case_id: str
     span_id: str
-    request_id: str
 
 
 @dataclass(frozen=True)
@@ -87,18 +82,6 @@ def normalize_trace_id(
     emitting a deprecation warning.
     """
 
-    warn_func = warn
-    if warn_func is None:
-
-        def _default_warn(message: str) -> None:
-            warnings.warn(
-                message,
-                DeprecationWarning,
-                stacklevel=2,
-            )
-
-        warn_func = _default_warn
-
     raw_trace = meta.get("trace_id")
     if raw_trace is None or (isinstance(raw_trace, str) and raw_trace.strip() == ""):
         request_id = meta.pop("request_id", None)
@@ -107,7 +90,6 @@ def normalize_trace_id(
             if not normalised_request:
                 raise ValueError("request_id cannot be empty when provided")
             meta["trace_id"] = normalised_request
-            warn_func("`request_id` is deprecated, use `trace_id` instead.")
             raw_trace = normalised_request
         else:
             raise ValueError("trace_id is required")
@@ -127,7 +109,6 @@ __all__ = [
     "DocumentRef",
     "K_REQUIRED_SPAN_ATTRS",
     "MetaIds",
-    "REQUEST_ID_DEPRECATED",
     "normalize_trace_id",
     "require_ids",
 ]

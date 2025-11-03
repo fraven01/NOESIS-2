@@ -2227,7 +2227,7 @@ class RagHardDeleteAdminView(APIView):
             tenant_schema = request_data.tenant_schema
 
         trace_id = uuid4().hex
-        bind_log_context(trace_id=trace_id, tenant=tenant_id)
+        bind_log_context(trace_id=trace_id, tenant_id=tenant_id)
 
         actor = _resolve_hard_delete_actor(request, operator_label)
 

@@ -1757,27 +1757,21 @@ def _resolve_trace_context(
         or _extract_from_mapping(state_meta, "case_id")
         or _extract_from_mapping(state, "case_id")
     )
-    request_id = _coerce_str(
-        _extract_from_mapping(meta, "request_id")
-        or _extract_from_mapping(state_meta, "request_id")
-        or _extract_from_mapping(state, "request_id")
+    trace_id = _coerce_str(
+        _extract_from_mapping(meta, "trace_id")
+        or _extract_from_mapping(state_meta, "trace_id")
+        or _extract_from_mapping(state, "trace_id")
     )
     workflow_id = _coerce_str(
         _extract_from_mapping(meta, "workflow_id")
         or _extract_from_mapping(state_meta, "workflow_id")
         or _extract_from_mapping(state, "workflow_id")
     )
-    trace_id = _coerce_str(
-        _extract_from_mapping(meta, "trace_id")
-        or _extract_from_mapping(state_meta, "trace_id")
-        or _extract_from_mapping(state, "trace_id")
-    )
     document_id = _resolve_document_id(state, meta)
 
     return {
         "tenant_id": tenant_id,
         "case_id": case_id,
-        "request_id": request_id,
         "workflow_id": workflow_id,
         "trace_id": trace_id,
         "document_id": document_id,
@@ -1789,7 +1783,17 @@ def _build_base_span_metadata(
     graph_run_id: Optional[str],
 ) -> Dict[str, Any]:
     attributes: Dict[str, Any] = {}
-    for key in ("tenant_id", "case_id", "trace_id", "document_id"):
+    for key in (
+        "tenant_id",
+        "case_id",
+        "trace_id",
+        "document_id",
+        "workflow_id",
+        "run_id",
+        "ingestion_run_id",
+        "collection_id",
+        "document_version_id",
+    ):
         value = _coerce_str(trace_context.get(key))
         if value:
             attributes[f"meta.{key}"] = value
@@ -1832,6 +1836,18 @@ def _collect_transition_attributes(
         document_id = _coerce_str(context_payload.get("document_id"))
         if document_id:
             attributes["meta.document_id"] = document_id
+        run_id = _coerce_str(context_payload.get("run_id"))
+        if run_id:
+            attributes["meta.run_id"] = run_id
+        ingestion_run_id = _coerce_str(context_payload.get("ingestion_run_id"))
+        if ingestion_run_id:
+            attributes["meta.ingestion_run_id"] = ingestion_run_id
+        collection_id = _coerce_str(context_payload.get("collection_id"))
+        if collection_id:
+            attributes["meta.collection_id"] = collection_id
+        document_version_id = _coerce_str(context_payload.get("document_version_id"))
+        if document_version_id:
+            attributes["meta.document_version_id"] = document_version_id
 
     if phase == "document_pipeline":
         pipeline_payload = transition.pipeline
@@ -1983,9 +1999,6 @@ def run_ingestion_graph(
             case_id = trace_context.get("case_id") or _coerce_str(
                 _extract_from_mapping(state, "case_id")
             )
-            request_id = trace_context.get("request_id") or _coerce_str(
-                _extract_from_mapping(state, "request_id")
-            )
             raw_metadata = raw_reference.get("metadata")
             if not isinstance(raw_metadata, MappingABC):
                 raw_metadata = None
@@ -2010,7 +2023,6 @@ def run_ingestion_graph(
                         raw_reference=raw_reference,
                         tenant_id=tenant_id,
                         case_id=case_id,
-                        request_id=request_id,
                         workflow_id=workflow_id,
                         source=source,
                     )

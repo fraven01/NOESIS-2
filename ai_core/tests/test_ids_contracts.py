@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import warnings
 
 import pytest
 
 from ai_core.ids import (
     K_REQUIRED_SPAN_ATTRS,
-    REQUEST_ID_DEPRECATED,
     CorrelationIds,
     DocumentRef,
     normalize_trace_id,
@@ -41,18 +39,6 @@ def test_normalize_trace_id_strips_and_returns_value() -> None:
     assert meta["trace_id"] == "trace-value"
 
 
-def test_normalize_trace_id_supports_request_id_with_warning() -> None:
-    meta = {"tenant_id": "tenant", "request_id": "legacy-trace"}
-
-    with warnings.catch_warnings(record=True) as caught:
-        warnings.simplefilter("always")
-        trace_id = normalize_trace_id(meta)
-
-    assert trace_id == "legacy-trace"
-    assert meta == {"tenant_id": "tenant", "trace_id": "legacy-trace"}
-    assert any("deprecated" in str(w.message) for w in caught)
-
-
 def test_normalize_trace_id_missing_values_raise_error() -> None:
     meta = {"tenant_id": "tenant"}
 
@@ -82,7 +68,6 @@ def test_correlation_and_document_ref_dataclasses() -> None:
 
 def test_contract_constants() -> None:
     assert K_REQUIRED_SPAN_ATTRS == ("tenant_id", "case_id", "trace_id", "workflow_id")
-    assert REQUEST_ID_DEPRECATED is True
 
 
 def test_require_ids_custom_required_fields() -> None:

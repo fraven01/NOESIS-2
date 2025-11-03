@@ -5,7 +5,6 @@ from .contracts import (
     DocumentRef,
     K_REQUIRED_SPAN_ATTRS,
     MetaIds,
-    REQUEST_ID_DEPRECATED,
     normalize_trace_id,
     require_ids,
 )
@@ -15,7 +14,6 @@ __all__ = [
     "DocumentRef",
     "K_REQUIRED_SPAN_ATTRS",
     "MetaIds",
-    "REQUEST_ID_DEPRECATED",
     "normalize_trace_id",
     "require_ids",
 ]

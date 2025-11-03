@@ -330,7 +330,7 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
             context = common_logging.get_log_context()
             assert context["trace_id"] == meta["trace_id"]
             assert context["case_id"] == meta["case_id"]
-            assert context["tenant"] == meta["tenant_id"]
+            assert context["tenant_id"] == meta["tenant_id"]
             assert context.get("key_alias") == meta.get("key_alias")
             logger.info("graph-run")
             return state, {"ok": True}
@@ -362,7 +362,7 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     event = events[0]
     assert event["trace_id"] != "-"
     assert event["case_id"] != "-"
-    assert event["tenant"] != "-"
+    assert event["tenant_id"] != "-"
     assert event.get("key_alias", "") != "-"
     assert common_logging.get_log_context() == {}
 

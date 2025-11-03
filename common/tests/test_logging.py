@@ -44,7 +44,7 @@ def test_filter_masks_values_when_masking_enabled(settings):
     with common_logging.log_context(
         trace_id="trace-abcdef",
         case_id="case-12345",
-        tenant="tenant-42",
+        tenant_id="tenant-42",
         key_alias="alias-secret",
     ):
         record = _build_record()
@@ -54,7 +54,7 @@ def test_filter_masks_values_when_masking_enabled(settings):
     assert record.trace_id.endswith("ef")
     assert "***" in record.trace_id
     assert record.case_id != "case-12345"
-    assert record.tenant != "tenant-42"
+    assert record.tenant_id != "tenant-42"
     assert record.key_alias != "alias-secret"
 
 
@@ -65,7 +65,7 @@ def test_filter_allows_unmasked_values_when_opted_in(settings):
     with common_logging.log_context(
         trace_id="trace-xyz",
         case_id="case-xyz",
-        tenant="tenant-xyz",
+        tenant_id="tenant-xyz",
         key_alias="alias-xyz",
     ):
         record = _build_record()
@@ -73,7 +73,7 @@ def test_filter_allows_unmasked_values_when_opted_in(settings):
 
     assert record.trace_id == "trace-xyz"
     assert record.case_id == "case-xyz"
-    assert record.tenant == "tenant-xyz"
+    assert record.tenant_id == "tenant-xyz"
     assert record.key_alias == "alias-xyz"
 
 
@@ -86,7 +86,7 @@ def test_filter_sets_placeholders_when_context_missing(settings):
 
     assert record.trace_id == "-"
     assert record.case_id == "-"
-    assert record.tenant == "-"
+    assert record.tenant_id == "-"
     assert record.key_alias == "-"
 
 
@@ -99,7 +99,7 @@ def test_structlog_logger_includes_context_and_service(settings, monkeypatch):
 
     with capture_logs() as logs:
         with common_logging.log_context(
-            trace_id="trace-xyz123", case_id="case-789", tenant="tenant-42"
+            trace_id="trace-xyz123", case_id="case-789", tenant_id="tenant-42"
         ):
             common_logging.get_logger("common.tests").info("hello", extra_field="value")
 
@@ -113,7 +113,7 @@ def test_structlog_logger_includes_context_and_service(settings, monkeypatch):
     assert event["trace_id"].endswith("23")
     assert "***" in event["trace_id"]
     assert event["case_id"].startswith("ca")
-    assert event["tenant"].startswith("te")
+    assert event["tenant_id"].startswith("te")
 
 
 def test_structlog_logger_respects_string_opt_in(settings):
@@ -121,15 +121,15 @@ def test_structlog_logger_respects_string_opt_in(settings):
 
     with capture_logs() as logs:
         with common_logging.log_context(
-            trace_id="trace-xyz123", case_id="case-789", tenant="tenant-42"
+            trace_id="trace-xyz123", case_id="case-789", tenant_id="tenant-42"
         ):
             common_logging.get_logger("common.tests").info("hello", extra_field="value")
 
-    assert logs, "expected log entry"
-    event = logs[0]
-    assert event["trace_id"] == "trace-xyz123"
-    assert event["case_id"] == "case-789"
-    assert event["tenant"] == "tenant-42"
+        assert logs, "expected log entry"
+        event = logs[0]
+        assert event["trace_id"] == "trace-xyz123"
+        assert event["case_id"] == "case-789"
+        assert event["tenant_id"] == "tenant-42"
 
 
 def test_request_log_context_middleware_binds_and_clears():
@@ -157,7 +157,7 @@ def test_request_log_context_middleware_binds_and_clears():
     assert response.status_code == 200
     assert observed["trace_id"] == "trace-123"
     assert observed["case_id"] == "case-456"
-    assert observed["tenant"] == "tenant-789"
+    assert observed["tenant_id"] == "tenant-789"
     assert observed["key_alias"] == "alias-001"
     assert common_logging.get_log_context() == {}
 

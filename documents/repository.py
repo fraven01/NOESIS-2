@@ -116,7 +116,7 @@ class DocumentLifecycleRecord:
 
 @dataclass
 class IngestionRunRecord:
-    tenant: str
+    tenant_id: str
     case: str
     run_id: str
     status: str
@@ -137,6 +137,7 @@ class IngestionRunRecord:
 
     def as_payload(self) -> Dict[str, object]:
         payload: Dict[str, object] = {
+            "tenant_id": self.tenant_id,
             "run_id": self.run_id,
             "status": self.status,
             "queued_at": self.queued_at,
@@ -241,7 +242,7 @@ class DocumentLifecycleStore:
     def record_ingestion_run_queued(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         document_ids: Iterable[str],
@@ -263,7 +264,7 @@ class DocumentLifecycleStore:
             if value is not None
         )
         record = IngestionRunRecord(
-            tenant=tenant,
+            tenant_id=tenant_id,
             case=case,
             run_id=str(run_id),
             status="queued",
@@ -274,7 +275,7 @@ class DocumentLifecycleStore:
             embedding_profile=_normalize_optional_string(embedding_profile),
             source=_normalize_optional_string(source),
         )
-        key = (tenant, case)
+        key = (tenant_id, case)
         with self._lock:
             self._ingestion_runs[key] = record
             return record.as_payload()
@@ -282,13 +283,13 @@ class DocumentLifecycleStore:
     def mark_ingestion_run_running(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         started_at: str,
         document_ids: Iterable[str],
     ) -> Optional[Dict[str, object]]:
-        key = (tenant, case)
+        key = (tenant_id, case)
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -307,7 +308,7 @@ class DocumentLifecycleStore:
     def mark_ingestion_run_completed(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         finished_at: str,
@@ -320,7 +321,7 @@ class DocumentLifecycleStore:
         document_ids: Iterable[str],
         error: Optional[str],
     ) -> Optional[Dict[str, object]]:
-        key = (tenant, case)
+        key = (tenant_id, case)
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -349,9 +350,9 @@ class DocumentLifecycleStore:
             return record.as_payload()
 
     def get_ingestion_run(
-        self, *, tenant: str, case: str
+        self, *, tenant_id: str, case: str
     ) -> Optional[Dict[str, object]]:
-        key = (tenant, case)
+        key = (tenant_id, case)
         with self._lock:
             record = self._ingestion_runs.get(key)
             if record is None:
@@ -520,7 +521,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
     def record_ingestion_run_queued(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         document_ids: Iterable[str],
@@ -546,7 +547,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
 
         with transaction.atomic():
             instance, _ = model.objects.select_for_update().get_or_create(
-                tenant=tenant,
+                tenant_id=tenant_id,
                 case=case,
                 defaults={},
             )
@@ -571,12 +572,12 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             instance.inserted_chunks = None
             instance.save()
 
-        return self.get_ingestion_run(tenant=tenant, case=case) or {}
+        return self.get_ingestion_run(tenant_id=tenant_id, case=case) or {}
 
     def mark_ingestion_run_running(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         started_at: str,
@@ -592,7 +593,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         with transaction.atomic():
             try:
                 instance = model.objects.select_for_update().get(
-                    tenant=tenant, case=case
+                    tenant_id=tenant_id, case=case
                 )
             except model.DoesNotExist:  # type: ignore[attr-defined]
                 return None
@@ -606,12 +607,12 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
                 instance.document_ids = list(normalized_ids)
             instance.save()
 
-        return self.get_ingestion_run(tenant=tenant, case=case)
+        return self.get_ingestion_run(tenant_id=tenant_id, case=case)
 
     def mark_ingestion_run_completed(
         self,
         *,
-        tenant: str,
+        tenant_id: str,
         case: str,
         run_id: str,
         finished_at: str,
@@ -639,7 +640,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         with transaction.atomic():
             try:
                 instance = model.objects.select_for_update().get(
-                    tenant=tenant, case=case
+                    tenant_id=tenant_id, case=case
                 )
             except model.DoesNotExist:  # type: ignore[attr-defined]
                 return None
@@ -661,19 +662,19 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             instance.error = normalized_error or ""
             instance.save()
 
-        return self.get_ingestion_run(tenant=tenant, case=case)
+        return self.get_ingestion_run(tenant_id=tenant_id, case=case)
 
     def get_ingestion_run(
-        self, *, tenant: str, case: str
+        self, *, tenant_id: str, case: str
     ) -> Optional[Dict[str, object]]:
         model = _ingestion_model()
         try:
-            instance = model.objects.get(tenant=tenant, case=case)
+            instance = model.objects.get(tenant_id=tenant_id, case=case)
         except model.DoesNotExist:  # type: ignore[attr-defined]
             return None
 
         payload = IngestionRunRecord(
-            tenant=instance.tenant,
+            tenant_id=instance.tenant_id,
             case=instance.case,
             run_id=instance.run_id,
             status=instance.status,

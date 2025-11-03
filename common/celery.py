@@ -108,7 +108,7 @@ class ContextTask(Task):
 
         tenant = meta.get("tenant_id")
         if tenant:
-            context["tenant"] = self._normalize(tenant)
+            context["tenant_id"] = self._normalize(tenant)
 
         key_alias = meta.get("key_alias")
         if key_alias:

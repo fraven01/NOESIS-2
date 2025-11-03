@@ -128,6 +128,7 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
             document_id,
             profile_id,
             tenant_schema=tenant_schema,
+            trace_id="test-trace-id",
         )
 
     status_path = ingestion._status_store_path(tenant, case, document_id)
@@ -174,6 +175,7 @@ def test_process_document_retry_and_resume(monkeypatch, tmp_path):
         document_id,
         profile_id,
         tenant_schema=tenant_schema,
+        trace_id="test-trace-id",
     )
 
     assert counts == prior_counts
@@ -304,8 +306,8 @@ def test_process_document_copies_pipeline_config_to_state(monkeypatch, tmp_path)
             document_id,
             "standard",
             tenant_schema=tenant_schema,
+            trace_id="test-trace-id",
         )
-
     assert captured["meta"]["pipeline_config"] == {"enable_ocr": True}
     assert captured["state"]["pipeline_config"] == {"enable_ocr": True}
     assert captured["state"]["meta"]["pipeline_config"] == {"enable_ocr": True}

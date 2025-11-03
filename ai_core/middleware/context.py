@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import uuid
-import warnings
 from typing import Any, Mapping, MutableMapping
 
 from django.http import HttpRequest, HttpResponse
@@ -17,7 +16,7 @@ class RequestContextMiddleware:
 
     TRACEPARENT_HEADER = "HTTP_TRACEPARENT"
     TRACE_ID_HEADER = "HTTP_X_TRACE_ID"
-    REQUEST_ID_HEADER = "HTTP_X_REQUEST_ID"
+
     CASE_ID_HEADER = "HTTP_X_CASE_ID"
     TENANT_ID_HEADER = "HTTP_X_TENANT_ID"
     KEY_ALIAS_HEADER = "HTTP_X_KEY_ALIAS"
@@ -100,7 +99,6 @@ class RequestContextMiddleware:
         # 1. Headers
         headers = request.META
         meta["trace_id"] = self._normalize_header(headers.get(self.TRACE_ID_HEADER))
-        meta["request_id"] = self._normalize_header(headers.get(self.REQUEST_ID_HEADER))
 
         traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
         if traceparent:
@@ -110,14 +108,12 @@ class RequestContextMiddleware:
                 span_id = self._normalize_w3c_id(parts[2])
 
         # 2. Query Parameters
-        if not meta.get("trace_id") and not meta.get("request_id"):
+        if not meta.get("trace_id"):
             meta["trace_id"] = request.GET.get("trace_id")
-            meta["request_id"] = request.GET.get("request_id")
 
         # 3. Request Body (for JSON content type)
         if (
             not meta.get("trace_id")
-            and not meta.get("request_id")
             and "application/json" in (request.content_type or "")
             and request.body
         ):
@@ -125,12 +121,11 @@ class RequestContextMiddleware:
                 data = json.loads(request.body)
                 if isinstance(data, dict):
                     meta["trace_id"] = data.get("trace_id")
-                    meta["request_id"] = data.get("request_id")
             except json.JSONDecodeError:
                 pass  # Ignore malformed JSON
 
         try:
-            trace_id = normalize_trace_id(meta, warn=warnings.warn)
+            trace_id = normalize_trace_id(meta)
         except ValueError:
             trace_id = uuid.uuid4().hex
             if not span_id:

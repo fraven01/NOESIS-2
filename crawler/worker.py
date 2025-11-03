@@ -58,7 +58,6 @@ class CrawlerWorker:
         case_id: Optional[str] = None,
         crawl_id: Optional[str] = None,
         idempotency_key: Optional[str] = None,
-        request_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         frontier_state: Optional[Mapping[str, Any]] = None,
         document_id: Optional[str] = None,
@@ -83,7 +82,7 @@ class CrawlerWorker:
             request,
             tenant_id=tenant_id,
             case_id=case_id,
-            request_id=request_id,
+            trace_id=propagated_trace_id,
             frontier_state=frontier_state,
             document_id=document_id,
             document_metadata=document_metadata,
@@ -95,7 +94,6 @@ class CrawlerWorker:
             case_id=case_id,
             crawl_id=crawl_id,
             idempotency_key=idempotency_key,
-            request_id=request_id,
             trace_id=propagated_trace_id,
             frontier_state=frontier_state,
             meta_overrides=meta_overrides,
@@ -120,7 +118,7 @@ class CrawlerWorker:
         *,
         tenant_id: str,
         case_id: Optional[str],
-        request_id: Optional[str],
+        trace_id: Optional[str],
         frontier_state: Optional[Mapping[str, Any]],
         document_id: Optional[str],
         document_metadata: Optional[Mapping[str, Any]],
@@ -131,8 +129,8 @@ class CrawlerWorker:
         state.setdefault("tenant_id", tenant_id)
         if case_id is not None:
             state.setdefault("case_id", case_id)
-        if request_id is not None:
-            state.setdefault("request_id", request_id)
+        if trace_id is not None:
+            state.setdefault("trace_id", trace_id)
         if crawl_id is not None:
             state.setdefault("crawl_id", crawl_id)
         state.setdefault("frontier", dict(frontier_state or {}))
@@ -269,7 +267,6 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         idempotency_key: Optional[str],
-        request_id: Optional[str],
         trace_id: Optional[str],
         frontier_state: Optional[Mapping[str, Any]],
         meta_overrides: Optional[Mapping[str, Any]],
@@ -279,7 +276,6 @@ class CrawlerWorker:
             "case_id": case_id,
             "crawl_id": crawl_id,
             "idempotency_key": idempotency_key,
-            "request_id": request_id,
             "trace_id": trace_id,
         }
         if frontier_state:

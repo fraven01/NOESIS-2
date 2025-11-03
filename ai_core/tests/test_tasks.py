@@ -706,7 +706,7 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
         context = common_logging.get_log_context()
         assert context["trace_id"] == "trace-7890"
         assert context["case_id"] == "case-456"
-        assert context["tenant"] == "tenant-123"
+        assert context["tenant_id"] == "tenant-123"
         assert context["key_alias"] == "alias-1234"
         tasks.logger.info("task-run")
         return original_put_bytes(path, data)
@@ -735,7 +735,7 @@ def test_task_logging_context_includes_metadata(monkeypatch, tmp_path, settings)
     assert event["trace_id"].endswith("90")
     assert "***" in event["trace_id"]
     assert event["case_id"].startswith("ca")
-    assert event["tenant"].startswith("te")
+    assert event["tenant_id"].startswith("te")
     assert event["key_alias"].startswith("al")
     assert common_logging.get_log_context() == {}
 
