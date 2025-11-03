@@ -64,8 +64,8 @@ Hinweise:
 - PII Scope & Maskierung: [docs/pii-scope.md](docs/pii-scope.md)
 
 ## Tool-Verträge (Layer 2 – Norm)
-Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.  
-Pflicht-Tags: `tenant_id`, `request_id`, optional `idempotency_key`.  
+Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
+Pflicht-Tags: `tenant_id`, `trace_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
 Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal`. 
 Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
 
@@ -121,9 +121,11 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 ## Begriffe & Zwecke
 - `Tenant`: Logische Mandantentrennung (Daten/Policies). Zweck: Isolation, Billing, Rechte.
 - `Case`: Geschäftsvorfall/Arbeitskontext pro Tenant. Zweck: Tracing, Kosten- und Ergebniskapselung.
-- `Request-ID`: Eindeutige ID pro HTTP/Task. Zweck: End-to-End-Trace und Idempotenzbezug.
+- `Trace-ID`: Korrelation über Web, Worker und Langfuse. Zweck: End-to-End-Observability und Header/Body-Brücke.
+- `Run-ID`: Eindeutige ID pro Graph-Ausführung. Zweck: Laufzeit-Telemetrie, Retry- und Statuskorrelation.
+- `Ingestion-Run-ID`: Spezialfall für Upload/Ingestion-Läufe. Zweck: Nachverfolgung von Dokument-Lebenszyklen.
 - `Idempotency-Key`: Client-gelieferter Schlüssel für POST. Zweck: Deduplikation/Retry-Sicherheit auf Service- und Tool-Ebene.
-- `ToolContext`: Minimale Laufzeit-Metadaten (Tenant, Request, Rollen). Zweck: Konsistente Tags, Guardrails, Metriken.
+- `ToolContext`: Minimale Laufzeit-Metadaten (Tenant, Trace, Run-IDs, Rollen). Zweck: Konsistente Tags, Guardrails, Metriken.
 - `*Input/*Output`: Pydantic-Contracts pro Tool. Zweck: Validierung, Versionierung, klare Schnittstellen.
 - `ToolError`/Typed Errors: Standardisierte Fehlerklassen. Zweck: Vereinheitlichte Fehlerbehandlung, Retry-Strategien, Observability.
 - `Trace/Span`: Langfuse-Telemetrieobjekte. Zweck: Messbarkeit von Qualität, Kosten, Latenz.
