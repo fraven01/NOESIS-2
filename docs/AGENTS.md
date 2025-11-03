@@ -30,5 +30,5 @@
 
 ## Tool-Verträge & Schemas
 - Tool- und Agenten-Implementierungen verwenden `ToolContext`, `*Input`, `*Output` und `ToolError` gemäß der [Tool-Verträge des AI Core](agents/tool-contracts.md).
-- Pflichtfelder wie `tenant_id`, `request_id` und optionale Idempotenzschlüssel sind dort beschrieben; Fehlercodes orientieren sich an `ToolErrorType`.
+- Pflichtfelder wie `tenant_id`, `trace_id` sowie genau eine der Laufzeit-IDs (`run_id` oder `ingestion_run_id`) und optionale Idempotenzschlüssel sind dort beschrieben; Fehlercodes orientieren sich an `ToolErrorType`.
 - JSON-Schemas können über `model_json_schema()` direkt aus den Pydantic-Modellen erzeugt und als Referenz für API-/Tool-Autor:innen genutzt werden.

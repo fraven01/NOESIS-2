@@ -11,13 +11,15 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 | `X-Tenant-Schema` | string | required | Aktives PostgreSQL-Schema (z. B. `acme_prod`). Muss mit der Schemaauflösung via Subdomain/Hostname übereinstimmen. |
 | `X-Tenant-Id` | string | required | Mandanteninterne Kennung. Wird für Rate-Limits, Object-Store-Pfade und Vektor-Indizes genutzt. |
 | `X-Case-Id` | string | required | Kontext-ID eines Workflows (z. B. CRM-Fall). Muss RFC3986-konforme Zeichen enthalten. |
-| `X-Trace-Id` | string | optional (response) | Wird serverseitig generiert und als Echo-Header zurückgegeben. Dient zur Korrelation in Logs & Langfuse. |
+| `X-Trace-Id` / `X-Request-ID` | string | optional | Client-seitig nutzbarer Trace-Identifier. Wird gespiegelt; fehlt er, erzeugt der Service eine neue ID und sendet sie zurück. |
 | `Idempotency-Key` | string | optional | Empfohlen für POST-Endpunkte. Wiederholte Requests mit gleichem Schlüssel liefern denselben Response-Body und Statuscode. |
 | `X-Key-Alias` | string | optional | Referenziert einen LiteLLM API-Key Alias. Wird für Rate-Limiting gebunden. |
 | `X-Case-Scope` | string | optional | Zusätzliche Zugriffsscope für Agenten-Workflows. |
 | `Authorization` | string | required für LiteLLM Admin | `Bearer <API-Key>` gemäß LiteLLM Master Key Policy. Weitere Details in der [LiteLLM Admin Referenz](./litellm-admin.md). |
 
 **Tenancy-Hinweis:** Das Schema kann automatisch aus der anfragenden Domain (z. B. `tenant.example.com`) abgeleitet werden. Für interne Skripte ist der Header dennoch Pflicht, um versehentliche Schema-Wechsel zu verhindern.
+
+**Trace-ID-Auflösung:** Die Middleware liest die Trace-ID in folgender Reihenfolge aus: `X-Trace-Id`/`X-Request-ID` Header, Query-Parameter `trace_id`, JSON-Body-Feld `trace_id` sowie W3C `traceparent`. Wird keine Quelle gefunden, generiert der Service eine neue ID und spiegelt sie in Header und Response-Body.
 
 **Idempotente POST-Requests:** Setzen Sie einen stabilen `Idempotency-Key` pro fachlichem Vorgang (UUID oder Hash). Serverseitig wird der erste Abschluss pro Schlüssel persistiert; Wiederholungen liefern denselben `X-Trace-Id` sowie ein Flag `"idempotent": true` im Response-Body.
 
@@ -32,7 +34,7 @@ curl -X POST "https://api.noesis.example/v1/ai/rag/query/" \
   -H "X-Case-Id: crm-7421" \
   -H "Idempotency-Key: 6cdb89f6-8826-4f9b-8c82-1f14b3d4c21b" \
   -H "Content-Type: application/json" \
-  -d '{"question": "Welche Reisekosten gelten für Consultants?"}'
+  -d '{"tenant_id": "acme", "trace_id": "trace-a12b3c4d5", "question": "Welche Reisekosten gelten für Consultants?"}'
 ```
 
 ## System Endpunkte
@@ -327,10 +329,14 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 **Body Schema**
 ```json
 {
+  "tenant_id": "acme",
+  "trace_id": "trace-71f0a9c2",
   "prompt": "Fasse das Kundenfeedback zusammen",
   "metadata": {"channel": "email"}
 }
 ```
+
+`tenant_id` muss dem Header `X-Tenant-Id` entsprechen; `trace_id` kann aus Header oder Body geliefert werden und wird für Langfuse-Traces verwendet.
 
 **Response 200 Beispiel**
 ```json
@@ -354,11 +360,15 @@ Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augme
 **Body Beispiel**
 ```json
 {
+  "tenant_id": "acme",
+  "trace_id": "trace-b5d0c7a4",
   "question": "Welche Reisekosten gelten für Consultants?",
   "filters": {"doc_class": "policy", "process": "travel"},
   "visibility": "tenant"
 }
 ```
+
+Auch für Queries gilt: `tenant_id` ist ein Pflichtfeld im Body (muss dem Header entsprechen), `trace_id` wird entweder übernommen oder – falls nicht gesetzt – serverseitig ergänzt.
 
 **Response 200 Beispiel**
 ```json
