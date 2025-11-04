@@ -105,7 +105,10 @@ def test_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.quota_remaining == 37
     assert len(result.results) == 2
     assert tuple(result.raw_results)[0].display_link == "example.com"
-    assert result.results[0].url == "https://example.com/report.pdf?utm_source=newsletter&ref=42"
+    assert (
+        result.results[0].url
+        == "https://example.com/report.pdf?utm_source=newsletter&ref=42"
+    )
     assert result.results[0].content_type == "application/pdf"
     assert result.results[1].url == "https://example.com/insight?utm_medium=email&ref=1"
     assert result.results[1].source == "example.com"
@@ -223,12 +226,16 @@ def test_invalid_json_response(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_retry_after_ms_with_date_string(monkeypatch) -> None:
     adapter = _make_adapter(_FakeSession())
     headers = {"Retry-After": "Fri, 31 Dec 2025 23:59:59 GMT"}
-    
+
     from datetime import datetime, timezone
+
     now = datetime(2025, 12, 31, 23, 59, 49, tzinfo=timezone.utc)
-    
-    monkeypatch.setattr("ai_core.tools.search_adapters.google.datetime", type("datetime", (object,), {"now": lambda tz: now}))
-    
+
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.datetime",
+        type("datetime", (object,), {"now": lambda tz: now}),
+    )
+
     retry_ms = adapter._retry_after_ms(headers)
 
     assert retry_ms is not None
