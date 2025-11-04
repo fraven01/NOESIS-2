@@ -118,17 +118,17 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 - Pipeline-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD Pipeline](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
 - Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
 
-## Begriffe & Zwecke
-- `Tenant`: Logische Mandantentrennung (Daten/Policies). Zweck: Isolation, Billing, Rechte.
-- `Case`: Geschäftsvorfall/Arbeitskontext pro Tenant. Zweck: Tracing, Kosten- und Ergebniskapselung.
-- `Trace-ID`: Korrelation über Web, Worker und Langfuse. Zweck: End-to-End-Observability und Header/Body-Brücke.
-- `Run-ID`: Eindeutige ID pro Graph-Ausführung. Zweck: Laufzeit-Telemetrie, Retry- und Statuskorrelation.
-- `Ingestion-Run-ID`: Spezialfall für Upload/Ingestion-Läufe. Zweck: Nachverfolgung von Dokument-Lebenszyklen.
-- `Idempotency-Key`: Client-gelieferter Schlüssel für POST. Zweck: Deduplikation/Retry-Sicherheit auf Service- und Tool-Ebene.
-- `ToolContext`: Minimale Laufzeit-Metadaten (Tenant, Trace, Run-IDs, Rollen). Zweck: Konsistente Tags, Guardrails, Metriken.
-- `*Input/*Output`: Pydantic-Contracts pro Tool. Zweck: Validierung, Versionierung, klare Schnittstellen.
-- `ToolError`/Typed Errors: Standardisierte Fehlerklassen. Zweck: Vereinheitlichte Fehlerbehandlung, Retry-Strategien, Observability.
-- `Trace/Span`: Langfuse-Telemetrieobjekte. Zweck: Messbarkeit von Qualität, Kosten, Latenz.
+## Begriffe & IDs
+Eine verbindliche Definition aller systemweiten IDs und ihrer Semantik befindet sich im Dokument
+[ID-Verträge und Semantik](docs/ids.md). Dieses Dokument ist die maßgebliche Quelle für alle ID-bezogenen Verträge.
+
+Wichtige Begriffe im Überblick:
+- `Tenant`: Logische Mandantentrennung (Daten/Policies).
+- `Case`: Geschäftsvorfall/Arbeitskontext pro Tenant.
+- `ToolContext`: Minimale Laufzeit-Metadaten für Tools.
+- `*Input/*Output`: Pydantic-Contracts pro Tool.
+- `ToolError`: Standardisierte Fehlerklassen für Tools.
+- `Trace/Span`: Langfuse-Telemetrieobjekte.
 
 ## Comands
 test: pytest -q
