@@ -18,12 +18,15 @@ from pydantic import (
 )
 
 from ai_core.infra.observability import observe_span, update_observation
+from ai_core.tools.search_adapters.google import GoogleSearchAdapter
 from ai_core.tools.web_search import (
     SearchResult,
     ToolOutcome,
     WebSearchResponse,
     WebSearchWorker,
 )
+from django.conf import settings
+from pydantic import SecretStr
 
 
 class InvalidGraphInput(ValueError):
@@ -862,11 +865,6 @@ class ExternalKnowledgeGraph:
             document_id=document_id if isinstance(document_id, str) else None,
         )
         return working_state, result
-
-
-from ai_core.tools.search_adapters.google import GoogleSearchAdapter
-from django.conf import settings
-from pydantic import SecretStr
 
 
 def build_graph(

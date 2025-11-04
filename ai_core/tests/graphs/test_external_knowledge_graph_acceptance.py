@@ -8,6 +8,7 @@ from typing import Any, Iterable, Mapping
 
 import pytest
 
+from ai_core.graphs import external_knowledge_graph as ekg
 from ai_core.graphs.external_knowledge_graph import (
     CrawlerIngestionOutcome,
     ExternalKnowledgeGraphConfig,
@@ -122,8 +123,6 @@ def _find_by_key(entries: Iterable[Mapping[str, Any]], key: str) -> Mapping[str,
             return entry
     raise AssertionError(f"No entry contains key {key!r}")
 
-
-from ai_core.graphs import external_knowledge_graph as ekg
 
 def test_id_propagation_and_span_metadata(
     capture_observations: list[dict[str, Any]],
