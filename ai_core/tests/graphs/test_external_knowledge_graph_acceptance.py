@@ -14,8 +14,8 @@ from ai_core.graphs.external_knowledge_graph import (
     ExternalKnowledgeGraphConfig,
 )
 from ai_core.tools.web_search import (
+    BaseSearchAdapter,
     ProviderSearchResult,
-    SearchAdapter,
     SearchAdapterResponse,
     SearchProviderError,
     SearchProviderQuotaExceeded,
@@ -24,34 +24,26 @@ from ai_core.tools.web_search import (
 )
 
 
-class StaticSearchAdapter(SearchAdapter):
+class StaticSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a static sequence of results."""
 
     def __init__(self, provider: str, results: list[ProviderSearchResult], status_code: int = 200) -> None:
-        self._provider = provider
+        self.provider_name = provider
         self._results = results
         self._status_code = status_code
 
-    @property
-    def provider(self) -> str:
-        return self._provider
-
-    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(results=self._results[:limit], status_code=self._status_code)
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
+        return SearchAdapterResponse(results=self._results[:max_results], status_code=self._status_code)
 
 
-class RaisingSearchAdapter(SearchAdapter):
+class RaisingSearchAdapter(BaseSearchAdapter):
     """Adapter that raises a configured provider error when searched."""
 
     def __init__(self, provider: str, error: SearchProviderError) -> None:
-        self._provider = provider
+        self.provider_name = provider
         self._error = error
 
-    @property
-    def provider(self) -> str:
-        return self._provider
-
-    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:  # pragma: no cover - never returns
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:  # pragma: no cover - never returns
         raise self._error
 
 

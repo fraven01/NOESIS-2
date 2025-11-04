@@ -5,8 +5,8 @@ from typing import Sequence
 import pytest
 
 from ai_core.tools.web_search import (
+    BaseSearchAdapter,
     ProviderSearchResult,
-    SearchAdapter,
     SearchAdapterResponse,
     SearchProviderBadResponse,
     SearchProviderQuotaExceeded,
@@ -16,7 +16,7 @@ from ai_core.tools.web_search import (
 )
 
 
-class _FakeAdapter(SearchAdapter):
+class _FakeAdapter(BaseSearchAdapter):
     def __init__(
         self,
         provider: str = "serp",
@@ -24,21 +24,17 @@ class _FakeAdapter(SearchAdapter):
         responses: Sequence[SearchAdapterResponse] | None = None,
         side_effects: Sequence[Exception] | None = None,
     ) -> None:
-        self._provider = provider
+        self.provider_name = provider
         self.responses = list(responses or [])
         self.side_effects = list(side_effects or [])
 
-    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:  # type: ignore[override]
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:  # type: ignore[override]
         if self.side_effects:
             exc = self.side_effects.pop(0)
             raise exc
         if self.responses:
             return self.responses.pop(0)
         raise AssertionError("no response configured")
-
-    @property
-    def provider(self) -> str:  # type: ignore[override]
-        return self._provider
 
 
 @pytest.fixture
@@ -105,7 +101,7 @@ def test_successful_search(monkeypatch: pytest.MonkeyPatch, context: WebSearchCo
     assert captured_span["normalized_result_count"] == 2
     assert captured_span["raw_result_count"] == 3
     assert captured_span["http.status"] == 200
-    assert captured_span["provider"] == adapter.provider
+    assert captured_span["provider"] == adapter.provider_name
 
 
 def test_timeout_error(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
