@@ -35,14 +35,8 @@ class StaticSearchAdapter(BaseSearchAdapter):
         self._results = results
         self._status_code = status_code
 
-    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(results=self._results[:max_results], status_code=self._status_code)
-
-
     def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(
-            results=self._results[:limit], status_code=self._status_code
-        )
+        return SearchAdapterResponse(results=self._results[:limit], status_code=self._status_code)
 
 
 class RaisingSearchAdapter(BaseSearchAdapter):
