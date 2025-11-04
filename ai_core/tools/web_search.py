@@ -54,6 +54,17 @@ class SearchProviderBadResponse(SearchProviderError):
 
 
 @dataclass(slots=True)
+class RawSearchResult:
+    """Un-normalised search result returned directly by a provider."""
+
+    title: str
+    snippet: str
+    link: str
+    mime: str | None = None
+    display_link: str | None = None
+
+
+@dataclass(slots=True)
 class ProviderSearchResult:
     """Raw search result returned by a provider adapter."""
 
@@ -71,17 +82,21 @@ class SearchAdapterResponse:
 
     results: Sequence[ProviderSearchResult]
     status_code: int
+    raw_results: Sequence[RawSearchResult] = ()
+    quota_remaining: int | None = None
 
 
-class SearchAdapter(Protocol):
+class BaseSearchAdapter(Protocol):
     """Interface for web search provider adapters."""
 
-    @property
-    def provider(self) -> str:  # pragma: no cover - attribute contract
-        """Name of the upstream provider."""
+    provider_name: str  # pragma: no cover - attribute contract
 
-    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
         """Execute the search request against the provider."""
+
+
+# Backwards compatibility for callers importing the legacy protocol name.
+SearchAdapter = BaseSearchAdapter
 
 
 class WebSearchContext(BaseModel):
@@ -208,11 +223,12 @@ class WebSearchWorker:
         "vero_conv",
         "vero_id",
         "yclid",
+        "ref",
     }
 
     def __init__(
         self,
-        adapter: SearchAdapter,
+        adapter: BaseSearchAdapter,
         *,
         max_results: int = 10,
         max_attempts: int = 3,
@@ -228,6 +244,13 @@ class WebSearchWorker:
             raise ValueError("max_attempts must be greater than zero")
         if oversample_factor <= 0:
             raise ValueError("oversample_factor must be greater than zero")
+        provider_name = getattr(adapter, "provider_name", None)
+        if not provider_name:
+            legacy = getattr(adapter, "provider", None)
+            provider_name = legacy() if callable(legacy) else legacy
+        if not provider_name:
+            raise ValueError("adapter must define provider_name")
+        self._provider = str(provider_name)
         self._adapter = adapter
         self._max_results = max_results
         self._max_attempts = max_attempts
@@ -253,7 +276,7 @@ class WebSearchWorker:
         except ValidationError as exc:
             return self._validation_failure(ctx, exc)
 
-        provider = self._adapter.provider
+        provider = self._provider
         start_time = self._timer()
         span_attributes: dict[str, object]
         http_status = 500
@@ -261,13 +284,19 @@ class WebSearchWorker:
         error: SearchProviderError | InputError | None = None
         raw_result_count = 0
         normalized_result_count = 0
+        quota_remaining: int | None = None
 
         try:
             response = self._execute_with_retries(search_input.query)
             http_status = response.status_code
-            raw_result_count = len(response.results)
+            raw_result_count = (
+                len(response.raw_results)
+                if response.raw_results
+                else len(response.results)
+            )
             normalized_results = self._normalise_results(response.results, provider)
             normalized_result_count = len(normalized_results)
+            quota_remaining = response.quota_remaining
             decision = "ok"
             rationale = "search_completed"
         except SearchProviderError as exc:
@@ -297,6 +326,7 @@ class WebSearchWorker:
             raw_result_count=raw_result_count,
             normalized_result_count=normalized_result_count,
             error=error,
+            quota_remaining=quota_remaining,
         )
         record_span(
             "tool.web_search", attributes=span_attributes, trace_id=ctx.trace_id
@@ -310,6 +340,7 @@ class WebSearchWorker:
             raw_result_count=raw_result_count,
             normalized_result_count=normalized_result_count,
             error=error,
+            quota_remaining=quota_remaining,
         )
 
         if error is not None:
@@ -352,7 +383,7 @@ class WebSearchWorker:
         limit = self._max_results * self._oversample_factor
         while attempts < self._max_attempts:
             try:
-                response = self._adapter.search(query, limit=limit)
+                response = self._adapter.search(query, max_results=limit)
                 return response
             except SearchProviderQuotaExceeded as exc:
                 last_error = exc
@@ -461,6 +492,7 @@ class WebSearchWorker:
         error: SearchProviderError | InputError | None,
         error_kind_override: str | None = None,
         error_message_override: str | None = None,
+        quota_remaining: int | None = None,
     ) -> dict[str, object]:
         attributes: dict[str, object] = {
             "tenant_id": ctx.tenant_id,
@@ -476,6 +508,8 @@ class WebSearchWorker:
             "raw_result_count": raw_result_count,
             "normalized_result_count": normalized_result_count,
         }
+        if quota_remaining is not None:
+            attributes["quota.remaining"] = quota_remaining
         error_kind, error_message, _ = self._error_details(
             error,
             kind_override=error_kind_override,
@@ -499,6 +533,7 @@ class WebSearchWorker:
         error: SearchProviderError | InputError | None,
         error_kind_override: str | None = None,
         error_message_override: str | None = None,
+        quota_remaining: int | None = None,
     ) -> dict[str, object]:
         meta: dict[str, object] = {
             "tenant_id": ctx.tenant_id,
@@ -514,6 +549,8 @@ class WebSearchWorker:
             "raw_result_count": raw_result_count,
             "normalized_result_count": normalized_result_count,
         }
+        if quota_remaining is not None:
+            meta["quota_remaining"] = quota_remaining
         error_kind, error_message, retry_in_ms = self._error_details(
             error,
             kind_override=error_kind_override,
@@ -543,7 +580,7 @@ class WebSearchWorker:
             rationale="invalid_query",
             meta=self._build_outcome_meta(
                 ctx,
-                provider=self._adapter.provider,
+                provider=self._provider,
                 latency_ms=0,
                 http_status=400,
                 raw_result_count=0,
@@ -557,7 +594,7 @@ class WebSearchWorker:
             "tool.web_search",
             attributes=self._build_span_attributes(
                 ctx,
-                provider=self._adapter.provider,
+                provider=self._provider,
                 query="",
                 http_status=400,
                 raw_result_count=0,
@@ -582,7 +619,7 @@ class WebSearchWorker:
             "case_id": None,
             "run_id": None,
             "worker_call_id": None,
-            "provider": getattr(self._adapter, "provider", "unknown"),
+            "provider": self._provider,
             "latency_ms": 0,
             "http_status": 400,
             "result_count": 0,
@@ -654,9 +691,11 @@ class WebSearchWorker:
 
 
 __all__ = [
+    "BaseSearchAdapter",
     "SearchAdapter",
     "SearchAdapterResponse",
     "ProviderSearchResult",
+    "RawSearchResult",
     "SearchProviderError",
     "SearchProviderTimeout",
     "SearchProviderQuotaExceeded",

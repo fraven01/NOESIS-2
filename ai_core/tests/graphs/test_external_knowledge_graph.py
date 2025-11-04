@@ -14,26 +14,22 @@ from ai_core.graphs.external_knowledge_graph import (
     ExternalKnowledgeGraphConfig,
 )
 from ai_core.tools.web_search import (
+    BaseSearchAdapter,
     ProviderSearchResult,
-    SearchAdapter,
     SearchAdapterResponse,
     WebSearchWorker,
 )
 
 
-class StubSearchAdapter(SearchAdapter):
+class StubSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a pre-seeded list of results."""
 
     def __init__(self, provider: str, results: list[ProviderSearchResult]) -> None:
-        self._provider = provider
+        self.provider_name = provider
         self._results = results
 
-    @property
-    def provider(self) -> str:
-        return self._provider
-
-    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(results=self._results[:limit], status_code=200)
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
+        return SearchAdapterResponse(results=self._results[:max_results], status_code=200)
 
 
 @dataclass

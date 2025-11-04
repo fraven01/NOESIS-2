@@ -2,7 +2,9 @@
 
 from .errors import InputError, ToolError
 from .web_search import (
+    BaseSearchAdapter,
     ProviderSearchResult,
+    RawSearchResult,
     SearchAdapter,
     SearchAdapterResponse,
     SearchProviderBadResponse,
@@ -16,13 +18,16 @@ from .web_search import (
     WebSearchResponse,
     WebSearchWorker,
 )
+from .search_adapters import GoogleSearchAdapter
 
 __all__ = [
     "ToolError",
     "InputError",
+    "BaseSearchAdapter",
     "SearchAdapter",
     "SearchAdapterResponse",
     "ProviderSearchResult",
+    "RawSearchResult",
     "SearchProviderError",
     "SearchProviderTimeout",
     "SearchProviderQuotaExceeded",
@@ -33,4 +38,5 @@ __all__ = [
     "WebSearchInput",
     "WebSearchResponse",
     "WebSearchWorker",
+    "GoogleSearchAdapter",
 ]
