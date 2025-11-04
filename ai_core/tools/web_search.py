@@ -11,7 +11,14 @@ from typing import Callable, Protocol, Sequence
 from urllib.parse import parse_qsl, urlsplit, urlunsplit, urlencode
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    ValidationError,
+    field_validator,
+)
 
 from ai_core.infra.observability import record_span
 from ai_core.tools.errors import InputError
@@ -108,7 +115,9 @@ class WebSearchInput(BaseModel):
     @field_validator("query")
     @classmethod
     def _normalize_query(cls, value: str) -> str:
-        without_zero_width = "".join(ch for ch in value if unicodedata.category(ch) != "Cf")
+        without_zero_width = "".join(
+            ch for ch in value if unicodedata.category(ch) != "Cf"
+        )
         trimmed = without_zero_width.strip()
         normalized = " ".join(trimmed.split())
         if not normalized:
@@ -224,11 +233,15 @@ class WebSearchWorker:
         self._max_attempts = max_attempts
         self._backoff_factor = backoff_factor
         self._oversample_factor = oversample_factor
-        self._sleep = sleep or (lambda duration: None if duration <= 0 else time.sleep(duration))
+        self._sleep = sleep or (
+            lambda duration: None if duration <= 0 else time.sleep(duration)
+        )
         self._timer = timer or time.perf_counter
         self._logger = logger or LOGGER
 
-    def run(self, *, query: str, context: WebSearchContext | dict[str, object]) -> WebSearchResponse:
+    def run(
+        self, *, query: str, context: WebSearchContext | dict[str, object]
+    ) -> WebSearchResponse:
         """Run the web search with validation, deduplication, and telemetry."""
 
         try:
@@ -285,7 +298,9 @@ class WebSearchWorker:
             normalized_result_count=normalized_result_count,
             error=error,
         )
-        record_span("tool.web_search", attributes=span_attributes, trace_id=ctx.trace_id)
+        record_span(
+            "tool.web_search", attributes=span_attributes, trace_id=ctx.trace_id
+        )
 
         outcome_meta = self._build_outcome_meta(
             ctx,
@@ -309,7 +324,9 @@ class WebSearchWorker:
         )
         return WebSearchResponse(results=results, outcome=outcome)
 
-    def _validate_context(self, context: WebSearchContext | dict[str, object]) -> WebSearchContext:
+    def _validate_context(
+        self, context: WebSearchContext | dict[str, object]
+    ) -> WebSearchContext:
         try:
             ctx = (
                 context
@@ -317,7 +334,11 @@ class WebSearchWorker:
                 else WebSearchContext.model_validate(context)
             )
         except ValidationError as exc:
-            raise InputError("invalid_context", "Invalid tool context", context={"errors": exc.errors()}) from exc
+            raise InputError(
+                "invalid_context",
+                "Invalid tool context",
+                context={"errors": exc.errors()},
+            ) from exc
 
         worker_call_id = (ctx.worker_call_id or "").strip()
         if not worker_call_id:
@@ -384,7 +405,9 @@ class WebSearchWorker:
             try:
                 result = SearchResult.model_validate(payload)
             except ValidationError:
-                self._logger.debug("dropping invalid search result", extra={"payload": payload})
+                self._logger.debug(
+                    "dropping invalid search result", extra={"payload": payload}
+                )
                 continue
             unique.append(result)
             if len(unique) >= self._max_results:
@@ -512,7 +535,9 @@ class WebSearchWorker:
         exc: ValidationError,
     ) -> WebSearchResponse:
         message = "invalid_query"
-        error = InputError(message, "Query validation failed", context={"errors": exc.errors()})
+        error = InputError(
+            message, "Query validation failed", context={"errors": exc.errors()}
+        )
         outcome = ToolOutcome(
             decision="error",
             rationale="invalid_query",

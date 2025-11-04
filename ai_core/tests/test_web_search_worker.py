@@ -53,7 +53,9 @@ def context() -> WebSearchContext:
     )
 
 
-def _result(url: str, *, score: float | None = None, content_type: str | None = None) -> ProviderSearchResult:
+def _result(
+    url: str, *, score: float | None = None, content_type: str | None = None
+) -> ProviderSearchResult:
     return ProviderSearchResult(
         url=url,
         title="Example Result",
@@ -64,10 +66,14 @@ def _result(url: str, *, score: float | None = None, content_type: str | None = 
     )
 
 
-def test_successful_search(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_successful_search(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(name: str, *, attributes: dict[str, object], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, object], trace_id: str | None = None
+    ) -> None:
         assert name == "tool.web_search"
         captured_span.update(attributes)
         assert trace_id == context.trace_id
@@ -80,13 +86,18 @@ def test_successful_search(monkeypatch: pytest.MonkeyPatch, context: WebSearchCo
                 results=[
                     _result("https://example.com/path?utm_source=test"),
                     _result("https://example.com/path"),
-                    _result("https://files.example.com/doc.pdf?gclid=abc", content_type="application/pdf"),
+                    _result(
+                        "https://files.example.com/doc.pdf?gclid=abc",
+                        content_type="application/pdf",
+                    ),
                 ],
                 status_code=200,
             )
         ]
     )
-    worker = WebSearchWorker(adapter, max_results=5, sleep=lambda _: None, timer=lambda: 100.0)
+    worker = WebSearchWorker(
+        adapter, max_results=5, sleep=lambda _: None, timer=lambda: 100.0
+    )
 
     response = worker.run(query=" hello world ", context=context)
 
@@ -108,16 +119,24 @@ def test_successful_search(monkeypatch: pytest.MonkeyPatch, context: WebSearchCo
     assert captured_span["provider"] == adapter.provider
 
 
-def test_timeout_error(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_timeout_error(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(name: str, *, attributes: dict[str, object], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, object], trace_id: str | None = None
+    ) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
 
-    adapter = _FakeAdapter(side_effects=[SearchProviderTimeout("timeout", retry_in_ms=1200)])
-    worker = WebSearchWorker(adapter, timer=lambda: 1.0, sleep=lambda _: None, max_attempts=1)
+    adapter = _FakeAdapter(
+        side_effects=[SearchProviderTimeout("timeout", retry_in_ms=1200)]
+    )
+    worker = WebSearchWorker(
+        adapter, timer=lambda: 1.0, sleep=lambda _: None, max_attempts=1
+    )
 
     response = worker.run(query="timeout", context=context)
 
@@ -132,16 +151,24 @@ def test_timeout_error(monkeypatch: pytest.MonkeyPatch, context: WebSearchContex
     assert captured_span["error.kind"] == "SearchProviderTimeout"
 
 
-def test_quota_exceeded(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_quota_exceeded(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(name: str, *, attributes: dict[str, object], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, object], trace_id: str | None = None
+    ) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
 
-    adapter = _FakeAdapter(side_effects=[SearchProviderQuotaExceeded("quota", retry_in_ms=2500)])
-    worker = WebSearchWorker(adapter, timer=lambda: 2.0, sleep=lambda _: None, max_attempts=1)
+    adapter = _FakeAdapter(
+        side_effects=[SearchProviderQuotaExceeded("quota", retry_in_ms=2500)]
+    )
+    worker = WebSearchWorker(
+        adapter, timer=lambda: 2.0, sleep=lambda _: None, max_attempts=1
+    )
 
     response = worker.run(query="quota", context=context)
 
@@ -153,7 +180,9 @@ def test_quota_exceeded(monkeypatch: pytest.MonkeyPatch, context: WebSearchConte
     assert captured_span["http.status"] == 429
 
 
-def test_deduplication_and_validation(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_deduplication_and_validation(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     monkeypatch.setattr("ai_core.tools.web_search.record_span", lambda *_, **__: None)
 
     adapter = _FakeAdapter(
@@ -168,7 +197,9 @@ def test_deduplication_and_validation(monkeypatch: pytest.MonkeyPatch, context: 
             )
         ]
     )
-    worker = WebSearchWorker(adapter, max_results=3, sleep=lambda _: None, timer=lambda: 10.0)
+    worker = WebSearchWorker(
+        adapter, max_results=3, sleep=lambda _: None, timer=lambda: 10.0
+    )
 
     response = worker.run(query="dedupe", context=context)
 
@@ -179,10 +210,14 @@ def test_deduplication_and_validation(monkeypatch: pytest.MonkeyPatch, context: 
     assert response.outcome.meta["raw_result_count"] == 3
 
 
-def test_invalid_query_only_operators(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_invalid_query_only_operators(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(name: str, *, attributes: dict[str, object], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, object], trace_id: str | None = None
+    ) -> None:
         assert name == "tool.web_search"
         captured_span.update(attributes)
         assert trace_id == context.trace_id
@@ -197,7 +232,9 @@ def test_invalid_query_only_operators(monkeypatch: pytest.MonkeyPatch, context: 
             )
         ]
     )
-    worker = WebSearchWorker(adapter, max_results=3, sleep=lambda _: None, timer=lambda: 42.0)
+    worker = WebSearchWorker(
+        adapter, max_results=3, sleep=lambda _: None, timer=lambda: 42.0
+    )
 
     response = worker.run(query="\u200b  site:  \u200c", context=context)
 
@@ -212,10 +249,14 @@ def test_invalid_query_only_operators(monkeypatch: pytest.MonkeyPatch, context: 
     assert captured_span["raw_result_count"] == 0
 
 
-def test_bad_response_error(monkeypatch: pytest.MonkeyPatch, context: WebSearchContext) -> None:
+def test_bad_response_error(
+    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+) -> None:
     captured_span: dict[str, object] = {}
 
-    def _capture_span(name: str, *, attributes: dict[str, object], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, object], trace_id: str | None = None
+    ) -> None:
         captured_span.update(attributes)
 
     monkeypatch.setattr("ai_core.tools.web_search.record_span", _capture_span)
