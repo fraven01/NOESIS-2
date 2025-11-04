@@ -12,7 +12,7 @@ sequenceDiagram
     participant Tools as Tools (Django, APIs)
     participant LLM as LiteLLM
     Web->>Queue: Task `agents.run`
-    Queue->>Agent: Starte Graph mit State `{tenant, trace_id}`
+    Queue->>Agent: Starte Graph mit State `{tenant_id, trace_id}`
     Agent->>Retriever: Suche relevante Chunks
     Agent->>Tools: Führe Aktion aus (z.B. DB-Lookup)
     Agent->>LLM: Frage Modell mit Kontext
@@ -21,7 +21,7 @@ sequenceDiagram
     Queue-->>Web: Antwort speichern
 ```
 
-Jeder Aufruf muss die Header `X-Tenant-ID`, `X-Case-ID` und `Idempotency-Key` setzen. Die Werte werden in `meta` übernommen, sodass der Graph tenant-spezifisch arbeitet und doppelte POSTs anhand des `Idempotency-Key` ignorieren kann.
+Jeder Aufruf muss den Header `X-Tenant-ID` setzen. `X-Case-ID` und `Idempotency-Key` sind optional. Die Werte werden in `meta` übernommen, sodass der Graph tenant-spezifisch arbeitet und doppelte POSTs anhand des `Idempotency-Key` ignorieren kann.
 
 ## Knoten und Guardrails
 | Node | Aufgabe | Guardrail |
@@ -36,8 +36,8 @@ Agenten sind plattformweit; keine tenantspezifischen Prompts oder Tools im Start
 ## Tools, Cancellations und Tests
 - Tools definieren sich als LangChain-Tools mit klarer Input/Output-Spezifikation; Beispiele: `fetch_case`, `update_status`.
 - Cancellation: Jeder Node prüft `state["cancel"]`; falls gesetzt, beendet der Graph ohne weitere LLM-Calls.
-- Fehler propagieren als `AgentError` und landen in Langfuse mit Trace-Tags `error_type`/`tenant_id`.
-- Tests: Unit-Tests simulieren Nodes mit `FakeRetriever`, Integrationstests laufen über Docker Compose inklusive LiteLLM Stub; E2E (siehe [Pipeline](../cicd/pipeline.md)) ruft den Agentenpfad vollständig.
+- Fehler propagieren als `ToolError` und landen in Langfuse mit Trace-Tags `error_type`/`tenant_id`.
+- Tests: Unit-Tests simulieren Nodes mit `FakeRetriever`, Integrationstests laufen über Docker Compose inklusive LiteLLM Stub; E2E (siehe [CI/CD-Dokumentation](../cicd/pipeline.md)) ruft den Agentenpfad vollständig.
 
 # Schritte
 1. Implementiere Nodes gemäß Tabelle und dokumentiere sie mit `prompt_version` und Guardrails.

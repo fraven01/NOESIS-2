@@ -10,8 +10,8 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 | --- | --- | --- | --- |
 | `X-Tenant-Schema` | string | required | Aktives PostgreSQL-Schema (z. B. `acme_prod`). Muss mit der Schemaauflösung via Subdomain/Hostname übereinstimmen. |
 | `X-Tenant-Id` | string | required | Mandanteninterne Kennung. Wird für Rate-Limits, Object-Store-Pfade und Vektor-Indizes genutzt. |
-| `X-Case-Id` | string | required | Kontext-ID eines Workflows (z. B. CRM-Fall). Muss RFC3986-konforme Zeichen enthalten. |
-| `X-Trace-Id` / `X-Request-ID` | string | optional | Client-seitig nutzbarer Trace-Identifier. Wird gespiegelt; fehlt er, erzeugt der Service eine neue ID und sendet sie zurück. |
+| `X-Case-Id` | string | optional | Kontext-ID eines Workflows (z. B. CRM-Fall). Muss RFC3986-konforme Zeichen enthalten. |
+| `X-Trace-Id` | string | optional | Client-seitig nutzbarer Trace-Identifier. Wird gespiegelt; fehlt er, erzeugt der Service eine neue ID und sendet sie zurück. |
 | `Idempotency-Key` | string | optional | Empfohlen für POST-Endpunkte. Wiederholte Requests mit gleichem Schlüssel liefern denselben Response-Body und Statuscode. |
 | `X-Key-Alias` | string | optional | Referenziert einen LiteLLM API-Key Alias. Wird für Rate-Limiting gebunden. |
 | `X-Case-Scope` | string | optional | Zusätzliche Zugriffsscope für Agenten-Workflows. |
@@ -19,7 +19,7 @@ Alle Aufrufe erfordern HTTP/1.1 über TLS. Multi-Tenancy wird durch `django-tena
 
 **Tenancy-Hinweis:** Das Schema kann automatisch aus der anfragenden Domain (z. B. `tenant.example.com`) abgeleitet werden. Für interne Skripte ist der Header dennoch Pflicht, um versehentliche Schema-Wechsel zu verhindern.
 
-**Trace-ID-Auflösung:** Die Middleware liest die Trace-ID in folgender Reihenfolge aus: `X-Trace-Id`/`X-Request-ID` Header, Query-Parameter `trace_id`, JSON-Body-Feld `trace_id` sowie W3C `traceparent`. Wird keine Quelle gefunden, generiert der Service eine neue ID und spiegelt sie in Header und Response-Body.
+**Trace-ID-Auflösung:** Die Middleware liest die Trace-ID in folgender Reihenfolge aus: `X-Trace-Id` Header, Query-Parameter `trace_id`, JSON-Body-Feld `trace_id` sowie W3C `traceparent`. Wird keine Quelle gefunden, generiert der Service eine neue ID und spiegelt sie in Header und Response-Body.
 
 **Idempotente POST-Requests:** Setzen Sie einen stabilen `Idempotency-Key` pro fachlichem Vorgang (UUID oder Hash). Serverseitig wird der erste Abschluss pro Schlüssel persistiert; Wiederholungen liefern denselben `X-Trace-Id` sowie ein Flag `"idempotent": true` im Response-Body.
 
@@ -45,7 +45,7 @@ Kurzer Health-Check der AI-Core-Anwendung.
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 
 **Response 200 Beispiel**
 ```json
@@ -110,7 +110,7 @@ Lädt Rohdokumente in den Object-Store hoch und macht sie für nachfolgende Inge
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 - `Idempotency-Key` (optional, empfohlen)
 - `Content-Type: multipart/form-data`
 
@@ -138,7 +138,7 @@ Startet einen Ingestion-Workflow für zuvor hochgeladene Dokumente. Der Prozess 
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 - `Idempotency-Key` (optional, empfohlen)
 - `Content-Type: application/json`
 
@@ -206,7 +206,7 @@ Die „RAG Demo“ stellt einen rein retrieval-basierten Beispiel-Graphen bereit
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 - `Content-Type: application/json`
 
 **Body Schema**
@@ -322,7 +322,7 @@ Startet den Agenten-Flow `info_intake` zur Kontextanreicherung.
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 - `Idempotency-Key` (optional)
 - `Content-Type: application/json`
 
@@ -353,7 +353,7 @@ Startet den produktiven Retrieval-Augmented-Generation-Graphen (`retrieval_augme
 **Headers**
 - `X-Tenant-Schema` (required)
 - `X-Tenant-Id` (required)
-- `X-Case-Id` (required)
+- `X-Case-Id` (optional)
 - `Idempotency-Key` (optional, empfohlen)
 - `Content-Type: application/json`
 
@@ -404,4 +404,3 @@ Auch für Queries gilt: `tenant_id` ist ein Pflichtfeld im Body (muss dem Header
   "trace_id": "b5d0c7a4d5de4b89b9b7d0c14fd31b1b"
 }
 ```
-

@@ -2,8 +2,10 @@
 
 Der Crawler übernimmt die kontinuierliche Synchronisation externer Quellen und
 liefert normalisierte Dokumente an die RAG-Ingestion. Dieses Dokument fasst
-Pipeline, Kernverträge und Betriebsschalter zusammen und orientiert sich am
+die Graphen, Kernverträge und Betriebsschalter zusammen und orientiert sich am
 Aufbau der übrigen App-Dokumentationen.
+
+*Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für den heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flow.*
 
 ## Zweck
 - Erstellt deterministische Frontier-Entscheidungen auf Basis von Robots-,
@@ -20,7 +22,7 @@ Aufbau der übrigen App-Dokumentationen.
   liefert dafür nur noch Fetch-Daten und IDs, während AI-Core die Dokument- und
   Delta-Metriken erzeugt.【F:crawler/worker.py†L105-L174】
 
-## Pipeline
+## Ingestion-Graph
 ```mermaid
 flowchart TD
     U[update_status_normalized] --> G[enforce_guardrails]
@@ -54,8 +56,8 @@ flowchart TD
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
 | `documents.api` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocumentPayload`, `normalize_from_raw` |
-| `documents.processing_graph` | LangGraph-Orchestrierung von Parsing, Chunking und Artefakt-Phasen | `DocumentProcessingPhase`, `DocumentProcessingState`, `build_document_processing_graph` |
-| `documents.pipeline` | Pipeline-Konfiguration, Kontext und Statusübergänge | `DocumentPipelineConfig`, `DocumentProcessingMetadata`, `DocumentProcessingContext` |
+| `ai_core/graphs` (vormals `documents.processing_graph`) | LangGraph-Orchestrierung von Parsing, Chunking und Artefakt-Phasen | `DocumentProcessingPhase`, `DocumentProcessingState`, `build_document_processing_graph` |
+| `documents.pipeline` | Graph-Konfiguration, Kontext und Statusübergänge | `DocumentPipelineConfig`, `DocumentProcessingMetadata`, `DocumentProcessingContext` |
 | `ai_core.rag.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
 | `ai_core.api` | Guardrail-Auswertung, Delta-Entscheidungen & API-Brücke zum Graph | `enforce_guardrails`, `decide_delta`, `trigger_embedding` |
 | `ai_core.rag.ingestion_contracts` | Vektor-Payloads & Metadaten | [`CrawlerIngestionPayload`](#crawleringestionpayload), [`ChunkMeta`](#chunkmeta) |
@@ -88,7 +90,7 @@ geändert werden können und unbekannte Keys zu einem Pydantic-Fehler
 | `document_id` | Referenz auf das normalisierte Dokument | `str` | – | Pflichtfeld | `type_error.str` |
 | `workflow_id` | LangGraph-Workflow, falls vorhanden | `str \| None` | `None` | Optional, wird unverändert übernommen | – |
 | `tenant_id` | Mandantenkontext für nachgelagerte Systeme | `str` | – | Pflichtfeld | `type_error.str` |
-| `case_id` | Fallkontext für Observability/Tracing | `str` | – | Pflichtfeld | `type_error.str` |
+| `case_id` | Fallkontext für Observability/Tracing | `str \| None` | `None` | Optional | `type_error.str` |
 | `content_hash` | Hash des Inhalts für Delta-Entscheide | `str \| None` | `None` | Optional | – |
 | `chunk_meta` | Metadaten für Embedding-Storage | [`ChunkMeta`](#chunkmeta) \| `None` | `None` | Nested-Validierung | Fehler aus `ChunkMeta` |
 | `embedding_profile` | Angefragtes Embedding-Profil | `str \| None` | `None` | Optional; Muss zu `resolve_ingestion_profile` passen | `INGEST_PROFILE_*` (über `InputError`), `type_error.str` |
@@ -112,11 +114,9 @@ geändert werden können und unbekannte Keys zu einem Pydantic-Fehler
   "adapter_metadata": {"source": "crawler"},
   "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
   "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
-  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
   "content_hash": "sha256:abc123",
   "chunk_meta": {
     "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
-    "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
     "source": "crawler",
     "hash": "chunk:1",
     "external_id": "https://example.com/article",
@@ -142,7 +142,6 @@ geändert werden können und unbekannte Keys zu einem Pydantic-Fehler
   "adapter_metadata": {"source": "crawler"},
   "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
   "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
-  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
   "delta_status": "skip"
 }
 ```
@@ -157,7 +156,6 @@ geändert werden können und unbekannte Keys zu einem Pydantic-Fehler
   "adapter_metadata": {"source": "crawler"},
   "document_id": "4f932d53-5b42-4cb6-a820-bf934d947b85",
   "tenant_id": "5f27f1e7-96e2-4c2f-8b7b-1df7f7e15c7a",
-  "case_id": "3c9c7d5c-3025-4e2e-8af7-ec9b5539139f",
   "delta_status": "changed",
   "content_hash": "sha256:retired"
 }
@@ -171,7 +169,7 @@ werden. `extra="forbid"` verhindert unbeabsichtigte Zusatzfelder.
 | Feld | Zweck | Datentyp | Default | Validierung | Fehlercodes |
 | --- | --- | --- | --- | --- | --- |
 | `tenant_id` | Mandanten-ID für den Chunk | `str` | – | Pflichtfeld | `type_error.str` |
-| `case_id` | Case/Trace-Kontext | `str` | – | Pflichtfeld | `type_error.str` |
+| `case_id` | Case/Trace-Kontext | `str \| None` | `None` | Optional | `type_error.str` |
 | `source` | Ingestion-Kanal (`crawler`, `upload`, …) | `str` | – | Pflichtfeld | `type_error.str` |
 | `hash` | Chunk-Hash (Idempotenz) | `str` | – | Pflichtfeld | `type_error.str` |
 | `external_id` | Primäre Referenz (z. B. URL) | `str` | – | Pflichtfeld | `type_error.str` |
@@ -380,7 +378,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
 
 ## Erweiterungshinweise
 - Neue Provider sollten Provider-Tags über `ProviderReference` normalisieren und
-  sie im Dokument-Pipeline-Kontext weiterreichen; `DocumentProcessingMetadata`
+  sie im Dokumenten-Graph-Kontext weiterreichen; `DocumentProcessingMetadata`
   und `DocumentProcessingState` übernehmen die Referenzen unverändert in
   nachgelagerte Schritte.【F:documents/providers.py†L18-L132】【F:documents/pipeline.py†L229-L399】【F:documents/processing_graph.py†L147-L203】
 - Weitere Guardrails lassen sich über `GuardrailLimits` erweitern; bei neuen

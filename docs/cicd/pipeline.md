@@ -1,7 +1,11 @@
-# Warum
+# CI/CD-Pipeline
+
+*Hinweis: Der Begriff „Pipeline“ bezieht sich in diesem Dokument auf den CI/CD-Prozess, nicht auf die als „Graph“ bezeichneten LangGraph-Orchestrierungs-Flows.*
+
+## Warum
 Die Pipeline sorgt dafür, dass jede Änderung getestet, geprüft und kontrolliert ausgerollt wird. Diese Anleitung zeigt die feste Reihenfolge der Stufen und die benötigten Berechtigungen.
 
-# Wie
+## Wie
 ## Pipeline-Stufen
 | Reihenfolge | Stufe | Inhalt | Gate |
 | --- | --- | --- | --- |

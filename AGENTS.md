@@ -3,6 +3,8 @@
 Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst die verbindlichen Leitplanken zusammen und verweist
 auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `README.md`.
 
+*Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für die heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flows.*
+
 ## Zweck & Geltungsbereich
 - Gilt für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
 - Vor Änderungen prüfe den Verzeichnispfad auf spezifischere `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`) und befolge stets die tiefste Anweisung.
@@ -19,16 +21,16 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - **LiteLLM Betrieb** folgt den Betriebs- und Auth-Regeln aus [LiteLLM Admin GUI](docs/litellm/admin-gui.md).
 - **Observability & Kostenkontrolle** wird über [Langfuse Guide](docs/observability/langfuse.md) geführt.
 - **Multi-Tenancy & Tenant-CLI** inklusive Rollen findest du im [Multi-Tenancy Leitfaden](docs/multi-tenancy.md).
-- **CI/CD & Releases** werden über die [Pipeline-Dokumentation](docs/cicd/pipeline.md) gesteuert.
+- **CI/CD & Releases** werden über die [CI/CD-Dokumentation](docs/cicd/pipeline.md) gesteuert.
 - **Security & Secrets** verwalten Plattform- und AI-Schlüssel gemäß [Security Guide](docs/security/secrets.md).
 
 ## Ereignisse & Trigger
 | Quelle | Trigger | Beschreibung | Primärquelle |
 | --- | --- | --- | --- |
-| GitHub Actions | Pull Request oder Merge nach `main` | Startet alle Pipeline-Stufen von Lint bis Deploy. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
+| GitHub Actions | Pull Request oder Merge nach `main` | Startet alle CI/CD-Stufen von Lint bis Deploy. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
 | Cloud Run Jobs | Freigabe nach Staging-Checks | Führt `noesis2-migrate` sowie Vector-Schema-Migrationen aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
 | Django Web-Service | HTTP-Request mit `X-Tenant-ID` & `X-Case-ID` | Legt Celery Task `agents.run` an und startet den LangGraph-Flow. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
-| Ingestion Worker | Pipeline-Stufe „Ingestion-Smoke“ oder manueller Batch | Lädt Daten, chunked sie und schreibt Embeddings in pgvector. | [docs/rag/ingestion.md#pipeline](docs/rag/ingestion.md#pipeline) |
+| Ingestion Worker | Manueller oder getriggerter `run_ingestion_graph` Task | Führt den Ingestion-Graph aus (Loader→Chunk→Embedding→Upsert). | [docs/rag/ingestion.md#graph-verarbeitung](docs/rag/ingestion.md#graph-verarbeitung) |
 | Langfuse Observability | Fehlerquote > 5 % oder Kosten > 80 % Budget | Löst Alerts für Agenten, Ingestion und LiteLLM aus. | [docs/observability/langfuse.md#felder-und-sampling](docs/observability/langfuse.md#felder-und-sampling) |
 
 ## Inputs & Outputs
@@ -42,8 +44,9 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 
 ## Schichten & Verantwortlichkeiten
 - **Business/Orchestrierung**
+  - In NOESIS 2 liegen die Graphen unter `ai_core/graphs` (vormals `process_graphs`).
   - [ai_core/graphs/README.md](ai_core/graphs/README.md)  
-    Beschreibt die Geschäftsflüsse und wie LangGraph-Orchestrierungen die RAG-Kette für einzelne Cases auslösen.
+    Beschreibt die Geschäftsflüsse und wie LangGraph-Orchestrierungen die RAG-Kette für einzelne `case_id`s auslösen.
 
 - **Capabilities**
   - [ai_core/nodes/README.md](ai_core/nodes/README.md)  
@@ -65,26 +68,26 @@ Hinweise:
 
 ## Tool-Verträge (Layer 2 – Norm)
 Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
-Pflicht-Tags: `tenant_id`, `trace_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
-Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal`. 
+Pflicht-Tags: `tenant_id`, `trace_id`, `invocation_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
+Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal` (siehe `ToolErrorType` Enum in `ai_core/tools/errors.py`).
 Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
 
 ## Guardrails & Header
-Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Case-ID`, `Idempotency-Key` (POST), automatische PII-Maskierung.  
-LangGraph-Knoten & Timeouts siehe Agenten-Übersicht; Idempotenz & Traces sind verpflichtend. 
+Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Trace-ID` (obligatorisch), `X-Case-ID` (optional), `Idempotency-Key` (optional, POST), automatische PII-Maskierung.
+LangGraph-Knoten & Timeouts siehe Agenten-Übersicht; Idempotenz & Traces sind verpflichtend.
 
 ## Paketgrenzen (Import-Regeln)
 services → shared (nur nach unten)  
 tools → services, shared  
-process_graphs → tools, shared  
-tenant_logic → process_graphs, tools, shared  
+`ai_core/graphs` (vormals `process_graphs`) → tools, shared  
+tenant_logic → `ai_core/graphs`, tools, shared  
 Frontend ist getrennt (keine Rückimporte).
 
 ## Generierung mit Codex (Scaffolding)
 Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 1) Contracts & Adapter (Layer 2)  
 2) Services-Skeletons (Layer 1)  
-3) Prozess-Graphs (Layer 3)  
+3) Graphen (Layer 3) (LangGraph-Flows, intern auch „Agenten“ genannt). Physischer Speicherort in NOESIS 2: `ai_core/graphs/`.
 4) Tenant-Orchestrator (Layer 4)  
 5) Frontend-Scaffold + Storybook (Layer 5)
 
@@ -92,15 +95,15 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 | Interface | Endpunkt/Topic | Kurzbeschreibung | Primärquelle |
 | --- | --- | --- | --- |
 | AI Core REST | `/ai/ping/`, `/ai/intake/`, `/v1/ai/rag/query/` | HTTP-Endpunkte mit Tenant-Headern, orchestriert durch LangGraph. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
-| Agenten Queue | Celery Queue `agents` | Startet LangGraph-Nodes, setzt Guardrails & Cancellation. | [docs/agents/overview.md#knoten-und-guardrails](docs/agents/overview.md#knoten-und-guardrails) |
-| Ingestion Queue | Celery Queue `ingestion` | Führt Loader→Chunk→Embedding→Upsert Schritte aus. | [docs/rag/ingestion.md#pipeline](docs/rag/ingestion.md#pipeline) |
-| Vector Schema Migration | Cloud SQL Verbindung via Pipeline-Stufe | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
+| Agenten Queue | Celery Queue `agents` | Startet LangGraph-Graphen, setzt Guardrails & Cancellation. | [docs/agents/overview.md#knoten-und-guardrails](docs/agents/overview.md#knoten-und-guardrails) |
+| Ingestion Queue | Celery Queue `ingestion` | Nimmt `run_ingestion_graph`-Tasks zur Verarbeitung an. | [docs/rag/ingestion.md#graph-verarbeitung](docs/rag/ingestion.md#graph-verarbeitung) |
+| Vector Schema Migration | Cloud SQL Verbindung via CI/CD | Führt `docs/rag/schema.sql` gegen das RAG-Schema aus. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
 | LiteLLM Admin GUI | Cloud Run Service `litellm` (`/health`, GUI) | Verwaltung von Modellen, Rate-Limits und Master Keys. | [docs/litellm/admin-gui.md](docs/litellm/admin-gui.md) |
 | Langfuse API | `LANGFUSE_HOST` (`/api/public`, `/api/ingest`) | Erfasst Traces, Metrics, Alerts und Sampling-Konfiguration. | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 
 ## Laufzeit & Betrieb
 - Skalierungs- und Ressourcenregeln pro Dienst stehen in den [Operations Guidelines](docs/operations/scaling.md).
-- Deploy- und Traffic-Shift-Abläufe folgen der [CI/CD Pipeline](docs/cicd/pipeline.md) inklusive Approval-Stufen und Smoke-Checks.
+- Deploy- und Traffic-Shift-Abläufe folgen der [CI/CD-Dokumentation](docs/cicd/pipeline.md) inklusive Approval-Stufen und Smoke-Checks.
 - Runbooks zu Migrationen und Incidents liegen unter [docs/runbooks/](docs/runbooks) und ergänzen diese Übersicht.
 - Migrations-Runbook (Django/Tenants): [docs/runbooks/migrations.md](docs/runbooks/migrations.md)
 
@@ -115,22 +118,31 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 - QA-Abbruchkriterien und Smoke-Checklisten liegen in [docs/qa/checklists.md](docs/qa/checklists.md).
 
 ## Teststrategie
-- Pipeline-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD Pipeline](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
+- CI/CD-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD-Dokumentation](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
 - Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
 
-## Begriffe & IDs
-Eine verbindliche Definition aller systemweiten IDs und ihrer Semantik befindet sich im Dokument
-[ID-Verträge und Semantik](docs/ids.md). Dieses Dokument ist die maßgebliche Quelle für alle ID-bezogenen Verträge.
+## Glossar & Feld-Matrix
 
-Wichtige Begriffe im Überblick:
-- `Tenant`: Logische Mandantentrennung (Daten/Policies).
-- `Case`: Geschäftsvorfall/Arbeitskontext pro Tenant.
-- `ToolContext`: Minimale Laufzeit-Metadaten für Tools.
-- `*Input/*Output`: Pydantic-Contracts pro Tool.
-- `ToolError`: Standardisierte Fehlerklassen für Tools.
-- `Trace/Span`: Langfuse-Telemetrieobjekte.
+Diese Tabelle definiert die kanonischen Begriffe und Datenfelder in NOESIS 2.
 
-## Comands
+| Begriff/Feld | Bedeutung | Status | Vorkommen | Zu vermeidende Synonyme |
+|---|---|---|---|---|
+| `tenant_id` | ID des Mandanten | Pflicht | Graph, API, Tool | - |
+| `trace_id` | End-to-End-Korrelations-ID | Pflicht | Graph, API, Tool | `request_id` |
+| `invocation_id` | ID eines einzelnen Tool-Aufrufs | Pflicht | Tool | - |
+| `case_id` | ID eines Geschäftsvorfalls | Optional | Graph, API, Tool | `Case` |
+| `workflow_id` | ID eines Geschäftsprozess-Graphen | Optional | Graph, API, Tool | `Workflow` |
+| `run_id` | Laufzeit-ID für einen Graph-Lauf | Pflicht (eine von) | Graph, Tool | - |
+| `ingestion_run_id` | Laufzeit-ID für einen Ingestion-Lauf | Pflicht (eine von) | Graph, Tool | - |
+| `X-Tenant-ID` | HTTP-Header für Mandanten-ID | Pflicht | API | - |
+| `X-Tenant-Schema`| HTTP-Header für Mandanten-Schema | Pflicht (API-abhängig) | API | - |
+| `X-Case-ID` | HTTP-Header für Geschäftsvorfall-ID | Optional | API | - |
+| `Idempotency-Key`| HTTP-Header zur Deduplizierung | Optional | API | - |
+| `Graph` | LangGraph-Orchestrierung | - | Systemweit | `Pipeline` (historisch) |
+| `ingestion` | Name der Ingestion-Queue | - | Worker | - |
+| `run_ingestion_graph`| Name des Ingestion-Tasks | - | Worker | - |
+
+## Commands
 test: pytest -q
 lint: ruff check . && black --check . && mypy .
 typecheck: mypy .
@@ -154,4 +166,12 @@ format: black .
 10. [Runbooks](docs/runbooks) & [QA Checklisten](docs/qa/checklists.md)
 11. [README Einstieg & Kommandos](README.md)
 
- 
+## LLM-Kurzreferenz (stabil)
+
+- `trace_id` ist die verbindliche, systemweite Korrelations-ID; `request_id` ist veraltet.
+- Jeder Tool-Aufruf erfordert `tenant_id`, `trace_id`, `invocation_id` und genau eine Laufzeit-ID (`run_id` oder `ingestion_run_id`).
+- HTTP-APIs erfordern immer den `X-Tenant-ID`-Header.
+- `Graph` bezeichnet eine LangGraph-Orchestrierung; `Pipeline` ist ein veralteter Begriff dafür.
+- Die Graphen befinden sich im Verzeichnis `ai_core/graphs`.
+- Die Queue für die Datenaufnahme heißt `ingestion`, der zugehörige Task `run_ingestion_graph`.
+- Fehler in Tools werden über standardisierte `ToolError`-Typen abgebildet.

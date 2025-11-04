@@ -22,7 +22,7 @@ The following IDs are used throughout the NOESIS 2 system. Consistent use is cri
 
 ### Usage
 
-- Incoming HTTP requests require `X-Tenant-ID` and `X-Case-ID` headers.
+- Incoming HTTP requests require `X-Tenant-ID` header. `X-Case-ID` is optional.
 - Tool calls within agents receive a `ToolContext` containing `tenant_id`, `trace_id`, and either `run_id` or `ingestion_run_id`.
 - The `require_ids` function in `ai_core.ids.contracts` is used for validation.
 
