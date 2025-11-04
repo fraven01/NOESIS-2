@@ -8,10 +8,22 @@ from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    HttpUrl,
+    ValidationError,
+    model_validator,
+)
 
 from ai_core.infra.observability import observe_span, update_observation
-from ai_core.tools.web_search import SearchResult, ToolOutcome, WebSearchResponse, WebSearchWorker
+from ai_core.tools.web_search import (
+    SearchResult,
+    ToolOutcome,
+    WebSearchResponse,
+    WebSearchWorker,
+)
 
 
 class InvalidGraphInput(ValueError):
@@ -67,10 +79,17 @@ class GraphContextPayload(BaseModel):
     def _normalise(self) -> "GraphContextPayload":
         values = self.model_dump()
         cleaned: dict[str, str | None] = {}
-        for field in ("tenant_id", "workflow_id", "case_id", "trace_id", "run_id", "ingestion_run_id"):
-            raw = values.get(field)
-            text = (str(raw).strip() if raw is not None else "")
-            cleaned[field] = text or None
+        for _field_name in (
+            "tenant_id",
+            "workflow_id",
+            "case_id",
+            "trace_id",
+            "run_id",
+            "ingestion_run_id",
+        ):
+            raw = values.get(_field_name)
+            text = str(raw).strip() if raw is not None else ""
+            cleaned[_field_name] = text or None
         if not cleaned["tenant_id"]:
             raise ValueError("tenant_id_required")
         if not cleaned["workflow_id"]:
@@ -94,7 +113,9 @@ class GraphInput(BaseModel):
     query: str = Field(min_length=1)
     collection_id: str = Field(min_length=1)
     enable_hitl: bool = False
-    run_until: Literal["after_search", "after_selection", "review_complete"] | None = None
+    run_until: Literal["after_search", "after_selection", "review_complete"] | None = (
+        None
+    )
 
 
 class _OverrideUrlPayload(BaseModel):
@@ -129,7 +150,9 @@ class ExternalKnowledgeGraphConfig:
     prefer_pdf: bool = True
     blocked_domains: frozenset[str] = frozenset()
     min_snippet_length: int = 40
-    run_until: Literal["after_search", "after_selection", "review_complete"] | None = None
+    run_until: Literal["after_search", "after_selection", "review_complete"] | None = (
+        None
+    )
 
     def __post_init__(self) -> None:
         if self.top_n <= 0:
@@ -190,7 +213,9 @@ class ExternalKnowledgeGraph:
     ) -> _GraphIds:
         trace_id = context.trace_id or str(uuid4())
         stored_run_id = str(meta_state.get("run_id") or context.run_id or uuid4())
-        ingestion_run_id = meta_state.get("ingestion_run_id") or context.ingestion_run_id
+        ingestion_run_id = (
+            meta_state.get("ingestion_run_id") or context.ingestion_run_id
+        )
         ids = _GraphIds(
             tenant_id=context.tenant_id,
             trace_id=trace_id,
@@ -282,11 +307,15 @@ class ExternalKnowledgeGraph:
             "run_id": ids.run_id,
             "worker_call_id": str(uuid4()),
         }
-        response: WebSearchResponse = self._search_worker.run(query=query, context=worker_context)
+        response: WebSearchResponse = self._search_worker.run(
+            query=query, context=worker_context
+        )
         outcome: ToolOutcome = response.outcome
         meta = dict(outcome.meta)
         result_count = meta.get("result_count", len(response.results))
-        provider = str(meta.get("provider") or getattr(self._search_worker, "provider", "unknown"))
+        provider = str(
+            meta.get("provider") or getattr(self._search_worker, "provider", "unknown")
+        )
         attributes = self._base_span_attributes(ids)
         attributes.update(
             {
@@ -320,9 +349,13 @@ class ExternalKnowledgeGraph:
             transition_meta["error"] = meta.get("error")
             transition = Transition("error", "search_error", transition_meta)
         elif response.results:
-            transition = Transition("results", "search_results_available", transition_meta)
+            transition = Transition(
+                "results", "search_results_available", transition_meta
+            )
         else:
-            transition = Transition("no_results", "search_returned_empty", transition_meta)
+            transition = Transition(
+                "no_results", "search_returned_empty", transition_meta
+            )
         return transition
 
     @observe_span(name="graph.external_knowledge.k_filter_and_select")
@@ -382,9 +415,13 @@ class ExternalKnowledgeGraph:
         self._record_span_attributes(attributes)
 
         if selected is None:
-            transition = Transition("nothing_suitable", "no_candidate_selected", transition_meta)
+            transition = Transition(
+                "nothing_suitable", "no_candidate_selected", transition_meta
+            )
         else:
-            transition = Transition("candidate_selected", "candidate_selected", transition_meta)
+            transition = Transition(
+                "candidate_selected", "candidate_selected", transition_meta
+            )
         return transition, selected, shortlisted
 
     def _pause_for_review(
@@ -441,7 +478,9 @@ class ExternalKnowledgeGraph:
         if isinstance(override_url, str) and override_url.strip():
             override_text = override_url.strip()
             try:
-                validated_override = _OverrideUrlPayload.model_validate({"url": override_text})
+                validated_override = _OverrideUrlPayload.model_validate(
+                    {"url": override_text}
+                )
             except ValidationError:
                 override_issue = True
             else:
@@ -809,7 +848,9 @@ class ExternalKnowledgeGraph:
         except Exception as exc:
             meta = self._base_meta(ids)
             meta["error"] = repr(exc)
-            ingestion_transition = Transition("ingestion_error", "ingestion_failed", meta)
+            ingestion_transition = Transition(
+                "ingestion_error", "ingestion_failed", meta
+            )
         _record("k_trigger_ingestion", ingestion_transition)
         outcome = ingestion_transition.decision
         document_id = ingestion_transition.meta.get("document_id")

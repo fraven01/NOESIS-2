@@ -99,7 +99,9 @@ def _base_meta() -> dict[str, str]:
     }
 
 
-def test_external_knowledge_graph_ingests_pdf_without_hitl(observation_collector: list[dict[str, Any]]) -> None:
+def test_external_knowledge_graph_ingests_pdf_without_hitl(
+    observation_collector: list[dict[str, Any]],
+) -> None:
     pdf_result = ProviderSearchResult(
         url="https://example.org/report.pdf",
         title="Climate Report",
@@ -140,7 +142,9 @@ def test_external_knowledge_graph_ingests_pdf_without_hitl(observation_collector
     assert result["selected_url"] == "https://example.org/report.pdf"
     assert ingestion_adapter.call_count == 1
     assert ingestion_adapter.last_payload is not None
-    assert ingestion_adapter.last_payload["context"]["graph_name"] == "external_knowledge"
+    assert (
+        ingestion_adapter.last_payload["context"]["graph_name"] == "external_knowledge"
+    )
     assert "ingestion_run_id" in ingestion_adapter.last_payload["context"]
 
     telemetry = result["telemetry"]
@@ -157,7 +161,9 @@ def test_external_knowledge_graph_ingests_pdf_without_hitl(observation_collector
         assert metadata["run_id"]
 
 
-def test_external_knowledge_graph_handles_no_suitable_candidate(observation_collector: list[dict[str, Any]]) -> None:
+def test_external_knowledge_graph_handles_no_suitable_candidate(
+    observation_collector: list[dict[str, Any]],
+) -> None:
     short_result = ProviderSearchResult(
         url="https://spam.example.com/page",
         title="Spam",
@@ -176,7 +182,9 @@ def test_external_knowledge_graph_handles_no_suitable_candidate(observation_coll
     graph = ExternalKnowledgeGraph(
         search_worker=worker,
         ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(blocked_domains=frozenset({"spam.example.com"})),
+        config=ExternalKnowledgeGraphConfig(
+            blocked_domains=frozenset({"spam.example.com"})
+        ),
     )
 
     state, result = graph.run(
@@ -194,7 +202,9 @@ def test_external_knowledge_graph_handles_no_suitable_candidate(observation_coll
         assert metadata["collection_id"] == "collection-2"
 
 
-def test_external_knowledge_graph_hitl_rejection_skips_ingestion(observation_collector: list[dict[str, Any]]) -> None:
+def test_external_knowledge_graph_hitl_rejection_skips_ingestion(
+    observation_collector: list[dict[str, Any]],
+) -> None:
     result = ProviderSearchResult(
         url="https://example.org/insight",
         title="Insight",
@@ -519,7 +529,9 @@ def test_external_knowledge_graph_hitl_override_blocklist_rejection() -> None:
     graph = ExternalKnowledgeGraph(
         search_worker=worker,
         ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(blocked_domains=frozenset({"blocked.example"})),
+        config=ExternalKnowledgeGraphConfig(
+            blocked_domains=frozenset({"blocked.example"})
+        ),
     )
 
     state, pending = graph.run(
@@ -540,8 +552,13 @@ def test_external_knowledge_graph_hitl_override_blocklist_rejection() -> None:
     resumed_state, final_result = graph.run(state, meta=_base_meta())
 
     assert final_result["outcome"] == "rejected"
-    assert resumed_state["review"]["transition"]["rationale"] == "override_url_blocked_or_invalid"
+    assert (
+        resumed_state["review"]["transition"]["rationale"]
+        == "override_url_blocked_or_invalid"
+    )
     assert ingestion_adapter.call_count == 0
+
+
 def test_external_knowledge_graph_hitl_emitter_failure_records_error() -> None:
     result = ProviderSearchResult(
         url="https://example.org/resource",

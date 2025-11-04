@@ -27,13 +27,22 @@ from ai_core.tools.web_search import (
 class StaticSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a static sequence of results."""
 
-    def __init__(self, provider: str, results: list[ProviderSearchResult], status_code: int = 200) -> None:
-        self.provider_name = provider
+
+    def __init__(
+        self, provider: str, results: list[ProviderSearchResult], status_code: int = 200
+    ) -> None:
+        self._provider = provider
         self._results = results
         self._status_code = status_code
 
     def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
         return SearchAdapterResponse(results=self._results[:max_results], status_code=self._status_code)
+
+
+    def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
+        return SearchAdapterResponse(
+            results=self._results[:limit], status_code=self._status_code
+        )
 
 
 class RaisingSearchAdapter(BaseSearchAdapter):
@@ -43,7 +52,15 @@ class RaisingSearchAdapter(BaseSearchAdapter):
         self.provider_name = provider
         self._error = error
 
-    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:  # pragma: no cover - never returns
+
+    @property
+    def provider(self) -> str:
+        return self._provider
+
+    def search(
+        self, query: str, *, limit: int
+    ) -> SearchAdapterResponse:  # pragma: no cover - never returns
+
         raise self._error
 
 
@@ -61,11 +78,13 @@ class RecordingIngestionAdapter:
         collection_id: str,
         context: Mapping[str, str],
     ) -> CrawlerIngestionOutcome:
-        self.calls.append({
-            "url": url,
-            "collection_id": collection_id,
-            "context": dict(context),
-        })
+        self.calls.append(
+            {
+                "url": url,
+                "collection_id": collection_id,
+                "context": dict(context),
+            }
+        )
         return self.outcome
 
 
@@ -111,7 +130,9 @@ def _find_by_key(entries: Iterable[Mapping[str, Any]], key: str) -> Mapping[str,
     raise AssertionError(f"No entry contains key {key!r}")
 
 
-def test_id_propagation_and_span_metadata(capture_observations: list[dict[str, Any]]) -> None:
+def test_id_propagation_and_span_metadata(
+    capture_observations: list[dict[str, Any]],
+) -> None:
     pdf_result = ProviderSearchResult(
         url="https://example.com/files/report.pdf",
         title="Quarterly Report",
@@ -162,7 +183,10 @@ def test_id_propagation_and_span_metadata(capture_observations: list[dict[str, A
         config=ExternalKnowledgeGraphConfig(),
     )
 
-    state, result = graph.run({"query": "industry outlook", "collection_id": "collection-42"}, meta=_base_meta())
+    state, result = graph.run(
+        {"query": "industry outlook", "collection_id": "collection-42"},
+        meta=_base_meta(),
+    )
 
     trace_id = state["meta"]["context"]["trace_id"]
     run_id = state["meta"]["run_id"]
@@ -172,7 +196,11 @@ def test_id_propagation_and_span_metadata(capture_observations: list[dict[str, A
     assert result["telemetry"]["ids"]["run_id"] == run_id
 
     transitions = {entry["node"]: entry for entry in state["transitions"]}
-    assert set(transitions) == {"k_search", "k_filter_and_select", "k_trigger_ingestion"}
+    assert set(transitions) == {
+        "k_search",
+        "k_filter_and_select",
+        "k_trigger_ingestion",
+    }
 
     search_meta = transitions["k_search"]["meta"]
     filter_meta = transitions["k_filter_and_select"]["meta"]
@@ -200,7 +228,14 @@ def test_id_propagation_and_span_metadata(capture_observations: list[dict[str, A
 
     search_results = state["search"]["results"]
     assert search_results and len(search_results) == 3
-    assert sum(1 for item in search_results if item["url"] == "https://example.com/articles/insight") == 1
+    assert (
+        sum(
+            1
+            for item in search_results
+            if item["url"] == "https://example.com/articles/insight"
+        )
+        == 1
+    )
     selected = state["selection"]["selected"]
     assert selected and selected["is_pdf"] is True
     assert result["selected_url"].endswith(".pdf")
@@ -230,18 +265,23 @@ def test_id_propagation_and_span_metadata(capture_observations: list[dict[str, A
     assert trigger_span["collection_id"] == "collection-42"
     assert trigger_span["graph_name"] == "external_knowledge"
 
-    composed = json.dumps({
-        "state": state,
-        "result": result,
-        "spans": capture_observations,
-    })
+    composed = json.dumps(
+        {
+            "state": state,
+            "result": result,
+            "spans": capture_observations,
+        }
+    )
     assert "request_id" not in composed
 
     first_worker_call_id = search_meta["worker_call_id"]
     first_ingestion_run_id = ingestion_run_id
 
     capture_observations.clear()
-    state_two, result_two = graph.run({"query": "industry outlook", "collection_id": "collection-42"}, meta=_base_meta())
+    state_two, result_two = graph.run(
+        {"query": "industry outlook", "collection_id": "collection-42"},
+        meta=_base_meta(),
+    )
     transitions_two = {entry["node"]: entry for entry in state_two["transitions"]}
     assert state_two["meta"]["run_id"] != run_id
     assert transitions_two["k_search"]["meta"]["worker_call_id"] != first_worker_call_id
@@ -258,9 +298,13 @@ def test_hitl_pause_and_resume(capture_observations: list[dict[str, Any]]) -> No
         score=0.6,
         content_type="text/html",
     )
-    worker = WebSearchWorker(StaticSearchAdapter("static", [result]), max_results=3, oversample_factor=1)
+    worker = WebSearchWorker(
+        StaticSearchAdapter("static", [result]), max_results=3, oversample_factor=1
+    )
     ingestion_adapter = RecordingIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(decision="ingested", crawler_decision="ingested", document_id="doc-hitl"),
+        outcome=CrawlerIngestionOutcome(
+            decision="ingested", crawler_decision="ingested", document_id="doc-hitl"
+        ),
     )
     emitter = RecordingReviewEmitter()
     graph = ExternalKnowledgeGraph(
@@ -271,7 +315,11 @@ def test_hitl_pause_and_resume(capture_observations: list[dict[str, Any]]) -> No
     )
 
     state, pending_result = graph.run(
-        {"query": "governance update", "collection_id": "collection-hitl", "enable_hitl": True},
+        {
+            "query": "governance update",
+            "collection_id": "collection-hitl",
+            "enable_hitl": True,
+        },
         meta=_base_meta(),
     )
 
@@ -334,7 +382,9 @@ def test_provider_error_propagates_with_telemetry(
         config=ExternalKnowledgeGraphConfig(),
     )
 
-    state, result = graph.run({"query": "resilience" , "collection_id": "collection-error"}, meta=_base_meta())
+    state, result = graph.run(
+        {"query": "resilience", "collection_id": "collection-error"}, meta=_base_meta()
+    )
 
     assert result["outcome"] == "error"
     transitions = {entry["node"]: entry for entry in state["transitions"]}
