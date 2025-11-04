@@ -29,21 +29,6 @@ from common.logging import get_logger
 
 _LOGGER = get_logger(__name__)
 
-_TRACKING_PREFIXES: tuple[str, ...] = ("utm_",)
-_TRACKING_PARAMS: frozenset[str] = frozenset(
-    {
-        "gclid",
-        "fbclid",
-        "igshid",
-        "msclkid",
-        "mc_eid",
-        "vero_conv",
-        "vero_id",
-        "yclid",
-        "ref",
-    }
-)
-
 
 class GoogleSearchAdapter(BaseSearchAdapter):
     """Adapter calling the Google Custom Search JSON API."""
@@ -304,13 +289,8 @@ class GoogleSearchAdapter(BaseSearchAdapter):
             return None
         query_items: list[tuple[str, str]] = []
         for key, val in parse_qsl(parsed.query, keep_blank_values=False):
-            key_lower = key.lower()
-            if key_lower in _TRACKING_PARAMS:
-                continue
-            if any(key_lower.startswith(prefix) for prefix in _TRACKING_PREFIXES):
-                continue
             query_items.append((key, val))
-        normalized_query = urlencode(sorted(query_items))
+        normalized_query = urlencode(query_items, doseq=True)
         path = parsed.path or "/"
         return urlunsplit(
             (

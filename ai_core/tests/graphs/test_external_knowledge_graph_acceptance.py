@@ -27,6 +27,8 @@ from ai_core.tools.web_search import (
 class StaticSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a static sequence of results."""
 
+    provider_name = "static"
+
     def __init__(
         self, provider: str, results: list[ProviderSearchResult], status_code: int = 200
     ) -> None:
@@ -43,8 +45,13 @@ class StaticSearchAdapter(BaseSearchAdapter):
 class RaisingSearchAdapter(BaseSearchAdapter):
     """Adapter that raises a configured provider error when searched."""
 
+    provider_name = "failing"
+
+    provider_name = "failing"
+
     def __init__(self, provider: str, error: SearchProviderError) -> None:
         self.provider_name = provider
+        self._provider = provider
         self._error = error
 
     @property
@@ -171,11 +178,19 @@ def test_id_propagation_and_span_metadata(
             document_id="doc-777",
         )
     )
+    worker = WebSearchWorker(adapter, max_results=5, oversample_factor=1)
+    ingestion_adapter = RecordingIngestionAdapter(
+        outcome=CrawlerIngestionOutcome(
+            decision="ingested",
+            crawler_decision="ingested",
+            document_id="doc-777",
+        )
+    )
     graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
+        search_worker=worker,
     )
-    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "industry outlook", "collection_id": "collection-42"},
@@ -305,8 +320,8 @@ def test_hitl_pause_and_resume(capture_observations: list[dict[str, Any]]) -> No
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
         review_emitter=emitter,
+        search_worker=worker,
     )
-    graph._search_worker = worker
 
     state, pending_result = graph.run(
         {
@@ -373,8 +388,8 @@ def test_provider_error_propagates_with_telemetry(
     graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
+        search_worker=worker,
     )
-    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "resilience", "collection_id": "collection-error"}, meta=_base_meta()

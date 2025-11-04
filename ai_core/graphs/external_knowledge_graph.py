@@ -20,6 +20,7 @@ from pydantic import (
 from ai_core.infra.observability import observe_span, update_observation
 from ai_core.tools.search_adapters.google import GoogleSearchAdapter
 from ai_core.tools.web_search import (
+    SearchProviderError,
     SearchResult,
     ToolOutcome,
     WebSearchResponse,
@@ -639,10 +640,13 @@ class ExternalKnowledgeGraph:
                     ids=ids,
                     run_state=working_state,
                 )
-            except Exception as exc:  # pragma: no cover - defensive
+            except SearchProviderError as exc:
                 error_meta = self._base_meta(ids)
-                error_meta["error"] = repr(exc)
-                search_transition = Transition("error", "search_exception", error_meta)
+                error_meta["error"] = {
+                    "kind": type(exc).__name__,
+                    "message": str(exc),
+                }
+                search_transition = Transition("error", "search_error", error_meta)
                 working_state.setdefault("search", {})
             search_state["transition"] = search_transition.to_mapping()
             search_state["completed"] = True
@@ -872,14 +876,16 @@ def build_graph(
     ingestion_adapter: CrawlerIngestionAdapter,
     config: ExternalKnowledgeGraphConfig | None = None,
     review_emitter: ReviewEmitter | None = None,
+    search_worker: WebSearchWorker | None = None,
 ) -> ExternalKnowledgeGraph:
     """Construct a configured :class:`ExternalKnowledgeGraph`."""
 
-    search_adapter = GoogleSearchAdapter(
-        api_key=SecretStr(settings.GOOGLE_CUSTOM_SEARCH_API_KEY),
-        search_engine_id=settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID,
-    )
-    search_worker = WebSearchWorker(search_adapter)
+    if search_worker is None:
+        search_adapter = GoogleSearchAdapter(
+            api_key=SecretStr(settings.GOOGLE_CUSTOM_SEARCH_API_KEY),
+            search_engine_id=settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID,
+        )
+        search_worker = WebSearchWorker(search_adapter)
 
     return ExternalKnowledgeGraph(
         search_worker=search_worker,

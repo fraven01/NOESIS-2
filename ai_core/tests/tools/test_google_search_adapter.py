@@ -8,6 +8,7 @@ from requests.exceptions import Timeout as RequestsTimeout
 
 from ai_core.tools.search_adapters.google import GoogleSearchAdapter
 from ai_core.tools.web_search import (
+    SearchProviderBadResponse,
     SearchProviderQuotaExceeded,
     SearchProviderTimeout,
 )
@@ -104,9 +105,9 @@ def test_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
     assert result.quota_remaining == 37
     assert len(result.results) == 2
     assert tuple(result.raw_results)[0].display_link == "example.com"
-    assert result.results[0].url == "https://example.com/report.pdf"
+    assert result.results[0].url == "https://example.com/report.pdf?utm_source=newsletter&ref=42"
     assert result.results[0].content_type == "application/pdf"
-    assert result.results[1].url == "https://example.com/insight"
+    assert result.results[1].url == "https://example.com/insight?utm_medium=email&ref=1"
     assert result.results[1].source == "example.com"
 
     call = session.calls[0]
@@ -177,3 +178,58 @@ def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert captured_spans
     assert captured_spans[0]["error.kind"] == "Timeout"
+
+
+def test_server_error_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", lambda *_, **__: None
+    )
+
+    response = _FakeResponse(status_code=503)
+    adapter = _make_adapter(_FakeSession(responses=[response]))
+
+    with pytest.raises(SearchProviderBadResponse) as exc_info:
+        adapter.search("server error", max_results=1)
+
+    assert exc_info.value.http_status == 503
+
+
+def test_client_error_4xx(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", lambda *_, **__: None
+    )
+
+    response = _FakeResponse(status_code=400)
+    adapter = _make_adapter(_FakeSession(responses=[response]))
+
+    with pytest.raises(SearchProviderBadResponse) as exc_info:
+        adapter.search("client error", max_results=1)
+
+    assert exc_info.value.http_status == 400
+
+
+def test_invalid_json_response(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", lambda *_, **__: None
+    )
+
+    response = _FakeResponse(status_code=200, json_data=ValueError("Invalid JSON"))
+    adapter = _make_adapter(_FakeSession(responses=[response]))
+
+    with pytest.raises(SearchProviderBadResponse):
+        adapter.search("invalid json", max_results=1)
+
+
+def test_retry_after_ms_with_date_string(monkeypatch) -> None:
+    adapter = _make_adapter(_FakeSession())
+    headers = {"Retry-After": "Fri, 31 Dec 2025 23:59:59 GMT"}
+    
+    from datetime import datetime, timezone
+    now = datetime(2025, 12, 31, 23, 59, 49, tzinfo=timezone.utc)
+    
+    monkeypatch.setattr("ai_core.tools.search_adapters.google.datetime", type("datetime", (object,), {"now": lambda tz: now}))
+    
+    retry_ms = adapter._retry_after_ms(headers)
+
+    assert retry_ms is not None
+    assert 9000 < retry_ms < 11000

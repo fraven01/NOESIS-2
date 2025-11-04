@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import logging
 import math
 import time
@@ -223,7 +224,6 @@ class WebSearchWorker:
         "vero_conv",
         "vero_id",
         "yclid",
-        "ref",
     }
 
     def __init__(
@@ -261,6 +261,7 @@ class WebSearchWorker:
         )
         self._timer = timer or time.perf_counter
         self._logger = logger or LOGGER
+        self._adapter_limit_kwarg = self._determine_limit_keyword(adapter)
 
     def run(
         self, *, query: str, context: WebSearchContext | dict[str, object]
@@ -383,8 +384,13 @@ class WebSearchWorker:
         limit = self._max_results * self._oversample_factor
         while attempts < self._max_attempts:
             try:
-                response = self._adapter.search(query, max_results=limit)
+                response = self._invoke_adapter(query, limit)
                 return response
+            except TypeError as exc:
+                fallback = self._handle_adapter_type_error(query, limit, exc)
+                if fallback is not None:
+                    return fallback
+                raise
             except SearchProviderQuotaExceeded as exc:
                 last_error = exc
                 attempts += 1
@@ -403,11 +409,56 @@ class WebSearchWorker:
         assert last_error is not None
         raise last_error
 
+    def _invoke_adapter(self, query: str, limit: int) -> SearchAdapterResponse:
+        return self._adapter.search(query, **{self._adapter_limit_kwarg: limit})
+
+    def _handle_adapter_type_error(
+        self, query: str, limit: int, error: TypeError
+    ) -> SearchAdapterResponse | None:
+        message = str(error)
+        attempted = self._adapter_limit_kwarg
+        if (
+            "unexpected keyword argument" not in message
+            or f"'{attempted}'" not in message
+        ):
+            return None
+        alternate = "limit" if attempted == "max_results" else "max_results"
+        try:
+            response = self._adapter.search(query, **{alternate: limit})
+        except TypeError:
+            return None
+        self._adapter_limit_kwarg = alternate
+        return response
+
     def _retry_delay(self, attempt: int, retry_in_ms: int | None) -> float:
         if retry_in_ms is not None and retry_in_ms > 0:
             return retry_in_ms / 1000.0
         backoff = self._backoff_factor * (2 ** max(0, attempt - 1))
         return min(backoff, 10.0)
+
+    def _determine_limit_keyword(self, adapter: BaseSearchAdapter) -> str:
+        search_callable = getattr(adapter, "search", None)
+        if search_callable is None:
+            return "max_results"
+        try:
+            parameters = inspect.signature(search_callable).parameters
+        except (TypeError, ValueError):
+            return "max_results"
+        if "max_results" in parameters:
+            parameter = parameters["max_results"]
+            if parameter.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                return "max_results"
+        if "limit" in parameters:
+            parameter = parameters["limit"]
+            if parameter.kind in (
+                inspect.Parameter.KEYWORD_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            ):
+                return "limit"
+        return "max_results"
 
     def _normalise_results(
         self,
