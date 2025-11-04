@@ -789,6 +789,16 @@ class ExternalKnowledgeGraph:
                     )
                     return working_state, result
 
+        if graph_input.run_until == "review_complete":
+            telemetry["stop_reason"] = "review_complete"
+            result = self._build_result(
+                outcome="stopped_after_review",
+                telemetry=telemetry,
+                selection=selection_data,
+                document_id=None,
+            )
+            return working_state, result
+
         # ------------------------------------------------------------- ingestion
         try:
             ingestion_transition = self._k_trigger_ingestion(

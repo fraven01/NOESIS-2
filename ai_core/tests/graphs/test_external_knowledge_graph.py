@@ -327,6 +327,51 @@ def test_external_knowledge_graph_run_until_after_selection() -> None:
     assert ingestion_adapter.call_count == 0
 
 
+def test_external_knowledge_graph_run_until_review_complete() -> None:
+    result = ProviderSearchResult(
+        url="https://example.org/resource",
+        title="Resource",
+        snippet="""Detailed analysis describing technology trends across the industry landscape.""",
+        source="Example",
+        score=0.6,
+        content_type="text/html",
+    )
+    worker = _make_worker([result])
+    ingestion_adapter = StubIngestionAdapter(
+        outcome=CrawlerIngestionOutcome(
+            decision="ingested",
+            crawler_decision="ingested",
+            document_id="doc-901",
+        )
+    )
+    graph = ExternalKnowledgeGraph(
+        search_worker=worker,
+        ingestion_adapter=ingestion_adapter,
+        config=ExternalKnowledgeGraphConfig(),
+    )
+
+    state, pending = graph.run(
+        {
+            "query": "technology trends",
+            "collection_id": "collection-7",
+            "enable_hitl": True,
+            "run_until": "review_complete",
+        },
+        meta=_base_meta(),
+    )
+
+    assert pending["telemetry"]["review"]["status"] == "pending"
+    assert ingestion_adapter.call_count == 0
+
+    state["review_response"] = {"approved": True}
+    resumed_state, final_result = graph.run(state, meta=_base_meta())
+
+    assert final_result["outcome"] == "stopped_after_review"
+    assert final_result["telemetry"]["stop_reason"] == "review_complete"
+    assert resumed_state["review"]["status"] == "approved"
+    assert ingestion_adapter.call_count == 0
+
+
 def test_external_knowledge_graph_rejected_count_accounts_for_topn_cut() -> None:
     long_snippet = (
         "Extensive discussion of industry developments and analytical observations "
