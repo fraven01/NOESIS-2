@@ -864,14 +864,24 @@ class ExternalKnowledgeGraph:
         return working_state, result
 
 
+from ai_core.tools.search_adapters.google import GoogleSearchAdapter
+from django.conf import settings
+from pydantic import SecretStr
+
+
 def build_graph(
     *,
-    search_worker: WebSearchWorker,
     ingestion_adapter: CrawlerIngestionAdapter,
     config: ExternalKnowledgeGraphConfig | None = None,
     review_emitter: ReviewEmitter | None = None,
 ) -> ExternalKnowledgeGraph:
     """Construct a configured :class:`ExternalKnowledgeGraph`."""
+
+    search_adapter = GoogleSearchAdapter(
+        api_key=SecretStr(settings.GOOGLE_CUSTOM_SEARCH_API_KEY),
+        search_engine_id=settings.GOOGLE_CUSTOM_SEARCH_ENGINE_ID,
+    )
+    search_worker = WebSearchWorker(search_adapter)
 
     return ExternalKnowledgeGraph(
         search_worker=search_worker,

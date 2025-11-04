@@ -471,6 +471,10 @@ LANGFUSE_SECRET_KEY = env("LANGFUSE_SECRET_KEY", default="")
 LANGFUSE_SAMPLE_RATE = float(env("LANGFUSE_SAMPLE_RATE", default=1.0))
 AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
 
+# Google Custom Search (for ExternalKnowledgeGraph)
+GOOGLE_CUSTOM_SEARCH_API_KEY = env("GOOGLE_CUSTOM_SEARCH_API_KEY", default=None)
+GOOGLE_CUSTOM_SEARCH_ENGINE_ID = env("GOOGLE_CUSTOM_SEARCH_ENGINE_ID", default=None)
+
 # Guard: prevent accidental use of production Langfuse keys in non-prod environments
 if DEPLOYMENT_ENV in {"development", "dev", "staging", "test", "testing"}:
     lf_pk = (LANGFUSE_PUBLIC_KEY or "").lower()

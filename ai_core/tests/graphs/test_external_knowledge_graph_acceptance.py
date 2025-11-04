@@ -10,7 +10,6 @@ import pytest
 
 from ai_core.graphs.external_knowledge_graph import (
     CrawlerIngestionOutcome,
-    ExternalKnowledgeGraph,
     ExternalKnowledgeGraphConfig,
 )
 from ai_core.tools.web_search import (
@@ -27,7 +26,6 @@ from ai_core.tools.web_search import (
 class StaticSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a static sequence of results."""
 
-
     def __init__(
         self, provider: str, results: list[ProviderSearchResult], status_code: int = 200
     ) -> None:
@@ -36,7 +34,9 @@ class StaticSearchAdapter(BaseSearchAdapter):
         self._status_code = status_code
 
     def search(self, query: str, *, limit: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(results=self._results[:limit], status_code=self._status_code)
+        return SearchAdapterResponse(
+            results=self._results[:limit], status_code=self._status_code
+        )
 
 
 class RaisingSearchAdapter(BaseSearchAdapter):
@@ -45,7 +45,6 @@ class RaisingSearchAdapter(BaseSearchAdapter):
     def __init__(self, provider: str, error: SearchProviderError) -> None:
         self.provider_name = provider
         self._error = error
-
 
     @property
     def provider(self) -> str:
@@ -124,6 +123,8 @@ def _find_by_key(entries: Iterable[Mapping[str, Any]], key: str) -> Mapping[str,
     raise AssertionError(f"No entry contains key {key!r}")
 
 
+from ai_core.graphs import external_knowledge_graph as ekg
+
 def test_id_propagation_and_span_metadata(
     capture_observations: list[dict[str, Any]],
 ) -> None:
@@ -171,11 +172,11 @@ def test_id_propagation_and_span_metadata(
             document_id="doc-777",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "industry outlook", "collection_id": "collection-42"},
@@ -301,12 +302,12 @@ def test_hitl_pause_and_resume(capture_observations: list[dict[str, Any]]) -> No
         ),
     )
     emitter = RecordingReviewEmitter()
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
         review_emitter=emitter,
     )
+    graph._search_worker = worker
 
     state, pending_result = graph.run(
         {
@@ -370,11 +371,11 @@ def test_provider_error_propagates_with_telemetry(
     ingestion_adapter = RecordingIngestionAdapter(
         outcome=CrawlerIngestionOutcome(decision="skipped", crawler_decision="skipped"),
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "resilience", "collection_id": "collection-error"}, meta=_base_meta()

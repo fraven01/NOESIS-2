@@ -10,7 +10,6 @@ import pytest
 from ai_core.graphs import external_knowledge_graph as ekg
 from ai_core.graphs.external_knowledge_graph import (
     CrawlerIngestionOutcome,
-    ExternalKnowledgeGraph,
     ExternalKnowledgeGraphConfig,
 )
 from ai_core.tools.web_search import (
@@ -29,7 +28,9 @@ class StubSearchAdapter(BaseSearchAdapter):
         self._results = results
 
     def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(results=self._results[:max_results], status_code=200)
+        return SearchAdapterResponse(
+            results=self._results[:max_results], status_code=200
+        )
 
 
 @dataclass
@@ -126,11 +127,11 @@ def test_external_knowledge_graph_ingests_pdf_without_hitl(
             document_id="doc-123",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "climate report", "collection_id": "collection-1"},
@@ -179,13 +180,13 @@ def test_external_knowledge_graph_handles_no_suitable_candidate(
             crawler_decision="skipped",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(
             blocked_domains=frozenset({"spam.example.com"})
         ),
     )
+    graph._search_worker = worker
 
     state, result = graph.run(
         {"query": "irrelevant", "collection_id": "collection-2"},
@@ -222,12 +223,12 @@ def test_external_knowledge_graph_hitl_rejection_skips_ingestion(
         )
     )
     emitter = StubReviewEmitter()
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
         review_emitter=emitter,
     )
+    graph._search_worker = worker
 
     initial_state, pending = graph.run(
         {
@@ -273,11 +274,11 @@ def test_external_knowledge_graph_run_until_after_search() -> None:
             crawler_decision="skipped",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, payload = graph.run(
         {
@@ -311,11 +312,11 @@ def test_external_knowledge_graph_run_until_after_selection() -> None:
             document_id="doc-900",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, payload = graph.run(
         {
@@ -350,11 +351,11 @@ def test_external_knowledge_graph_run_until_review_complete() -> None:
             document_id="doc-901",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, pending = graph.run(
         {
@@ -411,11 +412,11 @@ def test_external_knowledge_graph_rejected_count_accounts_for_topn_cut() -> None
             crawler_decision="skipped",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(top_n=1),
     )
+    graph._search_worker = worker
 
     state, payload = graph.run(
         {
@@ -449,11 +450,11 @@ def test_external_knowledge_graph_blocks_blocked_subdomains() -> None:
             crawler_decision="skipped",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(blocked_domains=frozenset({"example.com"})),
     )
+    graph._search_worker = worker
 
     state, payload = graph.run(
         {"query": "spam", "collection_id": "collection-blocked"},
@@ -482,11 +483,11 @@ def test_external_knowledge_graph_hitl_override_allows_valid_url() -> None:
             document_id="doc-override",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
     )
+    graph._search_worker = worker
 
     state, pending = graph.run(
         {
@@ -526,13 +527,13 @@ def test_external_knowledge_graph_hitl_override_blocklist_rejection() -> None:
             document_id="doc-override",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(
             blocked_domains=frozenset({"blocked.example"})
         ),
     )
+    graph._search_worker = worker
 
     state, pending = graph.run(
         {
@@ -576,12 +577,12 @@ def test_external_knowledge_graph_hitl_emitter_failure_records_error() -> None:
             document_id="doc-111",
         )
     )
-    graph = ExternalKnowledgeGraph(
-        search_worker=worker,
+    graph = ekg.build_graph(
         ingestion_adapter=ingestion_adapter,
         config=ExternalKnowledgeGraphConfig(),
         review_emitter=FailingReviewEmitter(),
     )
+    graph._search_worker = worker
 
     state, payload = graph.run(
         {

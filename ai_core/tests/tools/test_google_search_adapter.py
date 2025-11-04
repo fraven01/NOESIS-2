@@ -41,7 +41,9 @@ class _FakeSession:
         self._exceptions = list(exceptions or [])
         self.calls: list[dict[str, Any]] = []
 
-    def get(self, url: str, *, params: Mapping[str, Any], timeout: float) -> _FakeResponse:
+    def get(
+        self, url: str, *, params: Mapping[str, Any], timeout: float
+    ) -> _FakeResponse:
         self.calls.append({"url": url, "params": dict(params), "timeout": timeout})
         if self._exceptions:
             raise self._exceptions.pop(0)
@@ -62,11 +64,15 @@ def _make_adapter(session: _FakeSession) -> GoogleSearchAdapter:
 def test_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
 
-    def _capture_span(name: str, *, attributes: dict[str, Any], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, Any], trace_id: str | None = None
+    ) -> None:
         assert name == "tool.web_search.provider"
         captured_spans.append(dict(attributes))
 
-    monkeypatch.setattr("ai_core.tools.search_adapters.google.record_span", _capture_span)
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", _capture_span
+    )
 
     response = _FakeResponse(
         status_code=200,
@@ -116,7 +122,9 @@ def test_search_success(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_quota_exceeded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("ai_core.tools.search_adapters.google.record_span", lambda *_, **__: None)
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", lambda *_, **__: None
+    )
 
     response = _FakeResponse(status_code=403, headers={"Retry-After": "120"})
     adapter = _make_adapter(_FakeSession(responses=[response]))
@@ -133,7 +141,9 @@ def test_empty_items(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
     monkeypatch.setattr(
         "ai_core.tools.search_adapters.google.record_span",
-        lambda name, *, attributes, trace_id=None: captured_spans.append(dict(attributes)),
+        lambda name, *, attributes, trace_id=None: captured_spans.append(
+            dict(attributes)
+        ),
     )
 
     response = _FakeResponse(status_code=200, json_data={})
@@ -150,10 +160,14 @@ def test_empty_items(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     captured_spans: list[dict[str, Any]] = []
 
-    def _capture_span(name: str, *, attributes: dict[str, Any], trace_id: str | None = None) -> None:
+    def _capture_span(
+        name: str, *, attributes: dict[str, Any], trace_id: str | None = None
+    ) -> None:
         captured_spans.append(dict(attributes))
 
-    monkeypatch.setattr("ai_core.tools.search_adapters.google.record_span", _capture_span)
+    monkeypatch.setattr(
+        "ai_core.tools.search_adapters.google.record_span", _capture_span
+    )
 
     session = _FakeSession(exceptions=[RequestsTimeout("timeout")])
     adapter = _make_adapter(session)

@@ -122,7 +122,9 @@ class GoogleSearchAdapter(BaseSearchAdapter):
                 quota_remaining,
                 error_kind="SearchProviderBadResponse",
             )
-            raise SearchProviderBadResponse("google_search_server_error", http_status=status)
+            raise SearchProviderBadResponse(
+                "google_search_server_error", http_status=status
+            )
         if status >= 400:
             self._record_span(
                 latency_ms,
@@ -131,7 +133,9 @@ class GoogleSearchAdapter(BaseSearchAdapter):
                 quota_remaining,
                 error_kind="SearchProviderBadResponse",
             )
-            raise SearchProviderBadResponse("google_search_http_error", http_status=status)
+            raise SearchProviderBadResponse(
+                "google_search_http_error", http_status=status
+            )
 
         try:
             payload = response.json()
@@ -144,7 +148,9 @@ class GoogleSearchAdapter(BaseSearchAdapter):
                 error_kind="SearchProviderBadResponse",
                 error_message="invalid_json",
             )
-            raise SearchProviderBadResponse("google_search_invalid_json", http_status=status) from exc
+            raise SearchProviderBadResponse(
+                "google_search_invalid_json", http_status=status
+            ) from exc
 
         items = self._extract_items(payload)
         raw_results: list[RawSearchResult] = []
@@ -232,7 +238,11 @@ class GoogleSearchAdapter(BaseSearchAdapter):
         return int(seconds * 1000)
 
     def _quota_remaining(self, headers: Mapping[str, str]) -> int | None:
-        for key in ("x-ratelimit-remaining", "X-RateLimit-Remaining", "X-RateLimit-Remaining-Requests"):
+        for key in (
+            "x-ratelimit-remaining",
+            "X-RateLimit-Remaining",
+            "X-RateLimit-Remaining-Requests",
+        ):
             if key in headers:
                 value = headers.get(key)
                 break
@@ -265,7 +275,9 @@ class GoogleSearchAdapter(BaseSearchAdapter):
         if not title or not snippet or not link:
             return None
         mime = self._clean_text(item.get("mime") or item.get("fileFormat"))
-        display_link = self._clean_text(item.get("displayLink") or item.get("formattedUrl"))
+        display_link = self._clean_text(
+            item.get("displayLink") or item.get("formattedUrl")
+        )
         return RawSearchResult(
             title=title,
             snippet=snippet,
