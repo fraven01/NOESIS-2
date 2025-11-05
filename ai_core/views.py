@@ -20,8 +20,11 @@ from django.conf import settings
 from django.db import connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from django.utils import timezone
+from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
+from django.views.decorators.http import require_POST
+from ai_core.graph.core import FileCheckpointer
 
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -113,8 +116,6 @@ from .rag.hard_delete import hard_delete
 from .rag.ingestion_contracts import (
     resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
 )
-from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
-from .services import CHECKPOINTER as CHECKPOINTER  # re-export for tests
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
@@ -1997,6 +1998,56 @@ def _build_crawler_state(
     return builds
 
 
+@require_POST
+def crawl_selected(request):
+    """Handle crawl selected requests from the RAG tools page."""
+    from io import BytesIO
+
+    try:
+        data = json.loads(request.body)
+        urls = data.get("urls")
+        if not urls:
+            return JsonResponse({"error": "URLs are required"}, status=400)
+
+        origins = []
+        for url in urls:
+            origins.append({"url": url})
+
+        crawler_request_data = {
+            "workflow_id": "crawler-demo",
+            "mode": "live",
+            "origins": origins,
+        }
+
+        # Encode request body
+        body = json.dumps(crawler_request_data).encode("utf-8")
+
+        # Create a new HttpRequest object with BytesIO stream
+        crawler_request = HttpRequest()
+        crawler_request.method = "POST"
+        crawler_request._stream = BytesIO(body)
+        crawler_request.META = request.META.copy()
+        crawler_request.META["CONTENT_TYPE"] = "application/json"
+        crawler_request.META["CONTENT_LENGTH"] = str(len(body))
+
+        # Copy tenant context from original request (required by django-tenants)
+        if hasattr(request, "tenant"):
+            crawler_request.tenant = request.tenant
+
+        # Call the crawler_runner view directly with Django HttpRequest
+        # DRF views wrap the request themselves
+        response = crawler_runner(crawler_request)
+
+        # DRF Response objects have .data already parsed
+        return JsonResponse(response.data, status=response.status_code)
+
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except Exception as e:
+        logger.exception("crawl_selected.failed")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
 class RagQueryViewV1(_GraphView):
     """Execute the production retrieval augmented generation graph."""
 
@@ -2719,5 +2770,59 @@ rag_ingestion_run = rag_ingestion_run_v1
 rag_ingestion_status_v1 = RagIngestionStatusView.as_view()
 rag_ingestion_status = rag_ingestion_status_v1
 
+
 rag_hard_delete_admin = RagHardDeleteAdminView.as_view()
 crawler_runner = CrawlerIngestionRunnerView.as_view()
+crawl_selected = crawl_selected
+
+CHECKPOINTER = FileCheckpointer()
+
+
+@require_POST
+def crawl_selected(request):
+    """Handle crawl selected requests from the RAG tools page."""
+    from io import BytesIO
+
+    try:
+        data = json.loads(request.body)
+        urls = data.get("urls")
+        if not urls:
+            return JsonResponse({"error": "URLs are required"}, status=400)
+
+        origins = []
+        for url in urls:
+            origins.append({"url": url})
+
+        crawler_request_data = {
+            "workflow_id": "crawler-demo",
+            "mode": "live",
+            "origins": origins,
+        }
+
+        # Encode request body
+        body = json.dumps(crawler_request_data).encode("utf-8")
+
+        # Create a new HttpRequest object with BytesIO stream
+        crawler_request = HttpRequest()
+        crawler_request.method = "POST"
+        crawler_request._stream = BytesIO(body)
+        crawler_request.META = request.META.copy()
+        crawler_request.META["CONTENT_TYPE"] = "application/json"
+        crawler_request.META["CONTENT_LENGTH"] = str(len(body))
+
+        # Copy tenant context from original request (required by django-tenants)
+        if hasattr(request, "tenant"):
+            crawler_request.tenant = request.tenant
+
+        # Call the crawler_runner view directly with Django HttpRequest
+        # DRF views wrap the request themselves
+        response = crawler_runner(crawler_request)
+
+        # DRF Response objects have .data already parsed
+        return JsonResponse(response.data, status=response.status_code)
+
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except Exception as e:
+        logger.exception("crawl_selected.failed")
+        return JsonResponse({"error": str(e)}, status=500)

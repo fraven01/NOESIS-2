@@ -63,6 +63,7 @@ class GoogleSearchAdapter(BaseSearchAdapter):
             "safe": "active",
         }
         start_time = time.perf_counter()
+        self._logger.debug("google_search.request", params=params)
         try:
             response = self._session.get(
                 self.endpoint,

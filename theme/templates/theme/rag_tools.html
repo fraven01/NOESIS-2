@@ -32,9 +32,9 @@
       </p>
     </div>
 
-    <form id="web-search-form" class="space-y-4">
+    <form id="web-search-form" class="grid gap-4 md:grid-cols-2">
       {% csrf_token %}
-      <div class="space-y-1">
+      <div class="md:col-span-2 space-y-1">
         <label class="text-sm font-medium text-slate-700" for="web-search-query">Search Query</label>
         <input
           class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
@@ -45,13 +45,58 @@
           required
         />
       </div>
-      <button
-        class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
-        type="submit"
-        id="web-search-button"
-      >
-        Suche starten
-      </button>
+
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="web-search-workflow">Workflow ID</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="web-search-workflow"
+          name="workflow_id"
+          type="text"
+          value="{{ crawler_default_workflow_id }}"
+          placeholder="crawler-demo"
+        />
+      </div>
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="web-search-mode">Modus</label>
+        <select
+          id="web-search-mode"
+          name="mode"
+          class="block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+        >
+          <option value="ingest" selected>Ingest (Fetch · Store · Upsert)</option>
+          <option value="store_only">Store only (Fetch · Store)</option>
+          <option value="fetch_only">Fetch only (Analyse ohne Storage)</option>
+        </select>
+        <p class="text-xs text-slate-500">Steuert, ob der Lauf nur Fetch, Fetch+Store oder den kompletten Ingestion-Pfad inklusive Upsert ausführt.</p>
+      </div>
+
+      <div class="md:col-span-2 flex flex-wrap items-center gap-3">
+        <button
+          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          type="submit"
+          id="web-search-button"
+        >
+          Suche starten
+        </button>
+        <button
+          class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+          type="button"
+          id="web-search-approve"
+          disabled
+        >
+          Review freigeben
+        </button>
+        <button
+          class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+          type="button"
+          id="web-search-reject"
+          disabled
+        >
+          Review ablehnen
+        </button>
+        <span class="text-xs text-slate-500" id="web-search-review-indicator">Review offen: –</span>
+      </div>
     </form>
 
     <div class="space-y-3">
@@ -59,10 +104,19 @@
         id="web-search-error"
         class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
       ></div>
-      <div class="space-y-3" id="web-search-results">
-         <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
-      </div>
-    </div>
+                <div class="space-y-3" id="web-search-results">
+                  <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
+                </div>
+                <div class="flex items-center gap-3">
+                  <button
+                    class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+                    type="button"
+                    id="crawl-selected-button"
+                    disabled
+                  >
+                    Crawl Selected
+                  </button>
+                </div>    </div>
 
     <div class="space-y-2">
       <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Web Search Raw Response</h3>
@@ -1528,7 +1582,153 @@
       await copyText(selector);
     }
 
-    const crawlerForm = document.getElementById('crawler-form');
+    const webSearchForm = document.getElementById('web-search-form');
+    const webSearchQueryInput = document.getElementById('web-search-query');
+    const webSearchWorkflowInput = document.getElementById('web-search-workflow');
+    const webSearchModeSelect = document.getElementById('web-search-mode');
+    const webSearchError = document.getElementById('web-search-error');
+    const webSearchResults = document.getElementById('web-search-results');
+    const webSearchRaw = document.getElementById('web-search-raw');
+    const webSearchApproveButton = document.getElementById('web-search-approve');
+    const webSearchRejectButton = document.getElementById('web-search-reject');
+    const crawlSelectedButton = document.getElementById('crawl-selected-button');
+
+    webSearchResults.addEventListener('change', function (event) {
+      if (event.target.type === 'checkbox') {
+        const checkedCheckboxes = webSearchResults.querySelectorAll('input[type="checkbox"]:checked');
+        crawlSelectedButton.disabled = checkedCheckboxes.length === 0;
+      }
+    });
+
+    crawlSelectedButton.addEventListener('click', async function () {
+      const checkedCheckboxes = webSearchResults.querySelectorAll('input[type="checkbox"]:checked');
+      const urls = Array.from(checkedCheckboxes).map(function (checkbox) {
+        return checkbox.value;
+      });
+
+      if (urls.length === 0) {
+        return;
+      }
+
+      const payload = {
+        urls: urls,
+      };
+
+      try {
+        const response = await fetch('/rag-tools/crawl-selected/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCsrfToken(),
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (response.ok) {
+          alert('Crawling started for selected URLs.');
+        } else {
+          const data = await response.json();
+          alert('Error: ' + (data.error || 'Unknown error'));
+        }
+      } catch (error) {
+        alert('An unknown error occurred.');
+      }
+    });
+
+    webSearchForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+
+      const query = webSearchQueryInput.value;
+      const workflowId = webSearchWorkflowInput.value;
+      const mode = webSearchModeSelect.value;
+
+      const payload = {
+        query: query,
+        workflow_id: workflowId,
+        mode: mode,
+      };
+
+      try {
+        const response = await fetch('/rag-tools/web-search/', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-CSRFToken': getCsrfToken(),
+          },
+          body: JSON.stringify(payload),
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          webSearchError.classList.add('hidden');
+          prettyPrint(webSearchRaw, data);
+
+          if (data.results && data.results.length > 0) {
+            webSearchResults.innerHTML = '';
+            data.results.forEach(function (result) {
+              const card = document.createElement('article');
+              card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+
+              const checkbox = document.createElement('input');
+              checkbox.type = 'checkbox';
+              checkbox.className = 'form-checkbox h-5 w-5 text-slate-600';
+              checkbox.value = result.url;
+              card.appendChild(checkbox);
+
+              const header = document.createElement('div');
+              header.className = 'flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600';
+
+              const score = document.createElement('span');
+              const scoreValue = Number.isFinite(result && result.score) ? Number(result.score).toFixed(3) : '–';
+              score.textContent = 'Score: ' + scoreValue;
+
+              const source = document.createElement('span');
+              const sourceValue = result && typeof result.source === 'string' ? result.source : '';
+              source.textContent = 'Quelle: ' + sourceValue;
+
+              header.appendChild(score);
+              header.appendChild(source);
+
+              const body = document.createElement('div');
+              body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
+              const snippetText = result && typeof result.snippet === 'string' ? result.snippet : '';
+              body.textContent = truncate(snippetText, 280);
+
+              const link = document.createElement('a');
+              link.href = result.url;
+              link.textContent = result.title;
+              link.target = '_blank';
+              link.className = 'text-sm font-medium text-slate-900 hover:underline';
+
+              card.appendChild(link);
+              card.appendChild(header);
+              card.appendChild(body);
+              webSearchResults.appendChild(card);
+            });
+          } else {
+            webSearchResults.innerHTML = '<p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>';
+          }
+
+          if (data.outcome && data.outcome.meta && data.outcome.meta.review_required) {
+            webSearchApproveButton.disabled = false;
+            webSearchRejectButton.disabled = false;
+            webSearchReviewIndicator.textContent = 'Review offen: ' + data.outcome.meta.run_id;
+          } else {
+            webSearchApproveButton.disabled = true;
+            webSearchRejectButton.disabled = true;
+            webSearchReviewIndicator.textContent = 'Review offen: –';
+          }
+
+        } else {
+          webSearchError.textContent = data.error || 'Ein unbekannter Fehler ist aufgetreten.';
+          webSearchError.classList.remove('hidden');
+        }
+      } catch (error) {
+        webSearchError.textContent = 'Ein unbekannter Fehler ist aufgetreten.';
+        webSearchError.classList.remove('hidden');
+      }
+    });
     const crawlerWorkflowInput = document.getElementById('crawler-workflow');
     const crawlerModeSelect = document.getElementById('crawler-mode');
     const crawlerOriginInput = document.getElementById('crawler-origin');
