@@ -2000,45 +2000,40 @@ def _build_crawler_state(
 
 @require_POST
 def crawl_selected(request):
-    """Handle crawl selected requests from the RAG tools page."""
-    from io import BytesIO
+    """Handle crawl selected requests from the RAG tools page.
 
+    Delegates to crawler_runner API view for proper state construction.
+    """
     try:
         data = json.loads(request.body)
         urls = data.get("urls")
+        collection_id = data.get("collection_id", "crawler-demo")
+
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
 
-        origins = []
-        for url in urls:
-            origins.append({"url": url})
-
-        crawler_request_data = {
-            "workflow_id": "crawler-demo",
+        # Build payload for crawler_runner
+        crawler_payload = {
+            "workflow_id": data.get("workflow_id", "crawler-demo"),
             "mode": "live",
-            "origins": origins,
+            "origins": [{"url": url} for url in urls],
+            "collection_id": collection_id,
         }
 
-        # Encode request body
-        body = json.dumps(crawler_request_data).encode("utf-8")
+        # Create a DRF Request for crawler_runner
+        from rest_framework.request import Request as DRFRequest
 
-        # Create a new HttpRequest object with BytesIO stream
-        crawler_request = HttpRequest()
-        crawler_request.method = "POST"
-        crawler_request._stream = BytesIO(body)
-        crawler_request.META = request.META.copy()
-        crawler_request.META["CONTENT_TYPE"] = "application/json"
-        crawler_request.META["CONTENT_LENGTH"] = str(len(body))
+        drf_request = DRFRequest(request)
+        drf_request._full_data = crawler_payload
 
-        # Copy tenant context from original request (required by django-tenants)
+        # Copy tenant context
         if hasattr(request, "tenant"):
-            crawler_request.tenant = request.tenant
+            drf_request._request.tenant = request.tenant
 
-        # Call the crawler_runner view directly with Django HttpRequest
-        # DRF views wrap the request themselves
-        response = crawler_runner(crawler_request)
+        # Call crawler_runner view directly (same module)
+        response = crawler_runner(drf_request)
 
-        # DRF Response objects have .data already parsed
+        # Return response data
         return JsonResponse(response.data, status=response.status_code)
 
     except json.JSONDecodeError:
@@ -2776,53 +2771,3 @@ crawler_runner = CrawlerIngestionRunnerView.as_view()
 crawl_selected = crawl_selected
 
 CHECKPOINTER = FileCheckpointer()
-
-
-@require_POST
-def crawl_selected(request):
-    """Handle crawl selected requests from the RAG tools page."""
-    from io import BytesIO
-
-    try:
-        data = json.loads(request.body)
-        urls = data.get("urls")
-        if not urls:
-            return JsonResponse({"error": "URLs are required"}, status=400)
-
-        origins = []
-        for url in urls:
-            origins.append({"url": url})
-
-        crawler_request_data = {
-            "workflow_id": "crawler-demo",
-            "mode": "live",
-            "origins": origins,
-        }
-
-        # Encode request body
-        body = json.dumps(crawler_request_data).encode("utf-8")
-
-        # Create a new HttpRequest object with BytesIO stream
-        crawler_request = HttpRequest()
-        crawler_request.method = "POST"
-        crawler_request._stream = BytesIO(body)
-        crawler_request.META = request.META.copy()
-        crawler_request.META["CONTENT_TYPE"] = "application/json"
-        crawler_request.META["CONTENT_LENGTH"] = str(len(body))
-
-        # Copy tenant context from original request (required by django-tenants)
-        if hasattr(request, "tenant"):
-            crawler_request.tenant = request.tenant
-
-        # Call the crawler_runner view directly with Django HttpRequest
-        # DRF views wrap the request themselves
-        response = crawler_runner(crawler_request)
-
-        # DRF Response objects have .data already parsed
-        return JsonResponse(response.data, status=response.status_code)
-
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
-    except Exception as e:
-        logger.exception("crawl_selected.failed")
-        return JsonResponse({"error": str(e)}, status=500)

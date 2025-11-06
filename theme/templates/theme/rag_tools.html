@@ -922,6 +922,7 @@
   (function () {
     const derivedTenantId = "{{ tenant_id|escapejs }}";
     const derivedTenantSchema = "{{ tenant_schema|escapejs }}";
+    const manualCollectionId = "{{ manual_collection_id|default_if_none:''|escapejs }}";
     const tenantId = derivedTenantId || window.location.hostname || "dev.localhost";
     const tenantSchema =
       derivedTenantSchema ||
@@ -1116,7 +1117,7 @@
       allowLegacy: allowDocClassAlias,
     });
     if (!currentCollectionId) {
-      currentCollectionId = resolverCollectionHintNormalized;
+      currentCollectionId = resolverCollectionHintNormalized || manualCollectionId;
     }
 
     function updateCollectionDisplays(value) {
@@ -1172,6 +1173,9 @@
       const resolved = determineCollection(rawValue, {
         allowResolverFallback: opts.allowResolverFallback !== false,
       });
+      if (!resolved && manualCollectionId) {
+        resolved = manualCollectionId;
+      }
       if (!resolved) {
         currentCollectionId = '';
         updateCollectionDisplays('');
@@ -1395,6 +1399,64 @@
       return text.slice(0, maxLength) + '…';
     }
 
+    /**
+     * Transform snippet metadata into user-facing source information.
+     * Returns {displayText, url} where url is null for non-linkable sources.
+     */
+    function transformSnippetSource(snippet) {
+      const meta = snippet && typeof snippet.meta === 'object' ? snippet.meta : {};
+      const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '';
+      const citationValue = snippet && typeof snippet.citation === 'string' && snippet.citation.trim()
+        ? snippet.citation.trim()
+        : sourceValue || '–';
+
+      // Web source detection: meta.external_id with "web::" prefix
+      if (meta.external_id && typeof meta.external_id === 'string') {
+        const externalId = meta.external_id.trim();
+        if (externalId.startsWith('web::')) {
+          const url = externalId.substring(5); // Remove "web::" prefix
+          if (url) {
+            try {
+              const urlObj = new URL(url);
+              const displayText = urlObj.hostname || url;
+              return { displayText: displayText, url: url };
+            } catch (e) {
+              // Invalid URL, fall through to default
+            }
+          }
+        }
+      }
+
+      // Upload source detection: meta.workflow_id indicates uploaded document
+      if (meta.workflow_id && typeof meta.workflow_id === 'string') {
+        // Try to get original filename from meta.title or meta.filename
+        let displayText = '–';
+        if (meta.title && typeof meta.title === 'string' && meta.title.trim()) {
+          displayText = meta.title.trim();
+        } else if (meta.filename && typeof meta.filename === 'string' && meta.filename.trim()) {
+          displayText = meta.filename.trim();
+        } else if (meta.document_id) {
+          displayText = 'Dokument ' + String(meta.document_id).substring(0, 8);
+        }
+
+        // Construct download URL if document_id is available
+        let url = null;
+        if (meta.document_id && typeof meta.document_id === 'string') {
+          url = '/documents/download/' + meta.document_id + '/';
+        }
+
+        return { displayText: displayText, url: url };
+      }
+
+      // Fallback: Use citation or source value, or document_id
+      let fallbackText = citationValue;
+      if (fallbackText === '–' && meta.document_id) {
+        fallbackText = 'Dokument ' + String(meta.document_id).substring(0, 8);
+      }
+
+      return { displayText: fallbackText, url: null };
+    }
+
     function renderRagV2(data) {
       if (!data || typeof data !== 'object') {
         showError('Server liefert kein RAG v2 Schema (Pflichtfelder fehlen).');
@@ -1515,15 +1577,31 @@
             const scoreValue = Number.isFinite(snippet && snippet.score) ? Number(snippet.score).toFixed(3) : '–';
             score.textContent = 'Score: ' + scoreValue;
 
-            const source = document.createElement('span');
-            const sourceValue = snippet && typeof snippet.source === 'string' ? snippet.source : '';
-            const citationValue = snippet && typeof snippet.citation === 'string' && snippet.citation.trim()
-              ? snippet.citation.trim()
-              : sourceValue || '–';
-            source.textContent = 'Fundstelle: ' + citationValue;
+            // Transform source metadata into user-facing display
+            const sourceInfo = transformSnippetSource(snippet);
+            const sourceContainer = document.createElement('span');
+
+            const sourceLabel = document.createTextNode('Fundstelle: ');
+            sourceContainer.appendChild(sourceLabel);
+
+            if (sourceInfo.url) {
+              // Create clickable link for web sources and downloadable documents
+              const link = document.createElement('a');
+              link.href = sourceInfo.url;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.textContent = sourceInfo.displayText;
+              link.className = 'text-slate-700 underline hover:text-slate-900';
+              sourceContainer.appendChild(link);
+            } else {
+              // Plain text for non-linkable sources
+              const text = document.createElement('span');
+              text.textContent = sourceInfo.displayText;
+              sourceContainer.appendChild(text);
+            }
 
             header.appendChild(score);
-            header.appendChild(source);
+            header.appendChild(sourceContainer);
 
             const body = document.createElement('div');
             body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
@@ -1610,22 +1688,30 @@
         return;
       }
 
+      const collectionScope = requireCollection({ allowResolverFallback: true });
       const payload = {
         urls: urls,
+        collection_id: collectionScope || manualCollectionId || null,
       };
 
       try {
-        const response = await fetch('/rag-tools/crawl-selected/', {
+        const response = await fetch('/rag-tools/web-search/ingest-selected/', {
           method: 'POST',
-          headers: {
+          headers: buildHeaders({
             'Content-Type': 'application/json',
             'X-CSRFToken': getCsrfToken(),
-          },
+          }),
           body: JSON.stringify(payload),
         });
 
         if (response.ok) {
-          alert('Crawling started for selected URLs.');
+          const data = await response.json();
+          if (data.status === 'completed') {
+            const urlCount = data.url_count || 0;
+            alert(`Crawling completed for ${urlCount} URL(s).`);
+          } else {
+            alert('Crawling started for selected URLs.');
+          }
         } else {
           const data = await response.json();
           alert('Error: ' + (data.error || 'Unknown error'));
@@ -1641,11 +1727,13 @@
       const query = webSearchQueryInput.value;
       const workflowId = webSearchWorkflowInput.value;
       const mode = webSearchModeSelect.value;
+      const collectionScope = requireCollection({ allowResolverFallback: true });
 
       const payload = {
         query: query,
         workflow_id: workflowId,
         mode: mode,
+        collection_id: collectionScope || manualCollectionId || null,
       };
 
       try {
@@ -2527,6 +2615,7 @@
       return config;
     }
 
+    const crawlerForm = document.getElementById('crawler-form');
     if (crawlerForm) {
       crawlerForm.addEventListener('submit', function (event) {
         event.preventDefault();

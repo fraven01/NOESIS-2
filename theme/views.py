@@ -3,7 +3,7 @@ from collections.abc import Mapping
 from uuid import uuid4
 
 from django.conf import settings
-from django.http import JsonResponse, HttpRequest
+from django.http import JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
@@ -15,6 +15,11 @@ from ai_core.graphs.external_knowledge_graph import (
     GraphContextPayload,
     build_graph,
 )
+from ai_core.rag.collections import (
+    MANUAL_COLLECTION_SLUG,
+    ensure_manual_collection,
+    manual_collection_uuid,
+)
 from ai_core.rag.routing_rules import (
     get_routing_table,
     is_collection_routing_enabled,
@@ -24,8 +29,12 @@ from ai_core.rag.routing_rules import (
 logger = get_logger(__name__)
 
 
-class SimpleCrawlerIngestionAdapter:
-    """Simple adapter for triggering crawler ingestion via Celery task."""
+class _NoOpIngestionAdapter:
+    """No-op adapter for graphs that skip ingestion phase (run_until="after_search").
+
+    This adapter is never actually called since web_search stops before ingestion.
+    It exists only to satisfy the build_graph() signature.
+    """
 
     def trigger(
         self,
@@ -34,73 +43,17 @@ class SimpleCrawlerIngestionAdapter:
         collection_id: str,
         context: Mapping[str, str],
     ) -> CrawlerIngestionOutcome:
-        """Trigger the crawler ingestion for the given URL."""
-        from io import BytesIO
-        from ai_core import views as ai_core_views
-
-        try:
-            # Build request data for crawler
-            crawler_request_data = {
-                "workflow_id": context.get("workflow_id", "web-search-ingestion"),
-                "mode": "live",
-                "origins": [{"url": url}],
-                "collection_id": collection_id,
-            }
-
-            # Encode request body
-            body = json.dumps(crawler_request_data).encode("utf-8")
-
-            # Create a mock Django HttpRequest with BytesIO stream
-            crawler_request = HttpRequest()
-            crawler_request.method = "POST"
-            crawler_request._stream = BytesIO(body)
-            crawler_request.META = {
-                "CONTENT_TYPE": "application/json",
-                "CONTENT_LENGTH": str(len(body)),
-                "HTTP_X_TENANT_ID": context.get("tenant_id", ""),
-                "HTTP_X_TRACE_ID": context.get("trace_id", ""),
-            }
-
-            # Create mock tenant object (required by django-tenants)
-            from types import SimpleNamespace
-
-            tenant_id = context.get("tenant_id", "")
-            crawler_request.tenant = SimpleNamespace(
-                schema_name=tenant_id, tenant_id=tenant_id
-            )
-
-            # Call crawler_runner directly with Django HttpRequest
-            # DRF views wrap the request themselves
-            response = ai_core_views.crawler_runner(crawler_request)
-
-            if response.status_code == 200:
-                # Extract document_id from response if available
-                response_data = response.data if hasattr(response, "data") else {}
-                document_id = response_data.get("document_id")
-
-                return CrawlerIngestionOutcome(
-                    decision="ingested",
-                    crawler_decision="accepted",
-                    document_id=document_id,
-                )
-            else:
-                logger.warning(
-                    "crawler_ingestion_failed",
-                    url=url,
-                    status=response.status_code,
-                )
-                return CrawlerIngestionOutcome(
-                    decision="ingestion_error",
-                    crawler_decision="rejected",
-                    document_id=None,
-                )
-        except Exception as exc:
-            logger.exception("crawler_ingestion_exception", url=url, exc_info=exc)
-            return CrawlerIngestionOutcome(
-                decision="ingestion_error",
-                crawler_decision="exception",
-                document_id=None,
-            )
+        """No-op trigger that should never be called."""
+        logger.error(
+            "noop_adapter.trigger_called",
+            url=url,
+            msg="No-op adapter was called unexpectedly. Graph should stop before ingestion.",
+        )
+        return CrawlerIngestionOutcome(
+            decision="skipped",
+            crawler_decision="noop",
+            document_id=None,
+        )
 
 
 def home(request):
@@ -129,6 +82,45 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
         tenant_id = tenant_schema
 
     return tenant_id, tenant_schema
+
+
+def _resolve_manual_collection(
+    tenant_id: str | None,
+    requested: object,
+    *,
+    ensure: bool = False,
+) -> tuple[str | None, str | None]:
+    """Return ``(manual_collection_id, resolved_collection_id)`` for the request."""
+
+    manual_id: str | None = None
+    if tenant_id:
+        try:
+            base_value = (
+                ensure_manual_collection(tenant_id)
+                if ensure
+                else manual_collection_uuid(tenant_id)
+            )
+            manual_id = str(base_value)
+        except ValueError:
+            logger.info(
+                "rag_tools.manual_collection.unavailable",
+                extra={"tenant_id": tenant_id},
+            )
+
+    requested_text = str(requested or "").strip()
+    if not requested_text:
+        return manual_id, manual_id
+
+    if manual_id:
+        if requested_text.lower() == MANUAL_COLLECTION_SLUG:
+            return manual_id, manual_id
+        if requested_text == manual_id:
+            return manual_id, manual_id
+
+    if requested_text.lower() == MANUAL_COLLECTION_SLUG:
+        return manual_id, manual_id
+
+    return manual_id, requested_text
 
 
 def rag_tools(request):
@@ -170,6 +162,8 @@ def rag_tools(request):
             if resolution.rule and resolution.rule.collection_id:
                 resolver_collection_hint = resolution.rule.collection_id
 
+    manual_collection_id, _ = _resolve_manual_collection(tenant_id, None)
+
     return render(
         request,
         "theme/rag_tools.html",
@@ -193,6 +187,7 @@ def rag_tools(request):
             "crawler_dry_run_default": bool(
                 getattr(settings, "CRAWLER_DRY_RUN_DEFAULT", False)
             ),
+            "manual_collection_id": manual_collection_id,
         },
     )
 
@@ -207,13 +202,16 @@ def web_search(request):
     try:
         data = json.loads(request.body)
         query = data.get("query")
-        collection_id = data.get("collection_id", "manual-search")
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        manual_collection_id, collection_id = _resolve_manual_collection(
+            tenant_id, data.get("collection_id")
+        )
+        if not collection_id:
+            collection_id = manual_collection_id
 
         logger.info("web_search.query", query=query)
         if not query:
             return JsonResponse({"error": "Query is required"}, status=400)
-
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
 
         # Build graph context
         context = GraphContextPayload(
@@ -236,9 +234,9 @@ def web_search(request):
             "run_until": run_until,
         }
 
-        # Build graph with ingestion adapter and config
+        # Build graph with no-op adapter (never called since run_until="after_search")
         graph = build_graph(
-            ingestion_adapter=SimpleCrawlerIngestionAdapter(),
+            ingestion_adapter=_NoOpIngestionAdapter(),
             config=ExternalKnowledgeGraphConfig(
                 top_n=10,
                 prefer_pdf=data.get("prefer_pdf", False),
@@ -288,54 +286,76 @@ def web_search(request):
 
 @require_POST
 def web_search_ingest_selected(request):
-    """Ingest user-selected URLs from web search results via CrawlerIngestionGraph."""
+    """Ingest user-selected URLs from web search results via crawler_runner API.
+
+    Uses the internal crawler_runner HTTP API endpoint for proper layer separation.
+    Returns a summary of started ingestion tasks.
+    """
+    import httpx
+
     try:
         data = json.loads(request.body)
         urls = data.get("urls", [])
-        collection_id = data.get("collection_id", "manual-search")
 
         logger.info("web_search_ingest_selected", url_count=len(urls))
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
 
         tenant_id, tenant_schema = _tenant_context_from_request(request)
+        manual_collection_id, collection_id = _resolve_manual_collection(
+            tenant_id, data.get("collection_id"), ensure=True
+        )
+        if not collection_id:
+            return JsonResponse(
+                {"error": "Collection ID could not be resolved"}, status=400
+            )
 
-        # Build context for crawler ingestion
-        context = {
-            "tenant_id": tenant_id,
-            "trace_id": str(uuid4()),
-            "workflow_id": "web-search-ingestion",
-            "case_id": data.get("case_id", "local"),
+        # Build headers for API call
+        headers = {
+            "Content-Type": "application/json",
+            "X-Tenant-ID": tenant_id,
+            "X-Tenant-Schema": tenant_schema,
+            "X-Case-ID": data.get("case_id", "local"),
+            "X-Trace-ID": str(uuid4()),
         }
 
-        # Create adapter
-        adapter = SimpleCrawlerIngestionAdapter()
+        # Build payload for crawler_runner endpoint
+        crawler_payload = {
+            "workflow_id": "web-search-ingestion",
+            "mode": "live",
+            "origins": [{"url": url} for url in urls],
+            "collection_id": collection_id,
+        }
 
-        # Trigger ingestion for each URL
-        results = []
-        for url in urls:
-            outcome = adapter.trigger(
-                url=url,
-                collection_id=collection_id,
-                context=context,
+        # Call crawler_runner API endpoint
+        # Use localhost since we're in the same service
+        crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
+
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                crawler_url,
+                json=crawler_payload,
+                headers=headers,
             )
-            results.append(
+
+        if response.status_code == 200:
+            response_data = response.json()
+            return JsonResponse(
                 {
-                    "url": url,
-                    "decision": outcome.decision,
-                    "crawler_decision": outcome.crawler_decision,
-                    "document_id": outcome.document_id,
+                    "status": "completed",
+                    "result": response_data,
+                    "url_count": len(urls),
                 }
             )
-
-        response_data = {
-            "status": "completed",
-            "results": results,
-            "trace_id": context["trace_id"],
-        }
-
-        logger.info("web_search_ingest_selected.completed", result_count=len(results))
-        return JsonResponse(response_data)
+        else:
+            return JsonResponse(
+                {
+                    "error": "Crawler API call failed",
+                    "status_code": response.status_code,
+                    "detail": response.text,
+                },
+                status=response.status_code,
+            )
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)

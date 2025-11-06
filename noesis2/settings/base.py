@@ -473,9 +473,10 @@ AI_CORE_RATE_LIMIT_QUOTA = int(env("AI_CORE_RATE_LIMIT_QUOTA", default=60))
 
 # Google Custom Search (for ExternalKnowledgeGraph)
 GOOGLE_CUSTOM_SEARCH_API_KEY = env("GOOGLE_CUSTOM_SEARCH_API_KEY", default=None)
-GOOGLE_CUSTOM_SEARCH_ENGINE_ID = env(
-    "GOOGLE_CUSTOM_SEARCH_ENGINE_ID", default=None
-).replace("cx=", "")
+_search_engine_id = env("GOOGLE_CUSTOM_SEARCH_ENGINE_ID", default=None)
+GOOGLE_CUSTOM_SEARCH_ENGINE_ID = (
+    _search_engine_id.replace("cx=", "") if _search_engine_id else None
+)
 
 # Guard: prevent accidental use of production Langfuse keys in non-prod environments
 if DEPLOYMENT_ENV in {"development", "dev", "staging", "test", "testing"}:
