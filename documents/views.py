@@ -1,11 +1,11 @@
 """Document download views."""
+
 import os
 import time
 import email.utils as email_utils
-from pathlib import Path
 from uuid import UUID
 
-from django.http import JsonResponse, FileResponse, HttpResponse, HttpResponseNotModified
+from django.http import FileResponse, HttpResponse, HttpResponseNotModified
 from django.views.decorators.http import require_http_methods
 from structlog.stdlib import get_logger
 
@@ -85,9 +85,7 @@ def document_download(request, document_id: str):
 
         # 3. Get physical file path (direct access for streaming)
         blob_path = get_upload_file_path(
-            doc.ref.tenant_id,
-            doc.ref.workflow_id,
-            str(doc.ref.document_id)
+            doc.ref.tenant_id, doc.ref.workflow_id, str(doc.ref.document_id)
         )
 
         if not blob_path.exists():
@@ -106,14 +104,14 @@ def document_download(request, document_id: str):
         weak_etag = f'W/"{file_size:x}-{int(st.st_mtime):x}"'
 
         # 5. Conditional requests (304 Not Modified)
-        if_none_match = request.headers.get('If-None-Match')
-        if_modified_since = request.headers.get('If-Modified-Since')
+        if_none_match = request.headers.get("If-None-Match")
+        if_modified_since = request.headers.get("If-Modified-Since")
 
         if if_none_match == weak_etag:
             logger.info("documents.download.not_modified_etag", etag=weak_etag)
             resp = HttpResponseNotModified()
-            resp['ETag'] = weak_etag
-            resp['Last-Modified'] = last_modified
+            resp["ETag"] = weak_etag
+            resp["Last-Modified"] = last_modified
             return resp
 
         if if_modified_since:
@@ -122,8 +120,8 @@ def document_download(request, document_id: str):
                 if ims_dt.timestamp() >= st.st_mtime:
                     logger.info("documents.download.not_modified_time")
                     resp = HttpResponseNotModified()
-                    resp['ETag'] = weak_etag
-                    resp['Last-Modified'] = last_modified
+                    resp["ETag"] = weak_etag
+                    resp["Last-Modified"] = last_modified
                     return resp
             except (ValueError, TypeError):
                 pass
@@ -132,23 +130,26 @@ def document_download(request, document_id: str):
         content_type = detect_content_type(doc.blob, blob_path)
 
         # 7. Filename extraction & sanitization
-        filename = doc.meta.title or f'{document_id}.bin'
+        filename = doc.meta.title or f"{document_id}.bin"
         filename = sanitize_filename(filename)
 
         # 8. Range request handling (206 Partial Content)
-        range_header = request.headers.get('Range')
-        if range_header and request.method == 'GET':
+        range_header = request.headers.get("Range")
+        if range_header and request.method == "GET":
             import re
-            match = re.match(r'bytes=(\d+)-(\d*)', range_header)
+
+            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
             if match:
                 start = int(match.group(1))
                 end = int(match.group(2)) if match.group(2) else file_size - 1
 
                 # Validate range bounds
                 if start < 0 or start >= file_size:
-                    logger.warning("documents.download.range_invalid", range_start=start)
+                    logger.warning(
+                        "documents.download.range_invalid", range_start=start
+                    )
                     resp = HttpResponse(status=416)
-                    resp['Content-Range'] = f'bytes */{file_size}'
+                    resp["Content-Range"] = f"bytes */{file_size}"
                     return resp
 
                 # Cap end to file size
@@ -156,19 +157,19 @@ def document_download(request, document_id: str):
                 length = end - start + 1
 
                 # Open and seek to start position
-                f = open(blob_path, 'rb')
+                f = open(blob_path, "rb")
                 f.seek(start)
 
                 response = FileResponse(f, content_type=content_type, status=206)
-                response['Content-Length'] = length
-                response['Content-Range'] = f'bytes {start}-{end}/{file_size}'
-                response['Content-Disposition'] = content_disposition(filename)
-                response['X-Content-Type-Options'] = 'nosniff'
-                response['Cache-Control'] = 'private, max-age=3600'
-                response['Vary'] = 'Authorization, Cookie'
-                response['ETag'] = weak_etag
-                response['Last-Modified'] = last_modified
-                response['Accept-Ranges'] = 'bytes'
+                response["Content-Length"] = length
+                response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
+                response["Content-Disposition"] = content_disposition(filename)
+                response["X-Content-Type-Options"] = "nosniff"
+                response["Cache-Control"] = "private, max-age=3600"
+                response["Vary"] = "Authorization, Cookie"
+                response["ETag"] = weak_etag
+                response["Last-Modified"] = last_modified
+                response["Accept-Ranges"] = "bytes"
 
                 duration_ms = int((time.time() - start_time) * 1000)
                 logger.info(
@@ -184,17 +185,17 @@ def document_download(request, document_id: str):
                 return response
 
         # 9. HEAD request (metadata only, no body)
-        if request.method == 'HEAD':
+        if request.method == "HEAD":
             response = HttpResponse()
-            response['Content-Type'] = content_type
-            response['Content-Length'] = file_size
-            response['Content-Disposition'] = content_disposition(filename)
-            response['X-Content-Type-Options'] = 'nosniff'
-            response['Cache-Control'] = 'private, max-age=3600'
-            response['Vary'] = 'Authorization, Cookie'
-            response['ETag'] = weak_etag
-            response['Last-Modified'] = last_modified
-            response['Accept-Ranges'] = 'bytes'
+            response["Content-Type"] = content_type
+            response["Content-Length"] = file_size
+            response["Content-Disposition"] = content_disposition(filename)
+            response["X-Content-Type-Options"] = "nosniff"
+            response["Cache-Control"] = "private, max-age=3600"
+            response["Vary"] = "Authorization, Cookie"
+            response["ETag"] = weak_etag
+            response["Last-Modified"] = last_modified
+            response["Accept-Ranges"] = "bytes"
 
             duration_ms = int((time.time() - start_time) * 1000)
             logger.info(
@@ -209,17 +210,17 @@ def document_download(request, document_id: str):
 
         # 10. GET request (full content streaming)
         response = FileResponse(
-            open(blob_path, 'rb'),
+            open(blob_path, "rb"),
             content_type=content_type,
         )
-        response['Content-Length'] = file_size
-        response['Content-Disposition'] = content_disposition(filename)
-        response['X-Content-Type-Options'] = 'nosniff'
-        response['Cache-Control'] = 'private, max-age=3600'
-        response['Vary'] = 'Authorization, Cookie'
-        response['ETag'] = weak_etag
-        response['Last-Modified'] = last_modified
-        response['Accept-Ranges'] = 'bytes'
+        response["Content-Length"] = file_size
+        response["Content-Disposition"] = content_disposition(filename)
+        response["X-Content-Type-Options"] = "nosniff"
+        response["Cache-Control"] = "private, max-age=3600"
+        response["Vary"] = "Authorization, Cookie"
+        response["ETag"] = weak_etag
+        response["Last-Modified"] = last_modified
+        response["Accept-Ranges"] = "bytes"
 
         duration_ms = int((time.time() - start_time) * 1000)
         logger.info(

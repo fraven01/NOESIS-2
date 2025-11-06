@@ -1,4 +1,5 @@
 """Utilities for document handling."""
+
 from pathlib import Path
 from structlog.stdlib import get_logger
 from urllib.parse import quote
@@ -18,7 +19,13 @@ def get_upload_file_path(tenant_id: str, workflow_id: str, document_id: str) -> 
     workflow_segment = object_store.sanitize_identifier(workflow_id)
     filename = f"{document_id}_upload.bin"
 
-    return object_store.BASE_PATH / tenant_segment / workflow_segment / "uploads" / filename
+    return (
+        object_store.BASE_PATH
+        / tenant_segment
+        / workflow_segment
+        / "uploads"
+        / filename
+    )
 
 
 def detect_content_type(blob, blob_path: Path) -> str:
@@ -26,31 +33,33 @@ def detect_content_type(blob, blob_path: Path) -> str:
     Detect Content-Type: blob.media_type → Magic → Fallback.
     """
     # 1. Try blob metadata
-    if hasattr(blob, 'media_type') and blob.media_type:
+    if hasattr(blob, "media_type") and blob.media_type:
         logger.debug("content_type.from_blob", mime=blob.media_type)
         return blob.media_type
 
     # 2. Fallback: Magic number detection
     try:
         import magic
+
         mime = magic.from_file(str(blob_path), mime=True)
         logger.info("content_type.magic_detected", mime=mime)
         return mime
     except Exception as e:
         logger.warning("content_type.magic_failed", error=str(e))
-        return 'application/octet-stream'
+        return "application/octet-stream"
 
 
 def sanitize_filename(filename: str) -> str:
     """Sanitize filename: Remove CRLF, path traversal, control chars."""
     import re
-    safe = re.sub(r'[\r\n\x00-\x1f\x7f]', '', filename)
-    safe = re.sub(r'[\\/:*?"<>|]', '_', safe)
-    return safe[:255] or 'download'
+
+    safe = re.sub(r"[\r\n\x00-\x1f\x7f]", "", filename)
+    safe = re.sub(r'[\\/:*?"<>|]', "_", safe)
+    return safe[:255] or "download"
 
 
 def content_disposition(filename: str) -> str:
     """RFC 5987 Content-Disposition with ASCII fallback."""
-    ascii_fallback = filename.encode('ascii', 'ignore').decode() or 'download'
+    ascii_fallback = filename.encode("ascii", "ignore").decode() or "download"
     utf8_encoded = quote(filename)
-    return f'attachment; filename="{ascii_fallback}"; filename*=UTF-8\'\'{utf8_encoded}'
+    return f"attachment; filename=\"{ascii_fallback}\"; filename*=UTF-8''{utf8_encoded}"
