@@ -115,7 +115,9 @@ def document_download(request, document_id: str):
         if_modified_since = request.headers.get("If-Modified-Since")
 
         # If-None-Match can contain multiple ETags (e.g., W/"abc", "def")
-        if if_none_match and any(tag.strip() == weak_etag for tag in if_none_match.split(",")):
+        if if_none_match and any(
+            tag.strip() == weak_etag for tag in if_none_match.split(",")
+        ):
             logger.info("documents.download.not_modified_etag", etag=weak_etag)
             resp = HttpResponseNotModified()
             resp["ETag"] = weak_etag

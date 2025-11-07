@@ -7,7 +7,9 @@ from urllib.parse import quote
 logger = get_logger(__name__)
 
 
-def get_upload_file_path(tenant_id: str, workflow_id: str | None, document_id: str) -> Path:
+def get_upload_file_path(
+    tenant_id: str, workflow_id: str | None, document_id: str
+) -> Path:
     """
     Construct path to uploaded file in ObjectStore.
 
