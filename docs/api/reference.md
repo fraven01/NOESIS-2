@@ -311,6 +311,197 @@ curl -X POST "https://api.noesis.example/ai/v1/rag-demo/" \
 Bei fehlenden `%`-Treffern wird automatisch auf eine reine Similarity-Sortierung
 zurückgefallen.
 
+## Dokumente
+
+### GET `/documents/download/<document_id>/`
+Streamt ein hochgeladenes Dokument mit produktionsreifen Caching- und Streaming-Features.
+
+**Features**
+- Tenant-isolierter Zugriff (prüft `X-Tenant-ID` gegen Dokument-Metadaten)
+- HTTP-Caching: ETag (weak), Last-Modified, `304 Not Modified`
+- Range-Requests: `206 Partial Content`, Suffix-Ranges (`bytes=-N`)
+- RFC 5987: UTF-8-Filenames in `Content-Disposition`
+- CRLF-Injection-Schutz für Dateinamen
+- HEAD-Methode für Metadaten ohne Body
+- FileResponse-Streaming (wsgi.file_wrapper/sendfile)
+
+**URL-Parameter**
+- `document_id` (UUID, required): Dokument-ID aus Upload/Ingestion
+
+**Headers**
+- `X-Tenant-Schema` (required)
+- `X-Tenant-Id` (required)
+- `If-None-Match` (optional): ETag(s) für Conditional Request (unterstützt mehrere ETags)
+- `If-Modified-Since` (optional): Zeitstempel für Conditional Request
+- `Range` (optional): Byte-Range (z. B. `bytes=0-999`, `bytes=100-`, `bytes=-500`)
+
+**Response 200 (GET) Beispiel**
+```
+Content-Type: application/pdf
+Content-Length: 245680
+Content-Disposition: attachment; filename="document.pdf"; filename*=UTF-8''document.pdf
+ETag: W/"3bf30-18a2f4c8e9a"
+Last-Modified: Fri, 17 May 2024 14:23:45 GMT
+Cache-Control: private, max-age=3600
+Vary: Authorization, Cookie
+Accept-Ranges: bytes
+X-Content-Type-Options: nosniff
+
+<binary content>
+```
+
+**Response 200 (HEAD) Beispiel**
+```
+Content-Type: application/pdf
+Content-Length: 245680
+Content-Disposition: attachment; filename="document.pdf"; filename*=UTF-8''document.pdf
+ETag: W/"3bf30-18a2f4c8e9a"
+Last-Modified: Fri, 17 May 2024 14:23:45 GMT
+Cache-Control: private, max-age=3600
+Vary: Authorization, Cookie
+Accept-Ranges: bytes
+X-Content-Type-Options: nosniff
+```
+
+**Response 206 (Partial Content) Beispiel**
+```
+Content-Type: application/pdf
+Content-Length: 1000
+Content-Range: bytes 0-999/245680
+Content-Disposition: attachment; filename="document.pdf"; filename*=UTF-8''document.pdf
+ETag: W/"3bf30-18a2f4c8e9a"
+Last-Modified: Fri, 17 May 2024 14:23:45 GMT
+Cache-Control: private, max-age=3600
+Vary: Authorization, Cookie
+Accept-Ranges: bytes
+X-Content-Type-Options: nosniff
+
+<partial binary content>
+```
+
+**Response 304 (Not Modified) Beispiel**
+```
+ETag: W/"3bf30-18a2f4c8e9a"
+Last-Modified: Fri, 17 May 2024 14:23:45 GMT
+Cache-Control: private, max-age=3600
+Vary: Authorization, Cookie
+Accept-Ranges: bytes
+```
+
+**Fehler**
+- `400 Bad Request`: Ungültige UUID in `document_id`
+```json
+{
+  "error": {
+    "code": "InvalidDocumentId",
+    "message": "document_id must be a valid UUID"
+  }
+}
+```
+
+- `403 Forbidden`: Tenant-Mismatch (Dokument gehört zu anderem Tenant)
+```json
+{
+  "error": {
+    "code": "TenantMismatch",
+    "message": "Access denied"
+  }
+}
+```
+
+- `404 Not Found`: Dokument in Metadatenbank nicht gefunden
+```json
+{
+  "error": {
+    "code": "DocumentNotFound",
+    "message": "Document 12345678-1234-1234-1234-123456789abc not found"
+  }
+}
+```
+
+- `404 Not Found`: Blob-Datei auf Disk fehlt
+```json
+{
+  "error": {
+    "code": "BlobNotFound",
+    "message": "Document file not found on disk"
+  }
+}
+```
+
+- `416 Range Not Satisfiable`: Ungültiger Range-Request
+```
+Content-Range: bytes */245680
+Cache-Control: private, max-age=3600
+Vary: Authorization, Cookie
+Accept-Ranges: bytes
+```
+
+- `500 Internal Server Error`: Unerwarteter Fehler
+```json
+{
+  "error": {
+    "code": "InternalError",
+    "message": "<exception message>"
+  }
+}
+```
+
+**Filename-Extraction**
+
+Der Dateiname wird mit 3-stufigem Fallback extrahiert:
+1. `doc.meta.title` (Originalname vom Upload)
+2. `doc.meta.external_ref["filename"]` (falls vorhanden)
+3. `document_id` + Extension aus `Content-Type` (z. B. `123e4567.pdf`)
+
+**Content-Type Detection**
+
+Reihenfolge:
+1. `blob.media_type` (aus Metadaten)
+2. Magic-Number-Detection via `python-magic`
+3. Fallback: `application/octet-stream`
+
+**cURL Beispiel**
+```bash
+# Vollständiger Download
+curl -X GET "https://api.noesis.example/documents/download/123e4567-e89b-12d3-a456-426614174000/" \
+  -H "X-Tenant-Schema: acme_prod" \
+  -H "X-Tenant-Id: acme" \
+  -O -J
+
+# HEAD Request (nur Metadaten)
+curl -I "https://api.noesis.example/documents/download/123e4567-e89b-12d3-a456-426614174000/" \
+  -H "X-Tenant-Schema: acme_prod" \
+  -H "X-Tenant-Id: acme"
+
+# Range Request (erste 1KB)
+curl -X GET "https://api.noesis.example/documents/download/123e4567-e89b-12d3-a456-426614174000/" \
+  -H "X-Tenant-Schema: acme_prod" \
+  -H "X-Tenant-Id: acme" \
+  -H "Range: bytes=0-1023"
+
+# Conditional Request (nur wenn geändert)
+curl -X GET "https://api.noesis.example/documents/download/123e4567-e89b-12d3-a456-426614174000/" \
+  -H "X-Tenant-Schema: acme_prod" \
+  -H "X-Tenant-Id: acme" \
+  -H 'If-None-Match: W/"3bf30-18a2f4c8e9a"'
+```
+
+**Observability**
+
+Alle Requests werden strukturiert geloggt mit:
+- `documents.download.started`: Start mit Tenant-ID, Dokument-ID, HTTP-Methode
+- `documents.download.streaming_started`: Erfolgreicher Stream mit File-Size, Content-Type, ETag, Dauer
+- `documents.download.partial_content`: Range-Request mit Start/End/Dauer
+- `documents.download.head_completed`: HEAD-Request mit File-Size, ETag, Dauer
+- `documents.download.not_modified_etag`: 304 via ETag-Match
+- `documents.download.not_modified_time`: 304 via If-Modified-Since
+- `documents.download.not_found`: 404 mit Dauer
+- `documents.download.tenant_mismatch`: 403 mit Tenant-IDs und Dauer
+- `documents.download.blob_missing`: 404 für fehlende Disk-Datei
+- `documents.download.range_invalid`: 416 mit ungültigem Range
+- `documents.download.failed`: 500 mit Exception-Type und Dauer
+
 ## Agenten (Queue `agents`)
 
 ### POST `/ai/intake/`
