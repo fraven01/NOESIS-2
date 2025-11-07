@@ -240,3 +240,70 @@ def test_document_download_range_invalid(mock_repo, sample_document, monkeypatch
 
     assert response.status_code == 416
     assert response["Content-Range"] == "bytes */16"
+    # Verify 416 includes cache headers
+    assert response["Cache-Control"] == "private, max-age=3600"
+    assert response["Accept-Ranges"] == "bytes"
+
+
+def test_document_download_invalid_uuid(mock_repo):
+    """Test 400 when document_id is not a valid UUID."""
+    mock_repo.get.return_value = None
+
+    factory = RequestFactory()
+    request = factory.get("/documents/download/not-a-uuid/")
+    request.tenant = SimpleNamespace(tenant_id="tenant-test", schema_name="test")
+
+    response = document_download(request, "not-a-uuid")
+
+    assert response.status_code == 400
+    import json
+
+    data = json.loads(response.content)
+    assert data["error"]["code"] == "InvalidDocumentId"
+
+
+def test_document_download_suffix_range(mock_repo, sample_document, monkeypatch):
+    """Test suffix range (bytes=-N) returns last N bytes."""
+    doc, test_file = sample_document
+    mock_repo.get.return_value = doc
+
+    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+
+    factory = RequestFactory()
+    request = factory.get(
+        f"/documents/download/{doc.ref.document_id}/", HTTP_RANGE="bytes=-4"
+    )
+    request.tenant = SimpleNamespace(tenant_id="tenant-test", schema_name="test")
+
+    response = document_download(request, str(doc.ref.document_id))
+
+    assert response.status_code == 206
+    assert response["Content-Length"] == "4"
+    assert response["Content-Range"] == "bytes 12-15/16"  # Last 4 bytes
+
+
+def test_document_download_multiple_etags(mock_repo, sample_document, monkeypatch):
+    """Test 304 when If-None-Match contains multiple ETags."""
+    doc, test_file = sample_document
+    mock_repo.get.return_value = doc
+
+    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+
+    # Generate expected ETag
+    st = os.stat(test_file)
+    etag = f'W/"{st.st_size:x}-{int(st.st_mtime):x}"'
+
+    factory = RequestFactory()
+    request = factory.get(
+        f"/documents/download/{doc.ref.document_id}/",
+        HTTP_IF_NONE_MATCH=f'W/"wrong-tag", {etag}, W/"another-wrong"',
+    )
+    request.tenant = SimpleNamespace(tenant_id="tenant-test", schema_name="test")
+
+    response = document_download(request, str(doc.ref.document_id))
+
+    assert response.status_code == 304
+    assert response["ETag"] == etag
+    # Verify 304 includes cache headers
+    assert response["Cache-Control"] == "private, max-age=3600"
+    assert response["Accept-Ranges"] == "bytes"

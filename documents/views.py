@@ -15,6 +15,7 @@ from .utils import (
     sanitize_filename,
     content_disposition,
     get_upload_file_path,
+    extract_filename,
 )
 from .errors import error
 
@@ -46,6 +47,12 @@ def document_download(request, document_id: str):
 
     Supports: GET, HEAD, ETag, Range, RFC 5987 filenames, CRLF protection.
     """
+    # Validate UUID format early (clean 400 instead of 500)
+    try:
+        doc_uuid = UUID(document_id)
+    except ValueError:
+        return error(400, "InvalidDocumentId", "document_id must be a valid UUID")
+
     start_time = time.time()
     tenant_id, tenant_schema = _tenant_context_from_request(request)
 
@@ -59,7 +66,7 @@ def document_download(request, document_id: str):
     try:
         # 1. Get document metadata via repository
         repo = _get_documents_repository()
-        doc = repo.get(tenant_id, UUID(document_id))
+        doc = repo.get(tenant_id, doc_uuid)
 
         if not doc:
             duration_ms = int((time.time() - start_time) * 1000)
@@ -107,11 +114,15 @@ def document_download(request, document_id: str):
         if_none_match = request.headers.get("If-None-Match")
         if_modified_since = request.headers.get("If-Modified-Since")
 
-        if if_none_match == weak_etag:
+        # If-None-Match can contain multiple ETags (e.g., W/"abc", "def")
+        if if_none_match and any(tag.strip() == weak_etag for tag in if_none_match.split(",")):
             logger.info("documents.download.not_modified_etag", etag=weak_etag)
             resp = HttpResponseNotModified()
             resp["ETag"] = weak_etag
             resp["Last-Modified"] = last_modified
+            resp["Cache-Control"] = "private, max-age=3600"
+            resp["Vary"] = "Authorization, Cookie"
+            resp["Accept-Ranges"] = "bytes"
             return resp
 
         if if_modified_since:
@@ -122,6 +133,9 @@ def document_download(request, document_id: str):
                     resp = HttpResponseNotModified()
                     resp["ETag"] = weak_etag
                     resp["Last-Modified"] = last_modified
+                    resp["Cache-Control"] = "private, max-age=3600"
+                    resp["Vary"] = "Authorization, Cookie"
+                    resp["Accept-Ranges"] = "bytes"
                     return resp
             except (ValueError, TypeError):
                 pass
@@ -129,8 +143,8 @@ def document_download(request, document_id: str):
         # 6. Content-Type detection
         content_type = detect_content_type(doc.blob, blob_path)
 
-        # 7. Filename extraction & sanitization
-        filename = doc.meta.title or f"{document_id}.bin"
+        # 7. Filename extraction & sanitization (with fallbacks)
+        filename = extract_filename(doc, document_id, content_type)
         filename = sanitize_filename(filename)
 
         # 8. Range request handling (206 Partial Content)
@@ -138,10 +152,18 @@ def document_download(request, document_id: str):
         if range_header and request.method == "GET":
             import re
 
-            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+            # Support both normal ranges (bytes=100-200) and suffix ranges (bytes=-500)
+            match = re.match(r"bytes=(\d*)-(\d*)", range_header)
             if match:
-                start = int(match.group(1))
-                end = int(match.group(2)) if match.group(2) else file_size - 1
+                # Handle suffix range (bytes=-N): last N bytes
+                if match.group(1) == "" and match.group(2):
+                    length = int(match.group(2))
+                    start = max(file_size - length, 0)
+                    end = file_size - 1
+                # Handle normal range (bytes=M-N or bytes=M-)
+                else:
+                    start = int(match.group(1)) if match.group(1) else 0
+                    end = int(match.group(2)) if match.group(2) else file_size - 1
 
                 # Validate range bounds
                 if start < 0 or start >= file_size:
@@ -150,6 +172,9 @@ def document_download(request, document_id: str):
                     )
                     resp = HttpResponse(status=416)
                     resp["Content-Range"] = f"bytes */{file_size}"
+                    resp["Cache-Control"] = "private, max-age=3600"
+                    resp["Vary"] = "Authorization, Cookie"
+                    resp["Accept-Ranges"] = "bytes"
                     return resp
 
                 # Cap end to file size
