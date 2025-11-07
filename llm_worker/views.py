@@ -1,0 +1,123 @@
+"""Views for polling task status via Result Backend."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from celery.result import AsyncResult
+from django.http import JsonResponse
+from rest_framework import status
+from rest_framework.decorators import api_view
+
+
+@api_view(["GET"])
+def task_status(request, task_id: str) -> JsonResponse:
+    """
+    Poll the status of a Celery task via Result Backend.
+
+    This endpoint is used for polling tasks that returned 202 Accepted
+    due to timeout in the graph worker pattern.
+
+    State Mapping:
+    - PENDING/RECEIVED/STARTED/RETRY → 202 Accepted (queued)
+    - SUCCESS → 200 OK (succeeded with result payload)
+    - FAILURE/REVOKED → 500 Internal Server Error (failed with error details)
+
+    Args:
+        request: Django request object
+        task_id: Celery task ID
+
+    Returns:
+        JsonResponse with task status and metadata
+    """
+    async_result = AsyncResult(task_id)
+
+    # Celery task states
+    state = async_result.state
+
+    # Map Celery states to API responses
+    if state in ("PENDING", "RECEIVED", "STARTED", "RETRY"):
+        # Task is still processing
+        return JsonResponse(
+            {
+                "status": "queued",
+                "task_id": task_id,
+                "state": state,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )
+
+    elif state == "SUCCESS":
+        # Task completed successfully - return result payload
+        try:
+            result_payload = async_result.result
+            if isinstance(result_payload, dict):
+                # Merge result payload into response
+                response_data: dict[str, Any] = {
+                    "status": "succeeded",
+                    "task_id": task_id,
+                }
+                response_data.update(result_payload)
+                return JsonResponse(response_data, status=status.HTTP_200_OK)
+            else:
+                # Result is not a dict, wrap it
+                return JsonResponse(
+                    {
+                        "status": "succeeded",
+                        "task_id": task_id,
+                        "result": result_payload,
+                    },
+                    status=status.HTTP_200_OK,
+                )
+        except Exception as exc:
+            # Error retrieving result
+            return JsonResponse(
+                {
+                    "status": "failed",
+                    "task_id": task_id,
+                    "error": {
+                        "type": "result_retrieval_error",
+                        "message": str(exc),
+                    },
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+    elif state in ("FAILURE", "REVOKED"):
+        # Task failed or was revoked
+        error_info: dict[str, str] = {
+            "type": state.lower(),
+            "message": "Task failed or was revoked",
+        }
+
+        # Try to get exception details
+        try:
+            if state == "FAILURE" and async_result.info:
+                if isinstance(async_result.info, Exception):
+                    error_info["message"] = str(async_result.info)
+                    error_info["type"] = type(async_result.info).__name__
+                elif isinstance(async_result.info, dict):
+                    error_info.update(async_result.info)
+        except Exception:
+            # Ignore errors when retrieving exception info
+            pass
+
+        return JsonResponse(
+            {
+                "status": "failed",
+                "task_id": task_id,
+                "error": error_info,
+            },
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    else:
+        # Unknown state - treat as queued
+        return JsonResponse(
+            {
+                "status": "queued",
+                "task_id": task_id,
+                "state": state,
+            },
+            status=status.HTTP_202_ACCEPTED,
+        )

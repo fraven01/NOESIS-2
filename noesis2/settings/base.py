@@ -362,7 +362,8 @@ if TESTING:
 
 # Graph worker timeout (seconds)
 # Maximum time to wait for a graph execution in the worker queue
-# before returning 202 Accepted with a task_id for async polling
+# before returning 202 Accepted with a task_id for async polling.
+# Wenn Result-Backend fehlt, fungiert Web-Pfad automatisch als 202-Fallback ohne .get()-Ergebnis.
 GRAPH_WORKER_TIMEOUT_S = env.int("GRAPH_WORKER_TIMEOUT_S", default=45)
 
 

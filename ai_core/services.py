@@ -749,6 +749,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
 
                 try:
                     # Wait for the task with timeout
+                    # Controlled via settings.GRAPH_WORKER_TIMEOUT_S
                     timeout_s = getattr(settings, "GRAPH_WORKER_TIMEOUT_S", 45)
                     task_payload = async_result.get(timeout=timeout_s, propagate=True)
                     new_state = task_payload["state"]
@@ -759,7 +760,7 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                         cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
                 except celery_exceptions.TimeoutError:
                     # Task did not complete within timeout - return 202 Accepted
-                    logger.info(
+                    logger.warning(
                         "graph.worker_timeout",
                         extra={
                             "graph": context.graph_name,
@@ -774,6 +775,8 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                             "status": "queued",
                             "task_id": async_result.id,
                             "graph": context.graph_name,
+                            "tenant_id": context.tenant_id,
+                            "case_id": context.case_id,
                             "trace_id": context.trace_id,
                         },
                         status=status.HTTP_202_ACCEPTED,

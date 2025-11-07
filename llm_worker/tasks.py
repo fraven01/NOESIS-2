@@ -32,6 +32,9 @@ def run_graph(  # type: ignore[no-untyped-def]
     Note: This task returns results (ignore_result=False by default) which are
     retrieved by the web layer using async_result.get(timeout=...) pattern.
     CELERY_RESULT_BACKEND must be configured for this to work.
+
+    In 202-Fallback-Modus kann das Result-Backend deaktiviert sein;
+    siehe GRAPH_WORKER_TIMEOUT_S.
     """
 
     # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
