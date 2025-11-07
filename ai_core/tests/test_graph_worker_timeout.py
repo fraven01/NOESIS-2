@@ -72,7 +72,10 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
     mock_async_result.get.return_value = {
         "state": {"updated": "state"},
         "result": {"result": "success", "data": "test"},
-        "cost_summary": {"total_usd": 0.123456789, "components": []},  # Will be rounded to 4 decimals
+        "cost_summary": {
+            "total_usd": 0.123456789,
+            "components": [],
+        },  # Will be rounded to 4 decimals
     }
     mock_async_result.id = "task-123"
 
