@@ -113,7 +113,7 @@ Die Skripte sind idempotent: Sie legen fehlende Tenants/Superuser an, führen `m
 Windows-Varianten (PowerShell) stehen als `npm run win:<script>` zur Verfügung (z. B. `win:dev:up`, `win:dev:stack`, `win:dev:rebuild`).
 
 Hinweise:
-- `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker ingestion-worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
+- `npm run dev:restart -- web` erlaubt gezielten Neustart einzelner Services (Default: `web worker agents-worker ingestion-worker`). Fallback auf `up -d --no-deps --no-build`, falls `restart` fehlschlägt.
 - `npm run dev:prune -- --all` löscht zusätzlich unbenutzte Netzwerke/Volumes (destruktiv).
 
 ### Tests im Docker-Container

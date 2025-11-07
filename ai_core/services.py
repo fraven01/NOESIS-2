@@ -19,7 +19,6 @@ import json
 import logging
 import time
 from collections.abc import Iterable, Mapping
-from contextlib import contextmanager
 from importlib import import_module
 from typing import Any
 from uuid import uuid4
@@ -49,7 +48,10 @@ from common.constants import (
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.schemas import ToolContext, merge_state
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
+from ai_core.graphs.cost_tracking import coerce_cost_value, track_ledger_costs
 from ai_core.llm.client import LlmClientError, RateLimitError
+from common.celery import with_scope_apply_async
+from llm_worker.tasks import run_graph as run_graph_task
 from ai_core.tool_contracts import (
     InconsistentMetadataError as ToolInconsistentMetadataError,
 )
@@ -97,6 +99,13 @@ logger = logging.getLogger(__name__)
 
 
 CHECKPOINTER = FileCheckpointer()
+ASYNC_GRAPH_NAMES = frozenset(
+    getattr(settings, "GRAPH_WORKER_GRAPHS", ("rag.default",))
+)
+
+
+def _should_enqueue_graph(graph_name: str) -> bool:
+    return graph_name in ASYNC_GRAPH_NAMES
 
 
 # Lightweight ledger shim so tests can monkeypatch services.ledger.record(...)
@@ -230,28 +239,17 @@ def _get_documents_repository() -> DocumentsRepository:
     return _DOCUMENTS_REPOSITORY
 
 
-def _coerce_cost_value(value: Any) -> float | None:
-    if isinstance(value, (int, float)):
-        return float(value)
-    if isinstance(value, str):
-        try:
-            return float(value)
-        except ValueError:
-            return None
-    return None
-
-
 def _extract_initial_cost(meta: Mapping[str, Any]) -> float | None:
     cost_block = meta.get("cost")
     if isinstance(cost_block, Mapping):
         for key in ("total_usd", "usd", "total"):
             cost_value = cost_block.get(key)
-            coerced = _coerce_cost_value(cost_value)
+            coerced = coerce_cost_value(cost_value)
             if coerced is not None:
                 return coerced
     for key in ("cost_total_usd", "cost_usd", "total_cost_usd"):
         if key in meta:
-            coerced = _coerce_cost_value(meta[key])
+            coerced = coerce_cost_value(meta[key])
             if coerced is not None:
                 return coerced
     return None
@@ -267,99 +265,6 @@ def _extract_ledger_identifier(meta: Mapping[str, Any]) -> str | None:
         if candidate:
             return str(candidate)
     return None
-
-
-class _GraphCostTracker:
-    def __init__(self, initial_total: float | None = None) -> None:
-        self._total_usd = 0.0
-        self._components: list[dict[str, Any]] = []
-        self._reconciliation_ids: set[str] = set()
-        if initial_total is not None:
-            initial = _coerce_cost_value(initial_total)
-            if initial and initial > 0:
-                self.add_component(
-                    source="meta",
-                    usd=initial,
-                    kind="initial",
-                )
-
-    @property
-    def total_usd(self) -> float:
-        return self._total_usd
-
-    @property
-    def components(self) -> list[dict[str, Any]]:
-        return list(self._components)
-
-    def add_component(self, *, source: str, usd: float, **extra: Any) -> None:
-        amount = _coerce_cost_value(usd)
-        if amount is None:
-            return
-        component: dict[str, Any] = {"source": source, "usd": float(amount)}
-        for key, value in extra.items():
-            if value is None:
-                continue
-            component[key] = (
-                value if isinstance(value, (str, int, float, bool)) else str(value)
-            )
-        ledger_entry_id = component.get("ledger_entry_id")
-        if ledger_entry_id:
-            self._reconciliation_ids.add(str(ledger_entry_id))
-        self._components.append(component)
-        self._total_usd += float(amount)
-
-    def record_ledger_meta(self, meta: Any) -> None:
-        if not isinstance(meta, Mapping):
-            return
-        usage = meta.get("usage")
-        usd = None
-        if isinstance(usage, Mapping):
-            cost_block = usage.get("cost")
-            if isinstance(cost_block, Mapping):
-                usd = cost_block.get("usd") or cost_block.get("total")
-        if usd is None:
-            usd = meta.get("cost_usd") or meta.get("usd")
-        coerced = _coerce_cost_value(usd)
-        if coerced is None:
-            return
-        source = str(meta.get("source") or meta.get("label") or "ledger")
-        component: dict[str, Any] = {
-            "label": meta.get("label"),
-            "model": meta.get("model"),
-            "trace_id": meta.get("trace_id"),
-        }
-        entry_id = meta.get("id") or meta.get("ledger_id")
-        if entry_id:
-            component["ledger_entry_id"] = str(entry_id)
-        cache_hit = meta.get("cache_hit")
-        if cache_hit is not None:
-            component["cache_hit"] = bool(cache_hit)
-        latency = meta.get("latency_ms")
-        if latency is not None:
-            component["latency_ms"] = latency
-        self.add_component(source=source, usd=float(coerced), **component)
-
-    def summary(self, ledger_id: str | None = None) -> dict[str, Any] | None:
-        if not self._components:
-            return None
-        summary: dict[str, Any] = {
-            "total_usd": self.total_usd,
-            "components": self.components,
-        }
-        reconciliation: dict[str, Any] = {}
-        if ledger_id:
-            reconciliation["ledger_id"] = ledger_id
-        if self._reconciliation_ids:
-            reconciliation["entry_ids"] = sorted(self._reconciliation_ids)
-        if reconciliation:
-            summary["reconciliation"] = reconciliation
-        return summary
-
-
-@contextmanager
-def _track_ledger_costs(initial_total: float | None = None):  # type: ignore[no-untyped-def]
-    tracker = _GraphCostTracker(initial_total)
-    yield tracker
 
 
 def _normalize_meta(request):  # type: ignore[no-untyped-def]
@@ -823,14 +728,32 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             except Exception:
                 pass
 
-            with _track_ledger_costs(initial_cost_total) as tracker:
-                runner_meta["ledger_logger"] = tracker.record_ledger_meta
-                try:
-                    new_state, result = graph_runner.run(merged_state, runner_meta)
-                finally:
-                    runner_meta.pop("ledger_logger", None)
-
-            cost_summary = tracker.summary(ledger_identifier)
+            if _should_enqueue_graph(context.graph_name):
+                signature = run_graph_task.s(
+                    graph_name=context.graph_name,
+                    state=merged_state,
+                    meta=runner_meta,
+                    ledger_identifier=ledger_identifier,
+                    initial_cost_total=initial_cost_total,
+                )
+                scope = {
+                    "tenant_id": context.tenant_id,
+                    "case_id": context.case_id,
+                    "trace_id": context.trace_id,
+                }
+                async_result = with_scope_apply_async(signature, scope)
+                task_payload = async_result.get()
+                new_state = task_payload["state"]
+                result = task_payload["result"]
+                cost_summary = task_payload.get("cost_summary")
+            else:
+                with track_ledger_costs(initial_cost_total) as tracker:
+                    runner_meta["ledger_logger"] = tracker.record_ledger_meta
+                    try:
+                        new_state, result = graph_runner.run(merged_state, runner_meta)
+                    finally:
+                        runner_meta.pop("ledger_logger", None)
+                cost_summary = tracker.summary(ledger_identifier)
 
             try:
                 dt_ms = int((time.monotonic() - t0) * 1000)

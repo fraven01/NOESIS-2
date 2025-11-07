@@ -64,6 +64,26 @@ services:
       - redis
     restart: unless-stopped
 
+  agents-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noesis2_agents_worker
+    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q agents
+    env_file:
+      - .env
+      - .env.docker
+    environment:
+      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      LOGGING_OTEL_INSTRUMENT: "true"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
+      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
+    depends_on:
+      - redis
+    restart: unless-stopped
+
   rag-schema:
     build:
       context: .

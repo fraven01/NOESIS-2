@@ -235,6 +235,7 @@ TENANT_APPS = [
     "crawler",
     "documents",
     "ai_core",
+    "llm_worker",
     "users",
     "profiles",
     "organizations",

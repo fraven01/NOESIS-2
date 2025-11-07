@@ -1,5 +1,5 @@
 Param(
-    [string[]]$Services = @('web', 'worker', 'ingestion-worker')
+    [string[]]$Services = @('web', 'worker', 'agents-worker', 'ingestion-worker')
 )
 
 Set-StrictMode -Version Latest
@@ -7,7 +7,7 @@ $ErrorActionPreference = 'Stop'
 
 $compose = 'docker compose -f docker-compose.yml -f docker-compose.dev.yml'
 
-$svcList = if ($Services -and $Services.Length -gt 0) { ($Services -join ' ') } else { 'web worker ingestion-worker' }
+$svcList = if ($Services -and $Services.Length -gt 0) { ($Services -join ' ') } else { 'web worker agents-worker ingestion-worker' }
 Write-Host "[dev-restart] Restarting: $svcList"
 
 try {

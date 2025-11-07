@@ -153,6 +153,34 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
       OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
 
+  agents-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: noesis2_agents_worker
+    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q agents
+    volumes:
+      - .:/app
+      - ${APP_LOG_PATH:-./logs/app}:/app/logs
+    env_file:
+      - .env
+      - .env.docker
+    depends_on:
+      redis:
+        condition: service_started
+      toxiproxy:
+        condition: service_started
+      litellm:
+        condition: service_started
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
+      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
+      APP_LOG_DIR: /app/logs
+      LOGGING_OTEL_INSTRUMENT: "true"
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
+      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
+
   rag-schema:
     build:
       context: .

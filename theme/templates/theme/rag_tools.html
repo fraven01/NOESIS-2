@@ -1170,7 +1170,7 @@
           : collectionInput && collectionInput instanceof HTMLInputElement
           ? collectionInput.value
           : currentCollectionId;
-      const resolved = determineCollection(rawValue, {
+      let resolved = determineCollection(rawValue, {
         allowResolverFallback: opts.allowResolverFallback !== false,
       });
       if (!resolved && manualCollectionId) {
