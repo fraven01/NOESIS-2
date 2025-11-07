@@ -50,8 +50,8 @@ from ai_core.graph.schemas import ToolContext, merge_state
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.graphs.cost_tracking import coerce_cost_value, track_ledger_costs
 from ai_core.llm.client import LlmClientError, RateLimitError
+from celery import current_app, exceptions as celery_exceptions
 from common.celery import with_scope_apply_async
-from llm_worker.tasks import run_graph as run_graph_task
 from ai_core.tool_contracts import (
     InconsistentMetadataError as ToolInconsistentMetadataError,
 )
@@ -729,12 +729,16 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                 pass
 
             if _should_enqueue_graph(context.graph_name):
-                signature = run_graph_task.s(
-                    graph_name=context.graph_name,
-                    state=merged_state,
-                    meta=runner_meta,
-                    ledger_identifier=ledger_identifier,
-                    initial_cost_total=initial_cost_total,
+                signature = current_app.signature(
+                    "llm_worker.tasks.run_graph",
+                    kwargs={
+                        "graph_name": context.graph_name,
+                        "state": merged_state,
+                        "meta": runner_meta,
+                        "ledger_identifier": ledger_identifier,
+                        "initial_cost_total": initial_cost_total,
+                    },
+                    queue="agents",
                 )
                 scope = {
                     "tenant_id": context.tenant_id,
@@ -742,10 +746,38 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                     "trace_id": context.trace_id,
                 }
                 async_result = with_scope_apply_async(signature, scope)
-                task_payload = async_result.get()
-                new_state = task_payload["state"]
-                result = task_payload["result"]
-                cost_summary = task_payload.get("cost_summary")
+
+                try:
+                    # Wait for the task with timeout
+                    timeout_s = getattr(settings, "GRAPH_WORKER_TIMEOUT_S", 45)
+                    task_payload = async_result.get(timeout=timeout_s, propagate=True)
+                    new_state = task_payload["state"]
+                    result = task_payload["result"]
+                    cost_summary = task_payload.get("cost_summary")
+                    # Round total_usd to 4 decimal places to reduce noise in logs/traces
+                    if cost_summary and "total_usd" in cost_summary:
+                        cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
+                except celery_exceptions.TimeoutError:
+                    # Task did not complete within timeout - return 202 Accepted
+                    logger.info(
+                        "graph.worker_timeout",
+                        extra={
+                            "graph": context.graph_name,
+                            "tenant_id": context.tenant_id,
+                            "case_id": context.case_id,
+                            "task_id": async_result.id,
+                            "timeout_s": timeout_s,
+                        },
+                    )
+                    return Response(
+                        {
+                            "status": "queued",
+                            "task_id": async_result.id,
+                            "graph": context.graph_name,
+                            "trace_id": context.trace_id,
+                        },
+                        status=status.HTTP_202_ACCEPTED,
+                    )
             else:
                 with track_ledger_costs(initial_cost_total) as tracker:
                     runner_meta["ledger_logger"] = tracker.record_ledger_meta
@@ -754,6 +786,9 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
                     finally:
                         runner_meta.pop("ledger_logger", None)
                 cost_summary = tracker.summary(ledger_identifier)
+                # Round total_usd to 4 decimal places to reduce noise in logs/traces
+                if cost_summary and "total_usd" in cost_summary:
+                    cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
 
             try:
                 dt_ms = int((time.monotonic() - t0) * 1000)

@@ -128,3 +128,12 @@ def ingestion_status_store(monkeypatch):
     store = PersistentDocumentLifecycleStore()
     monkeypatch.setattr(ingestion_status, "_LIFECYCLE_STORE", store, raising=False)
     yield store
+
+
+@pytest.fixture(autouse=True)
+def disable_async_graphs(monkeypatch):
+    """Disable async graph execution in tests to run graphs synchronously."""
+    from ai_core import services
+
+    monkeypatch.setattr(services, "_should_enqueue_graph", lambda graph_name: False)
+    yield

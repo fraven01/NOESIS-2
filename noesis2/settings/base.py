@@ -348,12 +348,22 @@ DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 AUTH_USER_MODEL = "users.User"
 
 REDIS_URL = env.str("REDIS_URL")
+
+# Celery Configuration
+# CELERY_RESULT_BACKEND is required for synchronous task result retrieval (async_result.get())
+# used in the graph worker timeout pattern. Without this, async_result.get() will fail.
+# Mode: Sync-wait with timeout → Returns 200 OK if task completes, 202 Accepted on timeout.
 CELERY_BROKER_URL = REDIS_URL
 CELERY_RESULT_BACKEND = REDIS_URL
 
 if TESTING:
     CELERY_TASK_ALWAYS_EAGER = True
     CELERY_TASK_EAGER_PROPAGATES_EXCEPTIONS = True
+
+# Graph worker timeout (seconds)
+# Maximum time to wait for a graph execution in the worker queue
+# before returning 202 Accepted with a task_id for async polling
+GRAPH_WORKER_TIMEOUT_S = env.int("GRAPH_WORKER_TIMEOUT_S", default=45)
 
 
 ADMINS = [

@@ -28,6 +28,10 @@ def run_graph(  # type: ignore[no-untyped-def]
 
     The task proxies the execution to a worker queue so web requests do not
     block on LiteLLM/network latency.
+
+    Note: This task returns results (ignore_result=False by default) which are
+    retrieved by the web layer using async_result.get(timeout=...) pattern.
+    CELERY_RESULT_BACKEND must be configured for this to work.
     """
 
     # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
@@ -46,8 +50,13 @@ def run_graph(  # type: ignore[no-untyped-def]
         finally:
             runner_meta.pop("ledger_logger", None)
 
+    cost_summary = tracker.summary(ledger_identifier)
+    # Round total_usd to 4 decimal places to reduce noise in logs/traces
+    if cost_summary and "total_usd" in cost_summary:
+        cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
+
     return {
         "state": new_state,
         "result": result,
-        "cost_summary": tracker.summary(ledger_identifier),
+        "cost_summary": cost_summary,
     }
