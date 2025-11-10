@@ -10,7 +10,7 @@ labels:
   draft: gemini-2.5-pro
   embedding: openai/oai-embed-large
   #embedding: vertex_ai/text-embedding-004
-  fast: vertex_ai/gemini-2.5-flash
+  fast: gemini-2.5-flash
   simple-query: vertex_ai/gemini-2.5-flash
   #synthesize: openai/gpt-5-nano
   extract: vertex_ai/gemini-2.5-flash

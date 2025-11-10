@@ -104,6 +104,54 @@
         id="web-search-error"
         class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
       ></div>
+      <div class="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
+        <div class="flex flex-wrap items-center gap-3">
+          <label class="inline-flex items-center gap-2 text-sm text-slate-700">
+            <input
+              type="checkbox"
+              id="web-search-rerank-toggle"
+              class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+            />
+            LLM-Rerank (Beta)
+          </label>
+          <button
+            type="button"
+            id="web-search-rerank-button"
+            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+            disabled
+          >
+            Neu bewerten
+          </button>
+          <span class="text-xs text-slate-500">nutzt LLM, kann ein paar Sekunden dauern.</span>
+        </div>
+        <div
+          id="web-search-rerank-status"
+          class="hidden items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+        >
+          <svg
+            id="web-search-rerank-spinner"
+            class="hidden h-4 w-4 animate-spin text-amber-600"
+            viewBox="0 0 24 24"
+            fill="none"
+            xmlns="http://www.w3.org/2000/svg"
+          >
+            <circle
+              class="opacity-25"
+              cx="12"
+              cy="12"
+              r="10"
+              stroke="currentColor"
+              stroke-width="4"
+            ></circle>
+            <path
+              class="opacity-75"
+              fill="currentColor"
+              d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"
+            ></path>
+          </svg>
+          <span id="web-search-rerank-status-text" class="text-xs"></span>
+        </div>
+      </div>
                 <div class="space-y-3" id="web-search-results">
                   <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
                 </div>
@@ -1665,11 +1713,193 @@
     const webSearchWorkflowInput = document.getElementById('web-search-workflow');
     const webSearchModeSelect = document.getElementById('web-search-mode');
     const webSearchError = document.getElementById('web-search-error');
+    const webSearchReviewIndicator = document.getElementById('web-search-review-indicator');
     const webSearchResults = document.getElementById('web-search-results');
     const webSearchRaw = document.getElementById('web-search-raw');
     const webSearchApproveButton = document.getElementById('web-search-approve');
     const webSearchRejectButton = document.getElementById('web-search-reject');
     const crawlSelectedButton = document.getElementById('crawl-selected-button');
+    const rerankToggle = document.getElementById('web-search-rerank-toggle');
+    const rerankButton = document.getElementById('web-search-rerank-button');
+    const rerankStatusBox = document.getElementById('web-search-rerank-status');
+    const rerankStatusText = document.getElementById('web-search-rerank-status-text');
+    const rerankSpinner = document.getElementById('web-search-rerank-spinner');
+
+    let lastSearchPayload = null;
+    let lastSearchResponse = null;
+    let rerankPollTimer = null;
+    let rerankPollAttempts = 0;
+
+    function stopRerankPolling() {
+      if (rerankPollTimer) {
+        clearTimeout(rerankPollTimer);
+        rerankPollTimer = null;
+      }
+      rerankPollAttempts = 0;
+    }
+
+    function updateRerankControlsState() {
+      if (!rerankButton) {
+        return;
+      }
+      const hasPayload = Boolean(lastSearchPayload && lastSearchPayload.query);
+      const toggleActive = rerankToggle instanceof HTMLInputElement ? rerankToggle.checked : false;
+      rerankButton.disabled = !(toggleActive && hasPayload);
+    }
+
+    function showRerankStatus(options) {
+      if (!rerankStatusBox || !rerankStatusText) {
+        return;
+      }
+      const opts = options || {};
+      rerankStatusBox.className = 'flex items-center gap-2 rounded-md border px-3 py-2 text-sm';
+      rerankStatusBox.classList.remove('hidden');
+      if (opts.variant === 'success') {
+        rerankStatusBox.classList.add('border-emerald-200', 'bg-emerald-50', 'text-emerald-800');
+      } else if (opts.variant === 'error') {
+        rerankStatusBox.classList.add('border-rose-200', 'bg-rose-50', 'text-rose-800');
+      } else {
+        rerankStatusBox.classList.add('border-amber-200', 'bg-amber-50', 'text-amber-800');
+      }
+      rerankStatusText.textContent = opts.message || '';
+      if (rerankSpinner) {
+        if (opts.showSpinner) {
+          rerankSpinner.classList.remove('hidden');
+        } else {
+          rerankSpinner.classList.add('hidden');
+        }
+      }
+    }
+
+    function clearRerankStatus() {
+      if (rerankStatusBox) {
+        rerankStatusBox.classList.add('hidden');
+      }
+      if (rerankSpinner) {
+        rerankSpinner.classList.add('hidden');
+      }
+    }
+
+    function applyPolledRerank(resultPayload) {
+      if (!resultPayload || !Array.isArray(resultPayload.ranked) || !lastSearchResponse) {
+        return;
+      }
+      const rankingMap = new Map();
+      resultPayload.ranked.forEach(function (entry) {
+        if (!entry || typeof entry.id !== 'string') {
+          return;
+        }
+        rankingMap.set(entry.id, {
+          score: typeof entry.score === 'number' ? entry.score : null,
+          reasons: Array.isArray(entry.reasons) ? entry.reasons.slice(0, 2) : [],
+        });
+      });
+      if (!Array.isArray(lastSearchResponse.results)) {
+        lastSearchResponse.results = [];
+      }
+      const scored = [];
+      const remainder = [];
+      lastSearchResponse.results.forEach(function (result, index) {
+        const rid = result && (result.rerank_id || result.id || result.url || 'result-' + index);
+        const info = rankingMap.get(rid);
+        const clone = { ...result, rerank_id: rid, rerank_index: index };
+        if (info && typeof info.score === 'number') {
+          clone.rerank = { score: info.score, reasons: info.reasons };
+          scored.push({ score: info.score, index: index, item: clone });
+        } else {
+          clone.rerank = { score: null, reasons: [] };
+          remainder.push({ index: index, item: clone });
+        }
+      });
+      scored.sort(function (a, b) {
+        if (b.score === a.score) {
+          return a.index - b.index;
+        }
+        return b.score - a.score;
+      });
+      remainder.sort(function (a, b) {
+        return a.index - b.index;
+      });
+      lastSearchResponse.results = scored
+        .map(function (entry) {
+          return entry.item;
+        })
+        .concat(
+          remainder.map(function (entry) {
+            return entry.item;
+          })
+        );
+      lastSearchResponse.rerank = {
+        status: 'succeeded',
+        applied: true,
+        latency_s: resultPayload.latency_s,
+        model: resultPayload.model,
+        usage: resultPayload.usage,
+        reranked_count: resultPayload.ranked.length,
+      };
+      renderWebSearchResults(lastSearchResponse);
+      showRerankStatus({ message: 'LLM-Rerank aktiv.', variant: 'success' });
+      updateRerankControlsState();
+    }
+
+    function startRerankPolling(statusUrl) {
+      stopRerankPolling();
+      if (!statusUrl) {
+        return;
+      }
+      const maxAttempts = 15;
+      const poll = async function () {
+        rerankPollAttempts += 1;
+        try {
+          const response = await fetch(statusUrl, { headers: buildHeaders({ Accept: 'application/json' }) });
+          const data = await response.json();
+          if (response.status === 200 && data.status === 'succeeded' && data.result) {
+            applyPolledRerank(data.result);
+            stopRerankPolling();
+            return;
+          }
+          if (response.status >= 400) {
+            showRerankStatus({ message: 'LLM-Rerank nicht verfügbar.', variant: 'error' });
+            stopRerankPolling();
+            return;
+          }
+        } catch (err) {
+          showRerankStatus({ message: 'LLM-Rerank nicht verfügbar.', variant: 'error' });
+          stopRerankPolling();
+          return;
+        }
+        if (rerankPollAttempts >= maxAttempts) {
+          showRerankStatus({ message: 'LLM-Rerank später erneut versuchen.', variant: 'error' });
+          stopRerankPolling();
+          return;
+        }
+        rerankPollTimer = setTimeout(poll, 1000);
+      };
+      rerankPollTimer = setTimeout(poll, 1000);
+    }
+
+    function handleRerankStatus(rerankData) {
+      if (!rerankData) {
+        clearRerankStatus();
+        stopRerankPolling();
+        return;
+      }
+      if (rerankData.status === 'queued' && rerankData.status_url) {
+        showRerankStatus({ message: 'Re-Rank läuft…', showSpinner: true });
+        startRerankPolling(rerankData.status_url);
+        return;
+      }
+      stopRerankPolling();
+      if (rerankData.status === 'succeeded' && rerankData.applied) {
+        showRerankStatus({ message: 'LLM-Rerank aktiv.', variant: 'success' });
+      } else if (rerankData.status === 'error') {
+        showRerankStatus({ message: rerankData.message || 'LLM-Rerank nicht verfügbar.', variant: 'error' });
+      } else if (rerankData.status === 'skipped') {
+        clearRerankStatus();
+      } else {
+        clearRerankStatus();
+      }
+    }
 
     webSearchResults.addEventListener('change', function (event) {
       if (event.target.type === 'checkbox') {
@@ -1721,21 +1951,122 @@
       }
     });
 
-    webSearchForm.addEventListener('submit', async function (event) {
-      event.preventDefault();
+    function renderWebSearchResults(data) {
+      if (!webSearchResults) {
+        return;
+      }
+      const results = Array.isArray(data.results) ? data.results : [];
+      const rerankInfo = data.rerank || null;
+      const rerankActive = rerankInfo && rerankInfo.status === 'succeeded' && rerankInfo.applied;
+      webSearchResults.innerHTML = '';
+      if (crawlSelectedButton) {
+        crawlSelectedButton.disabled = true;
+      }
+      if (!results.length) {
+        webSearchResults.innerHTML = '<p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>';
+        return;
+      }
+      results.forEach(function (result) {
+        const card = document.createElement('article');
+        card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
 
-      const query = webSearchQueryInput.value;
-      const workflowId = webSearchWorkflowInput.value;
-      const mode = webSearchModeSelect.value;
-      const collectionScope = requireCollection({ allowResolverFallback: true });
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.className = 'form-checkbox h-5 w-5 text-slate-600';
+        checkbox.value = result.url || '';
+        card.appendChild(checkbox);
 
-      const payload = {
-        query: query,
-        workflow_id: workflowId,
-        mode: mode,
-        collection_id: collectionScope || manualCollectionId || null,
-      };
+        const link = document.createElement('a');
+        link.href = result.url || '#';
+        link.textContent = result.title || result.url || 'Unbenanntes Ergebnis';
+        link.target = '_blank';
+        link.rel = 'noreferrer';
+        link.className = 'block text-sm font-semibold text-slate-900 hover:underline';
+        card.appendChild(link);
 
+        const metaRow = document.createElement('div');
+        metaRow.className = 'flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500';
+
+        const crawlerScore = document.createElement('span');
+        const crawlerScoreValue = Number.isFinite(result && result.score) ? Number(result.score).toFixed(3) : '–';
+        crawlerScore.textContent = 'Crawler-Score: ' + crawlerScoreValue;
+        metaRow.appendChild(crawlerScore);
+
+        const source = document.createElement('span');
+        source.textContent = 'Quelle: ' + (result && result.source ? result.source : '–');
+        metaRow.appendChild(source);
+
+        if (rerankActive) {
+          const badge = document.createElement('span');
+          badge.className = 'inline-flex items-center rounded-full border px-2 py-0.5 font-medium';
+          const scoreValue = result && result.rerank && typeof result.rerank.score === 'number' ? Math.round(result.rerank.score) : null;
+          if (scoreValue !== null) {
+            badge.classList.add('border-emerald-200', 'bg-emerald-50', 'text-emerald-800');
+            badge.textContent = 'LLM-Score ' + scoreValue;
+          } else {
+            badge.classList.add('border-slate-200', 'text-slate-500');
+            badge.textContent = 'LLM-Score –';
+          }
+          metaRow.appendChild(badge);
+        }
+
+        card.appendChild(metaRow);
+
+        const body = document.createElement('div');
+        body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
+        const snippetText = result && typeof result.snippet === 'string' ? result.snippet : '';
+        body.textContent = truncate(snippetText, 320);
+        card.appendChild(body);
+
+        if (
+          rerankActive &&
+          result &&
+          result.rerank &&
+          Array.isArray(result.rerank.reasons) &&
+          result.rerank.reasons.length
+        ) {
+          const details = document.createElement('details');
+          details.className = 'rounded-md border border-slate-200 bg-white/80 p-2 text-xs text-slate-600';
+          const summary = document.createElement('summary');
+          summary.className = 'cursor-pointer font-medium text-slate-700';
+          summary.textContent = 'Warum ausgewählt?';
+          details.appendChild(summary);
+          const list = document.createElement('ul');
+          list.className = 'ml-4 list-disc space-y-1 pt-1';
+          result.rerank.reasons.slice(0, 2).forEach(function (reason) {
+            const item = document.createElement('li');
+            item.textContent = reason;
+            list.appendChild(item);
+          });
+          details.appendChild(list);
+          card.appendChild(details);
+        }
+
+        webSearchResults.appendChild(card);
+      });
+    }
+
+    function renderWebSearchResponse(data) {
+      webSearchError.classList.add('hidden');
+      prettyPrint(webSearchRaw, data);
+      lastSearchResponse = data;
+      renderWebSearchResults(data);
+
+      if (data.outcome && data.outcome.meta && data.outcome.meta.review_required) {
+        webSearchApproveButton.disabled = false;
+        webSearchRejectButton.disabled = false;
+        webSearchReviewIndicator.textContent = 'Review offen: ' + data.outcome.meta.run_id;
+      } else {
+        webSearchApproveButton.disabled = true;
+        webSearchRejectButton.disabled = true;
+        webSearchReviewIndicator.textContent = 'Review offen: –';
+      }
+
+      handleRerankStatus(data.rerank);
+      updateRerankControlsState();
+    }
+
+    async function executeWebSearch(payload) {
       try {
         const response = await fetch('/rag-tools/web-search/', {
           method: 'POST',
@@ -1749,74 +2080,64 @@
         const data = await response.json();
 
         if (response.ok) {
-          webSearchError.classList.add('hidden');
-          prettyPrint(webSearchRaw, data);
-
-          if (data.results && data.results.length > 0) {
-            webSearchResults.innerHTML = '';
-            data.results.forEach(function (result) {
-              const card = document.createElement('article');
-              card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
-
-              const checkbox = document.createElement('input');
-              checkbox.type = 'checkbox';
-              checkbox.className = 'form-checkbox h-5 w-5 text-slate-600';
-              checkbox.value = result.url;
-              card.appendChild(checkbox);
-
-              const header = document.createElement('div');
-              header.className = 'flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600';
-
-              const score = document.createElement('span');
-              const scoreValue = Number.isFinite(result && result.score) ? Number(result.score).toFixed(3) : '–';
-              score.textContent = 'Score: ' + scoreValue;
-
-              const source = document.createElement('span');
-              const sourceValue = result && typeof result.source === 'string' ? result.source : '';
-              source.textContent = 'Quelle: ' + sourceValue;
-
-              header.appendChild(score);
-              header.appendChild(source);
-
-              const body = document.createElement('div');
-              body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
-              const snippetText = result && typeof result.snippet === 'string' ? result.snippet : '';
-              body.textContent = truncate(snippetText, 280);
-
-              const link = document.createElement('a');
-              link.href = result.url;
-              link.textContent = result.title;
-              link.target = '_blank';
-              link.className = 'text-sm font-medium text-slate-900 hover:underline';
-
-              card.appendChild(link);
-              card.appendChild(header);
-              card.appendChild(body);
-              webSearchResults.appendChild(card);
-            });
-          } else {
-            webSearchResults.innerHTML = '<p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>';
-          }
-
-          if (data.outcome && data.outcome.meta && data.outcome.meta.review_required) {
-            webSearchApproveButton.disabled = false;
-            webSearchRejectButton.disabled = false;
-            webSearchReviewIndicator.textContent = 'Review offen: ' + data.outcome.meta.run_id;
-          } else {
-            webSearchApproveButton.disabled = true;
-            webSearchRejectButton.disabled = true;
-            webSearchReviewIndicator.textContent = 'Review offen: –';
-          }
-
-        } else {
-          webSearchError.textContent = data.error || 'Ein unbekannter Fehler ist aufgetreten.';
-          webSearchError.classList.remove('hidden');
+          renderWebSearchResponse(data);
+          return true;
         }
+
+        webSearchError.textContent = data.error || 'Ein unbekannter Fehler ist aufgetreten.';
+        webSearchError.classList.remove('hidden');
+        return false;
       } catch (error) {
         webSearchError.textContent = 'Ein unbekannter Fehler ist aufgetreten.';
         webSearchError.classList.remove('hidden');
+        return false;
+      }
+    }
+
+    if (rerankToggle) {
+      rerankToggle.addEventListener('change', updateRerankControlsState);
+    }
+
+    if (rerankButton) {
+      rerankButton.addEventListener('click', async function () {
+        if (!lastSearchPayload) {
+          return;
+        }
+        if (rerankToggle && !rerankToggle.checked) {
+          rerankToggle.checked = true;
+        }
+        const payload = { ...lastSearchPayload, rerank: true };
+        await executeWebSearch(payload);
+      });
+    }
+
+    webSearchForm.addEventListener('submit', async function (event) {
+      event.preventDefault();
+
+      const query = webSearchQueryInput.value;
+      const workflowId = webSearchWorkflowInput.value;
+      const mode = webSearchModeSelect.value;
+      const collectionScope = requireCollection({ allowResolverFallback: true });
+
+      const basePayload = {
+        query: query,
+        workflow_id: workflowId,
+        mode: mode,
+        collection_id: collectionScope || manualCollectionId || null,
+      };
+
+      const payload = { ...basePayload };
+      if (rerankToggle && rerankToggle.checked) {
+        payload.rerank = true;
+      }
+
+      const ok = await executeWebSearch(payload);
+      if (ok) {
+        lastSearchPayload = basePayload;
       }
     });
+
+    updateRerankControlsState();
     const crawlerWorkflowInput = document.getElementById('crawler-workflow');
     const crawlerModeSelect = document.getElementById('crawler-mode');
     const crawlerOriginInput = document.getElementById('crawler-origin');

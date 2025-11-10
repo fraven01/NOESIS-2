@@ -2,12 +2,114 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
+from uuid import uuid4
 
 from celery.result import AsyncResult
 from django.http import JsonResponse
+from django.urls import reverse
+from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.decorators import api_view
+from structlog.stdlib import get_logger
+
+from llm_worker.runner import submit_worker_task
+from llm_worker.schemas import WorkerTask
+
+logger = get_logger(__name__)
+
+
+def _format_validation_error(error: ValidationError) -> str:
+    messages: list[str] = []
+    for issue in error.errors():
+        location = ".".join(str(part) for part in issue.get("loc", ()))
+        message = issue.get("msg", "Invalid input")
+        if location:
+            messages.append(f"{location}: {message}")
+        else:
+            messages.append(message)
+    return "; ".join(messages)
+
+
+@api_view(["POST"])
+def run_task(request) -> JsonResponse:
+    """Submit a worker task (currently score_results) and optionally wait for completion."""
+
+    try:
+        payload = json.loads(request.body or "{}")
+    except json.JSONDecodeError:
+        return JsonResponse(
+            {"detail": "Invalid JSON payload"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        worker_task = WorkerTask.model_validate(payload)
+    except ValidationError as exc:
+        return JsonResponse(
+            {"detail": _format_validation_error(exc)},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if worker_task.task_type != "score_results":
+        return JsonResponse(
+            {"detail": "Unsupported task_type. Only score_results is available."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    tenant_id = request.headers.get("X-Tenant-ID")
+    if not tenant_id:
+        return JsonResponse(
+            {"detail": "X-Tenant-ID header is required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    case_id = request.headers.get("X-Case-ID") or "local"
+    trace_id = request.headers.get("X-Trace-ID") or uuid4().hex
+
+    meta_payload = worker_task.model_dump(mode="python")
+
+    try:
+        task_payload, completed = submit_worker_task(
+            task_payload=meta_payload,
+            scope={
+                "tenant_id": tenant_id,
+                "case_id": case_id,
+                "trace_id": trace_id,
+            },
+            graph_name="score_results",
+        )
+    except Exception:
+        logger.exception("llm_worker.run_task.failed", task_type=worker_task.task_type)
+        return JsonResponse(
+            {"detail": "Task submission failed"},
+            status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    if completed:
+        return JsonResponse(
+            {
+                "status": "succeeded",
+                "task_id": task_payload.get("task_id"),
+                "result": task_payload.get("result"),
+                "state": task_payload.get("state"),
+                "cost_summary": task_payload.get("cost_summary"),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    status_url = request.build_absolute_uri(
+        reverse("llm_worker:task_status", args=[task_payload["task_id"]])
+    )
+    return JsonResponse(
+        {
+            "status": "queued",
+            "task_id": task_payload["task_id"],
+            "status_url": status_url,
+        },
+        status=status.HTTP_202_ACCEPTED,
+    )
 
 
 @api_view(["GET"])
