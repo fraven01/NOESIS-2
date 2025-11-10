@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+from django.core.cache import cache
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.html import escapejs
@@ -168,6 +169,131 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
     mock_ensure.assert_called_once_with(tenant_id)
     headers = mock_client.post.call_args.kwargs["headers"]
     assert headers["X-Tenant-Schema"] == tenant_schema
+
+
+@patch("theme.views.llm_routing.resolve")
+@patch("theme.views.submit_worker_task")
+@patch("theme.views.build_graph")
+def test_web_search_rerank_applies_scores(
+    mock_build_graph, mock_submit_task, mock_resolve, settings
+):
+    settings.RERANK_MODEL_PRESET = "meta/llama-3.1-70b-instruct"
+
+    def fake_resolve(label: str):
+        if label == "meta/llama-3.1-70b-instruct":
+            raise ValueError("unknown label")
+        return "resolved-model"
+
+    mock_resolve.side_effect = fake_resolve
+
+    cache.clear()
+    tenant_id = "tenant-test"
+    tenant_schema = "test"
+
+    mock_graph = MagicMock()
+    mock_graph.run.return_value = (
+        {
+            "search": {
+                "results": [
+                    {
+                        "document_id": "doc-a",
+                        "title": "Alpha",
+                        "snippet": "Snippet A",
+                        "source": "crawler",
+                        "url": "https://a.example",
+                        "score": 0.3,
+                    },
+                    {
+                        "document_id": "doc-b",
+                        "title": "Beta",
+                        "snippet": "Snippet B",
+                        "source": "crawler",
+                        "url": "https://b.example",
+                        "score": 0.2,
+                    },
+                ]
+            },
+            "selection": {"selected": [], "shortlisted": []},
+            "ingestion": {},
+        },
+        {"outcome": {"meta": {"review_required": False}}},
+    )
+    mock_build_graph.return_value = mock_graph
+    mock_submit_task.return_value = (
+        {
+            "task_id": "task-1",
+            "result": {
+                "ranked": [
+                    {"id": "doc-b", "score": 88, "reasons": ["präzise"]},
+                    {"id": "doc-a", "score": 40, "reasons": []},
+                ],
+                "latency_s": 0.5,
+                "model": "demo",
+            },
+        },
+        True,
+    )
+
+    factory = RequestFactory()
+    request = factory.post(
+        reverse("web-search"),
+        data=json.dumps({"query": "test", "rerank": True}),
+        content_type="application/json",
+    )
+    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+
+    response = web_search(request)
+    data = json.loads(response.content)
+
+    assert response.status_code == 200
+    assert data["rerank"]["status"] == "succeeded"
+    assert data["results"][0]["title"] == "Beta"
+    assert data["results"][0]["rerank"]["score"] == 88
+    task_payload = mock_submit_task.call_args.kwargs["task_payload"]
+    assert task_payload["control"]["model_preset"] == "fast"
+
+
+@patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
+@patch("theme.views.build_graph")
+def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
+    cache.clear()
+    tenant_id = "tenant-queued"
+    tenant_schema = "queued"
+
+    mock_graph = MagicMock()
+    mock_graph.run.return_value = (
+        {
+            "search": {
+                "results": [
+                    {
+                        "document_id": "doc-a",
+                        "title": "Alpha",
+                        "snippet": "Snippet A",
+                        "url": "https://a.example",
+                    }
+                ]
+            },
+            "selection": {"selected": [], "shortlisted": []},
+            "ingestion": {},
+        },
+        {"outcome": {"meta": {"review_required": False}}},
+    )
+    mock_build_graph.return_value = mock_graph
+
+    factory = RequestFactory()
+    request = factory.post(
+        reverse("web-search"),
+        data=json.dumps({"query": "test", "rerank": True}),
+        content_type="application/json",
+    )
+    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+
+    response = web_search(request)
+    data = json.loads(response.content)
+
+    assert response.status_code == 200
+    assert data["rerank"]["status"] == "queued"
+    assert data["rerank"]["status_url"].endswith("/api/llm/tasks/task-q/")
 
 
 @patch("theme.views.ensure_manual_collection", return_value="manual-uuid")

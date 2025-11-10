@@ -1,6 +1,7 @@
 general_settings:
   require_auth: false
   master_key: os.environ/LITELLM_MASTER_KEY
+  default_model_max_tokens: 1024
   proxy_port: 4000
   num_retries: 1
   pass_through_endpoints:
@@ -44,3 +45,16 @@ model_list:
     litellm_params:
       model: openai/gpt-5-nano
       api_key: os.environ/OPENAI_API_KEY
+      extra_headers:
+        # Reasoning-Modus deaktivieren (niedrige Latenz für Reranking)
+        reasoning: "disabled"
+      drop_params: true
+
+  # Alias für kostengünstiges Reranking (nutzt obiges Modell)
+  - model_name: fast
+    litellm_params:
+      model: openai/gpt-5-nano
+      api_key: os.environ/OPENAI_API_KEY
+      extra_headers:
+        reasoning: "disabled"
+      drop_params: true

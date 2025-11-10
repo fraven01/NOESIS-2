@@ -1,8 +1,11 @@
 import json
 from collections.abc import Mapping
+from hashlib import sha256
+from typing import Any, Sequence
 from uuid import uuid4
 
 from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -15,6 +18,7 @@ from ai_core.graphs.external_knowledge_graph import (
     GraphContextPayload,
     build_graph,
 )
+from ai_core.llm import routing as llm_routing
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
     ensure_manual_collection,
@@ -24,6 +28,8 @@ from ai_core.rag.routing_rules import (
     get_routing_table,
     is_collection_routing_enabled,
 )
+from llm_worker.runner import submit_worker_task
+from llm_worker.schemas import ScoreResultsTask
 
 
 logger = get_logger(__name__)
@@ -121,6 +127,345 @@ def _resolve_manual_collection(
         return manual_id, manual_id
 
     return manual_id, requested_text
+
+
+_RERANK_CRITERIA = [
+    "Relevanz",
+    "Deckung der Rechtsfrage",
+    "Aktualität",
+    "Autorität",
+]
+_RERANK_MAX_RESULTS = 15
+_RERANK_SNIPPET_LIMIT = 400
+_RERANK_TITLE_LIMIT = 200
+_RERANK_CACHE_PREFIX = "ragtools:rerank"
+_DEFAULT_RERANK_MODEL_LABEL = "fast"
+
+
+def _truncate_text(value: object, limit: int) -> str:
+    if value in (None, ""):
+        return ""
+    text = str(value)
+    stripped = text.strip()
+    if limit <= 0 or len(stripped) <= limit:
+        return stripped
+    return f"{stripped[:limit].rstrip()}…"
+
+
+def _result_identifier(result: Mapping[str, Any], fallback_index: int) -> str:
+    for key in ("document_id", "doc_id", "id"):
+        candidate = result.get(key)
+        if candidate not in (None, ""):
+            return str(candidate).strip()
+    url = result.get("url")
+    if url:
+        return str(url).strip()
+    return f"result-{fallback_index}"
+
+
+def _annotate_results_for_rerank(
+    results: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    annotated: list[dict[str, Any]] = []
+    for index, entry in enumerate(results):
+        candidate = dict(entry)
+        candidate["rerank_id"] = candidate.get("rerank_id") or _result_identifier(
+            candidate, index
+        )
+        candidate["rerank_index"] = index
+        if "rerank" not in candidate:
+            candidate["rerank"] = {"score": None, "reasons": []}
+        annotated.append(candidate)
+    return annotated
+
+
+def _build_rerank_inputs(
+    results: Sequence[Mapping[str, Any]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    limited = []
+    identifiers: list[str] = []
+    for index, entry in enumerate(results[:_RERANK_MAX_RESULTS]):
+        rid = entry.get("rerank_id") or _result_identifier(entry, index)
+        identifiers.append(rid)
+        limited.append(
+            {
+                "id": rid,
+                "title": _truncate_text(entry.get("title"), _RERANK_TITLE_LIMIT),
+                "snippet": _truncate_text(entry.get("snippet"), _RERANK_SNIPPET_LIMIT),
+                "url": (str(entry.get("url")).strip() if entry.get("url") else None),
+            }
+        )
+    return limited, identifiers
+
+
+def _rerank_cache_key(
+    tenant_id: str | None, query: str, identifiers: Sequence[str]
+) -> str:
+    payload = json.dumps(
+        {
+            "tenant": tenant_id or "",
+            "query": (query or "").strip(),
+            "ids": list(identifiers),
+        },
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    digest = sha256(payload).hexdigest()
+    return f"{_RERANK_CACHE_PREFIX}:{digest}"
+
+
+def _apply_rerank_scores(
+    results: Sequence[Mapping[str, Any]], ranking: Sequence[Mapping[str, Any]]
+) -> tuple[list[dict[str, Any]], int]:
+    if not ranking:
+        baseline: list[dict[str, Any]] = []
+        for entry in results:
+            candidate = dict(entry)
+            candidate["rerank"] = candidate.get("rerank") or {
+                "score": None,
+                "reasons": [],
+            }
+            baseline.append(candidate)
+        return baseline, 0
+
+    ranking_map: dict[str, dict[str, Any]] = {}
+    for entry in ranking:
+        rid = entry.get("id")
+        if not isinstance(rid, str):
+            continue
+        rid = rid.strip()
+        if not rid or rid in ranking_map:
+            continue
+        ranking_map[rid] = {
+            "score": entry.get("score"),
+            "reasons": entry.get("reasons") or [],
+        }
+
+    scored: list[tuple[float, int, dict[str, Any]]] = []
+    remainder: list[tuple[int, dict[str, Any]]] = []
+    for index, entry in enumerate(results):
+        candidate = dict(entry)
+        rid = candidate.get("rerank_id") or _result_identifier(candidate, index)
+        candidate["rerank_id"] = rid
+        candidate["rerank_index"] = index
+        info = ranking_map.get(rid)
+        if info is not None and info.get("score") is not None:
+            score_value = float(info["score"])
+            candidate["rerank"] = {
+                "score": score_value,
+                "reasons": list(info.get("reasons") or []),
+            }
+            scored.append((score_value, index, candidate))
+        else:
+            candidate["rerank"] = {
+                "score": None,
+                "reasons": [],
+            }
+            remainder.append((index, candidate))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    ordered = [entry[2] for entry in scored] + [
+        entry[1] for entry in sorted(remainder, key=lambda pair: pair[0])
+    ]
+    return ordered, len(scored)
+
+
+def _average_score(ranking: Sequence[Mapping[str, Any]]) -> float | None:
+    scores = [
+        float(entry.get("score"))
+        for entry in ranking
+        if isinstance(entry.get("score"), (int, float))
+    ]
+    if not scores:
+        return None
+    return sum(scores) / len(scores)
+
+
+def _determine_rerank_model_label() -> str | None:
+    """
+    Return a routing label that resolves to a configured model.
+
+    Prefers ``settings.RERANK_MODEL_PRESET`` but falls back to the default
+    label when the configured value is missing or unknown.
+    """
+
+    configured = getattr(settings, "RERANK_MODEL_PRESET", None)
+    candidates: list[str] = []
+    if configured:
+        text = str(configured).strip()
+        if text:
+            candidates.append(text)
+    fallback_labels = [_DEFAULT_RERANK_MODEL_LABEL, "default"]
+    for fallback_label in fallback_labels:
+        if fallback_label not in candidates:
+            candidates.append(fallback_label)
+
+    for label in candidates:
+        try:
+            llm_routing.resolve(label)
+        except ValueError:
+            logger.warning(
+                "ragtools.rerank_model.invalid",
+                extra={"model_label": label},
+            )
+            continue
+        return label
+    return None
+
+
+def _execute_rerank(
+    request,
+    *,
+    query: str,
+    results: Sequence[Mapping[str, Any]],
+    context: GraphContextPayload,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    annotated = _annotate_results_for_rerank(results)
+    trimmed_inputs, identifiers = _build_rerank_inputs(annotated)
+    if not trimmed_inputs:
+        return annotated, {
+            "status": "skipped",
+            "applied": False,
+            "reason": "insufficient_results",
+        }
+
+    tenant_id = context.tenant_id
+    cache_key = _rerank_cache_key(tenant_id, query, identifiers)
+    cache_ttl = getattr(settings, "RERANK_CACHE_TTL_SECONDS", 900)
+
+    logger.info(
+        "ragtools.rerank.requested",
+        extra={
+            "tenant_id": tenant_id,
+            "case_id": context.case_id,
+            "trace_id": context.trace_id,
+            "query": query,
+            "result_count": len(trimmed_inputs),
+        },
+    )
+
+    cached_result = cache.get(cache_key)
+    if isinstance(cached_result, Mapping):
+        ranked = cached_result.get("ranked") or []
+        ordered, applied = _apply_rerank_scores(annotated, ranked)
+        avg_score = _average_score(ranked)
+        meta = {
+            "status": "succeeded",
+            "applied": bool(applied),
+            "source": "cache",
+            "latency_s": cached_result.get("latency_s"),
+            "model": cached_result.get("model"),
+            "avg_score": avg_score,
+            "reranked_count": applied,
+            "criteria": _RERANK_CRITERIA,
+        }
+        logger.info(
+            "ragtools.rerank.applied",
+            extra={
+                "tenant_id": tenant_id,
+                "source": "cache",
+                "reranked_count": applied,
+            },
+        )
+        return ordered, meta
+
+    model_label = _determine_rerank_model_label()
+    if not model_label:
+        logger.error(
+            "ragtools.rerank.timeout_or_fail",
+            extra={"tenant_id": tenant_id, "reason": "no_model"},
+        )
+        return annotated, {
+            "status": "error",
+            "applied": False,
+            "message": "LLM-Rerank nicht konfigurierbar",
+            "criteria": _RERANK_CRITERIA,
+        }
+
+    control_payload = {
+        "tenant_id": tenant_id,
+        "case_id": context.case_id,
+        "trace_id": context.trace_id,
+        "model_preset": model_label,
+        "temperature": 0.1,
+    }
+    task = ScoreResultsTask(
+        control=control_payload,
+        data={
+            "query": query,
+            "results": trimmed_inputs,
+            "criteria": _RERANK_CRITERIA,
+            "k": min(10, len(trimmed_inputs)),
+        },
+    )
+    task_payload = task.model_dump(mode="python")
+
+    try:
+        worker_payload, completed = submit_worker_task(
+            task_payload=task_payload,
+            scope={
+                "tenant_id": tenant_id,
+                "case_id": context.case_id,
+                "trace_id": context.trace_id,
+            },
+            graph_name="score_results",
+        )
+    except Exception:
+        logger.exception(
+            "ragtools.rerank.timeout_or_fail",
+            extra={"tenant_id": tenant_id, "reason": "error"},
+        )
+        return annotated, {
+            "status": "error",
+            "applied": False,
+            "message": "LLM-Rerank nicht verfügbar",
+            "criteria": _RERANK_CRITERIA,
+        }
+
+    if completed:
+        llm_result = worker_payload.get("result") or {}
+        ranked = llm_result.get("ranked") or []
+        cache.set(cache_key, llm_result, cache_ttl)
+        ordered, applied = _apply_rerank_scores(annotated, ranked)
+        avg_score = _average_score(ranked)
+        latency_s = llm_result.get("latency_s")
+        meta = {
+            "status": "succeeded",
+            "applied": bool(applied),
+            "task_id": worker_payload.get("task_id"),
+            "latency_s": latency_s,
+            "model": llm_result.get("model"),
+            "avg_score": avg_score,
+            "usage": llm_result.get("usage"),
+            "reranked_count": applied,
+            "criteria": _RERANK_CRITERIA,
+        }
+        logger.info(
+            "ragtools.rerank.applied",
+            extra={
+                "tenant_id": tenant_id,
+                "source": "worker",
+                "reranked_count": applied,
+                "latency_s": latency_s,
+            },
+        )
+        return ordered, meta
+
+    status_url = request.build_absolute_uri(
+        reverse("llm_worker:task_status", args=[worker_payload["task_id"]])
+    )
+    logger.info(
+        "ragtools.rerank.timeout_or_fail",
+        extra={"tenant_id": tenant_id, "reason": "timeout"},
+    )
+    return annotated, {
+        "status": "queued",
+        "applied": False,
+        "task_id": worker_payload["task_id"],
+        "status_url": status_url,
+        "criteria": _RERANK_CRITERIA,
+        "result_ids": identifiers,
+    }
 
 
 def rag_tools(request):
@@ -257,6 +602,24 @@ def web_search(request):
         ingestion = state.get("ingestion", {})
         outcome = result.get("outcome", "unknown")
 
+        rerank_requested = bool(data.get("rerank"))
+        search_results = _annotate_results_for_rerank(search_results)
+        rerank_summary: dict[str, Any] | None = None
+
+        if rerank_requested and search_results:
+            search_results, rerank_summary = _execute_rerank(
+                request,
+                query=query,
+                results=search_results,
+                context=context,
+            )
+        elif rerank_requested:
+            rerank_summary = {
+                "status": "skipped",
+                "applied": False,
+                "reason": "no_results",
+            }
+
         # Convert URLs to strings for JSON serialization
         for result_item in search_results:
             if "url" in result_item:
@@ -270,6 +633,7 @@ def web_search(request):
             "ingestion": ingestion,
             "telemetry": result.get("telemetry"),
             "trace_id": context.trace_id,
+            "rerank": rerank_summary,
         }
 
         logger.info(
