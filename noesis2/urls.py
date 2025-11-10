@@ -33,7 +33,9 @@ urlpatterns = [
     path("ai/", include("ai_core.urls")),
     path("documents/", include("documents.urls")),
     path("v1/ai/", include(("ai_core.urls_v1", "ai_core_v1"), namespace="ai_core_v1")),
-    path("api/llm/", include(("llm_worker.urls", "llm_worker"), namespace="llm_worker")),
+    path(
+        "api/llm/", include(("llm_worker.urls", "llm_worker"), namespace="llm_worker")
+    ),
     path("api/schema/", SpectacularAPIView.as_view(), name="api-schema"),
     path(
         "api/docs/swagger/",

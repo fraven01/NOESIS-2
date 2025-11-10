@@ -54,7 +54,9 @@ def test_run_task_returns_success(mock_submit):
     assert data["task_id"] == "task-1"
 
 
-@patch("llm_worker.views.submit_worker_task", return_value=({"task_id": "task-1"}, False))
+@patch(
+    "llm_worker.views.submit_worker_task", return_value=({"task_id": "task-1"}, False)
+)
 def test_run_task_returns_queue_on_timeout(mock_submit):
     request = _make_request(
         _score_results_payload(),

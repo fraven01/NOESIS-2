@@ -268,7 +268,9 @@ def run_score_results(
     last_error: Exception | None = None
     for index, candidate_label in enumerate(labels_to_try):
         is_last = index == len(labels_to_try) - 1
-        candidate_temperature = _temperature_for_label(candidate_label, temperature_value)
+        candidate_temperature = _temperature_for_label(
+            candidate_label, temperature_value
+        )
         temp_context = (
             _temporary_env_var("LITELLM_TEMPERATURE", candidate_temperature)
             if candidate_temperature is not None

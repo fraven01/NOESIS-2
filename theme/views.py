@@ -164,7 +164,7 @@ def _result_identifier(result: Mapping[str, Any], fallback_index: int) -> str:
 
 
 def _annotate_results_for_rerank(
-    results: Sequence[Mapping[str, Any]]
+    results: Sequence[Mapping[str, Any]],
 ) -> list[dict[str, Any]]:
     annotated: list[dict[str, Any]] = []
     for index, entry in enumerate(results):
