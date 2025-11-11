@@ -11,7 +11,7 @@ from collections import Counter, defaultdict
 from collections.abc import Iterable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import quote, unquote, urlsplit, urlunsplit
 from uuid import UUID, uuid5
 
@@ -33,7 +33,11 @@ from llm_worker.schemas import (
     SearchCandidate,
     ScoreResultsData,
 )
-from llm_worker.domain_policies import DomainPolicy, DomainPolicyAction, get_domain_policy
+from llm_worker.domain_policies import (
+    DomainPolicy,
+    DomainPolicyAction,
+    get_domain_policy,
+)
 from llm_worker.utils.normalisation import coerce_enum, ensure_aware_utc
 
 
@@ -173,6 +177,7 @@ def _extract_host(url: str | None) -> str | None:
         return None
     return urlsplit(canonical).hostname
 
+
 def _build_domain_policy(
     scoring_context: ScoringContext | None,
     *,
@@ -244,8 +249,10 @@ def _infer_domain_traits(url: str | None) -> tuple[str | None, str | None, str |
     elif host.endswith(".org"):
         domain_type = "nonprofit"
         trust_hint = "medium"
-    elif host.startswith("intranet") or host.endswith(".internal") or host.endswith(
-        ".corp"
+    elif (
+        host.startswith("intranet")
+        or host.endswith(".internal")
+        or host.endswith(".corp")
     ):
         domain_type = "internal"
         trust_hint = "medium"
@@ -304,7 +311,9 @@ def _mmr_light(
                     similarity = _jaccard_similarity(candidate_tokens, _tokens(other))
                     if candidate_host and candidate_host == other.get("host"):
                         similarity = max(similarity, domain_penalty)
-                        applied_penalty = applied_penalty or similarity >= domain_penalty
+                        applied_penalty = (
+                            applied_penalty or similarity >= domain_penalty
+                        )
                     if similarity > max_similarity:
                         max_similarity = similarity
                 penalty_applied = applied_penalty
@@ -342,7 +351,9 @@ def _jaccard_similarity(left: set[str], right: set[str]) -> float:
 
 
 def _extract_key_points(text: str) -> list[str]:
-    sentences = [candidate.strip() for candidate in re.split(r"(?<=[.!?])\s+", text) if candidate]
+    sentences = [
+        candidate.strip() for candidate in re.split(r"(?<=[.!?])\s+", text) if candidate
+    ]
     key_points = [sentence for sentence in sentences if len(sentence) > 10]
     if len(key_points) < MIN_KEY_POINTS:
         chunks = text.splitlines()
@@ -396,7 +407,40 @@ def _ensure_uuid(text: str) -> UUID:
         return uuid5(UUID(int=0), text)
 
 
-def _aggregate_rag_facets(summaries: Sequence[RAGCoverageSummary]) -> dict[CoverageDimension, float]:
+def _parse_datetime(value: Any) -> datetime | None:
+    """Best-effort parsing of metadata timestamps into aware UTC datetimes."""
+
+    candidate = ensure_aware_utc(value)
+    if candidate is not None:
+        return candidate
+    if value in (None, ""):
+        return None
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _aggregate_rag_facets(
+    summaries: Sequence[RAGCoverageSummary],
+) -> dict[CoverageDimension, float]:
     totals: dict[CoverageDimension, list[float]] = defaultdict(list)
     for summary in summaries:
         for dimension_raw, score in summary.coverage_facets.items():
@@ -489,11 +533,15 @@ class HybridSearchAndScoreGraph:
             rrf_k_value = self.rrf_k
         debug_info.setdefault("settings", {})["rrf_k"] = rrf_k_value
 
-        query = str(working_state.get("query") or working_meta.get("query") or "").strip()
+        query = str(
+            working_state.get("query") or working_meta.get("query") or ""
+        ).strip()
         if not query:
             raise ValueError("query is required for hybrid_search_and_score")
 
-        normalised_candidates = self._normalise_candidates(working_state, scoring_context)
+        normalised_candidates = self._normalise_candidates(
+            working_state, scoring_context
+        )
         if not normalised_candidates:
             raise ValueError("at least one candidate is required for reranking")
 
@@ -504,7 +552,9 @@ class HybridSearchAndScoreGraph:
             scoring_context=scoring_context,
         )
         rag_facets = _aggregate_rag_facets(rag_summaries)
-        debug_info["rag_facets"] = {dimension.value: score for dimension, score in rag_facets.items()}
+        debug_info["rag_facets"] = {
+            dimension.value: score for dimension, score in rag_facets.items()
+        }
 
         filtered_candidates, pre_filter_debug = self._pre_filter_candidates(
             normalised_candidates,
@@ -542,7 +592,9 @@ class HybridSearchAndScoreGraph:
         self._last_debug = debug_info
         result_payload = {
             "result": hybrid_result.model_dump(mode="json"),
-            "rag_summaries": [summary.model_dump(mode="json") for summary in rag_summaries],
+            "rag_summaries": [
+                summary.model_dump(mode="json") for summary in rag_summaries
+            ],
             "flags": flags,
         }
 
@@ -582,12 +634,16 @@ class HybridSearchAndScoreGraph:
             host, domain_type, trust_hint = _infer_domain_traits(canonical_url)
             candidate_id = str(candidate_data.get("id") or "").strip()
             if not candidate_id:
-                candidate_id = _hash_values(canonical_url or "candidate", str(index))[:16]
+                candidate_id = _hash_values(canonical_url or "candidate", str(index))[
+                    :16
+                ]
             title = str(candidate_data.get("title") or "").strip()
             snippet = str(candidate_data.get("snippet") or "").strip()
             detected_date = ensure_aware_utc(candidate_data.get("detected_date"))
             version_hint = candidate_data.get("version_hint")
-            is_pdf = bool(candidate_data.get("is_pdf") or (canonical_url or "").endswith(".pdf"))
+            is_pdf = bool(
+                candidate_data.get("is_pdf") or (canonical_url or "").endswith(".pdf")
+            )
             base_score = float(candidate_data.get("score") or (100 - index))
             duplicate_of = None
             is_duplicate = False
@@ -623,7 +679,9 @@ class HybridSearchAndScoreGraph:
                 }
             )
 
-        normalised.sort(key=lambda item: float(item.get("base_score", 0.0)), reverse=True)
+        normalised.sort(
+            key=lambda item: float(item.get("base_score", 0.0)), reverse=True
+        )
         state["normalized_candidates"] = normalised
         state.setdefault("_debug", {})["normalise"] = {"urls": normalise_debug}
         return normalised
@@ -687,7 +745,11 @@ class HybridSearchAndScoreGraph:
                 visibility_override_allowed=bool(
                     meta.get("visibility_override_allowed", False)
                 ),
-                metadata={"scoring_context": scoring_context.model_dump() if scoring_context else {}},
+                metadata={
+                    "scoring_context": (
+                        scoring_context.model_dump() if scoring_context else {}
+                    )
+                },
             )
             retrieve_output = retrieve.run(tool_context, retrieve_params)
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -732,7 +794,11 @@ class HybridSearchAndScoreGraph:
             if not combined_text.strip():
                 continue
             meta = next(
-                (item.get("meta") for item in group if isinstance(item.get("meta"), Mapping)),
+                (
+                    item.get("meta")
+                    for item in group
+                    if isinstance(item.get("meta"), Mapping)
+                ),
                 {},
             )
             title = str(meta.get("title") or group[0].get("citation") or "RAG Document")
@@ -740,7 +806,9 @@ class HybridSearchAndScoreGraph:
             key_points = _extract_key_points(combined_text)
             coverage_facets = _infer_facets(combined_text)
             custom_facets = _infer_custom_facets(meta)
-            ingested_at = _parse_datetime(meta.get("ingested_at") or meta.get("updated_at"))
+            ingested_at = _parse_datetime(
+                meta.get("ingested_at") or meta.get("updated_at")
+            )
             if ingested_at is None:
                 ingested_at = datetime.now(timezone.utc)
             try:
@@ -772,7 +840,9 @@ class HybridSearchAndScoreGraph:
         if not candidates:
             return []
         now = datetime.now(timezone.utc)
-        freshness_mode = getattr(scoring_context, "freshness_mode", FreshnessMode.STANDARD)
+        freshness_mode = getattr(
+            scoring_context, "freshness_mode", FreshnessMode.STANDARD
+        )
         debug_entries: list[dict[str, Any]] = []
         for candidate in candidates:
             candidate_id = str(candidate.get("id") or "")
@@ -803,7 +873,9 @@ class HybridSearchAndScoreGraph:
                 age_days = max(0, (now - detected).days)
                 if age_days > SOFTWARE_FRESHNESS_DAYS:
                     months_over = (age_days - SOFTWARE_FRESHNESS_DAYS) / 30.0
-                    penalty = min(25.0, max(0.0, months_over * FRESHNESS_PENALTY_PER_MONTH))
+                    penalty = min(
+                        25.0, max(0.0, months_over * FRESHNESS_PENALTY_PER_MONTH)
+                    )
                     if penalty:
                         candidate["freshness_penalty"] = penalty
                         candidate["base_score"] = max(0.0, base_score - penalty)
@@ -960,9 +1032,7 @@ class HybridSearchAndScoreGraph:
                     sort_keys=True,
                 )
             )
-        context_hash = (
-            _hash_values(*context_chunks) if context_chunks else "baseline"
-        )
+        context_hash = _hash_values(*context_chunks) if context_chunks else "baseline"
         cache_key = f"hybrid:llm:{query_hash}:{url_hash}:{context_hash}"
         cached = cache.get(cache_key)
         debug_payload: dict[str, Any] = {
@@ -979,16 +1049,20 @@ class HybridSearchAndScoreGraph:
                         "hybrid.llm_cached_items": len(ranked),
                     }
                 )
-                return ranked, {
-                    "llm_cache_hit": True,
-                    "llm_timeout": False,
-                    "llm_failure": False,
-                }, {
-                    **debug_payload,
-                    "cache_hit": True,
-                    "fallback": None,
-                    "llm_items": len(ranked),
-                }
+                return (
+                    ranked,
+                    {
+                        "llm_cache_hit": True,
+                        "llm_timeout": False,
+                        "llm_failure": False,
+                    },
+                    {
+                        **debug_payload,
+                        "cache_hit": True,
+                        "fallback": None,
+                        "llm_items": len(ranked),
+                    },
+                )
             except Exception:
                 cache.delete(cache_key)
 
@@ -1007,11 +1081,12 @@ class HybridSearchAndScoreGraph:
 
         llm_meta: dict[str, Any] = dict(meta)
         if scoring_context:
-            llm_meta["scoring_context_payload"] = scoring_context.model_dump(mode="json")
+            llm_meta["scoring_context_payload"] = scoring_context.model_dump(
+                mode="json"
+            )
         if rag_facets:
             llm_meta["rag_facets"] = {
-                dimension.value: float(score)
-                for dimension, score in rag_facets.items()
+                dimension.value: float(score) for dimension, score in rag_facets.items()
             }
         if rag_gap_dimensions:
             llm_meta["rag_gap_dimensions"] = rag_gap_dimensions
@@ -1037,16 +1112,20 @@ class HybridSearchAndScoreGraph:
                     "hybrid.llm_timeout": True,
                 }
             )
-            return fallback, {
-                "llm_timeout": True,
-                "llm_cache_hit": False,
-                "llm_failure": False,
-            }, {
-                **debug_payload,
-                "cache_hit": False,
-                "fallback": "timeout",
-                "llm_items": len(fallback),
-            }
+            return (
+                fallback,
+                {
+                    "llm_timeout": True,
+                    "llm_cache_hit": False,
+                    "llm_failure": False,
+                },
+                {
+                    **debug_payload,
+                    "cache_hit": False,
+                    "fallback": "timeout",
+                    "llm_items": len(fallback),
+                },
+            )
         except Exception as exc:  # pragma: no cover - defensive logging
             logger.warning("hybrid.llm_failure", extra={"error": str(exc)})
             fallback = self._fallback_scores(search_candidates, rag_facets)
@@ -1058,22 +1137,22 @@ class HybridSearchAndScoreGraph:
                     "hybrid.llm_timeout": False,
                 }
             )
-            return fallback, {
-                "llm_timeout": False,
-                "llm_cache_hit": False,
-                "llm_failure": True,
-            }, {
-                **debug_payload,
-                "cache_hit": False,
-                "fallback": "error",
-                "llm_items": len(fallback),
-            }
+            return (
+                fallback,
+                {
+                    "llm_timeout": False,
+                    "llm_cache_hit": False,
+                    "llm_failure": True,
+                },
+                {
+                    **debug_payload,
+                    "cache_hit": False,
+                    "fallback": "error",
+                    "llm_items": len(fallback),
+                },
+            )
 
-        ranked_payload = (
-            response.get("evaluations")
-            or response.get("ranked")
-            or []
-        )
+        ranked_payload = response.get("evaluations") or response.get("ranked") or []
         ranked_items = self._build_llm_items(
             ranked_payload,
             candidates,
@@ -1095,18 +1174,24 @@ class HybridSearchAndScoreGraph:
             }
         )
 
-        return ranked_items, {
-            "llm_timeout": False,
-            "llm_cache_hit": False,
-            "llm_failure": False,
-        }, {
-            **debug_payload,
-            "cache_hit": False,
-            "fallback": None,
-            "llm_items": len(ranked_items),
-        }
+        return (
+            ranked_items,
+            {
+                "llm_timeout": False,
+                "llm_cache_hit": False,
+                "llm_failure": False,
+            },
+            {
+                **debug_payload,
+                "cache_hit": False,
+                "fallback": None,
+                "llm_items": len(ranked_items),
+            },
+        )
 
-    def _build_criteria(self, scoring_context: ScoringContext | None) -> list[str] | None:
+    def _build_criteria(
+        self, scoring_context: ScoringContext | None
+    ) -> list[str] | None:
         if not scoring_context:
             return None
         criteria: list[str] = [
@@ -1147,7 +1232,9 @@ class HybridSearchAndScoreGraph:
                     score=min(100.0, score),
                     reason=reason,
                     gap_tags=gap_tags,
-                    risk_flags=["low_trust"] if candidate.trust_hint == "medium" else [],
+                    risk_flags=(
+                        ["low_trust"] if candidate.trust_hint == "medium" else []
+                    ),
                     facet_coverage=facets,
                 )
             )
@@ -1230,7 +1317,10 @@ class HybridSearchAndScoreGraph:
                     text = str(flag).strip()
                     if text and text not in risk_flags:
                         risk_flags.append(text)
-            if candidate.get("trust_hint") == "medium" and "medium_trust_domain" not in risk_flags:
+            if (
+                candidate.get("trust_hint") == "medium"
+                and "medium_trust_domain" not in risk_flags
+            ):
                 risk_flags.append("medium_trust_domain")
             if candidate.get("is_pdf") and "pdf" not in risk_flags:
                 risk_flags.append("pdf")
@@ -1335,7 +1425,9 @@ class HybridSearchAndScoreGraph:
                 candidate = candidate_map.get(item.candidate_id)
                 if not candidate:
                     continue
-                bucket = candidate.get("domain_type") or candidate.get("host") or "unknown"
+                bucket = (
+                    candidate.get("domain_type") or candidate.get("host") or "unknown"
+                )
                 if bucket in diversity_buckets:
                     continue
                 final_ranked.append(item)
@@ -1344,7 +1436,8 @@ class HybridSearchAndScoreGraph:
                     break
 
         final_ranked.sort(
-            key=lambda item: fused_scores.get(item.candidate_id, item.score), reverse=True
+            key=lambda item: fused_scores.get(item.candidate_id, item.score),
+            reverse=True,
         )
         top_k = final_ranked[: self.rerank_top_k]
 
@@ -1443,4 +1536,3 @@ def run(
 
 
 __all__ = ["HybridSearchAndScoreGraph", "GRAPH", "build_graph", "run"]
-

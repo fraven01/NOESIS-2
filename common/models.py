@@ -24,7 +24,9 @@ class DomainPolicyOverride(TimestampedModel):
 
     class Meta:
         indexes = [
-            models.Index(fields=("tenant_id",), name="domain_policy_override_tenant_idx")
+            models.Index(
+                fields=("tenant_id",), name="domain_policy_override_tenant_idx"
+            )
         ]
 
 
@@ -37,7 +39,9 @@ class DomainPolicy(TimestampedModel):
 
     tenant_id = models.CharField(max_length=255)
     domain = models.CharField(max_length=512)
-    action = models.CharField(max_length=16, choices=Action.choices, default=Action.BOOST)
+    action = models.CharField(
+        max_length=16, choices=Action.choices, default=Action.BOOST
+    )
     priority = models.PositiveIntegerField(default=0)
 
     class Meta:
@@ -47,5 +51,7 @@ class DomainPolicy(TimestampedModel):
             )
         ]
         indexes = [
-            models.Index(fields=("tenant_id", "action"), name="domain_policy_action_idx")
+            models.Index(
+                fields=("tenant_id", "action"), name="domain_policy_action_idx"
+            )
         ]

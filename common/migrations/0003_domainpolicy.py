@@ -11,7 +11,15 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="DomainPolicy",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
                 ("tenant_id", models.CharField(max_length=255)),
@@ -28,7 +36,9 @@ class Migration(migrations.Migration):
             ],
             options={
                 "indexes": [
-                    models.Index(fields=("tenant_id", "action"), name="domain_policy_action_idx"),
+                    models.Index(
+                        fields=("tenant_id", "action"), name="domain_policy_action_idx"
+                    ),
                 ],
             },
         ),
@@ -39,4 +49,3 @@ class Migration(migrations.Migration):
             ),
         ),
     ]
-

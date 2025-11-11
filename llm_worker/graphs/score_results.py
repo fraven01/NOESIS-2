@@ -49,7 +49,7 @@ def _build_prompt(
         "Auftrag: Bewerte die Kandidaten relativ zur Frage, dem Zweck und dem vorhandenen RAG-Bestand.",
         "Kalibrierung der Scores: 85-100 = exzellente, offiziell belastbare Quelle; 70-84 = solide Quellen mit guter Deckung; 40-69 = nur teilweise relevant; <40 = ablehnen.",
         "Berücksichtige Relevanz, Deckung der Rechtsfrage, Aktualität (Version/Datum, Evergreen-Ausnahmen), Autorität und ob der Treffer Lücken im RAG schließt.",
-        "Unsichere Datums- oder Versionsangaben sollen zu risk_flags wie \"uncertain_version\" führen.",
+        'Unsichere Datums- oder Versionsangaben sollen zu risk_flags wie "uncertain_version" führen.',
         "",
         f"Query: {payload.query}",
     ]
@@ -73,7 +73,9 @@ def _build_prompt(
             sections.append("- Bevorzugte Quellen: " + ", ".join(preferred_sources))
         disallowed_sources = scoring_context.get("disallowed_sources") or []
         if disallowed_sources:
-            sections.append("- Ausgeschlossene Quellen: " + ", ".join(disallowed_sources))
+            sections.append(
+                "- Ausgeschlossene Quellen: " + ", ".join(disallowed_sources)
+            )
         version_target = scoring_context.get("version_target")
         if version_target:
             sections.append(f"- Ziel-Version: {version_target}")
@@ -138,11 +140,13 @@ def _build_prompt(
             "Gutes Beispiel:",
             '{"evaluations":[{"candidate_id":"doc-1","score":86,"reason":"Deckt Mitbestimmungs-Pflichten und ist offizielle Hersteller-Doku (Version 2024).","gap_tags":["TECHNICAL"],"risk_flags":["uncertain_version"],"facet_coverage":{"TECHNICAL":0.8,"PROCEDURAL":0.4}}]}',
             "Schlechtes Beispiel (vermeiden – falsches Schema, fehlende Begründung):",
-            '{"ranked":[{"id":"doc-1","score":100}]}'
+            '{"ranked":[{"id":"doc-1","score":100}]}',
         ]
     )
 
-    sections.append("Antworte nur mit dem JSON-Objekt und sortiere die Evaluations nach Score absteigend.")
+    sections.append(
+        "Antworte nur mit dem JSON-Objekt und sortiere die Evaluations nach Score absteigend."
+    )
     return "\n".join(sections).strip()
 
 

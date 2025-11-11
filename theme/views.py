@@ -534,7 +534,9 @@ def rag_tools(request):
             ),
             "manual_collection_id": manual_collection_id,
             "dev_hitl_url": (
-                reverse("dev-hitl") if getattr(settings, "DEV_FEATURE_HITL_UI", False) else None
+                reverse("dev-hitl")
+                if getattr(settings, "DEV_FEATURE_HITL_UI", False)
+                else None
             ),
         },
     )

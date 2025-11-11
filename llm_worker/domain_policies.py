@@ -144,7 +144,10 @@ def _choose_decision(
         return candidate
     if candidate.priority < current.priority:
         return current
-    if candidate.action is DomainPolicyAction.REJECT and current.action is DomainPolicyAction.BOOST:
+    if (
+        candidate.action is DomainPolicyAction.REJECT
+        and current.action is DomainPolicyAction.BOOST
+    ):
         return candidate
     return current
 
@@ -200,11 +203,15 @@ def _extract_host_rules(
             try:
                 priority = int(priority_raw.strip())
             except ValueError:
-                logger.debug("hybrid.policy_priority_invalid", extra={"value": priority_raw})
+                logger.debug(
+                    "hybrid.policy_priority_invalid", extra={"value": priority_raw}
+                )
         if "*" in host or "?" in host:
             pattern = _convert_wildcard(host)
             regex_rules.append(
-                DomainPolicyRule(action=action, priority=priority, pattern=pattern, source=source)
+                DomainPolicyRule(
+                    action=action, priority=priority, pattern=pattern, source=source
+                )
             )
         else:
             host_rules.append(
@@ -239,14 +246,18 @@ def _extract_regex_rules(
             try:
                 priority = int(priority_raw.strip())
             except ValueError:
-                logger.debug("hybrid.policy_priority_invalid", extra={"value": priority_raw})
+                logger.debug(
+                    "hybrid.policy_priority_invalid", extra={"value": priority_raw}
+                )
         try:
             pattern = re.compile(pattern_raw, re.IGNORECASE)
         except re.error as exc:
             logger.debug("hybrid.policy_regex_invalid", extra={"error": str(exc)})
             continue
         rules.append(
-            DomainPolicyRule(action=action, priority=priority, pattern=pattern, source=source)
+            DomainPolicyRule(
+                action=action, priority=priority, pattern=pattern, source=source
+            )
         )
     return rules
 
@@ -265,7 +276,11 @@ class _YamlBundle:
 
 def _load_yaml_defaults() -> _YamlBundle:
     path_setting = getattr(settings, "HYBRID_DOMAIN_POLICY_PATH", None)
-    path = Path(path_setting) if path_setting else Path(settings.BASE_DIR) / "config" / "domain_policies.yaml"
+    path = (
+        Path(path_setting)
+        if path_setting
+        else Path(settings.BASE_DIR) / "config" / "domain_policies.yaml"
+    )
     if not path.exists():
         return _YamlBundle(_YamlPolicy([], []), {})
     try:
@@ -290,7 +305,9 @@ def _load_yaml_defaults() -> _YamlBundle:
     )
     default_regex_rules = list(default_regex_preferred) + list(default_regex_blocked)
     default_regex_rules.extend(
-        _extract_regex_rules(defaults_payload.get("rules"), source="yaml.defaults.rules")
+        _extract_regex_rules(
+            defaults_payload.get("rules"), source="yaml.defaults.rules"
+        )
     )
     default_hosts = default_hosts_preferred + default_hosts_blocked
 
@@ -314,7 +331,9 @@ def _load_yaml_defaults() -> _YamlBundle:
                 (payload or {}).get("rules"), source=f"yaml.tenant.{tenant_id}.rules"
             )
         )
-        tenant_map[str(tenant_id)] = _YamlPolicy(hosts=hosts_boost + hosts_block, regex=regex_rules)
+        tenant_map[str(tenant_id)] = _YamlPolicy(
+            hosts=hosts_boost + hosts_block, regex=regex_rules
+        )
 
     return _YamlBundle(_YamlPolicy(default_hosts, default_regex_rules), tenant_map)
 
@@ -329,7 +348,11 @@ def _load_override_lists(tenant_id: str | None) -> list[_HostRule]:
     except LookupError:  # pragma: no cover - defensive guard
         return []
     try:
-        record = model.objects.filter(tenant_id=tenant_id).values("preferred_hosts", "blocked_hosts").first()
+        record = (
+            model.objects.filter(tenant_id=tenant_id)
+            .values("preferred_hosts", "blocked_hosts")
+            .first()
+        )
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("hybrid.policy_override_query_failed", extra={"error": str(exc)})
         return []
@@ -351,7 +374,9 @@ def _load_override_lists(tenant_id: str | None) -> list[_HostRule]:
     return hosts
 
 
-def _load_db_rules(tenant_id: str | None) -> tuple[list[_HostRule], list[DomainPolicyRule]]:
+def _load_db_rules(
+    tenant_id: str | None,
+) -> tuple[list[_HostRule], list[DomainPolicyRule]]:
     if not tenant_id:
         return [], []
     if not apps.is_installed("common"):
@@ -361,7 +386,9 @@ def _load_db_rules(tenant_id: str | None) -> tuple[list[_HostRule], list[DomainP
     except LookupError:  # pragma: no cover - defensive guard
         return [], []
     try:
-        rows = model.objects.filter(tenant_id=tenant_id).values("domain", "action", "priority")
+        rows = model.objects.filter(tenant_id=tenant_id).values(
+            "domain", "action", "priority"
+        )
     except Exception as exc:  # pragma: no cover - defensive guard
         logger.warning("hybrid.policy_rule_query_failed", extra={"error": str(exc)})
         return [], []
@@ -402,7 +429,9 @@ def _load_db_rules(tenant_id: str | None) -> tuple[list[_HostRule], list[DomainP
     return host_rules, regex_rules
 
 
-def _build_policy(host_rules: Sequence[_HostRule], regex_rules: Sequence[DomainPolicyRule]) -> DomainPolicy:
+def _build_policy(
+    host_rules: Sequence[_HostRule], regex_rules: Sequence[DomainPolicyRule]
+) -> DomainPolicy:
     policy = DomainPolicy()
     for rule in host_rules:
         policy.add_host(
@@ -450,4 +479,3 @@ __all__ = [
     "DomainPolicyDecision",
     "get_domain_policy",
 ]
-

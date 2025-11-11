@@ -130,7 +130,10 @@ def _graph(monkeypatch: pytest.MonkeyPatch) -> HybridSearchAndScoreGraph:
     monkeypatch.setattr(
         graph,
         "_retrieve_rag_context",
-        lambda **_kwargs: (_fake_rag(), {"rag_unavailable": False, "rag_cache_hit": False}),
+        lambda **_kwargs: (
+            _fake_rag(),
+            {"rag_unavailable": False, "rag_cache_hit": False},
+        ),
     )
 
     def _mock_llm(
@@ -162,11 +165,15 @@ def _graph(monkeypatch: pytest.MonkeyPatch) -> HybridSearchAndScoreGraph:
                 facet_coverage={CoverageDimension.MONITORING_SURVEILLANCE: 0.5},
             ),
         ]
-        return items, {"llm_timeout": False, "llm_cache_hit": False}, {
-            "cache_hit": False,
-            "fallback": None,
-            "llm_items": len(items),
-        }
+        return (
+            items,
+            {"llm_timeout": False, "llm_cache_hit": False},
+            {
+                "cache_hit": False,
+                "fallback": None,
+                "llm_items": len(items),
+            },
+        )
 
     monkeypatch.setattr(graph, "_run_llm_rerank", _mock_llm)
     return graph
@@ -191,9 +198,16 @@ def test_hybrid_graph_produces_ranked_result(monkeypatch: pytest.MonkeyPatch) ->
     assert decision and decision["action"] == "boost"
     assert state["flags"]["debug"]["llm"]["llm_items"] == 3
     normalise_debug = state["flags"]["debug"]["normalise"]["urls"]
-    assert any(entry["url_canonical"].startswith("https://example.com") for entry in normalise_debug)
+    assert any(
+        entry["url_canonical"].startswith("https://example.com")
+        for entry in normalise_debug
+    )
     heuristics = state["flags"]["debug"]["pre_filter"]["heuristics"]
-    boost_entries = [entry for entry in heuristics if entry.get("policy", {}).get("action") == "boost"]
+    boost_entries = [
+        entry
+        for entry in heuristics
+        if entry.get("policy", {}).get("action") == "boost"
+    ]
     assert boost_entries
 
 
@@ -236,7 +250,10 @@ def test_llm_timeout_falls_back(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         graph,
         "_retrieve_rag_context",
-        lambda **_kwargs: (_fake_rag(), {"rag_unavailable": False, "rag_cache_hit": False}),
+        lambda **_kwargs: (
+            _fake_rag(),
+            {"rag_unavailable": False, "rag_cache_hit": False},
+        ),
     )
     monkeypatch.setattr(
         "llm_worker.graphs.hybrid_search_and_score.run_score_results",
@@ -259,10 +276,18 @@ def test_llm_cache_avoids_second_call(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         graph,
         "_retrieve_rag_context",
-        lambda **_kwargs: (_fake_rag(), {"rag_unavailable": False, "rag_cache_hit": False}),
+        lambda **_kwargs: (
+            _fake_rag(),
+            {"rag_unavailable": False, "rag_cache_hit": False},
+        ),
     )
 
-    def _fake_score(control: Mapping[str, Any], data: Mapping[str, Any], *, meta: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    def _fake_score(
+        control: Mapping[str, Any],
+        data: Mapping[str, Any],
+        *,
+        meta: Mapping[str, Any] | None = None,
+    ) -> Mapping[str, Any]:
         call_counter["count"] += 1
         return {
             "evaluations": [
@@ -337,7 +362,9 @@ def test_pre_filter_records_reasons_and_limits_candidates() -> None:
 
     assert len(selected) <= graph.rerank_top_k * 4
     dropped_reasons = {entry["reason"] for entry in debug["dropped"]}
-    assert {"duplicate", "policy_block", "empty_snippet", "stale"}.issubset(dropped_reasons)
+    assert {"duplicate", "policy_block", "empty_snippet", "stale"}.issubset(
+        dropped_reasons
+    )
     assert len(debug["mmr"]["selected"]) == len(selected)
     assert any(entry.get("freshness_penalty") for entry in debug["heuristics"])
 
@@ -438,7 +465,9 @@ def test_build_llm_items_truncates_reasons() -> None:
     assert len(items[0].reason) <= 280
 
 
-def test_invalid_candidate_logs_warning(monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
+def test_invalid_candidate_logs_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     graph = build_hybrid_graph()
     candidates = [
         {
@@ -471,9 +500,7 @@ def test_invalid_candidate_logs_warning(monkeypatch: pytest.MonkeyPatch, caplog:
         lambda *_args, **_kwargs: {"evaluations": [], "top_k": []},
     )
 
-    with caplog.at_level(
-        "DEBUG", logger="llm_worker.graphs.hybrid_search_and_score"
-    ):
+    with caplog.at_level("DEBUG", logger="llm_worker.graphs.hybrid_search_and_score"):
         graph._run_llm_rerank(
             query="policy",
             candidates=candidates,

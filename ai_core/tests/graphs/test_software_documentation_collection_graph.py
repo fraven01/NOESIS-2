@@ -9,8 +9,18 @@ from ai_core.graphs.software_documentation_collection import (
     SearchStrategyRequest,
     SoftwareDocumentationCollectionGraph,
 )
-from ai_core.tools.web_search import SearchProviderError, SearchResult, ToolOutcome, WebSearchResponse
-from llm_worker.schemas import CoverageDimension, HybridResult, LLMScoredItem, RecommendedIngestItem
+from ai_core.tools.web_search import (
+    SearchProviderError,
+    SearchResult,
+    ToolOutcome,
+    WebSearchResponse,
+)
+from llm_worker.schemas import (
+    CoverageDimension,
+    HybridResult,
+    LLMScoredItem,
+    RecommendedIngestItem,
+)
 
 
 class StubStrategyGenerator:

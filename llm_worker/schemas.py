@@ -42,7 +42,9 @@ class ScoringContext(BaseModel):
     freshness_mode: FreshnessMode = Field(default=FreshnessMode.STANDARD)
     min_diversity_buckets: int | None = Field(default=None)
 
-    @field_validator("question", "purpose", "output_target", "collection_scope", mode="before")
+    @field_validator(
+        "question", "purpose", "output_target", "collection_scope", mode="before"
+    )
     @classmethod
     def _require_trimmed(cls, value: Any) -> str:
         if not isinstance(value, str):
@@ -166,9 +168,7 @@ class RAGCoverageSummary(BaseModel):
 
     @field_validator("coverage_facets", mode="before")
     @classmethod
-    def _normalise_coverage_facets(
-        cls, value: Any
-    ) -> dict[CoverageDimension, float]:
+    def _normalise_coverage_facets(cls, value: Any) -> dict[CoverageDimension, float]:
         if value in (None, {}):
             return {}
         if not isinstance(value, dict):
@@ -395,9 +395,7 @@ class LLMScoredItem(BaseModel):
 
     @field_validator("facet_coverage", mode="before")
     @classmethod
-    def _normalise_facet_coverage(
-        cls, value: Any
-    ) -> dict[CoverageDimension, float]:
+    def _normalise_facet_coverage(cls, value: Any) -> dict[CoverageDimension, float]:
         if value in (None, {}):
             return {}
         if not isinstance(value, dict):

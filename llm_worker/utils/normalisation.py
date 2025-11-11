@@ -1,6 +1,6 @@
-from __future__ import annotations
-
 """Shared normalisation helpers for reranking models and graphs."""
+
+from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum

@@ -160,7 +160,9 @@ class DevHitlRun:
     # ------------------------------------------------------------------
     @property
     def deadline(self) -> datetime:
-        return datetime.fromisoformat(self.payload["meta"]["deadline_utc"].replace("Z", "+00:00"))
+        return datetime.fromisoformat(
+            self.payload["meta"]["deadline_utc"].replace("Z", "+00:00")
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -232,7 +234,10 @@ class DevHitlRun:
                     now = time.monotonic()
                     remaining = self._last_keepalive + _KEEPALIVE_SECONDS - now
                     if remaining <= 0:
-                        keepalive = {"type": "keepalive", "payload": {"ts": datetime.now(tz=UTC).isoformat()}}
+                        keepalive = {
+                            "type": "keepalive",
+                            "payload": {"ts": datetime.now(tz=UTC).isoformat()},
+                        }
                         self._events.append(keepalive)
                         self._last_keepalive = now
                         self._condition.notify_all()
@@ -256,7 +261,9 @@ class DevHitlRun:
         self._events.append(event)
         self._condition.notify_all()
 
-    def _append_submission_events_locked(self, task_ids: list[str], payload: dict[str, Any]) -> None:
+    def _append_submission_events_locked(
+        self, task_ids: list[str], payload: dict[str, Any]
+    ) -> None:
         approved = payload.get("approved_ids", [])
         custom_urls = payload.get("custom_urls", [])
 
@@ -284,7 +291,10 @@ class DevHitlRun:
                 )
 
         time.sleep(1.2)
-        ingested_delta = max(len(payload.get("approved_ids", [])) + len(payload.get("custom_urls", [])), 0)
+        ingested_delta = max(
+            len(payload.get("approved_ids", [])) + len(payload.get("custom_urls", [])),
+            0,
+        )
         with self._condition:
             self._coverage_totals["ingested"] = min(
                 self._coverage_totals["total"],
@@ -298,7 +308,9 @@ class DevHitlRun:
             self._append_event_locked(
                 "coverage_update",
                 {
-                    "facets_after": self.payload["coverage_delta"].get("facets_after", {}),
+                    "facets_after": self.payload["coverage_delta"].get(
+                        "facets_after", {}
+                    ),
                     "ingested_count": self._coverage_totals["ingested"],
                     "total": self._coverage_totals["total"],
                 },
@@ -322,7 +334,10 @@ class DevHitlRun:
         self.payload["meta"]["auto_approved"] = True
         self._append_event_locked(
             "deadline_update",
-            {"deadline_utc": self.payload["meta"]["deadline_utc"], "auto_approved": True},
+            {
+                "deadline_utc": self.payload["meta"]["deadline_utc"],
+                "auto_approved": True,
+            },
         )
 
 
@@ -360,7 +375,9 @@ class DevHitlStore:
                     "id": candidate_id,
                     "candidate_id": candidate_id,
                     "score": min(100, max(0, base["base_score"] + rng.randint(-5, 5))),
-                    "fused_score": round(base["base_fused"] + rng.uniform(-0.7, 0.7), 3),
+                    "fused_score": round(
+                        base["base_fused"] + rng.uniform(-0.7, 0.7), 3
+                    ),
                     "reason": base["reason"][:280],
                     "gap_tags": list(base.get("gap_tags", [])),
                     "risk_flags": list(base.get("risk_flags", [])),
@@ -421,7 +438,10 @@ class DevHitlStore:
             )
             run._append_event_locked(
                 "deadline_update",
-                {"deadline_utc": payload["meta"]["deadline_utc"], "auto_approved": False},
+                {
+                    "deadline_utc": payload["meta"]["deadline_utc"],
+                    "auto_approved": False,
+                },
             )
         return run
 

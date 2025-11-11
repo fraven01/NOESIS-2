@@ -137,7 +137,9 @@ class SearchStrategy(BaseModel):
             raise ValueError("no more than seven query expansions are allowed")
         return cleaned
 
-    @field_validator("policies_applied", "preferred_sources", "disallowed_sources", mode="before")
+    @field_validator(
+        "policies_applied", "preferred_sources", "disallowed_sources", mode="before"
+    )
     @classmethod
     def _normalise_sequences(cls, value: Any) -> tuple[str, ...]:
         if value in (None, "", (), []):
@@ -362,7 +364,9 @@ class SoftwareDocumentationCollectionGraph:
     ) -> _GraphIds:
         trace_id = context.trace_id or str(uuid4())
         stored_run_id = str(meta_state.get("run_id") or context.run_id or uuid4())
-        ingestion_run_id = meta_state.get("ingestion_run_id") or context.ingestion_run_id
+        ingestion_run_id = (
+            meta_state.get("ingestion_run_id") or context.ingestion_run_id
+        )
         ids = _GraphIds(
             tenant_id=context.tenant_id,
             workflow_id=context.workflow_id,
@@ -686,7 +690,9 @@ class SoftwareDocumentationCollectionGraph:
         now = datetime.now(timezone.utc)
         hitl_state = run_state.setdefault("hitl", {})
         existing_payload = hitl_state.get("payload")
-        existing_payload = existing_payload if isinstance(existing_payload, Mapping) else None
+        existing_payload = (
+            existing_payload if isinstance(existing_payload, Mapping) else None
+        )
         previous_deadline = _parse_iso_datetime(
             existing_payload.get("deadline_at") if existing_payload else None
         )
@@ -904,9 +910,14 @@ class SoftwareDocumentationCollectionGraph:
 
         input_source = dict(working_state.get("input") or {})
         input_source.setdefault("question", working_state.get("question"))
-        input_source.setdefault("collection_scope", working_state.get("collection_scope"))
+        input_source.setdefault(
+            "collection_scope", working_state.get("collection_scope")
+        )
         input_source.setdefault("quality_mode", working_state.get("quality_mode"))
-        if "max_candidates" not in input_source and working_state.get("max_candidates") is not None:
+        if (
+            "max_candidates" not in input_source
+            and working_state.get("max_candidates") is not None
+        ):
             input_source["max_candidates"] = working_state.get("max_candidates")
         try:
             graph_input = GraphInput.model_validate(input_source)
@@ -931,9 +942,7 @@ class SoftwareDocumentationCollectionGraph:
             ids=ids, graph_input=graph_input, run_state=working_state
         )
         _record("k_generate_strategy", strategy_transition)
-        strategy = SearchStrategy.model_validate(
-            working_state["strategy"]["plan"]
-        )
+        strategy = SearchStrategy.model_validate(working_state["strategy"]["plan"])
 
         # -------------------------------------------------------------- web search
         search_transition = self._k_parallel_web_search(

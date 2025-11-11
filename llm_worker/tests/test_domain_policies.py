@@ -4,7 +4,9 @@ from llm_worker import domain_policies
 from llm_worker.domain_policies import DomainPolicyAction
 
 
-def test_yaml_defaults_provide_whitelist_and_blacklist(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_yaml_defaults_provide_whitelist_and_blacklist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(domain_policies, "_POLICY_CACHE", {})
     policy = domain_policies.get_domain_policy(None)
 
