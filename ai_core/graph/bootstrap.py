@@ -6,6 +6,7 @@ from ai_core.graphs import (
     crawler_ingestion_graph,
     info_intake,
     retrieval_augmented_generation,
+    software_documentation_collection,
 )
 
 from .adapters import module_runner
@@ -25,3 +26,5 @@ def bootstrap() -> None:
     register("rag.default", rag_graph)
     crawler_graph = crawler_ingestion_graph.build_graph()
     register("crawler.ingestion", crawler_graph)
+    software_docs_graph = software_documentation_collection.build_graph()
+    register("software_documentation_collection", software_docs_graph)

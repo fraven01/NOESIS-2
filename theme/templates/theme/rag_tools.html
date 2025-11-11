@@ -87,6 +87,13 @@
           Suche starten
         </button>
         <button
+          class="inline-flex items-center rounded-md bg-indigo-600 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2"
+          type="button"
+          id="rerank-workflow-submit"
+        >
+          Start Rerank-Workflow (HITL)
+        </button>
+        <button
           class="inline-flex items-center rounded-md border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
           type="button"
           id="web-search-approve"
@@ -110,6 +117,10 @@
       <div
         id="web-search-error"
         class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"
+      ></div>
+      <div
+        id="web-search-messages"
+        class="hidden rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"
       ></div>
       <div class="space-y-2 rounded-md border border-slate-200 bg-slate-50 p-3">
         <div class="flex flex-wrap items-center gap-3">
@@ -2143,6 +2154,88 @@
         lastSearchPayload = basePayload;
       }
     });
+
+    // Rerank Workflow button handler
+    const rerankWorkflowButton = document.getElementById('rerank-workflow-submit');
+    const webSearchMessages = document.getElementById('web-search-messages');
+
+    if (rerankWorkflowButton) {
+      rerankWorkflowButton.addEventListener('click', async function (event) {
+        event.preventDefault();
+
+        const query = webSearchQueryInput.value;
+        const collectionScope = requireCollection({ allowResolverFallback: true });
+
+        if (!query || !query.trim()) {
+          if (webSearchError) {
+            webSearchError.textContent = 'Bitte geben Sie eine Suchanfrage ein.';
+            webSearchError.classList.remove('hidden');
+          }
+          return;
+        }
+
+        if (!collectionScope) {
+          if (webSearchError) {
+            webSearchError.textContent = 'Bitte wählen Sie eine Collection aus.';
+            webSearchError.classList.remove('hidden');
+          }
+          return;
+        }
+
+        // Hide previous messages
+        if (webSearchError) {
+          webSearchError.classList.add('hidden');
+        }
+        if (webSearchMessages) {
+          webSearchMessages.classList.add('hidden');
+        }
+
+        const payload = {
+          query: query.trim(),
+          collection_id: collectionScope || manualCollectionId || null,
+          quality_mode: 'standard',
+          max_candidates: 20,
+          case_id: 'local',
+        };
+
+        try {
+          const response = await fetch('/rag-tools/start-rerank-workflow/', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRFToken': getCsrfToken(),
+            },
+            body: JSON.stringify(payload),
+          });
+
+          const data = await response.json();
+
+          if (response.ok) {
+            // Show success message
+            if (webSearchMessages) {
+              webSearchMessages.textContent = data.message || 'Workflow wurde gestartet. Ergebnisse erscheinen in /dev-hitl/.';
+              webSearchMessages.classList.remove('hidden');
+
+              // Auto-hide after 8 seconds
+              setTimeout(function () {
+                webSearchMessages.classList.add('hidden');
+              }, 8000);
+            }
+          } else {
+            // Show error
+            if (webSearchError) {
+              webSearchError.textContent = data.error || 'Ein unbekannter Fehler ist aufgetreten.';
+              webSearchError.classList.remove('hidden');
+            }
+          }
+        } catch (error) {
+          if (webSearchError) {
+            webSearchError.textContent = 'Netzwerkfehler: ' + error.message;
+            webSearchError.classList.remove('hidden');
+          }
+        }
+      });
+    }
 
     updateRerankControlsState();
     const crawlerWorkflowInput = document.getElementById('crawler-workflow');

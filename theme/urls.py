@@ -12,6 +12,11 @@ urlpatterns = [
         name="web-search-ingest-selected",
     ),
     path(
+        "rag-tools/start-rerank-workflow/",
+        views.start_rerank_workflow,
+        name="rag_tools_start_rerank",
+    ),
+    path(
         "dev/hitl/runs/<slug:run_id>/",
         dev_hitl_views.get_run_payload,
         name="dev-hitl-run-api",

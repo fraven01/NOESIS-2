@@ -360,6 +360,13 @@ class DevHitlStore:
                 self._runs[run_id] = run
             return run
 
+    def store_run(self, run_id: str, payload: dict[str, Any]) -> None:
+        """Store a real HITL run payload from a graph execution."""
+        with self._lock:
+            # Create a run from the payload
+            run = DevHitlRun(run_id, payload)
+            self._runs[run_id] = run
+
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------

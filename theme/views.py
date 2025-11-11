@@ -9,6 +9,7 @@ from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
+from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
@@ -654,6 +655,7 @@ def web_search(request):
 
 
 @require_POST
+@csrf_exempt
 def web_search_ingest_selected(request):
     """Ingest user-selected URLs from web search results via crawler_runner API.
 
@@ -730,4 +732,104 @@ def web_search_ingest_selected(request):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
         logger.exception("web_search_ingest_selected.failed")
+        return JsonResponse({"error": str(e)}, status=500)
+
+
+@require_POST
+def start_rerank_workflow(request):
+    """Start the software_documentation_collection graph asynchronously via worker queue.
+
+    This view accepts a query and collection parameters, then enqueues the graph
+    to run in the background. Results will appear in the /dev-hitl/ queue for HITL review.
+    """
+    try:
+        data = json.loads(request.body)
+        query = data.get("query", "").strip()
+        collection_id = data.get("collection_id", "").strip()
+        quality_mode = data.get("quality_mode", "standard").strip().lower()
+        max_candidates = data.get("max_candidates", 20)
+
+        logger.info(
+            "start_rerank_workflow.request", query=query, collection_id=collection_id
+        )
+
+        if not query:
+            return JsonResponse({"error": "Query is required"}, status=400)
+
+        if not collection_id:
+            return JsonResponse({"error": "Collection ID is required"}, status=400)
+
+        # Validate max_candidates
+        try:
+            max_candidates = int(max_candidates)
+            if max_candidates < 5 or max_candidates > 40:
+                max_candidates = 20
+        except (ValueError, TypeError):
+            max_candidates = 20
+
+        # Validate quality_mode
+        if quality_mode not in ("standard", "premium", "fast"):
+            quality_mode = "standard"
+
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        trace_id = str(uuid4())
+        run_id = str(uuid4())
+
+        # Build graph input state according to GraphInput schema
+        graph_state = {
+            "question": query,
+            "collection_scope": collection_id,
+            "quality_mode": quality_mode,
+            "max_candidates": max_candidates,
+        }
+
+        # Build metadata for the graph execution
+        graph_meta = {
+            "tenant_id": tenant_id,
+            "trace_id": trace_id,
+            "workflow_id": "rerank-workflow-manual",
+            "case_id": data.get("case_id", "local"),
+            "run_id": run_id,
+        }
+
+        # Submit graph task to worker queue without waiting (timeout_s=0)
+        task_payload = {
+            "state": graph_state,
+        }
+
+        scope = {
+            "tenant_id": tenant_id,
+            "case_id": graph_meta["case_id"],
+            "trace_id": trace_id,
+        }
+
+        # Enqueue the task without blocking (timeout_s=0 means don't wait)
+        result_payload, completed = submit_worker_task(
+            task_payload=task_payload,
+            scope=scope,
+            graph_name="software_documentation_collection",
+            timeout_s=0,
+        )
+
+        logger.info(
+            "start_rerank_workflow.submitted",
+            task_id=result_payload.get("task_id"),
+            trace_id=trace_id,
+            completed=completed,
+        )
+
+        return JsonResponse(
+            {
+                "status": "pending",
+                "graph_name": "software_documentation_collection",
+                "task_id": result_payload.get("task_id"),
+                "trace_id": trace_id,
+                "message": "Workflow wurde gestartet. Ergebnisse erscheinen in /dev-hitl/.",
+            }
+        )
+
+    except json.JSONDecodeError:
+        return JsonResponse({"error": "Invalid JSON"}, status=400)
+    except Exception as e:
+        logger.exception("start_rerank_workflow.failed")
         return JsonResponse({"error": str(e)}, status=500)

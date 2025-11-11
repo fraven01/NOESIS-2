@@ -4,7 +4,8 @@
       "Bash(npm run test:py:*)",
       "Bash(docker compose:*)",
       "Bash(python -m py_compile:*)",
-      "Bash(python -c:*)"
+      "Bash(python -c:*)",
+      "Bash(cat:*)"
     ],
     "deny": [],
     "ask": []

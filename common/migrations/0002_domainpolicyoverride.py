@@ -32,8 +32,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="domainpolicyoverride",
-            index=models.Index(
-                fields=("tenant_id",), name="domain_policy_override_tenant_idx"
-            ),
+            index=models.Index(fields=("tenant_id",), name="dom_pol_ovr_tenant_idx"),
         ),
     ]

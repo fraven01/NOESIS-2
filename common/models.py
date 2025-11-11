@@ -23,11 +23,7 @@ class DomainPolicyOverride(TimestampedModel):
     blocked_hosts = models.JSONField(default=list, blank=True)
 
     class Meta:
-        indexes = [
-            models.Index(
-                fields=("tenant_id",), name="domain_policy_override_tenant_idx"
-            )
-        ]
+        indexes = [models.Index(fields=("tenant_id",), name="dom_pol_ovr_tenant_idx")]
 
 
 class DomainPolicy(TimestampedModel):
