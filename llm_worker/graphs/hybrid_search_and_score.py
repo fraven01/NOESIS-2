@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import re
@@ -838,48 +839,52 @@ class HybridSearchAndScoreGraph:
             scoring_context=scoring_context,
         )
 
-        if len(candidates) <= 20:
-            selected, mmr_debug = _mmr_light(
-                candidates,
-                lam=self.mmr_lambda,
-                limit=self.rerank_top_k * 4,
-                domain_penalty=DOMAIN_REDUNDANCY_PENALTY,
-            )
-            return selected, {"dropped": [], "mmr": mmr_debug, "heuristics": heuristics_debug}
-
         cutoff = _freshness_cutoff(scoring_context)
         filtered: list[MutableMapping[str, Any]] = []
+        policy_safe: list[MutableMapping[str, Any]] = []
         dropped: list[dict[str, str]] = []
 
         for candidate in candidates:
             candidate_id = str(candidate.get("id") or "")
-            if candidate.get("is_duplicate"):
-                dropped.append({"id": candidate_id, "reason": "duplicate"})
-                continue
             host = candidate.get("host")
             if candidate.get("policy_reject") or domain_policy.is_blocked(host):
                 dropped.append({"id": candidate_id, "reason": "policy_block"})
                 continue
+
+            policy_safe.append(candidate)
+
+            if candidate.get("is_duplicate"):
+                dropped.append({"id": candidate_id, "reason": "duplicate"})
+                continue
+
             snippet = str(candidate.get("snippet") or "").strip()
             if not snippet:
                 dropped.append({"id": candidate_id, "reason": "empty_snippet"})
                 continue
+
             detected = candidate.get("detected_date")
             if cutoff and isinstance(detected, datetime) and detected < cutoff:
                 dropped.append({"id": candidate_id, "reason": "stale"})
                 continue
+
             filtered.append(candidate)
 
-        if not filtered:
-            filtered = list(candidates)
+        working_candidates: Sequence[MutableMapping[str, Any]]
+        if filtered:
+            working_candidates = filtered
+        else:
+            working_candidates = policy_safe
 
         selected, mmr_debug = _mmr_light(
-            filtered,
+            working_candidates,
             lam=self.mmr_lambda,
             limit=self.rerank_top_k * 4,
             domain_penalty=DOMAIN_REDUNDANCY_PENALTY,
         )
-        return selected, {"dropped": dropped, "mmr": mmr_debug, "heuristics": heuristics_debug}
+        return (
+            selected,
+            {"dropped": dropped, "mmr": mmr_debug, "heuristics": heuristics_debug},
+        )
 
     # LLM rerank -----------------------------------------------------------------
 
@@ -914,9 +919,51 @@ class HybridSearchAndScoreGraph:
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug("hybrid.candidate_invalid", extra={"error": str(exc)})
 
+        rag_gap_dimensions = _dimensions_to_tags(_gap_dimensions(rag_facets))
+
         query_hash = _hash_values(query)
         url_hash = _hash_values(*(candidate.id for candidate in search_candidates))
-        cache_key = f"hybrid:llm:{query_hash}:{url_hash}"
+        tenant_id = str(meta.get("tenant_id") or "").strip()
+        context_chunks: list[str] = []
+        if tenant_id:
+            context_chunks.append(tenant_id)
+        if scoring_context:
+            context_chunks.append(
+                json.dumps(
+                    scoring_context.model_dump(mode="json"),
+                    sort_keys=True,
+                )
+            )
+        if rag_facets:
+            context_chunks.append(
+                json.dumps(
+                    {
+                        dimension.value: float(score)
+                        for dimension, score in rag_facets.items()
+                    },
+                    sort_keys=True,
+                )
+            )
+        if rag_gap_dimensions:
+            context_chunks.append(json.dumps(sorted(rag_gap_dimensions)))
+        if rag_summaries:
+            context_chunks.append(
+                json.dumps(
+                    [
+                        {
+                            "title": summary.title,
+                            "url": summary.url,
+                            "document_id": str(summary.document_id),
+                        }
+                        for summary in rag_summaries
+                    ],
+                    sort_keys=True,
+                )
+            )
+        context_hash = (
+            _hash_values(*context_chunks) if context_chunks else "baseline"
+        )
+        cache_key = f"hybrid:llm:{query_hash}:{url_hash}:{context_hash}"
         cached = cache.get(cache_key)
         debug_payload: dict[str, Any] = {
             "cache_key": cache_key,
@@ -959,7 +1006,6 @@ class HybridSearchAndScoreGraph:
         }
 
         llm_meta: dict[str, Any] = dict(meta)
-        rag_gap_dimensions = _dimensions_to_tags(_gap_dimensions(rag_facets))
         if scoring_context:
             llm_meta["scoring_context_payload"] = scoring_context.model_dump(mode="json")
         if rag_facets:
