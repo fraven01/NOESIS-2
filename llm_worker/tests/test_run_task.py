@@ -38,7 +38,7 @@ def test_run_task_requires_tenant_header():
 @patch("llm_worker.views.submit_worker_task")
 def test_run_task_returns_success(mock_submit):
     mock_submit.return_value = (
-        {"task_id": "task-1", "result": {"ranked": []}, "state": {}},
+        {"task_id": "task-1", "result": {"evaluations": []}, "state": {}},
         True,
     )
     request = _make_request(

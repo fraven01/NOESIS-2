@@ -3,8 +3,8 @@ from __future__ import annotations
 import json
 import math
 import os
-from contextlib import contextmanager, nullcontext
-from typing import Any, Iterable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError
@@ -15,9 +15,9 @@ from llm_worker.schemas import ScoreResultsData
 logger = get_logger(__name__)
 
 DEFAULT_MODEL_LABEL = "fast"
-DEFAULT_PROMPT_VERSION = "score-results.v1"
+DEFAULT_PROMPT_VERSION = "score-results.v2"
 DEFAULT_TRACE_ID = "score-results"
-DEFAULT_TEMPERATURE = 0.1
+DEFAULT_TEMPERATURE = 0.3
 
 
 @contextmanager
@@ -35,34 +35,114 @@ def _temporary_env_var(key: str, value: str) -> Iterator[None]:
             os.environ[key] = previous
 
 
-def _build_prompt(payload: ScoreResultsData) -> str:
+def _build_prompt(
+    payload: ScoreResultsData, meta: Mapping[str, Any] | None = None
+) -> str:
+    scoring_context = (meta or {}).get("scoring_context_payload") or {}
+    rag_facets: Mapping[str, Any] = (meta or {}).get("rag_facets") or {}
+    rag_gaps: Sequence[str] = (meta or {}).get("rag_gap_dimensions") or []
+    rag_key_points: Sequence[str] = (meta or {}).get("rag_key_points") or []
+    rag_documents: Sequence[Mapping[str, Any]] = (meta or {}).get("rag_documents") or []
+
     sections: list[str] = [
-        "Du bewertest Suchergebnisse deterministisch und vergibst Scores zwischen 0 und 100.",
-        f"Query: {payload.query}",
+        "Rolle: Du bist fachkundige:r Evaluator:in für IT- und Rechtsdokumentation.",
+        "Auftrag: Bewerte die Kandidaten relativ zur Frage, dem Zweck und dem vorhandenen RAG-Bestand.",
+        "Kalibrierung der Scores: 85-100 = exzellente, offiziell belastbare Quelle; 70-84 = solide Quellen mit guter Deckung; 40-69 = nur teilweise relevant; <40 = ablehnen.",
+        "Berücksichtige Relevanz, Deckung der Rechtsfrage, Aktualität (Version/Datum, Evergreen-Ausnahmen), Autorität und ob der Treffer Lücken im RAG schließt.",
+        "Unsichere Datums- oder Versionsangaben sollen zu risk_flags wie \"uncertain_version\" führen.",
         "",
-        "Suchergebnisse:",
+        f"Query: {payload.query}",
     ]
+
+    if scoring_context:
+        sections.append("Scoring-Kontext:")
+        question = scoring_context.get("question")
+        if question:
+            sections.append(f"- Frage: {question}")
+        purpose = scoring_context.get("purpose")
+        if purpose:
+            sections.append(f"- Zweck: {purpose}")
+        jurisdiction = scoring_context.get("jurisdiction")
+        if jurisdiction:
+            sections.append(f"- Jurisdiktion: {jurisdiction}")
+        output_target = scoring_context.get("output_target")
+        if output_target:
+            sections.append(f"- Output-Format: {output_target}")
+        preferred_sources = scoring_context.get("preferred_sources") or []
+        if preferred_sources:
+            sections.append("- Bevorzugte Quellen: " + ", ".join(preferred_sources))
+        disallowed_sources = scoring_context.get("disallowed_sources") or []
+        if disallowed_sources:
+            sections.append("- Ausgeschlossene Quellen: " + ", ".join(disallowed_sources))
+        version_target = scoring_context.get("version_target")
+        if version_target:
+            sections.append(f"- Ziel-Version: {version_target}")
+        freshness_mode = scoring_context.get("freshness_mode")
+        if freshness_mode:
+            sections.append(f"- Freshness-Modus: {freshness_mode}")
+        sections.append("")
+
+    if rag_facets or rag_key_points or rag_documents:
+        sections.append("Aktueller RAG-Bestand:")
+        if rag_documents:
+            sections.append("- Dokumente:")
+            for doc in rag_documents[:3]:
+                title = doc.get("title")
+                url = doc.get("url")
+                if title:
+                    sections.append(f"  • {title}" + (f" ({url})" if url else ""))
+        if rag_key_points:
+            sections.append("- Key Points:")
+            for point in rag_key_points[:5]:
+                sections.append(f"  • {point}")
+        if rag_facets:
+            sections.append("- Facet-Abdeckung (0 = fehlend, 1 = vollständig):")
+            for facet, score in rag_facets.items():
+                gap_marker = " (Gap)" if facet in rag_gaps else ""
+                sections.append(f"  • {facet}: {score:.2f}{gap_marker}")
+        if rag_gaps:
+            sections.append("- Fehlende Facetten mit Priorität: " + ", ".join(rag_gaps))
+        sections.append("")
+
+    if payload.criteria:
+        sections.append("Zusätzliche Bewertungskriterien:")
+        for criterion in payload.criteria:
+            sections.append(f"- {criterion}")
+        sections.append("")
+
+    sections.append("Kandidaten:")
     for idx, item in enumerate(payload.results, start=1):
         sections.append(f"[{idx}] id={item.id}")
         if item.title:
-            sections.append(f"Title: {item.title}")
+            sections.append(f"Titel: {item.title}")
         if item.snippet:
             sections.append(f"Snippet: {item.snippet}")
         if item.url:
             sections.append(f"URL: {item.url}")
+        if item.detected_date:
+            sections.append(f"Datum: {item.detected_date.isoformat()}")
+        if item.version_hint:
+            sections.append(f"Version: {item.version_hint}")
+        if item.domain_type:
+            sections.append(f"Domain-Typ: {item.domain_type}")
+        if item.trust_hint:
+            sections.append(f"Trust-Hint: {item.trust_hint}")
         sections.append("")
-    if payload.criteria:
-        sections.append("Bewertungskriterien:")
-        for criterion in payload.criteria:
-            sections.append(f"- {criterion}")
-        sections.append("")
-    instructions = (
-        "Bewerte jedes Ergebnis strikt anhand der Query und Kriterien. "
-        "Erlaube nur ganze Scores zwischen 0 und 100 (0 = irrelevant, 100 = perfekt). "
-        "Gib ausschließlich folgenden JSON zurück: "
-        '{"ranked":[{"id":"<result_id>","score":0-100,"reasons":["..."]}, ...]}'
+
+    sections.extend(
+        [
+            "Denke Schritt für Schritt und berücksichtige Evergreen-Ausnahmen, bevor du dein Ergebnis formulierst.",
+            "Gib ausschließlich JSON im folgenden Schema zurück (keine Erklärungen außerhalb des JSON):",
+            '{"evaluations":[{"candidate_id":"string","score":0,"reason":"string","gap_tags":["string"],"risk_flags":["string"],"facet_coverage":{"facet_name":0.0}}]}',
+            "",
+            "Gutes Beispiel:",
+            '{"evaluations":[{"candidate_id":"doc-1","score":86,"reason":"Deckt Mitbestimmungs-Pflichten und ist offizielle Hersteller-Doku (Version 2024).","gap_tags":["TECHNICAL"],"risk_flags":["uncertain_version"],"facet_coverage":{"TECHNICAL":0.8,"PROCEDURAL":0.4}}]}',
+            "Schlechtes Beispiel (vermeiden – falsches Schema, fehlende Begründung):",
+            '{"ranked":[{"id":"doc-1","score":100}]}'
+        ]
     )
-    sections.append(instructions)
+
+    sections.append("Antworte nur mit dem JSON-Objekt und sortiere die Evaluations nach Score absteigend.")
     return "\n".join(sections).strip()
 
 
@@ -110,14 +190,14 @@ def _safe_json_parse(text: str) -> dict[str, Any]:
                 return json.loads(snippet)
             except json.JSONDecodeError:
                 pass
-    return {"ranked": []}
+    return {"evaluations": []}
 
 
 def _normalise_rankings(raw_text: str, allowed_ids: set[str]) -> list[dict[str, Any]]:
     if not raw_text:
         return []
     parsed = _safe_json_parse(raw_text)
-    ranked = parsed.get("ranked")
+    ranked = parsed.get("evaluations")
     if not isinstance(ranked, list):
         return []
     normalised: list[dict[str, Any]] = []
@@ -125,7 +205,7 @@ def _normalise_rankings(raw_text: str, allowed_ids: set[str]) -> list[dict[str, 
     for entry in ranked:
         if not isinstance(entry, Mapping):
             continue
-        result_id_raw = entry.get("id")
+        result_id_raw = entry.get("candidate_id") or entry.get("id")
         if not isinstance(result_id_raw, str):
             continue
         result_id = result_id_raw.strip()
@@ -134,12 +214,43 @@ def _normalise_rankings(raw_text: str, allowed_ids: set[str]) -> list[dict[str, 
         score_value = _coerce_score(entry.get("score"))
         if score_value is None:
             continue
-        reasons = _normalise_reasons(entry.get("reasons"))
+        reason_raw = entry.get("reason")
+        reason_text = ""
+        if isinstance(reason_raw, str):
+            reason_text = reason_raw.strip()
+        elif isinstance(reason_raw, Iterable):
+            reason_text = " ".join(str(part).strip() for part in reason_raw if part)
+        reasons = [reason_text] if reason_text else []
+        gap_tags = _normalise_reasons(entry.get("gap_tags"))
+        risk_flags = _normalise_reasons(entry.get("risk_flags"))
+        facet_payload = entry.get("facet_coverage")
+        facet_coverage: dict[str, float] = {}
+        if isinstance(facet_payload, Mapping):
+            for key, raw_score in facet_payload.items():
+                if not isinstance(key, str):
+                    continue
+                cleaned_key = key.strip()
+                if not cleaned_key:
+                    continue
+                try:
+                    value = float(raw_score)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(value):
+                    continue
+                if value < 0:
+                    value = 0.0
+                if value > 1:
+                    value = 1.0
+                facet_coverage[cleaned_key] = value
         normalised.append(
             {
-                "id": result_id,
+                "candidate_id": result_id,
                 "score": score_value,
-                "reasons": reasons,
+                "reason": reasons[0] if reasons else "",
+                "gap_tags": gap_tags,
+                "risk_flags": risk_flags,
+                "facet_coverage": facet_coverage,
             }
         )
         seen.add(result_id)
@@ -196,6 +307,20 @@ def _coerce_temperature(value: Any) -> str:
     return f"{numeric}"
 
 
+def _coerce_max_tokens(value: Any) -> int | None:
+    if value in (None, ""):
+        return None
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    if numeric <= 0:
+        return None
+    if numeric > 8000:
+        numeric = 8000
+    return numeric
+
+
 def _should_retry_with_default(exc: LlmClientError) -> bool:
     """Return True when the LLM error indicates an invalid model selection."""
 
@@ -247,7 +372,7 @@ def run_score_results(
     )
     metadata = _build_metadata(meta, control, prompt_version)
     model_label = str((control or {}).get("model_preset") or DEFAULT_MODEL_LABEL)
-    prompt = _build_prompt(payload)
+    prompt = _build_prompt(payload, meta)
     allowed_ids = {item.id for item in payload.results}
     logger.info(
         "score_results.prompt_metrics",
@@ -255,6 +380,7 @@ def run_score_results(
     )
 
     temperature_value = _coerce_temperature((control or {}).get("temperature"))
+    max_tokens_value = _coerce_max_tokens((control or {}).get("max_tokens"))
     labels_to_try: list[str] = []
     for candidate in (model_label, DEFAULT_MODEL_LABEL, "default"):
         candidate_text = str(candidate).strip()
@@ -271,12 +397,15 @@ def run_score_results(
         candidate_temperature = _temperature_for_label(
             candidate_label, temperature_value
         )
-        temp_context = (
-            _temporary_env_var("LITELLM_TEMPERATURE", candidate_temperature)
-            if candidate_temperature is not None
-            else nullcontext()
-        )
-        with temp_context:
+        with ExitStack() as stack:
+            if max_tokens_value is not None:
+                stack.enter_context(
+                    _temporary_env_var("LITELLM_MAX_TOKENS", str(max_tokens_value))
+                )
+            if candidate_temperature is not None:
+                stack.enter_context(
+                    _temporary_env_var("LITELLM_TEMPERATURE", candidate_temperature)
+                )
             try:
                 response = llm_client.call(candidate_label, prompt, metadata)
             except ValueError:
@@ -325,7 +454,7 @@ def run_score_results(
     )
 
     result = {
-        "ranked": ranked,
+        "evaluations": ranked,
         "top_k": top_k,
         "usage": response.get("usage"),
         "latency_s": latency_s,

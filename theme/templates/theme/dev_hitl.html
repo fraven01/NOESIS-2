@@ -1,0 +1,105 @@
+{% extends 'theme/base.html' %}
+{% load static %}
+
+{% block title %}HITL Freigabe (Dev) · NOESIS 2{% endblock %}
+
+{% block head %}
+  {{ block.super }}
+  <link rel="preload" href="{% static 'theme/hitl-dev.js' %}" as="script">
+  <script src="{% static 'theme/hitl-dev-support.js' %}"></script>
+  <script src="{% static 'theme/hitl-dev.js' %}" defer></script>
+{% endblock %}
+
+{% block content %}
+  <main class="mx-auto max-w-7xl space-y-6 px-4 py-8 sm:px-6 lg:px-8" id="hitl-dev-page">
+    <header class="space-y-2">
+      <p class="text-sm font-medium text-blue-600">Developer Toolkit</p>
+      <h1 class="text-3xl font-semibold tracking-tight text-slate-900">HITL-Freigabe (Dev-Modus)</h1>
+      <p class="max-w-2xl text-sm text-slate-600">
+        Diese Ansicht simuliert die HITL-Freigabe für Hybrid-Search-Runs. Alle Daten sind Mock-Daten und
+        Interaktionen lösen lediglich Dev-Logs aus. Ein Dev-Header (<code class="rounded bg-slate-100 px-1 py-0.5 text-xs">{{ dev_token_header }}: {{ dev_token_value }}</code>)
+        wird bei API-Aufrufen automatisch gesetzt.
+      </p>
+    </header>
+
+    <section class="rounded-xl border border-slate-200 bg-white shadow-sm" aria-labelledby="hitl-actions-heading">
+      <div class="flex flex-col gap-6 p-6" data-hitl-root
+           data-run-id="{{ run_id }}"
+           data-dev-header="{{ dev_token_header }}"
+           data-dev-value="{{ dev_token_value }}">
+        <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h2 id="hitl-actions-heading" class="text-xl font-semibold text-slate-900">Review &amp; Entscheidung</h2>
+            <p class="text-sm text-slate-600">Treffe Approval-Entscheidungen für die Top-K Ergebnisse und ergänze bei Bedarf eigene URLs.</p>
+          </div>
+          <div class="flex items-center gap-3">
+            <span class="text-xs font-medium uppercase tracking-wide text-slate-500">Run</span>
+            <code id="hitl-run-label" class="rounded-md bg-slate-100 px-2 py-1 text-xs text-slate-700">{{ run_id }}</code>
+          </div>
+        </div>
+
+        <div class="flex flex-col gap-4 lg:flex-row">
+          <div class="flex-1 space-y-3">
+            <div class="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+              <span class="rounded-full bg-blue-50 px-3 py-1 font-medium text-blue-700" id="hitl-countdown" aria-live="polite">Lädt …</span>
+              <span class="rounded-full bg-slate-100 px-3 py-1" id="hitl-diversity"></span>
+              <span class="rounded-full bg-slate-100 px-3 py-1" id="hitl-freshness"></span>
+              <span class="rounded-full bg-slate-100 px-3 py-1" id="hitl-flags"></span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Schnellaktionen">
+              <button type="button" id="hitl-approve-all" class="inline-flex items-center gap-2 rounded-md bg-slate-900 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+                ✅ Approve all
+              </button>
+              <button type="button" id="hitl-reject-all" class="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+                ❌ Reject all
+              </button>
+              <div class="flex flex-wrap items-center gap-2">
+                <button type="button" id="hitl-approve-selected" class="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+                  ☑️ Approve selected
+                </button>
+                <button type="button" id="hitl-reject-selected" class="inline-flex items-center gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2">
+                  🚫 Reject selected
+                </button>
+              </div>
+              <button type="button" id="hitl-undo" class="inline-flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-800 shadow-sm transition hover:bg-amber-100 focus:outline-none focus:ring-2 focus:ring-amber-500 focus:ring-offset-2" disabled>
+                🔄 Undo
+              </button>
+            </div>
+          </div>
+          <div class="w-full max-w-sm space-y-2">
+            <label for="hitl-custom-urls" class="block text-sm font-medium text-slate-700">➕ Custom URLs hinzufügen</label>
+            <textarea id="hitl-custom-urls" class="h-28 w-full resize-y rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500" placeholder="https://example.com/neuer-hinweis"></textarea>
+            <p class="text-xs text-slate-500">Eine URL pro Zeile. Nur http/https sind erlaubt. Ungültige Einträge werden markiert.</p>
+          </div>
+        </div>
+
+        <div class="space-y-4" id="hitl-table-container" aria-live="polite"></div>
+
+        <div class="grid gap-4 lg:grid-cols-3" id="hitl-progress-panel" aria-live="polite">
+          <section class="col-span-2 space-y-3">
+            <header class="flex items-center justify-between">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Ingestion Tasks</h3>
+              <span class="text-xs text-slate-500" id="hitl-progress-summary">Noch keine Aktion ausgeführt.</span>
+            </header>
+            <ul class="divide-y divide-slate-200 rounded-lg border border-slate-200" id="hitl-progress-list" role="list"></ul>
+          </section>
+          <section class="space-y-3">
+            <header class="flex items-center justify-between">
+              <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Coverage Delta</h3>
+              <span class="text-xs text-slate-500" id="hitl-coverage-counter"></span>
+            </header>
+            <div class="space-y-2 rounded-lg border border-slate-200 p-3" id="hitl-coverage-card">
+              <p class="text-sm text-slate-700" id="hitl-coverage-summary">Noch keine Daten.</p>
+              <dl class="grid gap-2 text-xs text-slate-600" id="hitl-coverage-facets"></dl>
+            </div>
+          </section>
+        </div>
+
+        <div class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700" role="alert" id="hitl-error"></div>
+        <div class="hidden rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800" role="status" id="hitl-success"></div>
+      </div>
+    </section>
+  </main>
+
+  {{ initial_payload|json_script:"hitl-initial-data" }}
+{% endblock %}
