@@ -25,10 +25,24 @@ def test_run_score_results_sorts_rankings(monkeypatch):
         return {
             "text": json.dumps(
                 {
-                    "ranked": [
-                        {"id": "b", "score": 55, "reasons": ["ok precision"]},
-                        {"id": "a", "score": 95, "reasons": ["matches intent"]},
-                        {"id": "missing", "score": 10},
+                    "evaluations": [
+                        {
+                            "candidate_id": "b",
+                            "score": 55,
+                            "reason": "ok precision",
+                            "gap_tags": ["TECHNICAL"],
+                            "risk_flags": [],
+                            "facet_coverage": {"TECHNICAL": 0.6},
+                        },
+                        {
+                            "candidate_id": "a",
+                            "score": 95,
+                            "reason": "matches intent",
+                            "gap_tags": ["LEGAL"],
+                            "risk_flags": ["uncertain_version"],
+                            "facet_coverage": {"LEGAL": 0.9},
+                        },
+                        {"candidate_id": "missing", "score": 10},
                     ]
                 }
             ),
@@ -52,9 +66,9 @@ def test_run_score_results_sorts_rankings(monkeypatch):
 
     assert calls["label"] == "fast"
     assert "policy for contractors" in calls["prompt"]
-    assert len(result["ranked"]) == 2
-    assert result["ranked"][0]["id"] == "a"
-    assert result["top_k"][0]["id"] == "a"
+    assert len(result["evaluations"]) == 2
+    assert result["evaluations"][0]["candidate_id"] == "a"
+    assert result["top_k"][0]["candidate_id"] == "a"
     assert result["usage"]["prompt_tokens"] == 42
     assert result["latency_s"] == 0.25
     assert result["model"] == "fast-model"
@@ -79,14 +93,26 @@ def test_run_score_results_handles_invalid_json(monkeypatch):
         },
     )
 
-    assert result["ranked"] == []
+    assert result["evaluations"] == []
     assert result["top_k"] == []
     assert result["usage"] == {}
     assert result["latency_s"] is None
 
 
 def test_run_graph_routes_score_results(monkeypatch):
-    sentinel = {"ranked": [{"id": "a", "score": 50, "reasons": []}]}
+    sentinel = {
+        "evaluations": [
+            {
+                "candidate_id": "a",
+                "score": 50,
+                "reason": "ok",
+                "gap_tags": [],
+                "risk_flags": [],
+                "facet_coverage": {},
+            }
+        ],
+        "top_k": [],
+    }
 
     def fake_run_score(control, data, meta):
         assert meta["task_type"] == "score_results"
@@ -125,7 +151,18 @@ def test_run_score_results_fallbacks_on_invalid_model(monkeypatch):
             raise LlmClientError("Invalid model", status=400)
         return {
             "text": json.dumps(
-                {"ranked": [{"id": "a", "score": 77, "reasons": ["good"]}]}
+                {
+                    "evaluations": [
+                        {
+                            "candidate_id": "a",
+                            "score": 77,
+                            "reason": "good",
+                            "gap_tags": [],
+                            "risk_flags": [],
+                            "facet_coverage": {},
+                        }
+                    ]
+                }
             ),
             "usage": {},
             "latency_ms": 50,
@@ -140,7 +177,43 @@ def test_run_score_results_fallbacks_on_invalid_model(monkeypatch):
     )
 
     assert attempts == ["broken", "fast"]
-    assert result["ranked"][0]["id"] == "a"
+    assert result["evaluations"][0]["candidate_id"] == "a"
+
+
+def test_run_score_results_applies_max_tokens(monkeypatch):
+    captured: dict[str, str | None] = {}
+
+    def fake_call(label, prompt, metadata):
+        captured["max_tokens"] = os.getenv("LITELLM_MAX_TOKENS")
+        return {
+            "text": json.dumps(
+                {
+                    "evaluations": [
+                        {
+                            "candidate_id": "a",
+                            "score": 70,
+                            "reason": "ok",
+                            "gap_tags": [],
+                            "risk_flags": [],
+                            "facet_coverage": {},
+                        }
+                    ]
+                }
+            ),
+            "usage": {},
+            "latency_ms": 10,
+            "model": label,
+        }
+
+    monkeypatch.setattr("ai_core.llm.client.call", fake_call)
+    monkeypatch.delenv("LITELLM_MAX_TOKENS", raising=False)
+
+    run_score_results(
+        control={"max_tokens": 2048},
+        data={"query": "abc", "results": _sample_results()},
+    )
+
+    assert captured["max_tokens"] == "2048"
 
 
 def test_run_score_results_tries_default_label(monkeypatch):
@@ -151,7 +224,20 @@ def test_run_score_results_tries_default_label(monkeypatch):
         if label != "default":
             raise LlmClientError("Invalid model", status=400)
         return {
-            "text": json.dumps({"ranked": [{"id": "a", "score": 60, "reasons": []}]}),
+            "text": json.dumps(
+                {
+                    "evaluations": [
+                        {
+                            "candidate_id": "a",
+                            "score": 60,
+                            "reason": "",
+                            "gap_tags": [],
+                            "risk_flags": [],
+                            "facet_coverage": {},
+                        }
+                    ]
+                }
+            ),
             "usage": {},
             "latency_ms": 10,
             "model": label,
@@ -165,7 +251,7 @@ def test_run_score_results_tries_default_label(monkeypatch):
     )
 
     assert attempts == ["vertex_ai/gemini-2.5-flash", "fast", "default"]
-    assert result["ranked"][0]["score"] == 60
+    assert result["evaluations"][0]["score"] == 60
 
 
 def test_run_score_results_sets_temperature_for_gpt5(monkeypatch):
@@ -174,7 +260,20 @@ def test_run_score_results_sets_temperature_for_gpt5(monkeypatch):
     def fake_call(label, prompt, metadata):
         recorded_temps.append(os.environ.get("LITELLM_TEMPERATURE"))
         return {
-            "text": json.dumps({"ranked": [{"id": "a", "score": 50, "reasons": []}]}),
+            "text": json.dumps(
+                {
+                    "evaluations": [
+                        {
+                            "candidate_id": "a",
+                            "score": 50,
+                            "reason": "",
+                            "gap_tags": [],
+                            "risk_flags": [],
+                            "facet_coverage": {},
+                        }
+                    ]
+                }
+            ),
             "usage": {},
             "latency_ms": 5,
             "model": label,

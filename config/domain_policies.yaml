@@ -1,0 +1,19 @@
+# Default domain policy configuration for hybrid reranking.
+# Hosts are matched case-insensitively; URLs are reduced to their hostname.
+defaults:
+  preferred:
+    - host: docs.vendor.example
+      priority: 85
+    - host: good.example.com
+      priority: 80
+  blocked:
+    - host: spam.example.net
+      priority: 95
+    - host: bad.example.com
+      priority: 95
+  rules:
+    - pattern: ".*\\.gov$"
+      action: boost
+      priority: 90
+
+tenants: {}

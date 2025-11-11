@@ -49,3 +49,30 @@ deterministischen Sequenz
 Jeder Schritt emittiert eine Transition mit deterministischer Struktur. Diese
 Transitions landen im aggregierten Ergebnis des Graph-Laufs und bilden die
 Grundlage für Unit-Tests sowie Langfuse-Spans.
+
+## Software-Documentation-Collection-Graph
+
+Der `software_documentation_collection`-Graph koordiniert Query-Expansion,
+Websuche, Hybrid-Reranking, HITL-Review und Ingestion für Software-Dokumentation
+innerhalb eines Tenants. Er nutzt den Worker-Graph
+`hybrid_search_and_score`, um Web-Treffer und vorhandene RAG-Daten zu
+verschmelzen und erzeugt dabei eine deterministische Telemetrie pro Knoten.
+
+Die Knotenfolge lautet:
+
+1. **generate_search_strategy** — erzeugt Query-Expansions und wendet
+   Tenant-Policies an.
+2. **parallel_web_search** — sammelt Treffer aus 3–7 Websuchen (derzeit
+   sequentiell).
+3. **execute_hybrid_score** — ruft den Worker-Graph mit einem
+   `ScoringContext` (jurisdiction = DE) auf.
+4. **hitl_approval_gate** — baut die Review-Payload samt Scores, Gap-Tags und
+   Coverage-Delta.
+5. **trigger_ingestion** — übergibt approvte URLs an den Crawler.
+6. **verify_coverage** — pollt den Coverage-Status (30 s Intervall, 10 min
+   Timeout).
+
+Die Tests in
+`ai_core/tests/graphs/test_software_documentation_collection_graph.py`
+validieren einen End-to-End-Lauf mit Mock-Komponenten sowie die HITL-Warte- und
+Fehlerpfade.

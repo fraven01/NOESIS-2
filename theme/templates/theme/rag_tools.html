@@ -21,6 +21,13 @@
       und
       <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">X-Case-ID: local</code>.
     </p>
+    {% if dev_hitl_url %}
+    <p class="text-xs text-slate-500">
+      <a class="inline-flex items-center gap-1 rounded-md border border-dashed border-slate-300 px-3 py-1 text-xs font-medium text-slate-600 hover:border-slate-400 hover:text-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2" href="{{ dev_hitl_url }}?dev_token=true">
+        Test: HITL-Freigabe (dev)
+      </a>
+    </p>
+    {% endif %}
   </header>
 
   <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
