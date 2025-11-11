@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import re
@@ -838,15 +839,6 @@ class HybridSearchAndScoreGraph:
             scoring_context=scoring_context,
         )
 
-        if len(candidates) <= 20:
-            selected, mmr_debug = _mmr_light(
-                candidates,
-                lam=self.mmr_lambda,
-                limit=self.rerank_top_k * 4,
-                domain_penalty=DOMAIN_REDUNDANCY_PENALTY,
-            )
-            return selected, {"dropped": [], "mmr": mmr_debug, "heuristics": heuristics_debug}
-
         cutoff = _freshness_cutoff(scoring_context)
         filtered: list[MutableMapping[str, Any]] = []
         dropped: list[dict[str, str]] = []
@@ -871,7 +863,14 @@ class HybridSearchAndScoreGraph:
             filtered.append(candidate)
 
         if not filtered:
-            filtered = list(candidates)
+            filtered = [
+                candidate
+                for candidate in candidates
+                if not candidate.get("policy_reject")
+                and not domain_policy.is_blocked(candidate.get("host"))
+            ]
+            if not filtered:
+                filtered = list(candidates)
 
         selected, mmr_debug = _mmr_light(
             filtered,
@@ -914,13 +913,81 @@ class HybridSearchAndScoreGraph:
             except Exception as exc:  # pragma: no cover - defensive logging
                 logger.debug("hybrid.candidate_invalid", extra={"error": str(exc)})
 
+        tenant_id = str(meta.get("tenant_id") or "").strip()
+        scoring_context_payload: str | None = None
+        if scoring_context:
+            scoring_context_payload = json.dumps(
+                scoring_context.model_dump(mode="json"),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        rag_gap_dimensions = _dimensions_to_tags(_gap_dimensions(rag_facets))
+        rag_facets_payload: str | None = None
+        if rag_facets:
+            rag_facets_payload = json.dumps(
+                {
+                    dimension.value: float(score)
+                    for dimension, score in rag_facets.items()
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+
+        policy_markers = [
+            ":".join(
+                (
+                    str(candidate.get("id") or ""),
+                    str(candidate.get("host") or ""),
+                    str(candidate.get("policy_decision") or ""),
+                    "1" if candidate.get("policy_reject") else "0",
+                    str(candidate.get("policy_boost") or ""),
+                )
+            )
+            for candidate in candidates
+            if candidate.get("policy_decision")
+            or candidate.get("policy_reject")
+            or candidate.get("policy_boost")
+        ]
+
+        prompt_meta_context = {
+            key: meta.get(key)
+            for key in ("prompt_version", "model_preset", "max_tokens")
+            if meta.get(key) is not None
+        }
+
+        context_components: list[str] = []
+        if tenant_id:
+            context_components.append(f"tenant:{tenant_id}")
+        if scoring_context_payload:
+            context_components.append(scoring_context_payload)
+        if rag_facets_payload:
+            context_components.append(rag_facets_payload)
+        if rag_gap_dimensions:
+            context_components.append(
+                json.dumps(sorted(rag_gap_dimensions), separators=(",", ":"))
+            )
+        if policy_markers:
+            context_components.append("|".join(sorted(policy_markers)))
+        if prompt_meta_context:
+            context_components.append(
+                json.dumps(prompt_meta_context, sort_keys=True, separators=(",", ":"))
+            )
+
+        context_hash = (
+            _hash_values(*context_components)
+            if context_components
+            else _hash_values("")
+        )
+
         query_hash = _hash_values(query)
         url_hash = _hash_values(*(candidate.id for candidate in search_candidates))
-        cache_key = f"hybrid:llm:{query_hash}:{url_hash}"
+        cache_key = f"hybrid:llm:{query_hash}:{url_hash}:{context_hash}"
         cached = cache.get(cache_key)
         debug_payload: dict[str, Any] = {
             "cache_key": cache_key,
             "candidate_count": len(search_candidates),
+            "context_hash": context_hash,
         }
         if cached:
             try:
@@ -959,7 +1026,6 @@ class HybridSearchAndScoreGraph:
         }
 
         llm_meta: dict[str, Any] = dict(meta)
-        rag_gap_dimensions = _dimensions_to_tags(_gap_dimensions(rag_facets))
         if scoring_context:
             llm_meta["scoring_context_payload"] = scoring_context.model_dump(mode="json")
         if rag_facets:
