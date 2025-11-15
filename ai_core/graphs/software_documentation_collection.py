@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from hashlib import sha256
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -1126,9 +1127,10 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         f"- Quality mode: {request.quality_mode}\n"
         f"- Original query: {request.query}"
     )
+    query_hash = sha256(request.query.encode("utf-8")).hexdigest()[:12]
     metadata = {
         "tenant_id": request.tenant_id,
-        "case_id": f"software-docs:{request.purpose}",
+        "case_id": f"software-docs:{request.purpose}:{query_hash}",
         "trace_id": None,
         "prompt_version": "software_docs_search_strategy_v1",
     }
