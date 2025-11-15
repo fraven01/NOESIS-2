@@ -197,11 +197,23 @@ def web_search(request):
         run_id=run_id,
     )
 
+    manual_collection_id, resolved_collection_id = _resolve_manual_collection(
+        tenant_id, data.get("collection_id")
+    )
+    collection_scope = resolved_collection_id or manual_collection_id or "default"
+
+    logger.info(
+        "web_search.collection_scope",
+        collection_scope=collection_scope,
+        requested=data.get("collection_id"),
+        manual_collection_id=manual_collection_id,
+    )
+
     graph_state = {
         "input": {
             "question": query,
             "purpose": purpose,
-            "collection_scope": "default",
+            "collection_scope": collection_scope,
         }
     }
 
