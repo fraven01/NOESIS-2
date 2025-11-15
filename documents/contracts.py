@@ -31,7 +31,6 @@ from typing import (
     Mapping,
     MutableMapping,
     Optional,
-    Tuple,
     Union,
 )
 from types import MappingProxyType
@@ -68,6 +67,16 @@ from .contracts_context import (
     set_strict_checksums,
     strict_checksums,
 )
+
+
+__all__ = [
+    "asset_media_guard",
+    "get_asset_media_guard",
+    "is_strict_checksums_enabled",
+    "set_asset_media_guard",
+    "set_strict_checksums",
+    "strict_checksums",
+]
 
 
 _HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
