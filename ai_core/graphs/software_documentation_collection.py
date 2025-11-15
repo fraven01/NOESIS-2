@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -12,6 +13,8 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from ai_core.infra.observability import observe_span, update_observation
+from ai_core.llm import client as llm_client
+from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.tools.web_search import (
     SearchProviderError,
     SearchResult,
@@ -95,8 +98,9 @@ class SearchStrategyRequest(BaseModel):
     tenant_id: str
     query: str
     quality_mode: str
+    purpose: str
 
-    @field_validator("tenant_id", "query", "quality_mode", mode="before")
+    @field_validator("tenant_id", "query", "quality_mode", "purpose", mode="before")
     @classmethod
     def _trimmed(cls, value: Any) -> str:
         if not isinstance(value, str):
@@ -208,6 +212,7 @@ class GraphInput(BaseModel):
     collection_scope: str = Field(min_length=1)
     quality_mode: str = Field(default="standard")
     max_candidates: int = Field(default=20, ge=5, le=40)
+    purpose: str = Field(min_length=1)
 
     @field_validator("quality_mode", mode="before")
     @classmethod
@@ -427,6 +432,23 @@ class SoftwareDocumentationCollectionGraph:
     ) -> None:
         telemetry.setdefault("nodes", {})[name] = dict(details)
 
+    def _search_snapshot(self, state: Mapping[str, Any]) -> dict[str, Any]:
+        search_state = state.get("search") if isinstance(state, Mapping) else None
+        if not isinstance(search_state, Mapping):
+            search_state = {}
+        strategy_state = state.get("strategy") if isinstance(state, Mapping) else None
+        if not isinstance(strategy_state, Mapping):
+            strategy_state = {}
+        snapshot: dict[str, Any] = {
+            "results": list(search_state.get("results") or []),
+            "errors": list(search_state.get("errors") or []),
+            "responses": list(search_state.get("responses") or []),
+        }
+        plan = strategy_state.get("plan")
+        if isinstance(plan, Mapping):
+            snapshot["strategy"] = dict(plan)
+        return snapshot
+
     def _build_result(
         self,
         *,
@@ -435,6 +457,7 @@ class SoftwareDocumentationCollectionGraph:
         hitl: Mapping[str, Any] | None,
         ingestion: Mapping[str, Any] | None,
         coverage: Mapping[str, Any] | None,
+        search: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         payload = {
             "outcome": outcome,
@@ -442,6 +465,7 @@ class SoftwareDocumentationCollectionGraph:
             "hitl": dict(hitl) if hitl else None,
             "ingestion": dict(ingestion) if ingestion else None,
             "coverage": dict(coverage) if coverage else None,
+            "search": dict(search) if search else None,
         }
         return payload
 
@@ -458,6 +482,7 @@ class SoftwareDocumentationCollectionGraph:
             tenant_id=ids.tenant_id,
             query=graph_input.question,
             quality_mode=graph_input.quality_mode,
+            purpose=graph_input.purpose,
         )
         strategy = self._strategy_generator(request)
         plan = strategy.model_dump(mode="json")
@@ -914,6 +939,10 @@ class SoftwareDocumentationCollectionGraph:
             "collection_scope", working_state.get("collection_scope")
         )
         input_source.setdefault("quality_mode", working_state.get("quality_mode"))
+        input_source.setdefault(
+            "purpose",
+            working_state.get("purpose") or "software_documentation_collection",
+        )
         if (
             "max_candidates" not in input_source
             and working_state.get("max_candidates") is not None
@@ -949,7 +978,8 @@ class SoftwareDocumentationCollectionGraph:
             ids=ids, strategy=strategy, run_state=working_state
         )
         _record("k_parallel_web_search", search_transition)
-        search_results = working_state.get("search", {}).get("results") or []
+        search_snapshot = self._search_snapshot(working_state)
+        search_results = search_snapshot.get("results") or []
         if search_transition.decision == "error":
             result = self._build_result(
                 outcome="search_failed",
@@ -957,6 +987,7 @@ class SoftwareDocumentationCollectionGraph:
                 hitl=None,
                 ingestion=None,
                 coverage=None,
+                search=search_snapshot,
             )
             return working_state, result
         if not search_results:
@@ -966,98 +997,17 @@ class SoftwareDocumentationCollectionGraph:
                 hitl=None,
                 ingestion=None,
                 coverage=None,
+                search=search_snapshot,
             )
             return working_state, result
-
-        # ----------------------------------------------------------- hybrid score
-        hybrid_transition, hybrid_result = self._k_execute_hybrid_score(
-            ids=ids,
-            graph_input=graph_input,
-            strategy=strategy,
-            search_results=search_results,
-            run_state=working_state,
-        )
-        _record("k_execute_hybrid_score", hybrid_transition)
-        if hybrid_transition.decision == "error":
-            result = self._build_result(
-                outcome="hybrid_failed",
-                telemetry=telemetry,
-                hitl=None,
-                ingestion=None,
-                coverage=None,
-            )
-            return working_state, result
-        if hybrid_result is None:
-            result = self._build_result(
-                outcome="no_scoring_result",
-                telemetry=telemetry,
-                hitl=None,
-                ingestion=None,
-                coverage=None,
-            )
-            return working_state, result
-
-        # --------------------------------------------------------------- HITL gate
-        hitl_transition, hitl_payload, decision = self._k_hitl_gate(
-            ids=ids,
-            graph_input=graph_input,
-            hybrid_result=hybrid_result,
-            run_state=working_state,
-        )
-        _record("k_hitl_approval_gate", hitl_transition)
-        hitl_state = {
-            "payload": hitl_payload,
-            "decision": decision.model_dump(mode="json") if decision else None,
-            "auto_approved": bool(working_state.get("hitl", {}).get("auto_approved")),
-        }
-        if decision is None or decision.status == "pending":
-            result = self._build_result(
-                outcome="awaiting_hitl",
-                telemetry=telemetry,
-                hitl=hitl_state,
-                ingestion=None,
-                coverage=None,
-            )
-            return working_state, result
-        approved_ids = decision.approved_candidate_ids or ()
-        candidate_lookup = working_state.get("hybrid", {}).get("candidates") or {}
-        approved_urls = [
-            item.get("url")
-            for cid in approved_ids
-            for item in [candidate_lookup.get(cid)]
-            if isinstance(item, Mapping) and isinstance(item.get("url"), str)
-        ]
-        approved_urls.extend(url for url in decision.added_urls if isinstance(url, str))
-        if not approved_urls:
-            result = self._build_result(
-                outcome="hitl_rejected",
-                telemetry=telemetry,
-                hitl=hitl_state,
-                ingestion=None,
-                coverage=None,
-            )
-            return working_state, result
-
-        # -------------------------------------------------------- trigger ingestion
-        ingestion_transition, ingestion_meta = self._k_trigger_ingestion(
-            ids=ids,
-            decision=decision,
-            run_state=working_state,
-        )
-        _record("k_trigger_ingestion", ingestion_transition)
-
-        # --------------------------------------------------------- verify coverage
-        coverage_transition, coverage_meta = self._k_verify_coverage(
-            ids=ids, approved_urls=approved_urls
-        )
-        _record("k_verify_coverage", coverage_transition)
 
         result = self._build_result(
-            outcome="coverage_verified",
+            outcome="search_completed",
             telemetry=telemetry,
-            hitl=hitl_state,
-            ingestion=ingestion_meta,
-            coverage=coverage_meta,
+            hitl=None,
+            ingestion=None,
+            coverage=None,
+            search=search_snapshot,
         )
         return working_state, result
 
@@ -1065,20 +1015,178 @@ class SoftwareDocumentationCollectionGraph:
 # ================================================================== Production Factory
 
 
-def _default_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
-    """Default strategy generator for software documentation searches."""
+def _fallback_strategy(request: SearchStrategyRequest) -> SearchStrategy:
+    """Return a deterministic baseline strategy when LLM generation fails."""
+
     base_query = request.query
-    queries = [
+    purpose_hint = request.purpose.replace("_", " ")
+    candidates = [
         f"{base_query} documentation",
+        f"{base_query} {purpose_hint}",
         f"{base_query} API reference",
-        f"{base_query} guide",
+        f"{base_query} release notes",
+        f"{base_query} quickstart",
     ]
+    seen: set[str] = set()
+    queries: list[str] = []
+    for item in candidates:
+        normalised = item.strip()
+        if not normalised:
+            continue
+        if normalised.lower() in seen:
+            continue
+        seen.add(normalised.lower())
+        queries.append(normalised)
+        if len(queries) == 3:
+            break
     return SearchStrategy(
         queries=queries,
         policies_applied=("default",),
         preferred_sources=(),
         disallowed_sources=(),
     )
+
+
+def _fallback_with_reason(
+    request: SearchStrategyRequest, message: str, error: Exception | None = None
+) -> SearchStrategy:
+    if error is not None:
+        LOGGER.warning(message, exc_info=error)
+    else:
+        LOGGER.warning(message)
+    return _fallback_strategy(request)
+
+
+def _coerce_query_list(value: Any) -> list[str]:
+    if not isinstance(value, Sequence):
+        raise ValueError("queries must be a sequence")
+    queries: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if item in (None, ""):
+            continue
+        candidate = str(item).strip()
+        if not candidate:
+            continue
+        key = candidate.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        queries.append(candidate)
+        if len(queries) == 5:
+            break
+    if len(queries) < 3:
+        raise ValueError("at least three queries required")
+    return queries
+
+
+def _extract_strategy_payload(text: str) -> Mapping[str, Any]:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        raise ValueError("empty strategy payload")
+    if cleaned.startswith("```") and cleaned.endswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 3:
+            cleaned = "\n".join(lines[1:-1])
+            cleaned = cleaned.strip()
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError("payload does not contain a JSON object")
+    fragment = cleaned[start : end + 1]
+    try:
+        data = json.loads(fragment)
+    except json.JSONDecodeError as exc:  # pragma: no cover - defensive
+        raise ValueError("invalid JSON payload") from exc
+    if not isinstance(data, Mapping):
+        raise ValueError("strategy payload must be an object")
+    return data
+
+
+def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
+    """Generate a search strategy via the production LLM client."""
+
+    prompt = (
+        "You are an expert software documentation researcher tasked with "
+        "designing focused web search strategies.\n"
+        "Analyse the user's intent and produce between 3 and 5 focused web "
+        "search queries that maximise authoritative product documentation.\n"
+        "Consider versioning, API references, troubleshooting guides and "
+        "release notes relevant to the task.\n"
+        "Respond with a JSON object containing the keys 'queries', "
+        "'policies_applied', 'preferred_sources', 'disallowed_sources', and "
+        "an optional 'notes'.\n"
+        "- 'queries' must be an array of 3-5 strings.\n"
+        "- Optional arrays may be empty if not applicable.\n"
+        "Do not include any additional text outside the JSON object.\n"
+        "\n"
+        "Context:\n"
+        f"- Tenant: {request.tenant_id}\n"
+        f"- Purpose: {request.purpose}\n"
+        f"- Quality mode: {request.quality_mode}\n"
+        f"- Original query: {request.query}"
+    )
+    metadata = {
+        "tenant_id": request.tenant_id,
+        "case_id": f"software-docs:{request.purpose}",
+        "trace_id": None,
+        "prompt_version": "software_docs_search_strategy_v1",
+    }
+    try:
+        response = llm_client.call("analyze", prompt, metadata)
+    except (LlmClientError, RateLimitError) as exc:  # pragma: no cover
+        return _fallback_with_reason(
+            request,
+            "llm strategy generation failed; using fallback strategy",
+            exc,
+        )
+    except Exception as exc:  # pragma: no cover
+        return _fallback_with_reason(
+            request,
+            "llm strategy generation failed; using fallback strategy",
+            exc,
+        )
+
+    text = (response.get("text") or "").strip()
+    try:
+        payload = _extract_strategy_payload(text)
+    except ValueError as exc:
+        return _fallback_with_reason(
+            request,
+            "unable to parse LLM strategy payload; using fallback strategy",
+            exc,
+        )
+
+    try:
+        queries = _coerce_query_list(payload.get("queries"))
+    except Exception as exc:
+        return _fallback_with_reason(
+            request,
+            "invalid queries in LLM strategy payload; using fallback strategy",
+            exc,
+        )
+
+    policies = payload.get("policies_applied") or ()
+    preferred_sources = payload.get("preferred_sources") or ()
+    disallowed_sources = payload.get("disallowed_sources") or ()
+    notes = payload.get("notes") if isinstance(payload.get("notes"), str) else None
+    if isinstance(notes, str):
+        notes = notes.strip() or None
+
+    try:
+        return SearchStrategy(
+            queries=queries,
+            policies_applied=policies,
+            preferred_sources=preferred_sources,
+            disallowed_sources=disallowed_sources,
+            notes=notes,
+        )
+    except ValidationError as exc:
+        return _fallback_with_reason(
+            request,
+            "structured strategy validation failed; using fallback strategy",
+            exc,
+        )
 
 
 class _ProductionHitlGateway:
@@ -1190,7 +1298,7 @@ def build_graph() -> SoftwareDocumentationCollectionGraph:
     search_worker = get_web_search_worker()
 
     return SoftwareDocumentationCollectionGraph(
-        strategy_generator=_default_strategy_generator,
+        strategy_generator=_llm_strategy_generator,
         search_worker=search_worker,
         hybrid_executor=_HybridExecutorAdapter(),
         hitl_gateway=_ProductionHitlGateway(),

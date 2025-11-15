@@ -771,11 +771,17 @@ def start_rerank_workflow(request):
         run_id = str(uuid4())
 
         # Build graph input state according to GraphInput schema
+        purpose = data.get("purpose", "software_documentation_collection")
+        if not isinstance(purpose, str):
+            purpose = "software_documentation_collection"
+        purpose = purpose.strip() or "software_documentation_collection"
+
         graph_state = {
             "question": query,
             "collection_scope": collection_id,
             "quality_mode": quality_mode,
             "max_candidates": max_candidates,
+            "purpose": purpose,
         }
 
         # Build metadata for the graph execution
