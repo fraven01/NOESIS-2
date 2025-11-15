@@ -37,6 +37,11 @@ from documents.contracts import (
 )
 from documents.repository import InMemoryDocumentsRepository
 from documents.storage import InMemoryStorage
+from documents.parsers import (
+    build_parsed_asset,
+    build_parsed_result,
+    build_parsed_text_block,
+)
 
 
 _PNG_BASE64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAIAAABLbSncAAAAFElEQVR4nGOsfq7LgA0wYRUdtBIAO/8Bn565mEEAAAAASUVORK5CYII="
@@ -98,9 +103,11 @@ class RecordingParser:
     def parse(self, document: object, config: object) -> ParsedResult:
         self.calls += 1
         payload = b"asset"
-        return ParsedResult(
-            text_blocks=[ParsedTextBlock(text="Block text", kind="paragraph")],
-            assets=[ParsedAsset(media_type="image/png", content=payload)],
+        return build_parsed_result(
+            text_blocks=[
+                build_parsed_text_block(text="Block text", kind="paragraph")
+            ],
+            assets=[build_parsed_asset(media_type="image/png", content=payload)],
             statistics=dict(self.statistics),
         )
 
@@ -518,9 +525,11 @@ def test_metadata_coalesces_trace_and_span_sources():
 def test_persist_parsed_document_stores_assets_and_stats():
     repository, storage, document, context = _prepare_repository_document()
     payload = _PNG_BYTES
-    parsed = ParsedResult(
-        text_blocks=[ParsedTextBlock(text="Hello world", kind="paragraph")],
-        assets=[ParsedAsset(media_type="image/png", content=payload)],
+    parsed = build_parsed_result(
+        text_blocks=[
+            build_parsed_text_block(text="Hello world", kind="paragraph")
+        ],
+        assets=[build_parsed_asset(media_type="image/png", content=payload)],
         statistics={"parser.words": 2},
     )
 
@@ -572,9 +581,9 @@ def test_persist_parsed_document_stores_assets_and_stats():
 def test_persist_parsed_document_is_idempotent():
     repository, storage, document, context = _prepare_repository_document()
     payload = _PNG_BYTES
-    parsed = ParsedResult(
-        text_blocks=[ParsedTextBlock(text="Block", kind="paragraph")],
-        assets=[ParsedAsset(media_type="image/png", content=payload)],
+    parsed = build_parsed_result(
+        text_blocks=[build_parsed_text_block(text="Block", kind="paragraph")],
+        assets=[build_parsed_asset(media_type="image/png", content=payload)],
         statistics={},
     )
 
@@ -621,9 +630,9 @@ def test_persist_parsed_document_is_idempotent():
 def test_persist_parsed_document_supports_external_uri_assets():
     repository, storage, document, context = _prepare_repository_document()
     file_uri = "https://example.com/image.png"
-    parsed = ParsedResult(
+    parsed = build_parsed_result(
         text_blocks=[],
-        assets=[ParsedAsset(media_type="image/png", file_uri=file_uri)],
+        assets=[build_parsed_asset(media_type="image/png", file_uri=file_uri)],
         statistics={},
     )
 

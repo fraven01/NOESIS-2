@@ -28,7 +28,15 @@ from documents.contract_utils import (
     normalize_media_type,
     normalize_string,
 )
-from documents.parsers import DocumentParser, ParsedAsset, ParsedResult, ParsedTextBlock
+from documents.parsers import (
+    DocumentParser,
+    ParsedAsset,
+    ParsedResult,
+    ParsedTextBlock,
+    build_parsed_asset,
+    build_parsed_result,
+    build_parsed_text_block,
+)
 
 try:  # pragma: no cover - optional dependency exercised in integration environments
     from langdetect import DetectorFactory, LangDetectException, detect_langs  # type: ignore
@@ -149,7 +157,7 @@ class PdfDocumentParser(DocumentParser):
                             )
                             if candidate is not None:
                                 tables += 1
-                                text_block = ParsedTextBlock(
+                                text_block = build_parsed_text_block(
                                     text=candidate.summary_text,
                                     kind="table_summary",
                                     section_path=(
@@ -161,7 +169,7 @@ class PdfDocumentParser(DocumentParser):
                                 )
                             elif fallback_table is not None:
                                 tables += 1
-                                text_block = ParsedTextBlock(
+                                text_block = build_parsed_text_block(
                                     text=fallback_table[0],
                                     kind="table_summary",
                                     section_path=(
@@ -175,7 +183,7 @@ class PdfDocumentParser(DocumentParser):
                                 kind = _classify_block_kind(normalized, max_font)
                                 if kind == "heading":
                                     section_path = [normalized]
-                                text_block = ParsedTextBlock(
+                                text_block = build_parsed_text_block(
                                     text=normalized,
                                     kind=kind,  # type: ignore[arg-type]
                                     section_path=(
@@ -191,7 +199,7 @@ class PdfDocumentParser(DocumentParser):
                             words += len(text_block.text.split())
                             last_text = text_block.text
                             for asset_index in pending_assets:
-                                assets[asset_index] = ParsedAsset(
+                                assets[asset_index] = build_parsed_asset(
                                     media_type=assets[asset_index].media_type,
                                     content=assets[asset_index].content,
                                     file_uri=assets[asset_index].file_uri,
@@ -230,7 +238,7 @@ class PdfDocumentParser(DocumentParser):
                             continue
                         tables += 1
                         text_blocks.append(
-                            ParsedTextBlock(
+                            build_parsed_text_block(
                                 text=candidate.summary_text,
                                 kind="table_summary",
                                 section_path=(
@@ -255,7 +263,7 @@ class PdfDocumentParser(DocumentParser):
                 if ocr_errors:
                     statistics["ocr.errors"] = ocr_errors
 
-                return ParsedResult(
+                return build_parsed_result(
                     text_blocks=text_blocks, assets=assets, statistics=statistics
                 )
         except fitz.fitz.FileDataError as exc:  # type: ignore[attr-defined]
@@ -381,7 +389,7 @@ def _extract_asset_from_block(
 
     bbox = block.get("bbox")
     normalized_bbox = _normalise_bbox(bbox, page.rect)
-    return ParsedAsset(
+    return build_parsed_asset(
         media_type=media_type,
         content=content,
         page_index=page_index,
