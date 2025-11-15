@@ -15,13 +15,15 @@ from documents.contracts import (
     DocumentMeta,
     DocumentRef,
     NormalizedDocument,
-    asset_media_guard,
     asset_ref_schema,
     asset_schema,
     blob_locator_schema,
     document_meta_schema,
     document_ref_schema,
     normalized_document_schema,
+)
+from documents.contracts_context import (
+    asset_media_guard,
     set_asset_media_guard,
     set_strict_checksums,
     strict_checksums,

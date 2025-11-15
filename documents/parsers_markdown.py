@@ -31,7 +31,15 @@ from documents.contract_utils import (
     truncate_text,
 )
 from documents.media_type_resolver import resolve_image_media_type
-from documents.parsers import DocumentParser, ParsedAsset, ParsedResult, ParsedTextBlock
+from documents.parsers import (
+    DocumentParser,
+    ParsedAsset,
+    ParsedResult,
+    ParsedTextBlock,
+    build_parsed_asset,
+    build_parsed_result,
+    build_parsed_text_block,
+)
 from documents.payloads import extract_payload
 
 
@@ -351,7 +359,7 @@ class _MarkdownState:
             language = self.default_language
         if not cleaned:
             return None
-        block = ParsedTextBlock(
+        block = build_parsed_text_block(
             text=cleaned,
             kind=kind,
             section_path=self._section_path(),
@@ -411,7 +419,7 @@ class _MarkdownState:
                 context_after = _context_snippet(combined)
             elif self.origin_uri:
                 context_after = _context_snippet(f"Source: {self.origin_uri}")
-            parsed_asset = ParsedAsset(
+            parsed_asset = build_parsed_asset(
                 media_type=asset.media_type,
                 file_uri=asset.file_uri,
                 context_before=asset.context_before,
@@ -536,7 +544,7 @@ class MarkdownDocumentParser(DocumentParser):
             statistics["assets.origins"] = {
                 asset.file_uri: origin_uri for asset in assets
             }
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=tuple(state.blocks),
             assets=tuple(assets),
             statistics=statistics,

@@ -22,6 +22,9 @@ from documents.parsers import (
     ParsedAssetWithMeta,
     ParsedResult,
     ParsedTextBlock,
+    build_parsed_asset_with_meta,
+    build_parsed_result,
+    build_parsed_text_block,
 )
 from documents.payloads import extract_payload
 
@@ -182,7 +185,7 @@ class _HtmlState:
             language = self.default_language
         if not cleaned:
             return None
-        block = ParsedTextBlock(
+        block = build_parsed_text_block(
             text=cleaned,
             kind=kind,
             section_path=self._section_path(),
@@ -268,7 +271,7 @@ class _HtmlState:
                 metadata["parent_ref"] = asset.parent_ref
             if asset.locator:
                 metadata["locator"] = asset.locator
-            parsed_asset = ParsedAssetWithMeta(
+            parsed_asset = build_parsed_asset_with_meta(
                 media_type=asset.media_type,
                 file_uri=asset.file_uri,
                 context_before=asset.context_before,
@@ -563,7 +566,7 @@ class HtmlDocumentParser(DocumentParser):
             statistics["assets.origins"] = {
                 asset.file_uri: origin_uri for asset in assets
             }
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=tuple(state.blocks),
             assets=tuple(assets),
             statistics=statistics,

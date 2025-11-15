@@ -20,21 +20,17 @@ import base64
 import hashlib
 import math
 import re
-from contextlib import contextmanager
-from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import (
     Annotated,
     Any,
     Callable,
     Dict,
-    Iterable,
     List,
     Literal,
     Mapping,
     MutableMapping,
     Optional,
-    Tuple,
     Union,
 )
 from types import MappingProxyType
@@ -62,6 +58,25 @@ from .contract_utils import (
     truncate_text,
     validate_bbox,
 )
+
+from .contracts_context import (
+    asset_media_guard,
+    get_asset_media_guard,
+    is_strict_checksums_enabled,
+    set_asset_media_guard,
+    set_strict_checksums,
+    strict_checksums,
+)
+
+
+__all__ = [
+    "asset_media_guard",
+    "get_asset_media_guard",
+    "is_strict_checksums_enabled",
+    "set_asset_media_guard",
+    "set_strict_checksums",
+    "strict_checksums",
+]
 
 
 _HEX_64_RE = re.compile(r"^[a-f0-9]{64}$")
@@ -92,12 +107,6 @@ CaptionSource = Literal[
     "ocr",
     "manual",
 ]
-
-
-_STRICT_CHECKSUMS: ContextVar[bool] = ContextVar("STRICT_CHECKSUMS", default=False)
-_ASSET_MEDIA_GUARD: ContextVar[Optional[Tuple[str, ...]]] = ContextVar(
-    "ASSET_MEDIA_GUARD", default=None
-)
 
 
 # Default provider names resolved from ingestion sources. Callers may override
@@ -132,58 +141,6 @@ def _extract_charset_param(value: Optional[str]) -> Optional[str]:
             if encoding:
                 return encoding
     return None
-
-
-def set_strict_checksums(enabled: bool = True) -> None:
-    """Toggle strict checksum verification for contract models."""
-
-    _STRICT_CHECKSUMS.set(bool(enabled))
-
-
-@contextmanager
-def strict_checksums(enabled: bool = True):
-    """Context manager enabling strict checksum validation within the scope."""
-
-    token = _STRICT_CHECKSUMS.set(bool(enabled))
-    try:
-        yield
-    finally:
-        _STRICT_CHECKSUMS.reset(token)
-
-
-def _normalize_guard_prefix(value: str) -> str:
-    normalized = normalize_string(value)
-    if not normalized:
-        raise ValueError("media_guard_empty")
-    return normalized.lower()
-
-
-def set_asset_media_guard(prefixes: Optional[Iterable[str]]) -> None:
-    """Configure allowed media type prefixes for non-inline asset blobs."""
-
-    normalized = None
-    if prefixes:
-        normalized = tuple(_normalize_guard_prefix(prefix) for prefix in prefixes)
-    _ASSET_MEDIA_GUARD.set(normalized)
-
-
-@contextmanager
-def asset_media_guard(prefixes: Optional[Iterable[str]]):
-    """Context manager enforcing non-inline asset media type prefixes.
-
-    Inline blobs continue to require an exact media type match and therefore do
-    not participate in the prefix guard logic.
-    """
-
-    if prefixes:
-        normalized = tuple(_normalize_guard_prefix(prefix) for prefix in prefixes)
-    else:
-        normalized = None
-    token = _ASSET_MEDIA_GUARD.set(normalized)
-    try:
-        yield
-    finally:
-        _ASSET_MEDIA_GUARD.reset(token)
 
 
 def _coerce_uuid(value: Any):
@@ -334,7 +291,7 @@ class InlineBlob(BaseModel):
         self._decoded_payload = decoded
         if len(decoded) != self.size:
             raise ValueError("inline_size_mismatch")
-        if _STRICT_CHECKSUMS.get():
+        if is_strict_checksums_enabled():
             digest = hashlib.sha256(decoded).hexdigest()
             if digest != self.sha256:
                 raise ValueError("inline_checksum_mismatch")
@@ -1439,7 +1396,7 @@ class Asset(BaseModel):
 
     @model_validator(mode="after")
     def _check_checksum(self) -> "Asset":
-        if not _STRICT_CHECKSUMS.get():
+        if not is_strict_checksums_enabled():
             return self
         blob_sha = getattr(self.blob, "sha256", None)
         if not blob_sha:
@@ -1450,7 +1407,7 @@ class Asset(BaseModel):
 
     @model_validator(mode="after")
     def _enforce_media_guard(self) -> "Asset":
-        guard = _ASSET_MEDIA_GUARD.get()
+        guard = get_asset_media_guard()
         if guard and not isinstance(self.blob, InlineBlob):
             if not any(self.media_type.startswith(prefix) for prefix in guard):
                 raise ValueError("media_type_guard")
@@ -1528,7 +1485,7 @@ class NormalizedDocument(BaseModel):
                 raise ValueError("asset_collection_mismatch")
             if asset.ref.workflow_id != self.ref.workflow_id:
                 raise ValueError("asset_workflow_mismatch")
-        if _STRICT_CHECKSUMS.get():
+        if is_strict_checksums_enabled():
             blob_sha = getattr(self.blob, "sha256", None)
             if not blob_sha:
                 raise ValueError("document_checksum_missing")

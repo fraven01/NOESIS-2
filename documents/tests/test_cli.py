@@ -21,6 +21,9 @@ from documents.parsers import (
     ParsedTextBlock,
     ParserDispatcher,
     ParserRegistry,
+    build_parsed_asset,
+    build_parsed_result,
+    build_parsed_text_block,
 )
 from documents.pipeline import DocumentPipelineConfig, ProcessingState
 from documents.repository import InMemoryDocumentsRepository
@@ -37,10 +40,12 @@ class StubParser:
     def parse(self, document: object, config: object) -> ParsedResult:
         self.calls += 1
         image_payload = b"image-bytes"
-        text_block = ParsedTextBlock(text="Sample paragraph", kind="paragraph")
-        asset = ParsedAsset(media_type="image/png", content=image_payload)
+        text_block = build_parsed_text_block(
+            text="Sample paragraph", kind="paragraph"
+        )
+        asset = build_parsed_asset(media_type="image/png", content=image_payload)
         statistics = {"parser.words": 2}
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=[text_block],
             assets=[asset],
             statistics=statistics,

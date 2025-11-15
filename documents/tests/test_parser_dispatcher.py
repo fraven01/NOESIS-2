@@ -10,6 +10,9 @@ from documents.parsers import (
     ParsedTextBlock,
     ParserDispatcher,
     ParserRegistry,
+    build_parsed_asset,
+    build_parsed_result,
+    build_parsed_text_block,
 )
 
 
@@ -23,9 +26,11 @@ class _FakeParser:
 
     def parse(self, document: dict[str, str], config: object) -> ParsedResult:
         self.handled.append(document)
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=(
-                ParsedTextBlock(text=f"parsed-{self.media_type}", kind="paragraph"),
+                build_parsed_text_block(
+                    text=f"parsed-{self.media_type}", kind="paragraph"
+                ),
             ),
             assets=(),
             statistics={"media_type": self.media_type},
@@ -124,6 +129,22 @@ def test_parsed_asset_schema_validation() -> None:
 
     with pytest.raises(ValueError, match="parsed_asset_bbox_range"):
         ParsedAsset(media_type="image/png", content=b"x", bbox=[0, 0, 1])
+
+
+def test_adapters_preserve_error_codes() -> None:
+    with pytest.raises(ValueError, match="parsed_asset_content"):
+        build_parsed_asset(
+            media_type="image/png",
+            content="not-bytes",  # type: ignore[arg-type]
+            file_uri="s3://bucket/object.png",
+        )
+
+    with pytest.raises(ValueError, match="parsed_text_block_page_index"):
+        build_parsed_text_block(
+            text="Text",
+            kind="paragraph",
+            page_index="1",  # type: ignore[arg-type]
+        )
 
 
 def test_parsed_result_wrangles_collections() -> None:
