@@ -49,6 +49,17 @@ def normalize_tenant(value: str) -> str:
     return normalized
 
 
+def normalize_collection_tenant(value: str) -> str:
+    """Normalize tenant IDs for collection contracts with legacy messaging."""
+
+    try:
+        return normalize_tenant(value)
+    except ValueError as exc:
+        if exc.args == ("tenant_empty",):
+            raise ValueError("tenant_id must not be empty") from exc
+        raise
+
+
 def normalize_workflow_id(value: str) -> str:
     """Normalize and validate workflow identifiers."""
 

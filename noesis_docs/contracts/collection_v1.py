@@ -15,6 +15,8 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
 from typing_extensions import Annotated
 
+from documents.contract_utils import normalize_collection_tenant
+
 __all__ = [
     "CollectionRef",
     "CollectionLink",
@@ -70,11 +72,7 @@ class CollectionRef(BaseModel):
     @field_validator("tenant_id")
     @classmethod
     def _validate_tenant_id(cls, value: str) -> str:
-        trimmed = value.strip()
-        cleaned = _strip_invisible(trimmed)
-        if not cleaned:
-            raise ValueError("tenant_id must not be empty")
-        return cleaned
+        return normalize_collection_tenant(value)
 
     @field_validator("slug", "version_label", mode="before")
     @classmethod
