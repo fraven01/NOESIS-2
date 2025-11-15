@@ -46,6 +46,21 @@
         />
       </div>
 
+      <div class="md:col-span-2 space-y-1">
+        <div class="flex items-center justify-between gap-2">
+          <label class="text-sm font-medium text-slate-700" for="web-search-purpose">Purpose</label>
+          <span class="text-xs text-slate-500">Beschreibe den konkreten Analysezweck.</span>
+        </div>
+        <textarea
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="web-search-purpose"
+          name="purpose"
+          rows="2"
+          placeholder="z. B. Gap-Analyse für neue Feature-Dokumentation"
+          required
+        ></textarea>
+      </div>
+
       <div class="space-y-1">
         <label class="text-sm font-medium text-slate-700" for="web-search-workflow">Workflow ID</label>
         <input
@@ -1721,6 +1736,7 @@
 
     const webSearchForm = document.getElementById('web-search-form');
     const webSearchQueryInput = document.getElementById('web-search-query');
+    const webSearchPurposeInput = document.getElementById('web-search-purpose');
     const webSearchWorkflowInput = document.getElementById('web-search-workflow');
     const webSearchModeSelect = document.getElementById('web-search-mode');
     const webSearchError = document.getElementById('web-search-error');
@@ -2060,20 +2076,19 @@
     function renderWebSearchResponse(data) {
       webSearchError.classList.add('hidden');
       prettyPrint(webSearchRaw, data);
-      lastSearchResponse = data;
-      renderWebSearchResults(data);
+      const normalised = {
+        ...data,
+        results: Array.isArray(data && data.results) ? data.results : [],
+        rerank: data && data.rerank ? data.rerank : null,
+      };
+      lastSearchResponse = normalised;
+      renderWebSearchResults(normalised);
 
-      if (data.outcome && data.outcome.meta && data.outcome.meta.review_required) {
-        webSearchApproveButton.disabled = false;
-        webSearchRejectButton.disabled = false;
-        webSearchReviewIndicator.textContent = 'Review offen: ' + data.outcome.meta.run_id;
-      } else {
-        webSearchApproveButton.disabled = true;
-        webSearchRejectButton.disabled = true;
-        webSearchReviewIndicator.textContent = 'Review offen: –';
-      }
+      webSearchApproveButton.disabled = true;
+      webSearchRejectButton.disabled = true;
+      webSearchReviewIndicator.textContent = 'Review offen: –';
 
-      handleRerankStatus(data.rerank);
+      handleRerankStatus(normalised.rerank);
       updateRerankControlsState();
     }
 
@@ -2126,12 +2141,14 @@
       event.preventDefault();
 
       const query = webSearchQueryInput.value;
+      const purpose = webSearchPurposeInput.value;
       const workflowId = webSearchWorkflowInput.value;
       const mode = webSearchModeSelect.value;
       const collectionScope = requireCollection({ allowResolverFallback: true });
 
       const basePayload = {
         query: query,
+        purpose: purpose,
         workflow_id: workflowId,
         mode: mode,
         collection_id: collectionScope || manualCollectionId || null,
@@ -2157,6 +2174,7 @@
         event.preventDefault();
 
         const query = webSearchQueryInput.value;
+        const purpose = webSearchPurposeInput.value;
         const collectionScope = requireCollection({ allowResolverFallback: true });
 
         if (!query || !query.trim()) {
@@ -2185,6 +2203,7 @@
 
         const payload = {
           query: query.trim(),
+          purpose: purpose.trim(),
           collection_id: collectionScope || manualCollectionId || null,
           quality_mode: 'standard',
           max_candidates: 20,
