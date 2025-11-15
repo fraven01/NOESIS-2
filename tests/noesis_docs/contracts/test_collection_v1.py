@@ -51,6 +51,21 @@ def test_collection_ref_rejects_empty_tenant_id(tenant_value: str) -> None:
     assert "tenant_id must not be empty" in str(exc.value)
 
 
+def test_collection_ref_normalizer_wrapper_preserves_error_message(monkeypatch) -> None:
+    def _raise_tenant_empty(_: str) -> str:
+        raise ValueError("tenant_empty")
+
+    monkeypatch.setattr(
+        "documents.contract_utils.normalize_tenant",
+        _raise_tenant_empty,
+    )
+
+    with pytest.raises(ValidationError) as exc:
+        CollectionRef(tenant_id="tenant", collection_id=uuid4())
+
+    assert "tenant_id must not be empty" in str(exc.value)
+
+
 def test_collection_ref_rejects_invalid_uuid() -> None:
     with pytest.raises(ValidationError) as exc:
         CollectionRef(tenant_id="tenant", collection_id="not-a-uuid")
