@@ -21,10 +21,8 @@ from documents.contract_utils import (
 from documents.parsers import (
     DocumentParser,
     ParsedAsset,
-    ParsedAssetWithMeta,
     ParsedResult,
     ParsedTextBlock,
-    build_parsed_asset,
     build_parsed_asset_with_meta,
     build_parsed_result,
     build_parsed_text_block,

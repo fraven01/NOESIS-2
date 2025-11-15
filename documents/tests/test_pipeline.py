@@ -19,9 +19,7 @@ from documents import (
     DocumentProcessingContext,
     DocumentProcessingMetadata,
     DocumentProcessingOutcome,
-    ParsedAsset,
     ParsedResult,
-    ParsedTextBlock,
     ProcessingState,
     persist_parsed_document,
     require_document_components,
@@ -104,9 +102,7 @@ class RecordingParser:
         self.calls += 1
         payload = b"asset"
         return build_parsed_result(
-            text_blocks=[
-                build_parsed_text_block(text="Block text", kind="paragraph")
-            ],
+            text_blocks=[build_parsed_text_block(text="Block text", kind="paragraph")],
             assets=[build_parsed_asset(media_type="image/png", content=payload)],
             statistics=dict(self.statistics),
         )
@@ -526,9 +522,7 @@ def test_persist_parsed_document_stores_assets_and_stats():
     repository, storage, document, context = _prepare_repository_document()
     payload = _PNG_BYTES
     parsed = build_parsed_result(
-        text_blocks=[
-            build_parsed_text_block(text="Hello world", kind="paragraph")
-        ],
+        text_blocks=[build_parsed_text_block(text="Hello world", kind="paragraph")],
         assets=[build_parsed_asset(media_type="image/png", content=payload)],
         statistics={"parser.words": 2},
     )

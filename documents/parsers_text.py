@@ -83,9 +83,7 @@ class TextDocumentParser:
         blocks: List[ParsedTextBlock] = []
         if parts:
             if len(parts) == 1:
-                blocks.append(
-                    build_parsed_text_block(text=parts[0], kind="paragraph")
-                )
+                blocks.append(build_parsed_text_block(text=parts[0], kind="paragraph"))
             else:
                 blocks.extend(
                     build_parsed_text_block(text=part, kind="paragraph")

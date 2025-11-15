@@ -16,9 +16,7 @@ from documents.contracts import (
     NormalizedDocument,
 )
 from documents.parsers import (
-    ParsedAsset,
     ParsedResult,
-    ParsedTextBlock,
     ParserDispatcher,
     ParserRegistry,
     build_parsed_asset,
@@ -40,9 +38,7 @@ class StubParser:
     def parse(self, document: object, config: object) -> ParsedResult:
         self.calls += 1
         image_payload = b"image-bytes"
-        text_block = build_parsed_text_block(
-            text="Sample paragraph", kind="paragraph"
-        )
+        text_block = build_parsed_text_block(text="Sample paragraph", kind="paragraph")
         asset = build_parsed_asset(media_type="image/png", content=image_payload)
         statistics = {"parser.words": 2}
         return build_parsed_result(

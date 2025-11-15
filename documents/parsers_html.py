@@ -19,7 +19,6 @@ from documents.media_type_resolver import resolve_image_media_type
 from documents.parsers import (
     DocumentParser,
     ParsedAsset,
-    ParsedAssetWithMeta,
     ParsedResult,
     ParsedTextBlock,
     build_parsed_asset_with_meta,
