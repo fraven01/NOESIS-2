@@ -1082,15 +1082,11 @@ def _default_strategy_generator(request: SearchStrategyRequest) -> SearchStrateg
 
 
 class _ProductionHitlGateway:
-    """Production HITL gateway that persists payloads to dev-hitl storage."""
+    """Production HITL gateway (currently no-op - HITL persistence removed)."""
 
     def present(self, payload: Mapping[str, Any]) -> HitlDecision | None:
-        """Persist the HITL payload and return None (awaiting manual approval)."""
-        from theme.dev_hitl_store import store
-
-        run_id = payload.get("run_id")
-        if run_id:
-            store.store_run(run_id, dict(payload))
+        """Return None to indicate pending approval (HITL persistence removed)."""
+        # HITL persistence has been removed
         # Return None to indicate pending approval
         return None
 

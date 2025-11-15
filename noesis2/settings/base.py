@@ -160,9 +160,6 @@ ALLOWED_HOSTS = env.list(
     default=["example.com", "localhost", ".localhost", "testserver"],
 )
 
-# Developer-only feature flags
-DEV_FEATURE_HITL_UI = env.bool("DEV_FEATURE_HITL_UI", default=False)
-
 # Testing flag (auto-detected for pytest)
 TESTING = bool(os.environ.get("PYTEST_CURRENT_TEST"))
 

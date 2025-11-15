@@ -534,11 +534,6 @@ def rag_tools(request):
                 getattr(settings, "CRAWLER_DRY_RUN_DEFAULT", False)
             ),
             "manual_collection_id": manual_collection_id,
-            "dev_hitl_url": (
-                reverse("dev-hitl")
-                if getattr(settings, "DEV_FEATURE_HITL_UI", False)
-                else None
-            ),
         },
     )
 
