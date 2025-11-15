@@ -24,6 +24,10 @@ from documents.parsers import (
     ParsedAssetWithMeta,
     ParsedResult,
     ParsedTextBlock,
+    build_parsed_asset,
+    build_parsed_asset_with_meta,
+    build_parsed_result,
+    build_parsed_text_block,
 )
 
 _PPTX_MEDIA_TYPES = {
@@ -289,7 +293,7 @@ class PptxDocumentParser(DocumentParser):
             if slide_text or emit_empty_slides:
                 block_text = slide_text or f"Slide {index + 1}"
                 slide_blocks.append(
-                    ParsedTextBlock(
+                    build_parsed_text_block(
                         text=block_text,
                         kind="slide",
                         section_path=section_path,
@@ -331,7 +335,7 @@ class PptxDocumentParser(DocumentParser):
                     else:
                         notes_language = slide_language
                     note_blocks.append(
-                        ParsedTextBlock(
+                        build_parsed_text_block(
                             text=combined_notes,
                             kind="note",
                             section_path=section_path,
@@ -393,7 +397,7 @@ class PptxDocumentParser(DocumentParser):
                         metadata["caption_candidates"] = candidates
 
                     assets.append(
-                        ParsedAssetWithMeta(
+                        build_parsed_asset_with_meta(
                             media_type=media_type,
                             content=content,
                             page_index=index,
@@ -436,7 +440,7 @@ class PptxDocumentParser(DocumentParser):
                         metadata["caption_candidates"] = candidates
 
                     assets.append(
-                        ParsedAssetWithMeta(
+                        build_parsed_asset_with_meta(
                             media_type=chart_media_type,
                             file_uri=file_uri,
                             page_index=index,
@@ -452,7 +456,7 @@ class PptxDocumentParser(DocumentParser):
             "assets.images": images_count,
         }
 
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=tuple(slide_blocks + note_blocks),
             assets=tuple(assets),
             statistics=statistics,

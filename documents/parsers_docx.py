@@ -29,6 +29,10 @@ from documents.parsers import (
     ParsedAssetWithMeta,
     ParsedResult,
     ParsedTextBlock,
+    build_parsed_asset,
+    build_parsed_asset_with_meta,
+    build_parsed_result,
+    build_parsed_text_block,
 )
 
 
@@ -595,7 +599,7 @@ class DocxDocumentParser(DocumentParser):
                             section_stack.pop()
                         section_stack.append(paragraph_text)
                         section_path: Optional[Tuple[str, ...]] = tuple(section_stack)
-                        block_obj = ParsedTextBlock(
+                        block_obj = build_parsed_text_block(
                             text=paragraph_text,
                             kind="heading",
                             section_path=section_path,
@@ -604,7 +608,7 @@ class DocxDocumentParser(DocumentParser):
                     else:
                         section_path = tuple(section_stack) if section_stack else None
                         kind = "list" if is_list else "paragraph"
-                        block_obj = ParsedTextBlock(
+                        block_obj = build_parsed_text_block(
                             text=paragraph_text,
                             kind=kind,
                             section_path=section_path,
@@ -619,7 +623,7 @@ class DocxDocumentParser(DocumentParser):
                 if not summary_text:
                     continue
                 section_path = tuple(section_stack) if section_stack else None
-                block_obj = ParsedTextBlock(
+                block_obj = build_parsed_text_block(
                     text=summary_text,
                     kind="table_summary",
                     section_path=section_path,
@@ -653,7 +657,7 @@ class DocxDocumentParser(DocumentParser):
             if builder.locator:
                 metadata["locator"] = builder.locator
             parsed_assets.append(
-                ParsedAssetWithMeta(
+                build_parsed_asset_with_meta(
                     media_type=builder.media_type,
                     content=builder.content,
                     context_before=builder.context_before,
@@ -669,7 +673,7 @@ class DocxDocumentParser(DocumentParser):
             "assets.images": max(app_props.get("images", images_count), images_count),
         }
 
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=tuple(text_blocks),
             assets=tuple(parsed_assets),
             statistics=statistics,

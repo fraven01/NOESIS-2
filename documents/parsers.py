@@ -22,7 +22,14 @@ from typing import (
     runtime_checkable,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    TypeAdapter,
+    field_validator,
+    model_validator,
+)
 
 from documents.contract_utils import normalize_string, truncate_text
 
@@ -202,7 +209,7 @@ class ParserContent(BaseModel):
     def to_parsed_result(self) -> "ParsedResult":
         """Build a :class:`ParsedResult` view of the content."""
 
-        return ParsedResult(
+        return build_parsed_result(
             text_blocks=self.structural_elements,
             assets=(),
             statistics={},
@@ -586,6 +593,51 @@ class ParsedResult:
             safe_media_type = media_type.replace("/", "_")
             stats[f"parse.assets.media_type.{safe_media_type}"] = count
         object.__setattr__(self, "statistics", stats)
+
+
+_STRICT_ADAPTER_CONFIG = ConfigDict(strict=True)
+
+
+ParsedTextBlockAdapter = TypeAdapter(ParsedTextBlock)
+ParsedTextBlockWithMetaAdapter = TypeAdapter(ParsedTextBlockWithMeta)
+ParsedEntityAdapter = TypeAdapter(ParsedEntity)
+ParsedAssetAdapter = TypeAdapter(ParsedAsset)
+ParsedAssetWithMetaAdapter = TypeAdapter(ParsedAssetWithMeta)
+ParsedResultAdapter = TypeAdapter(ParsedResult)
+
+
+def _validate_dataclass(adapter: TypeAdapter[Any], instance: Any) -> Any:
+    return adapter.validate_python(instance, strict=_STRICT_ADAPTER_CONFIG["strict"])
+
+
+def build_parsed_text_block(**data: Any) -> ParsedTextBlock:
+    instance = ParsedTextBlock(**data)
+    return _validate_dataclass(ParsedTextBlockAdapter, instance)
+
+
+def build_parsed_text_block_with_meta(**data: Any) -> ParsedTextBlockWithMeta:
+    instance = ParsedTextBlockWithMeta(**data)
+    return _validate_dataclass(ParsedTextBlockWithMetaAdapter, instance)
+
+
+def build_parsed_entity(**data: Any) -> ParsedEntity:
+    instance = ParsedEntity(**data)
+    return _validate_dataclass(ParsedEntityAdapter, instance)
+
+
+def build_parsed_asset(**data: Any) -> ParsedAsset:
+    instance = ParsedAsset(**data)
+    return _validate_dataclass(ParsedAssetAdapter, instance)
+
+
+def build_parsed_asset_with_meta(**data: Any) -> ParsedAssetWithMeta:
+    instance = ParsedAssetWithMeta(**data)
+    return _validate_dataclass(ParsedAssetWithMetaAdapter, instance)
+
+
+def build_parsed_result(**data: Any) -> ParsedResult:
+    instance = ParsedResult(**data)
+    return _validate_dataclass(ParsedResultAdapter, instance)
 
 
 @runtime_checkable

@@ -5,7 +5,12 @@ from __future__ import annotations
 import re
 from typing import List, Mapping, Optional
 
-from documents.parsers import ParsedResult, ParsedTextBlock
+from documents.parsers import (
+    ParsedResult,
+    ParsedTextBlock,
+    build_parsed_result,
+    build_parsed_text_block,
+)
 from documents.payloads import extract_payload
 
 
@@ -78,18 +83,23 @@ class TextDocumentParser:
         blocks: List[ParsedTextBlock] = []
         if parts:
             if len(parts) == 1:
-                blocks.append(ParsedTextBlock(text=parts[0], kind="paragraph"))
+                blocks.append(
+                    build_parsed_text_block(text=parts[0], kind="paragraph")
+                )
             else:
                 blocks.extend(
-                    ParsedTextBlock(text=part, kind="paragraph") for part in parts
+                    build_parsed_text_block(text=part, kind="paragraph")
+                    for part in parts
                 )
         elif normalised.strip():
-            blocks.append(ParsedTextBlock(text=normalised.strip(), kind="paragraph"))
+            blocks.append(
+                build_parsed_text_block(text=normalised.strip(), kind="paragraph")
+            )
         statistics = {
             "parser.kind": "text/plain",
             "parser.characters": len(normalised),
         }
-        return ParsedResult(text_blocks=tuple(blocks), statistics=statistics)
+        return build_parsed_result(text_blocks=tuple(blocks), statistics=statistics)
 
 
 __all__ = ["TextDocumentParser"]
