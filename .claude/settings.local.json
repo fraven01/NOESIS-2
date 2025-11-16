@@ -5,7 +5,9 @@
       "Bash(docker compose:*)",
       "Bash(python -m py_compile:*)",
       "Bash(python -c:*)",
-      "Bash(cat:*)"
+      "Bash(cat:*)",
+      "Bash(git log:*)",
+      "Bash(git mv:*)"
     ],
     "deny": [],
     "ask": []

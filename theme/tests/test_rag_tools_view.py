@@ -8,7 +8,12 @@ from django.urls import reverse
 from django.utils.html import escapejs
 
 from ai_core.rag.collections import manual_collection_uuid
-from theme.views import rag_tools, web_search, web_search_ingest_selected
+from theme.views import (
+    rag_tools,
+    start_rerank_workflow,
+    web_search,
+    web_search_ingest_selected,
+)
 
 
 def test_rag_tools_page_is_accessible():
@@ -412,6 +417,57 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     assert headers["X-Tenant-Schema"] == tenant_schema
     assert headers["X-Case-ID"] == "test-case"
     assert "X-Trace-ID" in headers
+
+
+@patch("theme.views.submit_worker_task")
+def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
+    tenant_id = "tenant-test"
+    tenant_schema = "test"
+    telemetry_payload = {
+        "graph": "collection_search",
+        "nodes": {"k_generate_strategy": {"status": "completed"}},
+    }
+    search_payload = {
+        "results": [{"title": "Alpha", "url": "https://example.com", "score": 0.3}],
+        "responses": [],
+    }
+    mock_submit_worker_task.return_value = (
+        {
+            "task_id": "task-123",
+            "result": {
+                "outcome": "search_completed",
+                "telemetry": telemetry_payload,
+                "search": search_payload,
+            },
+            "cost_summary": {"total_usd": 0.001},
+        },
+        True,
+    )
+
+    factory = RequestFactory()
+    request = factory.post(
+        reverse("rag_tools_start_rerank"),
+        data=json.dumps(
+            {
+                "query": "Alpha docs",
+                "purpose": "collection_search",
+                "collection_id": "manual",
+                "max_candidates": 20,
+                "quality_mode": "standard",
+                "case_id": "local",
+            }
+        ),
+        content_type="application/json",
+    )
+    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+
+    response = start_rerank_workflow(request)
+    assert response.status_code == 200
+    data = json.loads(response.content)
+
+    assert data["status"] == "completed"
+    assert data["results"][0]["title"] == "Alpha"
+    assert data["telemetry"]["nodes"]["k_generate_strategy"]["status"] == "completed"
 
 
 def test_rag_tools_page_includes_source_transformation_logic():

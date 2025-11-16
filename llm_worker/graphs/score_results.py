@@ -45,10 +45,10 @@ def _build_prompt(
     rag_documents: Sequence[Mapping[str, Any]] = (meta or {}).get("rag_documents") or []
 
     sections: list[str] = [
-        "Rolle: Du bist fachkundige:r Evaluator:in für IT- und Rechtsdokumentation.",
-        "Auftrag: Bewerte die Kandidaten relativ zur Frage, dem Zweck und dem vorhandenen RAG-Bestand.",
+        "Rolle: Du bist fachkundige:r Evaluator:in für qualitative Suchwerte aus Suchmaschinen, um zu prüfen, ob Sucheregbnisse für den Zweck der Suche geeigent sind.",
+        "Auftrag: Bewerte die Kandidaten relativ zur Frage und dem Zweck.",
         "Kalibrierung der Scores: 85-100 = exzellente, offiziell belastbare Quelle; 70-84 = solide Quellen mit guter Deckung; 40-69 = nur teilweise relevant; <40 = ablehnen.",
-        "Berücksichtige Relevanz, Deckung der Rechtsfrage, Aktualität (Version/Datum, Evergreen-Ausnahmen), Autorität und ob der Treffer Lücken im RAG schließt.",
+        "Berücksichtige Relevanz, Deckung der Anfrage, Aktualität (Version/Datum, Evergreen-Ausnahmen), Autorität und ob der Treffer Lücken im RAG schließt.",
         'Unsichere Datums- oder Versionsangaben sollen zu risk_flags wie "uncertain_version" führen.',
         "",
         f"Query: {payload.query}",

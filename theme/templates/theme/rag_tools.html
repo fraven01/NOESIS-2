@@ -6,6 +6,28 @@
 {% block head %}
 {{ block.super }}
 <script src="{% static 'theme/rag-tools-support.js' %}"></script>
+<style>
+  /* Pipeline Progress Styles */
+  .pipeline-step[data-status="completed"] .step-icon {
+    @apply text-emerald-600;
+  }
+
+  .pipeline-step[data-status="in_progress"] .step-icon {
+    @apply text-amber-600 animate-pulse;
+  }
+
+  .pipeline-step[data-status="warning"] .step-icon {
+    @apply text-amber-600;
+  }
+
+  .pipeline-step[data-status="failed"] .step-icon {
+    @apply text-red-600;
+  }
+
+  .pipeline-step[data-status="pending"] {
+    @apply opacity-50;
+  }
+</style>
 {% endblock %}
 
 {% block content %}
@@ -178,9 +200,62 @@
           <span id="web-search-rerank-status-text" class="text-xs"></span>
         </div>
       </div>
-                <div class="space-y-3" id="web-search-results">
-                  <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
+
+      <!-- Pipeline Progress Visualizer -->
+      <div id="pipeline-progress" class="hidden space-y-3 rounded-lg border border-slate-200 bg-white p-4">
+        <div class="flex items-center justify-between">
+          <h3 class="text-sm font-semibold text-slate-900">Execution Pipeline</h3>
+          <div class="flex items-center gap-3 text-xs text-slate-600">
+            <span id="pipeline-time">–</span>
+            <span id="pipeline-cost">–</span>
+          </div>
+        </div>
+
+        <!-- Pipeline Steps -->
+        <div class="space-y-2">
+          <!-- Strategy Generation -->
+          <div class="pipeline-step" data-node="k_generate_strategy" data-status="pending">
+            <div class="flex items-center gap-3">
+              <span class="step-icon">□</span>
+              <div class="flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="step-label text-sm font-medium">Strategy Generation</span>
+                  <span class="step-duration text-xs text-slate-500 hidden"></span>
+                  <span class="step-cost text-xs text-emerald-600 hidden"></span>
                 </div>
+                <div class="step-details text-xs text-slate-600 mt-1 hidden"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Web Search -->
+          <div class="pipeline-step" data-node="k_web_search" data-status="pending">
+            <div class="flex items-center gap-3">
+              <span class="step-icon">□</span>
+              <div class="flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="step-label text-sm font-medium">Web Search</span>
+                  <span class="step-duration text-xs text-slate-500 hidden"></span>
+                </div>
+                <div class="step-queries space-y-1 mt-2 ml-6 hidden"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Future nodes (grayed out for now) -->
+          <div class="pipeline-step opacity-50" data-node="k_hybrid_score" data-status="pending">
+            <div class="flex items-center gap-3">
+              <span class="step-icon">□</span>
+              <span class="step-label text-sm">Hybrid Scoring</span>
+              <span class="text-xs text-slate-400">(pending)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="space-y-3" id="web-search-results">
+        <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
+      </div>
                 <div class="flex items-center gap-3">
                   <button
                     class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
@@ -1993,15 +2068,165 @@
         webSearchResults.innerHTML = '<p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>';
         return;
       }
+
+      const searchMeta = Array.isArray(data.search && data.search.responses) ? data.search.responses : [];
+      const groups = [];
+      const indexLookup = new Map();
+
+      function addMetaGroup(meta, index) {
+        const queryLabel =
+          meta && typeof meta.query === 'string' && meta.query.trim()
+            ? meta.query.trim()
+            : `Query ${index + 1}`;
+        const group = {
+          queryIndex: index,
+          queryText: queryLabel,
+          meta: meta,
+          items: [],
+          order: groups.length,
+        };
+        groups.push(group);
+        indexLookup.set(index, group);
+        return group;
+      }
+
+      searchMeta.forEach(function (meta, index) {
+        addMetaGroup(meta, index);
+      });
+
+      function ensureGroupForResult(result) {
+        const queryIndexValue =
+          typeof result.query_index === 'number' && Number.isFinite(result.query_index)
+            ? result.query_index
+            : null;
+        if (queryIndexValue !== null && indexLookup.has(queryIndexValue)) {
+          return indexLookup.get(queryIndexValue);
+        }
+        const displayQuery =
+          typeof result.query === 'string' && result.query.trim()
+            ? result.query.trim()
+            : data.query || 'Weitere Ergebnisse';
+        const group = {
+          queryIndex: queryIndexValue,
+          queryText: displayQuery,
+          meta: null,
+          items: [],
+          order: groups.length,
+        };
+        groups.push(group);
+        if (queryIndexValue !== null && !indexLookup.has(queryIndexValue)) {
+          indexLookup.set(queryIndexValue, group);
+        }
+        return group;
+      }
+
       results.forEach(function (result) {
+        const group = ensureGroupForResult(result);
+        group.items.push(result);
+      });
+
+      if (!groups.length) {
+        groups.push({
+          queryIndex: null,
+          queryText: data.query || 'Query',
+          meta: null,
+          items: results.slice(),
+          order: 0,
+        });
+      }
+
+      const summaryRow = document.createElement('div');
+      summaryRow.className =
+        'flex flex-wrap items-center justify-between rounded-md bg-slate-100/70 px-3 py-2 text-xs text-slate-600';
+      const summaryLeft = document.createElement('span');
+      summaryLeft.textContent = `📊 ${results.length} Ergebnis${results.length === 1 ? '' : 'se'}`;
+      summaryRow.appendChild(summaryLeft);
+      const summaryRight = document.createElement('span');
+      summaryRight.textContent = `${groups.length} Query${groups.length === 1 ? '' : 's'}`;
+      summaryRow.appendChild(summaryRight);
+      webSearchResults.appendChild(summaryRow);
+
+      const sortedGroups = groups
+        .slice()
+        .sort(function (a, b) {
+          const aHasIndex = typeof a.queryIndex === 'number' && Number.isFinite(a.queryIndex);
+          const bHasIndex = typeof b.queryIndex === 'number' && Number.isFinite(b.queryIndex);
+          if (aHasIndex && bHasIndex && a.queryIndex !== b.queryIndex) {
+            return a.queryIndex - b.queryIndex;
+          }
+          if (aHasIndex && !bHasIndex) {
+            return -1;
+          }
+          if (!aHasIndex && bHasIndex) {
+            return 1;
+          }
+          return a.order - b.order;
+        });
+
+      sortedGroups.forEach(function (group) {
+        const section = document.createElement('section');
+        section.className = 'space-y-3 rounded-xl border border-slate-200 bg-white/80 p-4 shadow-sm';
+
+        const header = document.createElement('div');
+        header.className = 'flex flex-wrap items-center justify-between gap-2';
+
+        const title = document.createElement('div');
+        title.className = 'text-sm font-semibold text-slate-900';
+        const queryIndexLabel =
+          typeof group.queryIndex === 'number' && Number.isFinite(group.queryIndex)
+            ? `Query ${group.queryIndex + 1}`
+            : 'Query';
+        const queryLabel = group.queryText || 'Unbenannte Query';
+        title.textContent = `🔍 ${queryIndexLabel}: "${queryLabel}"`;
+
+        const stats = document.createElement('div');
+        stats.className = 'text-xs text-slate-500';
+        const resultCount =
+          group.meta && typeof group.meta.result_count === 'number'
+            ? group.meta.result_count
+            : group.items.length;
+        const latencyMs =
+          group.meta && typeof group.meta.latency_ms === 'number' ? group.meta.latency_ms : null;
+        const latencyLabel = latencyMs !== null ? `${(latencyMs / 1000).toFixed(2)}s` : '–';
+        stats.textContent = `${resultCount} Resultate • ${latencyLabel}`;
+
+        header.appendChild(title);
+        header.appendChild(stats);
+        section.appendChild(header);
+
+        const cardsWrapper = document.createElement('div');
+        cardsWrapper.className = 'space-y-3';
+
+        if (!group.items.length) {
+          const empty = document.createElement('p');
+          empty.className = 'text-xs italic text-slate-500';
+          empty.textContent = 'Keine Ergebnisse für diese Query.';
+          cardsWrapper.appendChild(empty);
+        } else {
+          group.items.forEach(function (result) {
+            cardsWrapper.appendChild(buildResultCard(result));
+          });
+        }
+
+        section.appendChild(cardsWrapper);
+        webSearchResults.appendChild(section);
+      });
+
+      function buildResultCard(result) {
         const card = document.createElement('article');
-        card.className = 'space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+        card.className = 'space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4 shadow-sm';
+
+        const headerRow = document.createElement('div');
+        headerRow.className = 'flex items-start gap-3';
 
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
-        checkbox.className = 'form-checkbox h-5 w-5 text-slate-600';
+        checkbox.className = 'mt-1 h-5 w-5 rounded border-slate-300 text-slate-600 focus:ring-slate-500';
         checkbox.value = result.url || '';
-        card.appendChild(checkbox);
+        headerRow.appendChild(checkbox);
+
+        const headerContent = document.createElement('div');
+        headerContent.className = 'flex-1 space-y-1';
 
         const link = document.createElement('a');
         link.href = result.url || '#';
@@ -2009,7 +2234,7 @@
         link.target = '_blank';
         link.rel = 'noreferrer';
         link.className = 'block text-sm font-semibold text-slate-900 hover:underline';
-        card.appendChild(link);
+        headerContent.appendChild(link);
 
         const metaRow = document.createElement('div');
         metaRow.className = 'flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500';
@@ -2026,7 +2251,8 @@
         if (rerankActive) {
           const badge = document.createElement('span');
           badge.className = 'inline-flex items-center rounded-full border px-2 py-0.5 font-medium';
-          const scoreValue = result && result.rerank && typeof result.rerank.score === 'number' ? Math.round(result.rerank.score) : null;
+          const scoreValue =
+            result && result.rerank && typeof result.rerank.score === 'number' ? Math.round(result.rerank.score) : null;
           if (scoreValue !== null) {
             badge.classList.add('border-emerald-200', 'bg-emerald-50', 'text-emerald-800');
             badge.textContent = 'LLM-Score ' + scoreValue;
@@ -2037,7 +2263,9 @@
           metaRow.appendChild(badge);
         }
 
-        card.appendChild(metaRow);
+        headerContent.appendChild(metaRow);
+        headerRow.appendChild(headerContent);
+        card.appendChild(headerRow);
 
         const body = document.createElement('div');
         body.className = 'max-h-48 overflow-auto whitespace-pre-wrap text-sm text-slate-700';
@@ -2069,8 +2297,8 @@
           card.appendChild(details);
         }
 
-        webSearchResults.appendChild(card);
-      });
+        return card;
+      }
     }
 
     function renderWebSearchResponse(data) {
@@ -2082,6 +2310,13 @@
         rerank: data && data.rerank ? data.rerank : null,
       };
       lastSearchResponse = normalised;
+
+      if (normalised.telemetry) {
+        updatePipelineProgress(normalised.telemetry);
+      } else {
+        updatePipelineProgress(null);
+      }
+
       renderWebSearchResults(normalised);
 
       webSearchApproveButton.disabled = true;
@@ -2090,6 +2325,265 @@
 
       handleRerankStatus(normalised.rerank);
       updateRerankControlsState();
+    }
+
+    /**
+     * Updates the pipeline progress component with telemetry data
+     */
+    function updatePipelineProgress(telemetry) {
+      const pipelineEl = document.getElementById('pipeline-progress');
+      if (!pipelineEl) {
+        return;
+      }
+      if (!telemetry || !telemetry.nodes) {
+        pipelineEl.classList.add('hidden');
+        return;
+      }
+
+      pipelineEl.classList.remove('hidden');
+
+      const nodes = telemetry.nodes || {};
+      let totalCost = 0;
+
+      Object.values(nodes).forEach(function (node) {
+        if (!node) {
+          return;
+        }
+        const rawCost = parseFloat(node['llm.cost_usd']);
+        if (!Number.isNaN(rawCost)) {
+          totalCost += rawCost;
+        }
+      });
+
+      // Update Strategy Generation node
+      const strategyNode = nodes['k_generate_strategy'];
+      if (strategyNode) {
+        const rawCost = parseFloat(strategyNode['llm.cost_usd']);
+        const cost = Number.isNaN(rawCost) ? 0 : rawCost;
+        const policies = Array.isArray(strategyNode.policies)
+          ? strategyNode.policies
+          : [];
+        const details = [
+          `${strategyNode.query_count || 0} queries`,
+          `Policies: ${policies.length ? policies.join(', ') : 'default'}`,
+        ].join(' • ');
+
+        updatePipelineStep('k_generate_strategy', {
+          status: 'completed',
+          duration: strategyNode.latency_ms || strategyNode.duration_ms || 0,
+          details: details,
+          cost: cost,
+        });
+      }
+
+      // Update Web Search node
+      const searchNode = nodes['k_parallel_web_search'];
+      if (searchNode) {
+        const queryCount =
+          searchNode.queries ||
+          (strategyNode && strategyNode.query_count) ||
+          0;
+        const details = `${searchNode.total_results || 0} results from ${queryCount} queries`;
+
+        updatePipelineStep('k_web_search', {
+          status: (searchNode.error_count || 0) > 0 ? 'warning' : 'completed',
+          duration: searchNode.latency_ms || searchNode.duration_ms || 0,
+          details: details,
+        });
+
+        renderQueryBreakdown(telemetry);
+      }
+
+      const totalLatency = Object.values(nodes).reduce(function (sum, node) {
+        if (!node) {
+          return sum;
+        }
+        const duration = typeof node.latency_ms === 'number'
+          ? node.latency_ms
+          : typeof node.duration_ms === 'number'
+            ? node.duration_ms
+            : 0;
+        return sum + duration;
+      }, 0);
+
+      const pipelineTimeEl = document.getElementById('pipeline-time');
+      if (pipelineTimeEl) {
+        pipelineTimeEl.textContent =
+          totalLatency > 0 ? `⏱ ${(totalLatency / 1000).toFixed(2)}s` : '⏱ 0.00s';
+      }
+
+      const pipelineCostEl = document.getElementById('pipeline-cost');
+      if (pipelineCostEl) {
+        pipelineCostEl.textContent =
+          totalCost > 0 ? `💰 $${totalCost.toFixed(6)}` : '–';
+      }
+    }
+
+    /**
+     * Updates a single pipeline step with status and metadata
+     */
+    function updatePipelineStep(nodeName, data) {
+      const stepEl = document.querySelector(`[data-node="${nodeName}"]`);
+      if (!stepEl) {
+        console.warn(`Pipeline step not found: ${nodeName}`);
+        return;
+      }
+
+      const status = data.status || 'pending';
+      stepEl.dataset.status = status;
+
+      const icon = stepEl.querySelector('.step-icon');
+      const iconMap = {
+        completed: '✓',
+        in_progress: '⏳',
+        pending: '□',
+        warning: '⚠',
+        failed: '❌',
+      };
+      if (icon) {
+        icon.textContent = iconMap[status] || '□';
+        icon.classList.remove(
+          'text-emerald-600',
+          'text-amber-600',
+          'text-red-600',
+          'text-slate-400',
+          'animate-pulse'
+        );
+        const colorMap = {
+          completed: 'text-emerald-600',
+          in_progress: 'text-amber-600',
+          warning: 'text-amber-600',
+          failed: 'text-red-600',
+          pending: 'text-slate-400',
+        };
+        const nextColor = colorMap[status] || 'text-slate-400';
+        nextColor
+          .split(' ')
+          .filter(Boolean)
+          .forEach(function (cls) {
+            icon.classList.add(cls);
+          });
+        if (status === 'in_progress') {
+          icon.classList.add('animate-pulse');
+        }
+      }
+
+      const durationEl = stepEl.querySelector('.step-duration');
+      if (durationEl && typeof data.duration === 'number' && data.duration > 0) {
+        durationEl.textContent = `(${(data.duration / 1000).toFixed(2)}s)`;
+        durationEl.classList.remove('hidden');
+      }
+
+      const costEl = stepEl.querySelector('.step-cost');
+      if (costEl) {
+        if (typeof data.cost === 'number' && data.cost > 0) {
+          costEl.textContent = `$${data.cost.toFixed(6)}`;
+          costEl.classList.remove('hidden');
+        } else {
+          costEl.classList.add('hidden');
+        }
+      }
+
+      const detailsEl = stepEl.querySelector('.step-details');
+      if (detailsEl) {
+        if (data.details) {
+          detailsEl.textContent = data.details;
+          detailsEl.classList.remove('hidden');
+        } else {
+          detailsEl.classList.add('hidden');
+        }
+      }
+    }
+
+    /**
+     * Renders per-query breakdown in the Web Search step
+     */
+    function renderQueryBreakdown(telemetry) {
+      const searchStep = document.querySelector('[data-node="k_web_search"]');
+      if (!searchStep) {
+        return;
+      }
+
+      const queriesContainer = searchStep.querySelector('.step-queries');
+      if (!queriesContainer) {
+        return;
+      }
+
+      const fromTelemetry = Array.isArray(telemetry && telemetry.search_responses)
+        ? telemetry.search_responses
+        : [];
+      const nestedTelemetry =
+        telemetry && telemetry.search && Array.isArray(telemetry.search.responses)
+          ? telemetry.search.responses
+          : [];
+      const fromState =
+        lastSearchResponse &&
+        lastSearchResponse.search &&
+        Array.isArray(lastSearchResponse.search.responses)
+          ? lastSearchResponse.search.responses
+          : [];
+
+      const searchResponses = fromTelemetry.length
+        ? fromTelemetry
+        : nestedTelemetry.length
+          ? nestedTelemetry
+          : fromState;
+
+      if (!searchResponses.length) {
+        queriesContainer.classList.add('hidden');
+        queriesContainer.innerHTML = '';
+        return;
+      }
+
+      queriesContainer.classList.remove('hidden');
+      queriesContainer.innerHTML = '';
+
+      searchResponses.forEach(function (response, index) {
+        const row = document.createElement('div');
+        row.className = 'flex items-center gap-2 text-xs';
+
+        const statusSymbol = response && response.decision === 'ok' ? '✓' : '⚠';
+        const statusColor =
+          response && response.decision === 'ok'
+            ? 'text-emerald-600'
+            : 'text-amber-600';
+        const statusEl = document.createElement('span');
+        statusEl.className = statusColor;
+        statusEl.textContent = statusSymbol;
+
+        const labelEl = document.createElement('span');
+        labelEl.className = 'text-slate-600';
+        labelEl.textContent = `Query ${index + 1}:`;
+
+        const queryEl = document.createElement('span');
+        queryEl.className = 'font-mono text-slate-700';
+        const queryText =
+          (response && typeof response.query === 'string' && response.query) || '';
+        queryEl.textContent = `"${queryText}"`;
+
+        const detailEl = document.createElement('span');
+        detailEl.className = 'text-slate-500';
+        const resultCount =
+          typeof (response && response.result_count) === 'number'
+            ? response.result_count
+            : typeof (response && response.normalized_result_count) === 'number'
+              ? response.normalized_result_count
+              : 0;
+        const latencyMs =
+          typeof (response && response.latency_ms) === 'number'
+            ? response.latency_ms
+            : null;
+        const latencyLabel =
+          latencyMs !== null ? `${(latencyMs / 1000).toFixed(2)}s` : '–';
+        detailEl.textContent = `(${resultCount} results • ${latencyLabel})`;
+
+        row.appendChild(statusEl);
+        row.appendChild(labelEl);
+        row.appendChild(queryEl);
+        row.appendChild(detailEl);
+
+        queriesContainer.appendChild(row);
+      });
     }
 
     async function executeWebSearch(payload) {
@@ -2223,15 +2717,44 @@
           const data = await response.json();
 
           if (response.ok) {
-            // Show success message
-            if (webSearchMessages) {
-              webSearchMessages.textContent = data.message || 'Workflow wurde gestartet.';
-              webSearchMessages.classList.remove('hidden');
+            if (data.status === 'completed') {
+              if (webSearchMessages) {
+                webSearchMessages.textContent = data.message || 'Workflow abgeschlossen.';
+                webSearchMessages.classList.remove('hidden');
+                setTimeout(function () {
+                  webSearchMessages.classList.add('hidden');
+                }, 8000);
+              }
 
-              // Auto-hide after 8 seconds
-              setTimeout(function () {
-                webSearchMessages.classList.add('hidden');
-              }, 8000);
+              const graphResult = data.graph_result || {};
+              const searchPayload =
+                (graphResult && graphResult.search) || data.search || null;
+              const telemetryPayload =
+                data.telemetry ||
+                (graphResult && graphResult.telemetry) ||
+                null;
+
+              const normalizedResponse = {
+                ...graphResult,
+                results: Array.isArray(data.results)
+                  ? data.results
+                  : Array.isArray(searchPayload && searchPayload.results)
+                    ? searchPayload.results
+                    : [],
+                search: searchPayload,
+                telemetry: telemetryPayload,
+              };
+
+              renderWebSearchResponse(normalizedResponse);
+            } else {
+              if (webSearchMessages) {
+                webSearchMessages.textContent =
+                  data.message || 'Workflow wurde gestartet.';
+                webSearchMessages.classList.remove('hidden');
+                setTimeout(function () {
+                  webSearchMessages.classList.add('hidden');
+                }, 8000);
+              }
             }
           } else {
             // Show error

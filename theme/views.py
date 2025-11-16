@@ -1,6 +1,8 @@
 import json
+from typing import Mapping
 from uuid import uuid4
 
+import httpx
 from django.conf import settings
 from django.http import JsonResponse
 from django.shortcuts import render
@@ -9,10 +11,12 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
-from ai_core.graphs.software_documentation_collection import (
+from ai_core.graphs.external_knowledge_graph import (
+    CrawlerIngestionAdapter,
+    CrawlerIngestionOutcome,
     GraphContextPayload,
     InvalidGraphInput,
-    build_graph,
+    build_graph as build_external_knowledge_graph,
 )
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
@@ -27,6 +31,7 @@ from llm_worker.runner import submit_worker_task
 
 
 logger = get_logger(__name__)
+
 
 def home(request):
     """Render the homepage."""
@@ -93,6 +98,56 @@ def _resolve_manual_collection(
         return manual_id, manual_id
 
     return manual_id, requested_text
+
+
+class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
+    """Adapter that triggers crawler ingestion via internal HTTP API."""
+
+    def trigger(
+        self,
+        *,
+        url: str,
+        collection_id: str,
+        context: Mapping[str, str],
+    ) -> CrawlerIngestionOutcome:
+        """Trigger ingestion for the given URL."""
+        tenant_id = context.get("tenant_id", "dev")
+        trace_id = context.get("trace_id", "")
+        case_id = context.get("case_id", "local")
+        mode = context.get("mode", "live")
+
+        headers = {
+            "Content-Type": "application/json",
+            "X-Tenant-ID": str(tenant_id),
+            "X-Case-ID": str(case_id),
+            "X-Trace-ID": str(trace_id),
+        }
+        payload = {
+            "workflow_id": "external-knowledge-ingestion",
+            "mode": mode,
+            "origins": [{"url": url}],
+            "collection_id": collection_id,
+        }
+        try:
+            crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
+            with httpx.Client(timeout=30.0) as client:
+                response = client.post(crawler_url, json=payload, headers=headers)
+            if response.status_code == 200:
+                response_data = response.json()
+                # This is a simplification; real outcome depends on crawler response
+                return CrawlerIngestionOutcome(
+                    decision="ingested",
+                    crawler_decision=response_data.get("decision", "unknown"),
+                    document_id=response_data.get("document_id"),
+                )
+            return CrawlerIngestionOutcome(
+                decision="ingestion_error", crawler_decision="http_error"
+            )
+        except Exception:
+            logger.exception("crawler.trigger.failed")
+            return CrawlerIngestionOutcome(
+                decision="ingestion_error", crawler_decision="trigger_exception"
+            )
 
 
 def rag_tools(request):
@@ -166,7 +221,7 @@ def rag_tools(request):
 
 @require_POST
 def web_search(request):
-    """Execute the software documentation graph for manual RAG searches."""
+    """Execute the external knowledge graph for manual RAG searches."""
 
     try:
         data = json.loads(request.body)
@@ -174,24 +229,19 @@ def web_search(request):
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
     query = str(data.get("query") or "").strip()
-    purpose_value = data.get("purpose")
-    purpose = str(purpose_value).strip() if isinstance(purpose_value, str) else ""
-
     if not query:
         return JsonResponse({"error": "Query is required"}, status=400)
-    if not purpose:
-        return JsonResponse({"error": "Purpose is required"}, status=400)
 
     tenant_id, _ = _tenant_context_from_request(request)
     case_id = str(data.get("case_id") or "local").strip() or "local"
     trace_id = str(uuid4())
     run_id = str(uuid4())
 
-    logger.info("web_search.query", query=query, purpose=purpose)
+    logger.info("web_search.query", query=query)
 
     context = GraphContextPayload(
         tenant_id=tenant_id,
-        workflow_id="software-docs-manual",
+        workflow_id="external-knowledge-manual",
         case_id=case_id,
         trace_id=trace_id,
         run_id=run_id,
@@ -200,27 +250,27 @@ def web_search(request):
     manual_collection_id, resolved_collection_id = _resolve_manual_collection(
         tenant_id, data.get("collection_id")
     )
-    collection_scope = resolved_collection_id or manual_collection_id or "default"
+    collection_id = resolved_collection_id or manual_collection_id or "default"
 
     logger.info(
         "web_search.collection_scope",
-        collection_scope=collection_scope,
+        collection_id=collection_id,
         requested=data.get("collection_id"),
         manual_collection_id=manual_collection_id,
     )
 
     graph_state = {
-        "input": {
-            "question": query,
-            "purpose": purpose,
-            "collection_scope": collection_scope,
-        }
+        "query": query,
+        "collection_id": collection_id,
+        "run_until": "after_search",  # Per user request, only run search
     }
 
-    graph = build_graph()
+    ingestion_adapter = _ViewCrawlerIngestionAdapter()
+    graph = build_external_knowledge_graph(ingestion_adapter=ingestion_adapter)
 
     try:
-        _state, result = graph.run(state=graph_state, meta=context.model_dump())
+        # The graph returns the final state and a result payload
+        final_state, result = graph.run(state=graph_state, meta=context.model_dump())
     except InvalidGraphInput as exc:
         logger.info("web_search.invalid_input", error=str(exc))
         return JsonResponse({"error": "Ungültige Eingabe für den Graphen."}, status=400)
@@ -228,18 +278,22 @@ def web_search(request):
         logger.exception("web_search.failed")
         return JsonResponse({"error": "Graph execution failed."}, status=500)
 
-    search_payload = result.get("search")
-    if not isinstance(search_payload, dict):
-        search_payload = {}
-    results = search_payload.get("results")
-    if not isinstance(results, list):
-        results = []
+    # Extract search results from the final graph state
+    search_payload = final_state.get("search", {})
+    results = search_payload.get("results", [])
+
+    telemetry_payload = result.get("telemetry")
+    if telemetry_payload is not None:
+        telemetry_payload = dict(telemetry_payload)
+        search_responses = search_payload.get("responses")
+        if isinstance(search_responses, list):
+            telemetry_payload["search_responses"] = search_responses
 
     response_data = {
         "outcome": result.get("outcome"),
         "results": results,
         "search": search_payload,
-        "telemetry": result.get("telemetry"),
+        "telemetry": telemetry_payload,
         "trace_id": trace_id,
     }
 
@@ -259,8 +313,9 @@ def web_search_ingest_selected(request):
     try:
         data = json.loads(request.body)
         urls = data.get("urls", [])
+        mode = data.get("mode", "live")  # Pass mode to crawler
 
-        logger.info("web_search_ingest_selected", url_count=len(urls))
+        logger.info("web_search_ingest_selected", url_count=len(urls), mode=mode)
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
 
@@ -285,7 +340,7 @@ def web_search_ingest_selected(request):
         # Build payload for crawler_runner endpoint
         crawler_payload = {
             "workflow_id": "web-search-ingestion",
-            "mode": "live",
+            "mode": mode,
             "origins": [{"url": url} for url in urls],
             "collection_id": collection_id,
         }
@@ -368,10 +423,10 @@ def start_rerank_workflow(request):
         run_id = str(uuid4())
 
         # Build graph input state according to GraphInput schema
-        purpose = data.get("purpose", "software_documentation_collection")
+        purpose = data.get("purpose", "collection_search")
         if not isinstance(purpose, str):
-            purpose = "software_documentation_collection"
-        purpose = purpose.strip() or "software_documentation_collection"
+            purpose = "collection_search"
+        purpose = purpose.strip() or "collection_search"
 
         graph_state = {
             "question": query,
@@ -393,6 +448,7 @@ def start_rerank_workflow(request):
         # Submit graph task to worker queue without waiting (timeout_s=0)
         task_payload = {
             "state": graph_state,
+            **graph_meta,
         }
 
         scope = {
@@ -405,8 +461,8 @@ def start_rerank_workflow(request):
         result_payload, completed = submit_worker_task(
             task_payload=task_payload,
             scope=scope,
-            graph_name="software_documentation_collection",
-            timeout_s=0,
+            graph_name="collection_search",
+            timeout_s=30,
         )
 
         logger.info(
@@ -416,15 +472,34 @@ def start_rerank_workflow(request):
             completed=completed,
         )
 
-        return JsonResponse(
-            {
-                "status": "pending",
-                "graph_name": "software_documentation_collection",
-                "task_id": result_payload.get("task_id"),
-                "trace_id": trace_id,
-                "message": "Workflow wurde gestartet. Ergebnisse erscheinen in /dev-hitl/.",
-            }
-        )
+        if not completed:
+            return JsonResponse(
+                {
+                    "status": "pending",
+                    "graph_name": "collection_search",
+                    "task_id": result_payload.get("task_id"),
+                    "trace_id": trace_id,
+                    "message": "Workflow wurde gestartet und läuft im Hintergrund.",
+                }
+            )
+
+        graph_result = result_payload.get("result") or {}
+        search_payload = graph_result.get("search") or {}
+        telemetry_payload = graph_result.get("telemetry") or {}
+        outcome_label = graph_result.get("outcome") or "Workflow abgeschlossen"
+        response_payload = {
+            "status": "completed",
+            "graph_name": "collection_search",
+            "task_id": result_payload.get("task_id"),
+            "trace_id": trace_id,
+            "results": search_payload.get("results", []),
+            "search": search_payload,
+            "telemetry": telemetry_payload or None,
+            "graph_result": graph_result,
+            "cost_summary": result_payload.get("cost_summary"),
+            "message": str(outcome_label).replace("_", " ").capitalize(),
+        }
+        return JsonResponse(response_payload)
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)

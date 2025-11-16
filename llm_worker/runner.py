@@ -36,11 +36,13 @@ def submit_worker_task(
             meta[key] = value
     scope_context = {key: value for key, value in scope_payload.items() if value}
 
+    task_state = meta.pop("state", {})
+
     signature = current_app.signature(
         "llm_worker.tasks.run_graph",
         kwargs={
             "graph_name": graph_name,
-            "state": task_payload.get("state") or {},
+            "state": task_state,
             "meta": meta,
             "ledger_identifier": ledger_identifier,
             "initial_cost_total": initial_cost_total,

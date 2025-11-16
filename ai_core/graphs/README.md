@@ -50,10 +50,10 @@ Jeder Schritt emittiert eine Transition mit deterministischer Struktur. Diese
 Transitions landen im aggregierten Ergebnis des Graph-Laufs und bilden die
 Grundlage für Unit-Tests sowie Langfuse-Spans.
 
-## Software-Documentation-Collection-Graph
+## Collection-Search-Graph
 
-Der `software_documentation_collection`-Graph koordiniert Query-Expansion,
-Websuche, Hybrid-Reranking, HITL-Review und Ingestion für Software-Dokumentation
+Der `collection_search`-Graph koordiniert Query-Expansion,
+Websuche, Hybrid-Reranking, HITL-Review und Ingestion für beliebige Dokumentationstypen
 innerhalb eines Tenants. Er nutzt den Worker-Graph
 `hybrid_search_and_score`, um Web-Treffer und vorhandene RAG-Daten zu
 verschmelzen und erzeugt dabei eine deterministische Telemetrie pro Knoten.
@@ -73,6 +73,6 @@ Die Knotenfolge lautet:
    Timeout).
 
 Die Tests in
-`ai_core/tests/graphs/test_software_documentation_collection_graph.py`
+`ai_core/tests/graphs/test_collection_search_graph.py`
 validieren einen End-to-End-Lauf mit Mock-Komponenten sowie die HITL-Warte- und
 Fehlerpfade.

@@ -1,4 +1,3 @@
-"""External knowledge acquisition orchestrator graph."""
 
 from __future__ import annotations
 
@@ -595,9 +594,21 @@ class ExternalKnowledgeGraph:
         telemetry.setdefault("nodes", {})
         working_state.setdefault("transitions", [])
 
+        # Filter out runtime-only fields (e.g., ledger_logger from worker layer)
+        # before validating against GraphContextPayload schema
+        allowed_context_fields = {
+            "tenant_id",
+            "workflow_id",
+            "case_id",
+            "trace_id",
+            "run_id",
+            "ingestion_run_id",
+        }
         context_source: dict[str, Any] = {}
         if meta is not None:
-            context_source.update(meta)
+            context_source.update(
+                {k: v for k, v in meta.items() if k in allowed_context_fields}
+            )
         context_source.update(meta_state.get("context") or {})
         try:
             context_payload = GraphContextPayload.model_validate(context_source)

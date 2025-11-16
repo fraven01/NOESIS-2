@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from ai_core.graphs.software_documentation_collection import (
+from ai_core.graphs.collection_search import (
+    CollectionSearchGraph,
     HitlDecision,
     SearchStrategy,
     SearchStrategyRequest,
-    SoftwareDocumentationCollectionGraph,
 )
 from ai_core.tools.web_search import (
     SearchProviderError,
@@ -14,6 +14,8 @@ from ai_core.tools.web_search import (
     ToolOutcome,
     WebSearchResponse,
 )
+
+
 class StubStrategyGenerator:
     def __init__(self) -> None:
         self.requests: list[SearchStrategyRequest] = []
@@ -76,7 +78,9 @@ class StubHybridExecutor:
         tenant_context,
     ) -> Any:
         self.calls.append((scoring_context, candidates, tenant_context))
-        raise AssertionError("hybrid executor should not be invoked in search-only flow")
+        raise AssertionError(
+            "hybrid executor should not be invoked in search-only flow"
+        )
 
 
 class StubHitlGateway:
@@ -161,7 +165,7 @@ def test_run_returns_search_results() -> None:
     hitl_gateway = StubHitlGateway(decision=None)
     ingestion_trigger = StubIngestionTrigger()
     coverage_verifier = StubCoverageVerifier()
-    graph = SoftwareDocumentationCollectionGraph(
+    graph = CollectionSearchGraph(
         strategy_generator=strategy,
         search_worker=search_worker,
         hybrid_executor=hybrid_executor,
@@ -204,7 +208,7 @@ def test_search_failure_aborts_flow() -> None:
 
     search_worker = FailingSearchWorker()
     hybrid_executor = StubHybridExecutor()
-    graph = SoftwareDocumentationCollectionGraph(
+    graph = CollectionSearchGraph(
         strategy_generator=strategy,
         search_worker=search_worker,
         hybrid_executor=hybrid_executor,
@@ -234,7 +238,7 @@ def test_search_without_results_returns_no_candidates() -> None:
             return WebSearchResponse(results=[], outcome=outcome)
 
     search_worker = EmptySearchWorker()
-    graph = SoftwareDocumentationCollectionGraph(
+    graph = CollectionSearchGraph(
         strategy_generator=strategy,
         search_worker=search_worker,
         hybrid_executor=StubHybridExecutor(),

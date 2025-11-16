@@ -1,9 +1,10 @@
-"""Business graph orchestrating software documentation collection flows."""
+"""Business graph orchestrating collection search and ingestion flows."""
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from hashlib import sha256
 from collections.abc import Mapping, MutableMapping, Sequence
 from dataclasses import dataclass, field
@@ -13,9 +14,10 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from ai_core.infra.observability import observe_span, update_observation
+from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
+from ai_core.llm.pricing import calculate_chat_completion_cost
 from ai_core.tools.web_search import (
     SearchProviderError,
     SearchResult,
@@ -38,7 +40,7 @@ class InvalidGraphInput(ValueError):
 
 
 class StrategyGenerator(Protocol):
-    """Callable generating web search strategies for software documentation."""
+    """Callable generating web search strategies for collection search."""
 
     def __call__(self, request: "SearchStrategyRequest") -> "SearchStrategy":
         """Return a deterministic search strategy for the given request."""
@@ -205,7 +207,7 @@ class GraphContextPayload(BaseModel):
 
 
 class GraphInput(BaseModel):
-    """Validated input payload for the software documentation graph."""
+    """Validated input payload for the collection search graph."""
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
@@ -338,10 +340,10 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     return parsed.astimezone(timezone.utc)
 
 
-class SoftwareDocumentationCollectionGraph:
-    """Orchestrates search, hybrid scoring, HITL, and ingestion for docs."""
+class CollectionSearchGraph:
+    """Orchestrates search, hybrid scoring, HITL, and ingestion for collections."""
 
-    _GRAPH_NAME = "software_documentation_collection"
+    _GRAPH_NAME = "collection_search"
 
     def __init__(
         self,
@@ -471,7 +473,7 @@ class SoftwareDocumentationCollectionGraph:
         return payload
 
     # --------------------------------------------------------------------- nodes
-    @observe_span(name="graph.software_docs.k_generate_strategy")
+    @observe_span(name="graph.collection_search.k_generate_strategy")
     def _k_generate_strategy(
         self,
         *,
@@ -506,7 +508,7 @@ class SoftwareDocumentationCollectionGraph:
         )
         return Transition("planned", "search_strategy_ready", meta)
 
-    @observe_span(name="graph.software_docs.k_web_search")
+    @observe_span(name="graph.collection_search.k_web_search")
     def _k_parallel_web_search(
         self,
         *,
@@ -526,12 +528,42 @@ class SoftwareDocumentationCollectionGraph:
                 "run_id": ids.run_id,
                 "worker_call_id": f"search-{index}-{uuid4()}",
             }
+            query_start = time.time()
             try:
                 response: WebSearchResponse = self._search_worker.run(
                     query=query, context=worker_context
                 )
+                query_latency = time.time() - query_start
+
+                # Emit success event
+                emit_event(
+                    {
+                        "event.name": "query.executed",
+                        "query.index": index,
+                        "query.text": query,
+                        "query.result_count": len(response.results),
+                        "query.latency_ms": int(query_latency * 1000),
+                        "query.status": "success",
+                        "query.decision": response.outcome.decision,
+                    }
+                )
             except SearchProviderError as exc:
+                query_latency = time.time() - query_start
                 LOGGER.warning("web search provider failed", exc_info=exc)
+
+                # Emit failure event
+                emit_event(
+                    {
+                        "event.name": "query.failed",
+                        "query.index": index,
+                        "query.text": query,
+                        "query.latency_ms": int(query_latency * 1000),
+                        "query.status": "error",
+                        "query.error_type": type(exc).__name__,
+                        "query.error_message": str(exc),
+                    }
+                )
+
                 errors.append(
                     {
                         "query": query,
@@ -597,7 +629,7 @@ class SoftwareDocumentationCollectionGraph:
             rationale = "web_search_failed"
         return Transition(decision, rationale, meta)
 
-    @observe_span(name="graph.software_docs.k_hybrid_score")
+    @observe_span(name="graph.collection_search.k_hybrid_score")
     def _k_execute_hybrid_score(
         self,
         *,
@@ -660,7 +692,7 @@ class SoftwareDocumentationCollectionGraph:
         )
         scoring_context = ScoringContext(
             question=graph_input.question,
-            purpose="software_documentation_collection",
+            purpose="collection_search",
             jurisdiction="DE",
             output_target="hybrid_rerank",
             preferred_sources=list(strategy.preferred_sources),
@@ -704,7 +736,7 @@ class SoftwareDocumentationCollectionGraph:
         self._record_span_attributes(attributes)
         return Transition("scored", "hybrid_score_completed", meta), hybrid_result
 
-    @observe_span(name="graph.software_docs.k_hitl_gate")
+    @observe_span(name="graph.collection_search.k_hitl_gate")
     def _k_hitl_gate(
         self,
         *,
@@ -809,7 +841,7 @@ class SoftwareDocumentationCollectionGraph:
             transition = Transition("decided", "hitl_decision_recorded", meta)
         return transition, payload, decision
 
-    @observe_span(name="graph.software_docs.k_trigger_ingestion")
+    @observe_span(name="graph.collection_search.k_trigger_ingestion")
     def _k_trigger_ingestion(
         self,
         *,
@@ -853,7 +885,7 @@ class SoftwareDocumentationCollectionGraph:
         transition = Transition("ingest_triggered", "ingestion_triggered", meta)
         return transition, ingestion_meta
 
-    @observe_span(name="graph.software_docs.k_verify_coverage")
+    @observe_span(name="graph.collection_search.k_verify_coverage")
     def _k_verify_coverage(
         self,
         *,
@@ -924,9 +956,21 @@ class SoftwareDocumentationCollectionGraph:
         telemetry.setdefault("nodes", {})
         working_state.setdefault("transitions", [])
 
+        # Filter out runtime-only fields (e.g., ledger_logger from worker layer)
+        # before validating against GraphContextPayload schema
+        allowed_context_fields = {
+            "tenant_id",
+            "workflow_id",
+            "case_id",
+            "trace_id",
+            "run_id",
+            "ingestion_run_id",
+        }
         context_source: dict[str, Any] = {}
         if meta is not None:
-            context_source.update(meta)
+            context_source.update(
+                {k: v for k, v in meta.items() if k in allowed_context_fields}
+            )
         context_source.update(meta_state.get("context") or {})
         try:
             context_payload = GraphContextPayload.model_validate(context_source)
@@ -942,7 +986,7 @@ class SoftwareDocumentationCollectionGraph:
         input_source.setdefault("quality_mode", working_state.get("quality_mode"))
         input_source.setdefault(
             "purpose",
-            working_state.get("purpose") or "software_documentation_collection",
+            working_state.get("purpose") or "collection_search",
         )
         if (
             "max_candidates" not in input_source
@@ -1022,11 +1066,11 @@ def _fallback_strategy(request: SearchStrategyRequest) -> SearchStrategy:
     base_query = request.query
     purpose_hint = request.purpose.replace("_", " ")
     candidates = [
-        f"{base_query} documentation",
+        base_query,
         f"{base_query} {purpose_hint}",
-        f"{base_query} API reference",
-        f"{base_query} release notes",
-        f"{base_query} quickstart",
+        f"{base_query} overview",
+        f"{base_query} information",
+        f"{base_query} guide",
     ]
     seen: set[str] = set()
     queries: list[str] = []
@@ -1108,12 +1152,12 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
     """Generate a search strategy via the production LLM client."""
 
     prompt = (
-        "You are an expert software documentation researcher tasked with "
+        "You are an expert research strategist tasked with "
         "designing focused web search strategies.\n"
         "Analyse the user's intent and produce between 3 and 5 focused web "
-        "search queries that maximise authoritative product documentation.\n"
-        "Consider versioning, API references, troubleshooting guides and "
-        "release notes relevant to the task.\n"
+        "search queries that maximise authoritative and relevant sources.\n"
+        "Consider document types, versioning, source quality, and "
+        "content relevance to the task.\n"
         "Respond with a JSON object containing the keys 'queries', "
         "'policies_applied', 'preferred_sources', 'disallowed_sources', and "
         "an optional 'notes'.\n"
@@ -1130,12 +1174,39 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
     query_hash = sha256(request.query.encode("utf-8")).hexdigest()[:12]
     metadata = {
         "tenant_id": request.tenant_id,
-        "case_id": f"software-docs:{request.purpose}:{query_hash}",
+        "case_id": f"collection-search:{request.purpose}:{query_hash}",
         "trace_id": None,
-        "prompt_version": "software_docs_search_strategy_v1",
+        "prompt_version": "collection_search_strategy_v1",
     }
     try:
+        llm_start = time.time()
         response = llm_client.call("analyze", prompt, metadata)
+        llm_latency = time.time() - llm_start
+
+        # Track LLM metrics for observability
+        usage = response.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
+        model_id = response.get("model", "gemini-2.5-flash")
+
+        # Calculate cost
+        cost_usd = calculate_chat_completion_cost(
+            model_id, prompt_tokens, completion_tokens
+        )
+
+        # Attach metrics to current span
+        update_observation(
+            metadata={
+                "llm.model": model_id,
+                "llm.prompt_tokens": prompt_tokens,
+                "llm.completion_tokens": completion_tokens,
+                "llm.total_tokens": total_tokens,
+                "llm.cost_usd": f"{cost_usd:.6f}",
+                "llm.latency_ms": int(llm_latency * 1000),
+                "llm.label": "analyze",
+            }
+        )
     except (LlmClientError, RateLimitError) as exc:  # pragma: no cover
         return _fallback_with_reason(
             request,
@@ -1264,8 +1335,8 @@ class _ProductionCoverageVerifier:
         }
 
 
-def build_graph() -> SoftwareDocumentationCollectionGraph:
-    """Build a production-ready software documentation collection graph."""
+def build_graph() -> CollectionSearchGraph:
+    """Build a production-ready collection search graph."""
     from ai_core.tools.shared_workers import get_web_search_worker
     from llm_worker.graphs.hybrid_search_and_score import run
     from llm_worker.schemas import HybridResult
@@ -1299,7 +1370,7 @@ def build_graph() -> SoftwareDocumentationCollectionGraph:
     # Use shared WebSearchWorker instance (singleton, created once)
     search_worker = get_web_search_worker()
 
-    return SoftwareDocumentationCollectionGraph(
+    return CollectionSearchGraph(
         strategy_generator=_llm_strategy_generator,
         search_worker=search_worker,
         hybrid_executor=_HybridExecutorAdapter(),
