@@ -203,6 +203,7 @@ def normalize_from_raw(
         title=contract.title,
         language=contract.language,
         tags=contract.tags,
+        document_collection_id=contract.document_collection_id,
         origin_uri=contract.origin_uri,
         external_ref=contract.build_external_reference(document_id),
         parse_stats=parse_stats,
@@ -237,6 +238,11 @@ def normalize_from_raw(
             "collection_id": (
                 str(contract.collection_id)
                 if contract.collection_id is not None
+                else None
+            ),
+            "document_collection_id": (
+                str(contract.document_collection_id)
+                if contract.document_collection_id is not None
                 else None
             ),
             "external_id": contract.external_id,

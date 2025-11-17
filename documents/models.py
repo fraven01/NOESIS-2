@@ -2,7 +2,52 @@
 
 from __future__ import annotations
 
+import uuid
+
 from django.db import models
+
+
+class DocumentCollection(models.Model):
+    """Logical document grouping mapping to vector collections."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "customers.Tenant",
+        on_delete=models.PROTECT,
+        related_name="document_collections",
+    )
+    case = models.ForeignKey(
+        "cases.Case",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="document_collections",
+    )
+    name = models.CharField(max_length=255)
+    key = models.CharField(max_length=128)
+    collection_id = models.UUIDField()
+    type = models.CharField(max_length=64, blank=True, default="")
+    visibility = models.CharField(max_length=64, blank=True, default="")
+    metadata = models.JSONField(blank=True, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("tenant", "key"),
+                name="document_collection_unique_key",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("tenant", "case"),
+                name="doc_collection_tenant_case_idx",
+            ),
+        ]
+
+    def __str__(self) -> str:  # pragma: no cover - debug helper
+        return f"{self.name} ({self.key})"
 
 
 class DocumentLifecycleState(models.Model):

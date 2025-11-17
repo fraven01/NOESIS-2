@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
 from ai_core import api as ai_core_api
@@ -1245,9 +1245,18 @@ class CrawlerIngestionGraph:
         trace_id = state.get("trace_id") or state.get("meta", {}).get("trace_id")
         span_id = state.get("span_id") or state.get("meta", {}).get("span_id")
 
+        doc_collection_value = state.get("document_collection_id")
+        document_collection_id = None
+        if doc_collection_value:
+            try:
+                document_collection_id = UUID(str(doc_collection_value))
+            except Exception:
+                document_collection_id = None
+
         context = DocumentProcessingContext.from_document(
             normalized.document,
             case_id=str(case_id) if case_id else None,
+            document_collection_id=document_collection_id,
             trace_id=str(trace_id) if trace_id else None,
             span_id=str(span_id) if span_id else None,
         )

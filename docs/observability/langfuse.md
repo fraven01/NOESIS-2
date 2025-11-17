@@ -43,6 +43,10 @@ flowchart LR
 | `run_id` | Service-Schicht | Eindeutige ID pro Graph-Ausführung (`run_*`). |
 | `ingestion_run_id` | Service-Schicht | Eindeutige ID pro Upload-/Ingestion-Run (`ingest_*`). |
 | `tenant_id` | Celery Task Meta | Steuert RLS und Filter |
+| `case_id` | API / ToolContext | Business-Kontext (`Case.external_id`). |
+| `case_status` | Case Lifecycle | Aktueller Status (`open`/`closed`). |
+| `case_phase` | Case Lifecycle | Feinere Prozessphase (Tenant-Definition). |
+| `case_event_type` | Case Services | Letztes Lifecycle-Event (`ingestion_run_*`, `collection_search:*`). |
 | `operation` | Task- oder Node-Name | `ingestion.embed`, `agent.reason`, `liteLLM.call` |
 | `cost_total` | LiteLLM | Aggregierte Kosten pro Request |
 | `error_type` | Worker/LiteLLM | Klassifiziert Fehlertyp (z.B. `rate_limit`) |
@@ -54,6 +58,21 @@ flowchart LR
 - Hard-Delete-Läufe erzeugen einen Span `rag.hard_delete` mit Zählern (`documents_deleted`, `not_found`, `vacuum`, `reindex`, `operator`, `actor_mode`), sodass Audit und Bereinigungsschritte nachvollziehbar bleiben.
 - PII-Redaction: Die Anwendung maskiert PII vor jedem LLM-Aufruf; Langfuse erhält bereits redaktierte Daten. Zusätzliche Langfuse-Regeln sind optional.
 - Dashboards: Standard-Dashboards `Agent Erfolg`, `Ingestion Durchsatz`, `Kosten pro Tenant`. Alerts lösen bei Fehlerquote >5% oder Kosten >80% Budget aus.
+
+## Case Traces
+
+- **HTTP** – `_prepare_request` schreibt `case_id` in Meta und Trace-Tags.
+- **Ingestion** – `log_ingestion_run_start`/`end` sowie `case.lifecycle.ingestion`
+  Events veröffentlichen `case_status`, `case_phase`, `collection_scope` und
+  `ingestion_run_id`.
+- **Graph** – Der CollectionSearch-Worker ruft `case.lifecycle.collection_search`
+  Events auf (inkl. `case_event_types`), sobald Transitionen stattfinden.
+- **Retriever/Tools** – LangGraph Nodes geben `case_id`/`collection_scope` weiter,
+  sodass Traces die komplette Akte abbilden.
+
+So lässt sich ein Case-Ende-zu-Ende verfolgen: Request → Upload → Ingestion →
+Graph → Antwort. In Langfuse reicht es, nach `case.lifecycle.*` zu filtern, um die
+zugehörigen Events und Spans anzuzeigen.
 
 # Schritte
 1. Installiere und initialisiere das Langfuse SDK in Worker und Agenten (siehe [Docker-Konventionen](../docker/conventions.md)); setze ENV `LANGFUSE_*` laut [Security](../security/secrets.md).

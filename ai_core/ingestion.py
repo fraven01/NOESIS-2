@@ -27,6 +27,7 @@ from documents import (
 )
 
 from . import tasks as pipe
+from .case_events import emit_ingestion_case_event
 from .infra import object_store
 from .ingestion_utils import make_fallback_external_id
 from .ingestion_status import (
@@ -34,11 +35,32 @@ from .ingestion_status import (
     mark_ingestion_run_running,
 )
 from ai_core.tools import InputError
+from cases.models import Case
 
 from .rag.ingestion_contracts import resolve_ingestion_profile
 from .rag.vector_schema import ensure_vector_space_schema
 
 log = get_logger(__name__)
+
+
+def _load_case_observability_context(tenant_id: str, case_id: str) -> dict[str, str]:
+    if not tenant_id or not case_id:
+        return {}
+    for filter_kwargs in (
+        {"tenant_id": tenant_id, "external_id": case_id},
+        {"tenant__schema_name": tenant_id, "external_id": case_id},
+    ):
+        try:
+            record = (
+                Case.objects.filter(**filter_kwargs)
+                .values("status", "phase")
+                .first()
+            )
+        except Exception:
+            continue
+        if record:
+            return dict(record)
+    return {}
 
 
 def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
@@ -631,10 +653,19 @@ def process_document(
             "document_id": str(normalized_document.ref.document_id),
             "trace_id": trace_id,
         }
+        document_collection_id = getattr(
+            normalized_document.meta, "document_collection_id", None
+        )
+        if not document_collection_id:
+            document_collection_id = getattr(
+                normalized_document.ref, "document_collection_id", None
+            )
         if tenant_schema:
             meta["tenant_schema"] = tenant_schema
         if normalized_document.ref.collection_id is not None:
             meta["collection_id"] = str(normalized_document.ref.collection_id)
+        if document_collection_id:
+            meta["document_collection_id"] = str(document_collection_id)
 
         if not meta.get("tenant_id"):
             raise InputError(
@@ -715,6 +746,10 @@ def process_document(
             sanitized_meta_json["vector_space_schema"] = vector_space_schema
         if meta.get("collection_id"):
             sanitized_meta_json["collection_id"] = meta["collection_id"]
+        if document_collection_id:
+            sanitized_meta_json["document_collection_id"] = str(
+                document_collection_id
+            )
         if title:
             sanitized_meta_json["title"] = title
         if language:
@@ -736,6 +771,8 @@ def process_document(
             "content_hash": normalized_document.checksum,
             "document_id": str(normalized_document.ref.document_id),
         }
+        if document_collection_id:
+            state_meta["document_collection_id"] = str(document_collection_id)
         if normalized_pipeline_config is not None:
             state_meta["pipeline_config"] = dict(normalized_pipeline_config)
             state["pipeline_config"] = dict(normalized_pipeline_config)
@@ -986,6 +1023,7 @@ def run_ingestion(
     valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
     dispatch_ids = list(valid_ids if valid_ids else document_ids)
     doc_count = len(valid_ids)
+    start_case_context = _load_case_observability_context(tenant, case)
     try:
         binding = resolve_ingestion_profile(embedding_profile)
     except InputError as exc:
@@ -1032,6 +1070,8 @@ def run_ingestion(
         idempotency_key=idempotency_key,
         embedding_profile=resolved_profile_id,
         vector_space_id=vector_space_id,
+        case_status=start_case_context.get("status"),
+        case_phase=start_case_context.get("phase"),
     )
     mark_ingestion_run_running(
         tenant_id=tenant,
@@ -1039,6 +1079,12 @@ def run_ingestion(
         run_id=run_id,
         started_at=timezone.now().isoformat(),
         document_ids=dispatch_ids,
+    )
+    emit_ingestion_case_event(
+        tenant,
+        case,
+        run_id=run_id,
+        context="running",
     )
     started = time.perf_counter()
 
@@ -1158,21 +1204,25 @@ def run_ingestion(
             for result in results
         )
 
-        pipe.log_ingestion_run_end(
-            tenant=tenant,
-            case=case,
-            run_id=run_id,
-            doc_count=doc_count,
-            inserted=inserted,
-            replaced=replaced,
-            skipped=skipped,
-            total_chunks=total_chunks,
-            duration_ms=duration_ms,
-            trace_id=trace_id,
-            idempotency_key=idempotency_key,
-            embedding_profile=resolved_profile_id,
-            vector_space_id=vector_space_id,
-        )
+    end_case_context = _load_case_observability_context(tenant, case)
+
+    pipe.log_ingestion_run_end(
+        tenant=tenant,
+        case=case,
+        run_id=run_id,
+        doc_count=doc_count,
+        inserted=inserted,
+        replaced=replaced,
+        skipped=skipped,
+        total_chunks=total_chunks,
+        duration_ms=duration_ms,
+        trace_id=trace_id,
+        idempotency_key=idempotency_key,
+        embedding_profile=resolved_profile_id,
+        vector_space_id=vector_space_id,
+        case_status=end_case_context.get("status"),
+        case_phase=end_case_context.get("phase"),
+    )
 
     log.info(
         "Dispatched ingestion group",
@@ -1222,6 +1272,12 @@ def run_ingestion(
         invalid_document_ids=invalid_ids,
         document_ids=dispatch_ids,
         error=response.get("error"),
+    )
+    emit_ingestion_case_event(
+        tenant,
+        case,
+        run_id=run_id,
+        context="completed",
     )
 
     return response
