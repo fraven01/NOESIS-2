@@ -308,16 +308,41 @@
       <div class="space-y-3" id="web-search-results">
         <p class="text-sm text-slate-500">Noch keine Suche durchgeführt.</p>
       </div>
-                <div class="flex items-center gap-3">
-                  <button
-                    class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
-                    type="button"
-                    id="crawl-selected-button"
-                    disabled
-                  >
-                    Crawl Selected
-                  </button>
-                </div>    </div>
+
+      <div class="flex items-center gap-3">
+        <button
+          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2 disabled:opacity-50"
+          type="button"
+          id="crawl-selected-button"
+          disabled
+        >
+          Crawl Selected
+        </button>
+      </div>
+
+      <div
+        id="ingestion-status-panel"
+        class="hidden space-y-3 rounded-lg border border-slate-200 bg-slate-50 p-4"
+      >
+        <div class="flex items-center justify-between gap-3">
+          <div class="space-y-1">
+            <h3 class="text-sm font-semibold text-slate-900">Ingestion Tasks</h3>
+            <p class="text-xs text-slate-600">
+              Beobachtet die asynchronen Crawler-Läufe (HTTP 202) und zeigt finale Ergebnisse oder Guardrail-Denies an.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="clear-ingestion-tasks"
+            class="inline-flex items-center rounded-md border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition hover:bg-slate-100 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          >
+            Verlauf leeren
+          </button>
+        </div>
+        <div class="space-y-2" id="ingestion-task-list">
+          <p class="text-xs text-slate-500">Noch keine Tasks gestartet.</p>
+        </div>
+      </div>
 
     <div class="space-y-2">
       <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Web Search Raw Response</h3>
@@ -1873,6 +1898,9 @@
     const webSearchApproveButton = document.getElementById('web-search-approve');
     const webSearchRejectButton = document.getElementById('web-search-reject');
     const crawlSelectedButton = document.getElementById('crawl-selected-button');
+    const ingestionStatusPanel = document.getElementById('ingestion-status-panel');
+    const ingestionTaskList = document.getElementById('ingestion-task-list');
+    const clearIngestionTasksButton = document.getElementById('clear-ingestion-tasks');
     const rerankToggle = document.getElementById('web-search-rerank-toggle');
     const rerankButton = document.getElementById('web-search-rerank-button');
     const rerankStatusBox = document.getElementById('web-search-rerank-status');
@@ -1883,6 +1911,8 @@
     let lastSearchResponse = null;
     let rerankPollTimer = null;
     let rerankPollAttempts = 0;
+    const ingestionTasks = new Map();
+    const ingestionPollTimers = new Map();
 
     function stopRerankPolling() {
       if (rerankPollTimer) {
@@ -2055,6 +2085,327 @@
       }
     }
 
+    function stopIngestionPolling(taskId) {
+      const handle = ingestionPollTimers.get(taskId);
+      if (handle) {
+        clearTimeout(handle);
+        ingestionPollTimers.delete(taskId);
+      }
+    }
+
+    function summarizeGuardrail(data) {
+      const source = data && data.result ? data.result : data;
+      if (!source || typeof source !== 'object') {
+        return null;
+      }
+      const decision = source.decision || source.crawler_decision || null;
+      const reason = source.reason || source.message || null;
+      const policyEvents = Array.isArray(source.policy_events)
+        ? source.policy_events
+        : [];
+      if (!decision && !reason && !policyEvents.length) {
+        return null;
+      }
+      return {
+        decision: decision,
+        reason: reason,
+        policy_events: policyEvents,
+      };
+    }
+
+    function updateIngestionTask(taskId, updates) {
+      if (!taskId) {
+        return;
+      }
+      const existing = ingestionTasks.get(taskId) || {};
+      const now = Date.now();
+      ingestionTasks.set(taskId, {
+        taskId: taskId,
+        addedAt: existing.addedAt || now,
+        updatedAt: now,
+        ...existing,
+        ...updates,
+      });
+    }
+
+    function renderIngestionTasks() {
+      if (!ingestionStatusPanel || !ingestionTaskList) {
+        return;
+      }
+
+      if (!ingestionTasks.size) {
+        ingestionStatusPanel.classList.add('hidden');
+        ingestionTaskList.innerHTML =
+          '<p class="text-xs text-slate-500">Noch keine Tasks gestartet.</p>';
+        return;
+      }
+
+      ingestionStatusPanel.classList.remove('hidden');
+      ingestionTaskList.innerHTML = '';
+
+      const statusStyles = {
+        queued: 'border-amber-200 bg-amber-50 text-amber-800',
+        succeeded: 'border-emerald-200 bg-emerald-50 text-emerald-800',
+        failed: 'border-red-200 bg-red-50 text-red-800',
+      };
+
+      const statusLabels = {
+        queued: 'Wartet/Aktiv',
+        succeeded: 'Erfolgreich',
+        failed: 'Fehlgeschlagen',
+      };
+
+      const tasks = Array.from(ingestionTasks.values()).sort(function (a, b) {
+        return (b.updatedAt || 0) - (a.updatedAt || 0);
+      });
+
+      tasks.forEach(function (task) {
+        const card = document.createElement('article');
+        card.className = 'space-y-2 rounded-md border border-slate-200 bg-white p-3 shadow-sm';
+
+        const header = document.createElement('div');
+        header.className = 'flex flex-wrap items-center justify-between gap-2';
+
+        const title = document.createElement('div');
+        title.className = 'space-y-1';
+
+        const label = document.createElement('p');
+        label.className = 'text-sm font-semibold text-slate-900';
+        label.textContent = task.origin || task.documentId || task.taskId;
+        title.appendChild(label);
+
+        const meta = document.createElement('p');
+        meta.className = 'text-xs text-slate-500';
+        const parts = [];
+        if (task.documentId) {
+          parts.push('Doc: ' + task.documentId);
+        }
+        if (task.workflowId) {
+          parts.push('Workflow: ' + task.workflowId);
+        }
+        meta.textContent = parts.join(' • ') || 'Task-ID: ' + task.taskId;
+        title.appendChild(meta);
+        header.appendChild(title);
+
+        const badge = document.createElement('span');
+        badge.className =
+          'inline-flex items-center rounded-full border px-2 py-0.5 text-xs font-medium ' +
+          (statusStyles[task.status] || 'border-slate-200 bg-slate-100 text-slate-700');
+        badge.textContent = statusLabels[task.status] || task.status || 'Unbekannt';
+        header.appendChild(badge);
+
+        card.appendChild(header);
+
+        if (task.status_detail) {
+          const statusDetail = document.createElement('p');
+          statusDetail.className = 'text-xs text-slate-600';
+          statusDetail.textContent = task.status_detail;
+          card.appendChild(statusDetail);
+        }
+
+        if (task.status === 'succeeded' && (task.result || task.ingestionRunId)) {
+          const successList = document.createElement('dl');
+          successList.className = 'grid grid-cols-2 gap-x-3 gap-y-1 text-xs text-slate-700';
+
+          const addRow = function (term, value) {
+            const dt = document.createElement('dt');
+            dt.className = 'font-medium text-slate-600';
+            dt.textContent = term;
+            const dd = document.createElement('dd');
+            dd.className = 'text-right break-all';
+            dd.textContent = value || '–';
+            successList.appendChild(dt);
+            successList.appendChild(dd);
+          };
+
+          if (task.ingestionRunId) {
+            addRow('Ingestion Run', task.ingestionRunId);
+          }
+          if (task.documentId) {
+            addRow('Document', task.documentId);
+          }
+          if (task.result && task.result.ingestion_run_id) {
+            addRow('Run (Result)', task.result.ingestion_run_id);
+          }
+          if (task.result && task.result.document_id) {
+            addRow('Document (Result)', task.result.document_id);
+          }
+
+          if (successList.childElementCount > 0) {
+            card.appendChild(successList);
+          }
+        }
+
+        if (task.status === 'failed') {
+          const guardrail = summarizeGuardrail(task.error || task.result);
+          const errorBox = document.createElement('div');
+          errorBox.className = 'space-y-1 rounded-md border border-red-200 bg-red-50 p-2 text-xs text-red-800';
+          errorBox.textContent = 'Task fehlgeschlagen.';
+          if (guardrail) {
+            errorBox.textContent = '';
+            const titleRow = document.createElement('p');
+            titleRow.className = 'font-semibold';
+            titleRow.textContent = guardrail.decision
+              ? 'Guardrail: ' + guardrail.decision
+              : 'Guardrail-Hinweis';
+            errorBox.appendChild(titleRow);
+            if (guardrail.reason) {
+              const reason = document.createElement('p');
+              reason.textContent = guardrail.reason;
+              errorBox.appendChild(reason);
+            }
+            if (Array.isArray(guardrail.policy_events) && guardrail.policy_events.length) {
+              const list = document.createElement('ul');
+              list.className = 'list-disc space-y-1 pl-4';
+              guardrail.policy_events.forEach(function (entry) {
+                const item = document.createElement('li');
+                item.textContent = typeof entry === 'string' ? entry : JSON.stringify(entry);
+                list.appendChild(item);
+              });
+              errorBox.appendChild(list);
+            }
+          } else if (task.error) {
+            const reason = document.createElement('p');
+            reason.textContent = typeof task.error.message === 'string'
+              ? task.error.message
+              : JSON.stringify(task.error);
+            errorBox.appendChild(reason);
+          }
+          card.appendChild(errorBox);
+        }
+
+        if (task.status && task.status !== 'queued' && (task.result || task.error)) {
+          const details = document.createElement('details');
+          details.className = 'rounded-md border border-slate-200 bg-slate-50 p-2 text-xs text-slate-700';
+          const summary = document.createElement('summary');
+          summary.className = 'cursor-pointer font-semibold text-slate-800';
+          summary.textContent = 'Payload anzeigen';
+          details.appendChild(summary);
+
+          const pre = document.createElement('pre');
+          pre.className = 'mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-[11px] text-slate-700';
+          try {
+            pre.textContent = JSON.stringify(task.result || task.error, null, 2);
+          } catch (err) {
+            pre.textContent = String(task.result || task.error);
+          }
+          details.appendChild(pre);
+          card.appendChild(details);
+        }
+
+        ingestionTaskList.appendChild(card);
+      });
+    }
+
+    async function pollIngestionTask(taskId) {
+      try {
+        const response = await fetch(`/api/llm/tasks/${encodeURIComponent(taskId)}/`, {
+          method: 'GET',
+          headers: buildHeaders({ Accept: 'application/json' }),
+          credentials: 'include',
+        });
+        const data = await response.json();
+        const statusValue = data && data.status;
+        const updates = {
+          status: statusValue || (response.ok ? 'succeeded' : 'failed'),
+          result: data && data.result ? data.result : data,
+          error: !response.ok ? data : null,
+          ingestionRunId: data && data.ingestion_run_id,
+          documentId: data && data.document_id,
+          status_detail: data && data.state ? 'State: ' + data.state : null,
+        };
+        updateIngestionTask(taskId, updates);
+        if (statusValue === 'succeeded' || statusValue === 'failed' || response.status >= 500) {
+          stopIngestionPolling(taskId);
+        } else {
+          ingestionPollTimers.set(
+            taskId,
+            setTimeout(function () {
+              pollIngestionTask(taskId);
+            }, 2000)
+          );
+        }
+        renderIngestionTasks();
+      } catch (err) {
+        updateIngestionTask(taskId, {
+          status: 'failed',
+          status_detail: 'Polling fehlgeschlagen',
+          error: { message: err && err.message ? err.message : 'Polling error' },
+        });
+        stopIngestionPolling(taskId);
+        renderIngestionTasks();
+      }
+    }
+
+    function startIngestionPolling(taskId) {
+      if (!taskId || ingestionPollTimers.has(taskId)) {
+        return;
+      }
+      ingestionPollTimers.set(
+        taskId,
+        setTimeout(function () {
+          pollIngestionTask(taskId);
+        }, 500)
+      );
+    }
+
+    function extractTasksFromResponse(data) {
+      if (!data) {
+        return [];
+      }
+      if (Array.isArray(data.task_ids)) {
+        return data.task_ids;
+      }
+      if (data.result && Array.isArray(data.result.task_ids)) {
+        return data.result.task_ids;
+      }
+      return [];
+    }
+
+    function handleIngestionKickoff(data, statusCode) {
+      const tasks = extractTasksFromResponse(data);
+      if (tasks.length) {
+        tasks.forEach(function (task) {
+          if (!task || !task.task_id) {
+            return;
+          }
+          updateIngestionTask(task.task_id, {
+            origin: task.origin || task.url || null,
+            documentId: task.document_id,
+            workflowId: data && data.workflow_id ? data.workflow_id : null,
+            status: 'queued',
+            status_detail: 'Task angenommen (HTTP ' + statusCode + ')',
+          });
+          startIngestionPolling(task.task_id);
+        });
+        renderIngestionTasks();
+        alert('Crawler-Ingestion asynchron gestartet. Tasks: ' + tasks.length);
+        return;
+      }
+
+      if (data && data.result) {
+        const taskId = (data.result && data.result.task_id) || 'sync-' + Date.now();
+        updateIngestionTask(taskId, {
+          origin: data.result.origin,
+          documentId: data.result.document_id,
+          workflowId: data.result.workflow_id,
+          status: data.status === 'completed' ? 'succeeded' : data.status || 'succeeded',
+          result: data.result,
+          status_detail: 'Synchrones Ergebnis',
+        });
+        stopIngestionPolling(taskId);
+        renderIngestionTasks();
+        return;
+      }
+
+      updateIngestionTask('unknown-' + Date.now(), {
+        status: 'failed',
+        error: data || { message: 'Keine Task-IDs im Response' },
+        status_detail: 'Keine Task-IDs im Response',
+      });
+      renderIngestionTasks();
+    }
+
     webSearchResults.addEventListener('change', function (event) {
       if (event.target.type === 'checkbox') {
         const checkedCheckboxes = webSearchResults.querySelectorAll('input[type="checkbox"]:checked');
@@ -2087,23 +2438,28 @@
           }),
           body: JSON.stringify(payload),
         });
-
+        const parsed = await parseJsonOrText(response);
+        const data = Array.isArray(parsed) ? parsed[1] : parsed;
         if (response.ok) {
-          const data = await response.json();
-          if (data.status === 'completed') {
-            const urlCount = data.url_count || 0;
-            alert(`Crawling completed for ${urlCount} URL(s).`);
-          } else {
-            alert('Crawling started for selected URLs.');
-          }
+          handleIngestionKickoff(data, response.status);
         } else {
-          const data = await response.json();
-          alert('Error: ' + (data.error || 'Unknown error'));
+          alert('Error: ' + (data.error || data.detail || 'Unknown error'));
         }
       } catch (error) {
         alert('An unknown error occurred.');
       }
     });
+
+    if (clearIngestionTasksButton) {
+      clearIngestionTasksButton.addEventListener('click', function () {
+        ingestionTasks.clear();
+        ingestionPollTimers.forEach(function (timer) {
+          clearTimeout(timer);
+        });
+        ingestionPollTimers.clear();
+        renderIngestionTasks();
+      });
+    }
 
     function renderWebSearchResults(data) {
       if (!webSearchResults) {

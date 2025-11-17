@@ -93,11 +93,11 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graphs import (
-    crawler_ingestion_graph,
     info_intake,
 )  # noqa: F401
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
+from llm_worker.runner import submit_worker_task
 
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
 from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
@@ -2489,12 +2489,6 @@ class CrawlerIngestionRunnerView(APIView):
                 except Exception:
                     pass
 
-        origins_payload: list[dict[str, object]] = []
-        transitions_payload: list[dict[str, object]] = []
-        telemetry_payload: list[dict[str, object]] = []
-        errors_payload: list[dict[str, object]] = []
-        guardrail_exception: CrawlerRunError | None = None
-
         raw_header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not raw_header_idempotency:
             raw_header_idempotency = request.META.get(
@@ -2510,295 +2504,54 @@ class CrawlerIngestionRunnerView(APIView):
                 meta["idempotency_key"] = candidate_key
         header_idempotent = bool(resolved_idempotency)
 
+        task_ids: list[dict[str, object]] = []
         for build in state_builds:
-            graph = crawler_ingestion_graph.build_graph()
+            task_payload = {
+                "state": build.state,
+                "graph_name": "crawler_ingestion",
+            }
 
-            def _upsert_handler(decision):  # type: ignore[no-untyped-def]
-                try:
-                    document_id: object | None = None
-                    chunk_meta: object | None = None
-                    attributes = getattr(decision, "attributes", None)
-                    if isinstance(attributes, Mapping):
-                        chunk_meta = attributes.get("chunk_meta")
-                        if chunk_meta is not None:
-                            if hasattr(chunk_meta, "document_id"):
-                                document_id = getattr(chunk_meta, "document_id", None)
-                            elif isinstance(chunk_meta, Mapping):
-                                document_id = chunk_meta.get("document_id")
-                        if document_id is None:
-                            document_id = attributes.get("document_id")
-                    if document_id is None and hasattr(decision, "payload"):
-                        payload = getattr(decision, "payload")
-                        document_id = getattr(payload, "document_id", None)
-                        if document_id is None and hasattr(payload, "chunk_meta"):
-                            chunk_meta = getattr(payload, "chunk_meta", None)
-                            if getattr(chunk_meta, "document_id", None):
-                                document_id = getattr(chunk_meta, "document_id")
-                    if not document_id:
-                        document_id = build.document_id
-                    if not document_id:
-                        return {"status": "skipped", "reason": "missing_document_id"}
-                    request_data = {
-                        "document_ids": [str(document_id)],
-                        "embedding_profile": getattr(
-                            settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
-                        ),
-                    }
-                    collection_scope = (
-                        build.collection_id
-                        or request_model.collection_id
-                        or meta.get("collection_id")
-                    )
-                    ingest_meta = dict(meta)
-                    if collection_scope:
-                        request_data["collection_id"] = collection_scope
-                        ingest_meta["collection_id"] = collection_scope
-                    resp = services.start_ingestion_run(
-                        request_data,
-                        ingest_meta,
-                        idempotency_key=resolved_idempotency,
-                    )
-                    body = getattr(resp, "data", {}) or {}
-                    run_id = body.get("ingestion_run_id")
-                    status_label = body.get("status") or "queued"
-                    result = {"status": status_label}
-                    if run_id:
-                        result["ingestion_run_id"] = run_id
-                    return result
-                except Exception as exc:  # pragma: no cover - defensive
-                    return {"status": "error", "error": str(exc)}
-
-            try:
-                graph.upsert_handler = _upsert_handler  # type: ignore[attr-defined]
-            except Exception:
-                pass
-
-            try:
-                state = graph.start_crawl(build.state)
-            except Exception as exc:
-                errors_payload.append(
-                    {"origin": build.origin, "error": str(exc), "stage": "start_crawl"}
-                )
-                continue
-
-            graph_meta = {
+            scope = {
                 "tenant_id": meta["tenant_id"],
                 "case_id": meta["case_id"],
-                "workflow_id": state.get("workflow_id"),
+                "trace_id": meta.get("trace_id"),
+                "workflow_id": build.state.get("workflow_id"),
             }
 
-            try:
-                result_state, result = graph.run(state, graph_meta)
-            except Exception as exc:
-                errors_payload.append(
-                    {"origin": build.origin, "error": str(exc), "stage": "run"}
+            result, _completed = submit_worker_task(
+                task_payload=task_payload,
+                scope=scope,
+                graph_name="crawler_ingestion",
+                ledger_identifier=None,
+                initial_cost_total=None,
+                timeout_s=0.1,
+            )
+
+            task_id = result.get("task_id")
+            if task_id:
+                task_ids.append(
+                    {
+                        "task_id": task_id,
+                        "origin": build.origin,
+                        "document_id": build.document_id,
+                    }
                 )
-                continue
-
-            artifacts = result_state.get("artifacts", {}) or {}
-            upsert_result = (
-                artifacts.get("upsert_result") if isinstance(artifacts, dict) else {}
-            )
-            ingestion_run_id = None
-            if isinstance(upsert_result, dict):
-                ingestion_run_id = upsert_result.get("ingestion_run_id")
-
-            guardrail_decision = None
-            if isinstance(artifacts, Mapping):
-                guardrail_decision = artifacts.get("guardrail_decision")
-            guardrail_denied = (
-                isinstance(guardrail_decision, guardrails_middleware.GuardrailDecision)
-                and not guardrail_decision.allowed
-            )
-            if guardrail_denied:
-                guardrail_state: Mapping[str, object] = {}
-                candidate_state = result_state.get("guardrails")
-                if isinstance(candidate_state, Mapping):
-                    guardrail_state = candidate_state
-                else:
-                    original_state = build.state.get("guardrails")
-                    if isinstance(original_state, Mapping):
-                        guardrail_state = original_state
-
-                details_payload: dict[str, object] = {
-                    "origin": build.origin,
-                    "provider": build.provider,
-                    "document_id": build.document_id,
-                    "workflow_id": result_state.get("workflow_id"),
-                    "decision": guardrail_decision.decision,
-                    "reason": guardrail_decision.reason,
-                    "policy_events": list(guardrail_decision.policy_events),
-                    "attributes": _serialise_guardrail_attributes(
-                        getattr(guardrail_decision, "attributes", None)
-                    ),
-                    "limits": _serialise_guardrail_component(
-                        guardrail_state.get("limits") if guardrail_state else None
-                    ),
-                    "signals": _serialise_guardrail_component(
-                        guardrail_state.get("signals") if guardrail_state else None
-                    ),
-                    "graph_run_id": result.get("graph_run_id"),
-                    "transitions": _serialise_guardrail_component(
-                        result.get("transitions")
-                    ),
-                    "summary": _serialise_guardrail_component(
-                        result_state.get("summary")
-                    ),
-                    "fetch_used": build.fetch_used,
-                    "http_status": build.http_status,
-                    "fetched_bytes": build.fetched_bytes,
-                    "media_type_effective": build.media_type_effective,
-                    "fetch_elapsed": build.fetch_elapsed,
-                    "fetch_retries": build.fetch_retries,
-                    "fetch_retry_reason": build.fetch_retry_reason,
-                    "fetch_backoff_total_ms": build.fetch_backoff_total_ms,
-                }
-
-                filtered_details = {
-                    key: value
-                    for key, value in details_payload.items()
-                    if value is not None
-                }
-
-                guardrail_exception = CrawlerRunError(
-                    (
-                        f"Guardrails denied origin '{build.origin}' due to "
-                        f"{guardrail_decision.reason}."
-                    ),
-                    code="crawler_guardrail_denied",
-                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                    details=filtered_details,
-                )
-                break
-
-            normalized_input = result_state.get("normalized_document_input")
-            normalized_document_id: str | None = None
-            normalized_tags: Sequence[str] = ()
-            normalized_content_hash: str | None = None
-            if isinstance(normalized_input, NormalizedDocument):
-                normalized_document_id = str(normalized_input.ref.document_id)
-                normalized_tags = tuple(normalized_input.meta.tags or [])
-                normalized_content_hash = normalized_input.checksum
-            elif isinstance(normalized_input, Mapping):
-                ref_candidate = normalized_input.get("ref")
-                if isinstance(ref_candidate, Mapping):
-                    ref_document_id = ref_candidate.get("document_id")
-                    if ref_document_id is not None:
-                        normalized_document_id = str(ref_document_id)
-                tags_candidate = normalized_input.get("meta")
-                if isinstance(tags_candidate, Mapping):
-                    meta_tags = tags_candidate.get("tags")
-                    if isinstance(meta_tags, Sequence) and not isinstance(
-                        meta_tags, (str, bytes, bytearray)
-                    ):
-                        normalized_tags = tuple(str(tag) for tag in meta_tags)
-                    checksum_candidate = tags_candidate.get("checksum")
-                    if isinstance(checksum_candidate, str):
-                        normalized_content_hash = checksum_candidate
-                checksum_value = normalized_input.get("checksum")
-                if isinstance(checksum_value, str):
-                    normalized_content_hash = checksum_value
-                elif isinstance(normalized_input.get("tags"), Sequence):
-                    tags_value = normalized_input.get("tags")
-                    if isinstance(tags_value, Sequence) and not isinstance(
-                        tags_value, (str, bytes, bytearray)
-                    ):
-                        normalized_tags = tuple(str(tag) for tag in tags_value)
-
-            origin_snapshot = {
-                "workflow_id": result_state.get("workflow_id"),
-                "document_id": normalized_document_id
-                or result_state.get("document_id"),
-                "origin_uri": result_state.get("origin_uri"),
-                "provider": result_state.get("provider"),
-                "tags": list(normalized_tags),
-                "snapshot_requested": build.snapshot_requested,
-                "snapshot_label": build.snapshot_label,
-            }
-            content_hash_value = normalized_content_hash or result_state.get(
-                "content_hash"
-            )
-            origin_snapshot["content_hash"] = content_hash_value
-            if build.snapshot_path:
-                origin_snapshot["snapshot_path"] = build.snapshot_path
-            if build.snapshot_sha256:
-                origin_snapshot["snapshot_sha256"] = build.snapshot_sha256
-
-            origin_entry: dict[str, object] = {
-                "origin": build.origin,
-                "provider": build.provider,
-                "document_id": build.document_id,
-                "result": services._make_json_safe(result),
-                "control": services._make_json_safe(result_state.get("control", {})),
-                "ingest_action": result_state.get("ingest_action"),
-                "gating_score": result_state.get("gating_score"),
-                "graph_run_id": result.get("graph_run_id"),
-                "state": services._make_json_safe(origin_snapshot),
-                "collection_id": build.collection_id,
-                "review": build.review,
-                "dry_run": build.dry_run,
-            }
-            if ingestion_run_id:
-                origin_entry["ingestion_run_id"] = ingestion_run_id
-
-            origins_payload.append(origin_entry)
-
-            transitions_payload.append(
-                {
-                    "origin": build.origin,
-                    "transitions": services._make_json_safe(
-                        result_state.get("transitions", {})
-                    ),
-                }
-            )
-
-            telemetry_entry: dict[str, object] = {
-                "origin": build.origin,
-                "provider": build.provider,
-                "fetch_used": build.fetch_used,
-                "http_status": build.http_status,
-                "fetched_bytes": build.fetched_bytes,
-                "media_type_effective": build.media_type_effective,
-                "fetch_elapsed": build.fetch_elapsed,
-                "fetch_retries": build.fetch_retries,
-                "fetch_retry_reason": build.fetch_retry_reason,
-                "fetch_backoff_total_ms": build.fetch_backoff_total_ms,
-                "snapshot_requested": build.snapshot_requested,
-                "snapshot_label": build.snapshot_label,
-                "tags": list(build.tags),
-            }
-            if build.snapshot_path:
-                telemetry_entry["snapshot_path"] = build.snapshot_path
-            if build.snapshot_sha256:
-                telemetry_entry["snapshot_sha256"] = build.snapshot_sha256
-            telemetry_payload.append(telemetry_entry)
-
-        if guardrail_exception is not None:
-            payload = {
-                "detail": str(guardrail_exception),
-                "code": guardrail_exception.code,
-            }
-            payload.update(guardrail_exception.details)
-            response = Response(payload, status=guardrail_exception.status_code)
-            return apply_std_headers(response, meta)
 
         response_payload = {
+            "status": "accepted",
             "workflow_id": workflow_id,
             "mode": request_model.mode,
             "collection_id": request_model.collection_id,
-            "origins": origins_payload,
-            "transitions": transitions_payload,
-            "telemetry": telemetry_payload,
-            "errors": errors_payload,
+            "task_ids": task_ids,
             "idempotent": bool(fingerprint_match or header_idempotent),
+            "message": f"Crawler-Ingestion für {len(task_ids)} URL(s) gestartet (asynchron)",
         }
-        response_body = json.dumps(response_payload)
-        response = HttpResponse(response_body, status=status.HTTP_200_OK)
-        response["Content-Type"] = "application/json"
+        response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         response = apply_std_headers(response, meta)
         if resolved_idempotency:
             response[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
         return response
+
 
 
 class RagDemoViewV1(_BaseAgentView):

@@ -1607,9 +1607,9 @@ class _ProductionIngestionTrigger:
 
         try:
             crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=10.0) as client:
                 response = client.post(crawler_url, json=payload, headers=headers)
-            if response.status_code == 200:
+            if response.status_code in (200, 202):
                 return response.json()
             return {"error": "crawler_failed", "status_code": response.status_code}
         except Exception as exc:
