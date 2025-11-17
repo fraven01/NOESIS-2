@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import time
 from hashlib import sha256
 from collections.abc import Mapping, MutableMapping, Sequence
@@ -18,6 +19,7 @@ from ai_core.infra.observability import emit_event, observe_span, update_observa
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
 from ai_core.llm.pricing import calculate_chat_completion_cost
+from ai_core.rag.embeddings import EmbeddingClient
 from ai_core.tools.web_search import (
     SearchProviderError,
     SearchResult,
@@ -216,6 +218,9 @@ class GraphInput(BaseModel):
     quality_mode: str = Field(default="standard")
     max_candidates: int = Field(default=20, ge=5, le=40)
     purpose: str = Field(min_length=1)
+    auto_ingest: bool = Field(default=False)
+    auto_ingest_top_k: int = Field(default=10, ge=1, le=20)
+    auto_ingest_min_score: float = Field(default=60.0, ge=0.0, le=100.0)
 
     @field_validator("quality_mode", mode="before")
     @classmethod
@@ -338,6 +343,62 @@ def _parse_iso_datetime(value: Any) -> datetime | None:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def _cosine_similarity(vec_a: Sequence[float], vec_b: Sequence[float]) -> float:
+    """Calculate cosine similarity between two vectors."""
+    if not vec_a or not vec_b or len(vec_a) != len(vec_b):
+        return 0.0
+
+    dot_product = sum(a * b for a, b in zip(vec_a, vec_b))
+    norm_a = math.sqrt(sum(a * a for a in vec_a))
+    norm_b = math.sqrt(sum(b * b for b in vec_b))
+
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+
+    return dot_product / (norm_a * norm_b)
+
+
+def _calculate_generic_heuristics(
+    result: Mapping[str, Any],
+    query: str,
+) -> float:
+    """Calculate generic quality heuristics for a search result (0-100 score)."""
+    score = 0.0
+
+    title = str(result.get("title") or "").lower()
+    snippet = str(result.get("snippet") or "").lower()
+    url = str(result.get("url") or "").lower()
+    query_lower = query.lower()
+
+    # 1. Title relevance (0-30 points)
+    if query_lower in title:
+        score += 30.0
+    elif any(word in title for word in query_lower.split() if len(word) > 3):
+        score += 15.0
+
+    # 2. Snippet quality (0-25 points)
+    snippet_words = len(snippet.split())
+    score += min(snippet_words / 20.0, 25.0)  # More context = better
+
+    # 3. Query coverage in snippet (0-20 points)
+    query_mentions = snippet.count(query_lower)
+    score += min(query_mentions * 10.0, 20.0)
+
+    # 4. URL quality penalties (0 to -20 points)
+    if any(
+        x in url
+        for x in ["login", "signup", "register", "cookie-policy", "privacy-policy"]
+    ):
+        score -= 20.0
+
+    # 5. Source position boost (small bonus for early results)
+    position = result.get("position", 0)
+    if position < 3:
+        score += 5.0
+
+    return max(0.0, min(score, 100.0))
 
 
 class CollectionSearchGraph:
@@ -628,6 +689,123 @@ class CollectionSearchGraph:
             decision = "error"
             rationale = "web_search_failed"
         return Transition(decision, rationale, meta)
+
+    @observe_span(name="graph.collection_search.k_embedding_rank")
+    def _k_embedding_rank(
+        self,
+        *,
+        ids: _GraphIds,
+        query: str,
+        purpose: str,
+        search_results: Sequence[Mapping[str, Any]],
+        run_state: MutableMapping[str, Any],
+        top_k: int = 20,
+    ) -> Transition:
+        """Rank search results using embeddings + generic heuristics."""
+        if not search_results:
+            meta = self._base_meta(ids)
+            meta["ranked_count"] = 0
+            return Transition("skipped", "no_results_to_rank", meta)
+
+        rank_start = time.time()
+
+        # Build query embedding text
+        query_text = f"{query} {purpose}".strip()
+
+        # Prepare texts for embedding (query + all snippets)
+        texts_to_embed = [query_text]
+        result_texts = []
+        for result in search_results:
+            title = str(result.get("title") or "")
+            snippet = str(result.get("snippet") or "")
+            combined = f"{title} {snippet}".strip()
+            result_texts.append(combined)
+            texts_to_embed.append(combined)
+
+        # Get embeddings
+        try:
+            embedding_client = EmbeddingClient.from_settings()
+            embedding_result = embedding_client.embed(texts_to_embed)
+            embeddings = embedding_result.vectors
+        except Exception as exc:
+            LOGGER.warning("embedding_rank.embedding_failed", exc_info=exc)
+            # Fallback: just use heuristics
+            embeddings = []
+
+        # Calculate scores
+        scored_results = []
+        query_embedding = embeddings[0] if len(embeddings) > 0 else []
+
+        for idx, result in enumerate(search_results):
+            result_embedding = embeddings[idx + 1] if len(embeddings) > idx + 1 else []
+
+            # Embedding similarity score (0-100)
+            embedding_score = 0.0
+            if query_embedding and result_embedding:
+                similarity = _cosine_similarity(query_embedding, result_embedding)
+                embedding_score = similarity * 100.0  # Convert to 0-100
+
+            # Heuristic score (0-100)
+            heuristic_score = _calculate_generic_heuristics(result, query)
+
+            # Hybrid score: 60% embedding + 40% heuristics
+            hybrid_score = (0.6 * embedding_score) + (0.4 * heuristic_score)
+
+            # Attach score to result
+            scored_result = dict(result)
+            scored_result["embedding_rank_score"] = hybrid_score
+            scored_result["embedding_similarity"] = embedding_score
+            scored_result["heuristic_score"] = heuristic_score
+            scored_results.append(scored_result)
+
+        # Sort by hybrid score (highest first)
+        scored_results.sort(
+            key=lambda r: r.get("embedding_rank_score", 0.0), reverse=True
+        )
+
+        # Take top-k
+        top_results = scored_results[:top_k]
+
+        # Update state
+        run_state["search"]["results"] = top_results
+        run_state.setdefault("embedding_rank", {})["scored_count"] = len(scored_results)
+        run_state["embedding_rank"]["top_k"] = len(top_results)
+
+        rank_latency = time.time() - rank_start
+
+        # Telemetry
+        attributes = self._base_meta(ids)
+        attributes.update(
+            {
+                "input_count": len(search_results),
+                "ranked_count": len(scored_results),
+                "top_k_count": len(top_results),
+                "latency_ms": int(rank_latency * 1000),
+                "avg_embedding_score": (
+                    sum(r.get("embedding_similarity", 0.0) for r in top_results)
+                    / len(top_results)
+                    if top_results
+                    else 0.0
+                ),
+                "avg_heuristic_score": (
+                    sum(r.get("heuristic_score", 0.0) for r in top_results)
+                    / len(top_results)
+                    if top_results
+                    else 0.0
+                ),
+            }
+        )
+        self._record_span_attributes(attributes)
+
+        meta = self._base_meta(ids)
+        meta.update(
+            {
+                "ranked_count": len(scored_results),
+                "top_k_count": len(top_results),
+                "latency_ms": int(rank_latency * 1000),
+            }
+        )
+        return Transition("ranked", "embedding_rank_completed", meta)
 
     @observe_span(name="graph.collection_search.k_hybrid_score")
     def _k_execute_hybrid_score(
@@ -1046,11 +1224,134 @@ class CollectionSearchGraph:
             )
             return working_state, result
 
+        # --------------------------------------------------------- embedding rank
+        embedding_rank_transition = self._k_embedding_rank(
+            ids=ids,
+            query=graph_input.question,
+            purpose=graph_input.purpose,
+            search_results=search_results,
+            run_state=working_state,
+            top_k=20,
+        )
+        _record("k_embedding_rank", embedding_rank_transition)
+        # Refresh search snapshot after ranking
+        search_snapshot = self._search_snapshot(working_state)
+
+        # ---------------------------------------------------- auto-ingestion (optional)
+        ingestion_payload: Mapping[str, Any] | None = None
+        outcome = "search_completed"
+
+        if graph_input.auto_ingest:
+            # Extract ranked results with scores
+            ranked_results = search_snapshot.get("results") or []
+
+            # Score-based filtering with fallback logic
+            min_score = graph_input.auto_ingest_min_score
+            filtered_results = [
+                r
+                for r in ranked_results
+                if r.get("embedding_rank_score", 0.0) >= min_score
+            ]
+
+            # Fallback: If less than 3 results with primary threshold, try 50
+            if len(filtered_results) < 3 and min_score > 50.0:
+                fallback_min = 50.0
+                filtered_results = [
+                    r
+                    for r in ranked_results
+                    if r.get("embedding_rank_score", 0.0) >= fallback_min
+                ]
+                LOGGER.info(
+                    "auto_ingest.fallback_threshold original=%s fallback=%s count=%s",
+                    min_score,
+                    fallback_min,
+                    len(filtered_results),
+                )
+
+            # Error if no results meet minimum quality threshold
+            if not filtered_results:
+                LOGGER.error(
+                    "auto_ingest.insufficient_quality min_score=%s fallback_min=%s",
+                    min_score,
+                    50.0,
+                )
+                result = self._build_result(
+                    outcome="auto_ingest_failed_quality_threshold",
+                    telemetry=telemetry,
+                    hitl=None,
+                    ingestion=None,
+                    coverage=None,
+                    search=search_snapshot,
+                )
+                return working_state, result
+
+            # Limit to top_k
+            top_k_limit = min(graph_input.auto_ingest_top_k, len(filtered_results))
+            selected_results = filtered_results[:top_k_limit]
+
+            # Extract URLs
+            approved_urls = [
+                r["url"]
+                for r in selected_results
+                if isinstance(r.get("url"), str) and r["url"]
+            ]
+
+            if approved_urls:
+                # Trigger ingestion
+                context = {
+                    "tenant_id": ids.tenant_id,
+                    "workflow_id": ids.workflow_id,
+                    "case_id": ids.case_id,
+                    "collection_scope": ids.collection_scope,
+                    "trace_id": ids.trace_id,
+                    "run_id": ids.run_id,
+                }
+
+                try:
+                    ingestion_meta = self._ingestion_trigger.trigger(
+                        approved_urls=approved_urls,
+                        context=context,
+                    )
+                    working_state.setdefault("ingestion", {})["meta"] = dict(
+                        ingestion_meta
+                    )
+                    ingestion_payload = dict(ingestion_meta)
+                    outcome = "auto_ingest_triggered"
+
+                    LOGGER.info(
+                        "auto_ingest.triggered",
+                        url_count=len(approved_urls),
+                        min_score=min_score,
+                        selected_count=len(selected_results),
+                    )
+
+                    # Record transition for telemetry
+                    auto_ingest_meta = self._base_meta(ids)
+                    auto_ingest_meta.update(
+                        {
+                            "url_count": len(approved_urls),
+                            "min_score": min_score,
+                            "avg_score": sum(
+                                r.get("embedding_rank_score", 0.0)
+                                for r in selected_results
+                            )
+                            / len(selected_results),
+                        }
+                    )
+                    auto_ingest_transition = Transition(
+                        "triggered", "auto_ingestion_triggered", auto_ingest_meta
+                    )
+                    _record("k_auto_ingest", auto_ingest_transition)
+
+                except Exception as exc:
+                    LOGGER.exception("auto_ingest.trigger_failed", exc_info=exc)
+                    outcome = "auto_ingest_trigger_failed"
+
         result = self._build_result(
-            outcome="search_completed",
+            outcome=outcome,
             telemetry=telemetry,
             hitl=None,
-            ingestion=None,
+            ingestion=ingestion_payload,
             coverage=None,
             search=search_snapshot,
         )

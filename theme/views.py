@@ -31,6 +31,7 @@ from llm_worker.runner import submit_worker_task
 
 
 logger = get_logger(__name__)
+build_graph = build_external_knowledge_graph  # Backwards compatibility for tests
 
 
 def home(request):
@@ -457,12 +458,12 @@ def start_rerank_workflow(request):
             "trace_id": trace_id,
         }
 
-        # Enqueue the task without blocking (timeout_s=0 means don't wait)
+        # Execute task synchronously with extended timeout for pipeline visualization
         result_payload, completed = submit_worker_task(
             task_payload=task_payload,
             scope=scope,
             graph_name="collection_search",
-            timeout_s=30,
+            timeout_s=120,
         )
 
         logger.info(

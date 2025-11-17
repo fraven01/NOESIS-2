@@ -252,3 +252,168 @@ def test_search_without_results_returns_no_candidates() -> None:
     assert result["outcome"] == "no_candidates"
     assert result["search"]["results"] == []
     assert len(search_worker.calls) == 3
+
+
+def test_auto_ingest_disabled_by_default() -> None:
+    """Test that auto_ingest=False (default) does not trigger ingestion."""
+    strategy = StubStrategyGenerator()
+    search_worker = StubWebSearchWorker()
+    ingestion_trigger = StubIngestionTrigger()
+    graph = CollectionSearchGraph(
+        strategy_generator=strategy,
+        search_worker=search_worker,
+        hybrid_executor=StubHybridExecutor(),
+        hitl_gateway=StubHitlGateway(decision=None),
+        ingestion_trigger=ingestion_trigger,
+        coverage_verifier=StubCoverageVerifier(),
+    )
+
+    state, result = graph.run(_initial_state())
+
+    assert result["outcome"] == "search_completed"
+    assert ingestion_trigger.calls == []
+    assert result.get("ingestion") is None
+
+
+def test_auto_ingest_triggers_with_high_scores() -> None:
+    """Test auto_ingest=True triggers ingestion for results with score >= 60."""
+    strategy = StubStrategyGenerator()
+
+    class HighScoreSearchWorker(StubWebSearchWorker):
+        def run(self, *, query: str, context: Mapping[str, Any]) -> WebSearchResponse:
+            self.calls.append((query, context))
+            # Return results with high scores
+            results = [
+                SearchResult(
+                    url=f"https://docs.acme.test/page{i}",
+                    title=f"Doc {i}",
+                    snippet="High quality content",
+                    source="acme",
+                    score=0.9,
+                    is_pdf=False,
+                )
+                for i in range(5)
+            ]
+            outcome = ToolOutcome(
+                decision="ok",
+                rationale="search_completed",
+                meta={"provider": "stub", "latency_ms": 120},
+            )
+            return WebSearchResponse(results=results, outcome=outcome)
+
+    search_worker = HighScoreSearchWorker()
+    ingestion_trigger = StubIngestionTrigger()
+    graph = CollectionSearchGraph(
+        strategy_generator=strategy,
+        search_worker=search_worker,
+        hybrid_executor=StubHybridExecutor(),
+        hitl_gateway=StubHitlGateway(decision=None),
+        ingestion_trigger=ingestion_trigger,
+        coverage_verifier=StubCoverageVerifier(),
+    )
+
+    # Enable auto_ingest
+    initial_state = _initial_state()
+    initial_state["input"]["auto_ingest"] = True
+    initial_state["input"]["auto_ingest_top_k"] = 10
+    initial_state["input"]["auto_ingest_min_score"] = 60.0
+
+    # Patch embedding rank to add high scores
+    original_run = graph.run
+
+    def patched_run(state, meta=None):
+        working_state, result = original_run(state, meta)
+        # Inject high scores into results after embedding rank
+        if "search" in working_state and "results" in working_state["search"]:
+            for idx, res in enumerate(working_state["search"]["results"]):
+                res["embedding_rank_score"] = 70.0 - (
+                    idx * 2
+                )  # 70, 68, 66, 64, 62, ...
+        return working_state, result
+
+    graph.run = patched_run
+
+    state, result = graph.run(initial_state)
+
+    assert result["outcome"] == "auto_ingest_triggered"
+    assert len(ingestion_trigger.calls) == 1
+    urls, context = ingestion_trigger.calls[0]
+    assert len(urls) > 0
+    assert context["tenant_id"] == "tenant-1"
+
+
+def test_auto_ingest_fallback_to_lower_threshold() -> None:
+    """Test auto_ingest falls back to score >= 50 when < 3 results with score >= 60."""
+    strategy = StubStrategyGenerator()
+    search_worker = StubWebSearchWorker()
+    ingestion_trigger = StubIngestionTrigger()
+    graph = CollectionSearchGraph(
+        strategy_generator=strategy,
+        search_worker=search_worker,
+        hybrid_executor=StubHybridExecutor(),
+        hitl_gateway=StubHitlGateway(decision=None),
+        ingestion_trigger=ingestion_trigger,
+        coverage_verifier=StubCoverageVerifier(),
+    )
+
+    initial_state = _initial_state()
+    initial_state["input"]["auto_ingest"] = True
+    initial_state["input"]["auto_ingest_top_k"] = 10
+    initial_state["input"]["auto_ingest_min_score"] = 65.0
+
+    # Patch to inject medium scores (only 2 above 65, but several above 50)
+    original_run = graph.run
+
+    def patched_run(state, meta=None):
+        working_state, result = original_run(state, meta)
+        if "search" in working_state and "results" in working_state["search"]:
+            scores = [68.0, 66.0, 55.0, 54.0, 53.0, 52.0]
+            for idx, res in enumerate(working_state["search"]["results"]):
+                if idx < len(scores):
+                    res["embedding_rank_score"] = scores[idx]
+        return working_state, result
+
+    graph.run = patched_run
+
+    state, result = graph.run(initial_state)
+
+    # Should use fallback threshold of 50
+    assert result["outcome"] == "auto_ingest_triggered"
+    assert len(ingestion_trigger.calls) == 1
+
+
+def test_auto_ingest_fails_with_insufficient_quality() -> None:
+    """Test auto_ingest fails when no results meet minimum quality threshold."""
+    strategy = StubStrategyGenerator()
+    search_worker = StubWebSearchWorker()
+    ingestion_trigger = StubIngestionTrigger()
+    graph = CollectionSearchGraph(
+        strategy_generator=strategy,
+        search_worker=search_worker,
+        hybrid_executor=StubHybridExecutor(),
+        hitl_gateway=StubHitlGateway(decision=None),
+        ingestion_trigger=ingestion_trigger,
+        coverage_verifier=StubCoverageVerifier(),
+    )
+
+    initial_state = _initial_state()
+    initial_state["input"]["auto_ingest"] = True
+    initial_state["input"]["auto_ingest_top_k"] = 10
+    initial_state["input"]["auto_ingest_min_score"] = 60.0
+
+    # Patch to inject low scores (all below 50)
+    original_run = graph.run
+
+    def patched_run(state, meta=None):
+        working_state, result = original_run(state, meta)
+        if "search" in working_state and "results" in working_state["search"]:
+            for idx, res in enumerate(working_state["search"]["results"]):
+                res["embedding_rank_score"] = 40.0 - (idx * 2)  # 40, 38, 36, ...
+        return working_state, result
+
+    graph.run = patched_run
+
+    state, result = graph.run(initial_state)
+
+    assert result["outcome"] == "auto_ingest_failed_quality_threshold"
+    assert ingestion_trigger.calls == []

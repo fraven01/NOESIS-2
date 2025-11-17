@@ -10,14 +10,30 @@ from celery.result import AsyncResult
 from django.http import JsonResponse
 from django.urls import reverse
 from pydantic import ValidationError
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.decorators import api_view
 from structlog.stdlib import get_logger
 
 from llm_worker.runner import submit_worker_task
 from llm_worker.schemas import WorkerTask
+from noesis2.api import default_extend_schema
+from noesis2.api.serializers import IdempotentResponseSerializer
 
 logger = get_logger(__name__)
+
+
+class WorkerRunCompletedResponseSerializer(IdempotentResponseSerializer):
+    status = serializers.CharField()
+    task_id = serializers.CharField()
+    result = serializers.JSONField(required=False)
+    state = serializers.JSONField(required=False)
+    cost_summary = serializers.JSONField(required=False, allow_null=True)
+
+
+class WorkerRunQueuedResponseSerializer(IdempotentResponseSerializer):
+    status = serializers.CharField()
+    task_id = serializers.CharField()
+    status_url = serializers.URLField()
 
 
 def _format_validation_error(error: ValidationError) -> str:
@@ -32,6 +48,13 @@ def _format_validation_error(error: ValidationError) -> str:
     return "; ".join(messages)
 
 
+@default_extend_schema(
+    summary="Submit a worker graph task",
+    responses={
+        200: WorkerRunCompletedResponseSerializer,
+        202: WorkerRunQueuedResponseSerializer,
+    },
+)
 @api_view(["POST"])
 def run_task(request) -> JsonResponse:
     """Submit a worker task (currently score_results) and optionally wait for completion."""
@@ -90,6 +113,7 @@ def run_task(request) -> JsonResponse:
     if completed:
         return JsonResponse(
             {
+                "idempotent": False,
                 "status": "succeeded",
                 "task_id": task_payload.get("task_id"),
                 "result": task_payload.get("result"),
@@ -104,6 +128,7 @@ def run_task(request) -> JsonResponse:
     )
     return JsonResponse(
         {
+            "idempotent": False,
             "status": "queued",
             "task_id": task_payload["task_id"],
             "status_url": status_url,

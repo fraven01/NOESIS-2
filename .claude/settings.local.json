@@ -7,7 +7,10 @@
       "Bash(python -c:*)",
       "Bash(cat:*)",
       "Bash(git log:*)",
-      "Bash(git mv:*)"
+      "Bash(git mv:*)",
+      "Bash(find:*)",
+      "Bash(python -m pytest:*)",
+      "Bash(npm run test:py:cov:*)"
     ],
     "deny": [],
     "ask": []

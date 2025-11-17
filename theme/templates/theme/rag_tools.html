@@ -172,6 +172,44 @@
           </button>
           <span class="text-xs text-slate-500">nutzt LLM, kann ein paar Sekunden dauern.</span>
         </div>
+
+        <!-- Auto-Ingest Controls -->
+        <div class="flex flex-wrap items-center gap-4 border-t border-slate-200 pt-2">
+          <label class="inline-flex items-center gap-2 text-sm font-medium text-slate-700">
+            <input
+              type="checkbox"
+              id="auto-ingest-toggle"
+              class="h-4 w-4 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            Auto-Ingest
+          </label>
+          <div id="auto-ingest-options" class="flex flex-wrap items-center gap-3 opacity-50 pointer-events-none">
+            <label class="inline-flex items-center gap-1.5 text-xs text-slate-600">
+              <span>Min. Score:</span>
+              <input
+                type="number"
+                id="auto-ingest-min-score"
+                class="w-16 rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500"
+                min="50"
+                max="100"
+                step="5"
+                value="60"
+              />
+            </label>
+            <label class="inline-flex items-center gap-1.5 text-xs text-slate-600">
+              <span>Top-K:</span>
+              <input
+                type="number"
+                id="auto-ingest-top-k"
+                class="w-14 rounded border-slate-300 px-2 py-1 text-xs focus:border-indigo-500 focus:ring-indigo-500"
+                min="1"
+                max="20"
+                value="10"
+              />
+            </label>
+            <span class="text-xs text-slate-500">Crawlt automatisch hochwertige Ergebnisse (Score ≥60, Fallback ≥50)</span>
+          </div>
+        </div>
         <div
           id="web-search-rerank-status"
           class="hidden items-center gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
@@ -238,6 +276,20 @@
                   <span class="step-duration text-xs text-slate-500 hidden"></span>
                 </div>
                 <div class="step-queries space-y-1 mt-2 ml-6 hidden"></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Embedding Rank -->
+          <div class="pipeline-step" data-node="k_embedding_rank" data-status="pending">
+            <div class="flex items-center gap-3">
+              <span class="step-icon">□</span>
+              <div class="flex-1">
+                <div class="flex items-center gap-2">
+                  <span class="step-label text-sm font-medium">Embedding Rank</span>
+                  <span class="step-duration text-xs text-slate-500 hidden"></span>
+                </div>
+                <div class="step-details text-xs text-slate-600 mt-1 hidden"></div>
               </div>
             </div>
           </div>
@@ -2239,15 +2291,23 @@
         const metaRow = document.createElement('div');
         metaRow.className = 'flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500';
 
-        const crawlerScore = document.createElement('span');
-        const crawlerScoreValue = Number.isFinite(result && result.score) ? Number(result.score).toFixed(3) : '–';
-        crawlerScore.textContent = 'Crawler-Score: ' + crawlerScoreValue;
-        metaRow.appendChild(crawlerScore);
-
         const source = document.createElement('span');
         source.textContent = 'Quelle: ' + (result && result.source ? result.source : '–');
         metaRow.appendChild(source);
 
+        // Embedding Rank Score (if available)
+        if (result && typeof result.embedding_rank_score === 'number') {
+          const embeddingBadge = document.createElement('span');
+          embeddingBadge.className = 'inline-flex items-center rounded-full border px-2 py-0.5 font-medium';
+          const hybridScore = Math.round(result.embedding_rank_score);
+          const embScore = Math.round(result.embedding_similarity || 0);
+          const heurScore = Math.round(result.heuristic_score || 0);
+          embeddingBadge.classList.add('border-blue-200', 'bg-blue-50', 'text-blue-800');
+          embeddingBadge.textContent = '🎯 ' + hybridScore + ' (E:' + embScore + ' H:' + heurScore + ')';
+          metaRow.appendChild(embeddingBadge);
+        }
+
+        // LLM Rerank Score (if available)
         if (rerankActive) {
           const badge = document.createElement('span');
           badge.className = 'inline-flex items-center rounded-full border px-2 py-0.5 font-medium';
@@ -2392,6 +2452,23 @@
         });
 
         renderQueryBreakdown(telemetry);
+      }
+
+      // Update Embedding Rank node
+      const embeddingRankNode = nodes['k_embedding_rank'];
+      if (embeddingRankNode) {
+        const inputCount = embeddingRankNode.input_count || 0;
+        const topK = embeddingRankNode.top_k_count || 0;
+        const avgEmbScore = embeddingRankNode.avg_embedding_score || 0;
+        const avgHeurScore = embeddingRankNode.avg_heuristic_score || 0;
+
+        const details = `Ranked ${inputCount} → Top ${topK} | Avg scores: Emb ${avgEmbScore.toFixed(1)} / Heur ${avgHeurScore.toFixed(1)}`;
+
+        updatePipelineStep('k_embedding_rank', {
+          status: 'completed',
+          duration: embeddingRankNode.latency_ms || embeddingRankNode.duration_ms || 0,
+          details: details,
+        });
       }
 
       const totalLatency = Object.values(nodes).reduce(function (sum, node) {
@@ -2662,6 +2739,21 @@
     // Rerank Workflow button handler
     const rerankWorkflowButton = document.getElementById('rerank-workflow-submit');
     const webSearchMessages = document.getElementById('web-search-messages');
+    const autoIngestToggle = document.getElementById('auto-ingest-toggle');
+    const autoIngestOptions = document.getElementById('auto-ingest-options');
+    const autoIngestMinScore = document.getElementById('auto-ingest-min-score');
+    const autoIngestTopK = document.getElementById('auto-ingest-top-k');
+
+    // Toggle auto-ingest options visibility
+    if (autoIngestToggle && autoIngestOptions) {
+      autoIngestToggle.addEventListener('change', function () {
+        if (this.checked) {
+          autoIngestOptions.classList.remove('opacity-50', 'pointer-events-none');
+        } else {
+          autoIngestOptions.classList.add('opacity-50', 'pointer-events-none');
+        }
+      });
+    }
 
     if (rerankWorkflowButton) {
       rerankWorkflowButton.addEventListener('click', async function (event) {
@@ -2702,7 +2794,15 @@
           quality_mode: 'standard',
           max_candidates: 20,
           case_id: 'local',
+          auto_ingest: autoIngestToggle && autoIngestToggle.checked,
+          auto_ingest_min_score: autoIngestMinScore ? parseFloat(autoIngestMinScore.value) : 60.0,
+          auto_ingest_top_k: autoIngestTopK ? parseInt(autoIngestTopK.value) : 10,
         };
+
+        // Disable button and show loading state
+        rerankWorkflowButton.disabled = true;
+        const originalText = rerankWorkflowButton.textContent;
+        rerankWorkflowButton.textContent = 'Läuft...';
 
         try {
           const response = await fetch('/rag-tools/start-rerank-workflow/', {
@@ -2768,6 +2868,10 @@
             webSearchError.textContent = 'Netzwerkfehler: ' + error.message;
             webSearchError.classList.remove('hidden');
           }
+        } finally {
+          // Re-enable button
+          rerankWorkflowButton.disabled = false;
+          rerankWorkflowButton.textContent = originalText;
         }
       });
     }
