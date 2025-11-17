@@ -350,21 +350,25 @@ def web_search_ingest_selected(request):
         # Use localhost since we're in the same service
         crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
 
-        with httpx.Client(timeout=30.0) as client:
+        with httpx.Client(timeout=10.0) as client:
             response = client.post(
                 crawler_url,
                 json=crawler_payload,
                 headers=headers,
             )
 
-        if response.status_code == 200:
+        if response.status_code in (200, 202):
             response_data = response.json()
             return JsonResponse(
                 {
-                    "status": "completed",
+                    "status": "accepted"
+                    if response.status_code == 202
+                    else "completed",
                     "result": response_data,
+                    "task_ids": response_data.get("task_ids"),
                     "url_count": len(urls),
-                }
+                },
+                status=response.status_code,
             )
         else:
             return JsonResponse(
