@@ -241,6 +241,10 @@ def log_ingestion_run_start(
     idempotency_key: Optional[str] = None,
     embedding_profile: Optional[str] = None,
     vector_space_id: Optional[str] = None,
+    case_status: Optional[str] = None,
+    case_phase: Optional[str] = None,
+    collection_scope: Optional[str] = None,
+    document_collection_key: Optional[str] = None,
 ) -> None:
     extra = {
         "tenant_id": tenant,
@@ -256,6 +260,14 @@ def log_ingestion_run_start(
         extra["embedding_profile"] = embedding_profile
     if vector_space_id:
         extra["vector_space_id"] = vector_space_id
+    if case_status:
+        extra["case_status"] = case_status
+    if case_phase:
+        extra["case_phase"] = case_phase
+    if collection_scope:
+        extra["collection_scope"] = collection_scope
+    if document_collection_key:
+        extra["document_collection_key"] = document_collection_key
     logger.info("ingestion.start", extra=extra)
     if trace_id:
         record_span(
@@ -321,6 +333,10 @@ def log_ingestion_run_end(
     idempotency_key: Optional[str] = None,
     embedding_profile: Optional[str] = None,
     vector_space_id: Optional[str] = None,
+    case_status: Optional[str] = None,
+    case_phase: Optional[str] = None,
+    collection_scope: Optional[str] = None,
+    document_collection_key: Optional[str] = None,
 ) -> None:
     extra = {
         "tenant_id": tenant,
@@ -341,6 +357,14 @@ def log_ingestion_run_end(
         extra["embedding_profile"] = embedding_profile
     if vector_space_id:
         extra["vector_space_id"] = vector_space_id
+    if case_status:
+        extra["case_status"] = case_status
+    if case_phase:
+        extra["case_phase"] = case_phase
+    if collection_scope:
+        extra["collection_scope"] = collection_scope
+    if document_collection_key:
+        extra["document_collection_key"] = document_collection_key
     logger.info("ingestion.end", extra=extra)
     metrics.INGESTION_RUN_MS.observe(float(duration_ms))
     if trace_id:

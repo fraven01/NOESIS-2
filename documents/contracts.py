@@ -177,6 +177,10 @@ class DocumentRef(BaseModel):
     collection_id: Optional[UUID] = Field(
         default=None, description="Optional collection containing the document."
     )
+    document_collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional logical DocumentCollection identifier for the document.",
+    )
     version: Optional[str] = Field(
         default=None,
         description="Optional semantic version marker for the ingested document.",
@@ -193,7 +197,7 @@ class DocumentRef(BaseModel):
     def _normalize_workflow_id(cls, value: str) -> str:
         return normalize_workflow_id(value)
 
-    @field_validator("document_id", "collection_id", mode="before")
+    @field_validator("document_id", "collection_id", "document_collection_id", mode="before")
     @classmethod
     def _coerce_uuid_fields(cls, value):
         return _coerce_uuid(value)
@@ -373,6 +377,10 @@ class DocumentMeta(BaseModel):
         default_factory=list,
         description="Optional collection of tags for retrieval and filtering.",
     )
+    document_collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional logical DocumentCollection identifier for the document.",
+    )
     origin_uri: Optional[str] = Field(
         default=None,
         description="Original source URI for the ingested document.",
@@ -443,6 +451,20 @@ class DocumentMeta(BaseModel):
         if isinstance(value, (list, tuple, set)):
             return list(value)
         raise TypeError("tags_type")
+
+    @field_validator("document_collection_id", mode="before")
+    @classmethod
+    def _coerce_document_collection_id_meta(
+        cls, value: Optional[UUID] | str
+    ) -> Optional[UUID]:
+        if value is None:
+            return None
+        if isinstance(value, UUID):
+            return value
+        candidate = normalize_optional_string(value)
+        if not candidate:
+            return None
+        return UUID(candidate)
 
     @field_validator("tags")
     @classmethod
@@ -771,6 +793,10 @@ class NormalizedDocumentInputV1(BaseModel):
         default=None,
         description="Optional collection identifier the document belongs to.",
     )
+    document_collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Optional logical DocumentCollection identifier for the document.",
+    )
     case_id: Optional[str] = Field(
         default=None,
         description="Optional business case identifier supplied alongside the document.",
@@ -833,6 +859,16 @@ class NormalizedDocumentInputV1(BaseModel):
     @field_validator("collection_id", mode="before")
     @classmethod
     def _coerce_collection_id(cls, value):
+        if value is None:
+            return None
+        try:
+            return _coerce_uuid(value)
+        except (TypeError, ValueError):
+            return None
+
+    @field_validator("document_collection_id", mode="before")
+    @classmethod
+    def _coerce_document_collection_id(cls, value):
         if value is None:
             return None
         try:
@@ -999,6 +1035,13 @@ class NormalizedDocumentInputV1(BaseModel):
             if encoding_hint:
                 self.blob = self.blob.model_copy(update={"encoding": encoding_hint})
 
+        return self
+
+    @model_validator(mode="after")
+    def _validate_collection_consistency(self) -> "NormalizedDocumentInputV1":
+        if self.collection_id and self.document_collection_id:
+            if self.collection_id != self.document_collection_id:
+                raise ValueError("document_collection_mismatch")
         return self
 
     @property

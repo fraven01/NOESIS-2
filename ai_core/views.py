@@ -117,6 +117,10 @@ from .rag.ingestion_contracts import (
     resolve_ingestion_profile as resolve_ingestion_profile,  # test hook
 )
 
+from cases.models import Case
+from cases.services import get_or_create_case_for
+from customers.models import Tenant
+
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 
@@ -189,8 +193,69 @@ class CrawlerRunError(RuntimeError):
         self.details = dict(details or {})
 
 
-def assert_case_active(tenant: str, case_id: str) -> None:
-    """Placeholder for future case activity checks."""
+def _resolve_case_tenant(tenant_identifier: str) -> Tenant | None:
+    normalized_identifier = (tenant_identifier or "").strip()
+    candidate: Tenant | None = None
+    if normalized_identifier:
+        try:
+            candidate = Tenant.objects.get(pk=normalized_identifier)
+        except (Tenant.DoesNotExist, ValueError):
+            candidate = None
+        if candidate is None:
+            try:
+                candidate = Tenant.objects.get(schema_name=normalized_identifier)
+            except Tenant.DoesNotExist:
+                candidate = None
+    if candidate is not None:
+        return candidate
+
+    schema_name = getattr(connection, "schema_name", None)
+    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+    if schema_name and schema_name != public_schema:
+        try:
+            return Tenant.objects.get(schema_name=schema_name)
+        except Tenant.DoesNotExist:
+            return None
+    return None
+
+
+def assert_case_active(tenant: str, case_id: str) -> Response | None:
+    """Ensure the referenced case exists and can accept new work."""
+
+    tenant_obj = _resolve_case_tenant(tenant)
+    if tenant_obj is None:
+        return _error_response(
+            "Tenant context for this request could not be resolved.",
+            "tenant_not_found",
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    normalized_case_id = (case_id or "").strip()
+    if not normalized_case_id:
+        return _error_response(
+            "Case header is required and must use the documented format.",
+            "invalid_case_header",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    case_exists = Case.objects.filter(
+        tenant=tenant_obj, external_id=normalized_case_id
+    ).exists()
+    if not case_exists:
+        return _error_response(
+            "Case not found for this tenant. Create or activate the case before invoking this endpoint.",
+            "case_not_found",
+            status.HTTP_404_NOT_FOUND,
+        )
+
+    case = get_or_create_case_for(tenant_obj, normalized_case_id)
+    if case.status == Case.Status.CLOSED:
+        return _error_response(
+            "Case is closed and cannot accept additional requests.",
+            "case_closed",
+            status.HTTP_409_CONFLICT,
+        )
+
     return None
 
 
@@ -628,7 +693,9 @@ def _prepare_request(request: Request):
             collection_id = candidate
 
     trace_id = uuid4().hex
-    assert_case_active(tenant_id, case_id)
+    case_error = assert_case_active(tenant_id, case_id)
+    if case_error is not None:
+        return None, case_error
     meta = {
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,
@@ -2208,6 +2275,38 @@ class RagIngestionStatusView(APIView):
                 status.HTTP_404_NOT_FOUND,
             )
             return apply_std_headers(response, meta)
+
+        tenant_obj = _resolve_case_tenant(meta["tenant_id"])
+        if tenant_obj is not None:
+            case_obj = Case.objects.filter(
+                tenant=tenant_obj, external_id=meta["case_id"]
+            ).first()
+            if case_obj is not None:
+                response_payload["case_status"] = case_obj.status
+                if case_obj.phase:
+                    response_payload["case_phase"] = case_obj.phase
+                latest_case_event = (
+                    case_obj.events.filter(event_type__startswith="ingestion_run_")
+                    .order_by("-created_at")
+                    .first()
+                )
+                if latest_case_event is not None:
+                    response_payload["latest_case_event"] = {
+                        "event_type": latest_case_event.event_type,
+                        "created_at": latest_case_event.created_at.isoformat(),
+                    }
+                    if latest_case_event.trace_id:
+                        response_payload["latest_case_event"]["trace_id"] = (
+                            latest_case_event.trace_id
+                        )
+                    if latest_case_event.payload:
+                        response_payload["latest_case_event"]["payload"] = (
+                            latest_case_event.payload
+                        )
+                    if latest_case_event.ingestion_run_id:
+                        response_payload["latest_case_event"]["ingestion_run_id"] = (
+                            latest_case_event.ingestion_run.run_id
+                        )
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         processed_response = apply_std_headers(response, meta)

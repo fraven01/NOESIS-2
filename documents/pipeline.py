@@ -235,6 +235,10 @@ class DocumentProcessingMetadata(BaseModel):
     collection_id: Optional[UUID] = Field(
         default=None, description="Collection identifier the document belongs to"
     )
+    document_collection_id: Optional[UUID] = Field(
+        default=None,
+        description="Logical DocumentCollection identifier associated with the document",
+    )
     case_id: Optional[str] = Field(
         default=None, description="Case identifier associated with the document"
     )
@@ -267,6 +271,20 @@ class DocumentProcessingMetadata(BaseModel):
             raise ValueError("metadata_required_string")
         return normalize_tenant(str(value))
 
+    @field_validator("collection_id", "document_collection_id", mode="before")
+    @classmethod
+    def _coerce_optional_uuid(
+        cls, value: Optional[UUID] | str
+    ) -> Optional[UUID]:
+        if value is None:
+            return None
+        if isinstance(value, UUID):
+            return value
+        candidate = normalize_optional_string(value)
+        if not candidate:
+            return None
+        return UUID(candidate)
+
     @field_validator("workflow_id", mode="before")
     @classmethod
     def _normalize_workflow(cls, value: str) -> str:
@@ -294,6 +312,7 @@ class DocumentProcessingMetadata(BaseModel):
         document,
         *,
         case_id: Optional[str] = None,
+        document_collection_id: Optional[UUID] = None,
         trace_id: Optional[str] = None,
         span_id: Optional[str] = None,
     ) -> "DocumentProcessingMetadata":
@@ -331,9 +350,16 @@ class DocumentProcessingMetadata(BaseModel):
         if workflow_id is None:
             raise ValueError("metadata_workflow_missing")
 
+        if document_collection_id is None:
+            document_collection_id = getattr(ref, "document_collection_id", None)
+        if document_collection_id is None:
+            meta = getattr(document, "meta", None)
+            document_collection_id = getattr(meta, "document_collection_id", None)
+
         return cls(
             tenant_id=ref.tenant_id,
             collection_id=getattr(ref, "collection_id", None),
+            document_collection_id=document_collection_id,
             case_id=case_id,
             workflow_id=workflow_id,
             document_id=ref.document_id,
@@ -366,6 +392,7 @@ class DocumentProcessingContext:
             f"state={self.state.value!r}, "
             f"metadata=DocumentProcessingMetadata(tenant_id={self.metadata.tenant_id!r}, "
             f"collection_id={self.metadata.collection_id!r}, "
+            f"document_collection_id={self.metadata.document_collection_id!r}, "
             f"case_id={self.metadata.case_id!r}, "
             f"workflow_id={self.metadata.workflow_id!r}, "
             f"document_id={self.metadata.document_id!r}, "
@@ -404,6 +431,7 @@ class DocumentProcessingContext:
         document,
         *,
         case_id: Optional[str] = None,
+        document_collection_id: Optional[UUID] = None,
         initial_state: ProcessingState | str = ProcessingState.INGESTED,
         trace_id: Optional[str] = None,
         span_id: Optional[str] = None,
@@ -411,6 +439,7 @@ class DocumentProcessingContext:
         metadata = DocumentProcessingMetadata.from_document(
             document,
             case_id=case_id,
+            document_collection_id=document_collection_id,
             trace_id=trace_id,
             span_id=span_id,
         )
@@ -796,6 +825,9 @@ def _ensure_context_matches_document(
     if metadata.document_id != getattr(ref, "document_id", None):
         raise ValueError("context_document_mismatch")
     if metadata.collection_id != getattr(ref, "collection_id", None):
+        raise ValueError("context_document_mismatch")
+    ref_collection = getattr(ref, "document_collection_id", None)
+    if metadata.document_collection_id != ref_collection:
         raise ValueError("context_document_mismatch")
     if metadata.version != getattr(ref, "version", None):
         raise ValueError("context_document_mismatch")

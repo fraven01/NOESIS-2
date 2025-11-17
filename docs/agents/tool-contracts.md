@@ -48,6 +48,11 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 
 **Hinweis:** Ein Modell-Validator erzwingt, dass exakt eine der IDs `run_id` oder `ingestion_run_id` vorhanden ist. Client- und Service-Schichten erzeugen passende Werte (`run_...` für Graph-Ausführungen, `ingest_...` für Uploads) und spiegeln sie in Langfuse-Tags sowie Persistenzschichten wider.
 
+> **Case-Bindung:** `case_id` referenziert direkt `Case.external_id`. Header,
+> ToolContext und Chunk-Metadaten zeigen damit auf denselben Case-Datensatz; falls
+> noch kein Case existiert, erzeugt der Case-Service beim ersten Lifecycle-Event
+> (`ingestion_run_*`, `collection_search:*`, …) automatisch einen Eintrag.
+
 ## ToolResult & ToolResultMeta
 
 Erfolgreiche Antworten bestehen aus einem `ToolResult`-Envelope und einem frei definierbaren Datenmodell (`OT`).

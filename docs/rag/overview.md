@@ -46,6 +46,16 @@ Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenan
 - **Retriever:** Hybrid-Suchen unterstützen drei Modi ohne zusätzliche Flags: (1) Case-only (`filters.case_id`), (2) Collection-only (`filters.collection_id` oder `filters.collection_ids`), (3) Case + mehrere Collections (Union der Kandidatenmenge). Tenant-Isolation bleibt eine harte WHERE-Bedingung. Logs und Traces dokumentieren die effektive Collection-Klassifizierung (`collection_scope` = `single|list|none`) sowie die Kandidatenanzahl.
 - **Tracing & Observability:** `collection_id` wird als Trace-Tag und im Debug-Logging mitgeführt, sodass Langfuse-Filter ohne Payload-Einsicht möglich sind.
 
+## Scopes
+
+Neben `collection_id` existieren zwei weitere, orthogonale Scopes:
+
+- **`tenant_id`** – harte Isolation und Billing-Einheit. Jeder Request muss einen Tenant liefern und wird serverseitig erzwungen.
+- **`collection_id`/`collection_scope`** – technischer Vector-Store-Scope (UUID) bzw. `DocumentCollection.key`. Bestimmt, welche Chunks adressiert werden.
+- **`case_id`** – verweist auf `Case.external_id` und bildet die Business-Akte ab. Header, ToolContext und Graph-State propagieren diesen Wert; Retriever können damit gezielt Case-spezifische Chunks filtern.
+
+Alle drei Scopes landen als Trace-/Event-Tags in Langfuse, sodass komplette Case-Verläufe (Upload → Ingestion → Graph) nachvollziehbar bleiben.
+
 ## Mehrdimensionale Profile
 Wir unterscheiden künftig drei orthogonale Dimensionen, die Einfluss auf den Vektor-Speicher haben: (1) **Tenant** bzw. gebuchtes Service-Level, (2) **Prozesskontext** (z. B. Draft, Review, Final) und (3) **Dokumentklasse** (z. B. juristische Dokumente, technische Handbücher). Das aktuelle Setup unterstützt zwar Tenants über `tenant_id`, koppelt aber alle weiteren Dimensionen an ein einziges Embedding-Profil (`vector(1536)` + `oai-embed-large`).
 

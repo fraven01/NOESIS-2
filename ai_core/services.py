@@ -79,6 +79,7 @@ from documents.contracts import (
 )
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
+from .case_events import emit_ingestion_case_event
 from .infra import object_store
 from .ingestion import partition_document_ids, run_ingestion
 from .ingestion_status import record_ingestion_run_queued
@@ -1059,6 +1060,12 @@ def start_ingestion_run(
         trace_id=meta["trace_id"],
         embedding_profile=validated_data.embedding_profile,
         source=validated_data.source,
+    )
+    emit_ingestion_case_event(
+        meta["tenant_id"],
+        meta["case_id"],
+        run_id=ingestion_run_id,
+        context="queued",
     )
 
     idempotent = bool(idempotency_key)

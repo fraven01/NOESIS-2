@@ -233,6 +233,7 @@ TENANT_APPS = [
     "rest_framework",
     "drf_spectacular",
     "crawler",
+    "cases.apps.CasesConfig",
     "documents",
     "ai_core",
     "llm_worker",

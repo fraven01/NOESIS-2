@@ -6,6 +6,8 @@ from celery import shared_task
 
 from ai_core.graph.registry import get as get_graph_runner
 from ai_core.graphs.cost_tracking import track_ledger_costs
+from ai_core.infra.observability import emit_event
+from cases.integration import emit_case_lifecycle_for_collection_search
 from common.celery import ScopedTask
 from llm_worker.graphs import run_score_results
 
@@ -74,8 +76,34 @@ def run_graph(  # type: ignore[no-untyped-def]
     if cost_summary and "total_usd" in cost_summary:
         cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
 
-    return {
+    payload = {
         "state": new_state,
         "result": result,
         "cost_summary": cost_summary,
     }
+
+    lifecycle_result = emit_case_lifecycle_for_collection_search(
+        graph_name=graph_name,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        state=new_state,
+    )
+    if lifecycle_result is not None:
+        case = lifecycle_result.case
+        payload = {
+            "tenant_id": str(case.tenant_id),
+            "case_id": case.external_id,
+            "case_status": case.status,
+            "case_phase": case.phase or "",
+            "case_event_types": lifecycle_result.event_types,
+            "collection_scope": lifecycle_result.collection_scope,
+            "workflow_id": lifecycle_result.workflow_id,
+            "graph_name": graph_name,
+        }
+        if lifecycle_result.trace_id:
+            payload["trace_id"] = lifecycle_result.trace_id
+        elif trace_id:
+            payload["trace_id"] = trace_id
+        emit_event("case.lifecycle.collection_search", payload)
+
+    return payload

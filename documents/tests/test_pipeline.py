@@ -51,14 +51,20 @@ def _sample_document() -> NormalizedDocument:
     workflow_id = "workflow-1"
     document_id = uuid4()
     collection_id = uuid4()
+    document_collection_id = uuid4()
     ref = DocumentRef(
         tenant_id=tenant_id,
         workflow_id=workflow_id,
         document_id=document_id,
         collection_id=collection_id,
+        document_collection_id=document_collection_id,
         version="v1",
     )
-    meta = DocumentMeta(tenant_id=tenant_id, workflow_id=workflow_id)
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        document_collection_id=document_collection_id,
+    )
     discriminator_field = "type" if "type" in InlineBlob.model_fields else "kind"
     literal_values = get_args(InlineBlob.model_fields[discriminator_field].annotation)
     discriminator_value = literal_values[0]
@@ -282,6 +288,10 @@ def test_processing_context_roundtrip_preserves_metadata():
         assert context.metadata is metadata
         assert context.metadata.tenant_id == document.ref.tenant_id
         assert context.metadata.collection_id == document.ref.collection_id
+        assert (
+            context.metadata.document_collection_id
+            == document.meta.document_collection_id
+        )
         assert context.metadata.workflow_id == document.ref.workflow_id
         assert context.metadata.document_id == document.ref.document_id
         assert context.metadata.version == document.ref.version
@@ -313,6 +323,10 @@ def test_processing_context_with_case_override_preserves_values():
         assert context.metadata.case_id == "CASE-123"
         assert context.metadata.workflow_id == document.ref.workflow_id
         assert context.metadata.collection_id == document.ref.collection_id
+        assert (
+            context.metadata.document_collection_id
+            == document.meta.document_collection_id
+        )
         assert context.trace_id == "trace-xyz"
         assert context.span_id == "span-uvw"
 
