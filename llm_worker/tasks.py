@@ -90,7 +90,7 @@ def run_graph(  # type: ignore[no-untyped-def]
     )
     if lifecycle_result is not None:
         case = lifecycle_result.case
-        payload = {
+        lifecycle_payload = {
             "tenant_id": str(case.tenant_id),
             "case_id": case.external_id,
             "case_status": case.status,
@@ -101,9 +101,11 @@ def run_graph(  # type: ignore[no-untyped-def]
             "graph_name": graph_name,
         }
         if lifecycle_result.trace_id:
-            payload["trace_id"] = lifecycle_result.trace_id
+            lifecycle_payload["trace_id"] = lifecycle_result.trace_id
         elif trace_id:
-            payload["trace_id"] = trace_id
-        emit_event("case.lifecycle.collection_search", payload)
+            lifecycle_payload["trace_id"] = trace_id
+
+        payload["case_lifecycle"] = lifecycle_payload
+        emit_event("case.lifecycle.collection_search", lifecycle_payload)
 
     return payload
