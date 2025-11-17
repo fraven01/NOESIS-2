@@ -2299,7 +2299,7 @@
 
     async function pollIngestionTask(taskId) {
       try {
-        const response = await fetch(`/llm_worker/tasks/${encodeURIComponent(taskId)}/`, {
+        const response = await fetch(`/api/llm/tasks/${encodeURIComponent(taskId)}/`, {
           method: 'GET',
           headers: buildHeaders({ Accept: 'application/json' }),
           credentials: 'include',
