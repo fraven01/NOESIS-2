@@ -14,8 +14,6 @@ from ai_core.infra.pii_flags import (
 from ai_core.infra.policy import clear_session_scope, set_session_scope
 from ai_core.infra.pii import mask_text
 from common.celery import ScopedTask
-from customers.models import Tenant
-from django_tenants.utils import get_public_schema_name, schema_context
 
 
 @pytest.fixture(autouse=True)
@@ -170,25 +168,23 @@ def test_mask_text_deterministic_under_scope(pii_config_env):
 
 
 @pytest.mark.django_db
-def test_scoped_task_uses_tenant_profiles():
-    public_schema = get_public_schema_name()
-    with schema_context(public_schema):
-        tenant_disabled = Tenant.objects.create(
-            schema_name="scope-disabled",
-            name="Scope Disabled",
-            pii_mode="off",
-            pii_policy="off",
-            pii_deterministic=False,
-            pii_hmac_secret="",
-        )
-        tenant_enabled = Tenant.objects.create(
-            schema_name="scope-enabled",
-            name="Scope Enabled",
-            pii_mode="gold",
-            pii_policy="strict",
-            pii_deterministic=True,
-            pii_hmac_secret="tenant-secret",
-        )
+def test_scoped_task_uses_tenant_profiles(tenant_factory):
+    tenant_disabled = tenant_factory(
+        schema_name="scope-disabled",
+        name="Scope Disabled",
+        pii_mode="off",
+        pii_policy="off",
+        pii_deterministic=False,
+        pii_hmac_secret="",
+    )
+    tenant_enabled = tenant_factory(
+        schema_name="scope-enabled",
+        name="Scope Enabled",
+        pii_mode="gold",
+        pii_policy="strict",
+        pii_deterministic=True,
+        pii_hmac_secret="tenant-secret",
+    )
     captured: list[dict[str, object]] = []
 
     class _TenantTask(ScopedTask):
@@ -210,23 +206,18 @@ def test_scoped_task_uses_tenant_profiles():
     task = _TenantTask()
     task.bind(current_app)
 
-    try:
-        disabled_result = task.__call__(
-            "disabled",
-            tenant_id=tenant_disabled.id,
-            case_id="case-a",
-            trace_id="trace-a",
-        )
-        enabled_result = task.__call__(
-            "enabled",
-            tenant_id=tenant_enabled.id,
-            case_id="case-b",
-            trace_id="trace-b",
-        )
-    finally:
-        with schema_context(public_schema):
-            tenant_disabled.delete()
-            tenant_enabled.delete()
+    disabled_result = task.__call__(
+        "disabled",
+        tenant_id=tenant_disabled.id,
+        case_id="case-a",
+        trace_id="trace-a",
+    )
+    enabled_result = task.__call__(
+        "enabled",
+        tenant_id=tenant_enabled.id,
+        case_id="case-b",
+        trace_id="trace-b",
+    )
 
     assert disabled_result == "Reach user@example.com"
     assert "user@example.com" in disabled_result
@@ -248,55 +239,43 @@ def test_scoped_task_uses_tenant_profiles():
 
 
 @pytest.mark.django_db
-def test_load_tenant_pii_config_is_cached(django_assert_num_queries):
-    public_schema = get_public_schema_name()
-    with schema_context(public_schema):
-        tenant = Tenant.objects.create(
-            schema_name="cache-tenant",
-            name="Cache Tenant",
-            pii_mode="gold",
-            pii_policy="strict",
-            pii_deterministic=True,
-            pii_hmac_secret="cache-secret",
-        )
+def test_load_tenant_pii_config_is_cached(tenant_factory, django_assert_num_queries):
+    tenant = tenant_factory(
+        schema_name="cache-tenant",
+        name="Cache Tenant",
+        pii_mode="gold",
+        pii_policy="strict",
+        pii_deterministic=True,
+        pii_hmac_secret="cache-secret",
+    )
 
-    try:
-        with django_assert_num_queries(2):
-            first = load_tenant_pii_config(tenant.id)
+    with django_assert_num_queries(2):
+        first = load_tenant_pii_config(tenant.id)
 
-        with django_assert_num_queries(0):
-            second = load_tenant_pii_config(tenant.id)
-            third = load_tenant_pii_config(str(tenant.id))
+    with django_assert_num_queries(0):
+        second = load_tenant_pii_config(tenant.id)
+        third = load_tenant_pii_config(str(tenant.id))
 
-        assert first == second == third
-        assert first["mode"] == "gold"
-        assert first["deterministic"] is True
-    finally:
-        with schema_context(public_schema):
-            tenant.delete()
+    assert first == second == third
+    assert first["mode"] == "gold"
+    assert first["deterministic"] is True
 
 
 @pytest.mark.django_db
-def test_load_tenant_pii_config_accepts_schema_name():
-    public_schema = get_public_schema_name()
-    with schema_context(public_schema):
-        tenant = Tenant.objects.create(
-            schema_name="cache-tenant-schema",
-            name="Cache Tenant Schema",
-            pii_mode="gold",
-            pii_policy="strict",
-            pii_deterministic=True,
-            pii_hmac_secret="cache-secret",
-        )
+def test_load_tenant_pii_config_accepts_schema_name(tenant_factory):
+    tenant = tenant_factory(
+        schema_name="cache-tenant-schema",
+        name="Cache Tenant Schema",
+        pii_mode="gold",
+        pii_policy="strict",
+        pii_deterministic=True,
+        pii_hmac_secret="cache-secret",
+    )
 
-    try:
-        config = load_tenant_pii_config(tenant.schema_name)
-        assert config is not None
-        assert config["mode"] == "gold"
-        assert config["deterministic"] is True
-    finally:
-        with schema_context(public_schema):
-            tenant.delete()
+    config = load_tenant_pii_config(tenant.schema_name)
+    assert config is not None
+    assert config["mode"] == "gold"
+    assert config["deterministic"] is True
 
 
 def test_load_tenant_pii_config_gracefully_handles_blocked_db(monkeypatch):

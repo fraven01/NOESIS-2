@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
@@ -35,9 +34,8 @@ from ai_core.infra.observability import (
 from ai_core.rag.guardrails import (
     GuardrailLimits,
     GuardrailSignals,
-    QuotaLimits,
-    QuotaUsage,
 )
+from ai_core.guardrails.serde import GuardrailSerde
 from ai_core.rag.ingestion_contracts import (
     ChunkMeta,
     IngestionProfileResolution,
@@ -1053,144 +1051,13 @@ class CrawlerIngestionGraph:
         Optional[GuardrailSignals],
         Optional[Callable[..., Any]],
     ]:
-        def _coerce_timedelta(value: Any) -> Optional[timedelta]:
-            if value is None:
-                return None
-            if isinstance(value, timedelta):
-                return value
-            try:
-                numeric = float(value)
-            except (TypeError, ValueError):
-                return None
-            if numeric <= 0:
-                return None
-            return timedelta(seconds=numeric)
-
-        def _deserialize_quota_limits(value: Any) -> Optional[QuotaLimits]:
-            if isinstance(value, QuotaLimits):
-                return value
-            if not isinstance(value, Mapping):
-                return None
-            max_documents = value.get("max_documents")
-            max_bytes = value.get("max_bytes")
-            if max_documents is None and max_bytes is None:
-                return None
-            return QuotaLimits(
-                max_documents=int(max_documents) if max_documents is not None else None,
-                max_bytes=int(max_bytes) if max_bytes is not None else None,
-            )
-
-        def _deserialize_quota_usage(value: Any) -> Optional[QuotaUsage]:
-            if isinstance(value, QuotaUsage):
-                return value
-            if not isinstance(value, Mapping):
-                return None
-            documents = value.get("documents")
-            bytes_used = value.get("bytes")
-            if documents is None and bytes_used is None:
-                return None
-            return QuotaUsage(
-                documents=int(documents or 0),
-                bytes=int(bytes_used or 0),
-            )
-
-        def _deserialize_guardrail_limits(value: Any) -> Optional[GuardrailLimits]:
-            if isinstance(value, GuardrailLimits):
-                return value
-            if not isinstance(value, Mapping):
-                return None
-            kwargs: dict[str, Any] = {}
-            if (
-                "max_document_bytes" in value
-                and value["max_document_bytes"] is not None
-            ):
-                kwargs["max_document_bytes"] = int(value["max_document_bytes"])
-            limit_seconds = value.get("processing_time_limit_seconds")
-            td = _coerce_timedelta(limit_seconds)
-            if td is not None:
-                kwargs["processing_time_limit"] = td
-            mime_blacklist = value.get("mime_blacklist")
-            if isinstance(mime_blacklist, Iterable):
-                kwargs["mime_blacklist"] = frozenset(
-                    str(entry).strip().lower()
-                    for entry in mime_blacklist
-                    if entry not in (None, "")
-                )
-            host_blocklist = value.get("host_blocklist")
-            if isinstance(host_blocklist, Iterable):
-                kwargs["host_blocklist"] = frozenset(
-                    str(entry).strip().lower()
-                    for entry in host_blocklist
-                    if entry not in (None, "")
-                )
-            tenant_quota = _deserialize_quota_limits(value.get("tenant_quota"))
-            if tenant_quota is not None:
-                kwargs["tenant_quota"] = tenant_quota
-            host_quota = _deserialize_quota_limits(value.get("host_quota"))
-            if host_quota is not None:
-                kwargs["host_quota"] = host_quota
-            if not kwargs:
-                return None
-            return GuardrailLimits(**kwargs)
-
-        def _deserialize_guardrail_signals(value: Any) -> Optional[GuardrailSignals]:
-            if isinstance(value, GuardrailSignals):
-                return value
-            if not isinstance(value, Mapping):
-                return None
-            kwargs: dict[str, Any] = {}
-            for key in (
-                "tenant_id",
-                "provider",
-                "canonical_source",
-                "host",
-                "document_bytes",
-                "mime_type",
-            ):
-                if key in value and value[key] is not None:
-                    kwargs[key] = value[key]
-            processing_time = _coerce_timedelta(value.get("processing_time_seconds"))
-            if processing_time is not None:
-                kwargs["processing_time"] = processing_time
-            tenant_usage = _deserialize_quota_usage(value.get("tenant_usage"))
-            if tenant_usage is not None:
-                kwargs["tenant_usage"] = tenant_usage
-            host_usage = _deserialize_quota_usage(value.get("host_usage"))
-            if host_usage is not None:
-                kwargs["host_usage"] = host_usage
-            if not kwargs:
-                return None
-            return GuardrailSignals(**kwargs)
-
-        guardrail_state = state.get("guardrails")
-        config: Optional[Mapping[str, Any]] = None
-        limits: Optional[GuardrailLimits] = None
-        signals: Optional[GuardrailSignals] = None
-        error_builder: Optional[Callable[..., Any]] = None
-
-        if isinstance(guardrail_state, Mapping):
-            maybe_limits = guardrail_state.get("limits")
-            deserialized_limits = _deserialize_guardrail_limits(maybe_limits)
-            if deserialized_limits is not None:
-                limits = deserialized_limits
-            maybe_signals = guardrail_state.get("signals")
-            deserialized_signals = _deserialize_guardrail_signals(maybe_signals)
-            if deserialized_signals is not None:
-                signals = deserialized_signals
-            maybe_builder = guardrail_state.get("error_builder")
-            if callable(maybe_builder):
-                error_builder = maybe_builder
-            config_candidate = guardrail_state.get("config")
-            if isinstance(config_candidate, Mapping):
-                config = config_candidate
-            elif limits is None and signals is None:
-                config = guardrail_state
-        elif isinstance(guardrail_state, GuardrailLimits):
-            limits = guardrail_state
-        elif isinstance(guardrail_state, GuardrailSignals):
-            signals = guardrail_state
-
-        return config, limits, signals, error_builder
+        serde_state = GuardrailSerde.from_payload(state.get("guardrails"))
+        return (
+            serde_state.config,
+            serde_state.limits,
+            serde_state.signals,
+            serde_state.error_builder,
+        )
 
     def _resolve_frontier_state(
         self, state: Dict[str, Any]

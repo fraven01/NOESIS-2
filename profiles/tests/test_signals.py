@@ -14,7 +14,6 @@ pytestmark = pytest.mark.django_db
 
 def test_signal_skips_public_schema(monkeypatch):
     tenant = TenantFactory(schema_name="alpha")
-    tenant.create_schema(check_if_exists=True)
     with schema_context(tenant.schema_name):
         user = UserFactory()
         UserProfile.objects.all().delete()
@@ -27,9 +26,7 @@ def test_signal_skips_public_schema(monkeypatch):
 
 def test_signal_creates_profile_per_tenant():
     tenant1 = TenantFactory(schema_name="alpha")
-    tenant1.create_schema(check_if_exists=True)
     tenant2 = TenantFactory(schema_name="beta")
-    tenant2.create_schema(check_if_exists=True)
     with schema_context(tenant1.schema_name):
         user1 = UserFactory()
     with schema_context(tenant2.schema_name):

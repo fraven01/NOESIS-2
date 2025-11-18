@@ -95,18 +95,24 @@ from ai_core.graph.registry import get as get_graph_runner, register as register
 from ai_core.graphs import (
     info_intake,
 )  # noqa: F401
+from ai_core.guardrails.serde import GuardrailSerde
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
     GuardrailLimits,
     GuardrailSignals,
-    QuotaLimits,
-    QuotaUsage,
+)
+from ai_core.telemetry.crawler import (
+    build_fetch_payload,
+    build_manual_fetch_payload,
+    emit_fetch_started,
+    record_fetch_attempt,
+    summarize_fetch_attempt,
 )
 from llm_worker.runner import submit_worker_task
 
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
 from ai_core.graph.schemas import normalize_meta as normalize_meta  # noqa: F401
-from ai_core.infra.observability import emit_event, record_span
+from ai_core.infra.observability import emit_event
 from pydantic import ValidationError
 
 from . import services
@@ -421,135 +427,6 @@ def _extract_internal_key(request: object) -> str | None:
         if isinstance(key_meta, str) and key_meta.strip():
             return key_meta.strip()
     return None
-
-
-def _serialize_politeness(
-    politeness: PolitenessContext | None,
-) -> dict[str, object] | None:
-    if politeness is None:
-        return None
-    return {
-        "host": politeness.host,
-        "slot": politeness.slot,
-        "user_agent": politeness.user_agent,
-        "crawl_delay": politeness.crawl_delay,
-    }
-
-
-def _serialize_fetch_request(request: FetchRequest | None) -> dict[str, object] | None:
-    if request is None:
-        return None
-    return {
-        "canonical_source": request.canonical_source,
-        "metadata": dict(request.metadata or {}),
-        "politeness": _serialize_politeness(request.politeness),
-    }
-
-
-def _serialize_fetch_limits(limits: FetcherLimits | None) -> dict[str, object] | None:
-    if limits is None:
-        return None
-    payload: dict[str, object] = {}
-    if limits.max_bytes is not None:
-        payload["max_bytes"] = limits.max_bytes
-    if limits.timeout is not None:
-        payload["timeout_seconds"] = limits.timeout.total_seconds()
-    if limits.mime_whitelist is not None:
-        payload["mime_whitelist"] = list(limits.mime_whitelist)
-    return payload
-
-
-def _serialize_fetch_failure(failure: FetchFailure | None) -> dict[str, object] | None:
-    if failure is None:
-        return None
-    return {"reason": failure.reason, "temporary": failure.temporary}
-
-
-def _serialize_quota_limits(limits: QuotaLimits | None) -> dict[str, object] | None:
-    if limits is None:
-        return None
-    payload: dict[str, object] = {}
-    if limits.max_documents is not None:
-        payload["max_documents"] = limits.max_documents
-    if limits.max_bytes is not None:
-        payload["max_bytes"] = limits.max_bytes
-    return payload
-
-
-def _serialize_quota_usage(usage: QuotaUsage | None) -> dict[str, object] | None:
-    if usage is None:
-        return None
-    return {"documents": usage.documents, "bytes": usage.bytes}
-
-
-def _serialize_guardrail_limits(
-    limits: GuardrailLimits | None,
-) -> dict[str, object] | None:
-    if limits is None:
-        return None
-    payload: dict[str, object] = {}
-    if limits.max_document_bytes is not None:
-        payload["max_document_bytes"] = limits.max_document_bytes
-    if limits.processing_time_limit is not None:
-        payload["processing_time_limit_seconds"] = (
-            limits.processing_time_limit.total_seconds()
-        )
-    if limits.mime_blacklist:
-        payload["mime_blacklist"] = sorted(limits.mime_blacklist)
-    if limits.host_blocklist:
-        payload["host_blocklist"] = sorted(limits.host_blocklist)
-    tenant_quota = _serialize_quota_limits(limits.tenant_quota)
-    if tenant_quota is not None:
-        payload["tenant_quota"] = tenant_quota
-    host_quota = _serialize_quota_limits(limits.host_quota)
-    if host_quota is not None:
-        payload["host_quota"] = host_quota
-    return payload or None
-
-
-def _serialize_guardrail_signals(
-    signals: GuardrailSignals | None,
-) -> dict[str, object] | None:
-    if signals is None:
-        return None
-    payload: dict[str, object] = {}
-    for attr in (
-        "tenant_id",
-        "provider",
-        "canonical_source",
-        "host",
-        "document_bytes",
-        "mime_type",
-    ):
-        value = getattr(signals, attr, None)
-        if value is not None:
-            payload[attr] = value
-    processing_time = getattr(signals, "processing_time", None)
-    if processing_time is not None:
-        payload["processing_time_seconds"] = processing_time.total_seconds()
-    tenant_usage = _serialize_quota_usage(getattr(signals, "tenant_usage", None))
-    if tenant_usage is not None:
-        payload["tenant_usage"] = tenant_usage
-    host_usage = _serialize_quota_usage(getattr(signals, "host_usage", None))
-    if host_usage is not None:
-        payload["host_usage"] = host_usage
-    return payload or None
-
-
-def _build_header_mapping(fetch_result) -> dict[str, str]:
-    """Return a header mapping reconstructed from fetch metadata."""
-
-    headers: dict[str, str] = {}
-    metadata = fetch_result.metadata
-    if metadata.content_type:
-        headers["Content-Type"] = metadata.content_type
-    if metadata.etag:
-        headers["ETag"] = metadata.etag
-    if metadata.last_modified:
-        headers["Last-Modified"] = metadata.last_modified
-    if metadata.content_length is not None:
-        headers["Content-Length"] = str(metadata.content_length)
-    return headers
 
 
 def _normalize_media_type_value(value: str | None) -> str | None:
@@ -1940,106 +1817,77 @@ def _build_crawler_state(
                     },
                 )
 
-            emit_event(
-                "fetch_started",
-                {"origin": source.canonical_source, "provider": source.provider},
-            )
+            emit_fetch_started(source.canonical_source, source.provider)
             fetch_limits = None
             if limits.max_document_bytes is not None:
                 fetch_limits = FetcherLimits(max_bytes=limits.max_document_bytes)
             config = HttpFetcherConfig(limits=fetch_limits)
             fetcher = HttpFetcher(config)
             fetch_result = fetcher.fetch(fetch_request)
-            record_span(
-                "crawler.fetch",
-                attributes={
-                    "crawler.fetch.status": fetch_result.status.value,
-                    "crawler.fetch.bytes": fetch_result.telemetry.bytes_downloaded,
-                    "crawler.fetch.retry_reason": fetch_result.telemetry.retry_reason,
-                },
-            )
-            emit_event(
-                "fetch_finished",
-                {
-                    "status": fetch_result.status.value,
-                    "status_code": fetch_result.metadata.status_code,
-                    "bytes": fetch_result.telemetry.bytes_downloaded,
-                },
-            )
-            fetch_elapsed = fetch_result.telemetry.latency
-            fetch_retries = fetch_result.telemetry.retries
-            fetch_retry_reason = fetch_result.telemetry.retry_reason
-            fetch_backoff_total_ms = fetch_result.telemetry.backoff_total_ms
+            record_fetch_attempt(fetch_result)
 
             if fetch_result.status is not FetchStatus.FETCHED:
                 status_code, code = _map_fetch_error_response(fetch_result)
                 emit_event(code, {"origin": source.canonical_source})
-                details = {
-                    "fetch_used": True,
-                    "http_status": fetch_result.metadata.status_code,
-                    "fetched_bytes": fetch_result.telemetry.bytes_downloaded,
-                    "media_type_effective": fetch_result.metadata.content_type,
-                    "fetch_elapsed": fetch_elapsed,
-                    "fetch_retries": fetch_retries,
-                    "fetch_retry_reason": fetch_retry_reason,
-                    "fetch_backoff_total_ms": fetch_backoff_total_ms,
-                }
+                failure_snapshot = summarize_fetch_attempt(
+                    fetch_result,
+                    media_type=_normalize_media_type_value(
+                        fetch_result.metadata.content_type
+                    ),
+                )
                 raise CrawlerRunError(
                     "Fetching the origin URL failed.",
                     code=code,
                     status_code=status_code,
-                    details=details,
+                    details=failure_snapshot.as_details(),
                 )
 
             fetch_used = True
             http_status = fetch_result.metadata.status_code
-            payload_bytes = getattr(fetch_result, "payload", None)
-            if payload_bytes is None:
-                payload_bytes = getattr(fetch_result, "body", None)
-            body_bytes = payload_bytes or b""
-            fetched_bytes = len(body_bytes)
             effective_content_type = _normalize_media_type_value(
                 fetch_result.metadata.content_type
             )
-            fetch_input = {
-                "request": _serialize_fetch_request(fetch_request),
-                "status_code": fetch_result.metadata.status_code,
-                "body": body_bytes,
-                "headers": _build_header_mapping(fetch_result),
-                "elapsed": fetch_result.telemetry.latency,
-                "retries": fetch_result.telemetry.retries,
-                "retry_reason": fetch_result.telemetry.retry_reason,
-                "downloaded_bytes": fetch_result.telemetry.bytes_downloaded,
-                "backoff_total_ms": fetch_result.telemetry.backoff_total_ms,
-            }
-            if fetch_limits is not None:
-                fetch_input["limits"] = _serialize_fetch_limits(fetch_limits)
             failure = _map_failure(
                 getattr(fetch_result.error, "error_class", None),
                 getattr(fetch_result.error, "reason", None),
             )
-            if failure is not None:
-                fetch_input["failure"] = _serialize_fetch_failure(failure)
-            etag_value = getattr(fetch_result.metadata, "etag", None)
+            (
+                fetch_input,
+                fetch_snapshot,
+                body_bytes,
+                etag_value,
+            ) = build_fetch_payload(
+                fetch_request,
+                fetch_result,
+                fetch_limits=fetch_limits,
+                failure=failure,
+                media_type=effective_content_type,
+            )
+            if fetch_snapshot.media_type is not None:
+                effective_content_type = fetch_snapshot.media_type
+            fetched_bytes = fetch_snapshot.fetched_bytes
+            fetch_elapsed = fetch_snapshot.elapsed
+            fetch_retries = fetch_snapshot.retries
+            fetch_retry_reason = fetch_snapshot.retry_reason
+            fetch_backoff_total_ms = fetch_snapshot.backoff_total_ms
         else:
             if origin.content is None:
                 raise ValueError(
                     "Manual crawler runs require inline content. Provide content or enable remote fetching."
                 )
             body_bytes = origin.content.encode("utf-8")
-            fetched_bytes = len(body_bytes)
-            fetch_elapsed = 0.05
-            fetch_retries = 0
-            fetch_retry_reason = None
-            fetch_backoff_total_ms = 0.0
             manual_content_type = effective_content_type or "application/octet-stream"
-            fetch_input = {
-                "request": _serialize_fetch_request(fetch_request),
-                "status_code": 200,
-                "body": body_bytes,
-                "headers": {"Content-Type": manual_content_type},
-                "elapsed": 0.05,
-            }
+            fetch_input, snapshot = build_manual_fetch_payload(
+                fetch_request,
+                body=body_bytes,
+                media_type=manual_content_type,
+            )
+            fetched_bytes = snapshot.fetched_bytes
+            fetch_elapsed = snapshot.elapsed
+            fetch_retries = snapshot.retries
+            fetch_retry_reason = snapshot.retry_reason
+            fetch_backoff_total_ms = snapshot.backoff_total_ms
+            http_status = snapshot.http_status
 
         if effective_content_type is None:
             effective_content_type = "application/octet-stream"
@@ -2052,16 +1900,13 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        serialized_limits = _serialize_guardrail_limits(limits)
-        serialized_signals = _serialize_guardrail_signals(guardrail_signals)
-        guardrail_payload = {
-            "limits": serialized_limits,
-            "signals": serialized_signals,
-        }
-
+        guardrail_payload = GuardrailSerde.to_payload(
+            limits=limits,
+            signals=guardrail_signals,
+        )
         gating_input = {
-            "limits": serialized_limits,
-            "signals": serialized_signals,
+            "limits": guardrail_payload.get("limits"),
+            "signals": guardrail_payload.get("signals"),
         }
 
         fetched_at = timezone.now().astimezone(datetime_timezone.utc)

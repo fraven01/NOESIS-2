@@ -2,9 +2,9 @@ import datetime
 
 import factory
 from factory.django import DjangoModelFactory
-from django.core.management import call_command
 
 from customers.models import Domain, Tenant
+from testsupport.tenant_fixtures import bootstrap_tenant_schema
 
 
 class TenantFactory(DjangoModelFactory):
@@ -24,14 +24,7 @@ class TenantFactory(DjangoModelFactory):
 
         with schema_context(get_public_schema_name()):
             obj = super()._create(model_class, *args, **kwargs)
-            obj.create_schema(check_if_exists=True)
-            call_command(
-                "migrate_schemas",
-                tenant=True,
-                schema_name=obj.schema_name,
-                interactive=False,
-                verbosity=0,
-            )
+        bootstrap_tenant_schema(obj)
         return obj
 
 

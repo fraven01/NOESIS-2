@@ -12,22 +12,19 @@ from rest_framework.response import Response
 from rest_framework.routers import DefaultRouter
 from rest_framework.views import APIView
 
-from customers.models import Domain
 from customers.tests.factories import TenantFactory
 from noesis2.api import (
     RATE_LIMIT_JSON_ERROR_STATUSES,
     schema as api_schema,
 )
 from noesis2.settings.base import build_swagger_ui_settings
+from testsupport.tenant_fixtures import ensure_tenant_domain
 
 
 @pytest.fixture
 def tenant(db):
     tenant = TenantFactory(schema_name="spectacular")
-    tenant.create_schema(check_if_exists=True)
-    Domain.objects.update_or_create(
-        domain="testserver", defaults={"tenant": tenant, "is_primary": True}
-    )
+    ensure_tenant_domain(tenant, domain="testserver")
     return tenant
 
 

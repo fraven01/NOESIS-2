@@ -1261,19 +1261,17 @@ class CollectionSearchGraph:
                     for r in ranked_results
                     if r.get("embedding_rank_score", 0.0) >= fallback_min
                 ]
-                LOGGER.info(
-                    "auto_ingest.fallback_threshold original=%s fallback=%s count=%s",
-                    min_score,
-                    fallback_min,
-                    len(filtered_results),
+                telemetry.auto_ingest_fallback_threshold(
+                    original_threshold=min_score,
+                    fallback_threshold=fallback_min,
+                    result_count=len(filtered_results),
                 )
 
             # Error if no results meet minimum quality threshold
             if not filtered_results:
-                LOGGER.error(
-                    "auto_ingest.insufficient_quality min_score=%s fallback_min=%s",
-                    min_score,
-                    50.0,
+                telemetry.auto_ingest_insufficient_quality(
+                    min_score=min_score,
+                    fallback_min=50.0,
                 )
                 result = self._build_result(
                     outcome="auto_ingest_failed_quality_threshold",
@@ -1318,13 +1316,14 @@ class CollectionSearchGraph:
                     ingestion_payload = dict(ingestion_meta)
                     outcome = "auto_ingest_triggered"
 
-                    LOGGER.info(
-                        "auto_ingest.triggered",
-                        extra={
-                            "auto_ingest.url_count": len(approved_urls),
-                            "auto_ingest.min_score": min_score,
-                            "auto_ingest.selected_count": len(selected_results),
-                        },
+                    avg_score = sum(
+                        r.get("embedding_rank_score", 0.0) for r in selected_results
+                    ) / len(selected_results)
+                    telemetry.auto_ingest_triggered(
+                        url_count=len(approved_urls),
+                        min_score=min_score,
+                        selected_count=len(selected_results),
+                        avg_score=avg_score,
                     )
 
                     # Record transition for telemetry
@@ -1333,11 +1332,7 @@ class CollectionSearchGraph:
                         {
                             "url_count": len(approved_urls),
                             "min_score": min_score,
-                            "avg_score": sum(
-                                r.get("embedding_rank_score", 0.0)
-                                for r in selected_results
-                            )
-                            / len(selected_results),
+                            "avg_score": avg_score,
                         }
                     )
                     auto_ingest_transition = Transition(
@@ -1346,7 +1341,7 @@ class CollectionSearchGraph:
                     _record("k_auto_ingest", auto_ingest_transition)
 
                 except Exception as exc:
-                    LOGGER.exception("auto_ingest.trigger_failed", exc_info=exc)
+                    telemetry.auto_ingest_trigger_failed(exc)
                     outcome = "auto_ingest_trigger_failed"
 
         result = self._build_result(

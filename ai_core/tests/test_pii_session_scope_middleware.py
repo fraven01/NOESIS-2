@@ -11,6 +11,7 @@ from ai_core.infra.pii_flags import get_pii_config
 from ai_core.infra.policy import get_session_scope
 from ai_core.middleware import PIISessionScopeMiddleware
 from common.celery import ScopedTask, with_scope_apply_async
+from customers.tests.factories import TenantFactory
 
 
 pytestmark = pytest.mark.django_db
@@ -66,41 +67,6 @@ def configure_autotest_tenant():
     with schema_context(public_schema):
         Tenant.objects.filter(pk=tenant.pk).update(**original)
         tenant.refresh_from_db()
-
-
-@pytest.fixture
-def tenant_factory():
-    from customers.models import Tenant
-    from django.core.management import call_command
-    from django_tenants.utils import get_public_schema_name, schema_context
-
-    public_schema = get_public_schema_name()
-    created: list[Tenant] = []
-
-    def _create(schema_name: str, **fields):
-        data = {
-            "schema_name": schema_name,
-            "name": fields.pop("name", f"Tenant {schema_name}"),
-        }
-        data.update(fields)
-        with schema_context(public_schema):
-            tenant = Tenant.objects.create(**data)
-            tenant.create_schema(check_if_exists=True)
-            call_command(
-                "migrate_schemas",
-                tenant=True,
-                schema_name=tenant.schema_name,
-                interactive=False,
-                verbosity=0,
-            )
-        created.append(tenant)
-        return tenant
-
-    yield _create
-
-    for tenant in created:
-        with schema_context(tenant.schema_name):
-            tenant.delete(force_drop=True)
 
 
 def test_session_scope_middleware_sets_scope_and_masks(
@@ -209,13 +175,12 @@ def test_session_scope_middleware_clears_scope_on_exception(
     ids=["primary-key", "schema-name"],
 )
 def test_session_scope_middleware_loads_tenant_from_header_when_missing_request_tenant(
-    tenant_factory,
     scope_headers_shared,
     tenant_header_source,
     monkeypatch,
 ):
-    tenant = tenant_factory(
-        "fallback-tenant",
+    tenant = TenantFactory(
+        schema_name="fallback-tenant",
         pii_mode="gold",
         pii_policy="strict",
         pii_logging_redaction=True,
@@ -317,7 +282,7 @@ def test_session_scope_middleware_changes_token_with_new_trace(
 
 
 def test_middleware_uses_tenant_specific_profiles(
-    configure_autotest_tenant, tenant_factory, scope_headers_shared
+    configure_autotest_tenant, scope_headers_shared
 ):
     tenant_disabled = configure_autotest_tenant(
         pii_mode="off",
@@ -325,8 +290,8 @@ def test_middleware_uses_tenant_specific_profiles(
         pii_deterministic=False,
         pii_hmac_secret="",
     )
-    tenant_enabled = tenant_factory(
-        "tenant-beta",
+    tenant_enabled = TenantFactory(
+        schema_name="tenant-beta",
         pii_mode="gold",
         pii_policy="strict",
         pii_deterministic=True,

@@ -134,7 +134,6 @@ def test_create_tenant_superuser_missing_tables(monkeypatch):
 @pytest.mark.django_db
 def test_create_tenant_superuser_creates_user(monkeypatch):
     tenant = TenantFactory(schema_name="createuser")
-    tenant.create_schema(check_if_exists=True)
 
     recorded_calls = []
 
@@ -172,7 +171,6 @@ def test_create_tenant_superuser_creates_user(monkeypatch):
 @pytest.mark.django_db
 def test_create_tenant_superuser_updates_existing_user(monkeypatch):
     tenant = TenantFactory(schema_name="updateuser")
-    tenant.create_schema(check_if_exists=True)
 
     with schema_context(tenant.schema_name):
         user = User.objects.create_user(
@@ -215,7 +213,6 @@ def test_create_tenant_superuser_updates_existing_user(monkeypatch):
 @pytest.mark.django_db
 def test_create_tenant_superuser_requires_password(monkeypatch):
     tenant = TenantFactory(schema_name="requirespass")
-    tenant.create_schema(check_if_exists=True)
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",
@@ -239,7 +236,6 @@ def test_create_tenant_superuser_requires_password(monkeypatch):
 @pytest.mark.django_db
 def test_create_tenant_superuser_requires_username(monkeypatch):
     tenant = TenantFactory(schema_name="requiresuser")
-    tenant.create_schema(check_if_exists=True)
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",
@@ -415,7 +411,6 @@ def test_collectstatic_command_resolves():
 @pytest.mark.django_db
 def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
     tenant = TenantFactory(schema_name="env-superuser")
-    tenant.create_schema(check_if_exists=True)
 
     recorded_calls = []
 
@@ -474,7 +469,6 @@ def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
 @pytest.mark.django_db
 def test_create_tenant_superuser_warns_when_no_changes_needed(monkeypatch):
     tenant = TenantFactory(schema_name="noop-superuser")
-    tenant.create_schema(check_if_exists=True)
 
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.call_command",
