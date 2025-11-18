@@ -171,6 +171,7 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
     django_tenants' TenantTestCase which uses 'test' by default.
     """
     from customers.models import Tenant, Domain
+    from django.core.management import call_command
 
     with django_db_blocker.unblock():
         tenant, _ = Tenant.objects.get_or_create(
@@ -178,6 +179,13 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
         )
         # Ensure schema exists even though auto_create_schema is disabled in tests
         tenant.create_schema(check_if_exists=True)
+        call_command(
+            "migrate_schemas",
+            tenant=True,
+            schema_name=tenant.schema_name,
+            interactive=False,
+            verbosity=0,
+        )
         # Map default Django test host to this tenant to avoid 404 from tenant middleware
         Domain.objects.get_or_create(
             domain="testserver", tenant=tenant, defaults={"is_primary": True}

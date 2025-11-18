@@ -22,8 +22,9 @@ def test_ping_ok(client, monkeypatch, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
-def test_ping_missing_case(client, monkeypatch):
+def test_ping_missing_case(client, monkeypatch, settings):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    settings.AUTO_CREATE_CASES = False
     resp = client.get(
         "/ai/ping/",
         HTTP_X_TENANT_ID="tenant-x",

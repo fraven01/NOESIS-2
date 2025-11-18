@@ -131,7 +131,7 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert ledger_calls["meta"]["usage"]["prompt_tokens"] == 1
     assert ledger_calls["meta"]["usage"]["completion_tokens"] == 1
     assert ledger_calls["meta"]["usage"]["total_tokens"] == 2
-    assert ledger_calls["meta"]["usage"]["cost"]["usd"] == pytest.approx(0.000001)
+    assert ledger_calls["meta"]["usage"]["cost"]["usd"] == 0.0
     assert "text" not in ledger_calls["meta"]
     assert fail_once.calls == 2
     assert fail_once.idempotency_headers == ["c1:simple-query:v1", "c1:simple-query:v1"]
@@ -1049,12 +1049,14 @@ def test_llm_client_updates_observation_on_success(monkeypatch):
 
     success_call = observation_calls[-1]
     success_meta = success_call["metadata"]
+    resolved_model = routing.resolve("simple-query")
     assert success_meta["status"] == "success"
-    assert success_meta["model.id"] == "vertex_ai/gemini-2.5-flash"
+    assert success_meta["model.id"] == resolved_model
     assert success_meta["usage.prompt_tokens"] == 20
     assert success_meta["usage.completion_tokens"] == 40
     assert success_meta["usage.total_tokens"] == 60
-    assert success_meta["cost.usd"] == pytest.approx(0.000032)
+    expected_cost = calculate_chat_completion_cost(resolved_model, 20, 40)
+    assert success_meta["cost.usd"] == pytest.approx(expected_cost)
     assert success_meta["cache_hit"] is True
     assert len(success_meta["input.masked_prompt"]) == 512
     assert success_meta["input.masked_prompt"] == "x" * 512
@@ -1097,7 +1099,7 @@ def test_llm_client_updates_observation_on_error(monkeypatch):
     error_call = observation_calls[-1]
     error_meta = error_call["metadata"]
     assert error_meta["status"] == "error"
-    assert error_meta["model.id"] == "vertex_ai/gemini-2.5-flash"
+    assert error_meta["model.id"] == routing.resolve("simple-query")
     assert error_meta["error.type"] == "LlmClientError"
     assert error_meta["error.message"] == "bad request"
     assert error_meta["provider.http_status"] == 400

@@ -8,9 +8,11 @@ from documents.models import DocumentIngestionRun
 
 
 @pytest.mark.django_db
-def test_emit_ingestion_case_event_records_latest_run(test_tenant_schema_name, monkeypatch):
+def test_emit_ingestion_case_event_records_latest_run(
+    test_tenant_schema_name, monkeypatch
+):
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
-    run = DocumentIngestionRun.objects.create(
+    DocumentIngestionRun.objects.create(
         tenant_id=tenant.schema_name,
         case="case-hook",
         run_id="run-hook",
@@ -25,7 +27,9 @@ def test_emit_ingestion_case_event_records_latest_run(test_tenant_schema_name, m
 
     monkeypatch.setattr(case_events, "emit_event", fake_emit_event)
 
-    emit_ingestion_case_event(tenant.schema_name, "case-hook", run_id="run-hook", context="running")
+    emit_ingestion_case_event(
+        tenant.schema_name, "case-hook", run_id="run-hook", context="running"
+    )
 
     event = CaseEvent.objects.get(case__external_id="case-hook")
     assert event.event_type == "ingestion_run_started"

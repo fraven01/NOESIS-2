@@ -39,11 +39,7 @@ def _apply_case_phase(case: models.Case) -> None:
 
     apply_lifecycle_definition(
         case,
-        list(
-            case.events.order_by("created_at").only(
-                "id", "event_type", "created_at"
-            )
-        ),
+        list(case.events.order_by("created_at").only("id", "event_type", "created_at")),
     )
 
 

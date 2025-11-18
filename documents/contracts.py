@@ -197,7 +197,9 @@ class DocumentRef(BaseModel):
     def _normalize_workflow_id(cls, value: str) -> str:
         return normalize_workflow_id(value)
 
-    @field_validator("document_id", "collection_id", "document_collection_id", mode="before")
+    @field_validator(
+        "document_id", "collection_id", "document_collection_id", mode="before"
+    )
     @classmethod
     def _coerce_uuid_fields(cls, value):
         return _coerce_uuid(value)

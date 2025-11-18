@@ -52,9 +52,7 @@ def _load_case_observability_context(tenant_id: str, case_id: str) -> dict[str, 
     ):
         try:
             record = (
-                Case.objects.filter(**filter_kwargs)
-                .values("status", "phase")
-                .first()
+                Case.objects.filter(**filter_kwargs).values("status", "phase").first()
             )
         except Exception:
             continue
@@ -747,9 +745,7 @@ def process_document(
         if meta.get("collection_id"):
             sanitized_meta_json["collection_id"] = meta["collection_id"]
         if document_collection_id:
-            sanitized_meta_json["document_collection_id"] = str(
-                document_collection_id
-            )
+            sanitized_meta_json["document_collection_id"] = str(document_collection_id)
         if title:
             sanitized_meta_json["title"] = title
         if language:
@@ -1203,26 +1199,30 @@ def run_ingestion(
             int(result.get("chunk_count", result.get("written", 0)))
             for result in results
         )
-
-    end_case_context = _load_case_observability_context(tenant, case)
-
-    pipe.log_ingestion_run_end(
-        tenant=tenant,
-        case=case,
-        run_id=run_id,
-        doc_count=doc_count,
-        inserted=inserted,
-        replaced=replaced,
-        skipped=skipped,
-        total_chunks=total_chunks,
-        duration_ms=duration_ms,
-        trace_id=trace_id,
-        idempotency_key=idempotency_key,
-        embedding_profile=resolved_profile_id,
-        vector_space_id=vector_space_id,
-        case_status=end_case_context.get("status"),
-        case_phase=end_case_context.get("phase"),
-    )
+        try:
+            end_case_context = _load_case_observability_context(tenant, case)
+        except Exception:  # pragma: no cover - defensive logging path
+            end_case_context = {}
+        try:
+            pipe.log_ingestion_run_end(
+                tenant=tenant,
+                case=case,
+                run_id=run_id,
+                doc_count=doc_count,
+                inserted=inserted,
+                replaced=replaced,
+                skipped=skipped,
+                total_chunks=total_chunks,
+                duration_ms=duration_ms,
+                trace_id=trace_id,
+                idempotency_key=idempotency_key,
+                embedding_profile=resolved_profile_id,
+                vector_space_id=vector_space_id,
+                case_status=end_case_context.get("status"),
+                case_phase=end_case_context.get("phase"),
+            )
+        except Exception:  # pragma: no cover - defensive logging path
+            pass
 
     log.info(
         "Dispatched ingestion group",

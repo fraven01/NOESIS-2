@@ -238,6 +238,8 @@ def test_run_ingestion_success(monkeypatch):
             "idempotency_key": "idem-1",
             "embedding_profile": "standard",
             "vector_space_id": "global",
+            "case_status": None,
+            "case_phase": None,
         }
     ]
     assert len(end_calls) == 1
@@ -255,6 +257,8 @@ def test_run_ingestion_success(monkeypatch):
     assert end_call["idempotency_key"] == "idem-1"
     assert end_call["embedding_profile"] == "standard"
     assert end_call["vector_space_id"] == "global"
+    assert end_call["case_status"] is None
+    assert end_call["case_phase"] is None
     assert apply_async_calls == []
     assert schema_calls == [
         {

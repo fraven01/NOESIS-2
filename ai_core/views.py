@@ -17,10 +17,10 @@ import base64
 from datetime import timezone as datetime_timezone
 
 from django.conf import settings
-from django.db import connection
+from django.db import OperationalError, ProgrammingError, connection
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, HttpResponse, JsonResponse
+from django.http import HttpRequest, JsonResponse
 from django.utils import timezone
 from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from django.views.decorators.http import require_POST
@@ -96,7 +96,12 @@ from ai_core.graphs import (
     info_intake,
 )  # noqa: F401
 from ai_core.middleware import guardrails as guardrails_middleware
-from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
+from ai_core.rag.guardrails import (
+    GuardrailLimits,
+    GuardrailSignals,
+    QuotaLimits,
+    QuotaUsage,
+)
 from llm_worker.runner import submit_worker_task
 
 # Re-export normalize_meta so tests can monkeypatch via ai_core.views
@@ -238,17 +243,26 @@ def assert_case_active(tenant: str, case_id: str) -> Response | None:
             status.HTTP_400_BAD_REQUEST,
         )
 
-    case_exists = Case.objects.filter(
-        tenant=tenant_obj, external_id=normalized_case_id
-    ).exists()
-    if not case_exists:
+    try:
+        case = Case.objects.filter(
+            tenant=tenant_obj, external_id=normalized_case_id
+        ).first()
+    except (ProgrammingError, OperationalError):
+        case = None
+
+    if case is None and getattr(settings, "AUTO_CREATE_CASES", True):
+        try:
+            case = get_or_create_case_for(tenant_obj, normalized_case_id)
+        except (ProgrammingError, OperationalError):
+            case = None
+
+    if case is None:
         return _error_response(
             "Case not found for this tenant. Create or activate the case before invoking this endpoint.",
             "case_not_found",
             status.HTTP_404_NOT_FOUND,
         )
 
-    case = get_or_create_case_for(tenant_obj, normalized_case_id)
     if case.status == Case.Status.CLOSED:
         return _error_response(
             "Case is closed and cannot accept additional requests.",
@@ -407,6 +421,119 @@ def _extract_internal_key(request: object) -> str | None:
         if isinstance(key_meta, str) and key_meta.strip():
             return key_meta.strip()
     return None
+
+
+def _serialize_politeness(
+    politeness: PolitenessContext | None,
+) -> dict[str, object] | None:
+    if politeness is None:
+        return None
+    return {
+        "host": politeness.host,
+        "slot": politeness.slot,
+        "user_agent": politeness.user_agent,
+        "crawl_delay": politeness.crawl_delay,
+    }
+
+
+def _serialize_fetch_request(request: FetchRequest | None) -> dict[str, object] | None:
+    if request is None:
+        return None
+    return {
+        "canonical_source": request.canonical_source,
+        "metadata": dict(request.metadata or {}),
+        "politeness": _serialize_politeness(request.politeness),
+    }
+
+
+def _serialize_fetch_limits(limits: FetcherLimits | None) -> dict[str, object] | None:
+    if limits is None:
+        return None
+    payload: dict[str, object] = {}
+    if limits.max_bytes is not None:
+        payload["max_bytes"] = limits.max_bytes
+    if limits.timeout is not None:
+        payload["timeout_seconds"] = limits.timeout.total_seconds()
+    if limits.mime_whitelist is not None:
+        payload["mime_whitelist"] = list(limits.mime_whitelist)
+    return payload
+
+
+def _serialize_fetch_failure(failure: FetchFailure | None) -> dict[str, object] | None:
+    if failure is None:
+        return None
+    return {"reason": failure.reason, "temporary": failure.temporary}
+
+
+def _serialize_quota_limits(limits: QuotaLimits | None) -> dict[str, object] | None:
+    if limits is None:
+        return None
+    payload: dict[str, object] = {}
+    if limits.max_documents is not None:
+        payload["max_documents"] = limits.max_documents
+    if limits.max_bytes is not None:
+        payload["max_bytes"] = limits.max_bytes
+    return payload
+
+
+def _serialize_quota_usage(usage: QuotaUsage | None) -> dict[str, object] | None:
+    if usage is None:
+        return None
+    return {"documents": usage.documents, "bytes": usage.bytes}
+
+
+def _serialize_guardrail_limits(
+    limits: GuardrailLimits | None,
+) -> dict[str, object] | None:
+    if limits is None:
+        return None
+    payload: dict[str, object] = {}
+    if limits.max_document_bytes is not None:
+        payload["max_document_bytes"] = limits.max_document_bytes
+    if limits.processing_time_limit is not None:
+        payload["processing_time_limit_seconds"] = (
+            limits.processing_time_limit.total_seconds()
+        )
+    if limits.mime_blacklist:
+        payload["mime_blacklist"] = sorted(limits.mime_blacklist)
+    if limits.host_blocklist:
+        payload["host_blocklist"] = sorted(limits.host_blocklist)
+    tenant_quota = _serialize_quota_limits(limits.tenant_quota)
+    if tenant_quota is not None:
+        payload["tenant_quota"] = tenant_quota
+    host_quota = _serialize_quota_limits(limits.host_quota)
+    if host_quota is not None:
+        payload["host_quota"] = host_quota
+    return payload or None
+
+
+def _serialize_guardrail_signals(
+    signals: GuardrailSignals | None,
+) -> dict[str, object] | None:
+    if signals is None:
+        return None
+    payload: dict[str, object] = {}
+    for attr in (
+        "tenant_id",
+        "provider",
+        "canonical_source",
+        "host",
+        "document_bytes",
+        "mime_type",
+    ):
+        value = getattr(signals, attr, None)
+        if value is not None:
+            payload[attr] = value
+    processing_time = getattr(signals, "processing_time", None)
+    if processing_time is not None:
+        payload["processing_time_seconds"] = processing_time.total_seconds()
+    tenant_usage = _serialize_quota_usage(getattr(signals, "tenant_usage", None))
+    if tenant_usage is not None:
+        payload["tenant_usage"] = tenant_usage
+    host_usage = _serialize_quota_usage(getattr(signals, "host_usage", None))
+    if host_usage is not None:
+        payload["host_usage"] = host_usage
+    return payload or None
 
 
 def _build_header_mapping(fetch_result) -> dict[str, str]:
@@ -726,6 +853,7 @@ def _prepare_request(request: Request):
     log_context = {
         "trace_id": trace_id,
         "case_id": case_id,
+        "tenant_id": tenant_id,
         "tenant": tenant_id,
         "key_alias": key_alias,
         "collection_id": collection_id,
@@ -1735,7 +1863,10 @@ def _build_crawler_state(
         descriptor = SourceDescriptor(
             host=host, path=path_component, provider=source.provider
         )
-        frontier_input = {"descriptor": descriptor, "signals": CrawlSignals()}
+        frontier_input = {
+            "descriptor": asdict(descriptor),
+            "signals": asdict(CrawlSignals()),
+        }
 
         politeness = PolitenessContext(host=descriptor.host)
         fetch_request = FetchRequest(
@@ -1871,7 +2002,7 @@ def _build_crawler_state(
                 fetch_result.metadata.content_type
             )
             fetch_input = {
-                "request": fetch_request,
+                "request": _serialize_fetch_request(fetch_request),
                 "status_code": fetch_result.metadata.status_code,
                 "body": body_bytes,
                 "headers": _build_header_mapping(fetch_result),
@@ -1882,13 +2013,13 @@ def _build_crawler_state(
                 "backoff_total_ms": fetch_result.telemetry.backoff_total_ms,
             }
             if fetch_limits is not None:
-                fetch_input["limits"] = fetch_limits
+                fetch_input["limits"] = _serialize_fetch_limits(fetch_limits)
             failure = _map_failure(
                 getattr(fetch_result.error, "error_class", None),
                 getattr(fetch_result.error, "reason", None),
             )
             if failure is not None:
-                fetch_input["failure"] = failure
+                fetch_input["failure"] = _serialize_fetch_failure(failure)
             etag_value = getattr(fetch_result.metadata, "etag", None)
         else:
             if origin.content is None:
@@ -1903,7 +2034,7 @@ def _build_crawler_state(
             fetch_backoff_total_ms = 0.0
             manual_content_type = effective_content_type or "application/octet-stream"
             fetch_input = {
-                "request": fetch_request,
+                "request": _serialize_fetch_request(fetch_request),
                 "status_code": 200,
                 "body": body_bytes,
                 "headers": {"Content-Type": manual_content_type},
@@ -1921,13 +2052,17 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
+        serialized_limits = _serialize_guardrail_limits(limits)
+        serialized_signals = _serialize_guardrail_signals(guardrail_signals)
         guardrail_payload = {
-            "limits": limits,
-            "signals": guardrail_signals,
-            "error_builder": _build_guardrail_error,
+            "limits": serialized_limits,
+            "signals": serialized_signals,
         }
 
-        gating_input = {"limits": limits, "signals": guardrail_signals}
+        gating_input = {
+            "limits": serialized_limits,
+            "signals": serialized_signals,
+        }
 
         fetched_at = timezone.now().astimezone(datetime_timezone.utc)
         document_uuid = _resolve_document_uuid(document_id)
@@ -2075,6 +2210,7 @@ def crawl_selected(request):
         data = json.loads(request.body)
         urls = data.get("urls")
         collection_id = data.get("collection_id", "crawler-demo")
+        mode = data.get("mode", "live")
 
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
@@ -2082,23 +2218,34 @@ def crawl_selected(request):
         # Build payload for crawler_runner
         crawler_payload = {
             "workflow_id": data.get("workflow_id", "crawler-demo"),
-            "mode": "live",
+            "mode": mode,
             "origins": [{"url": url} for url in urls],
             "collection_id": collection_id,
         }
 
-        # Create a DRF Request for crawler_runner
-        from rest_framework.request import Request as DRFRequest
+        # Clone the request so crawler_runner receives a proper HttpRequest
+        cloned_request = HttpRequest()
+        cloned_request.method = "POST"
+        cloned_request.path = "/crawler-runner/internal"
+        base_meta = getattr(request, "META", {}) or {}
+        cloned_request.META = dict(base_meta)
 
-        drf_request = DRFRequest(request)
-        drf_request._full_data = crawler_payload
+        body_bytes = json.dumps(crawler_payload).encode("utf-8")
+        cloned_request._body = body_bytes
+        cloned_request.META["CONTENT_TYPE"] = "application/json"
+        cloned_request.META["HTTP_CONTENT_TYPE"] = "application/json"
+        cloned_request.META["CONTENT_LENGTH"] = str(len(body_bytes))
 
-        # Copy tenant context
+        # Preserve tenant context for downstream resolution
         if hasattr(request, "tenant"):
-            drf_request._request.tenant = request.tenant
+            cloned_request.tenant = request.tenant
+        if hasattr(request, "tenant_schema"):
+            cloned_request.tenant_schema = request.tenant_schema
+        if hasattr(request, "user"):
+            cloned_request.user = request.user
 
         # Call crawler_runner view directly (same module)
-        response = crawler_runner(drf_request)
+        response = crawler_runner(cloned_request)
 
         # Return response data
         return JsonResponse(response.data, status=response.status_code)
@@ -2296,17 +2443,17 @@ class RagIngestionStatusView(APIView):
                         "created_at": latest_case_event.created_at.isoformat(),
                     }
                     if latest_case_event.trace_id:
-                        response_payload["latest_case_event"]["trace_id"] = (
-                            latest_case_event.trace_id
-                        )
+                        response_payload["latest_case_event"][
+                            "trace_id"
+                        ] = latest_case_event.trace_id
                     if latest_case_event.payload:
-                        response_payload["latest_case_event"]["payload"] = (
-                            latest_case_event.payload
-                        )
+                        response_payload["latest_case_event"][
+                            "payload"
+                        ] = latest_case_event.payload
                     if latest_case_event.ingestion_run_id:
-                        response_payload["latest_case_event"]["ingestion_run_id"] = (
-                            latest_case_event.ingestion_run.run_id
-                        )
+                        response_payload["latest_case_event"][
+                            "ingestion_run_id"
+                        ] = latest_case_event.ingestion_run.run_id
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         processed_response = apply_std_headers(response, meta)
@@ -2551,7 +2698,6 @@ class CrawlerIngestionRunnerView(APIView):
         if resolved_idempotency:
             response[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
         return response
-
 
 
 class RagDemoViewV1(_BaseAgentView):

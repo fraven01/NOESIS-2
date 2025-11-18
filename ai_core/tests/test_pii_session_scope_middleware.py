@@ -71,6 +71,7 @@ def configure_autotest_tenant():
 @pytest.fixture
 def tenant_factory():
     from customers.models import Tenant
+    from django.core.management import call_command
     from django_tenants.utils import get_public_schema_name, schema_context
 
     public_schema = get_public_schema_name()
@@ -84,14 +85,22 @@ def tenant_factory():
         data.update(fields)
         with schema_context(public_schema):
             tenant = Tenant.objects.create(**data)
+            tenant.create_schema(check_if_exists=True)
+            call_command(
+                "migrate_schemas",
+                tenant=True,
+                schema_name=tenant.schema_name,
+                interactive=False,
+                verbosity=0,
+            )
         created.append(tenant)
         return tenant
 
     yield _create
 
-    with schema_context(public_schema):
-        for tenant in created:
-            Tenant.objects.filter(pk=tenant.pk).delete()
+    for tenant in created:
+        with schema_context(tenant.schema_name):
+            tenant.delete(force_drop=True)
 
 
 def test_session_scope_middleware_sets_scope_and_masks(

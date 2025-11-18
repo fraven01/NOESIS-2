@@ -253,6 +253,7 @@ def update_case_from_collection_search(
 
     return None
 
+
 __all__ = [
     "CaseLifecycleUpdateResult",
     "apply_lifecycle_definition",

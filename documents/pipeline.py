@@ -273,9 +273,7 @@ class DocumentProcessingMetadata(BaseModel):
 
     @field_validator("collection_id", "document_collection_id", mode="before")
     @classmethod
-    def _coerce_optional_uuid(
-        cls, value: Optional[UUID] | str
-    ) -> Optional[UUID]:
+    def _coerce_optional_uuid(cls, value: Optional[UUID] | str) -> Optional[UUID]:
         if value is None:
             return None
         if isinstance(value, UUID):

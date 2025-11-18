@@ -7,6 +7,7 @@ from ai_core.graphs.collection_search import (
     HitlDecision,
     SearchStrategy,
     SearchStrategyRequest,
+    Transition,
 )
 from ai_core.tools.web_search import (
     SearchProviderError,
@@ -275,7 +276,7 @@ def test_auto_ingest_disabled_by_default() -> None:
     assert result.get("ingestion") is None
 
 
-def test_auto_ingest_triggers_with_high_scores() -> None:
+def test_auto_ingest_triggers_with_high_scores(monkeypatch) -> None:
     """Test auto_ingest=True triggers ingestion for results with score >= 60."""
     strategy = StubStrategyGenerator()
 
@@ -318,20 +319,39 @@ def test_auto_ingest_triggers_with_high_scores() -> None:
     initial_state["input"]["auto_ingest_top_k"] = 10
     initial_state["input"]["auto_ingest_min_score"] = 60.0
 
-    # Patch embedding rank to add high scores
-    original_run = graph.run
+    high_scores = [70.0, 68.0, 66.0, 64.0, 62.0]
 
-    def patched_run(state, meta=None):
-        working_state, result = original_run(state, meta)
-        # Inject high scores into results after embedding rank
-        if "search" in working_state and "results" in working_state["search"]:
-            for idx, res in enumerate(working_state["search"]["results"]):
-                res["embedding_rank_score"] = 70.0 - (
-                    idx * 2
-                )  # 70, 68, 66, 64, 62, ...
-        return working_state, result
+    def _fake_embedding_rank(
+        self,
+        *,
+        ids,
+        query,
+        purpose,
+        search_results,
+        run_state,
+        top_k=20,
+    ):
+        ranked = []
+        for idx, item in enumerate(search_results):
+            cloned = dict(item)
+            if idx < len(high_scores):
+                cloned["embedding_rank_score"] = high_scores[idx]
+            else:
+                cloned["embedding_rank_score"] = 40.0
+            ranked.append(cloned)
+        run_state.setdefault("search", {})["results"] = ranked
+        meta = self._base_meta(ids)
+        meta.update(
+            {"ranked_count": len(ranked), "top_k_count": min(len(ranked), top_k)}
+        )
+        run_state.setdefault("embedding_rank", {})
+        run_state["embedding_rank"]["scored_count"] = len(ranked)
+        run_state["embedding_rank"]["top_k"] = min(len(ranked), top_k)
+        return Transition("ranked", "embedding_rank_completed", meta)
 
-    graph.run = patched_run
+    monkeypatch.setattr(
+        CollectionSearchGraph, "_k_embedding_rank", _fake_embedding_rank
+    )
 
     state, result = graph.run(initial_state)
 
@@ -342,7 +362,7 @@ def test_auto_ingest_triggers_with_high_scores() -> None:
     assert context["tenant_id"] == "tenant-1"
 
 
-def test_auto_ingest_fallback_to_lower_threshold() -> None:
+def test_auto_ingest_fallback_to_lower_threshold(monkeypatch) -> None:
     """Test auto_ingest falls back to score >= 50 when < 3 results with score >= 60."""
     strategy = StubStrategyGenerator()
     search_worker = StubWebSearchWorker()
@@ -361,19 +381,39 @@ def test_auto_ingest_fallback_to_lower_threshold() -> None:
     initial_state["input"]["auto_ingest_top_k"] = 10
     initial_state["input"]["auto_ingest_min_score"] = 65.0
 
-    # Patch to inject medium scores (only 2 above 65, but several above 50)
-    original_run = graph.run
+    fallback_scores = [68.0, 66.0, 55.0, 54.0, 53.0, 52.0]
 
-    def patched_run(state, meta=None):
-        working_state, result = original_run(state, meta)
-        if "search" in working_state and "results" in working_state["search"]:
-            scores = [68.0, 66.0, 55.0, 54.0, 53.0, 52.0]
-            for idx, res in enumerate(working_state["search"]["results"]):
-                if idx < len(scores):
-                    res["embedding_rank_score"] = scores[idx]
-        return working_state, result
+    def _fake_embedding_rank(
+        self,
+        *,
+        ids,
+        query,
+        purpose,
+        search_results,
+        run_state,
+        top_k=20,
+    ):
+        ranked = []
+        for idx, item in enumerate(search_results):
+            cloned = dict(item)
+            if idx < len(fallback_scores):
+                cloned["embedding_rank_score"] = fallback_scores[idx]
+            else:
+                cloned["embedding_rank_score"] = 40.0
+            ranked.append(cloned)
+        run_state.setdefault("search", {})["results"] = ranked
+        meta = self._base_meta(ids)
+        meta.update(
+            {"ranked_count": len(ranked), "top_k_count": min(len(ranked), top_k)}
+        )
+        run_state.setdefault("embedding_rank", {})
+        run_state["embedding_rank"]["scored_count"] = len(ranked)
+        run_state["embedding_rank"]["top_k"] = min(len(ranked), top_k)
+        return Transition("ranked", "embedding_rank_completed", meta)
 
-    graph.run = patched_run
+    monkeypatch.setattr(
+        CollectionSearchGraph, "_k_embedding_rank", _fake_embedding_rank
+    )
 
     state, result = graph.run(initial_state)
 

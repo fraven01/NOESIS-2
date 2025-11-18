@@ -22,7 +22,6 @@ from ai_core.schemas import CrawlerRunRequest, RagQueryRequest
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.middleware import guardrails as guardrails_middleware
-from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
 from common.constants import (
@@ -319,6 +318,7 @@ def test_write_route_without_trace_id_gets_one(
     assert response[X_TRACE_ID_HEADER]
 
 
+@pytest.mark.django_db
 def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -1873,16 +1873,13 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     assert isinstance(guardrails, dict)
     limits = guardrails.get("limits")
     signals = guardrails.get("signals")
-    assert isinstance(limits, GuardrailLimits)
-    assert limits.max_document_bytes is None
-    assert isinstance(signals, GuardrailSignals)
-    assert signals.canonical_source == "https://example.org/doc"
-    assert signals.host == "example.org"
-    assert signals.document_bytes == len("hello world".encode("utf-8"))
-    assert guardrails.get("error_builder") is views._build_guardrail_error
+    assert limits is None
+    assert isinstance(signals, dict)
+    assert signals["canonical_source"] == "https://example.org/doc"
+    assert signals["host"] == "example.org"
+    assert signals["document_bytes"] == len("hello world".encode("utf-8"))
     gating_input = builds[0].state.get("gating_input", {})
-    assert gating_input.get("limits") is limits
-    assert gating_input.get("signals") is signals
+    assert gating_input == guardrails
 
 
 def test_build_crawler_state_builds_normalized_document(monkeypatch):

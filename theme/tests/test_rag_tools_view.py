@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from django.core.cache import cache
+from django.http import JsonResponse
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.html import escapejs
@@ -139,23 +140,16 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
 
 
 @patch("theme.views.ensure_manual_collection")
-@patch("httpx.Client")
+@patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_defaults_to_manual_collection(
-    mock_client_class, mock_ensure
+    mock_crawl_selected, mock_ensure
 ):
     tenant_id = "tenant-auto"
     tenant_schema = "auto"
 
     mock_ensure.return_value = "manual-uuid"
 
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"origins": []}
-    mock_client.post.return_value = mock_response
-    mock_client.__enter__.return_value = mock_client
-    mock_client.__exit__.return_value = None
-    mock_client_class.return_value = mock_client
+    mock_crawl_selected.return_value = JsonResponse({"task_ids": []})
 
     factory = RequestFactory()
     request = factory.post(
@@ -168,12 +162,12 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
     response = web_search_ingest_selected(request)
 
     assert response.status_code == 200
-    assert mock_client.post.call_count == 1
-    payload = mock_client.post.call_args.kwargs["json"]
-    assert payload["collection_id"] == "manual-uuid"
+    assert mock_crawl_selected.call_count == 1
+    forward_request = mock_crawl_selected.call_args.args[0]
+    forwarded_payload = json.loads(forward_request.body.decode())
+    assert forwarded_payload["collection_id"] == "manual-uuid"
     mock_ensure.assert_called_once_with(tenant_id)
-    headers = mock_client.post.call_args.kwargs["headers"]
-    assert headers["X-Tenant-Schema"] == tenant_schema
+    assert forward_request.META["HTTP_X_TENANT_SCHEMA"] == tenant_schema
 
 
 @patch("theme.views.llm_routing.resolve")
@@ -302,26 +296,21 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
 
 
 @patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
-@patch("httpx.Client")
-def test_web_search_ingest_selected(mock_client_class, _mock_ensure):
-    """Test that web_search_ingest_selected calls crawler_runner API for selected URLs."""
+@patch("theme.views.crawl_selected")
+def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
+    """Test that web_search_ingest_selected dispatches crawl_selected for each URL."""
     tenant_id = "tenant-test"
     tenant_schema = "test"
 
-    # Mock HTTP client and response
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "origins": [
-            {"url": "https://example.com", "status": "completed"},
-            {"url": "https://test.com", "status": "completed"},
-        ]
-    }
-    mock_client.post.return_value = mock_response
-    mock_client.__enter__.return_value = mock_client
-    mock_client.__exit__.return_value = None
-    mock_client_class.return_value = mock_client
+    mock_crawl_selected.return_value = JsonResponse(
+        {
+            "status": "accepted",
+            "task_ids": [
+                {"task_id": "task-1", "origin": {"url": "https://example.com"}},
+                {"task_id": "task-2", "origin": {"url": "https://test.com"}},
+            ],
+        }
+    )
 
     factory = RequestFactory()
     request = factory.post(
@@ -343,18 +332,16 @@ def test_web_search_ingest_selected(mock_client_class, _mock_ensure):
     assert response_data["status"] == "completed"
     assert response_data["url_count"] == 2
     assert "result" in response_data
-
-    # Verify httpx.Client().post was called once
-    assert mock_client.post.call_count == 1
+    assert mock_crawl_selected.call_count == 1
 
 
 @patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
-@patch("httpx.Client")
+@patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_passes_correct_params_to_crawler(
-    mock_client_class,
+    mock_crawl_selected,
     _mock_ensure,
 ):
-    """Test that web_search_ingest_selected passes all required parameters to crawler_runner API.
+    """Ensure crawler view receives the expected payload and headers.
 
     This test validates that:
     1. collection_id from the request payload is passed through to crawler_runner
@@ -366,15 +353,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     tenant_id = "tenant-test"
     tenant_schema = "test"
 
-    # Mock HTTP client and response
-    mock_client = MagicMock()
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"document_id": "doc-123"}
-    mock_client.post.return_value = mock_response
-    mock_client.__enter__.return_value = mock_client
-    mock_client.__exit__.return_value = None
-    mock_client_class.return_value = mock_client
+    mock_crawl_selected.return_value = JsonResponse({"task_ids": []})
 
     factory = RequestFactory()
     request = factory.post(
@@ -396,27 +375,22 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     response_data = json.loads(response.content)
     assert response_data["status"] == "completed"
     assert response_data["url_count"] == 1
-
-    # Verify httpx.Client().post was called once
-    assert mock_client.post.call_count == 1
+    assert mock_crawl_selected.call_count == 1
 
     # Verify the payload and headers passed to crawler_runner API
-    call_kwargs = mock_client.post.call_args.kwargs
-
-    # Validate JSON payload
-    payload = call_kwargs["json"]
+    call_request = mock_crawl_selected.call_args.args[0]
+    payload = json.loads(call_request.body.decode())
     assert payload["workflow_id"] == "web-search-ingestion"
     assert payload["mode"] == "live"
     assert payload["collection_id"] == "test-collection"
-    assert len(payload["origins"]) == 1
-    assert payload["origins"][0]["url"] == "https://example.com"
+    assert len(payload["urls"]) == 1
+    assert payload["urls"][0] == "https://example.com"
 
-    # Validate HTTP headers
-    headers = call_kwargs["headers"]
-    assert headers["X-Tenant-ID"] == tenant_id
-    assert headers["X-Tenant-Schema"] == tenant_schema
-    assert headers["X-Case-ID"] == "test-case"
-    assert "X-Trace-ID" in headers
+    headers = call_request.META
+    assert headers["HTTP_X_TENANT_ID"] == tenant_id
+    assert headers["HTTP_X_TENANT_SCHEMA"] == tenant_schema
+    assert headers["HTTP_X_CASE_ID"] == "test-case"
+    assert "HTTP_X_TRACE_ID" in headers
 
 
 @patch("theme.views.submit_worker_task")

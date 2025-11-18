@@ -1,6 +1,9 @@
 import pytest
 
-from cases.lifecycle import apply_lifecycle_definition, update_case_from_collection_search
+from cases.lifecycle import (
+    apply_lifecycle_definition,
+    update_case_from_collection_search,
+)
 from cases.models import Case, CaseEvent
 from customers.models import Tenant
 
@@ -44,7 +47,9 @@ def test_update_case_from_collection_search_creates_events(test_tenant_schema_na
 
 
 @pytest.mark.django_db
-def test_update_case_from_collection_search_sets_completed_phase(test_tenant_schema_name):
+def test_update_case_from_collection_search_sets_completed_phase(
+    test_tenant_schema_name,
+):
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
 
     state = {

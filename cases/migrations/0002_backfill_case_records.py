@@ -31,7 +31,9 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 def _resolve_tenant(apps, schema_name: str):
     Tenant = apps.get_model("customers", "Tenant")
-    if not schema_name or schema_name == getattr(settings, "PUBLIC_SCHEMA_NAME", "public"):
+    if not schema_name or schema_name == getattr(
+        settings, "PUBLIC_SCHEMA_NAME", "public"
+    ):
         return None
     try:
         return Tenant.objects.get(schema_name=schema_name)
@@ -65,7 +67,9 @@ def backfill_cases(apps, schema_editor):
         .exclude(case__exact="")
         .order_by("case", "queued_at", "started_at")
     )
-    case_map: dict[str, dict[str, object]] = defaultdict(lambda: {"runs": [], "earliest": None})
+    case_map: dict[str, dict[str, object]] = defaultdict(
+        lambda: {"runs": [], "earliest": None}
+    )
     for run in runs:
         case_id = (run.case or "").strip()
         if not case_id:

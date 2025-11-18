@@ -1320,9 +1320,11 @@ class CollectionSearchGraph:
 
                     LOGGER.info(
                         "auto_ingest.triggered",
-                        url_count=len(approved_urls),
-                        min_score=min_score,
-                        selected_count=len(selected_results),
+                        extra={
+                            "auto_ingest.url_count": len(approved_urls),
+                            "auto_ingest.min_score": min_score,
+                            "auto_ingest.selected_count": len(selected_results),
+                        },
                     )
 
                     # Record transition for telemetry

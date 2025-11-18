@@ -106,7 +106,10 @@ DEFAULT_CASE_LIFECYCLE_DEFINITION = CaseLifecycleDefinition(
         CaseLifecycleTransition(
             from_phase=None,
             to_phase="evidence_collection",
-            trigger_events=["ingestion_run_completed", "collection_search:ingest_triggered"],
+            trigger_events=[
+                "ingestion_run_completed",
+                "collection_search:ingest_triggered",
+            ],
         ),
         CaseLifecycleTransition(
             from_phase="evidence_collection",

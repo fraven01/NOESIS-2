@@ -48,7 +48,7 @@ COPY requirements*.txt ./
 RUN --mount=type=cache,target=/root/.cache/pip \
     PIP_NO_CACHE_DIR=0 \
     python -m pip install --upgrade 'pip<24.3' setuptools wheel \
-    && python -m pip install --retries 10 --timeout 60 -r requirements.txt
+    && python -m pip install --retries 10 --timeout 60 -r requirements.txt -r requirements-dev.txt
 
 # Smoke test TLS path to PyPI to surface trust store issues early
 RUN python - <<'PY'

@@ -6,7 +6,10 @@ from typing import Any, Mapping
 
 from common.logging import get_logger
 
-from cases.lifecycle import CaseLifecycleUpdateResult, update_case_from_collection_search
+from cases.lifecycle import (
+    CaseLifecycleUpdateResult,
+    update_case_from_collection_search,
+)
 
 log = get_logger(__name__)
 

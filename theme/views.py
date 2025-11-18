@@ -2,8 +2,8 @@ import json
 from typing import Mapping
 from uuid import uuid4
 
-import httpx
 from django.conf import settings
+from django.core.cache import cache
 from django.http import JsonResponse
 from django.shortcuts import render
 from django.urls import reverse
@@ -27,11 +27,15 @@ from ai_core.rag.routing_rules import (
     get_routing_table,
     is_collection_routing_enabled,
 )
+from ai_core.llm import routing as llm_routing
 from llm_worker.runner import submit_worker_task
+
+from ai_core.views import crawl_selected as _core_crawl_selected
 
 
 logger = get_logger(__name__)
 build_graph = build_external_knowledge_graph  # Backwards compatibility for tests
+crawl_selected = _core_crawl_selected  # Re-export for tests
 
 
 def home(request):
@@ -101,8 +105,206 @@ def _resolve_manual_collection(
     return manual_id, requested_text
 
 
+_RERANK_MODEL_FALLBACK = "fast"
+_RERANK_CACHE_PREFIX = "rag_tools.rerank_model"
+
+
+def _resolve_rerank_model_preset() -> str:
+    """Resolve the configured rerank model preset via llm routing with caching."""
+
+    preset_label = getattr(settings, "RERANK_MODEL_PRESET", "") or ""
+    preset_label = preset_label.strip()
+    if not preset_label:
+        return _RERANK_MODEL_FALLBACK
+
+    cache_key = f"{_RERANK_CACHE_PREFIX}:{preset_label}"
+    cached = cache.get(cache_key)
+    if isinstance(cached, str) and cached:
+        return cached
+
+    try:
+        resolved = llm_routing.resolve(preset_label)
+    except ValueError:
+        logger.warning(
+            "rag_tools.rerank_model.resolve_failed",
+            preset=preset_label,
+        )
+        resolved = _RERANK_MODEL_FALLBACK
+
+    cache.set(cache_key, resolved, timeout=300)
+    return resolved
+
+
+def _normalise_quality_mode(value: object, default: str = "standard") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"standard", "premium", "fast"}:
+        return candidate
+    return default
+
+
+def _normalise_max_candidates(value: object, *, default: int = 20) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = default
+    numeric = max(5, min(40, numeric))
+    return numeric
+
+
+def _result_identifier(result: Mapping[str, object]) -> str | None:
+    """Return the identifier used to merge rerank scores back onto results."""
+
+    for key in ("document_id", "id"):
+        candidate = result.get(key)
+        if candidate:
+            return str(candidate)
+    metadata = result.get("meta")
+    if isinstance(metadata, Mapping):
+        for key in ("document_id", "id"):
+            candidate = metadata.get(key)
+            if candidate:
+                return str(candidate)
+    return None
+
+
+def _apply_rerank_results(
+    results: list[Mapping[str, object]],
+    rerank_entries: list[Mapping[str, object]],
+) -> list[dict[str, object]]:
+    """Return ``results`` reordered with rerank scores applied."""
+
+    if not rerank_entries:
+        return [dict(item) for item in results]
+
+    remaining = [dict(item) for item in results]
+    ordered: list[dict[str, object]] = []
+    consumed_ids: set[str] = set()
+
+    for entry in rerank_entries:
+        entry_id = entry.get("id")
+        if not entry_id:
+            continue
+        entry_id = str(entry_id)
+        for candidate in remaining:
+            result_id = _result_identifier(candidate)
+            if result_id == entry_id and entry_id not in consumed_ids:
+                candidate = dict(candidate)
+                candidate["rerank"] = {
+                    key: value for key, value in entry.items() if key != "id"
+                }
+                ordered.append(candidate)
+                consumed_ids.add(entry_id)
+                break
+
+    for candidate in remaining:
+        candidate_id = _result_identifier(candidate)
+        if candidate_id and candidate_id in consumed_ids:
+            continue
+        ordered.append(candidate)
+
+    return ordered
+
+
+def _build_rerank_state(
+    *,
+    query: str,
+    collection_id: str,
+    results: list[Mapping[str, object]],
+    request_data: Mapping[str, object],
+) -> dict[str, object]:
+    quality_mode = _normalise_quality_mode(request_data.get("quality_mode"))
+    max_candidates = _normalise_max_candidates(request_data.get("max_candidates"))
+    purpose = str(request_data.get("purpose") or "web_search_rerank").strip() or (
+        "web_search_rerank"
+    )
+    return {
+        "question": query,
+        "collection_scope": collection_id,
+        "quality_mode": quality_mode,
+        "max_candidates": max_candidates,
+        "purpose": purpose,
+        "search": {"results": results},
+    }
+
+
+def _run_rerank_workflow(
+    *,
+    request_data: Mapping[str, object],
+    query: str,
+    collection_id: str,
+    results: list[Mapping[str, object]],
+    tenant_id: str,
+    case_id: str,
+    trace_id: str,
+) -> tuple[dict[str, object], list[dict[str, object]] | None]:
+    """Trigger the rerank worker graph and return ``(meta, updated_results)``."""
+
+    if not results:
+        return (
+            {
+                "status": "skipped",
+                "message": "Keine Ergebnisse zum Reranken vorhanden.",
+            },
+            None,
+        )
+
+    state = _build_rerank_state(
+        query=query,
+        collection_id=collection_id,
+        results=results,
+        request_data=request_data,
+    )
+    model_preset = _resolve_rerank_model_preset()
+    task_payload = {
+        "state": state,
+        "workflow_id": "web-search-rerank",
+        "control": {
+            "model_preset": model_preset,
+        },
+    }
+    scope = {
+        "tenant_id": tenant_id,
+        "case_id": case_id,
+        "trace_id": trace_id,
+    }
+    rerank_response, completed = submit_worker_task(
+        task_payload=task_payload,
+        scope=scope,
+        graph_name="collection_search",
+        timeout_s=60,
+    )
+
+    meta = {
+        "status": "succeeded" if completed else "queued",
+        "task_id": rerank_response.get("task_id"),
+        "model_preset": model_preset,
+    }
+    task_id = meta["task_id"]
+    if task_id:
+        meta["status_url"] = reverse(
+            "llm_worker:task_status",
+            kwargs={"task_id": task_id},
+        )
+
+    if not completed:
+        meta["message"] = "Rerank workflow wurde gestartet und läuft im Hintergrund."
+        return meta, None
+
+    result_payload = rerank_response.get("result") or {}
+    ranked_entries = result_payload.get("ranked") or []
+    merged_results = _apply_rerank_results(results, ranked_entries)
+
+    if "model" in result_payload:
+        meta["model"] = result_payload["model"]
+    if "latency_s" in result_payload:
+        meta["latency_s"] = result_payload["latency_s"]
+    meta["graph_name"] = rerank_response.get("graph_name", "collection_search")
+
+    return meta, merged_results
+
+
 class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
-    """Adapter that triggers crawler ingestion via internal HTTP API."""
+    """Adapter that triggers crawler ingestion by calling crawler_runner view directly."""
 
     def trigger(
         self,
@@ -112,30 +314,58 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
         context: Mapping[str, str],
     ) -> CrawlerIngestionOutcome:
         """Trigger ingestion for the given URL."""
+        from ai_core.views import crawler_runner
+        from django.http import HttpRequest
+        from customers.models import Tenant
+
         tenant_id = context.get("tenant_id", "dev")
         trace_id = context.get("trace_id", "")
         case_id = context.get("case_id", "local")
         mode = context.get("mode", "live")
+        tenant_schema = context.get("tenant_schema") or tenant_id
 
-        headers = {
-            "Content-Type": "application/json",
-            "X-Tenant-ID": str(tenant_id),
-            "X-Case-ID": str(case_id),
-            "X-Trace-ID": str(trace_id),
-        }
         payload = {
             "workflow_id": "external-knowledge-ingestion",
             "mode": mode,
             "origins": [{"url": url}],
             "collection_id": collection_id,
         }
+        body = json.dumps(payload).encode("utf-8")
+
         try:
-            crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
-            with httpx.Client(timeout=30.0) as client:
-                response = client.post(crawler_url, json=payload, headers=headers)
+            # Create a mock Django request
+            django_request = HttpRequest()
+            django_request.method = "POST"
+            django_request.META = {
+                "CONTENT_TYPE": "application/json",
+                "HTTP_CONTENT_TYPE": "application/json",
+                "CONTENT_LENGTH": str(len(body)),
+                "HTTP_X_TENANT_ID": str(tenant_id),
+                "HTTP_X_TENANT_SCHEMA": str(tenant_schema),
+                "HTTP_X_CASE_ID": str(case_id),
+                "HTTP_X_TRACE_ID": str(trace_id),
+            }
+            django_request._body = body
+
+            # Attach tenant if available
+            try:
+                # tenant_id is actually the schema_name (e.g., 'dev')
+                tenant = Tenant.objects.get(schema_name=tenant_id)
+                django_request.tenant = tenant
+            except Tenant.DoesNotExist:
+                logger.warning("crawler.adapter.tenant_not_found", tenant_id=tenant_id)
+            except Exception as exc:
+                logger.warning(
+                    "crawler.adapter.tenant_lookup_failed",
+                    tenant_id=tenant_id,
+                    error=str(exc),
+                )
+
+            # Call crawler_runner directly with the constructed HttpRequest
+            response = crawler_runner(django_request)
+            response_data = response.data if hasattr(response, "data") else {}
+
             if response.status_code == 200:
-                response_data = response.json()
-                # This is a simplification; real outcome depends on crawler response
                 return CrawlerIngestionOutcome(
                     decision="ingested",
                     crawler_decision=response_data.get("decision", "unknown"),
@@ -267,7 +497,7 @@ def web_search(request):
     }
 
     ingestion_adapter = _ViewCrawlerIngestionAdapter()
-    graph = build_external_knowledge_graph(ingestion_adapter=ingestion_adapter)
+    graph = build_graph(ingestion_adapter=ingestion_adapter)
 
     try:
         # The graph returns the final state and a result payload
@@ -298,19 +528,40 @@ def web_search(request):
         "trace_id": trace_id,
     }
 
+    if data.get("rerank"):
+        try:
+            rerank_meta, reranked_results = _run_rerank_workflow(
+                request_data=data,
+                query=query,
+                collection_id=collection_id,
+                results=results,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                trace_id=trace_id,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.exception("web_search.rerank_failed")
+            rerank_meta = {
+                "status": "failed",
+                "message": "Rerank konnte nicht gestartet werden.",
+            }
+            reranked_results = None
+
+        response_data["rerank"] = rerank_meta
+        if reranked_results is not None:
+            response_data["results"] = reranked_results
+
     return JsonResponse(response_data)
 
 
 @require_POST
 @csrf_exempt
 def web_search_ingest_selected(request):
-    """Ingest user-selected URLs from web search results via crawler_runner API.
+    """Ingest user-selected URLs from web search results via crawler_runner.
 
-    Uses the internal crawler_runner HTTP API endpoint for proper layer separation.
+    Calls crawler_runner view directly to avoid HTTP overhead and tenant routing issues.
     Returns a summary of started ingestion tasks.
     """
-    import httpx
-
     try:
         data = json.loads(request.body)
         urls = data.get("urls", [])
@@ -329,41 +580,53 @@ def web_search_ingest_selected(request):
                 {"error": "Collection ID could not be resolved"}, status=400
             )
 
-        # Build headers for API call
-        headers = {
-            "Content-Type": "application/json",
-            "X-Tenant-ID": tenant_id,
-            "X-Tenant-Schema": tenant_schema,
-            "X-Case-ID": data.get("case_id", "local"),
-            "X-Trace-ID": str(uuid4()),
-        }
-
-        # Build payload for crawler_runner endpoint
-        crawler_payload = {
+        # Build payload for crawl_selected
+        crawl_payload = {
+            "urls": urls,
             "workflow_id": "web-search-ingestion",
-            "mode": mode,
-            "origins": [{"url": url} for url in urls],
             "collection_id": collection_id,
+            "mode": mode,
         }
 
-        # Call crawler_runner API endpoint
-        # Use localhost since we're in the same service
-        crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
+        # Create a new request with the crawl payload
+        from django.http import HttpRequest
 
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(
-                crawler_url,
-                json=crawler_payload,
-                headers=headers,
-            )
+        crawl_request = HttpRequest()
+        crawl_request.method = "POST"
+        crawl_request.META = request.META.copy()
+        crawl_request._body = json.dumps(crawl_payload).encode("utf-8")
+        crawl_request.META.setdefault("CONTENT_TYPE", "application/json")
+        crawl_request.META.setdefault("HTTP_CONTENT_TYPE", "application/json")
+        crawl_request.META.setdefault("CONTENT_LENGTH", str(len(crawl_request._body)))
+
+        # Ensure tenant headers are present for crawler_runner
+        crawl_request.META.setdefault("HTTP_X_TENANT_ID", tenant_id)
+        crawl_request.META.setdefault("HTTP_X_TENANT_SCHEMA", tenant_schema)
+        case_id = str(data.get("case_id") or "local").strip() or "local"
+        crawl_request.META.setdefault("HTTP_X_CASE_ID", case_id)
+        crawl_request.META.setdefault("HTTP_X_TRACE_ID", str(uuid4()))
+
+        # Copy tenant context
+        if hasattr(request, "tenant"):
+            crawl_request.tenant = request.tenant
+        if hasattr(request, "tenant_schema"):
+            crawl_request.tenant_schema = request.tenant_schema
+
+        # Call crawl_selected
+        response = crawl_selected(crawl_request)
+
+        # Parse response
+        try:
+            response_data = json.loads(response.content.decode())
+        except (json.JSONDecodeError, AttributeError):
+            response_data = {}
 
         if response.status_code in (200, 202):
-            response_data = response.json()
             return JsonResponse(
                 {
-                    "status": "accepted"
-                    if response.status_code == 202
-                    else "completed",
+                    "status": (
+                        "accepted" if response.status_code == 202 else "completed"
+                    ),
                     "result": response_data,
                     "task_ids": response_data.get("task_ids"),
                     "url_count": len(urls),
@@ -373,9 +636,9 @@ def web_search_ingest_selected(request):
         else:
             return JsonResponse(
                 {
-                    "error": "Crawler API call failed",
+                    "error": "Crawler call failed",
                     "status_code": response.status_code,
-                    "detail": response.text,
+                    "detail": response_data.get("error", str(response_data)),
                 },
                 status=response.status_code,
             )
