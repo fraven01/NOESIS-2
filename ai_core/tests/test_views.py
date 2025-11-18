@@ -12,6 +12,7 @@ from django.test import RequestFactory
 from structlog.testing import capture_logs
 
 from ai_core import services, views
+from ai_core.contracts.payloads import CompletionPayload, DeltaPayload, GuardrailPayload
 from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
 from ai_core.infra import object_store, rate_limit
@@ -1870,16 +1871,13 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
     guardrails = builds[0].state.get("guardrails")
-    assert isinstance(guardrails, dict)
-    limits = guardrails.get("limits")
-    signals = guardrails.get("signals")
-    assert limits is None
-    assert isinstance(signals, dict)
-    assert signals["canonical_source"] == "https://example.org/doc"
-    assert signals["host"] == "example.org"
-    assert signals["document_bytes"] == len("hello world".encode("utf-8"))
-    gating_input = builds[0].state.get("gating_input", {})
-    assert gating_input == guardrails
+    assert isinstance(guardrails, GuardrailPayload)
+    assert guardrails.limits is not None
+    assert guardrails.limits.max_document_bytes is None
+    assert guardrails.signals is not None
+    assert guardrails.signals.canonical_source == "https://example.org/doc"
+    assert guardrails.signals.host == "example.org"
+    assert guardrails.signals.document_bytes == len("hello world".encode("utf-8"))
 
 
 def test_build_crawler_state_builds_normalized_document(monkeypatch):
@@ -2054,13 +2052,25 @@ def test_crawler_runner_guardrail_denial_returns_413(
                     },
                 },
             }
-            summary = {
-                "guardrails": {
-                    "decision": decision.decision,
-                    "reason": decision.reason,
-                    "attributes": dict(decision.attributes),
-                }
-            }
+            summary = CompletionPayload(
+                normalized_document={"document_id": "denied"},
+                delta=DeltaPayload(
+                    decision="skipped",
+                    reason="guardrail_denied",
+                    attributes={},
+                ),
+                guardrails=GuardrailPayload(
+                    decision=decision.decision,
+                    reason=decision.reason,
+                    allowed=False,
+                    policy_events=tuple(
+                        decision.attributes.get("policy_events", ())
+                    ),
+                    limits=None,
+                    signals=None,
+                    attributes=dict(decision.attributes),
+                ),
+            )
             result_state["summary"] = summary
             return result_state, result
 

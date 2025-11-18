@@ -93,9 +93,15 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graphs import (
+    crawler_ingestion_graph,
     info_intake,
 )  # noqa: F401
-from ai_core.guardrails.serde import GuardrailSerde
+from ai_core.contracts.payloads import (
+    FrontierData,
+    GuardrailLimitsData,
+    GuardrailPayload,
+    GuardrailSignalsData,
+)
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
     GuardrailLimits,
@@ -1740,10 +1746,13 @@ def _build_crawler_state(
         descriptor = SourceDescriptor(
             host=host, path=path_component, provider=source.provider
         )
-        frontier_input = {
-            "descriptor": asdict(descriptor),
-            "signals": asdict(CrawlSignals()),
-        }
+        frontier_data = FrontierData(
+            host=descriptor.host,
+            path=descriptor.path,
+            provider=descriptor.provider,
+            breadcrumbs=(),
+            policy_events=(),
+        )
 
         politeness = PolitenessContext(host=descriptor.host)
         fetch_request = FetchRequest(
@@ -1778,7 +1787,6 @@ def _build_crawler_state(
         effective_content_type = _normalize_media_type_value(
             origin.content_type or request_data.content_type
         )
-        fetch_input: dict[str, object]
         fetch_used = False
         http_status: int | None = None
         fetched_bytes: int | None = None
@@ -1851,25 +1859,26 @@ def _build_crawler_state(
                 getattr(fetch_result.error, "error_class", None),
                 getattr(fetch_result.error, "reason", None),
             )
-            (
-                fetch_input,
-                fetch_snapshot,
-                body_bytes,
-                etag_value,
-            ) = build_fetch_payload(
+            fetch_payload = build_fetch_payload(
                 fetch_request,
                 fetch_result,
                 fetch_limits=fetch_limits,
                 failure=failure,
                 media_type=effective_content_type,
             )
-            if fetch_snapshot.media_type is not None:
-                effective_content_type = fetch_snapshot.media_type
-            fetched_bytes = fetch_snapshot.fetched_bytes
-            fetch_elapsed = fetch_snapshot.elapsed
-            fetch_retries = fetch_snapshot.retries
-            fetch_retry_reason = fetch_snapshot.retry_reason
-            fetch_backoff_total_ms = fetch_snapshot.backoff_total_ms
+            body_bytes = fetch_payload.body
+            header_content_type = fetch_payload.headers.get("Content-Type")
+            if header_content_type:
+                effective_content_type = _normalize_media_type_value(
+                    header_content_type
+                )
+            fetched_bytes = fetch_payload.downloaded_bytes
+            fetch_elapsed = fetch_payload.elapsed_ms / 1000 if fetch_payload.elapsed_ms else 0.0
+            fetch_retries = fetch_payload.retries
+            fetch_retry_reason = fetch_payload.retry_reason
+            fetch_backoff_total_ms = fetch_payload.backoff_total_ms
+            etag_value = fetch_payload.headers.get("ETag")
+            http_status = fetch_payload.status_code
         else:
             if origin.content is None:
                 raise ValueError(
@@ -1877,22 +1886,26 @@ def _build_crawler_state(
                 )
             body_bytes = origin.content.encode("utf-8")
             manual_content_type = effective_content_type or "application/octet-stream"
-            fetch_input, snapshot = build_manual_fetch_payload(
+            fetch_payload = build_manual_fetch_payload(
                 fetch_request,
                 body=body_bytes,
                 media_type=manual_content_type,
             )
-            fetched_bytes = snapshot.fetched_bytes
-            fetch_elapsed = snapshot.elapsed
-            fetch_retries = snapshot.retries
-            fetch_retry_reason = snapshot.retry_reason
-            fetch_backoff_total_ms = snapshot.backoff_total_ms
-            http_status = snapshot.http_status
+            fetched_bytes = fetch_payload.downloaded_bytes
+            fetch_elapsed = fetch_payload.elapsed_ms / 1000
+            fetch_retries = fetch_payload.retries
+            fetch_retry_reason = fetch_payload.retry_reason
+            fetch_backoff_total_ms = fetch_payload.backoff_total_ms
+            http_status = fetch_payload.status_code
+            etag_value = fetch_payload.headers.get("ETag")
 
         if effective_content_type is None:
             effective_content_type = "application/octet-stream"
 
-        guardrail_signals = GuardrailSignals(
+        guardrail_limits_data = GuardrailLimitsData(
+            max_document_bytes=limits.max_document_bytes,
+        )
+        guardrail_signals = GuardrailSignalsData(
             tenant_id=str(meta.get("tenant_id")),
             provider=source.provider,
             canonical_source=source.canonical_source,
@@ -1900,14 +1913,15 @@ def _build_crawler_state(
             document_bytes=len(body_bytes),
             mime_type=effective_content_type,
         )
-        guardrail_payload = GuardrailSerde.to_payload(
-            limits=limits,
+        guardrail_payload = GuardrailPayload(
+            decision="allow",
+            reason="pending_evaluation",
+            allowed=True,
+            policy_events=(),
+            limits=guardrail_limits_data,
             signals=guardrail_signals,
+            attributes={},
         )
-        gating_input = {
-            "limits": guardrail_payload.get("limits"),
-            "signals": guardrail_payload.get("signals"),
-        }
 
         fetched_at = timezone.now().astimezone(datetime_timezone.utc)
         document_uuid = _resolve_document_uuid(document_id)
@@ -1980,10 +1994,8 @@ def _build_crawler_state(
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
             "provider": source.provider,
-            "frontier_input": frontier_input,
-            "fetch_input": fetch_input,
-            "delta_input": {},
-            "gating_input": gating_input,
+            "frontier": frontier_data,
+            "fetch": fetch_payload,
             "guardrails": guardrail_payload,
             "document_id": document_id,
             "collection_id": request_data.collection_id,

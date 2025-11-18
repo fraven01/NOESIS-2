@@ -12,6 +12,7 @@ import ai_core.api as ai_api
 import pytest
 
 import ai_core.graphs.crawler_ingestion_graph as crawler_ingestion_graph
+from ai_core.contracts.payloads import CompletionPayload
 from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 
 from ai_core.graphs.document_service import DocumentLifecycleService
@@ -227,9 +228,11 @@ def test_orchestrates_nominal_flow() -> None:
     assert transitions["finish"].decision == "new"
     assert result["decision"] == "new"
     summary = updated_state["summary"]
-    assert summary["delta"]["decision"] == "new"
-    assert summary["embedding"]["status"] == "upserted"
-    assert summary["guardrails"]["decision"] == "allow"
+    assert isinstance(summary, CompletionPayload)
+    assert summary.delta.decision == "new"
+    assert summary.embedding is not None
+    assert summary.embedding.status == "upserted"
+    assert summary.guardrails.decision == "allow"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(
         status.to_dict().get("reason") == "no_previous_hash" for status in statuses
@@ -278,8 +281,9 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
     assert transitions["finish"].decision == "denied"
     assert result["decision"] == "denied"
     summary = updated_state["summary"]
-    assert summary["guardrails"]["decision"] == "deny"
-    assert "embedding" not in summary
+    assert isinstance(summary, CompletionPayload)
+    assert summary.guardrails.decision == "deny"
+    assert summary.embedding is None
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(
         status.to_dict().get("reason") == "document_too_large" for status in statuses
@@ -589,7 +593,9 @@ def test_guardrail_frontier_state_propagation() -> None:
     guardrail_section = guardrail_transition.guardrail
     assert guardrail_section is not None
     assert guardrail_section.policy_events == ("robots_disallow",)
-    summary_attrs = updated_state["summary"]["guardrails"]["attributes"]
+    summary = updated_state["summary"]
+    assert isinstance(summary, CompletionPayload)
+    summary_attrs = summary.guardrails.attributes
     assert summary_attrs["frontier"]["slot"] == "default"
     assert summary_attrs["frontier"]["policy_events"] == ("robots_disallow",)
 
@@ -614,7 +620,9 @@ def test_delta_includes_meta_frontier_backoff() -> None:
     assert delta_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
     assert delta_attrs["frontier"]["decision"] == "defer"
     assert delta_attrs["policy_events"] == ("failure_backoff",)
-    summary_attrs = updated_state["summary"]["delta"]["attributes"]
+    summary = updated_state["summary"]
+    assert isinstance(summary, CompletionPayload)
+    summary_attrs = summary.delta.attributes
     assert summary_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
 
 
@@ -635,7 +643,9 @@ def test_guardrail_denied_merges_frontier_policy_events() -> None:
         "max_document_bytes",
         "robots_disallow",
     )
-    summary_attrs = updated_state["summary"]["guardrails"]["attributes"]
+    summary = updated_state["summary"]
+    assert isinstance(summary, CompletionPayload)
+    summary_attrs = summary.guardrails.attributes
     assert summary_attrs["policy_events"] == (
         "max_document_bytes",
         "robots_disallow",
