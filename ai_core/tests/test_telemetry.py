@@ -62,7 +62,7 @@ def test_build_fetch_payload_serializes_limits_and_failures():
     limits = FetcherLimits(max_bytes=1024)
     failure = FetchFailure(reason="timeout", temporary=True)
 
-    fetch_input, snapshot, body_bytes, etag = build_fetch_payload(
+    fetch_payload = build_fetch_payload(
         request,
         result,
         fetch_limits=limits,
@@ -70,19 +70,17 @@ def test_build_fetch_payload_serializes_limits_and_failures():
         media_type="text/plain",
     )
 
-    assert snapshot.used is True
-    assert snapshot.http_status == 200
-    assert snapshot.media_type == "text/plain"
-    assert snapshot.fetched_bytes == len(body_bytes) == len("payload-bytes")
-    assert snapshot.retries == 1
-    assert snapshot.retry_reason == "retry"
-    assert snapshot.backoff_total_ms == 12.0
-
-    assert fetch_input["limits"]["max_bytes"] == 1024
-    assert fetch_input["failure"]["reason"] == "timeout"
-    assert fetch_input["headers"]["Content-Type"] == "text/plain"
-    assert fetch_input["request"]["canonical_source"] == request.canonical_source
-    assert etag == "etag-123"
+    assert fetch_payload.status_code == 200
+    assert fetch_payload.headers["Content-Type"] == "text/plain"
+    assert fetch_payload.downloaded_bytes == len("payload-bytes")
+    assert fetch_payload.retries == 1
+    assert fetch_payload.retry_reason == "retry"
+    assert fetch_payload.backoff_total_ms == 12.0
+    assert fetch_payload.max_bytes_limit == 1024
+    assert fetch_payload.failure_reason == "timeout"
+    assert fetch_payload.failure_temporary is True
+    assert fetch_payload.request.canonical_source == request.canonical_source
+    assert fetch_payload.headers["ETag"] == "etag-123"
 
 
 def test_build_manual_fetch_payload_defaults_elapsed():
@@ -91,18 +89,17 @@ def test_build_manual_fetch_payload_defaults_elapsed():
         politeness=PolitenessContext(host="example.org"),
     )
 
-    fetch_input, snapshot = build_manual_fetch_payload(
+    fetch_payload = build_manual_fetch_payload(
         request,
         body=b"manual-bytes",
         media_type="application/octet-stream",
     )
 
-    assert snapshot.used is False
-    assert snapshot.http_status == 200
-    assert snapshot.media_type == "application/octet-stream"
-    assert snapshot.fetched_bytes == len("manual-bytes")
-    assert fetch_input["headers"]["Content-Type"] == "application/octet-stream"
-    assert fetch_input["body"] == b"manual-bytes"
+    assert fetch_payload.status_code == 200
+    assert fetch_payload.headers["Content-Type"] == "application/octet-stream"
+    assert fetch_payload.downloaded_bytes == len("manual-bytes")
+    assert fetch_payload.retry_reason is None
+    assert fetch_payload.body == b"manual-bytes"
 
 
 def test_summarize_fetch_attempt_uses_result_telemetry():

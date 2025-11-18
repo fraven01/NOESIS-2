@@ -8,6 +8,10 @@ from typing import TYPE_CHECKING, Any, Dict, Iterable, Literal, Mapping, Optiona
 from pydantic import BaseModel, ConfigDict, Field, field_serializer, model_validator
 
 from ai_core.api import EmbeddingResult
+from ai_core.contracts.payloads import (
+    DeltaPayload,
+    GuardrailPayload as GuardrailStatePayload,
+)
 from ai_core.rag.ingestion_contracts import ChunkMeta
 from documents.processing_graph import DocumentProcessingPhase
 
@@ -183,9 +187,17 @@ def build_lifecycle_section(
     return LifecycleSection(status=update.status, policy_events=tuple(policy_events))
 
 
-def build_delta_section(decision: Optional["DeltaDecision"]) -> Optional[DeltaSection]:
+def build_delta_section(
+    decision: Optional["DeltaDecision" | DeltaPayload],
+) -> Optional[DeltaSection]:
     if decision is None:
         return None
+    if isinstance(decision, DeltaPayload):
+        return DeltaSection(
+            decision=decision.decision,
+            reason=decision.reason,
+            attributes=dict(decision.attributes),
+        )
     return DeltaSection(
         decision=decision.decision,
         reason=decision.reason,
@@ -194,10 +206,18 @@ def build_delta_section(decision: Optional["DeltaDecision"]) -> Optional[DeltaSe
 
 
 def build_guardrail_section(
-    decision: Optional["GuardrailDecision"],
+    decision: Optional["GuardrailDecision" | GuardrailStatePayload],
 ) -> Optional[GuardrailSection]:
     if decision is None:
         return None
+    if isinstance(decision, GuardrailStatePayload):
+        return GuardrailSection(
+            decision=decision.decision,
+            reason=decision.reason,
+            allowed=decision.allowed,
+            policy_events=tuple(decision.policy_events),
+            attributes=dict(decision.attributes),
+        )
     policy_events: Iterable[str] = getattr(decision, "policy_events", ())
     attributes: Mapping[str, Any]
     raw_attributes = getattr(decision, "attributes", {})

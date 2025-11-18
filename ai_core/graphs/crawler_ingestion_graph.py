@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
@@ -11,6 +12,13 @@ from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
 from ai_core import api as ai_core_api
+from ai_core.contracts.payloads import (
+    CompletionPayload,
+    FrontierData,
+    GuardrailLimitsData,
+    GuardrailPayload as GuardrailStatePayload,
+    GuardrailSignalsData,
+)
 from ai_core.graphs.transition_contracts import (
     DeltaSection,
     EmbeddingSection,
@@ -34,8 +42,9 @@ from ai_core.infra.observability import (
 from ai_core.rag.guardrails import (
     GuardrailLimits,
     GuardrailSignals,
+    QuotaLimits,
+    QuotaUsage,
 )
-from ai_core.guardrails.serde import GuardrailSerde
 from ai_core.rag.ingestion_contracts import (
     ChunkMeta,
     IngestionProfileResolution,
@@ -472,8 +481,15 @@ class CrawlerIngestionGraph:
             meta["key_alias"] = key_alias.strip()
 
         frontier_state = state.get("frontier")
-        if isinstance(frontier_state, Mapping):
-            breadcrumbs = frontier_state.get("breadcrumbs")
+        frontier_mapping: Optional[Mapping[str, Any]]
+        if isinstance(frontier_state, FrontierData):
+            frontier_mapping = frontier_state.model_dump()
+        elif isinstance(frontier_state, Mapping):
+            frontier_mapping = frontier_state
+        else:
+            frontier_mapping = None
+        if frontier_mapping is not None:
+            breadcrumbs = frontier_mapping.get("breadcrumbs")
             if isinstance(breadcrumbs, Iterable) and not isinstance(
                 breadcrumbs, (str, bytes)
             ):
@@ -1045,24 +1061,196 @@ class CrawlerIngestionGraph:
         )
         return transition, True
 
+    @staticmethod
+    def _timedelta_from_ms(value: float | None) -> Optional[timedelta]:
+        if value is None:
+            return None
+        if value <= 0:
+            return None
+        return timedelta(milliseconds=float(value))
+
+    @staticmethod
+    def _quota_limits_from_payload(
+        max_docs: int | None, max_bytes: int | None
+    ) -> Optional[QuotaLimits]:
+        if max_docs is None and max_bytes is None:
+            return None
+        return QuotaLimits(max_documents=max_docs, max_bytes=max_bytes)
+
+    @staticmethod
+    def _quota_usage_from_payload(
+        documents: int | None, bytes_used: int | None
+    ) -> Optional[QuotaUsage]:
+        if documents is None and bytes_used is None:
+            return None
+        return QuotaUsage(documents=int(documents or 0), bytes=int(bytes_used or 0))
+
+    def _guardrail_limits_from_payload(
+        self, payload: Optional[GuardrailStatePayload]
+    ) -> Optional[GuardrailLimits]:
+        if payload is None or payload.limits is None:
+            return None
+        limits = payload.limits
+        return GuardrailLimits(
+            max_document_bytes=limits.max_document_bytes,
+            processing_time_limit=self._timedelta_from_ms(
+                limits.processing_time_limit_ms
+            ),
+            mime_blacklist=frozenset(limits.mime_blacklist),
+            host_blocklist=frozenset(limits.host_blocklist),
+            tenant_quota=self._quota_limits_from_payload(
+                limits.tenant_quota_max_docs, limits.tenant_quota_max_bytes
+            ),
+            host_quota=self._quota_limits_from_payload(
+                limits.host_quota_max_docs, limits.host_quota_max_bytes
+            ),
+        )
+
+    def _guardrail_signals_from_payload(
+        self, payload: Optional[GuardrailStatePayload]
+    ) -> Optional[GuardrailSignals]:
+        if payload is None or payload.signals is None:
+            return None
+        signals = payload.signals
+        return GuardrailSignals(
+            tenant_id=signals.tenant_id,
+            provider=signals.provider,
+            canonical_source=signals.canonical_source,
+            host=signals.host,
+            document_bytes=signals.document_bytes,
+            processing_time=self._timedelta_from_ms(signals.processing_time_ms),
+            mime_type=signals.mime_type,
+            tenant_usage=self._quota_usage_from_payload(
+                signals.tenant_usage_docs, signals.tenant_usage_bytes
+            ),
+            host_usage=self._quota_usage_from_payload(
+                signals.host_usage_docs, signals.host_usage_bytes
+            ),
+        )
+
+    @staticmethod
+    def _limits_data_from_dataclass(
+        limits: Optional[GuardrailLimits],
+    ) -> Optional[GuardrailLimitsData]:
+        if limits is None:
+            return None
+        return GuardrailLimitsData(
+            max_document_bytes=limits.max_document_bytes,
+            processing_time_limit_ms=(
+                limits.processing_time_limit.total_seconds() * 1000
+                if limits.processing_time_limit
+                else None
+            ),
+            mime_blacklist=tuple(limits.mime_blacklist),
+            host_blocklist=tuple(limits.host_blocklist),
+            tenant_quota_max_docs=(
+                limits.tenant_quota.max_documents if limits.tenant_quota else None
+            ),
+            tenant_quota_max_bytes=(
+                limits.tenant_quota.max_bytes if limits.tenant_quota else None
+            ),
+            host_quota_max_docs=(
+                limits.host_quota.max_documents if limits.host_quota else None
+            ),
+            host_quota_max_bytes=(
+                limits.host_quota.max_bytes if limits.host_quota else None
+            ),
+        )
+
+    @staticmethod
+    def _signals_data_from_dataclass(
+        signals: Optional[GuardrailSignals],
+    ) -> Optional[GuardrailSignalsData]:
+        if signals is None or signals.tenant_id is None:
+            return None
+        return GuardrailSignalsData(
+            tenant_id=str(signals.tenant_id),
+            provider=signals.provider,
+            canonical_source=signals.canonical_source,
+            host=signals.host,
+            document_bytes=signals.document_bytes or 0,
+            mime_type=signals.mime_type,
+            processing_time_ms=(
+                signals.processing_time.total_seconds() * 1000
+                if signals.processing_time
+                else None
+            ),
+            tenant_usage_docs=(
+                signals.tenant_usage.documents if signals.tenant_usage else 0
+            ),
+            tenant_usage_bytes=(
+                signals.tenant_usage.bytes if signals.tenant_usage else 0
+            ),
+            host_usage_docs=(signals.host_usage.documents if signals.host_usage else 0),
+            host_usage_bytes=(signals.host_usage.bytes if signals.host_usage else 0),
+        )
+
+    def _coerce_guardrail_payload(
+        self,
+        payload: Any,
+    ) -> Optional[GuardrailStatePayload]:
+        if isinstance(payload, GuardrailStatePayload):
+            return payload
+        if isinstance(payload, Mapping):
+            legacy_limits = payload.get("limits")
+            legacy_signals = payload.get("signals")
+            if isinstance(legacy_limits, GuardrailLimits) or isinstance(
+                legacy_signals, GuardrailSignals
+            ):
+                limits_data = self._limits_data_from_dataclass(
+                    legacy_limits if isinstance(legacy_limits, GuardrailLimits) else None
+                )
+                signals_data = self._signals_data_from_dataclass(
+                    legacy_signals
+                    if isinstance(legacy_signals, GuardrailSignals)
+                    else None
+                )
+                attributes = dict(payload.get("attributes", {}))
+                config_override = payload.get("config")
+                if isinstance(config_override, Mapping):
+                    attributes.update(config_override)
+                return GuardrailStatePayload(
+                    decision=str(payload.get("decision", "allow")),
+                    reason=str(payload.get("reason", "pending")),
+                    allowed=bool(payload.get("allowed", True)),
+                    policy_events=tuple(payload.get("policy_events", ())),
+                    limits=limits_data,
+                    signals=signals_data,
+                    attributes=attributes,
+                )
+            try:
+                return GuardrailStatePayload.model_validate(payload)
+            except Exception:
+                return None
+        return None
+
     def _resolve_guardrail_state(self, state: Dict[str, Any]) -> Tuple[
         Optional[Mapping[str, Any]],
         Optional[GuardrailLimits],
         Optional[GuardrailSignals],
         Optional[Callable[..., Any]],
     ]:
-        serde_state = GuardrailSerde.from_payload(state.get("guardrails"))
+        payload = self._coerce_guardrail_payload(state.get("guardrails"))
+        if payload is None:
+            return (None, None, None, None)
         return (
-            serde_state.config,
-            serde_state.limits,
-            serde_state.signals,
-            serde_state.error_builder,
+            payload.attributes or None,
+            self._guardrail_limits_from_payload(payload),
+            self._guardrail_signals_from_payload(payload),
+            None,
         )
 
     def _resolve_frontier_state(
         self, state: Dict[str, Any]
     ) -> Optional[Mapping[str, Any]]:
         """Merge state and meta frontier payloads into a single mapping."""
+
+        def _coerce_frontier(frontier: Any) -> Optional[Mapping[str, Any]]:
+            if isinstance(frontier, FrontierData):
+                return frontier.model_dump()
+            if isinstance(frontier, Mapping):
+                return dict(frontier)
+            return None
 
         def _collect_policy_events(candidate: Any) -> Tuple[str, ...]:
             if candidate is None:
@@ -1106,12 +1294,12 @@ class CrawlerIngestionGraph:
 
         meta_payload = state.get("meta")
         if isinstance(meta_payload, Mapping):
-            meta_frontier = meta_payload.get("frontier")
-            if isinstance(meta_frontier, Mapping):
+            meta_frontier = _coerce_frontier(meta_payload.get("frontier"))
+            if meta_frontier is not None:
                 _merge_frontier(dict(meta_frontier))
 
-        state_frontier = state.get("frontier")
-        if isinstance(state_frontier, Mapping):
+        state_frontier = _coerce_frontier(state.get("frontier"))
+        if state_frontier is not None:
             _merge_frontier(dict(state_frontier))
 
         if policy_events:
@@ -1546,17 +1734,20 @@ class CrawlerIngestionGraph:
             normalized_document=normalized,
             decision=delta,
             guardrails=guardrail,
-            embedding_result=embedding_result.to_dict() if embedding_result else None,
+            embedding_result=embedding_result,
         )
+        if isinstance(payload, Mapping):
+            payload = CompletionPayload.model_validate(payload)
+        updates: Dict[str, Any] = {}
         pipeline_phase = artifacts.get("document_pipeline_phase")
         if pipeline_phase is not None:
-            payload["pipeline_phase"] = pipeline_phase
+            updates["pipeline_phase"] = pipeline_phase
         pipeline_run_until = artifacts.get("document_pipeline_run_until")
         if pipeline_run_until is not None:
-            payload["pipeline_run_until"] = pipeline_run_until
+            updates["pipeline_run_until"] = str(pipeline_run_until)
         pipeline_error = artifacts.get("document_pipeline_error")
         if pipeline_error is not None:
-            payload["pipeline_error"] = str(pipeline_error)
+            updates["pipeline_error"] = str(pipeline_error)
         failure = artifacts.get("failure")
         raw_severity = guardrail.attributes.get("severity")
         severity = (
@@ -1570,11 +1761,13 @@ class CrawlerIngestionGraph:
             severity = "error"
             decision_value = failure.get("decision", "error")
             reason_value = failure.get("reason", guardrail.reason)
-            payload["failure"] = dict(failure)
+            updates["failure"] = dict(failure)
         elif not guardrail.allowed:
             severity = "error"
             decision_value = "denied"
             reason_value = guardrail.reason
+        if updates:
+            payload = payload.model_copy(update=updates)
         transition = _transition(
             phase="finish",
             decision=decision_value,
@@ -1583,7 +1776,7 @@ class CrawlerIngestionGraph:
             guardrail=guardrail,
             delta=delta,
             embedding=embedding_result,
-            context={"result": dict(payload)},
+            context={"result": payload.model_dump()},
         )
         self._annotate_span(
             state,

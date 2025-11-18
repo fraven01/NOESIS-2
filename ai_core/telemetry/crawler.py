@@ -1,12 +1,11 @@
 ﻿from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Tuple
 
 from common.guardrails import FetcherLimits
 from crawler.fetcher import FetchFailure, FetchRequest, FetchResult
 
-from ai_core.guardrails.serde import GuardrailSerde
+from ai_core.contracts.payloads import FetchPayload, FetchRequestData
 from ai_core.infra.observability import emit_event, record_span
 
 
@@ -95,43 +94,41 @@ def build_fetch_payload(
     fetch_limits: FetcherLimits | None = None,
     failure: FetchFailure | None = None,
     media_type: str | None = None,
-) -> Tuple[dict[str, Any], FetchTelemetrySnapshot, bytes, str | None]:
+) -> FetchPayload:
     payload_bytes = getattr(fetch_result, "payload", None)
     if payload_bytes is None:
         payload_bytes = getattr(fetch_result, "body", None)
     body_bytes: bytes = payload_bytes or b""
     telemetry = fetch_result.telemetry
-    snapshot = FetchTelemetrySnapshot(
-        used=True,
-        http_status=fetch_result.metadata.status_code,
-        fetched_bytes=len(body_bytes),
-        media_type=media_type,
-        elapsed=telemetry.latency,
+    politeness = fetch_request.politeness
+    request_payload = FetchRequestData(
+        canonical_source=fetch_request.canonical_source,
+        metadata=dict(fetch_request.metadata or {}),
+        politeness_host=politeness.host if politeness else None,
+        politeness_user_agent=politeness.user_agent if politeness else None,
+        politeness_crawl_delay=politeness.crawl_delay if politeness else None,
+    )
+    timeout_seconds = None
+    max_bytes_limit = None
+    if fetch_limits is not None:
+        max_bytes_limit = fetch_limits.max_bytes
+        if fetch_limits.timeout is not None:
+            timeout_seconds = fetch_limits.timeout.total_seconds()
+    return FetchPayload(
+        request=request_payload,
+        status_code=fetch_result.metadata.status_code,
+        body=body_bytes,
+        headers=_build_header_mapping(fetch_result),
+        elapsed_ms=telemetry.latency * 1000,
         retries=telemetry.retries,
         retry_reason=telemetry.retry_reason,
+        downloaded_bytes=telemetry.bytes_downloaded,
         backoff_total_ms=telemetry.backoff_total_ms,
+        max_bytes_limit=max_bytes_limit,
+        timeout_seconds=timeout_seconds,
+        failure_reason=failure.reason if failure else None,
+        failure_temporary=failure.temporary if failure else None,
     )
-    fetch_input: dict[str, Any] = {
-        "request": GuardrailSerde.serialize_fetch_request(fetch_request),
-        "status_code": fetch_result.metadata.status_code,
-        "body": body_bytes,
-        "headers": _build_header_mapping(fetch_result),
-        "elapsed": telemetry.latency,
-        "retries": telemetry.retries,
-        "retry_reason": telemetry.retry_reason,
-        "downloaded_bytes": telemetry.bytes_downloaded,
-        "backoff_total_ms": telemetry.backoff_total_ms,
-    }
-    if fetch_limits is not None:
-        limits_payload = GuardrailSerde.serialize_fetch_limits(fetch_limits)
-        if limits_payload is not None:
-            fetch_input["limits"] = limits_payload
-    if failure is not None:
-        failure_payload = GuardrailSerde.serialize_fetch_failure(failure)
-        if failure_payload is not None:
-            fetch_input["failure"] = failure_payload
-    etag = getattr(fetch_result.metadata, "etag", None)
-    return fetch_input, snapshot, body_bytes, etag
 
 
 def build_manual_fetch_payload(
@@ -140,25 +137,30 @@ def build_manual_fetch_payload(
     body: bytes,
     media_type: str,
     elapsed: float = 0.05,
-) -> Tuple[dict[str, Any], FetchTelemetrySnapshot]:
-    snapshot = FetchTelemetrySnapshot(
-        used=False,
-        http_status=200,
-        fetched_bytes=len(body),
-        media_type=media_type,
-        elapsed=elapsed,
+) -> FetchPayload:
+    politeness = fetch_request.politeness
+    request_payload = FetchRequestData(
+        canonical_source=fetch_request.canonical_source,
+        metadata=dict(fetch_request.metadata or {}),
+        politeness_host=politeness.host if politeness else None,
+        politeness_user_agent=politeness.user_agent if politeness else None,
+        politeness_crawl_delay=politeness.crawl_delay if politeness else None,
+    )
+    return FetchPayload(
+        request=request_payload,
+        status_code=200,
+        body=body,
+        headers={"Content-Type": media_type},
+        elapsed_ms=elapsed * 1000,
         retries=0,
         retry_reason=None,
+        downloaded_bytes=len(body),
         backoff_total_ms=0.0,
+        max_bytes_limit=None,
+        timeout_seconds=None,
+        failure_reason=None,
+        failure_temporary=None,
     )
-    fetch_input = {
-        "request": GuardrailSerde.serialize_fetch_request(fetch_request),
-        "status_code": 200,
-        "body": body,
-        "headers": {"Content-Type": media_type},
-        "elapsed": elapsed,
-    }
-    return fetch_input, snapshot
 
 
 __all__ = [

@@ -9,6 +9,12 @@ from urllib.parse import urlparse
 
 from crawler.errors import CrawlerError, ErrorClass
 
+from ai_core.contracts.payloads import (
+    CompletionPayload,
+    DeltaPayload,
+    EmbeddingPayload,
+    GuardrailPayload as GuardrailStatePayload,
+)
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
     GuardrailLimits,
@@ -481,28 +487,56 @@ def build_completion_payload(
     normalized_document: NormalizedDocumentPayload,
     decision: DeltaDecision,
     guardrails: GuardrailDecision,
-    embedding_result: Optional[Mapping[str, Any]],
-) -> Mapping[str, Any]:
+    embedding_result: EmbeddingResult | None,
+) -> CompletionPayload:
     """Assemble a stable payload describing the graph summary."""
 
     document_payload = normalized_document.document.model_dump()
     document_payload["checksum"] = normalized_document.checksum
-    payload: Dict[str, Any] = {
-        "normalized_document": document_payload,
-        "delta": {
-            "decision": decision.decision,
-            "reason": decision.reason,
-            "attributes": dict(getattr(decision, "attributes", {})),
-        },
-        "guardrails": {
-            "decision": guardrails.decision,
-            "reason": guardrails.reason,
-            "attributes": dict(guardrails.attributes),
-        },
-    }
+
+    attributes = dict(getattr(decision, "attributes", {}))
+    delta_payload = DeltaPayload(
+        decision=decision.decision,
+        reason=decision.reason,
+        content_hash=attributes.get("content_hash") or getattr(decision, "content_hash", None),
+        version=getattr(decision, "version", None),
+        changed_fields=tuple(attributes.get("changed_fields", ())),
+        policy_events=tuple(attributes.get("policy_events", ())),
+        attributes=attributes,
+    )
+
+    guardrail_attributes = dict(getattr(guardrails, "attributes", {}))
+    guardrail_payload = GuardrailStatePayload(
+        decision=guardrails.decision,
+        reason=guardrails.reason,
+        allowed=getattr(guardrails, "allowed", False),
+        policy_events=tuple(getattr(guardrails, "policy_events", ())),
+        limits=None,
+        signals=None,
+        attributes=guardrail_attributes,
+    )
+
+    embedding_payload: EmbeddingPayload | None = None
     if embedding_result is not None:
-        payload["embedding"] = dict(embedding_result)
-    return payload
+        chunk_meta = embedding_result.chunk_meta
+        embedding_payload = EmbeddingPayload(
+            status=embedding_result.status,
+            chunks_inserted=embedding_result.chunks_inserted,
+            embedding_profile=embedding_result.embedding_profile or "",
+            vector_space_id=embedding_result.vector_space_id or "",
+            tenant_id=chunk_meta.tenant_id,
+            case_id=chunk_meta.case_id,
+            document_id=chunk_meta.document_id,
+            workflow_id=chunk_meta.workflow_id,
+            collection_id=chunk_meta.collection_id,
+        )
+
+    return CompletionPayload(
+        normalized_document=document_payload,
+        delta=delta_payload,
+        guardrails=guardrail_payload,
+        embedding=embedding_payload,
+    )
 
 
 __all__ = [
