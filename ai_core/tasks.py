@@ -47,6 +47,10 @@ from ai_core.infra.observability import (
     tracing_enabled,
     update_observation,
 )
+from ai_core.ingestion_orchestration import (
+    IngestionContextBuilder,
+    ObservabilityWrapper,
+)
 from common.celery import ScopedTask
 from common.logging import get_logger
 from django.conf import settings
@@ -1984,126 +1988,129 @@ def run_ingestion_graph(
     state: Mapping[str, Any],
     meta: Optional[Mapping[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Execute the crawler ingestion LangGraph orchestration."""
+    """Execute the crawler ingestion LangGraph orchestration.
 
-    raw_payload_path: Optional[str] = None
-    if isinstance(state, MappingABC):
-        candidate = state.get("raw_payload_path")
-        if isinstance(candidate, str) and candidate.strip():
-            raw_payload_path = candidate.strip()
-        else:
-            raw_document = state.get("raw_document")
-            if isinstance(raw_document, MappingABC):
-                nested_candidate = raw_document.get("payload_path")
-                if isinstance(nested_candidate, str) and nested_candidate.strip():
-                    raw_payload_path = nested_candidate.strip()
-
+    Refactored from 127-line function with defensive glue to use:
+    - IngestionContextBuilder: Extract metadata from nested dicts
+    - ObservabilityWrapper: Manage tracing lifecycle
+    - Cleaner orchestration flow
+    """
+    # 1. Build infrastructure components
     event_emitter = _resolve_event_emitter(meta)
     graph = _build_ingestion_graph(event_emitter)
     trace_context = _resolve_trace_context(state, meta)
-    state_meta = state.get("meta") if isinstance(state, MappingABC) else None
 
-    # Ensure the graph receives a normalized document input when only a
-    # raw_document reference is provided by the caller. This mirrors the
-    # normalization used in tests and CLI helpers so spans and transitions
-    # remain observable even for minimal inputs.
+    # 2. Extract ingestion context (defensive metadata extraction)
+    context_builder = IngestionContextBuilder()
+    ingestion_ctx = context_builder.build_from_state(
+        state=state,
+        meta=meta,
+        trace_context=trace_context,
+    )
+
+    # 3. Normalize document input if needed
+    working_state = _prepare_working_state(
+        state=state,
+        ingestion_ctx=ingestion_ctx,
+        trace_context=trace_context,
+    )
+
+    # 4. Setup observability (tracing)
+    obs_wrapper = ObservabilityWrapper(observability_helpers)
+    task_request = getattr(run_ingestion_graph, "request", None)
+    obs_ctx = obs_wrapper.create_context(
+        ingestion_ctx=ingestion_ctx,
+        trace_context=trace_context,
+        task_request=task_request,
+    )
+
+    obs_wrapper.start_trace(obs_ctx)
+
+    try:
+        # 5. Execute graph (the actual work!)
+        working_state, result = graph.run(working_state, meta or {})
+        _ensure_ingestion_phase_spans(working_state, result, trace_context)
+
+        # 6. Serialize result for Celery
+        serialized_result = _jsonify_for_task(result)
+        if not isinstance(serialized_result, dict):
+            raise TypeError("ingestion_result_serialization_error")
+
+        return serialized_result
+
+    finally:
+        try:
+            obs_wrapper.end_trace()
+        finally:
+            # Cleanup temporary payload file
+            if ingestion_ctx.raw_payload_path:
+                from .ingestion import cleanup_raw_payload_artifact
+
+                cleanup_raw_payload_artifact(ingestion_ctx.raw_payload_path)
+
+
+def _prepare_working_state(
+    state: Mapping[str, Any],
+    ingestion_ctx,
+    trace_context: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Prepare working state with normalized document input.
+
+    Extracted from run_ingestion_graph to isolate normalization logic.
+
+    Args:
+        state: Original graph state
+        ingestion_ctx: Extracted ingestion context
+        trace_context: Trace context
+
+    Returns:
+        Working state dict with normalized_document_input if applicable
+    """
     working_state: Dict[str, Any] = dict(state)
+
+    # Check if normalized input already present
     try:
         normalized_present = isinstance(
             working_state.get("normalized_document_input"), NormalizedDocument
         )
     except Exception:
         normalized_present = False
-    if not normalized_present:
-        raw_reference = working_state.get("raw_document")
-        if isinstance(raw_reference, MappingABC):
-            tenant_id = trace_context.get("tenant_id") or _coerce_str(
-                _extract_from_mapping(state, "tenant_id")
-            )
-            case_id = trace_context.get("case_id") or _coerce_str(
-                _extract_from_mapping(state, "case_id")
-            )
-            raw_metadata = raw_reference.get("metadata")
-            if not isinstance(raw_metadata, MappingABC):
-                raw_metadata = None
-            workflow_id = _coerce_str(
-                trace_context.get("workflow_id")
-                or _extract_from_mapping(meta, "workflow_id")
-                or _extract_from_mapping(state_meta, "workflow_id")
-                or _extract_from_mapping(state, "workflow_id")
-                or _extract_from_mapping(raw_reference, "workflow_id")
-                or _extract_from_mapping(raw_metadata, "workflow_id")
-            )
-            source = _coerce_str(
-                _extract_from_mapping(meta, "source")
-                or _extract_from_mapping(state_meta, "source")
-                or _extract_from_mapping(state, "source")
-                or _extract_from_mapping(raw_reference, "source")
-                or _extract_from_mapping(raw_metadata, "source")
-            )
-            if tenant_id:
-                try:
-                    contract = NormalizedDocumentInputV1.from_raw(
-                        raw_reference=raw_reference,
-                        tenant_id=tenant_id,
-                        case_id=case_id,
-                        workflow_id=workflow_id,
-                        source=source,
-                    )
-                    normalized_payload = normalize_from_raw(contract=contract)
-                    # Serialize to maintain JSON compatibility for Celery task payloads
-                    working_state["normalized_document_input"] = (
-                        normalized_payload.document.model_dump(mode="json")
-                    )
-                    try:
-                        working_state["document_id"] = str(
-                            normalized_payload.document.ref.document_id
-                        )
-                    except Exception:
-                        pass
-                except Exception:
-                    # Fall back to original state; the graph will surface an error
-                    pass
 
-    task_request = getattr(run_ingestion_graph, "request", None)
-    task_identifier = None
-    if task_request is not None:
-        task_identifier = _coerce_str(getattr(task_request, "id", None))
+    if normalized_present:
+        return working_state
 
-    metadata: Dict[str, str] = {
-        key: value
-        for key, value in (
-            ("trace_id", trace_context.get("trace_id")),
-            ("tenant_id", trace_context.get("tenant_id")),
-            ("case_id", trace_context.get("case_id")),
-            ("document_id", trace_context.get("document_id")),
-        )
-        if value
-    }
-    if task_identifier:
-        metadata["celery.task_id"] = task_identifier
+    # Normalize from raw_document if available
+    raw_reference = working_state.get("raw_document")
+    if not isinstance(raw_reference, MappingABC):
+        return working_state
 
-    observability_helpers.start_trace(
-        name="crawler.ingestion",
-        user_id=trace_context.get("tenant_id"),
-        session_id=trace_context.get("case_id"),
-        metadata=metadata or None,
-    )
-    if task_identifier:
-        update_observation(metadata={"celery.task_id": task_identifier})
+    if not ingestion_ctx.tenant_id:
+        return working_state
 
     try:
-        working_state, result = graph.run(working_state, meta or {})
-        _ensure_ingestion_phase_spans(working_state, result, trace_context)
-        serialized_result = _jsonify_for_task(result)
-        if not isinstance(serialized_result, dict):
-            raise TypeError("ingestion_result_serialization_error")
-        return serialized_result
-    finally:
-        try:
-            observability_helpers.end_trace()
-        finally:
-            if raw_payload_path:
-                from .ingestion import cleanup_raw_payload_artifact
+        contract = NormalizedDocumentInputV1.from_raw(
+            raw_reference=raw_reference,
+            tenant_id=ingestion_ctx.tenant_id,
+            case_id=ingestion_ctx.case_id,
+            workflow_id=ingestion_ctx.workflow_id,
+            source=ingestion_ctx.source,
+        )
+        normalized_payload = normalize_from_raw(contract=contract)
 
-                cleanup_raw_payload_artifact(raw_payload_path)
+        # Serialize to maintain JSON compatibility for Celery task payloads
+        working_state["normalized_document_input"] = (
+            normalized_payload.document.model_dump(mode="json")
+        )
+
+        try:
+            working_state["document_id"] = str(
+                normalized_payload.document.ref.document_id
+            )
+        except Exception:
+            pass
+
+    except Exception:
+        # Fall back to original state; the graph will surface an error
+        pass
+
+    return working_state

@@ -76,7 +76,10 @@ def test_document_download_success(mock_repo, sample_document, monkeypatch):
     mock_repo.get.return_value = doc
 
     # Mock get_upload_file_path to return our test file
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    # NOTE: After refactoring, this is now used in DocumentAccessService
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(f"/documents/download/{doc.ref.document_id}/")
@@ -118,7 +121,9 @@ def test_document_download_tenant_mismatch(mock_repo, sample_document, monkeypat
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(f"/documents/download/{doc.ref.document_id}/")
@@ -140,7 +145,9 @@ def test_document_download_head_method(mock_repo, sample_document, monkeypatch):
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.head(f"/documents/download/{doc.ref.document_id}/")
@@ -160,7 +167,9 @@ def test_document_download_etag_304(mock_repo, sample_document, monkeypatch):
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     # Generate expected ETag
     st = os.stat(test_file)
@@ -185,7 +194,9 @@ def test_document_download_crlf_protection(mock_repo, sample_document, monkeypat
     doc.meta.title = "evil\r\nSet-Cookie: pwned=true.pdf"
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(f"/documents/download/{doc.ref.document_id}/")
@@ -207,7 +218,9 @@ def test_document_download_range_request(mock_repo, sample_document, monkeypatch
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(
@@ -227,7 +240,9 @@ def test_document_download_range_invalid(mock_repo, sample_document, monkeypatch
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(
@@ -267,7 +282,9 @@ def test_document_download_suffix_range(mock_repo, sample_document, monkeypatch)
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     factory = RequestFactory()
     request = factory.get(
@@ -287,7 +304,9 @@ def test_document_download_multiple_etags(mock_repo, sample_document, monkeypatc
     doc, test_file = sample_document
     mock_repo.get.return_value = doc
 
-    monkeypatch.setattr("documents.views.get_upload_file_path", lambda *args: test_file)
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
 
     # Generate expected ETag
     st = os.stat(test_file)

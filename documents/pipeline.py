@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import io
 from dataclasses import dataclass, field
-import hashlib
 from datetime import datetime, timezone
 from enum import Enum
 from importlib import import_module
@@ -15,7 +14,6 @@ from typing import (
     Any,
     Callable,
     Dict,
-    Iterable,
     Mapping,
     Optional,
     Sequence,
@@ -24,7 +22,7 @@ from typing import (
     Protocol,
 )
 from urllib.parse import urlparse
-from uuid import UUID, uuid5
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -33,12 +31,12 @@ from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 
 from documents.contract_utils import (
-    is_image_mediatype,
     normalize_optional_string,
     normalize_string,
     normalize_tenant,
     normalize_workflow_id,
 )
+from documents.asset_ingestion import AssetIngestionPipeline
 
 from PIL import Image, ImageOps
 
@@ -844,186 +842,29 @@ def _persist_asset(
     storage: Any,
     contracts: DocumentContracts,
 ) -> object:
-    tenant_id = metadata.tenant_id
-    workflow_id = metadata.workflow_id
-    document_id = metadata.document_id
-    collection_id = metadata.collection_id
+    """Persist asset using AssetIngestionPipeline.
 
-    metadata_payload_raw = getattr(parsed_asset, "metadata", None)
-    if isinstance(metadata_payload_raw, Mapping):
-        metadata_payload = dict(metadata_payload_raw)
-    else:
-        metadata_payload = {}
-
-    raw_locator = metadata_payload.get("locator")
-    locator = normalize_string(str(raw_locator)) if raw_locator is not None else ""
-    if not locator:
-        locator = f"asset-index:{index}"
-
-    raw_parent_ref = metadata_payload.get("parent_ref")
-    parent_ref = (
-        normalize_optional_string(str(raw_parent_ref))
-        if raw_parent_ref is not None
-        else None
+    Refactored from 188-line god-function to orchestration delegate.
+    Business logic now in:
+    - AssetIngestionPipeline: Main orchestration
+    - CaptionResolver: Caption prioritization
+    - BlobStorageAdapter: Storage & hashing
+    """
+    pipeline = AssetIngestionPipeline(
+        repository=repository,
+        storage=storage,
+        contracts=contracts,
     )
 
-    raw_kind = metadata_payload.get("asset_kind")
-    asset_kind = (
-        normalize_optional_string(str(raw_kind)) if raw_kind is not None else None
-    )
-
-    origin_uri = None
-    raw_origin = metadata_payload.get("origin_uri")
-    if raw_origin is not None:
-        origin_uri = normalize_optional_string(str(raw_origin))
-
-    def _iter_caption_candidates() -> Iterable[Tuple[str, str]]:
-        raw_candidates = metadata_payload.get("caption_candidates")
-        if isinstance(raw_candidates, Sequence):
-            for entry in raw_candidates:
-                if not isinstance(entry, Sequence) or len(entry) != 2:
-                    continue
-                raw_source, raw_text = entry
-                source = (
-                    normalize_string(str(raw_source)) if raw_source is not None else ""
-                )
-                if not source:
-                    continue
-                if raw_text is None:
-                    continue
-                text = normalize_optional_string(str(raw_text))
-                if text:
-                    yield source, text
-
-    caption_candidates = list(_iter_caption_candidates())
-    caption_source: Optional[str] = None
-    caption_method = "none"
-    caption_confidence: Optional[float] = None
-    text_description: Optional[str] = None
-
-    for source, text in caption_candidates:
-        caption_source = source
-        text_description = text
-        caption_method = "manual"
-        caption_confidence = _CAPTION_SOURCE_CONFIDENCE.get(source)
-        break
-
-    if caption_source is None:
-        raw_source = metadata_payload.get("caption_source")
-        raw_text = metadata_payload.get("caption_text")
-        source = normalize_string(str(raw_source)) if raw_source is not None else ""
-        text = (
-            normalize_optional_string(str(raw_text)) if raw_text is not None else None
-        )
-        if source and text:
-            caption_source = source
-            text_description = text
-            caption_method = "manual"
-            caption_confidence = _CAPTION_SOURCE_CONFIDENCE.get(source)
-
-    if caption_source is None:
-        caption_source = "none"
-
-    checksum: str
-    blob_payload: Dict[str, Any]
-    perceptual_hash: Optional[str] = None
-
-    asset_id = uuid5(document_id, f"asset:{locator}")
-
-    if parsed_asset.content is not None:
-        payload = bytes(parsed_asset.content)
-        checksum = hashlib.sha256(payload).hexdigest()
-        existing = repository.get_asset(tenant_id, asset_id, workflow_id=workflow_id)
-        if existing is not None and existing.checksum == checksum:
-            return existing
-        perceptual_hash = (
-            _perceptual_hash(payload)
-            if is_image_mediatype(parsed_asset.media_type)
-            else None
-        )
-        uri, storage_checksum, size = storage.put(payload)
-        if storage_checksum != checksum:
-            raise ValueError("asset_checksum_mismatch")
-        blob_payload = {
-            "type": "file",
-            "uri": uri,
-            "sha256": storage_checksum,
-            "size": size,
-        }
-    else:
-        if parsed_asset.file_uri is None:
-            raise ValueError("parsed_asset_location")
-        file_uri = parsed_asset.file_uri
-        try:
-            payload = storage.get(file_uri)
-        except (KeyError, ValueError):
-            payload = None
-        if payload is not None:
-            checksum = hashlib.sha256(payload).hexdigest()
-            existing = repository.get_asset(
-                tenant_id, asset_id, workflow_id=workflow_id
-            )
-            if existing is not None and existing.checksum == checksum:
-                return existing
-            perceptual_hash = (
-                _perceptual_hash(payload)
-                if is_image_mediatype(parsed_asset.media_type)
-                else None
-            )
-            blob_payload = {
-                "type": "file",
-                "uri": file_uri,
-                "sha256": checksum,
-                "size": len(payload),
-            }
-        else:
-            checksum = hashlib.sha256(file_uri.encode("utf-8")).hexdigest()
-            existing = repository.get_asset(
-                tenant_id, asset_id, workflow_id=workflow_id
-            )
-            if existing is not None and existing.checksum == checksum:
-                return existing
-            blob_payload = {
-                "type": "external",
-                "kind": _external_kind_for_uri(file_uri),
-                "uri": file_uri,
-            }
-            origin_uri = origin_uri or file_uri
-
-    asset_ref = contracts.asset_ref(
-        tenant_id=tenant_id,
-        workflow_id=workflow_id,
-        asset_id=asset_id,
-        document_id=document_id,
-        collection_id=collection_id,
-    )
-
-    bbox = list(parsed_asset.bbox) if parsed_asset.bbox is not None else None
-
-    asset_obj = contracts.asset(
-        ref=asset_ref,
-        media_type=parsed_asset.media_type,
-        blob=blob_payload,
-        origin_uri=origin_uri,
-        page_index=parsed_asset.page_index,
-        bbox=bbox,
-        context_before=parsed_asset.context_before,
-        context_after=parsed_asset.context_after,
-        ocr_text=None,
-        text_description=text_description,
-        caption_method=caption_method,
-        caption_model=None,
-        caption_confidence=caption_confidence,
-        caption_source=caption_source,
-        parent_ref=parent_ref,
-        perceptual_hash=perceptual_hash,
-        asset_kind=asset_kind,
+    return pipeline.persist_asset(
+        index=index,
+        parsed_asset=parsed_asset,
+        tenant_id=metadata.tenant_id,
+        workflow_id=metadata.workflow_id,
+        document_id=metadata.document_id,
+        collection_id=metadata.collection_id,
         created_at=metadata.created_at,
-        checksum=checksum,
     )
-
-    stored = repository.add_asset(asset_obj, workflow_id=workflow_id)
-    return stored
 
 
 def persist_parsed_document(

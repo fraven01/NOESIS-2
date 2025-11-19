@@ -1,8 +1,6 @@
 """Document download views."""
 
-import os
 import time
-import email.utils as email_utils
 from uuid import UUID
 
 from django.http import FileResponse, HttpResponse, HttpResponseNotModified
@@ -14,10 +12,15 @@ from .utils import (
     detect_content_type,
     sanitize_filename,
     content_disposition,
-    get_upload_file_path,
     extract_filename,
 )
 from .errors import error
+from .access_service import DocumentAccessService
+from .http_handlers import (
+    HttpRangeHandler,
+    CacheControlStrategy,
+    CacheMetadata,
+)
 
 logger = get_logger(__name__)
 
@@ -46,6 +49,11 @@ def document_download(request, document_id: str):
     Stream binary document with production features.
 
     Supports: GET, HEAD, ETag, Range, RFC 5987 filenames, CRLF protection.
+
+    Refactored to delegate to:
+    - DocumentAccessService: Tenant isolation & file resolution
+    - CacheControlStrategy: HTTP caching logic
+    - HttpRangeHandler: Range request parsing
     """
     # Validate UUID format early (clean 400 instead of 500)
     try:
@@ -64,165 +72,104 @@ def document_download(request, document_id: str):
     )
 
     try:
-        # 1. Get document metadata via repository
+        # 1. Access check & file resolution (business logic layer)
         repo = _get_documents_repository()
-        doc = repo.get(tenant_id, doc_uuid)
-
-        if not doc:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.warning(
-                "documents.download.not_found",
-                tenant_id=tenant_id,
-                document_id=document_id,
-                duration_ms=duration_ms,
-            )
-            return error(404, "DocumentNotFound", f"Document {document_id} not found")
-
-        # 2. Tenant isolation check
-        if doc.ref.tenant_id != tenant_id:
-            duration_ms = int((time.time() - start_time) * 1000)
-            logger.error(
-                "documents.download.tenant_mismatch",
-                tenant_id=tenant_id,
-                document_tenant_id=doc.ref.tenant_id,
-                document_id=document_id,
-                duration_ms=duration_ms,
-            )
-            return error(403, "TenantMismatch", "Access denied")
-
-        # 3. Get physical file path (direct access for streaming)
-        blob_path = get_upload_file_path(
-            doc.ref.tenant_id, doc.ref.workflow_id, str(doc.ref.document_id)
+        access_service = DocumentAccessService(repo)
+        access_result, access_error = access_service.get_document_for_download(
+            tenant_id, doc_uuid
         )
 
-        if not blob_path.exists():
-            logger.error(
-                "documents.download.blob_missing",
+        if access_error:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.warning(
+                "documents.download.access_denied",
                 tenant_id=tenant_id,
                 document_id=document_id,
-                blob_path=str(blob_path),
+                error_code=access_error.error_code,
+                duration_ms=duration_ms,
             )
-            return error(404, "BlobNotFound", "Document file not found on disk")
+            return error(
+                access_error.status_code,
+                access_error.error_code,
+                access_error.message,
+            )
 
-        # 4. File stats & ETag generation
-        st = os.stat(blob_path)
-        file_size = st.st_size
-        last_modified = email_utils.formatdate(st.st_mtime, usegmt=True)
-        weak_etag = f'W/"{file_size:x}-{int(st.st_mtime):x}"'
+        doc = access_result.document
+        blob_path = access_result.blob_path
+        file_size = access_result.file_size
 
-        # 5. Conditional requests (304 Not Modified)
-        if_none_match = request.headers.get("If-None-Match")
-        if_modified_since = request.headers.get("If-Modified-Since")
+        # 2. Cache metadata & conditional request handling
+        cache_meta = CacheMetadata.from_file_stats(file_size, access_result.mtime)
+        cache_strategy = CacheControlStrategy()
 
-        # If-None-Match can contain multiple ETags (e.g., W/"abc", "def")
-        if if_none_match and any(
-            tag.strip() == weak_etag for tag in if_none_match.split(",")
+        if cache_strategy.should_return_304(
+            cache_meta,
+            if_none_match=request.headers.get("If-None-Match"),
+            if_modified_since=request.headers.get("If-Modified-Since"),
         ):
-            logger.info("documents.download.not_modified_etag", etag=weak_etag)
+            logger.info("documents.download.not_modified", etag=cache_meta.etag)
             resp = HttpResponseNotModified()
-            resp["ETag"] = weak_etag
-            resp["Last-Modified"] = last_modified
-            resp["Cache-Control"] = "private, max-age=3600"
-            resp["Vary"] = "Authorization, Cookie"
-            resp["Accept-Ranges"] = "bytes"
+            resp["ETag"] = cache_meta.etag
+            resp["Last-Modified"] = cache_meta.last_modified
+            for key, value in cache_strategy.cache_headers().items():
+                resp[key] = value
             return resp
 
-        if if_modified_since:
-            try:
-                ims_dt = email_utils.parsedate_to_datetime(if_modified_since)
-                if ims_dt.timestamp() >= st.st_mtime:
-                    logger.info("documents.download.not_modified_time")
-                    resp = HttpResponseNotModified()
-                    resp["ETag"] = weak_etag
-                    resp["Last-Modified"] = last_modified
-                    resp["Cache-Control"] = "private, max-age=3600"
-                    resp["Vary"] = "Authorization, Cookie"
-                    resp["Accept-Ranges"] = "bytes"
-                    return resp
-            except (ValueError, TypeError):
-                pass
-
-        # 6. Content-Type detection
+        # 3. Content-Type & Filename
         content_type = detect_content_type(doc.blob, blob_path)
+        filename = sanitize_filename(extract_filename(doc, document_id, content_type))
 
-        # 7. Filename extraction & sanitization (with fallbacks)
-        filename = extract_filename(doc, document_id, content_type)
-        filename = sanitize_filename(filename)
-
-        # 8. Range request handling (206 Partial Content)
+        # 4. Range request handling (206 Partial Content)
         range_header = request.headers.get("Range")
         if range_header and request.method == "GET":
-            import re
+            range_request = HttpRangeHandler.parse(range_header, file_size)
 
-            # Support both normal ranges (bytes=100-200) and suffix ranges (bytes=-500)
-            match = re.match(r"bytes=(\d*)-(\d*)", range_header)
-            if match:
-                # Handle suffix range (bytes=-N): last N bytes
-                if match.group(1) == "" and match.group(2):
-                    length = int(match.group(2))
-                    start = max(file_size - length, 0)
-                    end = file_size - 1
-                # Handle normal range (bytes=M-N or bytes=M-)
-                else:
-                    start = int(match.group(1)) if match.group(1) else 0
-                    end = int(match.group(2)) if match.group(2) else file_size - 1
+            if range_request is None:
+                # Invalid range
+                logger.warning("documents.download.range_invalid")
+                resp = HttpResponse(status=416)
+                resp["Content-Range"] = f"bytes */{file_size}"
+                for key, value in cache_strategy.cache_headers().items():
+                    resp[key] = value
+                return resp
 
-                # Validate range bounds
-                if start < 0 or start >= file_size:
-                    logger.warning(
-                        "documents.download.range_invalid", range_start=start
-                    )
-                    resp = HttpResponse(status=416)
-                    resp["Content-Range"] = f"bytes */{file_size}"
-                    resp["Cache-Control"] = "private, max-age=3600"
-                    resp["Vary"] = "Authorization, Cookie"
-                    resp["Accept-Ranges"] = "bytes"
-                    return resp
+            # Open and seek to start position
+            f = open(blob_path, "rb")
+            f.seek(range_request.start)
 
-                # Cap end to file size
-                end = min(end, file_size - 1)
-                length = end - start + 1
+            response = FileResponse(f, content_type=content_type, status=206)
+            response["Content-Length"] = range_request.length
+            response["Content-Range"] = range_request.content_range_header
+            response["Content-Disposition"] = content_disposition(filename)
+            response["X-Content-Type-Options"] = "nosniff"
+            response["ETag"] = cache_meta.etag
+            response["Last-Modified"] = cache_meta.last_modified
+            for key, value in cache_strategy.cache_headers().items():
+                response[key] = value
 
-                # Open and seek to start position
-                f = open(blob_path, "rb")
-                f.seek(start)
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.info(
+                "documents.download.partial_content",
+                tenant_id=tenant_id,
+                document_id=document_id,
+                duration_ms=duration_ms,
+                range_start=range_request.start,
+                range_end=range_request.end,
+                etag=cache_meta.etag,
+            )
+            return response
 
-                response = FileResponse(f, content_type=content_type, status=206)
-                response["Content-Length"] = length
-                response["Content-Range"] = f"bytes {start}-{end}/{file_size}"
-                response["Content-Disposition"] = content_disposition(filename)
-                response["X-Content-Type-Options"] = "nosniff"
-                response["Cache-Control"] = "private, max-age=3600"
-                response["Vary"] = "Authorization, Cookie"
-                response["ETag"] = weak_etag
-                response["Last-Modified"] = last_modified
-                response["Accept-Ranges"] = "bytes"
-
-                duration_ms = int((time.time() - start_time) * 1000)
-                logger.info(
-                    "documents.download.partial_content",
-                    tenant_id=tenant_id,
-                    document_id=document_id,
-                    duration_ms=duration_ms,
-                    range_start=start,
-                    range_end=end,
-                    etag=weak_etag,
-                )
-
-                return response
-
-        # 9. HEAD request (metadata only, no body)
+        # 5. HEAD request (metadata only, no body)
         if request.method == "HEAD":
             response = HttpResponse()
             response["Content-Type"] = content_type
             response["Content-Length"] = file_size
             response["Content-Disposition"] = content_disposition(filename)
             response["X-Content-Type-Options"] = "nosniff"
-            response["Cache-Control"] = "private, max-age=3600"
-            response["Vary"] = "Authorization, Cookie"
-            response["ETag"] = weak_etag
-            response["Last-Modified"] = last_modified
-            response["Accept-Ranges"] = "bytes"
+            response["ETag"] = cache_meta.etag
+            response["Last-Modified"] = cache_meta.last_modified
+            for key, value in cache_strategy.cache_headers().items():
+                response[key] = value
 
             duration_ms = int((time.time() - start_time) * 1000)
             logger.info(
@@ -231,23 +178,19 @@ def document_download(request, document_id: str):
                 document_id=document_id,
                 duration_ms=duration_ms,
                 file_size=file_size,
-                etag=weak_etag,
+                etag=cache_meta.etag,
             )
             return response
 
-        # 10. GET request (full content streaming)
-        response = FileResponse(
-            open(blob_path, "rb"),
-            content_type=content_type,
-        )
+        # 6. GET request (full content streaming)
+        response = FileResponse(open(blob_path, "rb"), content_type=content_type)
         response["Content-Length"] = file_size
         response["Content-Disposition"] = content_disposition(filename)
         response["X-Content-Type-Options"] = "nosniff"
-        response["Cache-Control"] = "private, max-age=3600"
-        response["Vary"] = "Authorization, Cookie"
-        response["ETag"] = weak_etag
-        response["Last-Modified"] = last_modified
-        response["Accept-Ranges"] = "bytes"
+        response["ETag"] = cache_meta.etag
+        response["Last-Modified"] = cache_meta.last_modified
+        for key, value in cache_strategy.cache_headers().items():
+            response[key] = value
 
         duration_ms = int((time.time() - start_time) * 1000)
         logger.info(
@@ -257,9 +200,8 @@ def document_download(request, document_id: str):
             duration_ms=duration_ms,
             file_size=file_size,
             content_type=content_type,
-            etag=weak_etag,
+            etag=cache_meta.etag,
         )
-
         return response
 
     except Exception as e:
