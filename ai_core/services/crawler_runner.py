@@ -75,7 +75,9 @@ def run_crawler_runner(
     guardrail_defaults = GuardrailLimits(
         max_document_bytes=getattr(settings, "CRAWLER_MAX_DOCUMENT_BYTES", None)
     )
-    fetcher_factory = lambda config: HttpFetcher(config)
+
+    def fetcher_factory(config):
+        return HttpFetcher(config)
 
     state_builds = build_crawler_state(
         context,
@@ -138,7 +140,11 @@ def run_crawler_runner(
         task_id = result.get("task_id")
         if task_id:
             task_ids.append(
-                {"task_id": task_id, "origin": build.origin, "document_id": build.document_id}
+                {
+                    "task_id": task_id,
+                    "origin": build.origin,
+                    "document_id": build.document_id,
+                }
             )
         if completed:
             completed_runs.append(
@@ -205,7 +211,9 @@ def _check_idempotency_fingerprint(
         request_model.mode,
         "|".join(origin_keys),
     ]
-    fingerprint = hashlib.sha256("::".join(fingerprint_components).encode("utf-8")).hexdigest()
+    fingerprint = hashlib.sha256(
+        "::".join(fingerprint_components).encode("utf-8")
+    ).hexdigest()
 
     try:
         tenant_key = object_store.sanitize_identifier(str(meta.get("tenant_id")))
@@ -300,7 +308,9 @@ def _prime_manual_state(
         build.state = dict(prepared_state)
 
 
-def _detect_guardrail_error(completed_runs: list[dict[str, object]]) -> dict[str, object] | None:
+def _detect_guardrail_error(
+    completed_runs: list[dict[str, object]],
+) -> dict[str, object] | None:
     for entry in completed_runs:
         state_data = entry.get("state")
         if not isinstance(state_data, Mapping):
@@ -308,7 +318,9 @@ def _detect_guardrail_error(completed_runs: list[dict[str, object]]) -> dict[str
         artifacts = state_data.get("artifacts")
         if not isinstance(artifacts, Mapping):
             continue
-        guardrail_decision = _coerce_guardrail_decision(artifacts.get("guardrail_decision"))
+        guardrail_decision = _coerce_guardrail_decision(
+            artifacts.get("guardrail_decision")
+        )
         if guardrail_decision and not guardrail_decision.allowed:
             return _build_guardrail_denied_payload(entry["build"], guardrail_decision)
     return None
@@ -339,7 +351,9 @@ def _build_synchronous_payload(
             {
                 "origin": build.origin,
                 "transitions": _make_json_safe(
-                    state_data.get("transitions") or result_payload.get("transitions") or {}
+                    state_data.get("transitions")
+                    or result_payload.get("transitions")
+                    or {}
                 ),
             }
         )
@@ -485,7 +499,10 @@ def _serialise_guardrail_component(value: object) -> object:
         candidate = dict(getattr(candidate, "__dict__", {}))
 
     if isinstance(candidate, Mapping):
-        processed = {str(key): _serialise_guardrail_component(value) for key, value in candidate.items()}
+        processed = {
+            str(key): _serialise_guardrail_component(value)
+            for key, value in candidate.items()
+        }
         return _make_json_safe(processed)
     if isinstance(candidate, (list, tuple, set)):
         processed_list = [_serialise_guardrail_component(item) for item in candidate]

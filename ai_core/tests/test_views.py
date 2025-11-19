@@ -1874,7 +1874,13 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
         request=request,
         workflow_id=request.workflow_id,
     )
-    fetcher_factory = lambda config: SimpleNamespace(fetch=lambda request: None)
+
+    def fetcher_factory(config):
+        def fetch(request):
+            return None
+
+        return SimpleNamespace(fetch=fetch)
+
     builds = crawler_state_builder_module.build_crawler_state(
         context,
         fetcher_factory=fetcher_factory,
@@ -1925,7 +1931,9 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
     monkeypatch.setattr(
         crawler_state_builder_module, "decide_frontier_action", _decide_frontier
     )
-    monkeypatch.setattr(crawler_state_builder_module, "emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(
+        crawler_state_builder_module, "emit_event", lambda *a, **k: None
+    )
 
     request = CrawlerRunRequest.model_validate(
         {
@@ -1944,7 +1952,10 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
         request=request,
         workflow_id=request.workflow_id,
     )
-    fetcher_factory = lambda config: _StubFetcher(config)
+
+    def fetcher_factory(config):
+        return _StubFetcher(config)
+
     builds = crawler_state_builder_module.build_crawler_state(
         context,
         fetcher_factory=fetcher_factory,
@@ -2003,7 +2014,9 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     monkeypatch.setattr(
         crawler_state_builder_module, "decide_frontier_action", _decide_frontier
     )
-    monkeypatch.setattr(crawler_state_builder_module, "emit_event", lambda *a, **k: None)
+    monkeypatch.setattr(
+        crawler_state_builder_module, "emit_event", lambda *a, **k: None
+    )
 
     request = CrawlerRunRequest.model_validate(
         {
@@ -2022,7 +2035,10 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
         request=request,
         workflow_id=request.workflow_id,
     )
-    fetcher_factory = lambda config: _StubFetcher(config)
+
+    def fetcher_factory(config):
+        return _StubFetcher(config)
+
     builds = crawler_state_builder_module.build_crawler_state(
         context,
         fetcher_factory=fetcher_factory,

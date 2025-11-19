@@ -230,9 +230,7 @@ def build_crawler_state(
                     "Manual crawler runs require inline content. Provide content or enable remote fetching."
                 )
             body_bytes = origin.content.encode("utf-8")
-            manual_content_type = (
-                effective_content_type or "application/octet-stream"
-            )
+            manual_content_type = effective_content_type or "application/octet-stream"
             fetch_payload = build_manual_fetch_payload(
                 fetch_request,
                 body=body_bytes,
@@ -483,7 +481,9 @@ def _map_fetch_error_response(result) -> tuple[int, str]:
     return status.HTTP_502_BAD_GATEWAY, "crawler_fetch_failed"
 
 
-def _write_snapshot(object_store, *, tenant: str, case: str, payload: bytes) -> tuple[str, str]:
+def _write_snapshot(
+    object_store, *, tenant: str, case: str, payload: bytes
+) -> tuple[str, str]:
     sha256 = hashlib.sha256(payload).hexdigest()
     tenant_safe = object_store.sanitize_identifier(tenant)
     case_safe = object_store.sanitize_identifier(case)

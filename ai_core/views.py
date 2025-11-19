@@ -51,7 +51,9 @@ from noesis2.api.serializers import (
 
 # Crawler contracts and runtime structures used by the ingestion runner view.
 from crawler.errors import CrawlerError, ErrorClass
-from documents.contract_utils import normalize_media_type as normalize_document_media_type
+from documents.contract_utils import (
+    normalize_media_type as normalize_document_media_type,
+)
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
@@ -1296,7 +1298,6 @@ def _resolve_lifecycle_store() -> object | None:
     return getattr(documents_api, "DEFAULT_LIFECYCLE_STORE", None)
 
 
-
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
 
@@ -1377,8 +1378,6 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
         projected["diagnostics"] = diagnostics
 
     return projected
-
-
 
 
 @require_POST
