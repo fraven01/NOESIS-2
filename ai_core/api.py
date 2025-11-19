@@ -498,7 +498,8 @@ def build_completion_payload(
     delta_payload = DeltaPayload(
         decision=decision.decision,
         reason=decision.reason,
-        content_hash=attributes.get("content_hash") or getattr(decision, "content_hash", None),
+        content_hash=attributes.get("content_hash")
+        or getattr(decision, "content_hash", None),
         version=getattr(decision, "version", None),
         changed_fields=tuple(attributes.get("changed_fields", ())),
         policy_events=tuple(attributes.get("policy_events", ())),

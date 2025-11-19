@@ -93,11 +93,12 @@ class FetchPayload(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
-    @field_serializer('body', when_used='json')
+    @field_serializer("body", when_used="json")
     def serialize_body_as_base64(self, value: bytes) -> str:
         """Serialize binary body as base64 for JSON compatibility."""
         import base64
-        return base64.b64encode(value).decode('ascii')
+
+        return base64.b64encode(value).decode("ascii")
 
 
 # ============================================================================

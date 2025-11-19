@@ -493,8 +493,7 @@ def _summarize_origin_entry(
         "control": services._make_json_safe(control),
         "ingest_action": state.get("ingest_action"),
         "gating_score": state.get("gating_score"),
-        "graph_run_id": state.get("graph_run_id")
-        or result_payload.get("graph_run_id"),
+        "graph_run_id": state.get("graph_run_id") or result_payload.get("graph_run_id"),
         "state": services._make_json_safe(summary_state),
         "collection_id": build.collection_id,
         "review": build.review,
@@ -2037,7 +2036,9 @@ def _build_crawler_state(
                     header_content_type
                 )
             fetched_bytes = fetch_payload.downloaded_bytes
-            fetch_elapsed = fetch_payload.elapsed_ms / 1000 if fetch_payload.elapsed_ms else 0.0
+            fetch_elapsed = (
+                fetch_payload.elapsed_ms / 1000 if fetch_payload.elapsed_ms else 0.0
+            )
             fetch_retries = fetch_payload.retries
             fetch_retry_reason = fetch_payload.retry_reason
             fetch_backoff_total_ms = fetch_payload.backoff_total_ms
@@ -2158,12 +2159,14 @@ def _build_crawler_state(
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
             "provider": source.provider,
-            "frontier": frontier_data.model_dump(mode='json'),
-            "fetch": fetch_payload.model_dump(mode='json'),
-            "guardrails": guardrail_payload.model_dump(mode='json'),
+            "frontier": frontier_data.model_dump(mode="json"),
+            "fetch": fetch_payload.model_dump(mode="json"),
+            "guardrails": guardrail_payload.model_dump(mode="json"),
             "document_id": document_id,
             "collection_id": request_data.collection_id,
-            "normalized_document_input": normalized_document_input.model_dump(mode='json'),
+            "normalized_document_input": normalized_document_input.model_dump(
+                mode="json"
+            ),
         }
         control: dict[str, object] = {
             "snapshot": snapshot_requested,

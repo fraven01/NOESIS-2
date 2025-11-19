@@ -1936,6 +1936,7 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
     assert normalized["blob"]["media_type"] == "text/plain"
     # Verify base64-encoded blob
     import base64
+
     assert base64.b64decode(normalized["blob"]["base64"]) == payload
 
 
@@ -2000,6 +2001,7 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     assert normalized["blob"]["size"] == len(payload)
     # Verify base64-encoded blob
     import base64
+
     assert base64.b64decode(normalized["blob"]["base64"]) == payload
 
 
@@ -2064,9 +2066,7 @@ def test_crawler_runner_guardrail_denial_returns_413(
                     decision=decision.decision,
                     reason=decision.reason,
                     allowed=False,
-                    policy_events=tuple(
-                        decision.attributes.get("policy_events", ())
-                    ),
+                    policy_events=tuple(decision.attributes.get("policy_events", ())),
                     limits=None,
                     signals=None,
                     attributes=dict(decision.attributes),
