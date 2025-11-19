@@ -8,6 +8,8 @@ from datetime import timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
+
+from pydantic import ValidationError
 from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
@@ -917,6 +919,12 @@ class CrawlerIngestionGraph:
             return existing
 
         normalized_input = state.get("normalized_document_input")
+        if isinstance(normalized_input, Mapping):
+            try:
+                normalized_input = NormalizedDocument.model_validate(normalized_input)
+            except ValidationError as exc:
+                raise KeyError("normalized_document_input_invalid") from exc
+            # Do NOT write the Pydantic object back to state to maintain JSON serializability
         if not isinstance(normalized_input, NormalizedDocument):
             raise KeyError("normalized_document_input_missing")
 
@@ -979,7 +987,8 @@ class CrawlerIngestionGraph:
             content_normalized=primary_text,
         )
         artifacts["normalized_document"] = payload
-        state["normalized_document_input"] = normalized_input
+        # Serialize to maintain JSON compatibility for Celery task payloads
+        state["normalized_document_input"] = normalized_input.model_dump(mode='json')
 
         if "repository_baseline" not in artifacts:
             baseline = self._load_repository_baseline(state, payload)
@@ -1483,7 +1492,8 @@ class CrawlerIngestionGraph:
             content_normalized=normalized.content_normalized,
         )
         artifacts["normalized_document"] = updated_payload
-        state["normalized_document_input"] = result_state.document
+        # Serialize to maintain JSON compatibility for Celery task payloads
+        state["normalized_document_input"] = result_state.document.model_dump(mode='json')
 
         extra = {"phase": result_state.phase}
         if result_state.error is not None:

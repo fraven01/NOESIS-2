@@ -10,7 +10,13 @@
       "Bash(git mv:*)",
       "Bash(find:*)",
       "Bash(python -m pytest:*)",
-      "Bash(npm run test:py:cov:*)"
+      "Bash(npm run test:py:cov:*)",
+      "Bash(python manage.py shell:*)",
+      "Bash(python test_serialization.py:*)",
+      "Bash(npm run test:py:direct:*)",
+      "Bash(Select-Object -First 200)",
+      "Bash(timeout 180 npm run test:py)",
+      "Bash(python debug_serialization.py:*)"
     ],
     "deny": [],
     "ask": []

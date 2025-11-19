@@ -2051,8 +2051,9 @@ def run_ingestion_graph(
                         source=source,
                     )
                     normalized_payload = normalize_from_raw(contract=contract)
+                    # Serialize to maintain JSON compatibility for Celery task payloads
                     working_state["normalized_document_input"] = (
-                        normalized_payload.document
+                        normalized_payload.document.model_dump(mode='json')
                     )
                     try:
                         working_state["document_id"] = str(

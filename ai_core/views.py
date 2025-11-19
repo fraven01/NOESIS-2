@@ -93,7 +93,6 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 from ai_core.graphs import (
-    crawler_ingestion_graph,
     info_intake,
 )  # noqa: F401
 from ai_core.contracts.payloads import (
@@ -371,6 +370,171 @@ def _serialise_guardrail_attributes(
         str(key): _serialise_guardrail_component(value)
         for key, value in dict(attributes).items()
     }
+
+
+def _coerce_guardrail_decision(
+    candidate: object,
+) -> guardrails_middleware.GuardrailDecision | None:
+    """Return a GuardrailDecision instance when possible."""
+
+    if isinstance(candidate, guardrails_middleware.GuardrailDecision):
+        return candidate
+    if isinstance(candidate, Mapping):
+        decision_value = candidate.get("decision")
+        reason_value = candidate.get("reason")
+        attributes = candidate.get("attributes")
+        if not isinstance(attributes, Mapping):
+            attributes = {
+                key: value
+                for key, value in candidate.items()
+                if key not in {"decision", "reason"}
+            }
+        try:
+            return guardrails_middleware.GuardrailDecision(
+                str(decision_value or ""),
+                str(reason_value or ""),
+                attributes=dict(attributes),
+            )
+        except Exception:
+            return None
+    return None
+
+
+def _build_guardrail_denied_payload(
+    build: CrawlerStateBuild,
+    decision: guardrails_middleware.GuardrailDecision,
+) -> dict[str, object]:
+    """Format a guardrail denial response payload."""
+
+    limits = {}
+    guardrail_state = build.state.get("guardrails")
+    if isinstance(guardrail_state, Mapping):
+        limits = guardrail_state.get("limits") or {}
+    return {
+        "code": "crawler_guardrail_denied",
+        "reason": decision.reason,
+        "origin": build.origin,
+        "policy_events": list(decision.policy_events),
+        "attributes": _serialise_guardrail_attributes(decision.attributes),
+        "limits": limits,
+    }
+
+
+def _build_fetch_telemetry_entry(build: CrawlerStateBuild) -> dict[str, object]:
+    """Return fetch metadata for the frontend telemetry table."""
+
+    return {
+        "origin": build.origin,
+        "provider": build.provider,
+        "fetch_used": build.fetch_used,
+        "http_status": build.http_status,
+        "fetched_bytes": build.fetched_bytes,
+        "media_type_effective": build.media_type_effective,
+        "fetch_elapsed": build.fetch_elapsed,
+        "fetch_retries": build.fetch_retries,
+        "fetch_retry_reason": build.fetch_retry_reason,
+        "fetch_backoff_total_ms": build.fetch_backoff_total_ms,
+        "snapshot_requested": build.snapshot_requested,
+        "snapshot_label": build.snapshot_label,
+        "tags": list(build.tags),
+    }
+
+
+def _extract_origin_errors(
+    build: CrawlerStateBuild, state: Mapping[str, object]
+) -> list[dict[str, object]]:
+    """Annotate graph errors with the originating URL."""
+
+    artifacts = state.get("artifacts")
+    if not isinstance(artifacts, Mapping):
+        return []
+    errors = artifacts.get("errors")
+    if not isinstance(errors, list):
+        return []
+    serialised = []
+    for error in errors:
+        if not isinstance(error, Mapping):
+            continue
+        serialised.append(
+            {
+                "origin": build.origin,
+                **services._make_json_safe(error),
+            }
+        )
+    return serialised
+
+
+def _summarize_origin_entry(
+    build: CrawlerStateBuild,
+    state: Mapping[str, object],
+    result_payload: Mapping[str, object],
+    ingestion_run_id: str | None,
+) -> dict[str, object]:
+    """Assemble the per-origin summary for the crawler runner response."""
+
+    control = state.get("control")
+    if not isinstance(control, Mapping):
+        control = {}
+    summary_state = {
+        "workflow_id": state.get("workflow_id"),
+        "document_id": state.get("document_id") or build.document_id,
+        "origin_uri": state.get("origin_uri") or build.origin,
+        "provider": state.get("provider") or build.provider,
+        "content_hash": state.get("content_hash"),
+        "tags": control.get("tags"),
+        "snapshot_requested": build.snapshot_requested,
+        "snapshot_label": build.snapshot_label,
+    }
+    entry: dict[str, object] = {
+        "origin": build.origin,
+        "provider": build.provider,
+        "document_id": build.document_id,
+        "result": services._make_json_safe(result_payload),
+        "control": services._make_json_safe(control),
+        "ingest_action": state.get("ingest_action"),
+        "gating_score": state.get("gating_score"),
+        "graph_run_id": state.get("graph_run_id")
+        or result_payload.get("graph_run_id"),
+        "state": services._make_json_safe(summary_state),
+        "collection_id": build.collection_id,
+        "review": build.review,
+        "dry_run": build.dry_run,
+    }
+    if ingestion_run_id:
+        entry["ingestion_run_id"] = ingestion_run_id
+    return entry
+
+
+def _maybe_start_ingestion(
+    build: CrawlerStateBuild,
+    state: Mapping[str, object],
+    meta: Mapping[str, object],
+) -> str | None:
+    """Trigger ingestion for the processed document when required."""
+
+    action = state.get("ingest_action")
+    if not action:
+        return None
+    document_id = state.get("document_id") or build.document_id
+    payload: dict[str, object] = {"document_ids": [document_id]}
+    if build.collection_id:
+        payload["collection_id"] = build.collection_id
+    try:
+        response = services.start_ingestion_run(
+            payload, dict(meta), meta.get("idempotency_key")
+        )
+    except Exception:
+        logger.exception(
+            "crawler_runner.start_ingestion_failed",
+            extra={"document_id": document_id, "origin": build.origin},
+        )
+        return None
+    data = getattr(response, "data", None)
+    if isinstance(data, Mapping):
+        ingestion_run_id = data.get("ingestion_run_id")
+        if isinstance(ingestion_run_id, str):
+            return ingestion_run_id
+    return None
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
@@ -1994,12 +2158,12 @@ def _build_crawler_state(
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
             "provider": source.provider,
-            "frontier": frontier_data,
-            "fetch": fetch_payload,
-            "guardrails": guardrail_payload,
+            "frontier": frontier_data.model_dump(mode='json'),
+            "fetch": fetch_payload.model_dump(mode='json'),
+            "guardrails": guardrail_payload.model_dump(mode='json'),
             "document_id": document_id,
             "collection_id": request_data.collection_id,
-            "normalized_document_input": normalized_document_input,
+            "normalized_document_input": normalized_document_input.model_dump(mode='json'),
         }
         control: dict[str, object] = {
             "snapshot": snapshot_requested,
@@ -2509,10 +2673,13 @@ class CrawlerIngestionRunnerView(APIView):
         header_idempotent = bool(resolved_idempotency)
 
         task_ids: list[dict[str, object]] = []
+        completed_runs: list[dict[str, object]] = []
+        pending_async = False
+        graph_name = "crawler.ingestion"
         for build in state_builds:
             task_payload = {
                 "state": build.state,
-                "graph_name": "crawler_ingestion",
+                "graph_name": graph_name,
             }
 
             scope = {
@@ -2525,7 +2692,7 @@ class CrawlerIngestionRunnerView(APIView):
             result, _completed = submit_worker_task(
                 task_payload=task_payload,
                 scope=scope,
-                graph_name="crawler_ingestion",
+                graph_name=graph_name,
                 ledger_identifier=None,
                 initial_cost_total=None,
                 timeout_s=0.1,
@@ -2540,6 +2707,93 @@ class CrawlerIngestionRunnerView(APIView):
                         "document_id": build.document_id,
                     }
                 )
+            if _completed:
+                completed_runs.append(
+                    {
+                        "build": build,
+                        "state": result.get("state") or {},
+                        "result": result.get("result") or {},
+                    }
+                )
+            else:
+                pending_async = True
+
+        if completed_runs and not pending_async:
+            guardrail_error: dict[str, object] | None = None
+            for entry in completed_runs:
+                state_data = entry.get("state")
+                if not isinstance(state_data, Mapping):
+                    continue
+                artifacts = state_data.get("artifacts")
+                if not isinstance(artifacts, Mapping):
+                    continue
+                guardrail_decision = _coerce_guardrail_decision(
+                    artifacts.get("guardrail_decision")
+                )
+                if guardrail_decision and not guardrail_decision.allowed:
+                    guardrail_error = _build_guardrail_denied_payload(
+                        entry["build"], guardrail_decision
+                    )
+                    break
+            if guardrail_error:
+                response = Response(
+                    guardrail_error,
+                    status=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                )
+                response = apply_std_headers(response, meta)
+                if resolved_idempotency:
+                    response[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
+                return response
+
+            origins_payload: list[dict[str, object]] = []
+            transitions_payload: list[dict[str, object]] = []
+            telemetry_payload: list[dict[str, object]] = []
+            errors_payload: list[dict[str, object]] = []
+            for entry in completed_runs:
+                build = entry["build"]
+                state_data = entry.get("state")
+                if not isinstance(state_data, Mapping):
+                    state_data = {}
+                result_payload = entry.get("result")
+                if not isinstance(result_payload, Mapping):
+                    result_payload = {}
+                telemetry_payload.append(_build_fetch_telemetry_entry(build))
+                transitions_payload.append(
+                    {
+                        "origin": build.origin,
+                        "transitions": services._make_json_safe(
+                            state_data.get("transitions")
+                            or result_payload.get("transitions")
+                            or {}
+                        ),
+                    }
+                )
+                errors_payload.extend(_extract_origin_errors(build, state_data))
+                ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
+                origins_payload.append(
+                    _summarize_origin_entry(
+                        build,
+                        state_data,
+                        result_payload,
+                        ingestion_run_id,
+                    )
+                )
+
+            response_payload = {
+                "workflow_id": workflow_id,
+                "mode": request_model.mode,
+                "collection_id": request_model.collection_id,
+                "origins": origins_payload,
+                "transitions": transitions_payload,
+                "telemetry": telemetry_payload,
+                "errors": errors_payload,
+                "idempotent": bool(fingerprint_match or header_idempotent),
+            }
+            response = Response(response_payload, status=status.HTTP_200_OK)
+            response = apply_std_headers(response, meta)
+            if resolved_idempotency:
+                response[IDEMPOTENCY_KEY_HEADER] = resolved_idempotency
+            return response
 
         response_payload = {
             "status": "accepted",

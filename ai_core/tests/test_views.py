@@ -44,7 +44,6 @@ from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
 from crawler.frontier import FrontierAction
 from rest_framework import status
-from documents.contracts import NormalizedDocument
 
 
 @pytest.fixture(autouse=True)
@@ -1871,13 +1870,13 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
     guardrails = builds[0].state.get("guardrails")
-    assert isinstance(guardrails, GuardrailPayload)
-    assert guardrails.limits is not None
-    assert guardrails.limits.max_document_bytes is None
-    assert guardrails.signals is not None
-    assert guardrails.signals.canonical_source == "https://example.org/doc"
-    assert guardrails.signals.host == "example.org"
-    assert guardrails.signals.document_bytes == len("hello world".encode("utf-8"))
+    assert isinstance(guardrails, dict)
+    assert guardrails["limits"] is not None
+    assert guardrails["limits"]["max_document_bytes"] is None
+    assert guardrails["signals"] is not None
+    assert guardrails["signals"]["canonical_source"] == "https://example.org/doc"
+    assert guardrails["signals"]["host"] == "example.org"
+    assert guardrails["signals"]["document_bytes"] == len("hello world".encode("utf-8"))
 
 
 def test_build_crawler_state_builds_normalized_document(monkeypatch):
@@ -1912,7 +1911,6 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
     monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
     monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
     monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
-    monkeypatch.setattr(views, "record_span", lambda *a, **k: None)
     monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
 
     request = CrawlerRunRequest.model_validate(
@@ -1931,12 +1929,14 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
     normalized = builds[0].state.get("normalized_document_input")
-    assert isinstance(normalized, NormalizedDocument)
-    assert normalized.meta.origin_uri == "https://example.org/utf8"
-    assert normalized.meta.tags == []
-    assert normalized.source == "crawler"
-    assert normalized.blob.media_type == "text/plain"
-    assert normalized.blob.decoded_payload() == payload
+    assert isinstance(normalized, dict)
+    assert normalized["meta"]["origin_uri"] == "https://example.org/utf8"
+    assert normalized["meta"]["tags"] == []
+    assert normalized["source"] == "crawler"
+    assert normalized["blob"]["media_type"] == "text/plain"
+    # Verify base64-encoded blob
+    import base64
+    assert base64.b64decode(normalized["blob"]["base64"]) == payload
 
 
 def test_build_crawler_state_preserves_binary_payload(monkeypatch):
@@ -1977,7 +1977,6 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
     monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
     monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
-    monkeypatch.setattr(views, "record_span", lambda *a, **k: None)
     monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
 
     request = CrawlerRunRequest.model_validate(
@@ -1996,10 +1995,12 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     builds = views._build_crawler_state(meta, request)
     assert len(builds) == 1
     normalized = builds[0].state.get("normalized_document_input")
-    assert isinstance(normalized, NormalizedDocument)
-    assert normalized.blob.media_type == "application/octet-stream"
-    assert normalized.blob.size == len(payload)
-    assert normalized.blob.decoded_payload() == payload
+    assert isinstance(normalized, dict)
+    assert normalized["blob"]["media_type"] == "application/octet-stream"
+    assert normalized["blob"]["size"] == len(payload)
+    # Verify base64-encoded blob
+    import base64
+    assert base64.b64decode(normalized["blob"]["base64"]) == payload
 
 
 @pytest.mark.django_db
@@ -2074,10 +2075,10 @@ def test_crawler_runner_guardrail_denial_returns_413(
             result_state["summary"] = summary
             return result_state, result
 
-    monkeypatch.setattr(
-        views,
-        "crawler_ingestion_graph",
-        SimpleNamespace(build_graph=lambda: _GuardrailDenyGraph()),
+    monkeypatch.setitem(
+        registry._REGISTRY,
+        "crawler.ingestion",
+        _GuardrailDenyGraph(),
     )
 
     headers = {
@@ -2174,10 +2175,10 @@ def test_crawler_runner_manual_multi_origin(
             }
             return result_state, result
 
-    monkeypatch.setattr(
-        views,
-        "crawler_ingestion_graph",
-        SimpleNamespace(build_graph=lambda: _DummyGraph()),
+    monkeypatch.setitem(
+        registry._REGISTRY,
+        "crawler.ingestion",
+        _DummyGraph(),
     )
 
     headers = {
