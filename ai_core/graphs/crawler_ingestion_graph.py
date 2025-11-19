@@ -988,7 +988,7 @@ class CrawlerIngestionGraph:
         )
         artifacts["normalized_document"] = payload
         # Serialize to maintain JSON compatibility for Celery task payloads
-        state["normalized_document_input"] = normalized_input.model_dump(mode='json')
+        state["normalized_document_input"] = normalized_input.model_dump(mode="json")
 
         if "repository_baseline" not in artifacts:
             baseline = self._load_repository_baseline(state, payload)
@@ -1207,7 +1207,9 @@ class CrawlerIngestionGraph:
                 legacy_signals, GuardrailSignals
             ):
                 limits_data = self._limits_data_from_dataclass(
-                    legacy_limits if isinstance(legacy_limits, GuardrailLimits) else None
+                    legacy_limits
+                    if isinstance(legacy_limits, GuardrailLimits)
+                    else None
                 )
                 signals_data = self._signals_data_from_dataclass(
                     legacy_signals
@@ -1493,7 +1495,9 @@ class CrawlerIngestionGraph:
         )
         artifacts["normalized_document"] = updated_payload
         # Serialize to maintain JSON compatibility for Celery task payloads
-        state["normalized_document_input"] = result_state.document.model_dump(mode='json')
+        state["normalized_document_input"] = result_state.document.model_dump(
+            mode="json"
+        )
 
         extra = {"phase": result_state.phase}
         if result_state.error is not None:
