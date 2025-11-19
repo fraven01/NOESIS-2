@@ -55,7 +55,10 @@ from pydantic import ValidationError
 
 from .infra import object_store, pii
 from .infra.pii_flags import get_pii_config
-from .segmentation import segment_markdown_blocks
+from .ingestion.blocks import StructuredBlockReader
+from .ingestion.chunk_assembler import ChunkAssembler, ChunkAssemblerInput
+from .ingestion.parent_capture import ParentCapture
+from .ingestion.pii import PIIMasker
 from .rag import metrics
 from .rag.embedding_config import get_embedding_profile
 from .rag.parents import limit_parent_payload
@@ -788,55 +791,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     )
     prefix = _build_chunk_prefix(meta)
 
-    blocks_path_value = meta.get("parsed_blocks_path")
-    structured_blocks: List[Dict[str, object]] = []
-    if blocks_path_value:
-        try:
-            payload = object_store.read_json(str(blocks_path_value))
-        except FileNotFoundError:
-            payload = None
-        except Exception:  # pragma: no cover - defensive guard
-            logger.warning(
-                "ingestion.chunk.blocks_read_failed",
-                extra={
-                    "tenant_id": meta.get("tenant_id"),
-                    "case_id": meta.get("case_id"),
-                    "path": blocks_path_value,
-                },
-            )
-            payload = None
-        if isinstance(payload, dict):
-            raw_blocks = payload.get("blocks") or []
-            if isinstance(raw_blocks, list):
-                structured_blocks = [
-                    entry for entry in raw_blocks if isinstance(entry, dict)
-                ]
+    block_reader = StructuredBlockReader()
+    structured_doc = block_reader.read(meta, text)
 
-    mask_enabled = bool(getattr(settings, "INGESTION_PII_MASK_ENABLED", True))
-
-    def _mask_for_chunk(value: str) -> str:
-        if not mask_enabled:
-            return value
-        masked_value = pii.mask(value)
-        if masked_value == value:
-            config = get_pii_config()
-            mode = str(config.get("mode", "")).lower()
-            policy = str(config.get("policy", "")).lower()
-            if mode != "off" and policy != "off":
-                masked_value = re.sub(r"\d", "X", value)
-        return masked_value
-
-    fallback_segments: List[str] = []
-    if not structured_blocks:
-        fallback_segments = segment_markdown_blocks(text)
-    parent_nodes: Dict[str, Dict[str, object]] = {}
-    parent_contents: Dict[str, List[str]] = {}
-    parent_content_bytes: Dict[str, int] = {}
+    masker = PIIMasker()
     parent_capture_max_depth = _resolve_parent_capture_max_depth()
     parent_capture_max_bytes = _resolve_parent_capture_max_bytes()
-    parent_stack: List[Dict[str, object]] = []
-    section_counter = 0
-    order_counter = 0
 
     document_id_value = meta.get("document_id")
     document_id: Optional[str] = None
@@ -858,427 +818,45 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
     doc_title = str(meta.get("title") or meta.get("external_id") or "").strip()
     # Use compact UUIDs for parent identifiers to align with external document_id formatting
     parent_prefix = document_id if document_id else str(external_id)
-    root_id = f"{parent_prefix}#doc"
-    parent_nodes[root_id] = {
-        "id": root_id,
-        "type": "document",
-        "title": doc_title or None,
-        "level": 0,
-        "order": order_counter,
-    }
-    if document_id:
-        parent_nodes[root_id]["document_id"] = document_id
-    parent_contents[root_id] = []
-    parent_content_bytes[root_id] = 0
+    parent_capture = ParentCapture(
+        document_id=document_id,
+        external_id=str(external_id),
+        title=doc_title,
+        parent_prefix=parent_prefix,
+        max_depth=parent_capture_max_depth,
+        max_bytes=parent_capture_max_bytes,
+    )
+    capture_result = parent_capture.build_candidates(
+        structured_blocks=structured_doc.blocks,
+        fallback_segments=structured_doc.fallback_segments,
+        full_text=text,
+        target_tokens=target_tokens,
+        overlap_tokens=overlap_tokens,
+        hard_limit=hard_limit,
+        mask=masker.mask,
+        chunk_sentences=_chunkify,
+        sentence_splitter=_split_sentences,
+        split_by_limit=_split_by_limit,
+        token_counter=_token_count,
+    )
 
-    def _within_capture_depth(level: int) -> bool:
-        """Return True when parent capture is allowed for the given heading level."""
-        if parent_capture_max_depth <= 0:
-            # A value of zero disables the depth restriction so that parent capture
-            # behaves as an "all levels" setting.
-            return True
-        return level <= parent_capture_max_depth
+    assembler = ChunkAssembler(
+        token_counter=_token_count,
+        split_by_limit=_split_by_limit,
+        normalizer=normalise_text,
+    )
+    chunk_input = ChunkAssemblerInput(
+        prefix=prefix,
+        chunk_candidates=capture_result.chunk_candidates,
+        hard_limit=hard_limit,
+        meta=meta,
+        text_path=text_path,
+        content_hash=content_hash,
+        document_id=document_id,
+    )
+    chunks = assembler.assemble(chunk_input)
 
-    def _append_parent_text(parent_id: str, text: str, level: int) -> None:
-        if not text:
-            return
-        normalised = text.strip()
-        if not normalised:
-            return
-        is_root_parent = parent_id == root_id
-        if (
-            not is_root_parent
-            and parent_capture_max_depth > 0
-            and not _within_capture_depth(level)
-        ):
-            return
-
-        if parent_capture_max_bytes > 0 and not is_root_parent:
-            used = parent_content_bytes.get(parent_id, 0)
-            remaining = parent_capture_max_bytes - used
-            if remaining <= 0:
-                parent_nodes[parent_id]["capture_limited"] = True
-                return
-
-            separator_bytes = 0
-            if parent_contents[parent_id]:
-                separator_bytes = len("\n\n".encode("utf-8"))
-            if remaining <= separator_bytes:
-                parent_nodes[parent_id]["capture_limited"] = True
-                return
-
-            allowed = remaining - separator_bytes
-            encoded = normalised.encode("utf-8")
-            if len(encoded) > allowed:
-                truncated = encoded[:allowed]
-                preview = truncated.decode("utf-8", errors="ignore").strip()
-                parent_nodes[parent_id]["capture_limited"] = True
-                if not preview:
-                    return
-                parent_contents[parent_id].append(preview)
-                appended_bytes = len(preview.encode("utf-8"))
-                parent_content_bytes[parent_id] = (
-                    used + separator_bytes + appended_bytes
-                )
-                return
-
-            parent_contents[parent_id].append(normalised)
-            parent_content_bytes[parent_id] = used + separator_bytes + len(encoded)
-            return
-
-        parent_contents[parent_id].append(normalised)
-        if parent_capture_max_bytes > 0:
-            used = parent_content_bytes.get(parent_id, 0)
-            separator_bytes = 0
-            if used > 0:
-                separator_bytes = len("\n\n".encode("utf-8"))
-            parent_content_bytes[parent_id] = (
-                used + separator_bytes + len(normalised.encode("utf-8"))
-            )
-
-    def _append_parent_text_with_root(parent_id: str, text: str, level: int) -> None:
-        _append_parent_text(parent_id, text, level)
-        if parent_id == root_id:
-            return
-        _append_parent_text(root_id, text, level)
-
-    def _register_section(
-        title: str, level: int, path: Optional[Tuple[str, ...]] = None
-    ) -> Dict[str, object]:
-        nonlocal section_counter, order_counter
-        section_counter += 1
-        order_counter += 1
-        parent_id = f"{parent_prefix}#sec-{section_counter}"
-        info = {
-            "id": parent_id,
-            "type": "section",
-            "title": title or None,
-            "level": level,
-            "order": order_counter,
-        }
-        if path is not None:
-            info["path"] = path
-        if document_id:
-            info["document_id"] = document_id
-        parent_nodes[parent_id] = info
-        parent_contents[parent_id] = []
-        parent_content_bytes[parent_id] = 0
-        return info
-
-    chunk_candidates: List[Tuple[str, List[str], str]] = []
-
-    if structured_blocks:
-        pending_pieces: List[str] = []
-        pending_parent_ids: Optional[Tuple[str, ...]] = None
-        pending_heading_prefix: str = ""
-
-        def _flush_pending() -> None:
-            nonlocal pending_pieces, pending_parent_ids, pending_heading_prefix
-            if not pending_pieces or pending_parent_ids is None:
-                pending_pieces = []
-                pending_parent_ids = None
-                pending_heading_prefix = ""
-                return
-
-            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
-            sentences = _split_sentences(combined_text)
-            if not sentences:
-                sentences = [combined_text] if combined_text else []
-
-            if sentences:
-                bodies = _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
-                for body in bodies:
-                    chunk_candidates.append(
-                        (body, list(pending_parent_ids), pending_heading_prefix)
-                    )
-
-            pending_pieces = []
-            pending_parent_ids = None
-            pending_heading_prefix = ""
-
-        section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
-
-        for block in structured_blocks:
-            text_value = str(block.get("text") or "")
-            kind = str(block.get("kind") or "").lower()
-            section_path_raw = block.get("section_path")
-            path_tuple: Tuple[str, ...] = ()
-            if isinstance(section_path_raw, (list, tuple)):
-                path_tuple = tuple(
-                    str(part).strip()
-                    for part in section_path_raw
-                    if isinstance(part, str) and str(part).strip()
-                )
-            masked_text = _mask_for_chunk(text_value)
-            if kind == "heading":
-                _flush_pending()
-                level = len(path_tuple) if path_tuple else 1
-                while parent_stack and len(parent_stack[-1].get("path", ())) >= level:
-                    parent_stack.pop()
-                title_candidate = path_tuple[-1] if path_tuple else text_value.strip()
-                section_info = _register_section(
-                    title_candidate or text_value.strip(), level, path_tuple or None
-                )
-                section_registry[path_tuple] = section_info
-                parent_stack.append(section_info)
-                if masked_text.strip():
-                    _append_parent_text_with_root(
-                        section_info["id"], masked_text.strip(), level
-                    )
-                continue
-
-            normalised_text = masked_text.strip()
-            if not normalised_text:
-                continue
-
-            if path_tuple:
-                desired_stack: List[Dict[str, object]] = []
-                for depth in range(1, len(path_tuple) + 1):
-                    prefix_tuple = path_tuple[:depth]
-                    info = section_registry.get(prefix_tuple)
-                    if info is None:
-                        title_candidate = prefix_tuple[-1] if prefix_tuple else ""
-                        info = _register_section(title_candidate, depth, prefix_tuple)
-                        section_registry[prefix_tuple] = info
-                    desired_stack.append(info)
-                parent_stack = desired_stack
-            else:
-                parent_stack = []
-
-            block_pieces = [normalised_text]
-            if _token_count(normalised_text) > hard_limit:
-                block_pieces = _split_by_limit(normalised_text, hard_limit)
-
-            for piece in block_pieces:
-                piece_text = piece.strip()
-                if not piece_text:
-                    continue
-                if parent_stack:
-                    target_info = parent_stack[-1]
-                    target_level = int(target_info.get("level") or 0)
-                    _append_parent_text_with_root(
-                        target_info["id"], piece_text, target_level
-                    )
-                else:
-                    _append_parent_text(root_id, piece_text, 0)
-                parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(
-                    dict.fromkeys(pid for pid in parent_ids if pid)
-                )
-                heading_prefix = " / ".join(path_tuple) if path_tuple else ""
-
-                new_parent_ids = tuple(unique_parent_ids)
-                if pending_parent_ids is not None and (
-                    pending_parent_ids != new_parent_ids
-                    or pending_heading_prefix != heading_prefix
-                ):
-                    _flush_pending()
-
-                if pending_parent_ids is None:
-                    pending_parent_ids = new_parent_ids
-                    pending_heading_prefix = heading_prefix
-
-                pending_pieces.append(piece_text)
-
-        _flush_pending()
-    else:
-        pending_pieces = []
-        pending_parent_ids: Optional[Tuple[str, ...]] = None
-
-        def _flush_pending() -> None:
-            nonlocal pending_pieces, pending_parent_ids
-            if not pending_pieces or pending_parent_ids is None:
-                pending_pieces = []
-                pending_parent_ids = None
-                return
-
-            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
-            sentences = _split_sentences(combined_text)
-            if not sentences:
-                sentences = [combined_text] if combined_text else []
-
-            if sentences:
-                bodies = _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
-                for body in bodies:
-                    chunk_candidates.append((body, list(pending_parent_ids), ""))
-
-            pending_pieces = []
-            pending_parent_ids = None
-
-        heading_pattern = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
-
-        for block in fallback_segments:
-            stripped_block = block.strip()
-            if not stripped_block:
-                continue
-            heading_match = heading_pattern.match(stripped_block)
-            if heading_match:
-                _flush_pending()
-                hashes, heading_title = heading_match.groups()
-                level = len(hashes)
-                while parent_stack and int(parent_stack[-1].get("level") or 0) >= level:
-                    parent_stack.pop()
-                section_info = _register_section(heading_title.strip(), level)
-                parent_stack.append(section_info)
-                _append_parent_text_with_root(section_info["id"], stripped_block, level)
-                continue
-
-            block_pieces = [block]
-            if _token_count(block) > hard_limit:
-                block_pieces = _split_by_limit(block, hard_limit)
-            for piece in block_pieces:
-                piece_text = piece.strip()
-                if not piece_text:
-                    continue
-                if parent_stack:
-                    target_info = parent_stack[-1]
-                    target_level = int(target_info.get("level") or 0)
-                    _append_parent_text_with_root(
-                        target_info["id"], piece_text, target_level
-                    )
-                else:
-                    _append_parent_text(root_id, piece_text, 0)
-                parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(
-                    dict.fromkeys(pid for pid in parent_ids if pid)
-                )
-                new_parent_ids = tuple(unique_parent_ids)
-
-                if (
-                    pending_parent_ids is not None
-                    and pending_parent_ids != new_parent_ids
-                ):
-                    _flush_pending()
-
-                if pending_parent_ids is None:
-                    pending_parent_ids = new_parent_ids
-
-                pending_pieces.append(piece_text)
-
-        _flush_pending()
-
-    if not chunk_candidates:
-        fallback_ids = [root_id] + [info["id"] for info in parent_stack]
-        unique_fallback_ids = list(dict.fromkeys(pid for pid in fallback_ids if pid))
-        fallback_text = text.strip()
-        if fallback_text:
-            if parent_stack:
-                target_info = parent_stack[-1]
-                target_level = int(target_info.get("level") or 0)
-                _append_parent_text_with_root(
-                    target_info["id"], fallback_text, target_level
-                )
-            else:
-                _append_parent_text(root_id, fallback_text, 0)
-        chunk_candidates.append((text, unique_fallback_ids or [root_id], ""))
-
-    chunks: List[Dict[str, object]] = []
-    chunk_index = 0
-    for body, parent_ids, heading_prefix in chunk_candidates:
-        prefix_parts: List[str] = []
-        if prefix:
-            prefix_parts.append(prefix)
-        if heading_prefix:
-            prefix_parts.append(heading_prefix)
-        prefix_token_count = sum(_token_count(part) for part in prefix_parts if part)
-        if prefix_token_count >= hard_limit:
-            body_limit = 0
-        else:
-            body_limit = hard_limit - prefix_token_count
-
-        body_segments: List[str] = [body]
-        if body_limit > 0:
-            adjusted_segments: List[str] = []
-            for segment in body_segments:
-                if _token_count(segment) > body_limit:
-                    adjusted_segments.extend(_split_by_limit(segment, body_limit))
-                else:
-                    adjusted_segments.append(segment)
-            body_segments = adjusted_segments or [""]
-        elif not body:
-            body_segments = [""]
-
-        for segment in body_segments:
-            chunk_text = segment
-            if prefix_parts:
-                combined_prefix = "\n\n".join(
-                    str(part).strip() for part in prefix_parts if str(part).strip()
-                )
-                if combined_prefix:
-                    chunk_text = (
-                        f"{combined_prefix}\n\n{chunk_text}"
-                        if chunk_text
-                        else combined_prefix
-                    )
-            normalised = normalise_text(chunk_text)
-            chunk_hash_input = f"{content_hash}:{chunk_index}".encode("utf-8")
-            chunk_hash = hashlib.sha256(chunk_hash_input).hexdigest()
-            chunk_meta = {
-                "tenant_id": meta["tenant_id"],
-                "case_id": meta.get("case_id"),
-                "source": text_path,
-                "hash": chunk_hash,
-                "external_id": external_id,
-                "content_hash": content_hash,
-                # Provide per-chunk parent lineage for compatibility with existing tests
-                "parent_ids": parent_ids,
-            }
-
-            if meta.get("embedding_profile"):
-                chunk_meta["embedding_profile"] = meta["embedding_profile"]
-            if meta.get("vector_space_id"):
-                chunk_meta["vector_space_id"] = meta["vector_space_id"]
-            if meta.get("collection_id"):
-                chunk_meta["collection_id"] = meta["collection_id"]
-            if meta.get("workflow_id"):
-                chunk_meta["workflow_id"] = meta["workflow_id"]
-
-            if document_id:
-                # Ensure canonical dashed UUID format for document_id in chunk meta
-                try:
-                    chunk_meta["document_id"] = str(uuid.UUID(str(document_id)))
-                except Exception:
-                    chunk_meta["document_id"] = document_id
-            chunks.append(
-                {
-                    "content": chunk_text,
-                    "normalized": normalised,
-                    "meta": chunk_meta,
-                }
-            )
-            chunk_index += 1
-
-    for parent_id, info in parent_nodes.items():
-        content_parts = parent_contents.get(parent_id) or []
-        content_text = "\n\n".join(part for part in content_parts if part).strip()
-        if content_text:
-            info = dict(info)
-            info["content"] = content_text
-            parent_nodes[parent_id] = info
-
-    # Provide compatibility for parent key formats: include both dashed and
-    # compact UUID variants for the document root when a document_id is present.
-    if document_id:
-        try:
-            compact_root = f"{document_id.replace('-', '')}#doc"
-            dashed_root = f"{document_id}#doc"
-            if compact_root in parent_nodes and dashed_root not in parent_nodes:
-                parent_nodes[dashed_root] = dict(parent_nodes[compact_root])
-                parent_nodes[dashed_root].setdefault("document_id", document_id)
-        except Exception:
-            pass
-
-    limited_parents = limit_parent_payload(parent_nodes)
+    limited_parents = limit_parent_payload(capture_result.parent_nodes)
     payload = {"chunks": chunks, "parents": limited_parents}
     chunk_filename = _resolve_artifact_filename(meta, "chunks")
     out_path = _build_path(meta, "embeddings", chunk_filename)
