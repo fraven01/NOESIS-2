@@ -12,15 +12,18 @@ from django.test import RequestFactory
 from structlog.testing import capture_logs
 
 from ai_core import services, views
+from ai_core.contracts.crawler_runner import CrawlerRunContext
 from ai_core.contracts.payloads import CompletionPayload, DeltaPayload, GuardrailPayload
 from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
 from ai_core.infra import object_store, rate_limit
+from ai_core.services import crawler_state_builder as crawler_state_builder_module
 from ai_core.graph import registry
 import ai_core.nodes.retrieve as retrieve
 from ai_core.nodes.retrieve import RetrieveInput
 from ai_core.schemas import CrawlerRunRequest, RagQueryRequest
 from ai_core.rag.schemas import Chunk
+from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
@@ -1866,8 +1869,19 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
         }
     )
     meta = {"tenant_id": "tenant-guard", "case_id": "case-guard"}
-
-    builds = views._build_crawler_state(meta, request)
+    context = CrawlerRunContext(
+        meta=meta,
+        request=request,
+        workflow_id=request.workflow_id,
+    )
+    fetcher_factory = lambda config: SimpleNamespace(fetch=lambda request: None)
+    builds = crawler_state_builder_module.build_crawler_state(
+        context,
+        fetcher_factory=fetcher_factory,
+        lifecycle_store=None,
+        object_store=object_store,
+        guardrail_limits=GuardrailLimits(),
+    )
     assert len(builds) == 1
     guardrails = builds[0].state.get("guardrails")
     assert isinstance(guardrails, dict)
@@ -1908,10 +1922,10 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
                 telemetry=telemetry,
             )
 
-    monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
-    monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
-    monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
-    monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
+    monkeypatch.setattr(
+        crawler_state_builder_module, "decide_frontier_action", _decide_frontier
+    )
+    monkeypatch.setattr(crawler_state_builder_module, "emit_event", lambda *a, **k: None)
 
     request = CrawlerRunRequest.model_validate(
         {
@@ -1925,8 +1939,19 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
         }
     )
     meta = {"tenant_id": "tenant-fetch", "case_id": "case-fetch"}
-
-    builds = views._build_crawler_state(meta, request)
+    context = CrawlerRunContext(
+        meta=meta,
+        request=request,
+        workflow_id=request.workflow_id,
+    )
+    fetcher_factory = lambda config: _StubFetcher(config)
+    builds = crawler_state_builder_module.build_crawler_state(
+        context,
+        fetcher_factory=fetcher_factory,
+        lifecycle_store=None,
+        object_store=object_store,
+        guardrail_limits=GuardrailLimits(),
+    )
     assert len(builds) == 1
     normalized = builds[0].state.get("normalized_document_input")
     assert isinstance(normalized, dict)
@@ -1975,10 +2000,10 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
                 telemetry=telemetry,
             )
 
-    monkeypatch.setattr(views, "decide_frontier_action", _decide_frontier)
-    monkeypatch.setattr(views, "HttpFetcher", _StubFetcher)
-    monkeypatch.setattr(views, "emit_event", lambda *a, **k: None)
-    monkeypatch.setattr(services, "_get_documents_repository", lambda: None)
+    monkeypatch.setattr(
+        crawler_state_builder_module, "decide_frontier_action", _decide_frontier
+    )
+    monkeypatch.setattr(crawler_state_builder_module, "emit_event", lambda *a, **k: None)
 
     request = CrawlerRunRequest.model_validate(
         {
@@ -1992,8 +2017,19 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
         }
     )
     meta = {"tenant_id": "tenant-binary", "case_id": "case-binary"}
-
-    builds = views._build_crawler_state(meta, request)
+    context = CrawlerRunContext(
+        meta=meta,
+        request=request,
+        workflow_id=request.workflow_id,
+    )
+    fetcher_factory = lambda config: _StubFetcher(config)
+    builds = crawler_state_builder_module.build_crawler_state(
+        context,
+        fetcher_factory=fetcher_factory,
+        lifecycle_store=None,
+        object_store=object_store,
+        guardrail_limits=GuardrailLimits(),
+    )
     assert len(builds) == 1
     normalized = builds[0].state.get("normalized_document_input")
     assert isinstance(normalized, dict)

@@ -4,16 +4,13 @@ import hashlib
 import json
 import re
 import uuid
-from dataclasses import asdict, dataclass, is_dataclass
-from collections.abc import Mapping, Sequence
+from dataclasses import asdict, is_dataclass
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
 from pathlib import Path
 from types import ModuleType
 from importlib import import_module
-from urllib.parse import urlsplit
-from uuid import uuid4, uuid5
-import base64
-
+from uuid import uuid4
 from datetime import timezone as datetime_timezone
 
 from django.conf import settings
@@ -56,26 +53,8 @@ from noesis2.api.serializers import (
 )
 
 # Crawler contracts and runtime structures used by the ingestion runner view.
-from crawler.contracts import normalize_source
 from crawler.errors import CrawlerError, ErrorClass
-from crawler.fetcher import (
-    FetchFailure,
-    FetchRequest,
-    FetchStatus,
-    PolitenessContext,
-)
-from common.guardrails import FetcherLimits
-from crawler.frontier import (
-    CrawlSignals,
-    FrontierAction,
-    SourceDescriptor,
-    decide_frontier_action,
-)
-from crawler.http_fetcher import HttpFetcher, HttpFetcherConfig
-from documents.contract_utils import (
-    normalize_media_type as normalize_document_media_type,
-)
-from documents.contracts import InlineBlob, NormalizedDocument
+from crawler.http_fetcher import HttpFetcher
 
 # OpenAPI helpers and serializer types are referenced throughout the schema
 # declarations below, so keep the imports explicit even if they appear unused
@@ -95,23 +74,15 @@ from ai_core.graph.registry import get as get_graph_runner, register as register
 from ai_core.graphs import (
     info_intake,
 )  # noqa: F401
-from ai_core.contracts.payloads import (
-    FrontierData,
-    GuardrailLimitsData,
-    GuardrailPayload,
-    GuardrailSignalsData,
+from ai_core.contracts.crawler_runner import (
+    CrawlerRunContext,
+    CrawlerRunError,
+    CrawlerStateBundle,
 )
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import (
     GuardrailLimits,
     GuardrailSignals,
-)
-from ai_core.telemetry.crawler import (
-    build_fetch_payload,
-    build_manual_fetch_payload,
-    emit_fetch_started,
-    record_fetch_attempt,
-    summarize_fetch_attempt,
 )
 from llm_worker.runner import submit_worker_task
 
@@ -121,6 +92,7 @@ from ai_core.infra.observability import emit_event
 from pydantic import ValidationError
 
 from . import services
+from ai_core.services.crawler_state_builder import build_crawler_state
 from .infra import object_store, rate_limit
 from .infra.resp import apply_std_headers
 from .ingestion import partition_document_ids as partition_document_ids  # test hook
@@ -164,49 +136,6 @@ logger.info(
     "module_loaded",
     extra={"module": __name__, "path": str(Path(__file__).resolve())},
 )
-
-
-@dataclass(slots=True)
-class CrawlerStateBuild:
-    """Result bundle returned by :func:`_build_crawler_state`."""
-
-    origin: str
-    provider: str
-    document_id: str
-    state: dict[str, object]
-    fetch_used: bool
-    http_status: int | None
-    fetched_bytes: int | None
-    media_type_effective: str | None
-    fetch_elapsed: float | None
-    fetch_retries: int | None
-    fetch_retry_reason: str | None
-    fetch_backoff_total_ms: float | None
-    snapshot_path: str | None
-    snapshot_sha256: str | None
-    tags: tuple[str, ...]
-    collection_id: str | None
-    snapshot_requested: bool
-    snapshot_label: str | None
-    review: str | None
-    dry_run: bool
-
-
-class CrawlerRunError(RuntimeError):
-    """Raised when crawler state preparation cannot proceed."""
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        code: str,
-        status_code: int,
-        details: Mapping[str, object] | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.code = code
-        self.status_code = status_code
-        self.details = dict(details or {})
 
 
 def _resolve_case_tenant(tenant_identifier: str) -> Tenant | None:
@@ -401,7 +330,7 @@ def _coerce_guardrail_decision(
 
 
 def _build_guardrail_denied_payload(
-    build: CrawlerStateBuild,
+    build: CrawlerStateBundle,
     decision: guardrails_middleware.GuardrailDecision,
 ) -> dict[str, object]:
     """Format a guardrail denial response payload."""
@@ -420,7 +349,7 @@ def _build_guardrail_denied_payload(
     }
 
 
-def _build_fetch_telemetry_entry(build: CrawlerStateBuild) -> dict[str, object]:
+def _build_fetch_telemetry_entry(build: CrawlerStateBundle) -> dict[str, object]:
     """Return fetch metadata for the frontend telemetry table."""
 
     return {
@@ -441,7 +370,7 @@ def _build_fetch_telemetry_entry(build: CrawlerStateBuild) -> dict[str, object]:
 
 
 def _extract_origin_errors(
-    build: CrawlerStateBuild, state: Mapping[str, object]
+    build: CrawlerStateBundle, state: Mapping[str, object]
 ) -> list[dict[str, object]]:
     """Annotate graph errors with the originating URL."""
 
@@ -465,7 +394,7 @@ def _extract_origin_errors(
 
 
 def _summarize_origin_entry(
-    build: CrawlerStateBuild,
+    build: CrawlerStateBundle,
     state: Mapping[str, object],
     result_payload: Mapping[str, object],
     ingestion_run_id: str | None,
@@ -505,7 +434,7 @@ def _summarize_origin_entry(
 
 
 def _maybe_start_ingestion(
-    build: CrawlerStateBuild,
+    build: CrawlerStateBundle,
     state: Mapping[str, object],
     meta: Mapping[str, object],
 ) -> str | None:
@@ -619,82 +548,6 @@ def _sanitize_primary_text(value: str | None) -> str:
         return ""
     sanitized = value.replace("\x00", " ")
     return sanitized
-
-
-def _merge_origin_tags(
-    global_tags: Sequence[str] | None, origin_tags: Sequence[str] | None
-) -> list[str]:
-    """Combine global and origin scoped tags while preserving order."""
-
-    combined: list[str] = []
-    seen: set[str] = set()
-    for tag_list in (global_tags or []), (origin_tags or []):
-        if not tag_list:
-            continue
-        for tag in tag_list:
-            if not tag:
-                continue
-            if tag in seen:
-                continue
-            seen.add(tag)
-            combined.append(tag)
-    return combined
-
-
-def _map_failure(error: ErrorClass | None, reason: str | None) -> FetchFailure | None:
-    """Translate :class:`CrawlerError` metadata into a fetch failure contract."""
-
-    if error is None:
-        return None
-    if error is ErrorClass.TIMEOUT:
-        return FetchFailure(reason=reason or "timeout", temporary=True)
-    if error is ErrorClass.TRANSIENT_NETWORK:
-        return FetchFailure(reason=reason or "network_error", temporary=True)
-    if error is ErrorClass.RATE_LIMIT:
-        return FetchFailure(reason=reason or "rate_limited", temporary=True)
-    return FetchFailure(reason=reason or error.value, temporary=False)
-
-
-def _map_fetch_error_response(result) -> tuple[int, str]:
-    """Return HTTP status code and error identifier for fetch failures."""
-
-    error = result.error
-    if error is None:
-        return status.HTTP_502_BAD_GATEWAY, "crawler_fetch_failed"
-
-    error_class = getattr(error, "error_class", None)
-    if error_class is ErrorClass.TIMEOUT:
-        return status.HTTP_504_GATEWAY_TIMEOUT, "crawler_fetch_timeout"
-    if error_class is ErrorClass.RATE_LIMIT:
-        return status.HTTP_429_TOO_MANY_REQUESTS, "crawler_fetch_rate_limited"
-    if error_class is ErrorClass.NOT_FOUND:
-        return status.HTTP_404_NOT_FOUND, "crawler_fetch_not_found"
-    if error_class is ErrorClass.GONE:
-        return status.HTTP_410_GONE, "crawler_fetch_gone"
-    if error_class is ErrorClass.POLICY_DENY:
-        return status.HTTP_403_FORBIDDEN, "crawler_fetch_policy_denied"
-    if error_class is ErrorClass.UPSTREAM_429:
-        return status.HTTP_429_TOO_MANY_REQUESTS, "crawler_fetch_upstream_429"
-    if error_class is ErrorClass.TRANSIENT_NETWORK:
-        return status.HTTP_503_SERVICE_UNAVAILABLE, "crawler_fetch_transient_error"
-    return status.HTTP_502_BAD_GATEWAY, "crawler_fetch_failed"
-
-
-def _write_snapshot(
-    *,
-    tenant: str,
-    case: str,
-    payload: bytes,
-) -> tuple[str, str]:
-    """Persist the crawler payload as HTML snapshot and return metadata."""
-
-    sha256 = hashlib.sha256(payload).hexdigest()
-    tenant_safe = object_store.sanitize_identifier(tenant)
-    case_safe = object_store.sanitize_identifier(case)
-    relative = "/".join((tenant_safe, case_safe, "crawler", f"{sha256}.html"))
-    object_store.write_bytes(relative, payload)
-    absolute = str(object_store.BASE_PATH / relative)
-    return absolute, sha256
 
 
 def _resolve_hard_delete_actor(
@@ -1667,132 +1520,6 @@ def _resolve_lifecycle_store() -> object | None:
     return getattr(documents_api, "DEFAULT_LIFECYCLE_STORE", None)
 
 
-def _resolve_document_uuid(identifier: object) -> uuid.UUID | None:
-    """Best-effort conversion mirroring :mod:`documents.api` behaviour."""
-
-    if isinstance(identifier, uuid.UUID):
-        return identifier
-    if identifier is None:
-        return None
-    try:
-        candidate = str(identifier).strip()
-    except Exception:  # pragma: no cover - defensive
-        candidate = str(identifier)
-    if not candidate:
-        return None
-    try:
-        return uuid.UUID(candidate)
-    except (TypeError, ValueError):
-        return uuid5(uuid.NAMESPACE_URL, candidate)
-
-
-def _load_baseline_context(
-    tenant_id: object,
-    workflow_id: object,
-    document_identifier: object,
-    repository: object | None,
-    lifecycle_store: object | None,
-) -> tuple[dict[str, object], str | None]:
-    """Fetch baseline metadata for the crawler graph state."""
-
-    baseline: dict[str, object] = {}
-    previous_status: str | None = None
-
-    tenant: str | None = None
-    if tenant_id is not None:
-        tenant_candidate = str(tenant_id).strip()
-        if tenant_candidate:
-            tenant = tenant_candidate
-    if not tenant:
-        return baseline, previous_status
-
-    document_uuid = _resolve_document_uuid(document_identifier)
-    if document_uuid is None:
-        return baseline, previous_status
-
-    workflow: str | None = None
-    if workflow_id is not None:
-        workflow_candidate = str(workflow_id).strip()
-        if workflow_candidate:
-            workflow = workflow_candidate
-
-    if repository is not None and hasattr(repository, "get"):
-        try:
-            existing = repository.get(  # type: ignore[attr-defined]
-                tenant,
-                document_uuid,
-                prefer_latest=True,
-                workflow_id=workflow,
-            )
-        except NotImplementedError:
-            existing = None
-        except Exception:  # pragma: no cover - best effort logging
-            logger.debug(
-                "crawler.baseline.repository_lookup_failed",
-                extra={"tenant_id": tenant, "document_id": str(document_identifier)},
-                exc_info=True,
-            )
-            existing = None
-
-        if existing is not None:
-            checksum = getattr(existing, "checksum", None)
-            if checksum:
-                checksum_str = str(checksum)
-                baseline.setdefault("checksum", checksum_str)
-                baseline.setdefault("content_hash", checksum_str)
-            ref = getattr(existing, "ref", None)
-            if ref is not None:
-                document_ref_id = getattr(ref, "document_id", None)
-                if document_ref_id is not None:
-                    baseline.setdefault("document_id", str(document_ref_id))
-                collection_id = getattr(ref, "collection_id", None)
-                if collection_id is not None:
-                    baseline.setdefault("collection_id", str(collection_id))
-                version = getattr(ref, "version", None)
-                if version:
-                    baseline.setdefault("version", version)
-            lifecycle_state = getattr(existing, "lifecycle_state", None)
-            if lifecycle_state:
-                lifecycle_text = str(lifecycle_state)
-                baseline.setdefault("lifecycle_state", lifecycle_text)
-                if previous_status is None:
-                    previous_status = lifecycle_text
-
-    if lifecycle_store is not None:
-        getter = getattr(lifecycle_store, "get_document_state", None)
-        if callable(getter):
-            try:
-                record = getter(  # type: ignore[misc]
-                    tenant_id=tenant,
-                    document_id=document_uuid,
-                    workflow_id=workflow,
-                )
-            except Exception:  # pragma: no cover - best effort logging
-                logger.debug(
-                    "crawler.baseline.lifecycle_lookup_failed",
-                    extra={
-                        "tenant_id": tenant,
-                        "document_id": str(document_identifier),
-                    },
-                    exc_info=True,
-                )
-                record = None
-
-            if record is not None:
-                state_value = getattr(record, "state", None)
-                if state_value:
-                    state_text = str(state_value)
-                    baseline.setdefault("lifecycle_state", state_text)
-                    previous_status = state_text
-                reason_value = getattr(record, "reason", None)
-                if reason_value:
-                    baseline.setdefault("previous_reason", str(reason_value))
-                events = getattr(record, "policy_events", None)
-                if events:
-                    baseline.setdefault("policy_events", tuple(events))
-
-    return baseline, previous_status
-
 
 def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
     """Return the payload projected onto the public RAG response contract."""
@@ -1874,6 +1601,7 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
         projected["diagnostics"] = diagnostics
 
     return projected
+
 
 
 def _build_crawler_state(
@@ -2222,6 +1950,7 @@ def _build_crawler_state(
         )
 
     return builds
+
 
 
 @require_POST
@@ -2593,8 +2322,37 @@ class CrawlerIngestionRunnerView(APIView):
         if request_model.collection_id:
             meta["collection_id"] = request_model.collection_id
 
+        workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
+        workflow_resolved = (
+            request_model.workflow_id or workflow_default or meta.get("tenant_id")
+        )
+        if not workflow_resolved:
+            raise ValueError("workflow_id could not be resolved for the crawler run")
+
         try:
-            state_builds = _build_crawler_state(meta, request_model)
+            repository = services._get_documents_repository()
+        except Exception:
+            repository = None
+        lifecycle_store = _resolve_lifecycle_store()
+
+        context = CrawlerRunContext(
+            meta=meta,
+            request=request_model,
+            workflow_id=str(workflow_resolved),
+            repository=repository,
+        )
+        fetcher_factory = lambda config: HttpFetcher(config)
+        guardrail_defaults = GuardrailLimits(
+            max_document_bytes=getattr(settings, "CRAWLER_MAX_DOCUMENT_BYTES", None)
+        )
+        try:
+            state_builds = build_crawler_state(
+                context,
+                fetcher_factory=fetcher_factory,
+                lifecycle_store=lifecycle_store,
+                object_store=object_store,
+                guardrail_limits=guardrail_defaults,
+            )
         except CrawlerRunError as exc:
             payload = {"detail": str(exc), "code": exc.code}
             payload.update(exc.details)

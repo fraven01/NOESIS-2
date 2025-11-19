@@ -79,16 +79,16 @@ from documents.contracts import (
 )
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
-from .case_events import emit_ingestion_case_event
-from .infra import object_store
-from .ingestion import partition_document_ids, run_ingestion
-from .ingestion_status import record_ingestion_run_queued
-from .ingestion_utils import make_fallback_external_id
-from .rag.ingestion_contracts import (
+from ..case_events import emit_ingestion_case_event
+from ..infra import object_store
+from ..ingestion import partition_document_ids, run_ingestion
+from ..ingestion_status import record_ingestion_run_queued
+from ..ingestion_utils import make_fallback_external_id
+from ..rag.ingestion_contracts import (
     map_ingestion_error_to_status,
     resolve_ingestion_profile as _base_resolve_ingestion_profile,
 )
-from .schemas import (
+from ..schemas import (
     InfoIntakeRequest,
     RagIngestionRunRequest,
     RagQueryRequest,
