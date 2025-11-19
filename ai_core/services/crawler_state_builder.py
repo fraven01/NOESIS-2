@@ -6,7 +6,7 @@ import base64
 import hashlib
 import uuid
 from datetime import timezone as datetime_timezone
-from typing import Callable, Mapping
+from typing import Callable
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4, uuid5
 
