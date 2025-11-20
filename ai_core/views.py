@@ -137,14 +137,7 @@ def assert_case_active(tenant: str, case_id: str) -> Response | None:
 
     from customers.tenant_context import TenantContext
 
-    tenant_obj = TenantContext.resolve(tenant)
-    if tenant_obj is None:
-        # Legacy fallback: try connection schema if explicit resolution failed
-        # This supports tests/callers that rely on the connection's tenant context
-        schema_name = getattr(connection, "schema_name", None)
-        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-        if schema_name and schema_name != public_schema:
-            tenant_obj = TenantContext.resolve(schema_name)
+    tenant_obj = TenantContext.resolve_identifier(tenant)
 
     if tenant_obj is None:
         return _error_response(
@@ -236,10 +229,8 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     """
     from customers.tenant_context import TenantContext
 
-    tenant = TenantContext.from_headers(request)
-    if tenant:
-        return tenant.schema_name
-    return None
+    tenant = TenantContext.from_request(request, require=False)
+    return tenant.schema_name if tenant else None
 
 
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1568,7 +1559,7 @@ class RagIngestionStatusView(APIView):
 
         from customers.tenant_context import TenantContext
 
-        tenant_obj = TenantContext.resolve(meta["tenant_id"])
+        tenant_obj = TenantContext.resolve_identifier(meta["tenant_id"])
         if tenant_obj is not None:
             case_obj = Case.objects.filter(
                 tenant=tenant_obj, external_id=meta["case_id"]

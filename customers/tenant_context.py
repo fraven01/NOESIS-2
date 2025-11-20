@@ -17,6 +17,10 @@ from customers.models import Tenant
 log = get_logger(__name__)
 
 
+class TenantRequiredError(RuntimeError):
+    """Raised when tenant resolution is required but unsuccessful."""
+
+
 class TenantContext:
     """Canonical helper for resolving tenant context/identity.
 
@@ -25,16 +29,17 @@ class TenantContext:
     with a fallback to numeric PKs only for legacy fixtures/internal tools.
     """
 
-    @staticmethod
-    def resolve(identifier: str | int | None) -> Tenant | None:
-        """Resolve a Tenant object from a string identifier (schema_name) or PK.
+    _CACHE_MISS = object()
 
-        Resolution order:
-        1. Lookup by schema_name (canonical string).
-        2. Lookup by PK (legacy fallback).
+    @staticmethod
+    def resolve_identifier(
+        identifier: str | int | None, *, allow_pk: bool = False
+    ) -> Tenant | None:
+        """Resolve a Tenant object from a schema identifier or optional PK.
 
         Args:
             identifier: The tenant identifier (schema string or numeric PK).
+            allow_pk: When ``True``, also attempt lookup by primary key.
 
         Returns:
             The Tenant object if found, else None.
@@ -42,25 +47,20 @@ class TenantContext:
         if identifier is None:
             return None
 
-        # Normalize identifier
         raw_value = str(identifier).strip()
         if not raw_value:
             return None
 
-        # 1. Try schema_name (Canonical)
         try:
             return Tenant.objects.get(schema_name=raw_value)
         except Tenant.DoesNotExist:
             pass
 
-        # 2. Try PK (Legacy Fallback)
-        # We only try this if the string looks like an integer to avoid
-        # unnecessary DB queries for obviously non-numeric schema names.
-        if raw_value.isdigit():
+        if allow_pk and raw_value.isdigit():
             try:
                 tenant = Tenant.objects.get(pk=raw_value)
                 log.warning(
-                    "tenant_resolution_legacy_pk_fallback",
+                    "tenant_resolution_pk_lookup",
                     extra={
                         "identifier": raw_value,
                         "tenant_schema": tenant.schema_name,
@@ -73,60 +73,71 @@ class TenantContext:
         return None
 
     @staticmethod
-    def from_headers(request: Any) -> Tenant | None:
-        """Resolve the tenant from HTTP request headers/metadata.
+    def from_request(
+        request: Any, *, allow_headers: bool = True, require: bool = True
+    ) -> Tenant | None:
+        """Resolve the tenant for the given request.
 
-        Prioritizes X-Tenant-Schema, then X-Tenant-ID.
-        Also checks django-tenants request.tenant and connection.schema_name.
+        Resolution order (first successful wins):
+        1) ``request.tenant`` (django-tenants middleware)
+        2) ``connection.schema_name`` when set to a non-public schema
+        3) Explicit headers (``X-Tenant-Schema`` then ``X-Tenant-ID``) when ``allow_headers``
 
-        Args:
-            request: The HTTP request object (or similar object with headers/META).
-
-        Returns:
-            The resolved Tenant object or None.
+        The resolved tenant is cached on ``request._tenant_context_cache`` to avoid
+        repeated lookups. When ``require`` is ``True`` and no tenant is found, a
+        ``TenantRequiredError`` is raised.
         """
-        # 1. Check explicit headers
-        # We prefer X-Tenant-Schema as the specific schema identifier,
-        # but X-Tenant-ID is often used as the logical ID (which should be the schema).
-        headers = getattr(request, "headers", {}) or {}
-        meta = getattr(request, "META", {}) or {}
 
-        # Helper to look in headers then META
-        def _get(header_key: str, meta_key: str) -> str | None:
-            val = headers.get(header_key)
-            if val is None:
-                val = meta.get(meta_key)
-            if isinstance(val, str) and val.strip():
-                return val.strip()
+        if request is None:
+            if require:
+                raise TenantRequiredError("Tenant could not be resolved from request")
             return None
 
-        # Try explicit schema header first
-        schema_header = _get(X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
-        if schema_header:
-            tenant = TenantContext.resolve(schema_header)
-            if tenant:
-                return tenant
+        cached = getattr(request, "_tenant_context_cache", TenantContext._CACHE_MISS)
+        if cached is not TenantContext._CACHE_MISS:
+            if cached is None and require:
+                raise TenantRequiredError("Tenant could not be resolved from request")
+            return cached
 
-        # Try generic tenant ID header
-        id_header = _get(X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
-        if id_header:
-            tenant = TenantContext.resolve(id_header)
-            if tenant:
-                return tenant
+        tenant: Tenant | None = None
 
-        # 2. Check django-tenants context
-        # If the request has already been processed by TenantMiddleware, it might have .tenant
         tenant_obj = getattr(request, "tenant", None)
         if isinstance(tenant_obj, Tenant):
-            return tenant_obj
+            tenant = tenant_obj
 
-        # 3. Check connection schema (last resort, context-bound)
-        schema_name = getattr(connection, "schema_name", None)
-        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-        if schema_name and schema_name != public_schema:
-            try:
-                return Tenant.objects.get(schema_name=schema_name)
-            except Tenant.DoesNotExist:
-                pass
+        if tenant is None:
+            schema_name = getattr(connection, "schema_name", None)
+            public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+            if schema_name and schema_name != public_schema:
+                try:
+                    tenant = Tenant.objects.get(schema_name=schema_name)
+                except Tenant.DoesNotExist:
+                    tenant = None
 
-        return None
+        if tenant is None and allow_headers:
+            headers = getattr(request, "headers", {}) or {}
+            meta = getattr(request, "META", {}) or {}
+
+            def _get(header_key: str, meta_key: str) -> str | None:
+                value = headers.get(header_key)
+                if value is None:
+                    value = meta.get(meta_key)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+                return None
+
+            schema_header = _get(X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
+            if schema_header:
+                tenant = TenantContext.resolve_identifier(schema_header)
+
+            if tenant is None:
+                id_header = _get(X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
+                if id_header:
+                    tenant = TenantContext.resolve_identifier(id_header)
+
+        setattr(request, "_tenant_context_cache", tenant)
+
+        if tenant is None and require:
+            raise TenantRequiredError("Tenant could not be resolved from request")
+
+        return tenant

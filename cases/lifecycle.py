@@ -46,7 +46,7 @@ def _normalise_mapping(candidate: Mapping[str, Any] | None) -> Mapping[str, Any]
 def _tenant_for_id(tenant_id: str | None) -> Tenant | None:
     from customers.tenant_context import TenantContext
 
-    return TenantContext.resolve(tenant_id)
+    return TenantContext.resolve_identifier(tenant_id)
 
 
 def _coerce_transitions(transitions: object) -> list[Mapping[str, Any]]:
