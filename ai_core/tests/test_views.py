@@ -8,6 +8,7 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from django.conf import settings
+from django.db import connection
 from django.test import RequestFactory
 from structlog.testing import capture_logs
 
@@ -201,6 +202,34 @@ def test_tenant_schema_header_match_allows_request(
     assert resp[X_CASE_ID_HEADER] == "c"
     assert resp.json()["tenant_id"] == "tenant-header"
     assert seen["tenant"] == "tenant-header"
+
+
+@pytest.mark.django_db
+def test_assert_case_active_rejects_connection_fallback(
+    monkeypatch, test_tenant_schema_name
+):
+    request = RequestFactory().post("/ai/intake/")
+    monkeypatch.setattr(connection, "schema_name", test_tenant_schema_name, raising=False)
+
+    error = views.assert_case_active(request, "case-without-header")
+
+    assert isinstance(error, Response)
+    assert error.status_code == status.HTTP_403_FORBIDDEN
+    assert error.data["code"] == "tenant_not_found"
+
+
+@pytest.mark.django_db
+def test_assert_case_active_rejects_mismatched_token_tenant(test_tenant_schema_name):
+    request = RequestFactory().post(
+        "/ai/intake/", HTTP_X_TENANT_ID=test_tenant_schema_name
+    )
+    request.auth = {"tenant_id": "other-tenant"}
+
+    error = views.assert_case_active(request, "case-token")
+
+    assert isinstance(error, Response)
+    assert error.status_code == status.HTTP_403_FORBIDDEN
+    assert error.data["code"] == "tenant_mismatch"
 
 
 @pytest.mark.django_db
