@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from types import SimpleNamespace
 from typing import Any
@@ -11,6 +12,8 @@ from structlog.contextvars import clear_contextvars, get_contextvars
 
 from ai_core.middleware import RequestContextMiddleware
 from common.constants import IDEMPOTENCY_KEY_HEADER
+from customers.models import Tenant
+from customers.tenant_context import TenantRequiredError
 
 
 @pytest.fixture(autouse=True)
@@ -41,11 +44,12 @@ def test_middleware_binds_headers_and_sets_response_metadata():
         HTTP_TRACEPARENT=traceparent,
         HTTP_X_TRACE_ID="trace-ignore",
         HTTP_X_CASE_ID="case-456",
-        HTTP_X_TENANT_ID="tenant-789",
+        HTTP_X_TENANT_ID="tenant-spoof",
         HTTP_X_KEY_ALIAS="alias-001",
         HTTP_X_FORWARDED_FOR="203.0.113.1, 10.0.0.1",
         HTTP_IDEMPOTENCY_KEY="idem-789",
     )
+    request.tenant = Tenant(schema_name="tenant-789", name="Tenant 789")
     request.resolver_match = SimpleNamespace(route="api:ping")
 
     captured: dict[str, str] = {}
@@ -82,6 +86,7 @@ def test_middleware_binds_headers_and_sets_response_metadata():
 def test_middleware_generates_trace_ids_when_headers_missing():
     factory = RequestFactory()
     request = _build_request(factory, "post", "/ai/intake/")
+    request.tenant = Tenant(schema_name="trace-tenant", name="Trace Tenant")
 
     captured: dict[str, str] = {}
 
@@ -96,18 +101,74 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert response.status_code == 201
     trace_id = response["X-Trace-Id"]
     assert re.fullmatch(r"[0-9a-f]{32}", trace_id)
+    assert response["X-Tenant-Id"] == "trace-tenant"
     assert "traceparent" not in response
     assert "X-Case-Id" not in response
-    assert "X-Tenant-Id" not in response
     assert "X-Key-Alias" not in response
 
     assert captured["trace.id"] == trace_id
     assert re.fullmatch(r"[0-9a-f]{16}", captured["span.id"])
+    assert captured["tenant.id"] == "trace-tenant"
     assert captured["http.method"] == "POST"
     assert captured["http.route"] == "/ai/intake/"
     assert captured["client.ip"] == "127.0.0.1"
     assert "case.id" not in captured
-    assert "tenant.id" not in captured
     assert "key.alias" not in captured
 
     assert get_contextvars() == {}
+
+def test_middleware_rejects_missing_tenant(monkeypatch):
+    monkeypatch.setattr(
+        "ai_core.middleware.context.TenantContext.from_request",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            TenantRequiredError("Tenant could not be resolved from request")
+        ),
+    )
+    factory = RequestFactory()
+    request = _build_request(
+        factory,
+        "get",
+        "/ai/ping/",
+        HTTP_X_TENANT_ID="spoof-only",
+    )
+
+    called = False
+
+    def _view(inner_request):
+        nonlocal called
+        called = True
+        return HttpResponse("ok")
+
+    middleware = RequestContextMiddleware(_view)
+    response = middleware(request)
+
+    assert response.status_code == 403
+    assert json.loads(response.content.decode()) == {
+        "detail": "Tenant could not be resolved from request"
+    }
+    assert called is False
+    assert get_contextvars() == {}
+
+
+def test_middleware_uses_resolved_tenant_over_header():
+    factory = RequestFactory()
+    request = _build_request(
+        factory,
+        "get",
+        "/ai/ping/",
+        HTTP_X_TENANT_ID="spoofed-tenant",
+    )
+    request.tenant = Tenant(schema_name="canonical-tenant", name="Canonical")
+
+    captured: dict[str, str] = {}
+
+    def _view(inner_request):
+        nonlocal captured
+        captured = get_contextvars()
+        return HttpResponse("ok")
+
+    middleware = RequestContextMiddleware(_view)
+    response = middleware(request)
+
+    assert response["X-Tenant-Id"] == "canonical-tenant"
+    assert captured["tenant.id"] == "canonical-tenant"
