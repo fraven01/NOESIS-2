@@ -4,11 +4,12 @@ import json
 import uuid
 from typing import Any, Mapping, MutableMapping
 
-from django.http import HttpRequest, HttpResponse
+from django.http import HttpRequest, HttpResponse, JsonResponse
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from ai_core.ids.contracts import normalize_trace_id
 from ai_core.infra.resp import apply_std_headers
+from customers.tenant_context import TenantContext, TenantRequiredError
 
 
 class RequestContextMiddleware:
@@ -29,13 +30,15 @@ class RequestContextMiddleware:
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
         clear_contextvars()
-        meta = self._gather_metadata(request)
-        bind_contextvars(**meta["log_context"])
-
         try:
+            meta = self._gather_metadata(request)
+            bind_contextvars(**meta["log_context"])
+
             response = self.get_response(request)
             response = apply_std_headers(response, meta["response_meta"])
             return response
+        except TenantRequiredError as exc:
+            return self._tenant_required_response(exc)
         finally:
             clear_contextvars()
 
@@ -44,7 +47,10 @@ class RequestContextMiddleware:
         trace_id, span_id = self._resolve_trace_and_span(request)
         traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
 
-        tenant_id = self._normalize_header(headers.get(self.TENANT_ID_HEADER))
+        tenant = TenantContext.from_request(
+            request, allow_headers=False, require=True
+        )
+        tenant_id = getattr(tenant, "schema_name", None)
         case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
         idempotency_key = self._normalize_header(
@@ -90,6 +96,10 @@ class RequestContextMiddleware:
             response_meta["traceparent"] = traceparent
 
         return {"log_context": log_context, "response_meta": response_meta}
+
+    @staticmethod
+    def _tenant_required_response(exc: TenantRequiredError) -> HttpResponse:
+        return JsonResponse({"detail": str(exc)}, status=403)
 
     def _resolve_trace_and_span(self, request: HttpRequest) -> tuple[str, str | None]:
         """Resolve trace and span IDs from headers, query params, and body."""
