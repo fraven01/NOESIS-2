@@ -8,6 +8,7 @@ from django.views.decorators.http import require_http_methods
 from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
+from customers.tenant_context import TenantContext, TenantRequiredError
 from .utils import (
     detect_content_type,
     sanitize_filename,
@@ -26,21 +27,20 @@ logger = get_logger(__name__)
 
 
 def _tenant_context_from_request(request) -> tuple[str, str]:
-    """Extract tenant context (pattern from theme/views.py)."""
-    tenant = getattr(request, "tenant", None)
-    tenant_id: str | None = None
-    tenant_schema: str | None = None
+    """Extract tenant context via canonical TenantContext helper."""
 
-    if tenant is not None:
-        tenant_id = getattr(tenant, "tenant_id", None)
-        tenant_schema = getattr(tenant, "schema_name", None)
+    tenant_obj = TenantContext.from_request(
+        request, allow_headers=False, require=True
+    )
+    tenant_schema = getattr(tenant_obj, "schema_name", None)
+    if tenant_schema is None:
+        tenant_schema = getattr(tenant_obj, "tenant_id", None)
+    tenant_id = getattr(tenant_obj, "tenant_id", None) or tenant_schema
 
-    if not tenant_id:
-        tenant_id = "dev"
-    if not tenant_schema:
-        tenant_schema = "dev"
+    if tenant_schema is None or tenant_id is None:
+        raise TenantRequiredError("Tenant could not be resolved from request")
 
-    return tenant_id, tenant_schema
+    return str(tenant_id), str(tenant_schema)
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -62,7 +62,10 @@ def document_download(request, document_id: str):
         return error(400, "InvalidDocumentId", "document_id must be a valid UUID")
 
     start_time = time.time()
-    tenant_id, tenant_schema = _tenant_context_from_request(request)
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
 
     logger.info(
         "documents.download.started",
