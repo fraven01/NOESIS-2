@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from django.conf import settings
+from django.db import connection
 from django.http import HttpResponse
 from django.test import RequestFactory
 from structlog.contextvars import clear_contextvars, get_contextvars
@@ -145,6 +147,36 @@ def test_middleware_rejects_missing_tenant(monkeypatch):
     assert response.status_code == 403
     assert json.loads(response.content.decode()) == {
         "detail": "Tenant could not be resolved from request"
+    }
+    assert called is False
+    assert get_contextvars() == {}
+
+
+def test_middleware_rejects_header_only_when_headers_disallowed(monkeypatch):
+    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+    monkeypatch.setattr(connection, "schema_name", public_schema, raising=False)
+
+    factory = RequestFactory()
+    request = _build_request(
+        factory,
+        "get",
+        "/ai/ping/",
+        HTTP_X_TENANT_ID="header-only",
+    )
+
+    called = False
+
+    def _view(inner_request):
+        nonlocal called
+        called = True
+        return HttpResponse("ok")
+
+    middleware = RequestContextMiddleware(_view)
+    response = middleware(request)
+
+    assert response.status_code == 403
+    assert json.loads(response.content.decode()) == {
+        "detail": "Tenant could not be resolved from request",
     }
     assert called is False
     assert get_contextvars() == {}
