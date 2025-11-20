@@ -132,18 +132,63 @@ logger.info(
 )
 
 
-def assert_case_active(tenant: str, case_id: str) -> Response | None:
+def _token_tenant_identifier(request: object) -> str | None:
+    """Return the tenant identifier bound to an authenticated token if present."""
+
+    auth = getattr(request, "auth", None)
+    if isinstance(auth, Mapping):
+        for key in ("tenant_id", "tenant", "tenant_schema"):
+            value = auth.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for attr in ("tenant_id", "tenant", "tenant_schema"):
+        value = getattr(auth, attr, None)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def assert_case_active(
+    request: HttpRequest | Request,
+    case_id: str,
+    *,
+    tenant_identifier: str | None = None,
+) -> Response | None:
     """Ensure the referenced case exists and can accept new work."""
 
-    from customers.tenant_context import TenantContext
+    from customers.tenant_context import TenantContext, TenantRequiredError
 
-    tenant_obj = TenantContext.resolve_identifier(tenant)
+    try:
+        tenant_obj = (
+            TenantContext.resolve_identifier(tenant_identifier)
+            if tenant_identifier is not None
+            else TenantContext.from_request(
+                request,
+                allow_headers=True,
+                require=True,
+                use_connection_schema=False,
+            )
+        )
+    except TenantRequiredError as exc:
+        return _error_response(
+            str(exc),
+            "tenant_not_found",
+            status.HTTP_403_FORBIDDEN,
+        )
 
     if tenant_obj is None:
         return _error_response(
             "Tenant context for this request could not be resolved.",
             "tenant_not_found",
             status.HTTP_404_NOT_FOUND,
+        )
+
+    token_tenant = _token_tenant_identifier(request)
+    if token_tenant and token_tenant != getattr(tenant_obj, "schema_name", None):
+        return _error_response(
+            "Token tenant does not match the requested tenant context.",
+            "tenant_mismatch",
+            status.HTTP_403_FORBIDDEN,
         )
 
     normalized_case_id = (case_id or "").strip()
@@ -229,7 +274,9 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     """
     from customers.tenant_context import TenantContext
 
-    tenant = TenantContext.from_request(request, require=False)
+    tenant = TenantContext.from_request(
+        request, require=False, use_connection_schema=False
+    )
     return tenant.schema_name if tenant else None
 
 
@@ -451,7 +498,7 @@ def _prepare_request(request: Request):
             collection_id = candidate
 
     trace_id = uuid4().hex
-    case_error = assert_case_active(tenant_id, case_id)
+    case_error = assert_case_active(request, case_id, tenant_identifier=tenant_id)
     if case_error is not None:
         return None, case_error
     meta = {
