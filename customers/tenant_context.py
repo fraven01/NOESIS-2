@@ -79,14 +79,16 @@ class TenantContext:
         allow_headers: bool = True,
         require: bool = True,
         use_connection_schema: bool = True,
+        allow_pk: bool = False,
     ) -> Tenant | None:
         """Resolve the tenant for the given request.
 
         Resolution order (first successful wins):
         1) ``request.tenant`` (django-tenants middleware)
         2) ``connection.schema_name`` when ``use_connection_schema`` is ``True`` and set
-           to a non-public schema (resolved via ``TenantContext.resolve_identifier(...,
-           allow_pk=True)`` to support CLI/fixtures)
+           to a non-public schema (resolved via ``TenantContext.resolve_identifier``). PK
+           resolution is only attempted when ``allow_pk`` is explicitly set to ``True``
+           to support CLI/fixtures.
         3) Explicit headers (``X-Tenant-Schema`` then ``X-Tenant-ID``) when ``allow_headers``
 
         The resolved tenant is cached on ``request._tenant_context_cache`` to avoid
@@ -116,7 +118,7 @@ class TenantContext:
             public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
             if schema_name and schema_name != public_schema:
                 tenant = TenantContext.resolve_identifier(
-                    schema_name, allow_pk=True
+                    schema_name, allow_pk=allow_pk
                 )
 
         if tenant is None and allow_headers:
