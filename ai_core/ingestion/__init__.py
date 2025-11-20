@@ -26,19 +26,19 @@ from documents import (
     ParsedTextBlock,
 )
 
-from . import tasks as pipe
-from .case_events import emit_ingestion_case_event
-from .infra import object_store
-from .ingestion_utils import make_fallback_external_id
-from .ingestion_status import (
+from .. import tasks as pipe
+from ..case_events import emit_ingestion_case_event
+from ..infra import object_store
+from ..ingestion_utils import make_fallback_external_id
+from ..ingestion_status import (
     mark_ingestion_run_completed,
     mark_ingestion_run_running,
 )
 from ai_core.tools import InputError
 from cases.models import Case
 
-from .rag.ingestion_contracts import resolve_ingestion_profile
-from .rag.vector_schema import ensure_vector_space_schema
+from ..rag.ingestion_contracts import resolve_ingestion_profile
+from ..rag.vector_schema import ensure_vector_space_schema
 
 log = get_logger(__name__)
 
