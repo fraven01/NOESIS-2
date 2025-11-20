@@ -22,7 +22,7 @@ log = get_logger(__name__)
 def _resolve_tenant(tenant_identifier: str) -> Optional[Tenant]:
     from customers.tenant_context import TenantContext
 
-    return TenantContext.resolve(tenant_identifier)
+    return TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
 
 
 def _load_ingestion_run(tenant_id: str, case_id: str) -> Optional[DocumentIngestionRun]:

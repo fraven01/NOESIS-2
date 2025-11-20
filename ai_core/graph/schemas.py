@@ -78,7 +78,7 @@ def normalize_meta(request: Any) -> dict:
     if not tenant_schema:
         from customers.tenant_context import TenantContext
 
-        tenant = TenantContext.from_headers(request)
+        tenant = TenantContext.from_request(request, require=False)
         if tenant:
             tenant_schema = tenant.schema_name
 

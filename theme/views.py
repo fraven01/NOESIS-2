@@ -53,7 +53,7 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
     tenant_id: str | None = None
     tenant_schema: str | None = None
 
-    tenant_obj = getattr(request, "tenant", None)
+    tenant_obj = TenantContext.from_request(request, require=False)
     if tenant_obj is not None:
         schema_name = getattr(tenant_obj, "schema_name", None)
         if isinstance(schema_name, str) and schema_name:
@@ -70,18 +70,6 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
             tenant_schema = tenant_schema_override
             if tenant_id is None:
                 tenant_id = tenant_schema_override
-
-    if tenant_id is None or tenant_schema is None:
-        tenant = TenantContext.from_headers(request)
-        if tenant:
-            if tenant_schema is None:
-                tenant_schema = tenant.schema_name
-            if tenant_id is None:
-                candidate_id = getattr(tenant, "tenant_id", None)
-                if isinstance(candidate_id, str) and candidate_id:
-                    tenant_id = candidate_id
-                elif isinstance(tenant.schema_name, str) and tenant.schema_name:
-                    tenant_id = tenant.schema_name
 
     if tenant_schema is None:
         tenant_schema = default_schema
@@ -374,7 +362,7 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
             django_request._body = body
 
             # Attach tenant if available
-            tenant = TenantContext.resolve(tenant_id)
+            tenant = TenantContext.resolve_identifier(tenant_id)
             if tenant:
                 django_request.tenant = tenant
             else:

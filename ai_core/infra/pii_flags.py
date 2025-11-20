@@ -239,7 +239,7 @@ def _load_tenant_pii_config_cached(cache_key: str) -> dict[str, object] | None:
     """
     from customers.tenant_context import TenantContext
 
-    tenant = TenantContext.resolve(cache_key)
+    tenant = TenantContext.resolve_identifier(cache_key, allow_pk=True)
     if tenant is None:
         return None
 
