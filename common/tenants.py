@@ -15,9 +15,11 @@ def get_current_tenant():
 def _is_valid_tenant_request(request):
     """Return the resolved tenant and optional error when validation fails."""
 
-    tenant = TenantContext.from_request(request, require=False)
+    tenant = TenantContext.from_request(
+        request, allow_headers=False, require=False
+    )
     if tenant is None:
-        return None, "Tenant context could not be resolved"
+        return None, "Tenant context is not active for this request"
 
     tenant_schema = getattr(request, "tenant_schema", None)
     if not tenant_schema:
