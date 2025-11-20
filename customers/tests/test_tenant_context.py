@@ -64,7 +64,38 @@ def test_from_request_resolves_connection_schema_pk(monkeypatch):
 
     monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
 
-    resolved = TenantContext.from_request(request)
+    with pytest.raises(TenantRequiredError):
+        TenantContext.from_request(request)
+
+    resolved_optional = TenantContext.from_request(request, require=False)
+
+    assert resolved_optional is None
+
+
+@pytest.mark.django_db
+def test_from_request_resolves_connection_schema_pk_when_allowed(monkeypatch):
+    tenant = TenantFactory()
+    request = RequestFactory().get("/")
+
+    monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
+
+    resolved = TenantContext.from_request(request, allow_pk=True)
+
+    assert resolved == tenant
+
+
+@pytest.mark.django_db
+def test_from_request_resolves_connection_schema_pk_in_cli_context(monkeypatch):
+    tenant = TenantFactory()
+    from types import SimpleNamespace
+
+    request = SimpleNamespace()
+
+    monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
+
+    resolved = TenantContext.from_request(
+        request, allow_headers=False, allow_pk=True
+    )
 
     assert resolved == tenant
 
