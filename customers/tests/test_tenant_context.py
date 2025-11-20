@@ -58,6 +58,18 @@ def test_from_request_resolves_connection_schema(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_from_request_resolves_connection_schema_pk(monkeypatch):
+    tenant = TenantFactory()
+    request = RequestFactory().get("/")
+
+    monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
+
+    resolved = TenantContext.from_request(request)
+
+    assert resolved == tenant
+
+
+@pytest.mark.django_db
 def test_from_request_resolves_headers_when_allowed(monkeypatch):
     tenant = TenantFactory(schema_name="header-tenant")
     request = RequestFactory().get("/", HTTP_X_TENANT_ID=tenant.schema_name)

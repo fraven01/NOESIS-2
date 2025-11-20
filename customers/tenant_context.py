@@ -80,7 +80,9 @@ class TenantContext:
 
         Resolution order (first successful wins):
         1) ``request.tenant`` (django-tenants middleware)
-        2) ``connection.schema_name`` when set to a non-public schema
+        2) ``connection.schema_name`` when set to a non-public schema (resolved
+           via ``TenantContext.resolve_identifier(..., allow_pk=True)`` to
+           support CLI/fixtures)
         3) Explicit headers (``X-Tenant-Schema`` then ``X-Tenant-ID``) when ``allow_headers``
 
         The resolved tenant is cached on ``request._tenant_context_cache`` to avoid
@@ -109,10 +111,9 @@ class TenantContext:
             schema_name = getattr(connection, "schema_name", None)
             public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
             if schema_name and schema_name != public_schema:
-                try:
-                    tenant = Tenant.objects.get(schema_name=schema_name)
-                except Tenant.DoesNotExist:
-                    tenant = None
+                tenant = TenantContext.resolve_identifier(
+                    schema_name, allow_pk=True
+                )
 
         if tenant is None and allow_headers:
             headers = getattr(request, "headers", {}) or {}

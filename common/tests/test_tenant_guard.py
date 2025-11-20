@@ -15,6 +15,7 @@ def test_demo_view_requires_tenant_header(client):
     with schema_context(tenant.schema_name):
         response = client.get("/tenant-demo/")
     assert response.status_code == 403
+    assert response.content.decode() == "Tenant schema header missing"
 
 
 def test_demo_view_mro_places_tenant_mixin_before_apiview():
@@ -30,6 +31,18 @@ def test_demo_view_with_valid_header(client):
         response = client.get("/tenant-demo/", HTTP_X_TENANT_SCHEMA=tenant.schema_name)
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.django_db
+def test_demo_view_with_mismatched_header(client):
+    tenant = TenantFactory(schema_name="delta")
+    ensure_tenant_domain(tenant, domain="testserver")
+    with schema_context(tenant.schema_name):
+        response = client.get(
+            "/tenant-demo/", HTTP_X_TENANT_SCHEMA="unexpected"
+        )
+    assert response.status_code == 403
+    assert response.content.decode() == "Tenant schema does not match resolved tenant"
 
 
 @pytest.mark.django_db
