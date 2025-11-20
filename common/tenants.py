@@ -3,24 +3,30 @@ from functools import wraps
 from django.db import connection
 from django.http import HttpResponseForbidden
 
-from customers.models import Tenant
+from customers.tenant_context import TenantContext
 
 
 def get_current_tenant():
     """Return the tenant for the current connection's schema."""
-    schema = connection.schema_name
-    try:
-        return Tenant.objects.get(schema_name=schema)
-    except Tenant.DoesNotExist:
-        return None
+    schema = getattr(connection, "schema_name", None)
+    return TenantContext.resolve_identifier(schema, allow_pk=True)
 
 
 def _is_valid_tenant_request(request):
-    """Return whether the request targets the active tenant schema."""
-    tenant = get_current_tenant()
-    return bool(
-        tenant and getattr(request, "tenant_schema", None) == tenant.schema_name
-    )
+    """Return the resolved tenant and optional error when validation fails."""
+
+    tenant = TenantContext.from_request(request, require=False)
+    if tenant is None:
+        return None, "Tenant context could not be resolved"
+
+    tenant_schema = getattr(request, "tenant_schema", None)
+    if not tenant_schema:
+        return None, "Tenant schema header missing"
+
+    if tenant_schema != tenant.schema_name:
+        return None, "Tenant schema does not match resolved tenant"
+
+    return tenant, None
 
 
 def tenant_schema_required(view_func):
@@ -28,8 +34,9 @@ def tenant_schema_required(view_func):
 
     @wraps(view_func)
     def _wrapped(request, *args, **kwargs):
-        if not _is_valid_tenant_request(request):
-            return HttpResponseForbidden("Invalid tenant schema")
+        tenant, error = _is_valid_tenant_request(request)
+        if tenant is None:
+            return HttpResponseForbidden(error)
         return view_func(request, *args, **kwargs)
 
     return _wrapped
@@ -39,6 +46,7 @@ class TenantSchemaRequiredMixin:
     """Mixin validating the active tenant schema for class-based views."""
 
     def dispatch(self, request, *args, **kwargs):
-        if not _is_valid_tenant_request(request):
-            return HttpResponseForbidden("Invalid tenant schema")
+        tenant, error = _is_valid_tenant_request(request)
+        if tenant is None:
+            return HttpResponseForbidden(error)
         return super().dispatch(request, *args, **kwargs)
