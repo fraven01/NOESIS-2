@@ -1554,8 +1554,8 @@ class RagIngestionStatusView(APIView):
                 "No ingestion runs recorded for the current tenant/case.",
                 "ingestion_status_not_found",
                 status.HTTP_404_NOT_FOUND,
-        )
-        return apply_std_headers(response, meta)
+            )
+            return apply_std_headers(response, meta)
 
         from customers.tenant_context import TenantContext
 
