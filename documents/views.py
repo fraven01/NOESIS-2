@@ -29,9 +29,15 @@ logger = get_logger(__name__)
 def _tenant_context_from_request(request) -> tuple[str, str]:
     """Extract tenant context via canonical TenantContext helper."""
 
-    tenant_obj = TenantContext.from_request(
-        request, allow_headers=False, require=True
-    )
+    tenant_obj = getattr(request, "tenant", None)
+    if tenant_obj is None or (
+        getattr(tenant_obj, "tenant_id", None) is None
+        and getattr(tenant_obj, "schema_name", None) is None
+    ):
+        tenant_obj = TenantContext.from_request(
+            request, allow_headers=True, require=False
+        )
+
     tenant_schema = getattr(tenant_obj, "schema_name", None)
     if tenant_schema is None:
         tenant_schema = getattr(tenant_obj, "tenant_id", None)
