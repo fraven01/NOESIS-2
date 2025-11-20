@@ -8,7 +8,6 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from django.conf import settings
-from django.core.exceptions import ValidationError
 
 _MASKING_DISABLED_STATE: Mapping[str, object] = MappingProxyType(
     {
@@ -238,27 +237,9 @@ def _load_tenant_pii_config_cached(cache_key: str) -> dict[str, object] | None:
     The preferred lookup key is the tenant primary key.  For backwards compatibility
     we also accept the schema name which is unique per tenant.
     """
+    from customers.tenant_context import TenantContext
 
-    from customers.models import Tenant
-
-    tenant = None
-    try:
-        tenant_pk = Tenant._meta.pk.to_python(cache_key)
-    except (TypeError, ValueError, ValidationError):
-        tenant_pk = None
-
-    if tenant_pk is not None:
-        try:
-            tenant = Tenant.objects.get(pk=tenant_pk)
-        except Tenant.DoesNotExist:
-            tenant = None
-
-    if tenant is None and isinstance(cache_key, str):
-        try:
-            tenant = Tenant.objects.get(schema_name=cache_key)
-        except Tenant.DoesNotExist:
-            return None
-
+    tenant = TenantContext.resolve(cache_key)
     if tenant is None:
         return None
 

@@ -12,7 +12,7 @@ from importlib import import_module
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import OperationalError, ProgrammingError, connection
+from django.db import connection, OperationalError, ProgrammingError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, JsonResponse
@@ -101,7 +101,6 @@ from .views_response_utils import apply_response_headers
 
 from cases.models import Case
 from cases.services import get_or_create_case_for
-from customers.models import Tenant
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
@@ -133,36 +132,20 @@ logger.info(
 )
 
 
-def _resolve_case_tenant(tenant_identifier: str) -> Tenant | None:
-    normalized_identifier = (tenant_identifier or "").strip()
-    candidate: Tenant | None = None
-    if normalized_identifier:
-        try:
-            candidate = Tenant.objects.get(pk=normalized_identifier)
-        except (Tenant.DoesNotExist, ValueError):
-            candidate = None
-        if candidate is None:
-            try:
-                candidate = Tenant.objects.get(schema_name=normalized_identifier)
-            except Tenant.DoesNotExist:
-                candidate = None
-    if candidate is not None:
-        return candidate
-
-    schema_name = getattr(connection, "schema_name", None)
-    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-    if schema_name and schema_name != public_schema:
-        try:
-            return Tenant.objects.get(schema_name=schema_name)
-        except Tenant.DoesNotExist:
-            return None
-    return None
-
-
 def assert_case_active(tenant: str, case_id: str) -> Response | None:
     """Ensure the referenced case exists and can accept new work."""
 
-    tenant_obj = _resolve_case_tenant(tenant)
+    from customers.tenant_context import TenantContext
+
+    tenant_obj = TenantContext.resolve(tenant)
+    if tenant_obj is None:
+        # Legacy fallback: try connection schema if explicit resolution failed
+        # This supports tests/callers that rely on the connection's tenant context
+        schema_name = getattr(connection, "schema_name", None)
+        public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+        if schema_name and schema_name != public_schema:
+            tenant_obj = TenantContext.resolve(schema_name)
+
     if tenant_obj is None:
         return _error_response(
             "Tenant context for this request could not be resolved.",
@@ -251,32 +234,12 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     2) Connection schema (django-tenants current schema)
     3) Explicit header-backed attribute populated by TenantSchemaMiddleware
     """
+    from customers.tenant_context import TenantContext
 
-    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
-
-    def _normalise(schema: object | None) -> str | None:
-        if schema is None:
-            return None
-        if not isinstance(schema, str):
-            schema = str(schema)
-        candidate = schema.strip()
-        if not candidate or candidate == public_schema:
-            return None
-        return candidate
-
-    # 1) Tenant object from django-tenants (domain-based routing)
-    tenant_obj = getattr(request, "tenant", None)
-    resolved = _normalise(getattr(tenant_obj, "schema_name", None))
-    if resolved:
-        return resolved
-
-    # 2) Fallback: current connection schema
-    resolved = _normalise(getattr(connection, "schema_name", None))
-    if resolved:
-        return resolved
-
-    # 3) Explicit header provided by TenantSchemaMiddleware
-    return _normalise(getattr(request, "tenant_schema", None))
+    tenant = TenantContext.from_headers(request)
+    if tenant:
+        return tenant.schema_name
+    return None
 
 
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -1603,12 +1566,20 @@ class RagIngestionStatusView(APIView):
             )
             return apply_std_headers(response, meta)
 
-        tenant_obj = _resolve_case_tenant(meta["tenant_id"])
+        from customers.tenant_context import TenantContext
+
+        tenant_obj = TenantContext.resolve(meta["tenant_id"])
         if tenant_obj is not None:
             case_obj = Case.objects.filter(
                 tenant=tenant_obj, external_id=meta["case_id"]
             ).first()
             if case_obj is not None:
+                print(
+                    f"DEBUG_VIEW: Found case {case_obj.external_id} for tenant {tenant_obj.schema_name}"
+                )
+                print(
+                    f"DEBUG_VIEW: Case phase: '{case_obj.phase}', status: '{case_obj.status}'"
+                )
                 response_payload["case_status"] = case_obj.status
                 if case_obj.phase:
                     response_payload["case_phase"] = case_obj.phase

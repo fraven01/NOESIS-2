@@ -46,21 +46,46 @@ def home(request):
 
 def _tenant_context_from_request(request) -> tuple[str, str]:
     """Return the tenant identifier and schema for the current request."""
+    from customers.tenant_context import TenantContext
 
-    tenant = getattr(request, "tenant", None)
     default_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
 
     tenant_id: str | None = None
     tenant_schema: str | None = None
 
-    if tenant is not None:
-        tenant_id = getattr(tenant, "tenant_id", None)
-        tenant_schema = getattr(tenant, "schema_name", None)
+    tenant_obj = getattr(request, "tenant", None)
+    if tenant_obj is not None:
+        schema_name = getattr(tenant_obj, "schema_name", None)
+        if isinstance(schema_name, str) and schema_name:
+            tenant_schema = schema_name
+        tenant_attr_id = getattr(tenant_obj, "tenant_id", None)
+        if isinstance(tenant_attr_id, str) and tenant_attr_id:
+            tenant_id = tenant_attr_id
+        elif tenant_id is None and isinstance(schema_name, str) and schema_name:
+            tenant_id = schema_name
 
-    if not tenant_schema:
+    if tenant_schema is None:
+        tenant_schema_override = getattr(request, "tenant_schema", None)
+        if isinstance(tenant_schema_override, str) and tenant_schema_override:
+            tenant_schema = tenant_schema_override
+            if tenant_id is None:
+                tenant_id = tenant_schema_override
+
+    if tenant_id is None or tenant_schema is None:
+        tenant = TenantContext.from_headers(request)
+        if tenant:
+            if tenant_schema is None:
+                tenant_schema = tenant.schema_name
+            if tenant_id is None:
+                candidate_id = getattr(tenant, "tenant_id", None)
+                if isinstance(candidate_id, str) and candidate_id:
+                    tenant_id = candidate_id
+                elif isinstance(tenant.schema_name, str) and tenant.schema_name:
+                    tenant_id = tenant.schema_name
+
+    if tenant_schema is None:
         tenant_schema = default_schema
-
-    if not tenant_id:
+    if tenant_id is None:
         tenant_id = tenant_schema
 
     return tenant_id, tenant_schema
@@ -316,7 +341,8 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
         """Trigger ingestion for the given URL."""
         from ai_core.views import crawler_runner
         from django.http import HttpRequest
-        from customers.models import Tenant
+
+        from customers.tenant_context import TenantContext
 
         tenant_id = context.get("tenant_id", "dev")
         trace_id = context.get("trace_id", "")
@@ -348,18 +374,11 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
             django_request._body = body
 
             # Attach tenant if available
-            try:
-                # tenant_id is actually the schema_name (e.g., 'dev')
-                tenant = Tenant.objects.get(schema_name=tenant_id)
+            tenant = TenantContext.resolve(tenant_id)
+            if tenant:
                 django_request.tenant = tenant
-            except Tenant.DoesNotExist:
+            else:
                 logger.warning("crawler.adapter.tenant_not_found", tenant_id=tenant_id)
-            except Exception as exc:
-                logger.warning(
-                    "crawler.adapter.tenant_lookup_failed",
-                    tenant_id=tenant_id,
-                    error=str(exc),
-                )
 
             # Call crawler_runner directly with the constructed HttpRequest
             response = crawler_runner(django_request)

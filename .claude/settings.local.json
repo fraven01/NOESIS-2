@@ -17,7 +17,8 @@
       "Bash(Select-Object -First 200)",
       "Bash(timeout 180 npm run test:py)",
       "Bash(python debug_serialization.py:*)",
-      "Bash(npm run lint:fix:*)"
+      "Bash(npm run lint:fix:*)",
+      "Bash(python3 -c:*)"
     ],
     "deny": [],
     "ask": []

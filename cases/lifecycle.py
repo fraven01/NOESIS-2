@@ -44,16 +44,9 @@ def _normalise_mapping(candidate: Mapping[str, Any] | None) -> Mapping[str, Any]
 
 
 def _tenant_for_id(tenant_id: str | None) -> Tenant | None:
-    if not tenant_id:
-        return None
-    try:
-        return Tenant.objects.get(pk=tenant_id)
-    except Tenant.DoesNotExist:
-        pass
-    try:
-        return Tenant.objects.get(schema_name=tenant_id)
-    except Tenant.DoesNotExist:
-        return None
+    from customers.tenant_context import TenantContext
+
+    return TenantContext.resolve(tenant_id)
 
 
 def _coerce_transitions(transitions: object) -> list[Mapping[str, Any]]:

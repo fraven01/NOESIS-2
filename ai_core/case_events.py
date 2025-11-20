@@ -20,17 +20,9 @@ log = get_logger(__name__)
 
 
 def _resolve_tenant(tenant_identifier: str) -> Optional[Tenant]:
-    candidate = (tenant_identifier or "").strip()
-    if not candidate:
-        return None
-    try:
-        return Tenant.objects.get(pk=candidate)
-    except (Tenant.DoesNotExist, ValueError):
-        pass
-    try:
-        return Tenant.objects.get(schema_name=candidate)
-    except Tenant.DoesNotExist:
-        return None
+    from customers.tenant_context import TenantContext
+
+    return TenantContext.resolve(tenant_identifier)
 
 
 def _load_ingestion_run(tenant_id: str, case_id: str) -> Optional[DocumentIngestionRun]:

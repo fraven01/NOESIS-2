@@ -1,0 +1,116 @@
+
+> noesis-2@1.0.0 win:dev:test
+> docker compose -f docker-compose.dev.yml run --rm -e AI_CORE_TEST_DATABASE_URL=postgresql://noesis2:***@db:5432/noesis2_test -e RAG_DATABASE_URL=postgresql://noesis2:***@db:5432/noesis2_test web python -m pytest -q -rs -vv ai_core/tests/test_views_min.py
+
+ Container noesis2_db  Running
+ Container noesis2_redis  Running
+ Container litellm  Running
+ Container noesis2_toxiproxy  Running
+ Container noesis2_db  Waiting
+ Container noesis2_db  Healthy
+============================= test session starts ==============================
+platform linux -- Python 3.12.12, pytest-8.4.2, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+django: version: 5.2.6, settings: noesis2.settings.development (from env)
+rootdir: /app
+configfile: pytest.ini
+plugins: cov-7.0.0, xdist-3.8.0, anyio-4.11.0, Faker-37.8.0, django-4.11.1
+collecting ... collected 4 items
+
+ai_core/tests/test_views_min.py::test_ping_ok PASSED                     [ 25%]
+ai_core/tests/test_views_min.py::test_ping_missing_case FAILED           [ 50%]
+ai_core/tests/test_views_min.py::test_rag_query_missing_headers PASSED   [ 75%]
+ai_core/tests/test_views_min.py::test_ingestion_status_includes_case_details FAILED [100%]
+
+=================================== FAILURES ===================================
+____________________________ test_ping_missing_case ____________________________
+
+client = <django.test.client.Client object at 0x795d72d254f0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x795d7321b230>
+settings = <pytest_django.fixtures.SettingsWrapper object at 0x795d72cbc710>
+
+    @pytest.mark.django_db
+    def test_ping_missing_case(client, monkeypatch, settings):
+        monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+        settings.AUTO_CREATE_CASES = False
+    
+        # Create the tenant so resolution succeeds, allowing us to test case lookup failure
+>       tenant = Tenant.objects.create(schema_name="tenant-x", name="Tenant X")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ai_core/tests/test_views_min.py:32: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/site-packages/django/db/models/manager.py:87: in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/django/db/models/query.py:663: in create
+    obj.save(force_insert=True, using=self.db)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Tenant: tenant-x>, verbosity = 1, args = ()
+kwargs = {'force_insert': True, 'using': 'default'}
+connection = <DatabaseWrapper vendor='postgresql' alias='default'>
+is_new = True, has_schema = True
+
+    def save(self, verbosity=1, *args, **kwargs):
+        connection = connections[get_tenant_database_alias()]
+        is_new = self._state.adding
+        has_schema = hasattr(connection, 'schema_name')
+        if has_schema and is_new and connection.schema_name != get_public_schema_name():
+>           raise Exception("Can't create tenant outside the public schema. "
+E           Exception: Can't create tenant outside the public schema. Current schema is autotest.
+
+/usr/local/lib/python3.12/site-packages/django_tenants/models.py:107: Exception
+_________________ test_ingestion_status_includes_case_details __________________
+
+client = <django.test.client.Client object at 0x795d72ba87a0>
+monkeypatch = <_pytest.monkeypatch.MonkeyPatch object at 0x795d72ba8bc0>
+
+    @pytest.mark.django_db
+    def test_ingestion_status_includes_case_details(
+        client, monkeypatch
+    ):
+        monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+>       tenant = Tenant.objects.create(schema_name="test-ingest", name="Test Ingest")
+                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+ai_core/tests/test_views_min.py:58: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+/usr/local/lib/python3.12/site-packages/django/db/models/manager.py:87: in manager_method
+    return getattr(self.get_queryset(), name)(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/site-packages/django/db/models/query.py:663: in create
+    obj.save(force_insert=True, using=self.db)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+
+self = <Tenant: test-ingest>, verbosity = 1, args = ()
+kwargs = {'force_insert': True, 'using': 'default'}
+connection = <DatabaseWrapper vendor='postgresql' alias='default'>
+is_new = True, has_schema = True
+
+    def save(self, verbosity=1, *args, **kwargs):
+        connection = connections[get_tenant_database_alias()]
+        is_new = self._state.adding
+        has_schema = hasattr(connection, 'schema_name')
+        if has_schema and is_new and connection.schema_name != get_public_schema_name():
+>           raise Exception("Can't create tenant outside the public schema. "
+E           Exception: Can't create tenant outside the public schema. Current schema is autotest.
+
+/usr/local/lib/python3.12/site-packages/django_tenants/models.py:107: Exception
+--------------------------- Captured stderr teardown ---------------------------
+Destroying test database for alias 'default'...
+=============================== warnings summary ===============================
+<frozen importlib._bootstrap>:488
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyPacked has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type SwigPyObject has no __module__ attribute
+
+<frozen importlib._bootstrap>:488
+  <frozen importlib._bootstrap>:488: DeprecationWarning: builtin type swigvarlink has no __module__ attribute
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=================== 2 failed, 2 passed, 5 warnings in 5.37s ====================
+

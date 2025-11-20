@@ -2,6 +2,7 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
 from django.core.cache import cache
 from django.http import JsonResponse
 from django.test import RequestFactory
@@ -17,6 +18,7 @@ from theme.views import (
 )
 
 
+@pytest.mark.django_db
 def test_rag_tools_page_is_accessible():
     tenant_id = "tenant-workbench"
     tenant_schema = "workbench"
@@ -53,6 +55,7 @@ def test_rag_tools_page_is_accessible():
     assert "function requireCollection" in content
 
 
+@pytest.mark.django_db
 @patch("theme.views.build_graph")
 def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     """Test that web_search view uses ExternalKnowledgeGraph orchestration.
@@ -110,6 +113,7 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     assert call_args[1]["state"]["collection_id"] == "test-collection"
 
 
+@pytest.mark.django_db
 @patch("theme.views.build_graph")
 def test_web_search_defaults_to_manual_collection(mock_build_graph):
     tenant_id = "tenant-fallback"
@@ -139,6 +143,7 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
     assert call_args[1]["state"]["collection_id"] == manual_id
 
 
+@pytest.mark.django_db
 @patch("theme.views.ensure_manual_collection")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_defaults_to_manual_collection(
@@ -170,6 +175,7 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
     assert forward_request.META["HTTP_X_TENANT_SCHEMA"] == tenant_schema
 
 
+@pytest.mark.django_db
 @patch("theme.views.llm_routing.resolve")
 @patch("theme.views.submit_worker_task")
 @patch("theme.views.build_graph")
@@ -252,6 +258,7 @@ def test_web_search_rerank_applies_scores(
     assert task_payload["control"]["model_preset"] == "fast"
 
 
+@pytest.mark.django_db
 @patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
 @patch("theme.views.build_graph")
 def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
@@ -295,6 +302,7 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
     assert data["rerank"]["status_url"].endswith("/api/llm/tasks/task-q/")
 
 
+@pytest.mark.django_db
 @patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
@@ -335,6 +343,7 @@ def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
     assert mock_crawl_selected.call_count == 1
 
 
+@pytest.mark.django_db
 @patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_passes_correct_params_to_crawler(
@@ -393,6 +402,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     assert "HTTP_X_TRACE_ID" in headers
 
 
+@pytest.mark.django_db
 @patch("theme.views.submit_worker_task")
 def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
     tenant_id = "tenant-test"
@@ -444,6 +454,7 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
     assert data["telemetry"]["nodes"]["k_generate_strategy"]["status"] == "completed"
 
 
+@pytest.mark.django_db
 def test_rag_tools_page_includes_source_transformation_logic():
     """Test that the RAG tools page includes JavaScript logic for source transformation.
 
@@ -484,6 +495,7 @@ def test_rag_tools_page_includes_source_transformation_logic():
     assert "link.rel = 'noopener noreferrer'" in content
 
 
+@pytest.mark.django_db
 def test_rag_tools_javascript_source_transformation_web_sources():
     """Test that the JavaScript source transformation handles web sources correctly.
 
@@ -509,6 +521,7 @@ def test_rag_tools_javascript_source_transformation_web_sources():
     assert "urlObj.hostname" in content  # Extract hostname for display
 
 
+@pytest.mark.django_db
 def test_rag_tools_javascript_source_transformation_upload_sources():
     """Test that the JavaScript source transformation handles upload sources correctly.
 
@@ -534,6 +547,7 @@ def test_rag_tools_javascript_source_transformation_upload_sources():
     assert "url = '/documents/download/' + meta.document_id + '/'" in content
 
 
+@pytest.mark.django_db
 def test_rag_tools_javascript_source_transformation_fallback():
     """Test that the JavaScript source transformation provides fallback behavior.
 

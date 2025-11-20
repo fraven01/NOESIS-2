@@ -73,6 +73,15 @@ def normalize_meta(request: Any) -> dict:
     idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
     collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
 
+    tenant_schema = _coalesce(request, X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
+
+    if not tenant_schema:
+        from customers.tenant_context import TenantContext
+
+        tenant = TenantContext.from_headers(request)
+        if tenant:
+            tenant_schema = tenant.schema_name
+
     meta = {
         "tenant_id": tenant_id,
         "case_id": case_id,
@@ -83,7 +92,6 @@ def normalize_meta(request: Any) -> dict:
         "rate_limit": {"quota": get_quota()},
     }
 
-    tenant_schema = _coalesce(request, X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
     if tenant_schema:
         meta["tenant_schema"] = tenant_schema
 

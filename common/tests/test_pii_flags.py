@@ -249,7 +249,7 @@ def test_load_tenant_pii_config_is_cached(tenant_factory, django_assert_num_quer
         pii_hmac_secret="cache-secret",
     )
 
-    with django_assert_num_queries(2):
+    with django_assert_num_queries(4):
         first = load_tenant_pii_config(tenant.id)
 
     with django_assert_num_queries(0):

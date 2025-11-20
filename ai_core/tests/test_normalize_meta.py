@@ -25,6 +25,7 @@ def _request(headers: dict | None = None, **attrs):
     return SimpleNamespace(headers=base_headers, META={}, **attrs)
 
 
+@pytest.mark.django_db
 def test_normalize_meta_returns_expected_mapping(monkeypatch):
     monkeypatch.setattr(schemas, "get_quota", lambda: 7)
     request = _request(
@@ -66,6 +67,7 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     assert context.metadata["requested_at"] == meta["requested_at"]
 
 
+@pytest.mark.django_db
 def test_normalize_meta_raises_on_missing_required_keys(monkeypatch):
     monkeypatch.setattr(schemas, "get_quota", lambda: 3)
     request = _request({X_TENANT_ID_HEADER: "tenant-a"}, graph_name="info_intake")
@@ -78,6 +80,7 @@ def test_normalize_meta_raises_on_missing_required_keys(monkeypatch):
     assert "trace_id" in message
 
 
+@pytest.mark.django_db
 def test_normalize_meta_defaults_graph_version(monkeypatch):
     monkeypatch.setattr(schemas, "get_quota", lambda: 5)
     request = _request(
@@ -98,6 +101,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
     assert meta["idempotency_key"] == "idem-1"
 
 
+@pytest.mark.django_db
 def test_normalize_meta_includes_tool_context(monkeypatch):
     monkeypatch.setattr(schemas, "get_quota", lambda: 2)
     request = _request(
@@ -125,6 +129,7 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     assert meta["idempotency_key"] == "idem-b"
 
 
+@pytest.mark.django_db
 def test_normalize_meta_includes_collection_scope(monkeypatch):
     monkeypatch.setattr(schemas, "get_quota", lambda: 1)
     request = _request(
