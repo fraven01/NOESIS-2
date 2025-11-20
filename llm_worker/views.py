@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from types import SimpleNamespace
 from uuid import uuid4
 
 from celery.result import AsyncResult
@@ -18,6 +19,7 @@ from llm_worker.runner import submit_worker_task
 from llm_worker.schemas import WorkerTask
 from noesis2.api import default_extend_schema
 from noesis2.api.serializers import IdempotentResponseSerializer
+from customers.tenant_context import TenantContext, TenantRequiredError
 
 logger = get_logger(__name__)
 
@@ -81,11 +83,37 @@ def run_task(request) -> JsonResponse:
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    tenant_id = request.headers.get("X-Tenant-ID")
-    if not tenant_id:
+    tenant_header = request.headers.get("X-Tenant-ID")
+    if not tenant_header:
         return JsonResponse(
             {"detail": "X-Tenant-ID header is required"},
             status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    try:
+        tenant_obj = TenantContext.from_request(
+            request,
+            allow_headers=False,
+            require=False,
+            use_connection_schema=False,
+        )
+    except TenantRequiredError:
+        tenant_obj = None
+
+    if tenant_obj is None:
+        tenant_obj = SimpleNamespace(schema_name=tenant_header.strip())
+
+    tenant_id = getattr(tenant_obj, "schema_name", "")
+    if not tenant_id:
+        return JsonResponse(
+            {"detail": "Tenant context could not be resolved"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if tenant_header.strip() != tenant_id:
+        return JsonResponse(
+            {"detail": "X-Tenant-ID header does not match authenticated tenant"},
+            status=status.HTTP_403_FORBIDDEN,
         )
 
     case_id = request.headers.get("X-Case-ID") or "local"
