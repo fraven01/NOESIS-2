@@ -158,10 +158,17 @@ def assert_case_active(
 
     from customers.tenant_context import TenantContext, TenantRequiredError
 
+    tenant_header = None
+    if hasattr(request, "headers"):
+        tenant_header = request.headers.get(X_TENANT_ID_HEADER)
+    if not tenant_header:
+        meta = getattr(request, "META", {}) or {}
+        tenant_header = meta.get(META_TENANT_ID_KEY)
+
     try:
         resolved_tenant = TenantContext.from_request(
             request,
-            allow_headers=False,
+            allow_headers=True,
             require=True,
             use_connection_schema=False,
         )
@@ -185,6 +192,17 @@ def assert_case_active(
     tenant_obj = explicit_tenant or resolved_tenant
 
     if explicit_tenant is not None and explicit_tenant != resolved_tenant:
+        return _error_response(
+            "Tenant identifier does not match the authenticated request tenant.",
+            "tenant_mismatch",
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    if (
+        tenant_header
+        and tenant_obj is not None
+        and tenant_header.strip() != getattr(tenant_obj, "schema_name", None)
+    ):
         return _error_response(
             "Tenant identifier does not match the authenticated request tenant.",
             "tenant_mismatch",

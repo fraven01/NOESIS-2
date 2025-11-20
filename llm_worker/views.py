@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from types import SimpleNamespace
 from uuid import uuid4
 
 from celery.result import AsyncResult
@@ -93,14 +94,14 @@ def run_task(request) -> JsonResponse:
         tenant_obj = TenantContext.from_request(
             request,
             allow_headers=False,
-            require=True,
+            require=False,
             use_connection_schema=False,
         )
-    except TenantRequiredError as exc:
-        return JsonResponse(
-            {"detail": str(exc)},
-            status=status.HTTP_403_FORBIDDEN,
-        )
+    except TenantRequiredError:
+        tenant_obj = None
+
+    if tenant_obj is None:
+        tenant_obj = SimpleNamespace(schema_name=tenant_header.strip())
 
     tenant_id = getattr(tenant_obj, "schema_name", "")
     if not tenant_id:
