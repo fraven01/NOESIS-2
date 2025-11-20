@@ -1,5 +1,4 @@
 import json
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -8,8 +7,10 @@ from django.http import JsonResponse
 from django.test import RequestFactory
 from django.urls import reverse
 from django.utils.html import escapejs
+from django_tenants.utils import get_public_schema_name, schema_context
 
 from ai_core.rag.collections import manual_collection_uuid
+from customers.tests.factories import TenantFactory
 from theme.views import (
     rag_tools,
     start_rerank_workflow,
@@ -20,12 +21,13 @@ from theme.views import (
 
 @pytest.mark.django_db
 def test_rag_tools_page_is_accessible():
-    tenant_id = "tenant-workbench"
     tenant_schema = "workbench"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
     request.tenant_schema = tenant_schema
 
     response = rag_tools(request)
@@ -53,6 +55,30 @@ def test_rag_tools_page_is_accessible():
     assert "const crawlerDefaultWorkflow" in content
     assert f'const manualCollectionId = "{escapejs(manual_collection_id)}"' in content
     assert "function requireCollection" in content
+
+
+@pytest.mark.django_db
+def test_rag_tools_requires_tenant():
+    factory = RequestFactory()
+    request = factory.get(reverse("rag-tools"))
+
+    with schema_context(get_public_schema_name()):
+        response = rag_tools(request)
+
+    assert response.status_code == 403
+    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
+
+
+@pytest.mark.django_db
+def test_rag_tools_rejects_spoofed_headers():
+    factory = RequestFactory()
+    request = factory.get(reverse("rag-tools"), HTTP_X_TENANT_ID="spoofed")
+
+    with schema_context(get_public_schema_name()):
+        response = rag_tools(request)
+
+    assert response.status_code == 403
+    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
 
 
 @pytest.mark.django_db
@@ -85,13 +111,15 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     )
     mock_build_graph.return_value = mock_graph
 
+    tenant = TenantFactory(schema_name=tenant_schema)
+
     factory = RequestFactory()
     request = factory.post(
         reverse("web-search"),
         data=json.dumps({"query": "test query", "collection_id": "test-collection"}),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search(request)
 
@@ -116,8 +144,9 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
 @pytest.mark.django_db
 @patch("theme.views.build_graph")
 def test_web_search_defaults_to_manual_collection(mock_build_graph):
-    tenant_id = "tenant-fallback"
     tenant_schema = "fallback"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_graph = MagicMock()
     mock_graph.run.return_value = (
@@ -132,7 +161,7 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
         data=json.dumps({"query": "fallback query"}),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search(request)
 
@@ -149,8 +178,9 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
 def test_web_search_ingest_selected_defaults_to_manual_collection(
     mock_crawl_selected, mock_ensure
 ):
-    tenant_id = "tenant-auto"
     tenant_schema = "auto"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_ensure.return_value = "manual-uuid"
 
@@ -162,7 +192,7 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
         data=json.dumps({"urls": ["https://fallback.example"]}),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search_ingest_selected(request)
 
@@ -192,8 +222,9 @@ def test_web_search_rerank_applies_scores(
     mock_resolve.side_effect = fake_resolve
 
     cache.clear()
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_graph = MagicMock()
     mock_graph.run.return_value = (
@@ -245,7 +276,7 @@ def test_web_search_rerank_applies_scores(
         data=json.dumps({"query": "test", "rerank": True}),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search(request)
     data = json.loads(response.content)
@@ -263,8 +294,9 @@ def test_web_search_rerank_applies_scores(
 @patch("theme.views.build_graph")
 def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
     cache.clear()
-    tenant_id = "tenant-queued"
     tenant_schema = "queued"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_graph = MagicMock()
     mock_graph.run.return_value = (
@@ -292,7 +324,7 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
         data=json.dumps({"query": "test", "rerank": True}),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search(request)
     data = json.loads(response.content)
@@ -307,8 +339,9 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
     """Test that web_search_ingest_selected dispatches crawl_selected for each URL."""
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_crawl_selected.return_value = JsonResponse(
         {
@@ -331,7 +364,7 @@ def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
         ),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search_ingest_selected(request)
 
@@ -359,8 +392,9 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     4. case_id is passed through via HTTP headers
     5. The crawler_runner API receives properly formatted payload
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     mock_crawl_selected.return_value = JsonResponse({"task_ids": []})
 
@@ -376,7 +410,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
         ),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = web_search_ingest_selected(request)
 
@@ -428,6 +462,8 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
         True,
     )
 
+    tenant = TenantFactory(schema_name=tenant_schema)
+
     factory = RequestFactory()
     request = factory.post(
         reverse("rag_tools_start_rerank"),
@@ -443,7 +479,7 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
         ),
         content_type="application/json",
     )
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = start_rerank_workflow(request)
     assert response.status_code == 200
@@ -462,12 +498,13 @@ def test_rag_tools_page_includes_source_transformation_logic():
     rendered HTML, which is responsible for converting internal source metadata
     (like file paths) into user-facing source information (like clickable links).
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = rag_tools(request)
 
@@ -504,12 +541,13 @@ def test_rag_tools_javascript_source_transformation_web_sources():
     - The display text should be derived from the URL hostname
     - A clickable link should be created
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = rag_tools(request)
     content = response.content.decode()
@@ -530,12 +568,13 @@ def test_rag_tools_javascript_source_transformation_upload_sources():
     - The display text should be extracted from meta.title or meta.filename
     - A download URL should be constructed from meta.document_id
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = rag_tools(request)
     content = response.content.decode()
@@ -556,12 +595,13 @@ def test_rag_tools_javascript_source_transformation_fallback():
     - If neither is available, use document_id
     - No URL should be generated (plain text display)
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
-    request.tenant = SimpleNamespace(tenant_id=tenant_id, schema_name=tenant_schema)
+    request.tenant = tenant
 
     response = rag_tools(request)
     content = response.content.decode()

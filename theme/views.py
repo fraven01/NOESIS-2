@@ -30,6 +30,8 @@ from ai_core.rag.routing_rules import (
 from ai_core.llm import routing as llm_routing
 from llm_worker.runner import submit_worker_task
 
+from customers.tenant_context import TenantContext, TenantRequiredError
+
 from ai_core.views import crawl_selected as _core_crawl_selected
 
 
@@ -46,37 +48,23 @@ def home(request):
 
 def _tenant_context_from_request(request) -> tuple[str, str]:
     """Return the tenant identifier and schema for the current request."""
-    from customers.tenant_context import TenantContext
 
-    default_schema = getattr(settings, "DEFAULT_TENANT_SCHEMA", None) or "dev"
-
-    tenant_id: str | None = None
-    tenant_schema: str | None = None
-
-    tenant_obj = TenantContext.from_request(request, require=False)
-    if tenant_obj is not None:
-        schema_name = getattr(tenant_obj, "schema_name", None)
-        if isinstance(schema_name, str) and schema_name:
-            tenant_schema = schema_name
-        tenant_attr_id = getattr(tenant_obj, "tenant_id", None)
-        if isinstance(tenant_attr_id, str) and tenant_attr_id:
-            tenant_id = tenant_attr_id
-        elif tenant_id is None and isinstance(schema_name, str) and schema_name:
-            tenant_id = schema_name
-
+    tenant_obj = TenantContext.from_request(
+        request, allow_headers=False, require=True
+    )
+    tenant_schema = getattr(tenant_obj, "schema_name", None)
     if tenant_schema is None:
-        tenant_schema_override = getattr(request, "tenant_schema", None)
-        if isinstance(tenant_schema_override, str) and tenant_schema_override:
-            tenant_schema = tenant_schema_override
-            if tenant_id is None:
-                tenant_id = tenant_schema_override
+        tenant_schema = getattr(tenant_obj, "tenant_id", None)
+    tenant_id = getattr(tenant_obj, "tenant_id", None) or tenant_schema
 
-    if tenant_schema is None:
-        tenant_schema = default_schema
-    if tenant_id is None:
-        tenant_id = tenant_schema
+    if tenant_schema is None or tenant_id is None:
+        raise TenantRequiredError("Tenant could not be resolved from request")
 
-    return tenant_id, tenant_schema
+    return str(tenant_id), str(tenant_schema)
+
+
+def _tenant_required_response(exc: TenantRequiredError) -> JsonResponse:
+    return JsonResponse({"detail": str(exc)}, status=403)
 
 
 def _resolve_manual_collection(
@@ -390,8 +378,10 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
 
 def rag_tools(request):
     """Render a minimal interface to exercise the RAG endpoints manually."""
-
-    tenant_id, tenant_schema = _tenant_context_from_request(request)
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return _tenant_required_response(exc)
 
     collection_options: list[str] = []
     resolver_profile_hint: str | None = None
@@ -470,7 +460,10 @@ def web_search(request):
     if not query:
         return JsonResponse({"error": "Query is required"}, status=400)
 
-    tenant_id, _ = _tenant_context_from_request(request)
+    try:
+        tenant_id, _ = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return _tenant_required_response(exc)
     case_id = str(data.get("case_id") or "local").strip() or "local"
     trace_id = str(uuid4())
     run_id = str(uuid4())
@@ -578,7 +571,10 @@ def web_search_ingest_selected(request):
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
 
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        try:
+            tenant_id, tenant_schema = _tenant_context_from_request(request)
+        except TenantRequiredError as exc:
+            return _tenant_required_response(exc)
         manual_collection_id, collection_id = _resolve_manual_collection(
             tenant_id, data.get("collection_id"), ensure=True
         )
@@ -693,7 +689,10 @@ def start_rerank_workflow(request):
         if quality_mode not in ("standard", "premium", "fast"):
             quality_mode = "standard"
 
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        try:
+            tenant_id, tenant_schema = _tenant_context_from_request(request)
+        except TenantRequiredError as exc:
+            return _tenant_required_response(exc)
         trace_id = str(uuid4())
         run_id = str(uuid4())
 
