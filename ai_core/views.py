@@ -158,16 +158,19 @@ def assert_case_active(
 
     from customers.tenant_context import TenantContext, TenantRequiredError
 
+    tenant_header = None
+    if hasattr(request, "headers"):
+        tenant_header = request.headers.get(X_TENANT_ID_HEADER)
+    if not tenant_header:
+        meta = getattr(request, "META", {}) or {}
+        tenant_header = meta.get(META_TENANT_ID_KEY)
+
     try:
-        tenant_obj = (
-            TenantContext.resolve_identifier(tenant_identifier)
-            if tenant_identifier is not None
-            else TenantContext.from_request(
-                request,
-                allow_headers=True,
-                require=True,
-                use_connection_schema=False,
-            )
+        resolved_tenant = TenantContext.from_request(
+            request,
+            allow_headers=True,
+            require=True,
+            use_connection_schema=False,
         )
     except TenantRequiredError as exc:
         return _error_response(
@@ -176,11 +179,34 @@ def assert_case_active(
             status.HTTP_403_FORBIDDEN,
         )
 
-    if tenant_obj is None:
+    explicit_tenant = None
+    if tenant_identifier is not None:
+        explicit_tenant = TenantContext.resolve_identifier(tenant_identifier)
+        if explicit_tenant is None:
+            return _error_response(
+                "Tenant context for this request could not be resolved.",
+                "tenant_not_found",
+                status.HTTP_404_NOT_FOUND,
+            )
+
+    tenant_obj = explicit_tenant or resolved_tenant
+
+    if explicit_tenant is not None and explicit_tenant != resolved_tenant:
         return _error_response(
-            "Tenant context for this request could not be resolved.",
-            "tenant_not_found",
-            status.HTTP_404_NOT_FOUND,
+            "Tenant identifier does not match the authenticated request tenant.",
+            "tenant_mismatch",
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    if (
+        tenant_header
+        and tenant_obj is not None
+        and tenant_header.strip() != getattr(tenant_obj, "schema_name", None)
+    ):
+        return _error_response(
+            "Tenant identifier does not match the authenticated request tenant.",
+            "tenant_mismatch",
+            status.HTTP_403_FORBIDDEN,
         )
 
     token_tenant = _token_tenant_identifier(request)
@@ -265,18 +291,20 @@ def _build_guardrail_error(
 
 
 def _resolve_tenant_id(request: HttpRequest) -> str | None:
-    """Derive the active tenant schema for the current request.
+    """Derive the active tenant schema for the current request."""
 
-    Resolution order (first non-public wins):
-    1) Request-bound tenant object (django-tenants)
-    2) Connection schema (django-tenants current schema)
-    3) Explicit header-backed attribute populated by TenantSchemaMiddleware
-    """
-    from customers.tenant_context import TenantContext
+    from customers.tenant_context import TenantContext, TenantRequiredError
 
-    tenant = TenantContext.from_request(
-        request, require=False, use_connection_schema=False
-    )
+    try:
+        tenant = TenantContext.from_request(
+            request,
+            allow_headers=False,
+            require=False,
+            use_connection_schema=False,
+        )
+    except TenantRequiredError:
+        return None
+
     return tenant.schema_name if tenant else None
 
 
@@ -410,6 +438,8 @@ def _resolve_hard_delete_actor(
 
 
 def _prepare_request(request: Request):
+    from customers.tenant_context import TenantContext, TenantRequiredError
+
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
@@ -428,12 +458,26 @@ def _prepare_request(request: Request):
         if candidate:
             idempotency_key = candidate
 
-    tenant_schema = _resolve_tenant_id(request)
+    try:
+        tenant_obj = TenantContext.from_request(
+            request,
+            allow_headers=False,
+            require=True,
+            use_connection_schema=False,
+        )
+    except TenantRequiredError as exc:
+        return None, _error_response(
+            str(exc),
+            "tenant_not_found",
+            status.HTTP_403_FORBIDDEN,
+        )
+
+    tenant_schema = getattr(tenant_obj, "schema_name", "")
     if not tenant_schema:
         return None, _error_response(
-            "Tenant schema could not be resolved from headers.",
+            "Tenant schema could not be resolved from request context.",
             "tenant_not_found",
-            status.HTTP_400_BAD_REQUEST,
+            status.HTTP_403_FORBIDDEN,
         )
 
     if tenant_header is None:
@@ -449,6 +493,13 @@ def _prepare_request(request: Request):
             "Tenant header is required for multi-tenant requests.",
             "invalid_tenant_header",
             status.HTTP_400_BAD_REQUEST,
+        )
+
+    if tenant_id != tenant_schema:
+        return None, _error_response(
+            "Tenant header does not match the authenticated request tenant.",
+            "tenant_mismatch",
+            status.HTTP_403_FORBIDDEN,
         )
 
     schema_header = request.headers.get(X_TENANT_SCHEMA_HEADER)
@@ -498,7 +549,7 @@ def _prepare_request(request: Request):
             collection_id = candidate
 
     trace_id = uuid4().hex
-    case_error = assert_case_active(request, case_id, tenant_identifier=tenant_id)
+    case_error = assert_case_active(request, case_id, tenant_identifier=tenant_schema)
     if case_error is not None:
         return None, case_error
     meta = {
