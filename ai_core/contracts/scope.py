@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+if TYPE_CHECKING:  # pragma: no cover
+    from ai_core.tool_contracts.base import ToolContext
 
 TenantId = str
 TraceId = str
@@ -43,6 +47,13 @@ class ScopeContext(BaseModel):
             raise ValueError("Exactly one of run_id or ingestion_run_id must be provided")
 
         return self
+
+    def to_tool_context(self, **overrides: object) -> "ToolContext":
+        """Project this scope into a ``ToolContext`` with optional overrides."""
+
+        from ai_core.tool_contracts.base import tool_context_from_scope
+
+        return tool_context_from_scope(self, **overrides)
 
 
 __all__ = [
