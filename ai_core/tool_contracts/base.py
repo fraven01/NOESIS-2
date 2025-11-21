@@ -13,6 +13,8 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from ai_core.contracts.scope import ScopeContext
+
 from ai_core.tools.errors import ToolErrorType
 
 NonNegativeInt = Annotated[int, Field(ge=0)]
@@ -78,6 +80,36 @@ class ToolContext(BaseModel):
         if self.run_id is not None and self.ingestion_run_id is not None:
             raise ValueError("Only one of run_id or ingestion_run_id can be provided.")
         return self
+
+
+def tool_context_from_scope(
+    scope: ScopeContext,
+    *,
+    now: datetime | None = None,
+    **overrides: Any,
+) -> ToolContext:
+    """Build a ``ToolContext`` from a canonical ``ScopeContext``.
+
+    Additional ``ToolContext`` fields (locale, budgets, auth, etc.) can be passed
+    as keyword overrides. ``now_iso`` defaults to the scope timestamp to keep
+    correlation with the originating request time unless explicitly overridden.
+    """
+
+    payload: dict[str, Any] = {
+        "tenant_id": scope.tenant_id,
+        "trace_id": scope.trace_id,
+        "invocation_id": scope.invocation_id,
+        "run_id": scope.run_id,
+        "ingestion_run_id": scope.ingestion_run_id,
+        "workflow_id": scope.workflow_id,
+        "case_id": scope.case_id,
+        "idempotency_key": scope.idempotency_key,
+        "now_iso": now or scope.timestamp,
+    }
+
+    payload.update(overrides)
+
+    return ToolContext(**payload)
 
 
 class ToolErrorMeta(BaseModel):
@@ -209,6 +241,7 @@ __all__ = [
     "NonNegativeInt",
     "PositiveInt",
     "ToolContext",
+    "tool_context_from_scope",
     "ToolErrorMeta",
     "ToolErrorDetail",
     "ToolError",

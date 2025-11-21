@@ -48,6 +48,12 @@ Laufzeitmetadaten, die jeden Tool-Aufruf begleiten.
 
 **Hinweis:** Ein Modell-Validator erzwingt, dass exakt eine der IDs `run_id` oder `ingestion_run_id` vorhanden ist. Client- und Service-Schichten erzeugen passende Werte (`run_...` für Graph-Ausführungen, `ingest_...` für Uploads) und spiegeln sie in Langfuse-Tags sowie Persistenzschichten wider.
 
+### ScopeContext-Adapter
+
+- Canonical Runtime-Scope (`ScopeContext` aus `ai_core/contracts/scope.py`) kann per Helper in einen vollständigen ToolContext überführt werden: `tool_context_from_scope(scope, **overrides)` in `ai_core.tool_contracts.base`.
+- Alternativ stellt das Scope-Objekt einen Convenience-Weg bereit: `scope.to_tool_context(**overrides)`.
+- `now_iso` übernimmt standardmäßig den `ScopeContext.timestamp`, kann aber über `now` überschrieben werden; optionale Tool-Felder wie `locale`, `budget_tokens` oder `auth` lassen sich als Keyword-Args angeben.
+
 > **Case-Bindung:** `case_id` referenziert direkt `Case.external_id`. Header,
 > ToolContext und Chunk-Metadaten zeigen damit auf denselben Case-Datensatz; falls
 > noch kein Case existiert, erzeugt der Case-Service beim ersten Lifecycle-Event
