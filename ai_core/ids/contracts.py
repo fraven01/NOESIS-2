@@ -91,6 +91,8 @@ def normalize_trace_id(
                 raise ValueError("request_id cannot be empty when provided")
             meta["trace_id"] = normalised_request
             raw_trace = normalised_request
+            if warn:
+                warn("request_id is deprecated; use trace_id instead")
         else:
             raise ValueError("trace_id is required")
 

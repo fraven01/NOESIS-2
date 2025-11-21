@@ -8,12 +8,22 @@ from .contracts import (
     normalize_trace_id,
     require_ids,
 )
+from .headers import (
+    coerce_trace_id,
+    normalize_case_header,
+    normalize_idempotency_key,
+    normalize_tenant_header,
+)
 
 __all__ = [
     "CorrelationIds",
     "DocumentRef",
     "K_REQUIRED_SPAN_ATTRS",
     "MetaIds",
+    "coerce_trace_id",
+    "normalize_case_header",
+    "normalize_idempotency_key",
     "normalize_trace_id",
+    "normalize_tenant_header",
     "require_ids",
 ]
