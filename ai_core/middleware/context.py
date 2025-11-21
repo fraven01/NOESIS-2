@@ -42,15 +42,16 @@ class RequestContextMiddleware:
         clear_contextvars()
         try:
             meta = self._gather_metadata(request)
+        except TenantRequiredError as exc:
+            return self._tenant_required_response(exc)
+        except ValueError as exc:
+            return JsonResponse({"detail": str(exc)}, status=400)
+        else:
             bind_contextvars(**meta["log_context"])
 
             response = self.get_response(request)
             response = apply_std_headers(response, meta["response_meta"])
             return response
-        except TenantRequiredError as exc:
-            return self._tenant_required_response(exc)
-        except ValueError as exc:
-            return JsonResponse({"detail": str(exc)}, status=400)
         finally:
             clear_contextvars()
 
@@ -177,6 +178,9 @@ class RequestContextMiddleware:
             headers.get(self.INGESTION_RUN_ID_HEADER)
         )
         workflow_id = self._normalize_header(headers.get(self.WORKFLOW_ID_HEADER))
+
+        if run_id and ingestion_run_id:
+            raise ValueError("Exactly one of run_id or ingestion_run_id must be provided")
 
         scope_kwargs = {
             "tenant_id": tenant_id or normalize_tenant_header(headers),

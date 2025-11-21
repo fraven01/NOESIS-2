@@ -291,3 +291,24 @@ def test_middleware_rejects_conflicting_run_scope():
         "detail": "Exactly one of run_id or ingestion_run_id must be provided",
     }
     assert called is False
+
+
+def test_middleware_allows_value_error_from_view_to_propagate():
+    factory = RequestFactory()
+    request = _build_request(
+        factory,
+        "get",
+        "/ai/ping/",
+        HTTP_X_TENANT_ID="tenant-error",
+    )
+    request.tenant = Tenant(schema_name="tenant-error", name="Tenant Error")
+
+    def _view(_inner_request):
+        raise ValueError("view raised")
+
+    middleware = RequestContextMiddleware(_view)
+
+    with pytest.raises(ValueError, match="view raised"):
+        middleware(request)
+
+    assert get_contextvars() == {}
