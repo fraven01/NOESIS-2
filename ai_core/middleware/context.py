@@ -47,9 +47,7 @@ class RequestContextMiddleware:
         trace_id, span_id = self._resolve_trace_and_span(request)
         traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
 
-        tenant = TenantContext.from_request(
-            request, allow_headers=False, require=True
-        )
+        tenant = TenantContext.from_request(request, allow_headers=False, require=True)
         tenant_id = getattr(tenant, "schema_name", None)
         case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))

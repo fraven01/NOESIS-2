@@ -209,7 +209,9 @@ def test_assert_case_active_rejects_connection_fallback(
     monkeypatch, test_tenant_schema_name
 ):
     request = RequestFactory().post("/ai/intake/")
-    monkeypatch.setattr(connection, "schema_name", test_tenant_schema_name, raising=False)
+    monkeypatch.setattr(
+        connection, "schema_name", test_tenant_schema_name, raising=False
+    )
 
     error = views.assert_case_active(request, "case-without-header")
 

@@ -93,9 +93,7 @@ def test_from_request_resolves_connection_schema_pk_in_cli_context(monkeypatch):
 
     monkeypatch.setattr(connection, "schema_name", str(tenant.pk), raising=False)
 
-    resolved = TenantContext.from_request(
-        request, allow_headers=False, allow_pk=True
-    )
+    resolved = TenantContext.from_request(request, allow_headers=False, allow_pk=True)
 
     assert resolved == tenant
 

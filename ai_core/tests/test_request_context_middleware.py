@@ -119,6 +119,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
 
     assert get_contextvars() == {}
 
+
 def test_middleware_rejects_missing_tenant(monkeypatch):
     monkeypatch.setattr(
         "ai_core.middleware.context.TenantContext.from_request",

@@ -66,7 +66,10 @@ def test_rag_tools_requires_tenant():
         response = rag_tools(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
+    assert (
+        json.loads(response.content)["detail"]
+        == "Tenant could not be resolved from request"
+    )
 
 
 @pytest.mark.django_db
@@ -78,7 +81,10 @@ def test_rag_tools_rejects_spoofed_headers():
         response = rag_tools(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
+    assert (
+        json.loads(response.content)["detail"]
+        == "Tenant could not be resolved from request"
+    )
 
 
 @pytest.mark.django_db
@@ -88,7 +94,6 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
 
     The view only performs search phase; ingestion is handled separately.
     """
-    tenant_id = "tenant-test"
     tenant_schema = "test"
 
     # Mock graph
@@ -224,7 +229,6 @@ def test_web_search_rerank_applies_scores(
     cache.clear()
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     mock_graph = MagicMock()
     mock_graph.run.return_value = (
@@ -296,7 +300,6 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
     cache.clear()
     tenant_schema = "queued"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     mock_graph = MagicMock()
     mock_graph.run.return_value = (
@@ -341,7 +344,6 @@ def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
     """Test that web_search_ingest_selected dispatches crawl_selected for each URL."""
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     mock_crawl_selected.return_value = JsonResponse(
         {
@@ -439,7 +441,6 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task")
 def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
-    tenant_id = "tenant-test"
     tenant_schema = "test"
     telemetry_payload = {
         "graph": "collection_search",
@@ -500,7 +501,6 @@ def test_rag_tools_page_includes_source_transformation_logic():
     """
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
@@ -543,7 +543,6 @@ def test_rag_tools_javascript_source_transformation_web_sources():
     """
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
@@ -570,7 +569,6 @@ def test_rag_tools_javascript_source_transformation_upload_sources():
     """
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
@@ -597,7 +595,6 @@ def test_rag_tools_javascript_source_transformation_fallback():
     """
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))

@@ -12,7 +12,7 @@ from importlib import import_module
 from uuid import uuid4
 
 from django.conf import settings
-from django.db import connection, OperationalError, ProgrammingError
+from django.db import OperationalError, ProgrammingError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, JsonResponse

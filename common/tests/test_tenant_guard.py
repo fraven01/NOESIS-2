@@ -38,9 +38,7 @@ def test_demo_view_with_mismatched_header(client):
     tenant = TenantFactory(schema_name="delta")
     ensure_tenant_domain(tenant, domain="testserver")
     with schema_context(tenant.schema_name):
-        response = client.get(
-            "/tenant-demo/", HTTP_X_TENANT_SCHEMA="unexpected"
-        )
+        response = client.get("/tenant-demo/", HTTP_X_TENANT_SCHEMA="unexpected")
     assert response.status_code == 403
     assert response.content.decode() == "Tenant schema does not match resolved tenant"
 

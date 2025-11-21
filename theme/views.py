@@ -49,9 +49,7 @@ def home(request):
 def _tenant_context_from_request(request) -> tuple[str, str]:
     """Return the tenant identifier and schema for the current request."""
 
-    tenant_obj = TenantContext.from_request(
-        request, allow_headers=False, require=True
-    )
+    tenant_obj = TenantContext.from_request(request, allow_headers=False, require=True)
     tenant_schema = getattr(tenant_obj, "schema_name", None)
     if tenant_schema is None:
         tenant_schema = getattr(tenant_obj, "tenant_id", None)
