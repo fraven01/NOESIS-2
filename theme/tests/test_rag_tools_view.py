@@ -66,7 +66,10 @@ def test_rag_tools_requires_tenant():
         response = rag_tools(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
+    assert (
+        json.loads(response.content)["detail"]
+        == "Tenant could not be resolved from request"
+    )
 
 
 @pytest.mark.django_db
@@ -78,7 +81,10 @@ def test_rag_tools_rejects_spoofed_headers():
         response = rag_tools(request)
 
     assert response.status_code == 403
-    assert json.loads(response.content)["detail"] == "Tenant could not be resolved from request"
+    assert (
+        json.loads(response.content)["detail"]
+        == "Tenant could not be resolved from request"
+    )
 
 
 @pytest.mark.django_db
@@ -86,8 +92,8 @@ def test_rag_tools_rejects_spoofed_headers():
 def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     """Test that web_search view uses ExternalKnowledgeGraph orchestration.
 
-    The view only performs search phase; ingestion is handled separately.
-x     """
+        The view only performs search phase; ingestion is handled separately.
+    x"""
     tenant_schema = "test"
 
     # Mock graph
