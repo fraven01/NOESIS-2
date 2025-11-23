@@ -34,7 +34,7 @@ from .logging_utils import (
     log_extra_entry,
     log_extra_exit,
 )
-from .storage import InMemoryStorage, Storage
+from .storage import ObjectStoreStorage, Storage
 
 
 logger = logging.getLogger(__name__)
@@ -893,7 +893,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
 
     def __init__(self, storage: Optional[Storage] = None) -> None:
         self._lock = RLock()
-        self._storage = storage or InMemoryStorage()
+        self._storage = storage or ObjectStoreStorage()
         self._documents: Dict[Tuple[str, str, UUID, Optional[str]], _StoredDocument] = (
             {}
         )

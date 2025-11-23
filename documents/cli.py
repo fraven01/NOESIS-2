@@ -60,7 +60,7 @@ from .pipeline import (
 )
 from .pipeline import _update_document_stats  # type: ignore
 from .repository import DocumentsRepository, InMemoryDocumentsRepository
-from .storage import InMemoryStorage, Storage
+from .storage import ObjectStoreStorage, Storage
 from .contract_utils import is_image_mediatype, normalize_optional_string, truncate_text
 
 
@@ -78,7 +78,7 @@ class CLIContext:
 
 
 def _default_context() -> CLIContext:
-    storage = InMemoryStorage()
+    storage = ObjectStoreStorage()
     repository = InMemoryDocumentsRepository(storage=storage)
     registry = ParserRegistry(
         [
