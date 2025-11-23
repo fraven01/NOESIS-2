@@ -18,7 +18,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from ai_core.infra.observability import emit_event, observe_span, update_observation
 from ai_core.llm import client as llm_client
 from ai_core.llm.client import LlmClientError, RateLimitError
-from ai_core.llm.pricing import calculate_chat_completion_cost
 from ai_core.rag.embeddings import EmbeddingClient
 from ai_core.tools.web_search import (
     SearchProviderError,
@@ -1490,11 +1489,20 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
         model_id = response.get("model", "gemini-2.5-flash")
+        cost_data = response.get("cost")
+        if not isinstance(cost_data, Mapping):
+            usage_cost = usage.get("cost") if isinstance(usage, Mapping) else None
+            cost_data = usage_cost if isinstance(usage_cost, Mapping) else None
 
-        # Calculate cost
-        cost_usd = calculate_chat_completion_cost(
-            model_id, prompt_tokens, completion_tokens
-        )
+        cost_usd = None
+        if isinstance(cost_data, Mapping):
+            for key in ("usd", "USD", "total_cost"):
+                value = cost_data.get(key)
+                try:
+                    cost_usd = float(value)  # type: ignore[arg-type]
+                    break
+                except (TypeError, ValueError):
+                    continue
 
         # Attach metrics to current span
         update_observation(
@@ -1503,11 +1511,12 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
                 "llm.prompt_tokens": prompt_tokens,
                 "llm.completion_tokens": completion_tokens,
                 "llm.total_tokens": total_tokens,
-                "llm.cost_usd": f"{cost_usd:.6f}",
                 "llm.latency_ms": int(llm_latency * 1000),
                 "llm.label": "analyze",
             }
         )
+        if cost_usd is not None:
+            update_observation(metadata={"llm.cost_usd": f"{cost_usd:.6f}"})
     except (LlmClientError, RateLimitError) as exc:  # pragma: no cover
         return _fallback_with_reason(
             request,

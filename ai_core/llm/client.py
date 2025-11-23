@@ -9,7 +9,6 @@ import requests
 from ai_core.infra.config import get_config
 from ai_core.infra.observability import observe_span, update_observation
 from ai_core.infra import ledger
-from ai_core.llm.pricing import calculate_chat_completion_cost
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -416,19 +415,42 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
             }
         )
         raise LlmClientError(message, status=status) from None
-    usage_raw = data.get("usage", {})
+    usage_raw = data.get("usage") if isinstance(data.get("usage"), Mapping) else {}
     prompt_tokens = usage_raw.get("prompt_tokens", 0) or 0
     completion_tokens = usage_raw.get("completion_tokens", 0) or 0
-    total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
-    cost_usd = calculate_chat_completion_cost(
-        model_id, prompt_tokens, completion_tokens
-    )
-    usage = {
-        "prompt_tokens": prompt_tokens,
-        "completion_tokens": completion_tokens,
-        "total_tokens": total_tokens,
-        "cost": {"usd": cost_usd},
-    }
+    total_tokens = usage_raw.get("total_tokens")
+    if total_tokens is None:
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+    cost_data: Mapping[str, Any] | None = None
+    if isinstance(usage_raw, Mapping):
+        usage_cost = usage_raw.get("cost")
+        if isinstance(usage_cost, Mapping):
+            cost_data = usage_cost
+    response_cost = data.get("cost")
+    if isinstance(response_cost, Mapping) and cost_data is None:
+        cost_data = response_cost
+    cost_usd: float | None = None
+    if isinstance(cost_data, Mapping):
+        for key in ("usd", "USD", "total_cost"):
+            value = cost_data.get(key)
+            try:
+                cost_usd = float(value)  # type: ignore[arg-type]
+                break
+            except (TypeError, ValueError):
+                continue
+    usage: dict[str, Any] = dict(usage_raw) if isinstance(usage_raw, Mapping) else {}
+    if cost_data is not None:
+        usage_cost: dict[str, Any] = {}
+        raw_usage_cost = usage.get("cost")
+        if isinstance(raw_usage_cost, Mapping):
+            usage_cost.update(raw_usage_cost)
+        if cost_usd is not None:
+            usage_cost.setdefault("usd", cost_usd)
+            usage_cost.setdefault("total", cost_usd)
+        if usage_cost:
+            usage["cost"] = usage_cost
+    if cost_usd is not None:
+        usage.setdefault("cost_usd", cost_usd)
     result = {
         "text": text,
         "usage": usage,
@@ -437,6 +459,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "latency_ms": latency_ms,
         "cache_hit": cache_hit,
     }
+    if cost_data is not None:
+        result["cost"] = cost_data
 
     ledger_payload = {
         "tenant": tenant_value,
@@ -449,6 +473,10 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "latency_ms": latency_ms,
         "cache_hit": cache_hit,
     }
+    if cost_data is not None:
+        ledger_payload["cost"] = cost_data
+    if cost_usd is not None:
+        ledger_payload["cost_usd"] = cost_usd
 
     ledger_logger = (
         metadata.get("ledger_logger") if isinstance(metadata, Mapping) else None
@@ -461,18 +489,19 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
 
     ledger.record(ledger_payload)
 
-    _safe_update_observation(
-        metadata={
-            "status": "success",
-            "model.id": model_id,
-            "usage.prompt_tokens": prompt_tokens,
-            "usage.completion_tokens": completion_tokens,
-            "usage.total_tokens": total_tokens,
-            "cost.usd": cost_usd,
-            "latency_ms": latency_ms,
-            "cache_hit": cache_hit,
-            "input.masked_prompt": masked_prompt_preview,
-        }
-    )
+    observation_metadata = {
+        "status": "success",
+        "model.id": model_id,
+        "usage.prompt_tokens": prompt_tokens,
+        "usage.completion_tokens": completion_tokens,
+        "usage.total_tokens": total_tokens,
+        "latency_ms": latency_ms,
+        "cache_hit": cache_hit,
+        "input.masked_prompt": masked_prompt_preview,
+    }
+    if cost_usd is not None:
+        observation_metadata["cost.usd"] = cost_usd
+
+    _safe_update_observation(metadata=observation_metadata)
 
     return result
