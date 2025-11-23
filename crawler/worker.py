@@ -264,14 +264,37 @@ class CrawlerWorker:
         crawl_id: Optional[str],
         document_id: Optional[str],
     ) -> Tuple[str, str, int]:
-        writer = self._blob_writer_factory(
-            tenant_id,
-            case_id,
-            crawl_id,
-            document_id,
+        writer = self._blob_writer_for(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
+            scope="raw",
         )
         uri, checksum, size = writer.put(payload)
         return uri, checksum, size
+
+    def _blob_writer_for(
+        self,
+        *,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+        scope: str,
+    ) -> BlobWriter:
+        try:
+            return self._blob_writer_factory(
+                tenant_id, case_id, crawl_id, document_id, scope=scope
+            )
+        except TypeError:
+            if scope != "raw":
+                return self._default_blob_writer_factory(
+                    tenant_id, case_id, crawl_id, document_id, scope=scope
+                )
+            return self._blob_writer_factory(
+                tenant_id, case_id, crawl_id, document_id
+            )
 
     def _default_blob_writer_factory(
         self,
@@ -279,6 +302,8 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         document_id: Optional[str],
+        *,
+        scope: str = "raw",
     ) -> BlobWriter:
         safe_tenant = self._safe_identifier(tenant_id, "tenant")
         safe_case = self._safe_identifier(case_id, "case")
@@ -287,7 +312,7 @@ class CrawlerWorker:
             self._safe_identifier(document_id, "document") if document_id else None
         )
 
-        path_parts = [safe_tenant, safe_case, "crawler", "raw"]
+        path_parts = [safe_tenant, safe_case, "crawler", scope]
         if safe_crawl:
             path_parts.append(safe_crawl)
         if safe_document:
@@ -531,27 +556,16 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         document_id: Optional[str],
-    ) -> str:
-        safe_tenant = self._safe_identifier(tenant_id, "tenant")
-        safe_case = self._safe_identifier(case_id, "case")
-        safe_crawl = self._safe_identifier(crawl_id, "crawl") if crawl_id else None
-        safe_document = (
-            self._safe_identifier(document_id, "document") if document_id else None
+        ) -> str:
+        writer = self._blob_writer_for(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
+            scope="assets",
         )
-
-        filename = locator or sha256
-        try:
-            filename = object_store.safe_filename(filename)
-        except Exception:
-            filename = sha256
-        path_parts = [safe_tenant, safe_case, "crawler", "assets"]
-        if safe_crawl:
-            path_parts.append(safe_crawl)
-        if safe_document:
-            path_parts.append(safe_document)
-        relative_path = "/".join((*path_parts, filename))
-        self._blob_writer(relative_path, payload)
-        return relative_path
+        uri, *_rest = writer.put(payload)
+        return uri
 
 
 __all__ = ["CrawlerWorker", "WorkerPublishResult"]
