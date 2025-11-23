@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import mimetypes
 from dataclasses import dataclass
@@ -202,7 +203,7 @@ class CrawlerWorker:
             document_id=document_id or raw_meta.get("document_id"),
         )
         if assets:
-            state["assets"] = assets
+            state["assets"] = [self._serialize_asset(asset) for asset in assets]
         return state
 
     def _resolve_source(
@@ -349,6 +350,26 @@ class CrawlerWorker:
             payload["status_code"] = error.status_code
         if error.attributes:
             payload["attributes"] = dict(error.attributes)
+        return payload
+
+    @staticmethod
+    def _serialize_asset(asset: AssetIngestPayload) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "media_type": asset.media_type,
+            "metadata": dict(asset.metadata),
+        }
+        if asset.content is not None:
+            payload["content"] = base64.b64encode(asset.content).decode("ascii")
+        if asset.file_uri is not None:
+            payload["file_uri"] = asset.file_uri
+        if asset.page_index is not None:
+            payload["page_index"] = asset.page_index
+        if asset.bbox is not None:
+            payload["bbox"] = list(asset.bbox)
+        if asset.context_before is not None:
+            payload["context_before"] = asset.context_before
+        if asset.context_after is not None:
+            payload["context_after"] = asset.context_after
         return payload
 
     def _extract_assets(

@@ -341,16 +341,16 @@ def test_worker_extracts_image_assets(tmp_path, monkeypatch) -> None:
     assert assets and len(assets) == 1
 
     asset = assets[0]
-    assert isinstance(asset, AssetIngestPayload)
-    assert asset.media_type == "image/png"
-    assert asset.content is None
+    assert isinstance(asset, dict)
+    assert asset["media_type"] == "image/png"
+    assert asset.get("content") is None
 
-    meta = dict(asset.metadata)
+    meta = dict(asset["metadata"])
     assert meta["origin_uri"] == image_url
     assert meta["sha256"] == sha256_bytes(_SAMPLE_PNG)
     assert meta.get("perceptual_hash") == perceptual_hash(_SAMPLE_PNG)
     assert meta.get("caption_candidates") == [("alt_text", "Example image")]
 
-    assert asset.file_uri is not None
-    stored_bytes = (tmp_path / asset.file_uri).read_bytes()
+    assert asset.get("file_uri") is not None
+    stored_bytes = (tmp_path / asset["file_uri"]).read_bytes()
     assert stored_bytes == _SAMPLE_PNG
