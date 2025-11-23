@@ -7,7 +7,13 @@ from typing import Any, Mapping, MutableMapping
 from django.http import HttpRequest, HttpResponse, JsonResponse
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
-from ai_core.ids.contracts import normalize_trace_id
+from ai_core.contracts.scope import ScopeContext
+from ai_core.ids import (
+    coerce_trace_id,
+    normalize_case_header,
+    normalize_idempotency_key,
+    normalize_tenant_header,
+)
 from ai_core.infra.resp import apply_std_headers
 from customers.tenant_context import TenantContext, TenantRequiredError
 
@@ -22,6 +28,10 @@ class RequestContextMiddleware:
     TENANT_ID_HEADER = "HTTP_X_TENANT_ID"
     KEY_ALIAS_HEADER = "HTTP_X_KEY_ALIAS"
     IDEMPOTENCY_KEY_HEADER = "HTTP_IDEMPOTENCY_KEY"
+    INVOCATION_ID_HEADER = "HTTP_X_INVOCATION_ID"
+    RUN_ID_HEADER = "HTTP_X_RUN_ID"
+    INGESTION_RUN_ID_HEADER = "HTTP_X_INGESTION_RUN_ID"
+    WORKFLOW_ID_HEADER = "HTTP_X_WORKFLOW_ID"
     FORWARDED_FOR_HEADER = "HTTP_X_FORWARDED_FOR"
     REMOTE_ADDR_HEADER = "REMOTE_ADDR"
 
@@ -32,13 +42,16 @@ class RequestContextMiddleware:
         clear_contextvars()
         try:
             meta = self._gather_metadata(request)
+        except TenantRequiredError as exc:
+            return self._tenant_required_response(exc)
+        except ValueError as exc:
+            return JsonResponse({"detail": str(exc)}, status=400)
+        else:
             bind_contextvars(**meta["log_context"])
 
             response = self.get_response(request)
             response = apply_std_headers(response, meta["response_meta"])
             return response
-        except TenantRequiredError as exc:
-            return self._tenant_required_response(exc)
         finally:
             clear_contextvars()
 
@@ -49,15 +62,22 @@ class RequestContextMiddleware:
 
         tenant = TenantContext.from_request(request, allow_headers=False, require=True)
         tenant_id = getattr(tenant, "schema_name", None)
-        case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
+        case_id = normalize_case_header(headers)
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
-        idempotency_key = self._normalize_header(
-            headers.get(self.IDEMPOTENCY_KEY_HEADER)
-        )
+        idempotency_key = normalize_idempotency_key(headers)
 
         http_method = request.method.upper() if request.method else ""
         http_route = self._resolve_route(request)
         client_ip = self._resolve_client_ip(headers)
+
+        scope_context = self._build_scope_context(
+            request,
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            idempotency_key=idempotency_key,
+        )
+        request.scope_context = scope_context
 
         log_context: dict[str, str] = {
             "trace.id": trace_id,
@@ -101,45 +121,80 @@ class RequestContextMiddleware:
 
     def _resolve_trace_and_span(self, request: HttpRequest) -> tuple[str, str | None]:
         """Resolve trace and span IDs from headers, query params, and body."""
-        meta: MutableMapping[str, Any] = {}
+        headers = request.META
         span_id: str | None = None
 
-        # 1. Headers
-        headers = request.META
-        meta["trace_id"] = self._normalize_header(headers.get(self.TRACE_ID_HEADER))
-
-        traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
-        if traceparent:
-            parts = traceparent.split("-")
-            if len(parts) >= 4:
-                meta["trace_id"] = self._normalize_w3c_id(parts[1])
-                span_id = self._normalize_w3c_id(parts[2])
-
-        # 2. Query Parameters
-        if not meta.get("trace_id"):
-            meta["trace_id"] = request.GET.get("trace_id")
-
-        # 3. Request Body (for JSON content type)
-        if (
-            not meta.get("trace_id")
-            and "application/json" in (request.content_type or "")
-            and request.body
-        ):
-            try:
-                data = json.loads(request.body)
-                if isinstance(data, dict):
-                    meta["trace_id"] = data.get("trace_id")
-            except json.JSONDecodeError:
-                pass  # Ignore malformed JSON
-
         try:
-            trace_id = normalize_trace_id(meta)
+            trace_id, span_id = coerce_trace_id(headers)
         except ValueError:
+            trace_id = None
+
+        if not trace_id:
+            meta: MutableMapping[str, Any] = {}
+            query_trace = request.GET.get("trace_id")
+            if query_trace:
+                meta["trace_id"] = query_trace
+            if (
+                not meta.get("trace_id")
+                and "application/json" in (request.content_type or "")
+                and request.body
+            ):
+                try:
+                    data = json.loads(request.body)
+                    if isinstance(data, dict):
+                        meta["trace_id"] = data.get("trace_id")
+                except json.JSONDecodeError:
+                    pass  # Ignore malformed JSON
+
+            if meta:
+                try:
+                    trace_id, _ = coerce_trace_id(meta)  # type: ignore[arg-type]
+                except ValueError:
+                    trace_id = None
+
+        if not trace_id:
             trace_id = uuid.uuid4().hex
             if not span_id:
                 span_id = uuid.uuid4().hex[:16]
 
         return trace_id, span_id
+
+    def _build_scope_context(
+        self,
+        request: HttpRequest,
+        *,
+        trace_id: str,
+        tenant_id: str | None,
+        case_id: str | None,
+        idempotency_key: str | None,
+    ) -> ScopeContext:
+        headers = request.META
+
+        invocation_id = self._normalize_header(headers.get(self.INVOCATION_ID_HEADER))
+        run_id = self._normalize_header(headers.get(self.RUN_ID_HEADER))
+        ingestion_run_id = self._normalize_header(
+            headers.get(self.INGESTION_RUN_ID_HEADER)
+        )
+        workflow_id = self._normalize_header(headers.get(self.WORKFLOW_ID_HEADER))
+
+        if run_id and ingestion_run_id:
+            raise ValueError("Exactly one of run_id or ingestion_run_id must be provided")
+
+        scope_kwargs = {
+            "tenant_id": tenant_id or normalize_tenant_header(headers),
+            "trace_id": trace_id,
+            "invocation_id": invocation_id or uuid.uuid4().hex,
+            "case_id": case_id,
+            "workflow_id": workflow_id,
+            "idempotency_key": idempotency_key,
+        }
+
+        if ingestion_run_id:
+            scope_kwargs["ingestion_run_id"] = ingestion_run_id
+        else:
+            scope_kwargs["run_id"] = run_id or trace_id
+
+        return ScopeContext.model_validate(scope_kwargs)
 
     @staticmethod
     def _normalize_header(value: Any) -> str | None:
@@ -149,15 +204,6 @@ class RequestContextMiddleware:
             stripped = value.strip()
             return stripped or None
         return str(value)
-
-    @staticmethod
-    def _normalize_w3c_id(value: str | None) -> str | None:
-        if not value:
-            return None
-        normalized = value.replace("-", "").strip().lower()
-        if normalized:
-            return normalized
-        return None
 
     @staticmethod
     def _resolve_route(request: HttpRequest) -> str:
