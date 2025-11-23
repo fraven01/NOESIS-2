@@ -6,14 +6,15 @@ import base64
 import hashlib
 import mimetypes
 from dataclasses import dataclass
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from lxml import html
 
 from ai_core.infra import object_store
+from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
-from common.assets import AssetIngestPayload
+from common.assets import AssetIngestPayload, BlobWriter
 from common.assets.hashing import perceptual_hash, sha256_bytes
 from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
 
@@ -50,14 +51,25 @@ class CrawlerWorker:
         ingestion_event_emitter: Optional[
             Callable[[str, Mapping[str, Any]], None]
         ] = None,
-        blob_writer: Optional[Callable[[str, bytes], Any]] = None,
+        blob_writer: Optional[BlobWriter] = None,
+        blob_writer_factory: Optional[
+            Callable[[str, Optional[str], Optional[str], Optional[str]], BlobWriter]
+        ] = None,
     ) -> None:
         if ingestion_task is None:
             ingestion_task = run_ingestion_graph
         self._fetcher = fetcher
         self._ingestion_task = ingestion_task
         self._ingestion_event_emitter = ingestion_event_emitter
-        self._blob_writer = blob_writer or object_store.put_bytes
+        if blob_writer is not None:
+            self._blob_writer_factory = (
+                blob_writer_factory
+                or (lambda *_args, **_kwargs: blob_writer)
+            )
+        else:
+            self._blob_writer_factory = (
+                blob_writer_factory or self._default_blob_writer_factory
+            )
 
     def process(
         self,
@@ -174,13 +186,16 @@ class CrawlerWorker:
             raw_meta["content_length"] = result.metadata.content_length
 
         payload_bytes = bytes(result.payload or b"")
-        payload_path = self._persist_payload(
+        payload_path, payload_checksum, payload_size = self._persist_payload(
             payload_bytes,
             tenant_id=tenant_id,
             case_id=case_id,
             crawl_id=crawl_id,
             document_id=document_id or raw_meta.get("document_id"),
         )
+
+        raw_meta.setdefault("content_hash", payload_checksum)
+        raw_meta.setdefault("content_length", payload_size)
 
         raw_document: dict[str, Any] = {
             "metadata": raw_meta,
@@ -248,7 +263,48 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         document_id: Optional[str],
-    ) -> str:
+    ) -> Tuple[str, str, int]:
+        writer = self._blob_writer_for(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
+            scope="raw",
+        )
+        uri, checksum, size = writer.put(payload)
+        return uri, checksum, size
+
+    def _blob_writer_for(
+        self,
+        *,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+        scope: str,
+    ) -> BlobWriter:
+        try:
+            return self._blob_writer_factory(
+                tenant_id, case_id, crawl_id, document_id, scope=scope
+            )
+        except TypeError:
+            if scope != "raw":
+                return self._default_blob_writer_factory(
+                    tenant_id, case_id, crawl_id, document_id, scope=scope
+                )
+            return self._blob_writer_factory(
+                tenant_id, case_id, crawl_id, document_id
+            )
+
+    def _default_blob_writer_factory(
+        self,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+        *,
+        scope: str = "raw",
+    ) -> BlobWriter:
         safe_tenant = self._safe_identifier(tenant_id, "tenant")
         safe_case = self._safe_identifier(case_id, "case")
         safe_crawl = self._safe_identifier(crawl_id, "crawl") if crawl_id else None
@@ -256,16 +312,12 @@ class CrawlerWorker:
             self._safe_identifier(document_id, "document") if document_id else None
         )
 
-        digest = hashlib.sha256(payload).hexdigest()
-        path_parts = [safe_tenant, safe_case, "crawler", "raw"]
+        path_parts = [safe_tenant, safe_case, "crawler", scope]
         if safe_crawl:
             path_parts.append(safe_crawl)
         if safe_document:
             path_parts.append(safe_document)
-        filename = f"{digest}.bin"
-        relative_path = "/".join((*path_parts, filename))
-        self._blob_writer(relative_path, payload)
-        return relative_path
+        return ObjectStoreBlobWriter(prefix=path_parts)
 
     @staticmethod
     def _safe_identifier(value: Optional[str], prefix: str) -> str:
@@ -504,27 +556,16 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         document_id: Optional[str],
-    ) -> str:
-        safe_tenant = self._safe_identifier(tenant_id, "tenant")
-        safe_case = self._safe_identifier(case_id, "case")
-        safe_crawl = self._safe_identifier(crawl_id, "crawl") if crawl_id else None
-        safe_document = (
-            self._safe_identifier(document_id, "document") if document_id else None
+        ) -> str:
+        writer = self._blob_writer_for(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id,
+            scope="assets",
         )
-
-        filename = locator or sha256
-        try:
-            filename = object_store.safe_filename(filename)
-        except Exception:
-            filename = sha256
-        path_parts = [safe_tenant, safe_case, "crawler", "assets"]
-        if safe_crawl:
-            path_parts.append(safe_crawl)
-        if safe_document:
-            path_parts.append(safe_document)
-        relative_path = "/".join((*path_parts, filename))
-        self._blob_writer(relative_path, payload)
-        return relative_path
+        uri, *_rest = writer.put(payload)
+        return uri
 
 
 __all__ = ["CrawlerWorker", "WorkerPublishResult"]
