@@ -38,6 +38,8 @@ def test_resolve_merges_base_and_override(tmp_path, monkeypatch):
     assert routing.resolve("default") == "override-default"
     with pytest.raises(ValueError):
         routing.resolve("missing")
+
+
 def test_llm_client_masks_records_and_retries(monkeypatch):
     metadata = {
         "tenant": "t1",

@@ -363,9 +363,7 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "provider.http_status": status_val,
             }
         )
-        raise LlmClientError(
-            detail or "LLM client error", status=status_val, code=code
-        )
+        raise LlmClientError(detail or "LLM client error", status=status_val, code=code)
 
     data = resp.json()
     cache_hit = _detect_cache_hit(resp, data if isinstance(data, Mapping) else {})

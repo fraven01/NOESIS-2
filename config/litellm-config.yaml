@@ -1,87 +1,51 @@
 general_settings:
-  require_auth: false
   master_key: os.environ/LITELLM_MASTER_KEY
-  default_model_max_tokens: 1024
+  default_model_max_tokens: 8192  # Erhöht für Gemini 3.0 / GPT-5
   proxy_port: 4000
-  num_retries: 1
-  pass_through_endpoints:
-    - path: /schedule/model_cost_map_reload/status
-      target: http://litellm:4000/schedule/model_cost_map_reload/status
-      auth: False
-router_settings:
   num_retries: 2
-  timeout: 60
-cache: true
-cache_params:
-  type: redis
-  host: noesis2_redis
-  port: 6379
 
 model_list:
+  # ---------------------------------------------------------
+  # GOOGLE (Direct / AI Studio) - State of the Art Nov 2025
+  # ---------------------------------------------------------
+  - model_name: gemini-3.0-pro
+    litellm_params:
+      model: gemini/gemini-3-pro-preview  # Release 18.11.2025
+      api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models: [gpt-5.1, claude-3-5-sonnet]
+
   - model_name: gemini-2.5-flash
     litellm_params:
-      model: gemini/gemini-2.5-flash
+      model: gemini/gemini-2.5-flash # Release Juni 2025
       api_key: os.environ/GEMINI_API_KEY
+
+  # ---------------------------------------------------------
+  # OPENAI (GPT-5 Series)
+  # ---------------------------------------------------------
+  - model_name: gpt-5-nano
+    litellm_params:
+      model: openai/gpt-5-nano  # Korrekter Slug für Nano
+      api_key: os.environ/OPENAI_API_KEY
+      # Falls Nano noch in Preview ist, ggf. 'gpt-5-nano-preview' prüfen
     model_info:
-      fallback_models:
-        - openai/gpt-5-nano
-    routing_strategy: usage-based
-  - model_name: gemini-2.5-pro
+      fallback_models: [gemini-2.5-flash, claude-haiku-4.5]
+
+  - model_name: gpt-5.1
     litellm_params:
-      model: gemini/gemini-2.5-pro
-      api_key: os.environ/GEMINI_API_KEY
-    model_info:
-      fallback_models:
-        - gemini-2.5-flash
-        - openai/gpt-5-nano
-    routing_strategy: usage-based
-  - model_name: openai/oai-embed-large
-    litellm_params:
-      model: openai/text-embedding-3-large
+      model: openai/gpt-5.1     # Flagship
       api_key: os.environ/OPENAI_API_KEY
 
-  # 2. Das kostenguenzigste/effizienteste Modell
-  - model_name: openai/oai-embed-small
+  # ---------------------------------------------------------
+  # ANTHROPIC (Direct API)
+  # ---------------------------------------------------------
+  - model_name: claude-4-5-sonnet  # Legacy-Alias für die App behalten (optional)
     litellm_params:
-      model: openai/text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
+      # Die neue ID laut Anthropic Docs (Release 29.09.2025)
+      model: anthropic/claude-sonnet-4-5-20250929
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4.5
+    litellm_params:
+      model: anthropic/claude-3-5-haiku-latest # Oder claude-haiku-4.5 wenn verfügbar
+      api_key: os.environ/ANTHROPIC_API_KEY
 
-  # Optionaler Kurzalias fuer Kompatibilitaet
-  - model_name: oai-embed-large
-    litellm_params:
-      model: openai/text-embedding-3-large
-      api_key: os.environ/OPENAI_API_KEY
-
-  - model_name: oai-embed-small
-    litellm_params:
-      model: openai/text-embedding-3-small
-      api_key: os.environ/OPENAI_API_KEY
-
-  # Chat/Reasoning: OpenAI GPT-5 nano (Standard)
-  - model_name: openai/gpt-5-nano
-    litellm_params:
-      model: openai/gpt-5-nano
-      api_key: os.environ/OPENAI_API_KEY
-      extra_headers:
-        # Reasoning-Modus deaktivieren (niedrige Latenz für Reranking)
-        reasoning: "disabled"
-      drop_params: true
-    model_info:
-      fallback_models:
-        - gemini-2.5-flash
-        - gemini-2.5-pro
-    routing_strategy: usage-based
-
-  # Alias für kostengünstiges Reranking (nutzt obiges Modell)
-  - model_name: fast
-    litellm_params:
-      model: openai/gpt-5-nano
-      api_key: os.environ/OPENAI_API_KEY
-      extra_headers:
-        reasoning: "disabled"
-      drop_params: true
-    model_info:
-      fallback_models:
-        - openai/gpt-5-nano
-        - gemini-2.5-flash
-    routing_strategy: usage-based

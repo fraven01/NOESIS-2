@@ -54,6 +54,7 @@ services:
       - LITELLM_SALT_KEY=${LITELLM_SALT_KEY:-dev-salt-key}
       - GOOGLE_API_KEY=${GOOGLE_API_KEY}
       - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
       - DATABASE_URL=${LITELLM_DATABASE_URL:-postgresql://${DB_USER:-noesis2}:${DB_PASSWORD:-noesis2}@db:5432/litellm}
       - UI_USERNAME=${DB_USER:-noesis2}
       - UI_PASSWORD=${DB_PASSWORD:-noesis2}
