@@ -22,10 +22,19 @@ model_list:
     litellm_params:
       model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models:
+        - openai/gpt-5-nano
+    routing_strategy: usage-based
   - model_name: gemini-2.5-pro
     litellm_params:
       model: gemini/gemini-2.5-pro
       api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models:
+        - gemini-2.5-flash
+        - openai/gpt-5-nano
+    routing_strategy: usage-based
   - model_name: openai/oai-embed-large
     litellm_params:
       model: openai/text-embedding-3-large
@@ -57,6 +66,11 @@ model_list:
         # Reasoning-Modus deaktivieren (niedrige Latenz für Reranking)
         reasoning: "disabled"
       drop_params: true
+    model_info:
+      fallback_models:
+        - gemini-2.5-flash
+        - gemini-2.5-pro
+    routing_strategy: usage-based
 
   # Alias für kostengünstiges Reranking (nutzt obiges Modell)
   - model_name: fast
@@ -66,3 +80,8 @@ model_list:
       extra_headers:
         reasoning: "disabled"
       drop_params: true
+    model_info:
+      fallback_models:
+        - openai/gpt-5-nano
+        - gemini-2.5-flash
+    routing_strategy: usage-based
