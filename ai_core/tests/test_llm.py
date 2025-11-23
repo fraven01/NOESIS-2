@@ -10,7 +10,6 @@ import requests
 
 from ai_core.infra.mask_prompt import mask_prompt
 from ai_core.llm import routing
-from ai_core.llm.pricing import calculate_chat_completion_cost
 from ai_core.llm.client import LlmClientError, RateLimitError, call
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -39,17 +38,6 @@ def test_resolve_merges_base_and_override(tmp_path, monkeypatch):
     assert routing.resolve("default") == "override-default"
     with pytest.raises(ValueError):
         routing.resolve("missing")
-
-
-def test_calculate_chat_completion_cost_known_model():
-    cost = calculate_chat_completion_cost("vertex_ai/gemini-2.5-flash", 1000, 2000)
-    assert cost == pytest.approx(0.001575)
-
-
-def test_calculate_chat_completion_cost_unknown_model():
-    assert calculate_chat_completion_cost("unknown/model", 123, 456) == 0.0
-
-
 def test_llm_client_masks_records_and_retries(monkeypatch):
     metadata = {
         "tenant": "t1",
@@ -128,10 +116,10 @@ def test_llm_client_masks_records_and_retries(monkeypatch):
     assert res["prompt_version"] == "v1"
     assert ledger_calls["meta"]["label"] == "simple-query"
     assert ledger_calls["meta"]["tenant"] == "t1"
-    assert ledger_calls["meta"]["usage"]["prompt_tokens"] == 1
-    assert ledger_calls["meta"]["usage"]["completion_tokens"] == 1
-    assert ledger_calls["meta"]["usage"]["total_tokens"] == 2
-    assert ledger_calls["meta"]["usage"]["cost"]["usd"] == 0.0
+    assert ledger_calls["meta"]["usage"] == {
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+    }
     assert "text" not in ledger_calls["meta"]
     assert fail_once.calls == 2
     assert fail_once.idempotency_headers == ["c1:simple-query:v1", "c1:simple-query:v1"]
@@ -1043,7 +1031,7 @@ def test_llm_client_updates_observation_on_success(monkeypatch):
     prompt = "x" * 600
     result = call("simple-query", prompt, metadata)
 
-    assert result["usage"]["total_tokens"] == 60
+    assert result["usage"] == {"prompt_tokens": 20, "completion_tokens": 40}
     assert result["cache_hit"] is True
     assert result["latency_ms"] is not None
 
@@ -1055,8 +1043,6 @@ def test_llm_client_updates_observation_on_success(monkeypatch):
     assert success_meta["usage.prompt_tokens"] == 20
     assert success_meta["usage.completion_tokens"] == 40
     assert success_meta["usage.total_tokens"] == 60
-    expected_cost = calculate_chat_completion_cost(resolved_model, 20, 40)
-    assert success_meta["cost.usd"] == pytest.approx(expected_cost)
     assert success_meta["cache_hit"] is True
     assert len(success_meta["input.masked_prompt"]) == 512
     assert success_meta["input.masked_prompt"] == "x" * 512
