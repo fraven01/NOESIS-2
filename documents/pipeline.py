@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -38,7 +37,7 @@ from documents.contract_utils import (
 )
 from documents.asset_ingestion import AssetIngestionPipeline
 
-from PIL import Image, ImageOps
+from common.assets import AssetIngestPayload
 
 from . import metrics
 from .logging_utils import document_log_fields, log_extra_entry, log_extra_exit
@@ -786,27 +785,6 @@ def _external_kind_for_uri(uri: str) -> str:
     return "http"
 
 
-def _perceptual_hash(payload: bytes) -> Optional[str]:
-    """Return a simple average hash for ``payload`` if it looks like an image."""
-
-    try:
-        with Image.open(io.BytesIO(payload)) as img:
-            grey = ImageOps.grayscale(img)
-            resample_attr = getattr(Image, "Resampling", None)
-            resample = getattr(resample_attr, "LANCZOS", getattr(Image, "LANCZOS", 1))
-            resized = grey.resize((8, 8), resample=resample)
-            pixels = list(resized.getdata())
-    except Exception:  # pragma: no cover - fall back on unsupported formats
-        return None
-    if not pixels:
-        return None
-    average = sum(pixels) / len(pixels)
-    bits = 0
-    for value in pixels:
-        bits = (bits << 1) | int(value >= average)
-    return f"{bits:016x}"
-
-
 def _ensure_context_matches_document(
     context: DocumentProcessingContext, document: Any
 ) -> None:
@@ -856,9 +834,20 @@ def _persist_asset(
         contracts=contracts,
     )
 
+    ingest_payload = AssetIngestPayload(
+        media_type=parsed_asset.media_type,
+        metadata=getattr(parsed_asset, "metadata", {}) or {},
+        content=parsed_asset.content,
+        file_uri=parsed_asset.file_uri,
+        page_index=parsed_asset.page_index,
+        bbox=parsed_asset.bbox,
+        context_before=parsed_asset.context_before,
+        context_after=parsed_asset.context_after,
+    )
+
     return pipeline.persist_asset(
         index=index,
-        parsed_asset=parsed_asset,
+        asset_payload=ingest_payload,
         tenant_id=metadata.tenant_id,
         workflow_id=metadata.workflow_id,
         document_id=metadata.document_id,

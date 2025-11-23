@@ -7,22 +7,24 @@ Refactored from _persist_asset god-function into:
 - AssetIngestionPipeline: Orchestration
 """
 
-import hashlib
-import io
 from dataclasses import dataclass
 from typing import Optional, Any, Protocol, Sequence, Tuple, Mapping
 from uuid import UUID, uuid5
 
-from PIL import Image, ImageOps
+from common.assets import (
+    AssetIngestPayload,
+    BlobIO,
+    deterministic_asset_path,
+    perceptual_hash,
+    sha256_bytes,
+    sha256_text,
+)
 
 from documents.contract_utils import (
     normalize_string,
     normalize_optional_string,
     is_image_mediatype,
 )
-from .parsers import ParsedAsset
-
-
 # Caption source confidence mapping (from pipeline.py)
 _CAPTION_SOURCE_CONFIDENCE: dict[str, float] = {
     "alt_text": 1.0,
@@ -126,18 +128,6 @@ class BlobDescriptor:
     perceptual_hash: Optional[str] = None
 
 
-class StorageProtocol(Protocol):
-    """Duck-typed protocol for storage backends."""
-
-    def put(self, payload: bytes) -> Tuple[str, str, int]:
-        """Store bytes, return (uri, checksum, size)."""
-        ...
-
-    def get(self, uri: str) -> bytes:
-        """Retrieve bytes by URI."""
-        ...
-
-
 class BlobStorageAdapter:
     """Adapter for blob storage with hash computation.
 
@@ -147,7 +137,7 @@ class BlobStorageAdapter:
     - Perceptual hashing for images
     """
 
-    def __init__(self, storage: StorageProtocol):
+    def __init__(self, storage: BlobIO):
         """Initialize with storage backend.
 
         Args:
@@ -165,14 +155,14 @@ class BlobStorageAdapter:
         Returns:
             BlobDescriptor with checksum and storage metadata
         """
-        checksum = hashlib.sha256(content).hexdigest()
+        checksum = sha256_bytes(content)
         uri, storage_checksum, size = self._storage.put(content)
 
         if storage_checksum != checksum:
             raise ValueError("asset_checksum_mismatch")
 
-        perceptual_hash = (
-            self._compute_perceptual_hash(content)
+        perceptual_hash_value = (
+            perceptual_hash(content)
             if is_image_mediatype(media_type)
             else None
         )
@@ -187,7 +177,7 @@ class BlobStorageAdapter:
         return BlobDescriptor(
             checksum=checksum,
             payload_dict=payload_dict,
-            perceptual_hash=perceptual_hash,
+            perceptual_hash=perceptual_hash_value,
         )
 
     def store_file_uri(self, file_uri: str, media_type: str) -> BlobDescriptor:
@@ -207,9 +197,9 @@ class BlobStorageAdapter:
 
         if payload is not None:
             # File exists, compute content hash
-            checksum = hashlib.sha256(payload).hexdigest()
-            perceptual_hash = (
-                self._compute_perceptual_hash(payload)
+            checksum = sha256_bytes(payload)
+            perceptual_hash_value = (
+                perceptual_hash(payload)
                 if is_image_mediatype(media_type)
                 else None
             )
@@ -221,8 +211,8 @@ class BlobStorageAdapter:
             }
         else:
             # External URI, hash the URI itself
-            checksum = hashlib.sha256(file_uri.encode("utf-8")).hexdigest()
-            perceptual_hash = None
+            checksum = sha256_text(file_uri)
+            perceptual_hash_value = None
             from urllib.parse import urlparse
 
             parsed = urlparse(file_uri)
@@ -238,41 +228,8 @@ class BlobStorageAdapter:
         return BlobDescriptor(
             checksum=checksum,
             payload_dict=payload_dict,
-            perceptual_hash=perceptual_hash,
+            perceptual_hash=perceptual_hash_value,
         )
-
-    @staticmethod
-    def _compute_perceptual_hash(payload: bytes) -> Optional[str]:
-        """Compute average hash for image payload.
-
-        Args:
-            payload: Binary image data
-
-        Returns:
-            16-character hex hash or None if not an image
-        """
-        try:
-            with Image.open(io.BytesIO(payload)) as img:
-                grey = ImageOps.grayscale(img)
-                resample_attr = getattr(Image, "Resampling", None)
-                resample = getattr(
-                    resample_attr, "LANCZOS", getattr(Image, "LANCZOS", 1)
-                )
-                resized = grey.resize((8, 8), resample=resample)
-                pixels = list(resized.getdata())
-        except Exception:  # pragma: no cover - fall back on unsupported formats
-            return None
-
-        if not pixels:
-            return None
-
-        average = sum(pixels) / len(pixels)
-        bits = 0
-        for value in pixels:
-            bits = (bits << 1) | int(value >= average)
-
-        return f"{bits:016x}"
-
 
 class RepositoryProtocol(Protocol):
     """Duck-typed protocol for asset repositories."""
@@ -313,7 +270,7 @@ class AssetIngestionPipeline:
     def __init__(
         self,
         repository: RepositoryProtocol,
-        storage: StorageProtocol,
+        storage: BlobIO,
         contracts: Any,
         caption_resolver: Optional[CaptionResolver] = None,
     ):
@@ -334,18 +291,18 @@ class AssetIngestionPipeline:
     def persist_asset(
         self,
         index: int,
-        parsed_asset: ParsedAsset,
+        asset_payload: AssetIngestPayload,
         tenant_id: str,
         workflow_id: str,
         document_id: UUID,
         collection_id: str,
         created_at: Any,
     ) -> Any:
-        """Persist parsed asset with deduplication.
+        """Persist prepared asset payload with deduplication.
 
         Args:
             index: Asset index in document
-            parsed_asset: Parsed asset data
+            asset_payload: Asset ingest payload
             tenant_id: Tenant ID
             workflow_id: Workflow ID
             document_id: Parent document ID
@@ -356,16 +313,16 @@ class AssetIngestionPipeline:
             Stored asset object from repository
         """
         # 1. Extract metadata
-        asset_meta = self._extract_metadata(index, parsed_asset)
+        asset_meta = self._extract_metadata(index, asset_payload)
 
         # 2. Resolve caption
         caption_result = self._caption_resolver.resolve(asset_meta.raw_metadata)
 
         # 3. Store blob & compute checksums
-        blob_desc = self._store_blob(parsed_asset)
+        blob_desc = self._store_blob(asset_payload)
 
         # 4. Generate deterministic asset ID
-        asset_id = uuid5(document_id, f"asset:{asset_meta.locator}")
+        asset_id = uuid5(document_id, deterministic_asset_path(document_id, asset_meta.locator))
 
         # 5. Check for existing asset (deduplication)
         existing = self._repository.get_asset(
@@ -383,7 +340,7 @@ class AssetIngestionPipeline:
             collection_id=collection_id,
         )
 
-        bbox = list(parsed_asset.bbox) if parsed_asset.bbox is not None else None
+        bbox = list(asset_payload.bbox) if asset_payload.bbox is not None else None
 
         # Resolve origin_uri: prefer metadata, fallback to file_uri for external refs
         origin_uri = asset_meta.origin_uri
@@ -392,13 +349,13 @@ class AssetIngestionPipeline:
 
         asset_obj = self._contracts.asset(
             ref=asset_ref,
-            media_type=parsed_asset.media_type,
+            media_type=asset_payload.media_type,
             blob=blob_desc.payload_dict,
             origin_uri=origin_uri,
-            page_index=parsed_asset.page_index,
+            page_index=asset_payload.page_index,
             bbox=bbox,
-            context_before=parsed_asset.context_before,
-            context_after=parsed_asset.context_after,
+            context_before=asset_payload.context_before,
+            context_after=asset_payload.context_after,
             ocr_text=None,
             text_description=caption_result.text,
             caption_method=caption_result.method,
@@ -416,17 +373,17 @@ class AssetIngestionPipeline:
         stored = self._repository.add_asset(asset_obj, workflow_id=workflow_id)
         return stored
 
-    def _extract_metadata(self, index: int, parsed_asset: ParsedAsset) -> AssetMetadata:
+    def _extract_metadata(self, index: int, asset_payload: AssetIngestPayload) -> AssetMetadata:
         """Extract and normalize asset metadata.
 
         Args:
             index: Asset index (for fallback locator)
-            parsed_asset: Parsed asset
+            asset_payload: Asset ingest payload
 
         Returns:
             AssetMetadata with normalized fields
         """
-        metadata_payload_raw = getattr(parsed_asset, "metadata", None)
+        metadata_payload_raw = getattr(asset_payload, "metadata", None)
         if isinstance(metadata_payload_raw, Mapping):
             metadata_payload = dict(metadata_payload_raw)
         else:
@@ -468,11 +425,11 @@ class AssetIngestionPipeline:
             raw_metadata=metadata_payload,
         )
 
-    def _store_blob(self, parsed_asset: ParsedAsset) -> BlobDescriptor:
+    def _store_blob(self, asset_payload: AssetIngestPayload) -> BlobDescriptor:
         """Store blob content or reference.
 
         Args:
-            parsed_asset: Parsed asset
+            asset_payload: Asset ingest payload
 
         Returns:
             BlobDescriptor with checksum and payload metadata
@@ -480,14 +437,14 @@ class AssetIngestionPipeline:
         Raises:
             ValueError: If neither content nor file_uri is available
         """
-        if parsed_asset.content is not None:
+        if asset_payload.content is not None:
             # Binary content available
-            payload = bytes(parsed_asset.content)
-            return self._blob_adapter.store_content(payload, parsed_asset.media_type)
-        elif parsed_asset.file_uri is not None:
+            payload = bytes(asset_payload.content)
+            return self._blob_adapter.store_content(payload, asset_payload.media_type)
+        elif asset_payload.file_uri is not None:
             # File URI reference
             return self._blob_adapter.store_file_uri(
-                parsed_asset.file_uri, parsed_asset.media_type
+                asset_payload.file_uri, asset_payload.media_type
             )
         else:
-            raise ValueError("parsed_asset_location")
+            raise ValueError("asset_ingest_location")

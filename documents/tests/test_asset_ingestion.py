@@ -1,8 +1,9 @@
 """Unit tests for ``AssetIngestionPipeline`` behaviour."""
 
-import hashlib
 from types import SimpleNamespace
 from uuid import uuid4, uuid5
+
+from common.assets import AssetIngestPayload, deterministic_asset_path, sha256_bytes
 
 from documents.asset_ingestion import AssetIngestionPipeline, CaptionResult
 
@@ -14,7 +15,7 @@ class DummyStorage:
         self.put_calls = []
 
     def put(self, payload: bytes):
-        checksum = hashlib.sha256(payload).hexdigest()
+        checksum = sha256_bytes(payload)
         uri = f"store://{len(payload)}"
         self.put_calls.append(payload)
         return uri, checksum, len(payload)
@@ -125,18 +126,16 @@ class CaptionResolverStub:
         )
 
 
-class ParsedAssetStub:
-    """Minimal parsed asset for pipeline tests."""
-
-    def __init__(self, content: bytes, metadata=None):
-        self.content = content
-        self.file_uri = None
-        self.media_type = "application/octet-stream"
-        self.metadata = metadata or {}
-        self.bbox = (0, 0, 1, 1)
-        self.page_index = 0
-        self.context_before = "before"
-        self.context_after = "after"
+def _payload(content: bytes, metadata: dict | None = None) -> AssetIngestPayload:
+    return AssetIngestPayload(
+        media_type="application/octet-stream",
+        content=content,
+        metadata=metadata or {},
+        bbox=(0, 0, 1, 1),
+        page_index=0,
+        context_before="before",
+        context_after="after",
+    )
 
 
 def _create_pipeline(existing_asset=None):
@@ -156,12 +155,12 @@ def _create_pipeline(existing_asset=None):
 def test_persist_asset_stores_new_asset():
     """Happy path stores blob, builds asset, and persists it."""
     pipeline, repository, storage, contracts, resolver = _create_pipeline()
-    parsed_asset = ParsedAssetStub(content=b"payload", metadata={"locator": "img-01"})
+    parsed_asset = _payload(content=b"payload", metadata={"locator": "img-01"})
     document_id = uuid4()
 
     stored = pipeline.persist_asset(
         index=0,
-        parsed_asset=parsed_asset,
+        asset_payload=parsed_asset,
         tenant_id="tenant-test",
         workflow_id="upload",
         document_id=document_id,
@@ -174,7 +173,9 @@ def test_persist_asset_stores_new_asset():
     assert stored is not None
     assert contracts.created_refs, "Contracts.asset_ref must be invoked"
     generated_asset_id = contracts.created_refs[-1].asset_id
-    expected_asset_id = uuid5(document_id, "asset:img-01")
+    expected_asset_id = uuid5(
+        document_id, deterministic_asset_path(document_id, "img-01")
+    )
     assert generated_asset_id == expected_asset_id
     assert repository.get_args, "Pipeline should check for duplicate assets"
     assert storage.put_calls, "Blob storage should be invoked for binary content"
@@ -182,9 +183,9 @@ def test_persist_asset_stores_new_asset():
 
 def test_persist_asset_returns_existing_on_duplicate():
     """Deduplication path returns cached asset when checksum matches."""
-    parsed_asset = ParsedAssetStub(content=b"payload", metadata={"locator": "dup"})
+    parsed_asset = _payload(content=b"payload", metadata={"locator": "dup"})
     document_id = uuid4()
-    checksum = hashlib.sha256(parsed_asset.content).hexdigest()
+    checksum = sha256_bytes(parsed_asset.content)
     existing_asset = SimpleNamespace(checksum=checksum, reused=True)
 
     pipeline, repository, storage, _, _ = _create_pipeline(
@@ -193,7 +194,7 @@ def test_persist_asset_returns_existing_on_duplicate():
 
     result = pipeline.persist_asset(
         index=1,
-        parsed_asset=parsed_asset,
+        asset_payload=parsed_asset,
         tenant_id="tenant-test",
         workflow_id="upload",
         document_id=document_id,
