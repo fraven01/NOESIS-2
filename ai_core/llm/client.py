@@ -1,12 +1,8 @@
 from __future__ import annotations
 
-import datetime
-import math
-import random
-import time
-from email.utils import parsedate_to_datetime
-from typing import Any, Dict, Mapping, Sequence
 import os
+import time
+from typing import Any, Dict, Mapping, Sequence
 
 import requests
 
@@ -14,24 +10,17 @@ from ai_core.infra.config import get_config
 from ai_core.infra.observability import observe_span, update_observation
 from ai_core.infra import ledger
 from ai_core.llm.pricing import calculate_chat_completion_cost
-from common.logging import get_logger, mask_value
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
     X_KEY_ALIAS_HEADER,
-    X_RETRY_ATTEMPT_HEADER,
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )
+from common.logging import get_logger, mask_value
 from .routing import resolve
 
 logger = get_logger(__name__)
-
-
-# Conservative defaults to avoid web worker timeouts in dev/prod.
-# Projects can override via LITELLM_TIMEOUTS env (see ai_core.infra.config).
-# "synthesize" often produces longer responses; align default with tests/expectations.
-DEFAULT_LABEL_TIMEOUTS: dict[str, int] = {"synthesize": 45}
 
 
 class LlmClientError(Exception):
@@ -231,14 +220,12 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
         "messages": [{"role": "user", "content": prompt}],
     }
     # Optional generation controls via ENV to keep latency predictable
-    default_max_tokens: int | None = None
     try:
         max_tokens_env = os.getenv("LITELLM_MAX_TOKENS")
         if max_tokens_env is not None:
             max_tokens_val = int(max_tokens_env)
             if max_tokens_val > 0:
                 payload["max_tokens"] = max_tokens_val
-                default_max_tokens = max_tokens_val
     except Exception:
         pass
     try:
@@ -248,21 +235,9 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Allow env override to fail fast during dev
-    max_retries = 3
-    try:
-        env_retries = os.getenv("LITELLM_MAX_RETRIES")
-        if env_retries is not None:
-            env_retries_i = int(env_retries)
-            if env_retries_i >= 0:
-                max_retries = env_retries_i
-    except Exception:
-        pass
     prompt_version = metadata.get("prompt_version") or "default"
     case_id = case_value or "unknown-case"
     idempotency_key = f"{case_id}:{label}:{prompt_version}"
-    default_timeout = DEFAULT_LABEL_TIMEOUTS.get(label, 20)
-    timeout = cfg.timeouts.get(label, default_timeout)
     log_extra = {
         "trace_id": mask_value(metadata.get("trace_id")),
         "case_id": mask_value(case_value),
@@ -281,217 +256,52 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     )
 
     status: int | None = None
-    extended_for_length = False
     text: str | None = None
     data: Dict[str, Any] | None = None
     finish_reason: str | None = None
     latency_ms: float | None = None
     cache_hit: bool | None = None
     masked_prompt_preview = _truncate(prompt, 512)
-    for attempt in range(max_retries):
-        resp: requests.Response | None = None
-        attempt_headers = headers.copy()
-        attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
-        if attempt > 0:
-            attempt_headers[X_RETRY_ATTEMPT_HEADER] = str(attempt + 1)
-        try:
-            start_ts = time.perf_counter()
-            resp = requests.post(
-                url, headers=attempt_headers, json=payload, timeout=timeout
-            )
-            latency_ms = (time.perf_counter() - start_ts) * 1000.0
-        except requests.RequestException as exc:
-            latency_ms = (time.perf_counter() - start_ts) * 1000.0
-            status = None
-            err = exc
-        else:
-            status = resp.status_code
-            err = None
-
-        if status and 500 <= status < 600:
-            logger.warning("llm 5xx response", extra={**log_extra, "status": status})
-            if attempt == max_retries - 1:
-                logger.warning(
-                    "llm retries exhausted", extra={**log_extra, "status": status}
-                )
-                payload = _safe_json(resp)
-                cache_hit = _detect_cache_hit(
-                    resp, payload if isinstance(payload, Mapping) else {}
-                )
-                detail = payload.get("detail") or _safe_text(resp)
-                status_val = payload.get("status") or status
-                code = payload.get("code")
-                _safe_update_observation(
-                    metadata={
-                        "status": "error",
-                        "model.id": model_id,
-                        "latency_ms": latency_ms,
-                        "cache_hit": cache_hit,
-                        "input.masked_prompt": masked_prompt_preview,
-                        "error.type": "LlmClientError",
-                        "error.message": _truncate(detail or "LLM client error", 256),
-                        "provider.http_status": status_val,
-                    }
-                )
-                raise LlmClientError(
-                    detail or "LLM client error", status=status_val, code=code
-                ) from None
-            time.sleep(min(5, 2**attempt))
-            continue
-
-        if err is not None:
-            logger.warning(
-                "llm request error",
-                exc_info=err,
-                extra={**log_extra, "status": status},
-            )
-            if attempt == max_retries - 1:
-                logger.warning(
-                    "llm retries exhausted", extra={**log_extra, "status": status}
-                )
-                _safe_update_observation(
-                    metadata={
-                        "status": "error",
-                        "model.id": model_id,
-                        "latency_ms": latency_ms,
-                        "cache_hit": cache_hit,
-                        "input.masked_prompt": masked_prompt_preview,
-                        "error.type": type(err).__name__,
-                        "error.message": _truncate(str(err) or "LLM client error", 256),
-                        "provider.http_status": status,
-                    }
-                )
-                raise LlmClientError(str(err) or "LLM client error") from err
-            time.sleep(min(5, 2**attempt))
-            continue
-
-        if status == 429:
-            logger.warning("llm rate limited", extra={**log_extra, "status": status})
-            if attempt == max_retries - 1:
-                logger.warning(
-                    "llm retries exhausted", extra={**log_extra, "status": status}
-                )
-                payload = _safe_json(resp)
-                cache_hit = _detect_cache_hit(
-                    resp, payload if isinstance(payload, Mapping) else {}
-                )
-                detail = payload.get("detail") or _safe_text(resp)
-                status_val = payload.get("status") or status
-                code = payload.get("code")
-                _safe_update_observation(
-                    metadata={
-                        "status": "error",
-                        "model.id": model_id,
-                        "latency_ms": latency_ms,
-                        "cache_hit": cache_hit,
-                        "input.masked_prompt": masked_prompt_preview,
-                        "error.type": "RateLimitError",
-                        "error.message": _truncate(detail or "LLM client error", 256),
-                        "provider.http_status": status_val,
-                    }
-                )
-                raise RateLimitError(
-                    detail or "LLM client error", status=status_val, code=code
-                ) from None
-
-            retry_after_raw = resp.headers.get("Retry-After") if resp else None
-            sleep_for: float | None = None
-            if retry_after_raw:
-                retry_after_raw = retry_after_raw.strip()
-                try:
-                    sleep_for = float(retry_after_raw)
-                except ValueError:
-                    try:
-                        retry_after_dt = parsedate_to_datetime(retry_after_raw)
-                    except (TypeError, ValueError):
-                        sleep_for = None
-                    else:
-                        if retry_after_dt.tzinfo is None:
-                            retry_after_dt = retry_after_dt.replace(
-                                tzinfo=datetime.timezone.utc
-                            )
-                        target_ts = retry_after_dt.timestamp()
-                        delta = target_ts - time.time()
-                        sleep_for = max(0.0, float(math.ceil(delta)))
-            if sleep_for is None:
-                base_delay = min(5, 2**attempt)
-                sleep_for = base_delay + random.uniform(0, 0.3)
-            time.sleep(max(0.0, sleep_for))
-            continue
-
-        if status and 400 <= status < 500:
-            logger.warning("llm 4xx response", extra={**log_extra, "status": status})
-            payload = _safe_json(resp)
-            cache_hit = _detect_cache_hit(
-                resp, payload if isinstance(payload, Mapping) else {}
-            )
-            detail = payload.get("detail") or _safe_text(resp)
-            status_val = payload.get("status") or status
-            code = payload.get("code")
-            _safe_update_observation(
-                metadata={
-                    "status": "error",
-                    "model.id": model_id,
-                    "latency_ms": latency_ms,
-                    "cache_hit": cache_hit,
-                    "input.masked_prompt": masked_prompt_preview,
-                    "error.type": "LlmClientError",
-                    "error.message": _truncate(detail or "LLM client error", 256),
-                    "provider.http_status": status_val,
-                }
-            )
-            raise LlmClientError(
-                detail or "LLM client error", status=status_val, code=code
-            )
-
-        data = resp.json()
-        cache_hit = _detect_cache_hit(resp, data if isinstance(data, Mapping) else {})
-        choices = data.get("choices") or []
-        if choices and isinstance(choices[0], Mapping):
-            raw_finish = choices[0].get("finish_reason")
-            finish_reason = str(raw_finish) if raw_finish is not None else None
-        try:
-            text = _coerce_choice_text(choices[0])
-        except (KeyError, IndexError, TypeError):
-            if (
-                finish_reason == "length"
-                and not extended_for_length
-                and (default_max_tokens or payload.get("max_tokens") or 0) < 4096
-            ):
-                current_max = payload.get("max_tokens")
-                if not current_max:
-                    current_max = default_max_tokens or 1024
-                new_max = int(min(max(current_max * 2, current_max + 512), 4096))
-                payload["max_tokens"] = new_max
-                extended_for_length = True
-                logger.info(
-                    "llm.extend_max_tokens",
-                    extra={
-                        **log_extra,
-                        "previous_max_tokens": current_max,
-                        "new_max_tokens": new_max,
-                    },
-                )
-                continue
-            message = "LLM response missing content"
-            if finish_reason:
-                message = f"{message} (finish_reason={finish_reason})"
-            logger.warning("llm.response_missing_content", extra=log_extra)
-            _safe_update_observation(
-                metadata={
-                    "status": "error",
-                    "model.id": model_id,
-                    "latency_ms": latency_ms,
-                    "cache_hit": cache_hit,
-                    "input.masked_prompt": masked_prompt_preview,
-                    "error.type": "LlmClientError",
-                    "error.message": _truncate(message, 256),
-                    "provider.http_status": status,
-                }
-            )
-            raise LlmClientError(message, status=status) from None
-        break
+    resp: requests.Response | None = None
+    attempt_headers = headers.copy()
+    attempt_headers[IDEMPOTENCY_KEY_HEADER] = idempotency_key
+    try:
+        start_ts = time.perf_counter()
+        resp = requests.post(url, headers=attempt_headers, json=payload)
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+    except requests.RequestException as exc:
+        latency_ms = (time.perf_counter() - start_ts) * 1000.0
+        status = None
+        logger.warning(
+            "llm request error",
+            exc_info=exc,
+            extra={**log_extra, "status": status},
+        )
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": type(exc).__name__,
+                "error.message": _truncate(str(exc) or "LLM client error", 256),
+                "provider.http_status": status,
+            }
+        )
+        raise LlmClientError(str(exc) or "LLM client error") from exc
     else:
+        status = resp.status_code
+
+    if status and 500 <= status < 600:
+        logger.warning("llm 5xx response", extra={**log_extra, "status": status})
+        payload_json = _safe_json(resp)
+        cache_hit = _detect_cache_hit(
+            resp, payload_json if isinstance(payload_json, Mapping) else {}
+        )
+        detail = payload_json.get("detail") or _safe_text(resp)
+        status_val = payload_json.get("status") or status
+        code = payload_json.get("code")
         _safe_update_observation(
             metadata={
                 "status": "error",
@@ -500,11 +310,90 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 "cache_hit": cache_hit,
                 "input.masked_prompt": masked_prompt_preview,
                 "error.type": "LlmClientError",
-                "error.message": "LLM client error",
+                "error.message": _truncate(detail or "LLM client error", 256),
+                "provider.http_status": status_val,
+            }
+        )
+        raise LlmClientError(
+            detail or "LLM client error", status=status_val, code=code
+        ) from None
+
+    if status == 429:
+        logger.warning("llm rate limited", extra={**log_extra, "status": status})
+        payload_json = _safe_json(resp)
+        cache_hit = _detect_cache_hit(
+            resp, payload_json if isinstance(payload_json, Mapping) else {}
+        )
+        detail = payload_json.get("detail") or _safe_text(resp)
+        status_val = payload_json.get("status") or status
+        code = payload_json.get("code")
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "RateLimitError",
+                "error.message": _truncate(detail or "LLM client error", 256),
+                "provider.http_status": status_val,
+            }
+        )
+        raise RateLimitError(
+            detail or "LLM client error", status=status_val, code=code
+        ) from None
+
+    if status and 400 <= status < 500:
+        logger.warning("llm 4xx response", extra={**log_extra, "status": status})
+        payload_json = _safe_json(resp)
+        cache_hit = _detect_cache_hit(
+            resp, payload_json if isinstance(payload_json, Mapping) else {}
+        )
+        detail = payload_json.get("detail") or _safe_text(resp)
+        status_val = payload_json.get("status") or status
+        code = payload_json.get("code")
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmClientError",
+                "error.message": _truncate(detail or "LLM client error", 256),
+                "provider.http_status": status_val,
+            }
+        )
+        raise LlmClientError(
+            detail or "LLM client error", status=status_val, code=code
+        )
+
+    data = resp.json()
+    cache_hit = _detect_cache_hit(resp, data if isinstance(data, Mapping) else {})
+    choices = data.get("choices") or []
+    if choices and isinstance(choices[0], Mapping):
+        raw_finish = choices[0].get("finish_reason")
+        finish_reason = str(raw_finish) if raw_finish is not None else None
+    try:
+        text = _coerce_choice_text(choices[0])
+    except (KeyError, IndexError, TypeError):
+        message = "LLM response missing content"
+        if finish_reason:
+            message = f"{message} (finish_reason={finish_reason})"
+        logger.warning("llm.response_missing_content", extra=log_extra)
+        _safe_update_observation(
+            metadata={
+                "status": "error",
+                "model.id": model_id,
+                "latency_ms": latency_ms,
+                "cache_hit": cache_hit,
+                "input.masked_prompt": masked_prompt_preview,
+                "error.type": "LlmClientError",
+                "error.message": _truncate(message, 256),
                 "provider.http_status": status,
             }
         )
-        raise LlmClientError("LLM client error", status=status)
+        raise LlmClientError(message, status=status) from None
 
     choices = data.get("choices") or []
     try:
