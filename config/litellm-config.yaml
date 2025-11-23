@@ -8,6 +8,14 @@ general_settings:
     - path: /schedule/model_cost_map_reload/status
       target: http://litellm:4000/schedule/model_cost_map_reload/status
       auth: False
+router_settings:
+  num_retries: 2
+  timeout: 60
+cache: true
+cache_params:
+  type: redis
+  host: noesis2_redis
+  port: 6379
 
 model_list:
   - model_name: gemini-2.5-flash
