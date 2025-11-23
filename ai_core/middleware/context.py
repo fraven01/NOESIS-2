@@ -178,7 +178,9 @@ class RequestContextMiddleware:
         workflow_id = self._normalize_header(headers.get(self.WORKFLOW_ID_HEADER))
 
         if run_id and ingestion_run_id:
-            raise ValueError("Exactly one of run_id or ingestion_run_id must be provided")
+            raise ValueError(
+                "Exactly one of run_id or ingestion_run_id must be provided"
+            )
 
         scope_kwargs = {
             "tenant_id": tenant_id or normalize_tenant_header(headers),

@@ -58,4 +58,3 @@ def test_tool_context_from_scope_respects_xor_validation():
             run_id="run-1",
             ingestion_run_id="ingest-1",
         )
-

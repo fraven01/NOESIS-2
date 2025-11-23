@@ -1,4 +1,5 @@
 """Header normalization helpers for correlation IDs."""
+
 from __future__ import annotations
 
 from typing import Any, Callable, Iterable, Mapping, MutableMapping

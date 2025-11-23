@@ -1,4 +1,5 @@
 """Tests for header normalization utilities."""
+
 from __future__ import annotations
 
 from typing import Any
@@ -22,7 +23,9 @@ from ai_core.ids import (
         ({"x-tenant-id": "  "}, None),
     ],
 )
-def test_normalize_tenant_header_variants(headers: dict[str, Any], expected: str | None) -> None:
+def test_normalize_tenant_header_variants(
+    headers: dict[str, Any], expected: str | None
+) -> None:
     assert normalize_tenant_header(headers) == expected
 
 
@@ -35,7 +38,9 @@ def test_normalize_tenant_header_variants(headers: dict[str, Any], expected: str
         ({"x-case-id": ""}, None),
     ],
 )
-def test_normalize_case_header_variants(headers: dict[str, Any], expected: str | None) -> None:
+def test_normalize_case_header_variants(
+    headers: dict[str, Any], expected: str | None
+) -> None:
     assert normalize_case_header(headers) == expected
 
 

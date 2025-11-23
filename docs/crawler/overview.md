@@ -8,6 +8,7 @@ Aufbau der übrigen App-Dokumentationen.
 *Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für den heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flow.*
 
 ## Zweck
+
 - Erstellt deterministische Frontier-Entscheidungen auf Basis von Robots-,
   Politeness- und Failure-Signalen, damit Quellen nur dann besucht werden, wenn
   es Policies erlauben und Recrawl-Intervalle eingehalten werden.【F:crawler/frontier.py†L14-L218】
@@ -23,6 +24,7 @@ Aufbau der übrigen App-Dokumentationen.
   Delta-Metriken erzeugt.【F:crawler/worker.py†L105-L174】
 
 ## Ingestion-Graph
+
 ```mermaid
 flowchart TD
     U[update_status_normalized] --> G[enforce_guardrails]
@@ -48,6 +50,7 @@ flowchart TD
   das Artefakt-Set.【F:ai_core/graphs/crawler_ingestion_graph.py†L932-L1016】
 
 ## Kernverträge & Artefakte
+
 | Modul | Verantwortung | Schlüsselklassen |
 | --- | --- | --- |
 | `crawler.frontier` | Robots-Compliance, Recrawl-Intervalle, Failure-Backoff | `FrontierDecision`, `RobotsPolicy`, `HostPolitenessPolicy` |
@@ -56,7 +59,7 @@ flowchart TD
 | `crawler.fetcher` | Kanonischer Fetch-Contract inkl. Limits und Telemetrie | `FetchRequest`, `FetchResult`, `FetcherLimits` |
 | `crawler.http_fetcher` | Streaming-HTTP-Client mit Retries und User-Agent-Steuerung | `HttpFetcher`, `HttpFetcherConfig`, `FetchRetryPolicy` |
 | `documents.api` | Normalisierte Dokumente und Provider-Referenzen | `NormalizedDocumentPayload`, `normalize_from_raw` |
-| `ai_core/graphs` (vormals `documents.processing_graph`) | LangGraph-Orchestrierung von Parsing, Chunking und Artefakt-Phasen | `DocumentProcessingPhase`, `DocumentProcessingState`, `build_document_processing_graph` |
+| `documents.processing_graph` | LangGraph-Orchestrierung von Parsing, Chunking und Artefakt-Phasen | `DocumentProcessingPhase`, `DocumentProcessingState`, `build_document_processing_graph` |
 | `documents.pipeline` | Graph-Konfiguration, Kontext und Statusübergänge | `DocumentPipelineConfig`, `DocumentProcessingMetadata`, `DocumentProcessingContext` |
 | `ai_core.rag.delta` | Hashing & Near-Duplicate-Detektion | `DeltaDecision`, `DeltaSignatures`, `NearDuplicateSignature` |
 | `ai_core.api` | Guardrail-Auswertung, Delta-Entscheidungen & API-Brücke zum Graph | `enforce_guardrails`, `decide_delta`, `trigger_embedding` |
@@ -182,6 +185,7 @@ werden. `extra="forbid"` verhindert unbeabsichtigte Zusatzfelder.
 | `collection_id` | Optionale Collection-Referenz | `str \| None` | `None` | Optional | `type_error.str` |
 | `document_id` | Dokument-Referenz (falls abweichend) | `str \| None` | `None` | Optional | – |
 | `lifecycle_state` | Lifecycle des Chunks | `str \| None` | `None` | Optional | – |
+| `trace_id` | Distributed Tracing ID | `str \| None` | `None` | Optional | `type_error.str` |
 
 ### CrawlerRunLimits {#crawlerrunlimits}
 
@@ -301,6 +305,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
 ```
 
 ## Normalisierung & Delta
+
 - Der Worker legt Rohbytes im Object-Store ab und reicht nur noch den Pfad als
   `payload_path` durch. Die Normalisierung lädt diese Bytes transparent oder
   akzeptiert weiterhin Inline-Payloads (`payload_bytes`, `payload_base64`),
@@ -323,6 +328,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
   des Vector-Clients.【F:ai_core/rag/delta.py†L59-L111】【F:ai_core/rag/vector_client.py†L60-L220】
 
 ## Ingestion, Retire & Lifecycle
+
 - Der LangGraph `CrawlerIngestionGraph` kombiniert Normalisierung, Delta-Status
   und optionale Lifecycle-Regeln. Statt eigener Payload-Klassen liefert die
   Entscheidung heute ein generisches `Decision`-Objekt mit validiertem
@@ -339,6 +345,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
   dieselbe Semantik verwenden.【F:crawler/errors.py†L1-L41】
 
 ## Konfiguration & Betriebsschalter
+
 - **User Agent**: `CRAWLER_HTTP_USER_AGENT` kann in Django-Settings oder via
   Environment überschrieben werden. Fallback ist `noesis-crawler/1.0`.【F:noesis2/settings/base.py†L202-L202】【F:crawler/http_fetcher.py†L13-L45】
 - **Fetcher Limits**: `FetcherLimits` decken Bytes-Limits, Timeouts und
@@ -355,6 +362,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
   Manual-Override-Signale.【F:crawler/frontier.py†L55-L115】
 
 ## Telemetrie & Fehlerhandhabung
+
 - Die LangGraph-Knoten `_run_update_status`, `_run_guardrails`,
   `_run_document_pipeline`, `_run_ingest_decision` und `_run_ingestion`
   erzeugen strukturierte Artefakte (`status_update`, `guardrail_decision`,
@@ -377,6 +385,7 @@ kopiert Defaults in jede Origin. Zusätzliche Felder werden ignoriert.
   ein.【F:documents/repository.py†L160-L238】
 
 ## Erweiterungshinweise
+
 - Neue Provider sollten Provider-Tags über `ProviderReference` normalisieren und
   sie im Dokumenten-Graph-Kontext weiterreichen; `DocumentProcessingMetadata`
   und `DocumentProcessingState` übernehmen die Referenzen unverändert in

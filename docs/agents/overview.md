@@ -1,45 +1,68 @@
-# Warum
-Agenten orchestrieren den Zugriff auf Retrieval und Aktionen. Diese Übersicht erklärt, wie LangGraph eingebettet wird, welche Guardrails gelten und wie Requests aus der Web-App verarbeitet werden.
+# Agent Architecture Overview
 
-# Wie
-## Kontrollfluss
+This document outlines the architecture of agents in NOESIS 2, specifically focusing on the `RetrievalAugmentedGenerationGraph` and `ExternalKnowledgeGraph`.
+
+## Core Concepts
+
+Agents are implemented as graphs (using LangGraph concepts) that orchestrate the flow of data between:
+
+1. **Nodes**: Functional units (e.g., Retrieval, Composition, Web Search).
+2. **Workers**: Specialized tools (e.g., `WebSearchWorker`).
+3. **LLMs**: Language models for reasoning and generation.
+
+## Graphs
+
+### 1. Retrieval Augmented Generation (RAG)
+
+**Location**: [`ai_core/graphs/retrieval_augmented_generation.py`](../../ai_core/graphs/retrieval_augmented_generation.py)
+
+This graph implements the standard RAG flow:
+
+1. **Retrieve**: Fetches relevant documents using `RetrieveNode` (implemented by `retrieve.run`).
+2. **Compose**: Generates an answer using `ComposeNode` (implemented by `compose.run`).
+
+**Flow**:
+
 ```mermaid
-sequenceDiagram
-    participant Web as Web-Service
-    participant Queue as Celery Queue
-    participant Agent as LangGraph Agent
-    participant Retriever as PGVector Retriever
-    participant Tools as Tools (Django, APIs)
-    participant LLM as LiteLLM
-    Web->>Queue: Task `agents.run`
-    Queue->>Agent: Starte Graph mit State `{tenant_id, trace_id}`
-    Agent->>Retriever: Suche relevante Chunks
-    Agent->>Tools: Führe Aktion aus (z.B. DB-Lookup)
-    Agent->>LLM: Frage Modell mit Kontext
-    LLM-->>Agent: Completion
-    Agent-->>Queue: Ergebnis + Logs
-    Queue-->>Web: Antwort speichern
+graph LR
+    Input --> RetrieveNode
+    RetrieveNode --> ComposeNode
+    ComposeNode --> Output
 ```
 
-Jeder Aufruf muss den Header `X-Tenant-ID` setzen. `X-Case-ID` und `Idempotency-Key` sind optional. Die Werte werden in `meta` übernommen, sodass der Graph tenant-spezifisch arbeitet und doppelte POSTs anhand des `Idempotency-Key` ignorieren kann.
+### 2. External Knowledge Graph
 
-## Knoten und Guardrails
-| Node | Aufgabe | Guardrail |
-| --- | --- | --- |
-| RetrievalNode | Ruft `pgvector` über LangChain Retriever | Erzwingt `tenant_id` Filter, max 5 Ergebnisse |
-| ReasonNode | Bewertet Ergebnisse, entscheidet nächsten Schritt | Bricht ab, wenn keine Treffer (`fallback=true`) |
-| ActNode | Führt Tools aus (z.B. Django Services) | Timeout 30s, idempotente Aufrufe |
-| LLMNode | Sendet Prompt an LiteLLM | Verwendet `prompt_version` aus Config, maskiert PII |
+**Location**: [`ai_core/graphs/external_knowledge_graph.py`](../../ai_core/graphs/external_knowledge_graph.py)
 
-Agenten sind plattformweit; keine tenantspezifischen Prompts oder Tools im Startzustand. Tenancy greift ausschließlich im Retriever-Filter, `prompt_version` wird zentral in der Plattformkonfiguration gepflegt.
+This graph handles web search, result filtering, and optional Human-In-The-Loop (HITL) review.
 
-## Tools, Cancellations und Tests
-- Tools definieren sich als LangChain-Tools mit klarer Input/Output-Spezifikation; Beispiele: `fetch_case`, `update_status`.
-- Cancellation: Jeder Node prüft `state["cancel"]`; falls gesetzt, beendet der Graph ohne weitere LLM-Calls.
-- Fehler propagieren als `ToolError` und landen in Langfuse mit Trace-Tags `error_type`/`tenant_id`.
-- Tests: Unit-Tests simulieren Nodes mit `FakeRetriever`, Integrationstests laufen über Docker Compose inklusive LiteLLM Stub; E2E (siehe [CI/CD-Dokumentation](../cicd/pipeline.md)) ruft den Agentenpfad vollständig.
+**Nodes**:
 
-# Schritte
-1. Implementiere Nodes gemäß Tabelle und dokumentiere sie mit `prompt_version` und Guardrails.
-2. Verdrahte den Web-Aufruf mit Celery Queue `agents` und halte die Tool-Registrierung plattformweit, bevor Deployments erfolgen.
-3. Überwache Traces via [Langfuse Observability](../observability/langfuse.md) und aktualisiere Guardrails nach jedem Incident-Review.
+* `_k_search`: Executes web search using `WebSearchWorker`.
+* `_k_filter_and_select`: Filters results and selects the best candidate.
+* `_k_hitl_gate`: Manages manual review if enabled.
+* `_k_trigger_ingestion`: Triggers ingestion of selected content.
+
+### 3. Hybrid Search & Score
+
+**Location**: [`llm_worker/graphs/hybrid_search_and_score.py`](../../llm_worker/graphs/hybrid_search_and_score.py)
+
+This graph (running in `llm_worker`) performs advanced reranking of search results using RRF (Reciprocal Rank Fusion) and LLM scoring.
+
+## Contracts
+
+* **Tool Contracts**: Defines the envelope for tool inputs/outputs (`ToolContext`, `ToolResult`). See [Tool Contracts](./tool-contracts.md).
+* **Reranking Contracts**: Defines data structures for reranking (`ScoringContext`, `HybridResult`). See [Reranking Contracts](./reranking-contracts.md).
+* **Web Search**: Defines `WebSearchWorker` interfaces. See [Web Search Tool](./web-search-tool.md).
+
+## Tenancy & Context
+
+All agents and tools operate within a strict multi-tenant context defined by `ToolContext`:
+
+* `tenant_id`: Mandatory for all operations.
+* `trace_id`: For observability (Langfuse).
+* `case_id`: Links operations to a specific business case.
+
+## Observability
+
+Tracing is integrated via `ai_core.infra.observability`. Spans are recorded for graph executions, node transitions, and tool calls.

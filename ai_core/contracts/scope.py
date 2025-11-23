@@ -44,7 +44,9 @@ class ScopeContext(BaseModel):
         has_ingestion_run_id = bool(self.ingestion_run_id)
 
         if has_run_id == has_ingestion_run_id:
-            raise ValueError("Exactly one of run_id or ingestion_run_id must be provided")
+            raise ValueError(
+                "Exactly one of run_id or ingestion_run_id must be provided"
+            )
 
         return self
 
