@@ -17,6 +17,7 @@ from documents import (
     DocumentPipelineConfig,
     DocxDocumentParser,
     HtmlDocumentParser,
+    ImageDocumentParser,
     MarkdownDocumentParser,
     ParserDispatcher,
     ParserRegistry,
@@ -398,6 +399,7 @@ def _build_parser_dispatcher() -> ParserDispatcher:
     registry.register(DocxDocumentParser())
     registry.register(PptxDocumentParser())
     registry.register(PdfDocumentParser())
+    registry.register(ImageDocumentParser())
     text_parser_cls = getattr(
         import_module("documents.parsers_text"), "TextDocumentParser"
     )

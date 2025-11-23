@@ -42,6 +42,7 @@ from .normalization import (  # noqa: F401
 )
 from .parsers_docx import DocxDocumentParser  # noqa: F401
 from .parsers_html import HtmlDocumentParser  # noqa: F401
+from .parsers_image import ImageDocumentParser  # noqa: F401
 from .parsers_markdown import MarkdownDocumentParser  # noqa: F401
 from .parsers_pdf import PdfDocumentParser  # noqa: F401
 from .parsers_pptx import PptxDocumentParser  # noqa: F401
@@ -89,6 +90,7 @@ __all__ = [
     "resolve_provider_reference",
     "DocxDocumentParser",
     "HtmlDocumentParser",
+    "ImageDocumentParser",
     "MarkdownDocumentParser",
     "PdfDocumentParser",
     "PptxDocumentParser",
