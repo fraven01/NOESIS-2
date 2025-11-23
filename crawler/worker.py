@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import mimetypes
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
+from urllib.parse import urljoin, urlparse
+
+from lxml import html
 
 from ai_core.infra import object_store
 from ai_core.tasks import run_ingestion_graph
+from common.assets import AssetIngestPayload
+from common.assets.hashing import perceptual_hash, sha256_bytes
 from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
 
 from .errors import CrawlerError
@@ -43,12 +50,14 @@ class CrawlerWorker:
         ingestion_event_emitter: Optional[
             Callable[[str, Mapping[str, Any]], None]
         ] = None,
+        blob_writer: Optional[Callable[[str, bytes], Any]] = None,
     ) -> None:
         if ingestion_task is None:
             ingestion_task = run_ingestion_graph
         self._fetcher = fetcher
         self._ingestion_task = ingestion_task
         self._ingestion_event_emitter = ingestion_event_emitter
+        self._blob_writer = blob_writer or object_store.put_bytes
 
     def process(
         self,
@@ -185,6 +194,16 @@ class CrawlerWorker:
         state["raw_document"] = raw_document
         state.setdefault("raw_payload_path", payload_path)
         state.setdefault("fetch", self._summarize_fetch(result))
+        assets = self._extract_assets(
+            result,
+            payload_bytes,
+            tenant_id=tenant_id,
+            case_id=case_id,
+            crawl_id=crawl_id,
+            document_id=document_id or raw_meta.get("document_id"),
+        )
+        if assets:
+            state["assets"] = [self._serialize_asset(asset) for asset in assets]
         return state
 
     def _resolve_source(
@@ -245,7 +264,7 @@ class CrawlerWorker:
             path_parts.append(safe_document)
         filename = f"{digest}.bin"
         relative_path = "/".join((*path_parts, filename))
-        object_store.put_bytes(relative_path, payload)
+        self._blob_writer(relative_path, payload)
         return relative_path
 
     @staticmethod
@@ -332,6 +351,180 @@ class CrawlerWorker:
         if error.attributes:
             payload["attributes"] = dict(error.attributes)
         return payload
+
+    @staticmethod
+    def _serialize_asset(asset: AssetIngestPayload) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "media_type": asset.media_type,
+            "metadata": dict(asset.metadata),
+        }
+        if asset.content is not None:
+            payload["content"] = base64.b64encode(asset.content).decode("ascii")
+        if asset.file_uri is not None:
+            payload["file_uri"] = asset.file_uri
+        if asset.page_index is not None:
+            payload["page_index"] = asset.page_index
+        if asset.bbox is not None:
+            payload["bbox"] = list(asset.bbox)
+        if asset.context_before is not None:
+            payload["context_before"] = asset.context_before
+        if asset.context_after is not None:
+            payload["context_after"] = asset.context_after
+        return payload
+
+    def _extract_assets(
+        self,
+        result: FetchResult,
+        payload: bytes,
+        *,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+    ) -> list[AssetIngestPayload]:
+        content_type = (result.metadata.content_type or "").lower()
+        if "html" not in content_type:
+            return []
+
+        try:
+            tree = html.fromstring(payload)
+        except Exception:
+            return []
+
+        base_url = result.request.canonical_source
+        assets: list[AssetIngestPayload] = []
+        seen_urls: set[str] = set()
+        for element in self._iter_image_elements(tree):
+            raw_src = element.get("src") or element.get("data-src")
+            normalized = self._normalize_asset_url(raw_src, base_url)
+            if normalized is None:
+                continue
+
+            if normalized in seen_urls:
+                continue
+            seen_urls.add(normalized)
+
+            asset_bytes, media_type = self._download_asset(normalized, result.request)
+            if asset_bytes is None or media_type is None:
+                continue
+
+            sha256 = sha256_bytes(asset_bytes)
+            perceptual = perceptual_hash(asset_bytes)
+            locator = self._asset_locator(normalized)
+            file_uri = self._persist_asset_blob(
+                asset_bytes,
+                locator,
+                sha256,
+                tenant_id=tenant_id,
+                case_id=case_id,
+                crawl_id=crawl_id,
+                document_id=document_id,
+            )
+            caption_candidates = []
+            alt_text = (element.get("alt") or "").strip()
+            if alt_text:
+                caption_candidates.append(("alt_text", alt_text))
+
+            metadata: dict[str, Any] = {
+                "origin_uri": normalized,
+                "locator": locator,
+                "caption_candidates": caption_candidates,
+                "sha256": sha256,
+            }
+            if perceptual:
+                metadata["perceptual_hash"] = perceptual
+
+            assets.append(
+                AssetIngestPayload(
+                    media_type=media_type,
+                    metadata=metadata,
+                    file_uri=file_uri,
+                    content=None,
+                )
+            )
+
+        return assets
+
+    @staticmethod
+    def _iter_image_elements(tree: html.HtmlElement) -> Iterable[html.HtmlElement]:
+        return tree.iterfind(".//img")
+
+    def _normalize_asset_url(self, raw: Optional[str], base_url: str) -> Optional[str]:
+        if raw is None:
+            return None
+        candidate = raw.strip()
+        if not candidate:
+            return None
+        joined = urljoin(base_url, candidate)
+        parsed = urlparse(joined)
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+        return joined
+
+    def _download_asset(
+        self, url: str, request: FetchRequest
+    ) -> tuple[Optional[bytes], Optional[str]]:
+        try:
+            fetch_result = self._fetcher.fetch(
+                FetchRequest(
+                    canonical_source=url,
+                    politeness=request.politeness,
+                    metadata=request.metadata,
+                )
+            )
+        except Exception:
+            return None, None
+
+        if fetch_result.status is not FetchStatus.FETCHED or not fetch_result.payload:
+            return None, None
+
+        media_type = fetch_result.metadata.content_type
+        if not media_type:
+            guessed, _ = mimetypes.guess_type(url)
+            media_type = guessed or "application/octet-stream"
+        return bytes(fetch_result.payload), media_type
+
+    def _asset_locator(self, url: str) -> str:
+        parsed = urlparse(url)
+        filename = parsed.path.rsplit("/", 1)[-1]
+        if filename:
+            try:
+                return object_store.safe_filename(filename)
+            except Exception:
+                pass
+        return parsed.hostname or "asset"
+
+    def _persist_asset_blob(
+        self,
+        payload: bytes,
+        locator: str,
+        sha256: str,
+        *,
+        tenant_id: str,
+        case_id: Optional[str],
+        crawl_id: Optional[str],
+        document_id: Optional[str],
+    ) -> str:
+        safe_tenant = self._safe_identifier(tenant_id, "tenant")
+        safe_case = self._safe_identifier(case_id, "case")
+        safe_crawl = self._safe_identifier(crawl_id, "crawl") if crawl_id else None
+        safe_document = (
+            self._safe_identifier(document_id, "document") if document_id else None
+        )
+
+        filename = locator or sha256
+        try:
+            filename = object_store.safe_filename(filename)
+        except Exception:
+            filename = sha256
+        path_parts = [safe_tenant, safe_case, "crawler", "assets"]
+        if safe_crawl:
+            path_parts.append(safe_crawl)
+        if safe_document:
+            path_parts.append(safe_document)
+        relative_path = "/".join((*path_parts, filename))
+        self._blob_writer(relative_path, payload)
+        return relative_path
 
 
 __all__ = ["CrawlerWorker", "WorkerPublishResult"]

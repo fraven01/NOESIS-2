@@ -9,6 +9,7 @@ from ai_core import tasks as ai_tasks
 from ai_core.graphs.crawler_ingestion_graph import GraphTransition
 from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
+from common.assets import AssetIngestPayload, perceptual_hash, sha256_bytes
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
     FetchMetadata,
@@ -27,17 +28,19 @@ def _build_fetch_result(
     payload: bytes | None = b"payload",
     error: CrawlerError | None = None,
     request_metadata: Mapping[str, object] | None = None,
+    content_type: str = "text/plain",
+    canonical_source: str = "https://example.com/docs",
 ) -> FetchResult:
     metadata = FetchMetadata(
         status_code=200,
-        content_type="text/plain",
+        content_type=content_type,
         etag="abc",
         last_modified="Wed, 21 Oct 2015 07:28:00 GMT",
         content_length=len(payload or b"") if payload is not None else None,
     )
     telemetry = FetchTelemetry(latency=0.42, bytes_downloaded=len(payload or b""))
     request = FetchRequest(
-        canonical_source="https://example.com/docs",
+        canonical_source=canonical_source,
         politeness=PolitenessContext(host="example.com"),
         metadata=request_metadata or {},
     )
@@ -61,6 +64,23 @@ class _StubFetcher:
     ) -> FetchResult:  # pragma: no cover - simple passthrough
         self.requests.append(request)
         return self.result
+
+
+class _MappingFetcher:
+    def __init__(self, mapping: Mapping[str, FetchResult]) -> None:
+        self.mapping = mapping
+        self.requests: list[FetchRequest] = []
+
+    def fetch(self, request: FetchRequest) -> FetchResult:
+        self.requests.append(request)
+        return self.mapping[request.canonical_source]
+
+
+_SAMPLE_PNG = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\x0cIDATx\x9cc`\x00\x00\x00\x02\x00\x01"
+    b"\xe2!\xbc3\x00\x00\x00\x00IEND\xaeB`\x82"
+)
 
 
 class _StubTask:
@@ -286,3 +306,51 @@ def test_worker_raises_without_source_metadata(tmp_path, monkeypatch) -> None:
         )
 
     assert str(excinfo.value) == "document_metadata.source_required"
+
+
+def test_worker_extracts_image_assets(tmp_path, monkeypatch) -> None:
+    page_url = "https://example.com/docs"
+    image_url = "https://example.com/assets/test.png"
+    html_body = b"<html><body><img src=\"/assets/test.png\" alt=\"Example image\"></body></html>"
+
+    page_result = _build_fetch_result(
+        payload=html_body, content_type="text/html", canonical_source=page_url
+    )
+    image_result = _build_fetch_result(
+        payload=_SAMPLE_PNG, content_type="image/png", canonical_source=image_url
+    )
+    fetcher = _MappingFetcher({page_url: page_result, image_url: image_result})
+    task = _StubTask()
+
+    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    worker = CrawlerWorker(fetcher, ingestion_task=task)
+
+    publish_result = worker.process(
+        page_result.request,
+        tenant_id="tenant-a",
+        case_id="case-b",
+        crawl_id="crawl-1",
+        document_id="doc-1",
+        document_metadata={"source": "crawler"},
+    )
+
+    assert publish_result.published
+    state_payload, _ = task.calls[0]
+    assets = state_payload.get("assets")
+    assert assets and len(assets) == 1
+
+    asset = assets[0]
+    assert isinstance(asset, dict)
+    assert asset["media_type"] == "image/png"
+    assert asset.get("content") is None
+
+    meta = dict(asset["metadata"])
+    assert meta["origin_uri"] == image_url
+    assert meta["sha256"] == sha256_bytes(_SAMPLE_PNG)
+    assert meta.get("perceptual_hash") == perceptual_hash(_SAMPLE_PNG)
+    assert meta.get("caption_candidates") == [("alt_text", "Example image")]
+
+    assert asset.get("file_uri") is not None
+    stored_bytes = (tmp_path / asset["file_uri"]).read_bytes()
+    assert stored_bytes == _SAMPLE_PNG
