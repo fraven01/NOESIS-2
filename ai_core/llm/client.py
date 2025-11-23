@@ -438,7 +438,19 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
                 break
             except (TypeError, ValueError):
                 continue
-    usage: Mapping[str, Any] = usage_raw if isinstance(usage_raw, Mapping) else {}
+    usage: dict[str, Any] = dict(usage_raw) if isinstance(usage_raw, Mapping) else {}
+    if cost_data is not None:
+        usage_cost: dict[str, Any] = {}
+        raw_usage_cost = usage.get("cost")
+        if isinstance(raw_usage_cost, Mapping):
+            usage_cost.update(raw_usage_cost)
+        if cost_usd is not None:
+            usage_cost.setdefault("usd", cost_usd)
+            usage_cost.setdefault("total", cost_usd)
+        if usage_cost:
+            usage["cost"] = usage_cost
+    if cost_usd is not None:
+        usage.setdefault("cost_usd", cost_usd)
     result = {
         "text": text,
         "usage": usage,
@@ -463,6 +475,8 @@ def call(label: str, prompt: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
     }
     if cost_data is not None:
         ledger_payload["cost"] = cost_data
+    if cost_usd is not None:
+        ledger_payload["cost_usd"] = cost_usd
 
     ledger_logger = (
         metadata.get("ledger_logger") if isinstance(metadata, Mapping) else None
