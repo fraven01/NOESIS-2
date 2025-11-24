@@ -100,7 +100,11 @@ class ImageDocumentParser:
             metadata={"asset_kind": "document_content", "locator": "image-body"},
         )
         placeholder_text = build_parsed_text_block(text="[Bilddatei]", kind="other")
-        statistics = {"parser.kind": "image"}
+        statistics = {
+            "parser.kind": "image",
+            "parser.bytes": len(payload),
+            "parser.assets": 1,
+        }
         return build_parsed_result(
             text_blocks=(placeholder_text,), assets=(asset,), statistics=statistics
         )

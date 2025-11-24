@@ -81,3 +81,5 @@ def test_image_parser_returns_placeholder_asset_and_text_block() -> None:
     assert placeholder.kind == "other"
 
     assert result.statistics["parser.kind"] == "image"
+    assert result.statistics["parser.bytes"] == len(payload)
+    assert result.statistics["parser.assets"] == 1
