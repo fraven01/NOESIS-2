@@ -48,6 +48,7 @@ from .logging_utils import (
 from .parsers import ParsedResult, ParsedTextBlock, ParserDispatcher, ParserRegistry
 from .parsers_docx import DocxDocumentParser
 from .parsers_html import HtmlDocumentParser
+from .parsers_image import ImageDocumentParser
 from .parsers_markdown import MarkdownDocumentParser
 from .parsers_pdf import PdfDocumentParser
 from .parsers_pptx import PptxDocumentParser
@@ -87,6 +88,7 @@ def _default_context() -> CLIContext:
             DocxDocumentParser(),
             PptxDocumentParser(),
             PdfDocumentParser(),
+            ImageDocumentParser(),
         ]
     )
     dispatcher = ParserDispatcher(registry)
