@@ -24,6 +24,11 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - **CI/CD & Releases** werden über die [CI/CD-Dokumentation](docs/cicd/pipeline.md) gesteuert.
 - **Security & Secrets** verwalten Plattform- und AI-Schlüssel gemäß [Security Guide](docs/security/secrets.md).
 
+### Agenten-Kurzreferenz
+- Vollständiger Einstieg: [docs/agents/overview.md](docs/agents/overview.md); Graphen liegen unter `ai_core/graphs/...` (u. a. `rag`, `external_knowledge`).
+- `ToolContext` führt verpflichtend `tenant_id` und `trace_id` (neben den Laufzeit-IDs gemäß Glossar).
+- Observability Hooks und Sampling: `ai_core.infra.observability`.
+
 ## Ereignisse & Trigger
 | Quelle | Trigger | Beschreibung | Primärquelle |
 | --- | --- | --- | --- |
