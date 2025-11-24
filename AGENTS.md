@@ -72,6 +72,8 @@ Pflicht-Tags: `tenant_id`, `trace_id`, `invocation_id` sowie genau eine Laufzeit
 Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal` (siehe `ToolErrorType` Enum in `ai_core/tools/errors.py`).
 Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
 
+Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable), siehe [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md); Agenten müssen diese Unveränderlichkeit bei Änderungen an Tool-Inputs/Outputs respektieren.
+
 ## Guardrails & Header
 Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Trace-ID` (obligatorisch), `X-Case-ID` (optional), `Idempotency-Key` (optional, POST), automatische PII-Maskierung.
 LangGraph-Knoten & Timeouts siehe Agenten-Übersicht; Idempotenz & Traces sind verpflichtend.
