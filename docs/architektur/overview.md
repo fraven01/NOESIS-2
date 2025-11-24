@@ -139,6 +139,15 @@ sequenceDiagram
 
 Standardmäßig planen wir mit höchstens 50 Tenants. Steigt die Anzahl, skalieren wir horizontal auf weitere Datenbank-Instanzen und prüfen optional einen Silo-Betrieb pro Großkunde.
 
+### Kontext-Identitäten im Architekturfluss
+
+- **tenant_id** wählt das Mandanten-Schema, die Berechtigungen und die isolierten Datenräume in Web, Worker, Agents-Worker und Tools; ohne sie werden keine Anfragen verarbeitet.
+- **case_id** verankert alle fachlichen Graphläufe eines Mandanten in einem stabilen Vorgang (Dokumente, Entscheidungen, Kontextdaten) und bleibt über die gesamte Lebensdauer unverändert.
+- **workflow_id** markiert den logischen Prozessschritt innerhalb eines Cases (z. B. Intake oder Bewertung); sie bleibt bei erneuten Läufen identisch und sollte vom Aufrufer/Dispatcher gesetzt werden, nicht vom Graph selbst.
+- **run_id** identifiziert eine konkrete technische Ausführung eines Workflows durch LangGraph; jede Ausführung erzeugt eine neue, nicht fachlich interpretierbare ID und gehört genau zu einer `workflow_id` und `case_id`.
+
+Beziehungsmatrix: Ein Tenant hat viele Cases, ein Case hat viele Workflows, ein Workflow hat viele Runs. Tools benötigen immer `tenant_id`, `trace_id`, `invocation_id` und genau eine Laufzeit-ID (`run_id` oder `ingestion_run_id`); Graphen setzen `case_id` und `workflow_id`, sobald der fachliche Kontext bekannt ist, und generieren `run_id` pro Ausführung strikt technisch.
+
 # Schritte
 
 1. Baue Container nach den [Docker-Konventionen](../docker/conventions.md) und tagge Images deterministisch.

@@ -57,11 +57,14 @@ This graph (running in `llm_worker`) performs advanced reranking of search resul
 
 ## Tenancy & Context
 
-All agents and tools operate within a strict multi-tenant context defined by `ToolContext`:
+Agents and tools run inside a strict context contract defined by `ScopeContext`/`ToolContext` and shared across APIs, graphs and services:
 
-* `tenant_id`: Mandatory for all operations.
-* `trace_id`: For observability (Langfuse).
-* `case_id`: Links operations to a specific business case.
+- **tenant_id**: Mandatory in every request; selects schema, permissions and data room for the organizational tenant.
+- **case_id**: Stable identifier for a business case within a tenant; bundles workflows, documents, context and decisions for the entire lifetime and must be present on every case-related graph execution.
+- **workflow_id**: Labels the logical workflow inside a case (e.g., intake, assessment, document generation); remains constant across multiple executions and should be provided by the caller or dispatcher, not by the graph itself.
+- **run_id**: Technical runtime identifier for a single LangGraph execution; each run creates a new, non-semantic ID that belongs to exactly one `workflow_id` and `case_id` and is regenerated per execution.
+
+Relationship: Tenant → many Cases → many Workflows → many Runs. Tool calls always include `tenant_id`, `trace_id`, `invocation_id` plus exactly one runtime ID (`run_id` or `ingestion_run_id`). Graphs set `case_id` and `workflow_id` as soon as the business context is known, while `run_id` stays purely technical and is issued per execution.
 
 ## Observability
 
