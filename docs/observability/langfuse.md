@@ -28,6 +28,7 @@ flowchart LR
 - Die Service-Schicht generiert `run_id` (Graph-Läufe) bzw. `ingestion_run_id` (Upload/Ingestion) und injiziert sie in ToolContext und Langfuse-Tags; `workflow_id` bleibt optionaler Business-Schlüssel.
 - LangGraph nutzt das integrierte Observability-Plugin; Nodes melden `span`-Informationen inklusive Input/Output-Metadaten.
 - Ingestion sendet Batch-Statistiken (`batch_size`, `duration`, `cost_estimate`) über Custom Metrics.
+- Parser liefern zusätzliche Felder in `ParsedResult.statistics`; für Bild-Uploads stehen damit `parser.kind=image`, `parser.bytes` und `parser.assets` als Span-Tags/OTel-Attribute bereit und erlauben Größen-/Payload-Monitoring ohne die Binärdaten selbst zu loggen.
 - LiteLLM aktiviert Model-Trace per ENV `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_KEY`; Sampling wird über `LANGFUSE_SAMPLE_RATE` (0.05 Prod, 0.25 Staging) gesteuert.
 
 ### Crawler-Spans
