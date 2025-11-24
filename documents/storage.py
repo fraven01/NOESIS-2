@@ -88,7 +88,9 @@ class ObjectStoreStorage(Storage):
     """Object-store backed storage using :class:`ObjectStoreBlobWriter`."""
 
     def __init__(self, *, prefix: Sequence[str] | None = None) -> None:
-        self._writer = ObjectStoreBlobWriter(prefix=tuple(prefix or ("documents", "uploads")))
+        self._writer = ObjectStoreBlobWriter(
+            prefix=tuple(prefix or ("documents", "uploads"))
+        )
 
     @log_call("storage.put")
     def put(self, data: bytes) -> Tuple[str, str, int]:

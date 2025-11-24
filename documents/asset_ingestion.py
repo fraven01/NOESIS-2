@@ -8,7 +8,7 @@ Refactored from _persist_asset god-function into:
 """
 
 from dataclasses import dataclass
-from typing import Optional, Any, Protocol, Sequence, Tuple, Mapping
+from typing import Optional, Any, Protocol, Sequence, Mapping
 from uuid import UUID, uuid5
 
 from common.assets import (
@@ -25,6 +25,7 @@ from documents.contract_utils import (
     normalize_optional_string,
     is_image_mediatype,
 )
+
 # Caption source confidence mapping (from pipeline.py)
 _CAPTION_SOURCE_CONFIDENCE: dict[str, float] = {
     "alt_text": 1.0,
@@ -162,9 +163,7 @@ class BlobStorageAdapter:
             raise ValueError("asset_checksum_mismatch")
 
         perceptual_hash_value = (
-            perceptual_hash(content)
-            if is_image_mediatype(media_type)
-            else None
+            perceptual_hash(content) if is_image_mediatype(media_type) else None
         )
 
         payload_dict = {
@@ -199,9 +198,7 @@ class BlobStorageAdapter:
             # File exists, compute content hash
             checksum = sha256_bytes(payload)
             perceptual_hash_value = (
-                perceptual_hash(payload)
-                if is_image_mediatype(media_type)
-                else None
+                perceptual_hash(payload) if is_image_mediatype(media_type) else None
             )
             payload_dict = {
                 "type": "file",
@@ -230,6 +227,7 @@ class BlobStorageAdapter:
             payload_dict=payload_dict,
             perceptual_hash=perceptual_hash_value,
         )
+
 
 class RepositoryProtocol(Protocol):
     """Duck-typed protocol for asset repositories."""
@@ -322,7 +320,9 @@ class AssetIngestionPipeline:
         blob_desc = self._store_blob(asset_payload)
 
         # 4. Generate deterministic asset ID
-        asset_id = uuid5(document_id, deterministic_asset_path(document_id, asset_meta.locator))
+        asset_id = uuid5(
+            document_id, deterministic_asset_path(document_id, asset_meta.locator)
+        )
 
         # 5. Check for existing asset (deduplication)
         existing = self._repository.get_asset(
@@ -373,7 +373,9 @@ class AssetIngestionPipeline:
         stored = self._repository.add_asset(asset_obj, workflow_id=workflow_id)
         return stored
 
-    def _extract_metadata(self, index: int, asset_payload: AssetIngestPayload) -> AssetMetadata:
+    def _extract_metadata(
+        self, index: int, asset_payload: AssetIngestPayload
+    ) -> AssetMetadata:
         """Extract and normalize asset metadata.
 
         Args:

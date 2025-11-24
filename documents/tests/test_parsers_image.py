@@ -50,7 +50,9 @@ def test_image_parser_rejects_unsupported_media_types(
     media_type: str | None, blob_media_type: str | None
 ) -> None:
     parser = ImageDocumentParser()
-    document = _DocumentStub(media_type=media_type, blob=_BlobStub(b"data", blob_media_type))
+    document = _DocumentStub(
+        media_type=media_type, blob=_BlobStub(b"data", blob_media_type)
+    )
 
     assert parser.can_handle(document) is False
 
@@ -58,7 +60,9 @@ def test_image_parser_rejects_unsupported_media_types(
 def test_image_parser_returns_placeholder_asset_and_text_block() -> None:
     payload = b"\x89PNG\r\n\x1a\n"
     parser = ImageDocumentParser()
-    document = _DocumentStub(media_type="image/png", blob=_BlobStub(payload, "image/png"))
+    document = _DocumentStub(
+        media_type="image/png", blob=_BlobStub(payload, "image/png")
+    )
 
     result = parser.parse(document, config={})
 
@@ -66,7 +70,10 @@ def test_image_parser_returns_placeholder_asset_and_text_block() -> None:
     asset = result.assets[0]
     assert asset.media_type == "image/png"
     assert asset.content == payload
-    assert dict(asset.metadata) == {"asset_kind": "document_content", "locator": "image-body"}
+    assert dict(asset.metadata) == {
+        "asset_kind": "document_content",
+        "locator": "image-body",
+    }
 
     assert len(result.text_blocks) == 1
     placeholder = result.text_blocks[0]

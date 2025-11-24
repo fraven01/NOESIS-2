@@ -9,7 +9,7 @@ from ai_core import tasks as ai_tasks
 from ai_core.graphs.crawler_ingestion_graph import GraphTransition
 from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
-from common.assets import AssetIngestPayload, perceptual_hash, sha256_bytes
+from common.assets import perceptual_hash, sha256_bytes
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import (
     FetchMetadata,
@@ -311,7 +311,9 @@ def test_worker_raises_without_source_metadata(tmp_path, monkeypatch) -> None:
 def test_worker_extracts_image_assets(tmp_path, monkeypatch) -> None:
     page_url = "https://example.com/docs"
     image_url = "https://example.com/assets/test.png"
-    html_body = b"<html><body><img src=\"/assets/test.png\" alt=\"Example image\"></body></html>"
+    html_body = (
+        b'<html><body><img src="/assets/test.png" alt="Example image"></body></html>'
+    )
 
     page_result = _build_fetch_result(
         payload=html_body, content_type="text/html", canonical_source=page_url

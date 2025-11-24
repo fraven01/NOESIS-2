@@ -62,9 +62,8 @@ class CrawlerWorker:
         self._ingestion_task = ingestion_task
         self._ingestion_event_emitter = ingestion_event_emitter
         if blob_writer is not None:
-            self._blob_writer_factory = (
-                blob_writer_factory
-                or (lambda *_args, **_kwargs: blob_writer)
+            self._blob_writer_factory = blob_writer_factory or (
+                lambda *_args, **_kwargs: blob_writer
             )
         else:
             self._blob_writer_factory = (
@@ -292,9 +291,7 @@ class CrawlerWorker:
                 return self._default_blob_writer_factory(
                     tenant_id, case_id, crawl_id, document_id, scope=scope
                 )
-            return self._blob_writer_factory(
-                tenant_id, case_id, crawl_id, document_id
-            )
+            return self._blob_writer_factory(tenant_id, case_id, crawl_id, document_id)
 
     def _default_blob_writer_factory(
         self,
@@ -556,7 +553,7 @@ class CrawlerWorker:
         case_id: Optional[str],
         crawl_id: Optional[str],
         document_id: Optional[str],
-        ) -> str:
+    ) -> str:
         writer = self._blob_writer_for(
             tenant_id=tenant_id,
             case_id=case_id,

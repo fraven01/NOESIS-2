@@ -15,7 +15,9 @@ def _safe_segment(value: str) -> str:
     return cleaned or "asset"
 
 
-def deterministic_asset_path(document_id: UUID, locator: str, *, prefix: str = "assets") -> str:
+def deterministic_asset_path(
+    document_id: UUID, locator: str, *, prefix: str = "assets"
+) -> str:
     """Return a deterministic path for an asset bound to ``document_id``.
 
     The resulting path is stable across runs and safe for filesystem or

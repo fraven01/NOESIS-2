@@ -6,7 +6,6 @@ from typing import Any, Mapping, Optional
 
 from documents.contract_utils import normalize_media_type
 from documents.parsers import (
-    DocumentParser,
     ParsedResult,
     build_parsed_asset_with_meta,
     build_parsed_result,
