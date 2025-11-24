@@ -67,12 +67,15 @@ Hinweise:
 - PII Scope & Maskierung: [docs/pii-scope.md](docs/pii-scope.md)
 
 ## Tool-Verträge (Layer 2 – Norm)
-Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
-Pflicht-Tags: `tenant_id`, `trace_id`, `invocation_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
-Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal` (siehe `ToolErrorType` Enum in `ai_core/tools/errors.py`).
-Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
+  Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
+  Pflicht-Tags: `tenant_id`, `trace_id`, `invocation_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
+  Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal` (siehe `ToolErrorType` Enum in `ai_core/tools/errors.py`).
+  Outputs enthalten Metriken (`took_ms`) und – für Retrieve – Routing (`embedding_profile`, `vector_space_id`).
 
-Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable), siehe [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md); Agenten müssen diese Unveränderlichkeit bei Änderungen an Tool-Inputs/Outputs respektieren.
+- `model_json_schema()` ist die kanonische Quelle für API- und Tool-Schemas sowie für LLM-Prompts; generierte Schemas sind verbindlich zu verwenden.
+- Beispiele (`examples` in den Modellen) gelten als Teil des Schemas und dienen sowohl als Fixtures als auch als Dokumentationsnachweis.
+
+  Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable), siehe [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md); Agenten müssen diese Unveränderlichkeit bei Änderungen an Tool-Inputs/Outputs respektieren.
 
 ## Guardrails & Header
 Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Trace-ID` (obligatorisch), `X-Case-ID` (optional), `Idempotency-Key` (optional, POST), automatische PII-Maskierung.
