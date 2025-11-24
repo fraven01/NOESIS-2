@@ -88,7 +88,8 @@ def test_middleware_binds_headers_and_sets_response_metadata():
 
     assert isinstance(scope, ScopeContext)
     assert scope.trace_id == captured["trace.id"]
-    assert scope.run_id == scope.trace_id
+    assert re.fullmatch(r"[0-9a-f]{32}", scope.run_id)
+    assert scope.run_id != scope.trace_id
     assert scope.ingestion_run_id is None
     assert scope.invocation_id
     assert scope.case_id == "case-456"
@@ -134,7 +135,8 @@ def test_middleware_generates_trace_ids_when_headers_missing():
 
     assert isinstance(scope, ScopeContext)
     assert scope.trace_id == trace_id
-    assert scope.run_id == trace_id
+    assert re.fullmatch(r"[0-9a-f]{32}", scope.run_id)
+    assert scope.run_id != scope.trace_id
     assert scope.invocation_id
     assert scope.ingestion_run_id is None
     assert scope.case_id is None

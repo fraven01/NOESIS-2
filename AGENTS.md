@@ -152,6 +152,15 @@ Diese Tabelle definiert die kanonischen Begriffe und Datenfelder in NOESIS 2.
 | `ingestion` | Name der Ingestion-Queue | - | Worker | - |
 | `run_ingestion_graph`| Name des Ingestion-Tasks | - | Worker | - |
 
+### Kontext-Identitäten
+
+- **tenant_id**: Identifiziert den Mandanten und schaltet Schema, Berechtigungen und Datenräume; Pflichtfeld in jedem API-, Tool- und Graph-Kontext.
+- **case_id**: Stabile Kennung eines fachlichen Falls innerhalb eines Tenants; bündelt Workflows, Dokumente, Kontextdaten und Entscheidungen über die gesamte Lebensdauer und muss auf jedem fachlich zugehörigen Graphlauf mitgeführt werden.
+- **workflow_id**: Kennzeichnet den logischen Prozessschritt innerhalb eines Cases (z. B. Intake, Bewertung, Dokumentengenerierung); bleibt über wiederholte Ausführungen hinweg identisch und wird vom Aufrufer oder Dispatcher vergeben, nicht vom Graph selbst.
+- **run_id**: Technische Laufzeit-ID für eine konkrete Ausführung eines Workflows durch LangGraph; jede Ausführung erzeugt eine neue, nicht fachlich interpretierbare ID, die genau zu einer ``workflow_id`` und ``case_id`` gehört.
+
+Beziehungsmatrix: Ein **Tenant** enthält viele **Cases**, jeder **Case** enthält viele **Workflows**, und jeder **Workflow** kann viele **Runs** erzeugen. Tools benötigen zusätzlich zu den oben genannten Kontexten immer ``trace_id``, ``invocation_id`` und genau eine Laufzeit-ID (``run_id`` oder ``ingestion_run_id``); Graphen setzen ``case_id`` und ``workflow_id`` sobald der fachliche Kontext bekannt ist, ``run_id`` wird pro Ausführung neu generiert und bleibt strikt technisch.
+
 ## Commands
 test: pytest -q
 lint: ruff check . && black --check . && mypy .

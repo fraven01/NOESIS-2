@@ -1,4 +1,18 @@
-"""Scope context contracts for tool and graph invocations."""
+"""Scope context contracts for tool and graph invocations.
+
+Context identifiers are aligned across APIs, graphs and tools:
+- ``tenant_id`` identifies the organizational tenant and drives schema/permission selection; it is mandatory everywhere.
+- ``case_id`` ties executions to a business case within a tenant, bundling documents and decisions for its full lifetime.
+- ``workflow_id`` labels a logical workflow inside a case (e.g., intake, assessment); repeated executions of the same workflow reuse
+  the same ID provided by the caller or dispatcher.
+- ``run_id`` marks a single LangGraph execution of a workflow; every execution gets a fresh, non-semantic value that belongs to
+  exactly one ``workflow_id`` and ``case_id``.
+
+Relationships: one tenant has many cases → each case can contain many workflows → each workflow can have many runs. Tools require
+``tenant_id``, ``trace_id``, ``invocation_id`` and exactly one runtime identifier (``run_id`` or ``ingestion_run_id``). Graphs set
+``case_id`` and ``workflow_id`` as soon as the business context is known, while ``run_id`` stays purely technical and is generated
+per execution.
+"""
 
 from __future__ import annotations
 
