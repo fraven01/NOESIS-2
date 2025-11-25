@@ -1,14 +1,14 @@
 # CLAUDE Leitfaden
 
-Zentrale Navigationsdatei für Claude Code bei der Arbeit mit NOESIS 2. Dieses Dokument ergänzt die [`AGENTS.md`](AGENTS.md) um Claude-spezifische Arbeitsweisen und Kontextverweise.
+Zentrale Navigationsdatei für Claude Code bei der Arbeit mit NOESIS 2. Dieses Dokument fokussiert sich auf **Claude-spezifische Workflows** und verweist für alle Contracts, Architektur und Glossar auf [`AGENTS.md`](AGENTS.md).
 
 *Hinweis: Der Begriff „Pipeline" ist eine historische Bezeichnung für die heute als „Graph" (LangGraph) bezeichneten Orchestrierungs-Flows.*
 
 ## Zweck & Geltungsbereich
-- Gilt für alle Arbeiten mit Claude Code in diesem Repository
-- Ergänzt die [`AGENTS.md`](AGENTS.md) um Claude-spezifische Arbeitsweisen
+- **Operational Guide** für Claude Code in diesem Repository
+- Alle Contracts, Glossar, Architektur → siehe [`AGENTS.md`](AGENTS.md)
 - Vor Änderungen prüfe den Verzeichnispfad auf spezifischere Leitfäden (z. B. `theme/AGENTS.md`)
-- Alle technischen Details und Primärquellen sind in [`AGENTS.md`](AGENTS.md) verlinkt
+- Dieser Guide enthält nur Claude-spezifische Arbeitsweisen und Workflows
 
 ## Systemverständnis (Kurzfassung)
 
@@ -21,7 +21,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 - **LiteLLM**: Proxy für LLM-Zugriff (Gemini, Vertex AI)
 - **Observability**: Langfuse (Traces) + ELK (Logs)
 
-Detaillierte Systemlandschaft und Diagramme: [docs/architektur/overview.md](docs/architektur/overview.md)
+**Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architektur/overview.md](docs/architektur/overview.md)
 
 ### Technologie-Stack
 - Backend: Django 5.x, Python 3.12+
@@ -31,56 +31,23 @@ Detaillierte Systemlandschaft und Diagramme: [docs/architektur/overview.md](docs
 - Entwicklung: Docker Compose, npm-Skripte
 - CI/CD: GitHub Actions
 
-## Wichtige Verträge & Pflichtfelder
+## Contracts & Pflichtfelder (Kurzreferenz)
 
-### Tool-Verträge (Layer 2)
-Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
+**Vollständige Contracts**: [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm)
 
-**Pflicht-Tags**:
+### Pflicht-Tags für alle Tool-Aufrufe
 - `tenant_id` (UUID)
 - `trace_id` (string)
 - `invocation_id` (UUID)
 - Genau **eine** Laufzeit-ID: `run_id` **XOR** `ingestion_run_id`
 
-**Optional**:
-- `idempotency_key`, `case_id`, `workflow_id`, `collection_id`, `document_id`
+### HTTP-Header (Pflicht)
+- `X-Tenant-ID` (UUID)
+- `X-Trace-ID` (string)
 
-Siehe: [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md)
+**Glossar & Feld-Matrix**: [AGENTS.md#glossar--feld-matrix](AGENTS.md#glossar--feld-matrix)
 
-### HTTP-Header
-Jeder API-Aufruf erfordert:
-- `X-Tenant-ID` (Pflicht)
-- `X-Trace-ID` (Pflicht)
-- `X-Case-ID` (Optional)
-- `Idempotency-Key` (Optional, für POST)
-
-### Fehlertypen
-Typed Errors aus `ai_core/tools/errors.py`:
-- `InputError` - Validierungsfehler
-- `NotFound` - Ressource nicht gefunden
-- `RateLimited` - Rate-Limit erreicht
-- `Timeout` - Zeitbudget überschritten
-- `Upstream` - Externer Dienst fehlgeschlagen
-- `Internal` - Interner Fehler
-
-## Paketstruktur & Import-Regeln
-
-### Layer-Hierarchie (nur nach unten importieren)
-```
-tenant_logic → ai_core/graphs → tools → services → shared
-Frontend (getrennt, keine Rückimporte)
-```
-
-### Wichtige Pakete
-- `ai_core/graphs/` - LangGraph-Orchestrierung (Layer 3)
-- `ai_core/nodes/` - Wiederverwendbare Graph-Knoten
-- `ai_core/rag/` - Retrieval & Embedding-Logik
-- `ai_core/tools/` - Tool-Implementierungen
-- `ai_core/llm/` - Modellanbindung & Routing
-- `ai_core/infra/` - Infrastruktur-Adapter
-- `ai_core/middleware/` - Telemetrie & Caching
-
-## Entwicklungsworkflow
+## Entwicklungsworkflow (Claude-spezifisch)
 
 ### Lokales Setup (Docker)
 ```bash
@@ -95,7 +62,7 @@ npm run dev:restart  # Neustart Services
 npm run dev:reset    # Komplett-Reset
 ```
 
-Windows-Varianten: `npm run win:dev:*`
+**Windows-Varianten**: `npm run win:dev:*`
 
 ### Tests
 ```bash
@@ -120,7 +87,9 @@ npm run api:schema   # Export OpenAPI
 make sdk             # Generate TS/Python SDKs
 ```
 
-## RAG & Embedding-Profile
+## RAG & Embedding-Profile (Praktische Hinweise)
+
+**Vollständige RAG-Architektur**: [docs/rag/overview.md](docs/rag/overview.md)
 
 ### Vector Spaces
 Konfiguriert über `RAG_VECTOR_STORES`:
@@ -146,47 +115,33 @@ python manage.py sync_rag_schemas    # Alle Spaces
 python manage.py check_rag_schemas   # Health-Check
 ```
 
-## Glossar (Häufige Begriffe)
-
-| Begriff | Bedeutung | Status |
-|---------|-----------|--------|
-| `tenant_id` | Mandanten-ID (UUID) | Pflicht |
-| `trace_id` | End-to-End-Korrelations-ID | Pflicht |
-| `invocation_id` | Tool-Aufruf-ID | Pflicht |
-| `case_id` | Geschäftsvorfall-ID | Optional |
-| `workflow_id` | Graph-/Prozess-ID | Optional |
-| `run_id` | Graph-Lauf-ID | Pflicht (XOR) |
-| `ingestion_run_id` | Ingestion-Lauf-ID | Pflicht (XOR) |
-| `collection_id` | Dokument-Scope für Filter | Optional |
-| Graph | LangGraph-Orchestrierung | - |
-| Pipeline | Veraltet, nutze "Graph" | ⚠️ Legacy |
-
 ## Arbeitsweise mit Claude Code
 
 ### Vor dem Start
-1. Lies [`AGENTS.md`](AGENTS.md) für vollständige Verträge
+1. **Lies [`AGENTS.md`](AGENTS.md)** für vollständige Verträge & Architektur
 2. Prüfe spezifischere `AGENTS.md` im Arbeitsverzeichnis
 3. Konsultiere verlinkte Primärquellen für Details
 
 ### Bei Änderungen
-1. **Contracts zuerst**: Tool-Inputs/-Outputs definieren
-2. **Tests schreiben**: Unit → Integration → E2E
-3. **Dokumentation**: README in betroffenen Paketen aktualisieren
-4. **Tracing**: Langfuse-Tags für neue Features setzen
-5. **Linting**: `npm run lint:fix` vor Commit
+1. **Contracts zuerst**: Tool-Inputs/-Outputs definieren (siehe [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm))
+2. **Layer-Regeln beachten**: Import-Hierarchie in [AGENTS.md#Paketgrenzen](AGENTS.md#paketgrenzen-import-regeln)
+3. **Tests schreiben**: Unit → Integration → E2E
+4. **Dokumentation**: README in betroffenen Paketen aktualisieren
+5. **Tracing**: Langfuse-Tags für neue Features setzen
+6. **Linting**: `npm run lint:fix` vor Commit
 
 ### Bei Fehlern
 1. Prüfe Langfuse-Traces (`trace_id` suchen)
 2. Konsultiere ELK-Logs für Chaos/Performance
 3. Siehe Runbooks: [docs/runbooks/](docs/runbooks/)
-4. Error-Codes in `ai_core/tools/errors.py`
+4. Error-Codes in `ai_core/tools/errors.py` (Typed Errors: `InputError`, `NotFound`, `RateLimited`, `Timeout`, `Upstream`, `Internal`)
 
 ### Bei RAG-Arbeiten
 1. Lies [docs/rag/overview.md](docs/rag/overview.md)
 2. Verstehe Vector Spaces & Profile
 3. Prüfe Routing-Regeln vor Änderungen
 4. Teste mit `rag_schema_smoke`
-5. Dimensionen dürfen **nie** gemischt werden
+5. **WARNUNG**: Dimensionen dürfen **nie** gemischt werden (Migration erforderlich!)
 
 ### Bei Graph-Entwicklung
 1. Lies [ai_core/graphs/README.md](ai_core/graphs/README.md)
@@ -195,7 +150,9 @@ python manage.py check_rag_schemas   # Health-Check
 4. Emittiere strukturierte Transitions
 5. Dokumentiere Guardrails
 
-## Multi-Tenancy
+## Multi-Tenancy (Setup & Commands)
+
+**Vollständige Multi-Tenancy-Architektur**: [docs/multi-tenancy.md](docs/multi-tenancy.md)
 
 ### Tenant-Setup
 ```bash
@@ -209,23 +166,21 @@ make tenant-superuser SCHEMA=demo USERNAME=admin PASSWORD=secret
 make jobs:migrate
 ```
 
-### Tenant-Isolation
+### Tenant-Isolation (Kurzfassung)
 - DB: Schema pro Tenant (`django-tenants`)
 - RAG: `tenant_id`-Filter in pgvector
 - API: `X-Tenant-ID` Header verpflichtend
 - Traces: `tenant_id` Tag in Langfuse
 
-Details: [docs/multi-tenancy.md](docs/multi-tenancy.md)
+## Observability (Praktische Hinweise)
 
-## Observability
+**Vollständige Observability-Guides**: [docs/observability/langfuse.md](docs/observability/langfuse.md), [docs/observability/elk.md](docs/observability/elk.md)
 
 ### Langfuse (Traces & Metrics)
 - Host: `LANGFUSE_HOST`
 - Keys: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`
 - Tags: `tenant_id`, `trace_id`, `case_id`, `workflow_id`
 - Spans: Automatisch für Tools & Graphs
-
-Siehe: [docs/observability/langfuse.md](docs/observability/langfuse.md)
 
 ### ELK-Stack (Logs)
 ```bash
@@ -236,14 +191,12 @@ docker compose -f docker/elk/docker-compose.yml up -d
 # Filter: test_suite:chaos für Chaos-Tests
 ```
 
-Siehe: [docs/observability/elk.md](docs/observability/elk.md)
-
-## Häufige Aufgaben
+## Häufige Aufgaben (Step-by-Step)
 
 ### Neues Tool erstellen
 1. Definiere Input/Output-Modelle in `ai_core/tools/`
-2. Verwende `ToolContext`, `ToolOutput[IT, OT]`
-3. Implementiere Error-Handling mit `ToolError`
+2. Verwende `ToolContext`, `ToolOutput[IT, OT]` (siehe [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm))
+3. Implementiere Error-Handling mit `ToolError` (Typed Errors)
 4. Registriere in LangChain-Tools
 5. Teste mit Fake-Retrievers
 6. Dokumentiere in Tool-Contract-Docs
@@ -255,7 +208,7 @@ Siehe: [docs/observability/elk.md](docs/observability/elk.md)
 4. Implementiere Runner-Funktionen
 5. Registriere in Graph-Registry
 6. Teste alle Pfade & Transitions
-7. Dokumentiere in `ai_core/graphs/README.md`
+7. Dokumentiere in [ai_core/graphs/README.md](ai_core/graphs/README.md)
 
 ### Embedding-Profil ändern
 1. **WARNUNG**: Dimensionswechsel = Migration!
@@ -276,14 +229,14 @@ Siehe: [docs/observability/elk.md](docs/observability/elk.md)
 
 Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 
-## Qualitätsregeln
+## Qualitätsregeln (Claude-Checkliste)
 
 ### Code-Qualität
-- Ruff + Black für Python
+- Ruff + Black für Python (immer `npm run lint:fix` vor Commit!)
 - TypeScript strict mode
 - 100% Type-Hints in Tool-Contracts
-- Pydantic für alle Datenmodelle
-- Frozen Dataclasses für Immutability
+- Pydantic für alle Datenmodelle mit `frozen=True`
+- `model_json_schema()` ist kanonische Quelle für Schemas
 
 ### Test-Coverage
 - Unit-Tests für alle Tools & Nodes
@@ -300,15 +253,15 @@ Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 - Changelog in Pull Requests
 
 ### Security
-- PII-Maskierung verpflichtend
+- PII-Maskierung verpflichtend (siehe [docs/pii-scope.md](docs/pii-scope.md))
 - Secrets via `.env` oder Secret Manager
 - Keine API-Keys in Code/Logs
 - Rate-Limiting für LLM-Calls
 - Tenant-Isolation durchgängig
 
-Siehe: [docs/security/secrets.md](docs/security/secrets.md)
+Details: [docs/security/secrets.md](docs/security/secrets.md)
 
-## Nützliche Kommandos
+## Nützliche Kommandos (Kurzreferenz)
 
 ```bash
 # Entwicklung
@@ -342,73 +295,59 @@ npm run api:schema         # Export OpenAPI
 make sdk                   # Generate SDKs
 ```
 
-## Navigationsverzeichnis (Primärquellen)
+## Navigation (Primärquellen)
 
-### Architektur & Konzepte
-1. [AGENTS.md](AGENTS.md) - Hauptleitfaden
+### Contracts & Architektur (AGENTS.md)
+1. **[AGENTS.md](AGENTS.md)** - Hauptleitfaden (Contracts, Glossar, Schnittstellen)
 2. [docs/architektur/overview.md](docs/architektur/overview.md) - Systemarchitektur
 3. [docs/multi-tenancy.md](docs/multi-tenancy.md) - Mandantenfähigkeit
-4. [docs/contracts.md](docs/contracts.md) - Datenverträge
 
 ### AI Core
-5. [docs/agents/overview.md](docs/agents/overview.md) - LangGraph-Agenten
-6. [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md) - Tool-Verträge
-7. [docs/rag/overview.md](docs/rag/overview.md) - RAG-Architektur
-8. [docs/rag/ingestion.md](docs/rag/ingestion.md) - Ingestion-Pipeline
-9. [docs/rag/configuration.md](docs/rag/configuration.md) - RAG-Konfiguration
+4. [docs/agents/overview.md](docs/agents/overview.md) - LangGraph-Agenten
+5. [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md) - Tool-Verträge
+6. [docs/rag/overview.md](docs/rag/overview.md) - RAG-Architektur
+7. [docs/rag/ingestion.md](docs/rag/ingestion.md) - Ingestion-Pipeline
 
-### Entwicklung
-10. [docs/development/onboarding.md](docs/development/onboarding.md) - Einstieg
-11. [docs/development/manual-setup.md](docs/development/manual-setup.md) - Setup ohne Docker
-12. [README.md](README.md) - Projekt-README
+### Entwicklung & Betrieb
+8. [docs/development/onboarding.md](docs/development/onboarding.md) - Einstieg
+9. [README.md](README.md) - Projekt-README
+10. [docs/operations/scaling.md](docs/operations/scaling.md) - Skalierung
+11. [docs/runbooks/migrations.md](docs/runbooks/migrations.md) - Migrationen
 
-### Betrieb
-13. [docs/operations/scaling.md](docs/operations/scaling.md) - Skalierung
-14. [docs/runbooks/migrations.md](docs/runbooks/migrations.md) - Migrationen
-15. [docs/runbooks/incidents.md](docs/runbooks/incidents.md) - Incident-Handling
+### Observability & CI/CD
+12. [docs/observability/langfuse.md](docs/observability/langfuse.md) - Langfuse
+13. [docs/observability/elk.md](docs/observability/elk.md) - ELK-Stack
+14. [docs/cicd/pipeline.md](docs/cicd/pipeline.md) - CI/CD-Pipeline
+15. [docs/security/secrets.md](docs/security/secrets.md) - Security
 
-### Observability
-16. [docs/observability/langfuse.md](docs/observability/langfuse.md) - Langfuse
-17. [docs/observability/elk.md](docs/observability/elk.md) - ELK-Stack
+## Quick Reference (für schnelle Lookups)
 
-### CI/CD & Qualität
-18. [docs/cicd/pipeline.md](docs/cicd/pipeline.md) - CI/CD-Pipeline
-19. [docs/qa/checklists.md](docs/qa/checklists.md) - QA-Checklisten
-20. [docs/security/secrets.md](docs/security/secrets.md) - Security
-
-## LLM-Kurzreferenz (für Claude Code)
-
-- `trace_id` ist die verbindliche End-to-End-Korrelations-ID
-- Jeder Tool-Aufruf benötigt: `tenant_id`, `trace_id`, `invocation_id` + genau **eine** Laufzeit-ID
-- HTTP-APIs erfordern immer `X-Tenant-ID` Header
-- `Graph` ist der aktuelle Begriff, `Pipeline` ist veraltet
-- Graphen liegen in `ai_core/graphs/`
-- Ingestion-Queue: `ingestion`, Task: `run_ingestion_graph`
-- Dimensionen dürfen **niemals** gemischt werden (Migration erforderlich!)
-- Tool-Errors nutzen typisierte `ToolErrorType` aus `ai_core/tools/errors.py`
-- Routing-Regeln sind case-insensitive
-- PII-Maskierung ist verpflichtend (Session-Scope)
-- Idempotenz über `Idempotency-Key` für POST-Requests
+- **Contracts & Glossar**: [AGENTS.md#Glossar & Feld-Matrix](AGENTS.md#glossar--feld-matrix)
+- **Layer-Hierarchie**: [AGENTS.md#Paketgrenzen](AGENTS.md#paketgrenzen-import-regeln)
+- **Tool-Verträge**: [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm)
+- **Ingestion**: Queue `ingestion`, Task `run_ingestion_graph`
+- **Graphs**: Liegen in `ai_core/graphs/`
+- **Fehler**: Typed Errors in `ai_core/tools/errors.py`
 
 ## Governance & Änderungen
 
-- Architektur-Änderungen zuerst in Primärquellen dokumentieren
-- Pull Requests verlinken auf aktualisierte Docs
-- Runbooks haben eigene Changelogs
-- Breaking Changes erfordern Migration-Runbook
-- Idempotenz bewahren: Nur bei neuen Links/Begriffen/Widersprüchen aktualisieren
+- Architektur-Änderungen → zuerst in [AGENTS.md](AGENTS.md) + Primärquellen
+- Pull Requests → verlinken auf aktualisierte Docs
+- Breaking Changes → erfordern Migration-Runbook
+- Idempotenz bewahren: Nur bei neuen Workflows/Commands aktualisieren
 
 ## Fragen oder Probleme?
 
-1. Konsultiere [`AGENTS.md`](AGENTS.md) für vollständige Verweise
-2. Suche in Primärquellen unter [docs/](docs/)
-3. Prüfe Langfuse-Traces für Laufzeitfehler
-4. Konsultiere ELK-Logs für Performance/Chaos
-5. Siehe Runbooks für Betriebsprobleme
-6. Bei Unsicherheit: Frage nach oder erstelle Issue
+1. **Contracts/Architektur**: Konsultiere [`AGENTS.md`](AGENTS.md)
+2. **Workflows/Commands**: Diese Datei (CLAUDE.md)
+3. **Details**: Primärquellen unter [docs/](docs/)
+4. **Laufzeitfehler**: Langfuse-Traces (`trace_id` suchen)
+5. **Performance/Chaos**: ELK-Logs
+6. **Betrieb**: Runbooks unter [docs/runbooks/](docs/runbooks/)
 
 ---
 
-**Version**: 1.0
-**Zuletzt aktualisiert**: 2025-11-05
+**Version**: 2.0
+**Zuletzt aktualisiert**: 2025-11-24
 **Gilt für**: NOESIS 2, Branch `main`
+**Master Reference**: [AGENTS.md](AGENTS.md)

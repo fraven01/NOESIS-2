@@ -1,4 +1,4 @@
-# AGENTS Leitfaden
+# AGENTS Leitfaden (Master-Referenz)
 
 Zentrale Navigations- und Vertragsdatei für NOESIS 2. Dieses Dokument fasst die verbindlichen Leitplanken zusammen und verweist
 auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `README.md`.
@@ -6,7 +6,9 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 *Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für die heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flows.*
 
 ## Zweck & Geltungsbereich
-- Gilt für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
+- **Master-Referenz** für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
+- **Für Claude Code**: Siehe [`CLAUDE.md`](CLAUDE.md) für operational workflows (Setup, Commands, häufige Aufgaben).
+- **Für Codex**: Diese Datei enthält alle erforderlichen Contracts und Architektur-Referenzen.
 - Vor Änderungen prüfe den Verzeichnispfad auf spezifischere `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`) und befolge stets die tiefste Anweisung.
 - Dieses Dokument dient als Einstieg und Navigationshilfe; es enthält keine sich wiederholenden Inhalte aus den Primärquellen.
 
