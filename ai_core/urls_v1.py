@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.urls import path
 
 from . import views
+from .views_framework import FrameworkAnalysisView
 
 app_name = "ai_core_v1"
 
@@ -11,4 +12,7 @@ urlpatterns = [
     path("intake/", views.intake_v1, name="intake"),
     path("rag/query/", views.rag_query_v1, name="rag_query"),
     path("rag-demo/", views.rag_demo_v1, name="rag_demo"),
+    path(
+        "frameworks/analyze/", FrameworkAnalysisView.as_view(), name="framework_analyze"
+    ),
 ]
