@@ -1,0 +1,180 @@
+{% extends 'theme/base.html' %}
+{% load static %}
+
+{% block title %}Framework Analysis · NOESIS 2{% endblock %}
+
+{% block head %}
+{{ block.super }}
+<style>
+  .json-output {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+    font-size: 0.75rem;
+    line-height: 1.5;
+  }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="space-y-10">
+  <header class="space-y-2">
+    <h1 class="text-3xl font-semibold tracking-tight text-slate-900">Framework Analysis Tool</h1>
+    <p class="max-w-2xl text-sm text-slate-600">
+      Developer tool to test the <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">/v1/ai/frameworks/analyze/</code> endpoint.
+      Analyzes a document to extract framework structures.
+    </p>
+  </header>
+
+  <section class="rounded-lg border border-slate-200 bg-white p-6 shadow-sm space-y-6">
+    <div class="space-y-2">
+      <h2 class="text-xl font-semibold text-slate-900">Analysis Request</h2>
+      <p class="text-sm text-slate-600">
+        Configure the analysis parameters.
+        Tenant: <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">{{ tenant_id }}</code>
+        Schema: <code class="rounded bg-slate-100 px-1 py-0.5 text-xs">{{ tenant_schema }}</code>
+      </p>
+    </div>
+
+    <form id="analysis-form" class="grid gap-4 md:grid-cols-2">
+      {% csrf_token %}
+      
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="collection-id">Document Collection ID</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="collection-id"
+          name="document_collection_id"
+          type="text"
+          value="{{ default_collection_id|default:'' }}"
+          placeholder="UUID"
+          required
+        />
+        <p class="text-xs text-slate-500">The ID of the document collection containing the document.</p>
+      </div>
+
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="document-id">Document ID (Optional)</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="document-id"
+          name="document_id"
+          type="text"
+          placeholder="UUID"
+        />
+        <p class="text-xs text-slate-500">Specific document to analyze. If omitted, behavior depends on backend.</p>
+      </div>
+
+      <div class="space-y-1">
+        <label class="text-sm font-medium text-slate-700" for="confidence-threshold">Confidence Threshold</label>
+        <input
+          class="block w-full rounded-md border border-slate-300 px-3 py-2 text-sm shadow-sm focus:border-slate-500 focus:outline-none focus:ring-1 focus:ring-slate-500"
+          id="confidence-threshold"
+          name="confidence_threshold"
+          type="number"
+          step="0.05"
+          min="0"
+          max="1"
+          value="0.70"
+        />
+      </div>
+
+      <div class="md:col-span-2 space-y-2">
+        <label class="inline-flex items-center gap-2 text-sm text-slate-700" for="force-reanalysis">
+          <input
+            type="checkbox"
+            id="force-reanalysis"
+            name="force_reanalysis"
+            class="h-4 w-4 rounded border-slate-300 text-slate-900 focus:ring-slate-500"
+          />
+          Force Reanalysis
+        </label>
+        <p class="text-xs text-slate-500">If checked, ignores existing analysis and re-runs the process.</p>
+      </div>
+
+      <div class="md:col-span-2">
+        <button
+          class="inline-flex items-center rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-slate-700 focus:outline-none focus:ring-2 focus:ring-slate-500 focus:ring-offset-2"
+          type="submit"
+          id="submit-button"
+        >
+          Start Analysis
+        </button>
+      </div>
+    </form>
+
+    <div id="error-message" class="hidden rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700"></div>
+    <div id="success-message" class="hidden rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700"></div>
+
+    <div class="space-y-2">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-semibold uppercase tracking-wide text-slate-600">Response</h3>
+        <span id="status-code" class="text-xs font-mono text-slate-500"></span>
+      </div>
+      <pre class="json-output max-h-[600px] overflow-auto rounded-lg bg-slate-950 p-4 text-slate-100" id="response-output">// Response will appear here...</pre>
+    </div>
+  </section>
+</div>
+
+<script>
+  document.getElementById('analysis-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    
+    const form = e.target;
+    const submitBtn = document.getElementById('submit-button');
+    const errorDiv = document.getElementById('error-message');
+    const successDiv = document.getElementById('success-message');
+    const outputPre = document.getElementById('response-output');
+    const statusSpan = document.getElementById('status-code');
+
+    // Reset UI
+    errorDiv.classList.add('hidden');
+    successDiv.classList.add('hidden');
+    outputPre.textContent = 'Processing...';
+    statusSpan.textContent = '';
+    submitBtn.disabled = true;
+    submitBtn.classList.add('opacity-75', 'cursor-not-allowed');
+
+    // Build payload
+    const formData = new FormData(form);
+    const payload = {
+      document_collection_id: formData.get('document_collection_id'),
+      document_id: formData.get('document_id') || null,
+      force_reanalysis: formData.get('force_reanalysis') === 'on',
+      confidence_threshold: parseFloat(formData.get('confidence_threshold'))
+    };
+
+    try {
+      const response = await fetch('/v1/ai/frameworks/analyze/', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Tenant-ID': '{{ tenant_id }}',
+          'X-Tenant-Schema': '{{ tenant_schema }}'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      statusSpan.textContent = `Status: ${response.status} ${response.statusText}`;
+      
+      const data = await response.json();
+      outputPre.textContent = JSON.stringify(data, null, 2);
+
+      if (response.ok) {
+        successDiv.textContent = 'Analysis completed successfully.';
+        successDiv.classList.remove('hidden');
+      } else {
+        errorDiv.textContent = data.detail || data.error || 'An error occurred during analysis.';
+        errorDiv.classList.remove('hidden');
+      }
+
+    } catch (err) {
+      console.error(err);
+      errorDiv.textContent = `Network error: ${err.message}`;
+      errorDiv.classList.remove('hidden');
+      outputPre.textContent = '// Network Error';
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+    }
+  });
+</script>
+{% endblock %}

@@ -778,3 +778,24 @@ def start_rerank_workflow(request):
     except Exception as e:
         logger.exception("start_rerank_workflow.failed")
         return JsonResponse({"error": str(e)}, status=500)
+
+
+def framework_analysis_tool(request):
+    """Render the framework analysis developer tool."""
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return _tenant_required_response(exc)
+
+    # Resolve default collection (manual collection for this tenant)
+    manual_collection_id, _ = _resolve_manual_collection(tenant_id, None)
+
+    return render(
+        request,
+        "theme/framework_analysis.html",
+        {
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
+            "default_collection_id": manual_collection_id,
+        },
+    )

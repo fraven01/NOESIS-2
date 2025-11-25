@@ -16,4 +16,9 @@ urlpatterns = [
         views.start_rerank_workflow,
         name="rag_tools_start_rerank",
     ),
+    path(
+        "framework-analysis/",
+        views.framework_analysis_tool,
+        name="framework-analysis-tool",
+    ),
 ]
