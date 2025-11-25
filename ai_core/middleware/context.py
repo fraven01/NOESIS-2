@@ -194,7 +194,7 @@ class RequestContextMiddleware:
         if ingestion_run_id:
             scope_kwargs["ingestion_run_id"] = ingestion_run_id
         else:
-            scope_kwargs["run_id"] = run_id or trace_id
+            scope_kwargs["run_id"] = run_id or uuid.uuid4().hex
 
         return ScopeContext.model_validate(scope_kwargs)
 
