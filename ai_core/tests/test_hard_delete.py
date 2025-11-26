@@ -48,7 +48,7 @@ def test_hard_delete_service_key(monkeypatch, settings):
 
     assert result["status"] == "queued"
     assert result["deleted_ids"] == [document_id]
-    assert result["not_found"] == 0
+    assert result["not_found"] == 1
     assert result["visibility"] == "deleted"
     assert DELETE_OUTBOX[-1]["document_ids"] == (document_id,)
     assert DELETE_OUTBOX[-1]["trace_id"] == "trace-123"
@@ -63,7 +63,7 @@ def test_hard_delete_service_key(monkeypatch, settings):
     )
 
     assert repeat["status"] == "queued"
-    assert repeat["not_found"] == 0
+    assert repeat["not_found"] == 1
     assert len(spans) == 2, "expected Langfuse spans for each invocation"
     assert spans[0]["node_name"] == "rag.hard_delete"
     assert spans[0]["trace_id"] == "trace-123"

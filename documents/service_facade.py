@@ -112,12 +112,20 @@ def delete_document(
 ) -> dict[str, Any]:
     """Queue a hard delete request with end-to-end context."""
 
+    from ai_core.rag.vector_client import get_default_client
+
     normalized_ids = []
     for doc_id in document_ids:
         try:
             normalized_ids.append(_coerce_uuid(doc_id))
         except Exception:
             continue
+
+    vector_client = get_default_client()
+    delete_result = vector_client.hard_delete_documents(
+        tenant_id=str(scope.tenant_id),
+        document_ids=normalized_ids,
+    )
 
     request = QueuedDeleteRequest(
         tenant_id=str(scope.tenant_id),
@@ -134,13 +142,22 @@ def delete_document(
     )
     _DELETE_OUTBOX.append(request.__dict__)
 
+    documents_deleted = int(delete_result.get("documents", 0))
+    chunks_deleted = int(delete_result.get("chunks", 0))
+    embeddings_deleted = int(delete_result.get("embeddings", 0))
+    invalid_count = len(document_ids) - len(normalized_ids)
+    missing_count = max(len(normalized_ids) - documents_deleted, 0)
+    not_found = max(invalid_count + missing_count, 0)
+
     return {
         "status": "queued",
         "trace_id": request.trace_id,
         "ingestion_run_id": request.ingestion_run_id,
         "documents_requested": len(document_ids),
-        "documents_deleted": 0,
-        "not_found": len(document_ids) - len(normalized_ids),
+        "documents_deleted": documents_deleted,
+        "chunks_deleted": chunks_deleted,
+        "embeddings_deleted": embeddings_deleted,
+        "not_found": not_found,
         "queued_at": request.queued_at,
         "tenant_schema": request.tenant_schema,
         "case_id": request.case_id,
