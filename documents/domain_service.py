@@ -160,7 +160,8 @@ class DocumentDomainService:
     ) -> None:
         """Delete a document and emit a vector deletion request."""
 
-        if soft_delete:
+        soft_delete_requested = soft_delete
+        if soft_delete_requested:
             if hasattr(document, "soft_deleted_at"):
                 setattr(document, "soft_deleted_at", timezone.now())
                 document.save(update_fields=["soft_deleted_at", "updated_at"])
@@ -182,8 +183,10 @@ class DocumentDomainService:
         else:
             logger.info("document_delete_outbox", extra=payload)
 
-        if not soft_delete:
-            document.delete()
+        if soft_delete_requested:
+            return
+
+        document.delete()
 
     def delete_collection(
         self,
@@ -195,7 +198,8 @@ class DocumentDomainService:
     ) -> None:
         """Delete a collection and emit vector cleanup instructions."""
 
-        if soft_delete:
+        soft_delete_requested = soft_delete
+        if soft_delete_requested:
             if hasattr(collection, "soft_deleted_at"):
                 setattr(collection, "soft_deleted_at", timezone.now())
                 collection.save(update_fields=["soft_deleted_at", "updated_at"])
@@ -217,5 +221,7 @@ class DocumentDomainService:
         else:
             logger.info("collection_delete_outbox", extra=payload)
 
-        if not soft_delete:
-            collection.delete()
+        if soft_delete_requested:
+            return
+
+        collection.delete()
