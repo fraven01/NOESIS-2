@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
 from ai_core import api as ai_core_api
+from ai_core.contracts.scope import ScopeContext
 from ai_core.contracts.payloads import (
     CompletionPayload,
     FrontierData,
@@ -52,6 +53,7 @@ from ai_core.rag.ingestion_contracts import (
     IngestionProfileResolution,
     resolve_ingestion_profile,
 )
+from documents.service_facade import ingest_document
 from documents import metrics as document_metrics
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
@@ -661,28 +663,33 @@ class CrawlerIngestionGraph:
         embedding_state: Mapping[str, Any],
         chunk_info: ChunkComputation,
     ) -> EmbeddingResult:
-        ingestion_tasks = self._ingestion_tasks()
-        embed_result = ingestion_tasks.embed(chunk_info.meta, chunk_info.chunks_path)
-        embeddings_path = str(embed_result.get("path"))
+        tenant_schema_value = (
+            embedding_state.get("tenant_schema")
+            if isinstance(embedding_state, Mapping)
+            else None
+        )
+        scope = ScopeContext(
+            tenant_id=str(chunk_info.meta["tenant_id"]),
+            trace_id=str(state.get("trace_id") or uuid4()),
+            invocation_id=str(uuid4()),
+            ingestion_run_id=str(state.get("ingestion_run_id") or uuid4()),
+            case_id=str(chunk_info.meta.get("case_id"))
+            if chunk_info.meta.get("case_id")
+            else None,
+            tenant_schema=str(tenant_schema_value) if tenant_schema_value else None,
+        )
+
+        ingestion_result = ingest_document(
+            scope,
+            meta=chunk_info.meta,
+            chunks_path=chunk_info.chunks_path,
+            embedding_state=embedding_state,
+        )
+
+        embeddings_path = str(ingestion_result.get("embeddings_path"))
         artifacts = self._artifacts(state)
         artifacts["embeddings_path"] = embeddings_path
-
-        upsert_kwargs: Dict[str, Any] = {}
-        tenant_schema = embedding_state.get("tenant_schema")
-        if tenant_schema is not None:
-            upsert_kwargs["tenant_schema"] = tenant_schema
-        vector_client = embedding_state.get("client")
-        if vector_client is not None:
-            upsert_kwargs["vector_client"] = vector_client
-        vector_factory = embedding_state.get("client_factory")
-        if vector_factory is not None:
-            upsert_kwargs["vector_client_factory"] = vector_factory
-
-        inserted = ingestion_tasks.upsert(
-            chunk_info.meta,
-            embeddings_path,
-            **upsert_kwargs,
-        )
+        inserted = bool(ingestion_result.get("chunks_inserted"))
 
         workflow_id_value = chunk_info.meta.get("workflow_id")
         workflow_id = None

@@ -28,6 +28,7 @@ TenantId = str
 TraceId = str
 InvocationId = str
 CaseId = str
+TenantSchema = str
 WorkflowId = str
 RunId = str
 IngestionRunId = str
@@ -44,6 +45,7 @@ class ScopeContext(BaseModel):
     run_id: RunId | None = None
     ingestion_run_id: IngestionRunId | None = None
     case_id: CaseId | None = None
+    tenant_schema: TenantSchema | None = None
     workflow_id: WorkflowId | None = None
     idempotency_key: IdempotencyKey | None = None
     timestamp: Timestamp = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -80,6 +82,7 @@ __all__ = [
     "RunId",
     "ScopeContext",
     "TenantId",
+    "TenantSchema",
     "Timestamp",
     "TraceId",
     "WorkflowId",

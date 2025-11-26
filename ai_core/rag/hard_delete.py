@@ -1,10 +1,8 @@
-"""Automated hard-delete task for pgvector documents."""
+"""Queued hard-delete task for pgvector documents."""
 
 from __future__ import annotations
 
-import time
 import uuid
-from dataclasses import dataclass
 from typing import Mapping, MutableMapping, Sequence
 
 from celery import shared_task
@@ -12,14 +10,13 @@ from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
 from django.utils import timezone
-from psycopg2 import sql
 
 from ai_core.authz.visibility import Visibility
+from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.observability import record_span
-from ai_core.rag.vector_store import get_default_router, reset_default_router
-from ai_core.rag import vector_client
 from common.celery import ScopedTask
 from common.logging import get_logger
+from documents.service_facade import delete_document
 from organizations.models import OrgMembership
 from profiles.models import UserProfile
 
@@ -28,18 +25,6 @@ logger = get_logger(__name__)
 
 class HardDeleteAuthorisationError(PermissionDenied):
     """Raised when the caller is not permitted to execute the hard delete."""
-
-
-@dataclass
-class HardDeleteStats:
-    """Summary of the rows affected by a hard delete run."""
-
-    requested: int
-    documents: int
-    chunks: int
-    embeddings: int
-    deleted_ids: list[str]
-    not_found: int
 
 
 def _normalise_document_ids(document_ids: Sequence[object]) -> list[uuid.UUID]:
@@ -110,253 +95,9 @@ def _resolve_actor(actor: Mapping[str, object] | None) -> tuple[str, str]:
     )
 
 
-def _resolve_store(tenant_id: str, tenant_schema: str | None) -> tuple[object, str]:
-    """Return the backing store and resolved scope for *tenant_id*."""
-
-    router = get_default_router()
-    scope = router._resolve_scope(str(tenant_id), tenant_schema)  # type: ignore[attr-defined]
-    if scope is None:
-        scope = router.default_scope
-    store = router._get_store(scope)  # type: ignore[attr-defined]
-    return store, scope
-
-
-def _schema_for_store(store: object) -> str:
-    schema = getattr(store, "_schema", None)
-    if isinstance(schema, str) and schema:
-        return schema
-    return "rag"
-
-
-def _collect_stats(
-    store: object,
-    tenant_uuid: uuid.UUID,
-    doc_ids: Sequence[uuid.UUID],
-) -> HardDeleteStats:
-    if not doc_ids:
-        return HardDeleteStats(
-            requested=0,
-            documents=0,
-            chunks=0,
-            embeddings=0,
-            deleted_ids=[],
-            not_found=0,
-        )
-
-    deleted_ids: list[str] = []
-    chunk_count = 0
-    embedding_count = 0
-
-    with store.connection() as conn:  # type: ignore[attr-defined]
-        try:
-            with conn.cursor() as cur:
-                # Apply short timeouts to avoid long lock waits during DELETE.
-                try:
-                    timeout_ms = int(
-                        getattr(
-                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
-                        )
-                    )
-                except Exception:
-                    timeout_ms = 2000
-                try:
-                    cur.execute(f"SET LOCAL statement_timeout = {int(timeout_ms)}")
-                    cur.execute(f"SET LOCAL lock_timeout = {int(timeout_ms)}")
-                except Exception:
-                    # Best-effort; continue without custom timeouts if SET fails
-                    pass
-                cur.execute(
-                    """
-                    SELECT id
-                    FROM documents
-                    WHERE tenant_id = %s AND id = ANY(%s)
-                    """,
-                    (tenant_uuid, list(doc_ids)),
-                )
-                existing_ids = [row[0] for row in cur.fetchall()]
-                if not existing_ids:
-                    conn.rollback()
-                    return HardDeleteStats(
-                        requested=len(doc_ids),
-                        documents=0,
-                        chunks=0,
-                        embeddings=0,
-                        deleted_ids=[],
-                        not_found=len(doc_ids),
-                    )
-
-                try:
-                    store.update_lifecycle_state(  # type: ignore[attr-defined]
-                        tenant_id=str(tenant_uuid),
-                        document_ids=existing_ids,
-                        state="deleted",
-                        reason="hard_delete",
-                        changed_at=timezone.now(),
-                        cursor=cur,
-                    )
-                except AttributeError:
-                    pass
-
-                cur.execute(
-                    "SELECT COUNT(*) FROM chunks WHERE document_id = ANY(%s)",
-                    (existing_ids,),
-                )
-                chunk_row = cur.fetchone()
-                if chunk_row and chunk_row[0] is not None:
-                    chunk_count = int(chunk_row[0])
-
-                cur.execute(
-                    """
-                    SELECT COUNT(*)
-                    FROM embeddings
-                    WHERE chunk_id IN (
-                        SELECT id FROM chunks WHERE document_id = ANY(%s)
-                    )
-                    """,
-                    (existing_ids,),
-                )
-                embedding_row = cur.fetchone()
-                if embedding_row and embedding_row[0] is not None:
-                    embedding_count = int(embedding_row[0])
-
-                cur.execute(
-                    """
-                    DELETE FROM documents
-                    WHERE tenant_id = %s AND id = ANY(%s)
-                    RETURNING id
-                    """,
-                    (tenant_uuid, existing_ids),
-                )
-                deleted_ids = [str(row[0]) for row in cur.fetchall()]
-
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-
-    return HardDeleteStats(
-        requested=len(doc_ids),
-        documents=len(deleted_ids),
-        chunks=chunk_count,
-        embeddings=embedding_count,
-        deleted_ids=deleted_ids,
-        not_found=len(doc_ids) - len(deleted_ids),
-    )
-
-
-def _run_vacuum(store: object, schema: str) -> bool:
-    vacuum_enabled = getattr(settings, "RAG_HARD_DELETE_VACUUM", False)
-    if not vacuum_enabled:
-        return False
-
-    with store.connection() as conn:  # type: ignore[attr-defined]
-        prev_autocommit = getattr(conn, "autocommit", False)
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                # Guard against long-running maintenance in test/dev by applying a
-                # short statement timeout (defaults to 2000ms, configurable).
-                try:
-                    timeout_ms = int(
-                        getattr(
-                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
-                        )
-                    )
-                except Exception:
-                    timeout_ms = 2000
-                try:
-                    cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
-                    cur.execute(f"SET lock_timeout = {int(timeout_ms)}")
-                except Exception:  # pragma: no cover - best-effort safeguard
-                    pass
-                cur.execute(
-                    sql.SQL("VACUUM (VERBOSE, ANALYZE) {}.{}").format(
-                        sql.Identifier(schema), sql.Identifier("documents")
-                    )
-                )
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.warning(
-                "rag.hard_delete.vacuum_failed",
-                extra={"schema": schema, "error": str(exc)},
-            )
-            return False
-        finally:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SET statement_timeout TO DEFAULT")
-                    try:
-                        cur.execute("SET lock_timeout TO DEFAULT")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            conn.autocommit = prev_autocommit
-    return True
-
-
-def _run_reindex(store: object, schema: str, stats: HardDeleteStats) -> bool:
-    threshold = getattr(settings, "RAG_HARD_DELETE_REINDEX_THRESHOLD", None)
-    if not threshold:
-        return False
-    try:
-        threshold_value = int(threshold)
-    except (TypeError, ValueError):
-        return False
-    if stats.documents < max(1, threshold_value):
-        return False
-
-    with store.connection() as conn:  # type: ignore[attr-defined]
-        prev_autocommit = getattr(conn, "autocommit", False)
-        conn.autocommit = True
-        try:
-            with conn.cursor() as cur:
-                # Apply a short timeout to avoid blocking tests on large indexes.
-                try:
-                    timeout_ms = int(
-                        getattr(
-                            settings, "RAG_HARD_DELETE_MAINTENANCE_TIMEOUT_MS", 2000
-                        )
-                    )
-                except Exception:
-                    timeout_ms = 2000
-                try:
-                    cur.execute(f"SET statement_timeout = {int(timeout_ms)}")
-                    cur.execute(f"SET lock_timeout = {int(timeout_ms)}")
-                except Exception:  # pragma: no cover - best-effort safeguard
-                    pass
-                cur.execute(
-                    sql.SQL("REINDEX TABLE CONCURRENTLY {}.{}").format(
-                        sql.Identifier(schema), sql.Identifier("documents")
-                    )
-                )
-        except Exception as exc:  # pragma: no cover - defensive logging
-            logger.warning(
-                "rag.hard_delete.reindex_failed",
-                extra={"schema": schema, "error": str(exc)},
-            )
-            return False
-        finally:
-            try:
-                with conn.cursor() as cur:
-                    cur.execute("SET statement_timeout TO DEFAULT")
-                    try:
-                        cur.execute("SET lock_timeout TO DEFAULT")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            conn.autocommit = prev_autocommit
-    return True
-
-
-def _emit_span(
-    trace_id: str | None,
-    metadata: MutableMapping[str, object | None],
-) -> None:
+def _emit_span(trace_id: str | None, metadata: MutableMapping[str, object | None]) -> None:
     if not trace_id:
         return
-    # Support both the observability helper signature and the simplified
-    # test capture stub (trace_id, node_name, metadata).
     try:
         record_span(
             "rag.hard_delete",
@@ -365,10 +106,27 @@ def _emit_span(
         )
     except TypeError:
         try:
-            # Fallback for monkeypatched tests expecting positional args
             record_span(str(trace_id), "rag.hard_delete", dict(metadata))  # type: ignore[misc]
         except Exception:
             pass
+
+
+def _build_scope(
+    tenant_id: uuid.UUID,
+    *,
+    trace_id: str | None,
+    ingestion_run_id: str | None,
+    tenant_schema: str | None,
+    case_id: str | None,
+) -> ScopeContext:
+    return ScopeContext(
+        tenant_id=str(tenant_id),
+        trace_id=trace_id or str(uuid.uuid4()),
+        invocation_id=str(uuid.uuid4()),
+        ingestion_run_id=ingestion_run_id or str(uuid.uuid4()),
+        tenant_schema=tenant_schema,
+        case_id=case_id,
+    )
 
 
 @shared_task(
@@ -387,10 +145,11 @@ def hard_delete(  # type: ignore[override]
     tenant_schema: str | None = None,
     case_id: str | None = None,
     trace_id: str | None = None,  # noqa: ARG001
+    ingestion_run_id: str | None = None,
     session_salt: str | None = None,
     session_scope: Sequence[str] | None = None,  # noqa: ARG001
 ) -> Mapping[str, object]:
-    """Physically delete documents and related rows from the vector store."""
+    """Queue a hard delete for documents in the vector store."""
 
     if not tenant_id:
         raise ValueError("tenant_id is required for rag.hard_delete")
@@ -399,67 +158,59 @@ def hard_delete(  # type: ignore[override]
     requested_ids = _normalise_document_ids(document_ids)
     tenant_uuid = uuid.UUID(str(tenant_id))
 
-    store, scope = _resolve_store(tenant_id, tenant_schema)
-    schema = _schema_for_store(store)
+    scope = _build_scope(
+        tenant_uuid,
+        trace_id=trace_id,
+        ingestion_run_id=ingestion_run_id,
+        tenant_schema=tenant_schema,
+        case_id=case_id,
+    )
 
-    start = time.perf_counter()
-    stats = _collect_stats(store, tenant_uuid, requested_ids)
-    vacuum_performed = _run_vacuum(store, schema)
-    reindex_performed = _run_reindex(store, schema, stats)
-    reset_default_router()
-    vector_client.reset_default_client()
+    actor_payload = dict(actor or {})
+    actor_payload.update({"operator": operator, "mode": actor_mode})
 
-    duration_ms = (time.perf_counter() - start) * 1000
-    completed_at = timezone.now().isoformat()
+    queued = delete_document(
+        scope,
+        requested_ids,
+        reason=reason,
+        ticket_ref=ticket_ref,
+        actor=actor_payload,
+    )
 
     log_payload = {
         "tenant": str(tenant_uuid),
-        "scope": scope,
-        "schema": schema,
-        "documents_requested": stats.requested,
-        "documents_deleted": stats.documents,
-        "chunks_deleted": stats.chunks,
-        "embeddings_deleted": stats.embeddings,
-        "not_found": stats.not_found,
+        "documents_requested": len(requested_ids),
         "reason": reason,
         "ticket_ref": ticket_ref,
         "operator": operator,
         "mode": actor_mode,
-        "duration_ms": duration_ms,
-        "vacuum": vacuum_performed,
-        "reindex": reindex_performed,
+        "queued_at": queued.get("queued_at") or timezone.now().isoformat(),
+        "trace_id": scope.trace_id,
+        "ingestion_run_id": scope.ingestion_run_id,
     }
 
     if case_id:
         log_payload["case_id"] = str(case_id)
 
+    if tenant_schema:
+        log_payload["tenant_schema"] = tenant_schema
+
     if session_salt:
         log_payload["session_salt"] = session_salt
 
     logger.info("rag.hard_delete.audit", extra=log_payload)
-
     _emit_span(trace_id, log_payload)
 
-    return {
-        "tenant_id": str(tenant_uuid),
-        "scope": scope,
-        "schema": schema,
-        "documents_requested": stats.requested,
-        "documents_deleted": stats.documents,
-        "chunks_deleted": stats.chunks,
-        "embeddings_deleted": stats.embeddings,
-        "not_found": stats.not_found,
-        "deleted_ids": stats.deleted_ids,
-        "vacuum_performed": vacuum_performed,
-        "reindex_performed": reindex_performed,
-        "operator": operator,
-        "actor_mode": actor_mode,
-        "reason": reason,
-        "ticket_ref": ticket_ref,
-        "completed_at": completed_at,
-        "duration_ms": duration_ms,
-        "visibility": Visibility.DELETED.value,
-    }
+    response = dict(queued)
+    response.update(
+        {
+            "operator": operator,
+            "actor_mode": actor_mode,
+            "deleted_ids": [str(doc_id) for doc_id in requested_ids],
+            "visibility": Visibility.DELETED.value,
+        }
+    )
+    return response
 
 
 __all__ = ["hard_delete"]
