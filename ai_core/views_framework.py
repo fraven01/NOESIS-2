@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from drf_spectacular.utils import OpenApiParameter, OpenApiExample
-from rest_framework import status
+from drf_spectacular.utils import OpenApiParameter, OpenApiExample, OpenApiResponse, inline_serializer
+from drf_spectacular.types import OpenApiTypes
+from rest_framework import status, serializers
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -19,6 +20,7 @@ from ai_core.graphs.framework_analysis_graph import build_graph
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
     FrameworkAnalysisErrorCode,
+    FrameworkAnalysisOutput,
     map_framework_error_to_status,
 )
 from ai_core.infra.resp import apply_std_headers
@@ -154,11 +156,27 @@ Returns a FrameworkProfile with structural metadata and completeness score.
         }
     },
     "responses": {
-        200: {
-            "description": "Analysis completed successfully",
-            "content": {
-                "application/json": {
-                    "example": {
+        200: OpenApiResponse(
+            response=inline_serializer(
+                name="FrameworkAnalysisResponse",
+                fields={
+                    "profile_id": serializers.UUIDField(),
+                    "version": serializers.IntegerField(),
+                    "gremium_identifier": serializers.CharField(),
+                    "completeness_score": serializers.FloatField(),
+                    "missing_components": serializers.ListField(child=serializers.CharField()),
+                    "hitl_required": serializers.BooleanField(),
+                    "hitl_reasons": serializers.ListField(child=serializers.CharField()),
+                    "idempotent": serializers.BooleanField(),
+                    "structure": serializers.DictField(),
+                    "analysis_metadata": serializers.DictField(),
+                },
+            ),
+            description="Analysis completed successfully",
+            examples=[
+                OpenApiExample(
+                    "Success",
+                    value={
                         "profile_id": "750e8400-e29b-41d4-a716-446655440002",
                         "version": 1,
                         "gremium_identifier": "KBR",
@@ -166,6 +184,7 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                         "missing_components": ["zugriffsrechte"],
                         "hitl_required": False,
                         "hitl_reasons": [],
+                        "idempotent": True,
                         "structure": {
                             "systembeschreibung": {
                                 "location": "main",
@@ -190,6 +209,7 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                                 "subannexes": ["3.1", "3.2"],
                                 "confidence": 0.85,
                                 "validated": True,
+                                "validation_notes": "Plausible",
                             },
                             "zugriffsrechte": {
                                 "location": "not_found",
@@ -208,14 +228,41 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                             "model_version": "framework_analysis_v1",
                         },
                     }
-                }
-            },
-        },
-        400: {"description": "Invalid request parameters"},
-        403: {"description": "Tenant not found or unauthorized"},
-        404: {"description": "Document or collection not found"},
-        409: {"description": "Profile already exists (use force_reanalysis=true)"},
-        500: {"description": "Analysis failed"},
+                )
+            ]
+        ),
+        400: OpenApiResponse(
+            response=OpenApiTypes.OBJECT,
+            description="Invalid request parameters",
+            examples=[
+                OpenApiExample(
+                    "invalid_json",
+                    value={
+                        "code": "invalid_json",
+                        "detail": "Request body is not valid JSON.",
+                    },
+                    media_type="application/json"
+                )
+            ]
+        ),
+        403: OpenApiResponse(description="Tenant not found or unauthorized"),
+        404: OpenApiResponse(description="Document or collection not found"),
+        409: OpenApiResponse(description="Profile already exists (use force_reanalysis=true)"),
+        415: OpenApiResponse(
+            response=OpenApiTypes.OBJECT,
+            description="Unsupported Media Type",
+            examples=[
+                OpenApiExample(
+                    "unsupported_media_type",
+                    value={
+                        "code": "unsupported_media_type",
+                        "detail": "Request payload must be encoded as application/json.",
+                    },
+                    media_type="application/json"
+                )
+            ]
+        ),
+        500: OpenApiResponse(description="Analysis failed"),
     },
     "parameters": [
         OpenApiParameter(
@@ -243,7 +290,7 @@ class FrameworkAnalysisView(APIView):
     POST /v1/ai/frameworks/analyze/
     """
 
-    @default_extend_schema(**FRAMEWORK_ANALYSIS_SCHEMA)
+    @default_extend_schema(include_trace_header=True, **FRAMEWORK_ANALYSIS_SCHEMA)
     def post(self, request: Request) -> Response:
         """
         Analyze a framework agreement document.

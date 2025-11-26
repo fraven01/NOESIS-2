@@ -215,6 +215,7 @@ class FrameworkAnalysisOutput(BaseModel):
     missing_components: list[str]
     hitl_required: bool
     hitl_reasons: list[str] = Field(default_factory=list)
+    idempotent: bool = True
     analysis_metadata: FrameworkAnalysisMetadata
 
     model_config = ConfigDict(extra="forbid", frozen=True)

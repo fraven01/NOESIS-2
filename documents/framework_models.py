@@ -121,15 +121,15 @@ class FrameworkProfile(models.Model):
         indexes = [
             models.Index(
                 fields=("tenant", "agreement_type"),
-                name="framework_profile_tenant_type_idx",
+                name="fp_tenant_type_idx",
             ),
             models.Index(
                 fields=("tenant", "gremium_identifier", "is_current"),
-                name="framework_profile_tenant_gremium_idx",
+                name="fp_tenant_gremium_idx",
             ),
             models.Index(
                 fields=("source_document_id",),
-                name="framework_profile_source_doc_idx",
+                name="fp_source_doc_idx",
             ),
         ]
         ordering = ["-version", "-created_at"]
@@ -198,7 +198,7 @@ class FrameworkDocument(models.Model):
         indexes = [
             models.Index(
                 fields=("tenant", "profile"),
-                name="framework_doc_tenant_profile_idx",
+                name="fd_tenant_profile_idx",
             ),
             models.Index(
                 fields=("document_id",),

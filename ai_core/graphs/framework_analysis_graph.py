@@ -178,7 +178,7 @@ class FrameworkAnalysisGraph:
         nodes = self.build_nodes()
         for node in nodes:
             transition, should_continue = node.execute(state)
-            state["transitions"].append(transition.model_dump())
+            state["transitions"].append(transition.to_dict())
 
             if not should_continue:
                 break
@@ -193,6 +193,7 @@ class FrameworkAnalysisGraph:
             missing_components=state["missing_components"],
             hitl_required=state["hitl_required"],
             hitl_reasons=state.get("hitl_reasons", []),
+            idempotent=True,
             analysis_metadata=FrameworkAnalysisMetadata(**state["analysis_metadata"]),
         )
 
@@ -221,6 +222,7 @@ class FrameworkAnalysisGraph:
             context = ToolContext(
                 tenant_id=state["tenant_id"],
                 trace_id=state["trace_id"],
+                case_id="framework-analysis",
                 invocation_id=uuid4(),
                 run_id=uuid4(),
             )
@@ -306,6 +308,7 @@ class FrameworkAnalysisGraph:
             context = ToolContext(
                 tenant_id=state["tenant_id"],
                 trace_id=state["trace_id"],
+                case_id="framework-analysis",
                 invocation_id=uuid4(),
                 run_id=uuid4(),
             )
@@ -351,6 +354,7 @@ class FrameworkAnalysisGraph:
             context = ToolContext(
                 tenant_id=state["tenant_id"],
                 trace_id=state["trace_id"],
+                case_id="framework-analysis",
                 invocation_id=uuid4(),
                 run_id=uuid4(),
             )

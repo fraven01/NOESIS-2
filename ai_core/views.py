@@ -564,7 +564,6 @@ def _prepare_request(request: Request):
         meta["collection_id"] = collection_id
     if idempotency_key:
         meta["idempotency_key"] = idempotency_key
-    print("PREPARE_META_IDEMPOTENCY", idempotency_key)
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id
@@ -1663,12 +1662,6 @@ class RagIngestionStatusView(APIView):
                 tenant=tenant_obj, external_id=meta["case_id"]
             ).first()
             if case_obj is not None:
-                print(
-                    f"DEBUG_VIEW: Found case {case_obj.external_id} for tenant {tenant_obj.schema_name}"
-                )
-                print(
-                    f"DEBUG_VIEW: Case phase: '{case_obj.phase}', status: '{case_obj.status}'"
-                )
                 response_payload["case_status"] = case_obj.status
                 if case_obj.phase:
                     response_payload["case_phase"] = case_obj.phase

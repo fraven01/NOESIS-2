@@ -3,7 +3,9 @@ import pytest
 
 from ai_core.infra import rate_limit
 from cases.services import get_or_create_case_for
+from cases.models import Case
 from customers.models import Tenant
+from django_tenants.utils import tenant_context
 
 
 @pytest.mark.django_db
@@ -23,15 +25,15 @@ def test_ping_ok(client, monkeypatch, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
-def test_ping_missing_case(client, monkeypatch, settings, tenant_factory):
+def test_ping_missing_case(client, monkeypatch, settings, test_tenant_schema_name):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     settings.AUTO_CREATE_CASES = False
 
-    # Create the tenant so resolution succeeds, allowing us to test case lookup failure
-    tenant = tenant_factory(schema_name="tenant-x", name="Tenant X")
+    # Use the existing test tenant
+    tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     resp = client.get(
         "/ai/ping/",
-        HTTP_X_TENANT_ID=str(tenant.pk),
+        HTTP_X_TENANT_ID=tenant.schema_name,
         HTTP_X_CASE_ID="missing",
     )
     assert resp.status_code == 404
@@ -49,18 +51,17 @@ def test_rag_query_missing_headers(client):
 
 
 @pytest.mark.django_db
-def test_ingestion_status_includes_case_details(client, monkeypatch, tenant_factory):
+def test_ingestion_status_includes_case_details(client, monkeypatch, test_tenant_schema_name):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    tenant = tenant_factory(schema_name="test-ingest", name="Test Ingest")
-    case = get_or_create_case_for(tenant, "case-status")
-    case.phase = "review"
-    case.save(update_fields=["phase"])
-    case.events.create(
-        tenant=tenant,
-        event_type="ingestion_run_completed",
-        source="ingestion",
-        payload={"status": "succeeded"},
-    )
+    tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    with tenant_context(tenant):
+        case = Case.objects.create(tenant=tenant, external_id="case-status", phase="review")
+        case.events.create(
+            tenant=tenant,
+            event_type="ingestion_run_completed",
+            source="ingestion",
+            payload={"status": "succeeded"},
+        )
 
     monkeypatch.setattr(
         "ai_core.views.get_latest_ingestion_run",

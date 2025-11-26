@@ -183,6 +183,9 @@ class TestAssembleProfileNode:
                 "auswertungen": {"plausible": True},
                 "zugriffsrechte": {"plausible": False},
             },
+            "tenant_id": "test_tenant",
+            "trace_id": "test_trace",
+            "gremium_identifier": "TEST_GREMIUM",
         }
 
         transition, should_continue = graph._assemble_profile(state)
@@ -224,6 +227,9 @@ class TestAssembleProfileNode:
                 "auswertungen": {"plausible": True},
                 "zugriffsrechte": {"plausible": True},
             },
+            "tenant_id": "test_tenant",
+            "trace_id": "test_trace",
+            "gremium_identifier": "TEST_GREMIUM",
         }
 
         transition, should_continue = graph._assemble_profile(state)
@@ -267,6 +273,9 @@ class TestAssembleProfileNode:
                 "auswertungen": {"plausible": True, "reason": "Lists reports"},
                 "zugriffsrechte": {"plausible": False},
             },
+            "tenant_id": "test_tenant",
+            "trace_id": "test_trace",
+            "gremium_identifier": "TEST_GREMIUM",
         }
 
         transition, should_continue = graph._assemble_profile(state)
@@ -288,10 +297,34 @@ class TestGraphEndToEnd:
 
     @patch("ai_core.graphs.framework_analysis_graph.llm_client")
     @patch("ai_core.graphs.framework_analysis_graph.retrieve")
+    @patch("ai_core.graphs.framework_analysis_graph.Tenant")
+    @patch("ai_core.graphs.framework_analysis_graph.DocumentCollection")
+    @patch("ai_core.graphs.framework_analysis_graph.FrameworkProfile")
+    @patch("ai_core.graphs.framework_analysis_graph.FrameworkDocument")
+    @patch("ai_core.graphs.framework_analysis_graph.load_prompt")
+    @pytest.mark.django_db
     def test_graph_executes_all_nodes(
-        self, mock_retrieve: MagicMock, mock_llm: MagicMock
+        self,
+        mock_load_prompt: MagicMock,
+        mock_framework_document: MagicMock,
+        mock_framework_profile: MagicMock,
+        mock_document_collection: MagicMock,
+        mock_tenant: MagicMock,
+        mock_retrieve: MagicMock,
+        mock_llm: MagicMock,
     ) -> None:
         """Test that graph executes all nodes successfully."""
+        # Mock DB
+        mock_tenant.objects.get.return_value = MagicMock()
+        mock_document_collection.objects.get.return_value = MagicMock()
+        mock_framework_profile.objects.filter.return_value.first.return_value = None
+        mock_profile = MagicMock()
+        mock_profile.id = uuid4()
+        mock_framework_profile.objects.create.return_value = mock_profile
+
+        # Mock prompt
+        mock_load_prompt.return_value = {"text": "Prompt text", "version": "v1"}
+
         # Mock retrieve responses
         mock_retrieve_output = MagicMock()
         mock_retrieve_output.matches = [

@@ -47,10 +47,12 @@ class HeaderTenantRoutingMiddleware:
             schema = request.META.get(self.header_name)
             if schema and Tenant.objects.filter(schema_name=schema).exists():
                 connection.set_schema(schema)
+                request.tenant = Tenant.objects.get(schema_name=schema)
             elif getattr(settings, "TESTING", False):
                 # Default to a known test schema when running tests and no header given
                 if Tenant.objects.filter(schema_name="autotest").exists():
                     connection.set_schema("autotest")
+                    request.tenant = Tenant.objects.get(schema_name="autotest")
         return self.get_response(request)
 
 

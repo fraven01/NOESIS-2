@@ -7,6 +7,9 @@ import uuid
 from django.db import models
 
 
+from . import framework_models  # noqa: F401
+
+
 class DocumentCollection(models.Model):
     """Logical document grouping mapping to vector collections."""
 

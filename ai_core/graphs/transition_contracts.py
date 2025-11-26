@@ -38,6 +38,7 @@ GraphPhase = Literal[
     "chunk_and_embed",
     "lifecycle_hook",
     "finalize",
+    "framework_analysis",
 ]
 
 
@@ -176,6 +177,19 @@ class GraphTransition:
 
     def to_dict(self) -> Dict[str, Any]:
         return self.result.model_dump()
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "GraphTransition":
+        """Create a transition from a dictionary."""
+        # Map 'attributes' to 'context' for compatibility
+        if "attributes" in data and "context" not in data:
+            data["context"] = data.pop("attributes")
+        
+        # Default phase if missing
+        if "phase" not in data:
+            data["phase"] = "framework_analysis"
+
+        return cls(result=StandardTransitionResult(**data))
 
 
 def build_lifecycle_section(

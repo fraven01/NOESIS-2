@@ -162,7 +162,7 @@ def test_tenant_schema_header_mismatch_returns_400(client, test_tenant_schema_na
         data={},
         content_type="application/json",
         **{
-            META_TENANT_ID_KEY: "tenant-header",
+            META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: f"{test_tenant_schema_name}-other",
             META_CASE_ID_KEY: "c",
         },
@@ -192,16 +192,16 @@ def test_tenant_schema_header_match_allows_request(
         data={},
         content_type="application/json",
         **{
-            META_TENANT_ID_KEY: "tenant-header",
+            META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_CASE_ID_KEY: "c",
         },
     )
     assert resp.status_code == 200
-    assert resp[X_TENANT_ID_HEADER] == "tenant-header"
+    assert resp[X_TENANT_ID_HEADER] == test_tenant_schema_name
     assert resp[X_CASE_ID_HEADER] == "c"
-    assert resp.json()["tenant_id"] == "tenant-header"
-    assert seen["tenant"] == "tenant-header"
+    assert resp.json()["tenant_id"] == test_tenant_schema_name
+    assert seen["tenant"] == test_tenant_schema_name
 
 
 @pytest.mark.django_db
@@ -245,8 +245,8 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
     )
     assert resp.status_code == 400
     error_body = resp.json()
-    assert error_body["detail"] == "Tenant schema could not be resolved from headers."
-    assert error_body["code"] == "tenant_not_found"
+    assert error_body["detail"] == "Tenant header is required for multi-tenant requests."
+    assert error_body["code"] == "invalid_tenant_header"
 
 
 @pytest.mark.django_db
@@ -303,7 +303,7 @@ def test_intake_persists_state_and_headers(
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
-    tenant_header = "tenant-header"
+    tenant_header = test_tenant_schema_name
     resp = client.post(
         "/ai/intake/",
         data={},
@@ -382,7 +382,8 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
             META_KEY_ALIAS_KEY: "alias-1234",
         },
     )
-    request.tenant = SimpleNamespace(schema_name="autotest")
+    from customers.models import Tenant
+    request.tenant = Tenant.objects.get(schema_name="autotest")
 
     middleware = RequestLogContextMiddleware(views.intake)
 
@@ -946,7 +947,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
-    tenant_id = "tenant-rag"
+    tenant_id = test_tenant_schema_name
     case_id = "case-rag-001"
     payload = {
         "question": " Welche Richtlinien gelten? ",
