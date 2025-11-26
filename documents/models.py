@@ -32,6 +32,12 @@ class DocumentCollection(models.Model):
     type = models.CharField(max_length=64, blank=True, default="")
     visibility = models.CharField(max_length=64, blank=True, default="")
     metadata = models.JSONField(blank=True, default=dict)
+    embedding_profile = models.CharField(max_length=255, blank=True, default="")
+    documents = models.ManyToManyField(
+        "Document",
+        through="DocumentCollectionMembership",
+        related_name="collections",
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -47,10 +53,75 @@ class DocumentCollection(models.Model):
                 fields=("tenant", "case"),
                 name="doc_collection_tenant_case_idx",
             ),
+            models.Index(
+                fields=("tenant", "embedding_profile"),
+                name="doc_coll_tenant_profile_idx",
+            ),
         ]
 
     def __str__(self) -> str:  # pragma: no cover - debug helper
         return f"{self.name} ({self.key})"
+
+
+class Document(models.Model):
+    """Persisted document metadata shared across collections."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "customers.Tenant",
+        on_delete=models.PROTECT,
+        related_name="documents",
+    )
+    hash = models.CharField(max_length=128)
+    source = models.CharField(max_length=255)
+    external_id = models.CharField(max_length=255, blank=True, null=True)
+    metadata = models.JSONField(blank=True, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("tenant", "source", "hash"),
+                name="document_unique_source_hash",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("tenant", "source"), name="document_tenant_source_idx"
+            ),
+            models.Index(fields=("tenant", "hash"), name="document_tenant_hash_idx"),
+        ]
+
+
+class DocumentCollectionMembership(models.Model):
+    """Membership relation between documents and logical collections."""
+
+    id = models.BigAutoField(primary_key=True)
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="collection_memberships",
+    )
+    collection = models.ForeignKey(
+        DocumentCollection,
+        on_delete=models.CASCADE,
+        related_name="collection_memberships",
+    )
+    added_at = models.DateTimeField(auto_now_add=True)
+    added_by = models.CharField(max_length=255, default="system")
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("document", "collection"),
+                name="document_collection_membership_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("collection",), name="document_collection_idx"),
+            models.Index(fields=("document",), name="collection_document_idx"),
+        ]
 
 
 class DocumentLifecycleState(models.Model):
