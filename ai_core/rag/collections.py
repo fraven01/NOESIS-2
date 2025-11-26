@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 from contextlib import suppress
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from uuid import UUID, NAMESPACE_URL, uuid5
 
 from psycopg2 import Error as PsycopgError, sql
 
 from common.logging import get_logger
 from .vector_client import PgVectorClient, get_default_client
+
+if TYPE_CHECKING:
+    from customers.models import Tenant
+    from documents.models import DocumentCollection
 
 MANUAL_COLLECTION_SLUG = "manual-search"
 MANUAL_COLLECTION_LABEL = "Manual Search"
@@ -109,12 +113,85 @@ def ensure_manual_collection(
         )
         raise
 
+    try:
+        ensure_manual_collection_model(
+            tenant_id=tenant_id,
+            collection_uuid=collection_uuid,
+            slug=slug,
+            label=label,
+        )
+    except Exception:  # pragma: no cover - defensive guard
+        _LOGGER.exception(
+            "manual_collection.model_ensure_failed",
+            extra={
+                "tenant_id": str(tenant_uuid),
+                "collection_id": str(collection_uuid),
+            },
+        )
+
     return str(collection_uuid)
+
+
+def _resolve_tenant(tenant_id: object) -> "Tenant | None":
+    from customers.tenant_context import TenantContext
+
+    return TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+
+
+def _get_document_collection_model() -> type["DocumentCollection"]:
+    from documents.models import DocumentCollection
+
+    return DocumentCollection
+
+
+def ensure_manual_collection_model(
+    *,
+    tenant_id: object,
+    collection_uuid: UUID,
+    slug: str = MANUAL_COLLECTION_SLUG,
+    label: str = MANUAL_COLLECTION_LABEL,
+) -> "DocumentCollection | None":
+    """Ensure the ORM representation of the manual collection exists."""
+
+    tenant = _resolve_tenant(tenant_id)
+    if tenant is None:
+        _LOGGER.info(
+            "manual_collection.model_missing_tenant",
+            extra={"tenant_id": str(tenant_id)},
+        )
+        return None
+
+    DocumentCollection = _get_document_collection_model()
+
+    try:
+        collection, _ = DocumentCollection.objects.get_or_create(
+            tenant=tenant,
+            key=slug,
+            defaults={
+                "id": collection_uuid,
+                "collection_id": collection_uuid,
+                "name": label,
+                "type": "",
+                "visibility": "",
+                "metadata": {},
+            },
+        )
+        return collection
+    except Exception:  # pragma: no cover - defensive guard
+        _LOGGER.exception(
+            "manual_collection.model_get_or_create_failed",
+            extra={
+                "tenant_id": str(tenant),
+                "collection_id": str(collection_uuid),
+            },
+        )
+        return None
 
 
 __all__ = [
     "MANUAL_COLLECTION_LABEL",
     "MANUAL_COLLECTION_SLUG",
     "ensure_manual_collection",
+    "ensure_manual_collection_model",
     "manual_collection_uuid",
 ]
