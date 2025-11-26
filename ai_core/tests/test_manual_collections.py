@@ -10,6 +10,7 @@ from ai_core.rag.collections import (
     MANUAL_COLLECTION_LABEL,
     MANUAL_COLLECTION_SLUG,
     ensure_manual_collection,
+    ensure_manual_collection_model,
     manual_collection_uuid,
 )
 
@@ -71,6 +72,10 @@ def test_ensure_manual_collection_inserts_record(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(
         "ai_core.rag.collections.get_default_client", lambda: dummy_client
     )
+    monkeypatch.setattr(
+        "ai_core.rag.collections.ensure_manual_collection_model",
+        lambda **_: None,
+    )
 
     tenant_id = "tenant-seed"
     expected_collection_id = str(manual_collection_uuid(tenant_id))
@@ -87,3 +92,77 @@ def test_ensure_manual_collection_inserts_record(monkeypatch: pytest.MonkeyPatch
     assert params[1] == expected_collection_id
     assert params[2] == MANUAL_COLLECTION_SLUG
     assert params[3] == MANUAL_COLLECTION_LABEL
+
+
+def test_ensure_manual_collection_dual_writes(monkeypatch: pytest.MonkeyPatch):
+    dummy_client = _DummyClient()
+    monkeypatch.setattr(
+        "ai_core.rag.collections.get_default_client", lambda: dummy_client
+    )
+
+    tenant_id = "tenant-seed"
+    collection_uuid = manual_collection_uuid(tenant_id)
+
+    calls: dict[str, object] = {}
+
+    def _capture_model_write(**kwargs):
+        calls.update(kwargs)
+        return "collection-model"
+
+    monkeypatch.setattr(
+        "ai_core.rag.collections.ensure_manual_collection_model",
+        _capture_model_write,
+    )
+
+    collection_id = ensure_manual_collection(tenant_id)
+
+    assert collection_id == str(collection_uuid)
+    assert calls["tenant_id"] == tenant_id
+    assert calls["collection_uuid"] == collection_uuid
+    assert calls["slug"] == MANUAL_COLLECTION_SLUG
+    assert calls["label"] == MANUAL_COLLECTION_LABEL
+
+
+def test_ensure_manual_collection_model_creates_document_collection(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    tenant = object()
+    collection_uuid = uuid.uuid4()
+    captured: dict[str, object] = {}
+
+    class _DummyManager:
+        def get_or_create(self, *, tenant, key, defaults):  # type: ignore[override]
+            captured["tenant"] = tenant
+            captured["key"] = key
+            captured["defaults"] = defaults
+            return "document-collection", True
+
+    class _DummyDocumentCollection:
+        objects = _DummyManager()
+
+    monkeypatch.setattr(
+        "ai_core.rag.collections._get_document_collection_model",
+        lambda: _DummyDocumentCollection,
+    )
+    monkeypatch.setattr(
+        "ai_core.rag.collections._resolve_tenant", lambda value: tenant
+    )
+
+    result = ensure_manual_collection_model(
+        tenant_id="tenant",
+        collection_uuid=collection_uuid,
+        slug="custom-slug",
+        label="Custom Label",
+    )
+
+    assert result == "document-collection"
+    assert captured["tenant"] is tenant
+    assert captured["key"] == "custom-slug"
+    assert captured["defaults"] == {
+        "id": collection_uuid,
+        "collection_id": collection_uuid,
+        "name": "Custom Label",
+        "type": "",
+        "visibility": "",
+        "metadata": {},
+    }
