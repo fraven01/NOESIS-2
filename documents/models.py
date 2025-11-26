@@ -67,6 +67,11 @@ class Document(models.Model):
     """Persisted document metadata shared across collections."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "customers.Tenant",
+        on_delete=models.PROTECT,
+        related_name="documents",
+    )
     hash = models.CharField(max_length=128)
     source = models.CharField(max_length=255)
     external_id = models.CharField(max_length=255, blank=True, null=True)
@@ -77,12 +82,15 @@ class Document(models.Model):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=("source", "hash"), name="document_unique_source_hash"
+                fields=("tenant", "source", "hash"),
+                name="document_unique_source_hash",
             )
         ]
         indexes = [
-            models.Index(fields=("source",), name="document_source_idx"),
-            models.Index(fields=("hash",), name="document_hash_idx"),
+            models.Index(
+                fields=("tenant", "source"), name="document_tenant_source_idx"
+            ),
+            models.Index(fields=("tenant", "hash"), name="document_tenant_hash_idx"),
         ]
 
 
