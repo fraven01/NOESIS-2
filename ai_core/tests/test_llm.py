@@ -52,9 +52,7 @@ def test_llm_client_masks_and_records(monkeypatch):
             self.calls = 0
             self.idempotency_headers: list[str] = []
 
-        def __call__(
-            self, url: str, headers: dict[str, str], json: dict[str, Any]
-        ):
+        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
             assert json["messages"][0]["content"] == sanitized_prompt
             assert headers["Authorization"] == "Bearer token"
             assert headers[X_TRACE_ID_HEADER] == "tr1"
@@ -118,9 +116,7 @@ def test_llm_client_flattens_structured_content(monkeypatch):
     }
 
     class StructuredContent:
-        def __call__(
-            self, url: str, headers: dict[str, str], json: dict[str, Any]
-        ):
+        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
             class Resp:
                 status_code = 200
 
@@ -187,8 +183,6 @@ def test_llm_client_falls_back_to_choice_text(monkeypatch):
     assert result["text"] == "Direct output"
 
 
-
-
 def test_llm_client_raises_when_content_missing(monkeypatch):
     metadata = {
         "tenant": "t1",
@@ -223,12 +217,6 @@ def test_llm_client_raises_when_content_missing(monkeypatch):
     assert "missing content" in str(excinfo.value).lower()
 
 
-
-
-
-
-
-
 def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
     metadata_v1 = {
         "tenant": "t1",
@@ -242,9 +230,7 @@ def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
         def __init__(self):
             self.headers: list[str] = []
 
-        def __call__(
-            self, url: str, headers: dict[str, str], json: dict[str, Any]
-        ):
+        def __call__(self, url: str, headers: dict[str, str], json: dict[str, Any]):
             self.headers.append(headers[IDEMPOTENCY_KEY_HEADER])
 
             class Resp:
@@ -273,8 +259,6 @@ def test_llm_idempotency_key_changes_with_prompt_version(monkeypatch):
     call("simple-query", "prompt-1", metadata_v2)
 
     assert capture.headers == ["c1:simple-query:v1", "c1:simple-query:v2"]
-
-
 
 
 def _prepare_env(monkeypatch):
@@ -341,7 +325,6 @@ def test_llm_client_logs_masked_context_on_5xx(monkeypatch):
         "status": 502,
     }
 
-
     for _, kwargs in warnings:
         assert kwargs.get("extra") == expected_extra
 
@@ -382,7 +365,7 @@ def test_llm_client_logs_masked_context_on_request_error(monkeypatch):
 
     with pytest.raises(LlmClientError) as excinfo:
         call("simple-query", "secret", metadata)
-    
+
     assert str(excinfo.value) == "boom"
 
     expected_extra = {

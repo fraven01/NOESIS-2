@@ -51,11 +51,15 @@ def test_rag_query_missing_headers(client):
 
 
 @pytest.mark.django_db
-def test_ingestion_status_includes_case_details(client, monkeypatch, test_tenant_schema_name):
+def test_ingestion_status_includes_case_details(
+    client, monkeypatch, test_tenant_schema_name
+):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     with tenant_context(tenant):
-        case = Case.objects.create(tenant=tenant, external_id="case-status", phase="review")
+        case = Case.objects.create(
+            tenant=tenant, external_id="case-status", phase="review"
+        )
         case.events.create(
             tenant=tenant,
             event_type="ingestion_run_completed",

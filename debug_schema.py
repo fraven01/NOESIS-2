@@ -1,4 +1,3 @@
-
 import os
 import django
 from drf_spectacular.generators import SchemaGenerator

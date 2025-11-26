@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from drf_spectacular.utils import OpenApiParameter, OpenApiExample, OpenApiResponse, inline_serializer
+from drf_spectacular.utils import (
+    OpenApiParameter,
+    OpenApiExample,
+    OpenApiResponse,
+    inline_serializer,
+)
 from drf_spectacular.types import OpenApiTypes
 from rest_framework import status, serializers
 from rest_framework.request import Request
@@ -163,9 +168,13 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                     "version": serializers.IntegerField(),
                     "gremium_identifier": serializers.CharField(),
                     "completeness_score": serializers.FloatField(),
-                    "missing_components": serializers.ListField(child=serializers.CharField()),
+                    "missing_components": serializers.ListField(
+                        child=serializers.CharField()
+                    ),
                     "hitl_required": serializers.BooleanField(),
-                    "hitl_reasons": serializers.ListField(child=serializers.CharField()),
+                    "hitl_reasons": serializers.ListField(
+                        child=serializers.CharField()
+                    ),
                     "idempotent": serializers.BooleanField(),
                     "structure": serializers.DictField(),
                     "analysis_metadata": serializers.DictField(),
@@ -226,9 +235,9 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                             "analysis_timestamp": "2025-01-15T10:30:00Z",
                             "model_version": "framework_analysis_v1",
                         },
-                    }
+                    },
                 )
-            ]
+            ],
         ),
         400: OpenApiResponse(
             response=OpenApiTypes.OBJECT,
@@ -240,13 +249,15 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                         "code": "invalid_json",
                         "detail": "Request body is not valid JSON.",
                     },
-                    media_type="application/json"
+                    media_type="application/json",
                 )
-            ]
+            ],
         ),
         403: OpenApiResponse(description="Tenant not found or unauthorized"),
         404: OpenApiResponse(description="Document or collection not found"),
-        409: OpenApiResponse(description="Profile already exists (use force_reanalysis=true)"),
+        409: OpenApiResponse(
+            description="Profile already exists (use force_reanalysis=true)"
+        ),
         415: OpenApiResponse(
             response=OpenApiTypes.OBJECT,
             description="Unsupported Media Type",
@@ -257,9 +268,9 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                         "code": "unsupported_media_type",
                         "detail": "Request payload must be encoded as application/json.",
                     },
-                    media_type="application/json"
+                    media_type="application/json",
                 )
-            ]
+            ],
         ),
         500: OpenApiResponse(description="Analysis failed"),
     },

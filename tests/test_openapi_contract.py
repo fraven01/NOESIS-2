@@ -123,7 +123,9 @@ def test_post_requests_document_unsupported_media_type(openapi_schema):
             responses = operation.get("responses", {})
             unsupported = responses.get("415")
             if not unsupported and path == "/v1/ai/frameworks/analyze/":
-                print(f"DEBUG: {path} {method} responses keys: {list(responses.keys())}")
+                print(
+                    f"DEBUG: {path} {method} responses keys: {list(responses.keys())}"
+                )
             assert unsupported, f"{path} {method} missing 415 response"
 
             content = unsupported.get("content", {}).get("application/json", {})

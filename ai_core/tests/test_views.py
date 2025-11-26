@@ -245,7 +245,9 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
     )
     assert resp.status_code == 400
     error_body = resp.json()
-    assert error_body["detail"] == "Tenant header is required for multi-tenant requests."
+    assert (
+        error_body["detail"] == "Tenant header is required for multi-tenant requests."
+    )
     assert error_body["code"] == "invalid_tenant_header"
 
 
@@ -383,6 +385,7 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
         },
     )
     from customers.models import Tenant
+
     request.tenant = Tenant.objects.get(schema_name="autotest")
 
     middleware = RequestLogContextMiddleware(views.intake)

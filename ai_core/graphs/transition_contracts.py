@@ -184,7 +184,7 @@ class GraphTransition:
         # Map 'attributes' to 'context' for compatibility
         if "attributes" in data and "context" not in data:
             data["context"] = data.pop("attributes")
-        
+
         # Default phase if missing
         if "phase" not in data:
             data["phase"] = "framework_analysis"
