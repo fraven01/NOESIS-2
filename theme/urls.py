@@ -5,6 +5,7 @@ from . import views
 urlpatterns = [
     path("", views.home, name="home"),
     path("rag-tools/", views.rag_tools, name="rag-tools"),
+    path("document-space/", views.document_space, name="document-space"),
     path("rag-tools/web-search/", views.web_search, name="web-search"),
     path(
         "rag-tools/web-search/ingest-selected/",

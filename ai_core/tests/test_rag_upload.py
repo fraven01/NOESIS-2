@@ -8,12 +8,14 @@ from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 
 from ai_core.infra import object_store, rate_limit
+from ai_core.rag.collections import manual_collection_uuid
 from common.constants import (
     META_CASE_ID_KEY,
     META_COLLECTION_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
+from documents.models import DocumentCollection
 from types import SimpleNamespace
 
 
@@ -79,9 +81,11 @@ def test_rag_upload_persists_file_and_metadata(
 
     assert response.status_code == 202
     body = response.json()
+    manual_collection_id = str(manual_collection_uuid(test_tenant_schema_name))
     assert body["trace_id"]
     assert body["workflow_id"] == "case-123"
     assert body["ingestion_run_id"]
+    assert body["collection_id"] == manual_collection_id
 
     assert captured["tenant_id"] == test_tenant_schema_name
     assert captured["case_id"] == "case-123"
@@ -107,6 +111,7 @@ def test_rag_upload_persists_file_and_metadata(
     stored_metadata = json.loads(metadata_path.read_text())
     external_id = stored_metadata["external_id"]
     assert "source" not in stored_metadata
+    assert stored_metadata["collection_id"] == manual_collection_id
 
     assert len(documents_repository_stub.saved) == 1
     saved_document = documents_repository_stub.saved[0]
@@ -124,6 +129,12 @@ def test_rag_upload_persists_file_and_metadata(
     assert status_payload["status"] == "queued"
     assert status_payload["document_ids"] == [body["document_id"]]
     assert status_payload["tenant_id"] == test_tenant_schema_name
+
+    collection_entry = DocumentCollection.objects.get(
+        tenant__schema_name=test_tenant_schema_name,
+        key="manual-search",
+    )
+    assert str(collection_entry.collection_id) == manual_collection_id
 
 
 @pytest.mark.django_db
@@ -159,6 +170,7 @@ def test_rag_upload_bridges_collection_header_to_metadata(
     body = response.json()
     document_id = body["document_id"]
     assert body["workflow_id"] == "case-collection"
+    assert body["collection_id"] == collection_scope
 
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
     case_segment = object_store.sanitize_identifier("case-collection")

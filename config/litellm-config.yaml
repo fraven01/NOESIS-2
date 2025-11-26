@@ -49,3 +49,16 @@ model_list:
       model: anthropic/claude-3-5-haiku-latest # Oder claude-haiku-4.5 wenn verfügbar
       api_key: os.environ/ANTHROPIC_API_KEY
 
+  # ---------------------------------------------------------
+  # OPENAI EMBEDDINGS
+  # ---------------------------------------------------------
+  - model_name: oai-embed-small
+    litellm_params:
+      model: openai/text-embedding-3-small  # 1536 Dimensionen
+      api_key: os.environ/OPENAI_API_KEY
+
+  - model_name: oai-embed-large
+    litellm_params:
+      model: openai/text-embedding-3-large  # 3072 Dimensionen (oder konfigurierbar)
+      api_key: os.environ/OPENAI_API_KEY
+

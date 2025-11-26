@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterable, Mapping
 from importlib import import_module
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
@@ -77,7 +77,16 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
+from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+from cases.models import Case
+from customers.models import Tenant
+from ai_core.rag.collections import (
+    MANUAL_COLLECTION_LABEL,
+    MANUAL_COLLECTION_SLUG,
+    ensure_manual_collection,
+    manual_collection_uuid,
+)
 
 from ..case_events import emit_ingestion_case_event
 from ..infra import object_store
@@ -1147,6 +1156,123 @@ def _build_document_meta(
     return DocumentMeta(**payload)
 
 
+def _ensure_document_collection_record(
+    *,
+    tenant_schema: str,
+    tenant_id: str,
+    collection_id: object,
+    case_id: str | None,
+    source: str = "upload",
+    key: str = MANUAL_COLLECTION_SLUG,
+    label: str = MANUAL_COLLECTION_LABEL,
+) -> None:
+    """Create or update a DocumentCollection row for manual developer uploads."""
+
+    if not collection_id:
+        return
+    try:
+        collection_uuid = (
+            collection_id
+            if isinstance(collection_id, UUID)
+            else UUID(str(collection_id))
+        )
+    except (TypeError, ValueError, AttributeError):
+        logger.warning(
+            "document_collection.ensure.invalid_id",
+            extra={"tenant_id": tenant_id, "collection_id": collection_id},
+        )
+        return
+
+    try:
+        tenant_obj = Tenant.objects.get(schema_name=tenant_schema)
+    except Tenant.DoesNotExist:
+        logger.warning(
+            "document_collection.ensure_missing_tenant",
+            extra={"tenant_id": tenant_id, "tenant_schema": tenant_schema},
+        )
+        return
+
+    case_obj = None
+    if case_id:
+        case_obj = (
+            Case.objects.filter(
+                tenant=tenant_obj,
+                external_id=str(case_id).strip(),
+            ).first()
+        )
+
+    collection = (
+        DocumentCollection.objects.filter(
+            tenant=tenant_obj, collection_id=collection_uuid
+        ).first()
+    )
+    if collection is None and key:
+        collection = (
+            DocumentCollection.objects.filter(tenant=tenant_obj, key=key).first()
+        )
+
+    metadata_payload = {"source": source} if source else {}
+
+    if collection is None:
+        try:
+            DocumentCollection.objects.create(
+                tenant=tenant_obj,
+                case=case_obj,
+                name=label or key or "Manual Collection",
+                key=key or str(collection_uuid),
+                collection_id=collection_uuid,
+                type="manual",
+                visibility="tenant",
+                metadata=metadata_payload,
+            )
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "document_collection.ensure_record_failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "tenant_schema": tenant_schema,
+                    "collection_id": str(collection_uuid),
+                },
+                exc_info=True,
+            )
+        return
+
+    updates: dict[str, object] = {}
+    if collection.collection_id != collection_uuid:
+        updates["collection_id"] = collection_uuid
+    if case_obj is not None and collection.case_id != case_obj.id:
+        updates["case"] = case_obj
+    if key and collection.key != key:
+        updates["key"] = key
+    if label and collection.name != label:
+        updates["name"] = label
+    if not collection.type:
+        updates["type"] = "manual"
+    if not collection.visibility:
+        updates["visibility"] = "tenant"
+    if metadata_payload:
+        merged_metadata = dict(collection.metadata or {})
+        if merged_metadata.get("source") != source:
+            merged_metadata["source"] = source
+            updates["metadata"] = merged_metadata
+
+    if updates:
+        for field, value in updates.items():
+            setattr(collection, field, value)
+        try:
+            collection.save(update_fields=list(updates))
+        except Exception:  # pragma: no cover - defensive
+            logger.warning(
+                "document_collection.ensure_record_update_failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "tenant_schema": tenant_schema,
+                    "collection_id": str(collection_uuid),
+                },
+                exc_info=True,
+            )
+
+
 def handle_document_upload(
     upload: UploadedFile,
     metadata_raw: str | bytes | None,
@@ -1206,6 +1332,39 @@ def handle_document_upload(
         )
 
     metadata_obj = metadata_model.model_dump()
+    manual_collection_scope = str(manual_collection_uuid(meta["tenant_id"]))
+    manual_scope_assigned = False
+
+    existing_scope = metadata_obj.get("collection_id")
+    if existing_scope:
+        existing_scope_str = str(existing_scope)
+        metadata_obj["collection_id"] = existing_scope_str
+        if existing_scope_str == manual_collection_scope:
+            manual_scope_assigned = True
+
+    if not metadata_obj.get("collection_id"):
+        manual_scope_assigned = True
+        try:
+            ensure_manual_collection(meta["tenant_id"])
+        except Exception:  # pragma: no cover - defensive guard
+            logger.warning(
+                "upload.ensure_manual_collection_failed",
+                extra={"tenant_id": meta["tenant_id"], "case_id": meta["case_id"]},
+                exc_info=True,
+            )
+        metadata_obj["collection_id"] = manual_collection_scope
+
+    if manual_scope_assigned and metadata_obj.get("collection_id"):
+        _ensure_document_collection_record(
+            tenant_schema=meta["tenant_schema"],
+            tenant_id=meta["tenant_id"],
+            case_id=meta.get("case_id"),
+            collection_id=metadata_obj["collection_id"],
+            source="upload",
+            key=MANUAL_COLLECTION_SLUG,
+            label=MANUAL_COLLECTION_LABEL,
+        )
+
     document_uuid = uuid4()
 
     file_bytes = upload.read()
@@ -1453,5 +1612,7 @@ def handle_document_upload(
         response_payload["document_id"] = document_id
     if ingestion_run_id:
         response_payload["ingestion_run_id"] = ingestion_run_id
+    if metadata_obj.get("collection_id"):
+        response_payload["collection_id"] = str(metadata_obj["collection_id"])
 
     return Response(response_payload, status=status.HTTP_202_ACCEPTED)

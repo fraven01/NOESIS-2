@@ -1,4 +1,5 @@
 import json
+from collections import Counter
 from typing import Mapping
 from uuid import uuid4
 
@@ -11,6 +12,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
+from ai_core.services import _get_documents_repository
 from ai_core.graphs.external_knowledge_graph import (
     CrawlerIngestionAdapter,
     CrawlerIngestionOutcome,
@@ -33,6 +35,8 @@ from llm_worker.runner import submit_worker_task
 from customers.tenant_context import TenantContext, TenantRequiredError
 
 from ai_core.views import crawl_selected as _core_crawl_selected
+
+from documents.models import DocumentCollection, DocumentLifecycleState
 
 
 logger = get_logger(__name__)
@@ -102,6 +106,260 @@ def _resolve_manual_collection(
         return manual_id, manual_id
 
     return manual_id, requested_text
+
+
+def _stringify_metadata_value(value: object) -> str:
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+        except TypeError:
+            return str(value)
+    return str(value)
+
+
+def _serialize_collection(collection: DocumentCollection) -> dict[str, object]:
+    """Flatten model attributes for template rendering."""
+
+    case_obj = collection.case
+    metadata = collection.metadata or {}
+    metadata_items = [
+        {"key": str(key), "value": _stringify_metadata_value(value)}
+        for key, value in sorted(metadata.items(), key=lambda item: str(item[0]))
+    ]
+
+    case_info = None
+    if case_obj is not None:
+        case_info = {
+            "id": str(case_obj.id),
+            "external_id": getattr(case_obj, "external_id", ""),
+            "title": getattr(case_obj, "title", ""),
+            "status": getattr(case_obj, "status", ""),
+        }
+
+    return {
+        "id": str(collection.id),
+        "name": collection.name,
+        "key": collection.key,
+        "collection_id": str(collection.collection_id),
+        "type": collection.type or "",
+        "visibility": collection.visibility or "",
+        "metadata": metadata_items,
+        "case": case_info,
+        "created_at": collection.created_at,
+        "updated_at": collection.updated_at,
+        "selector": str(collection.id),
+    }
+
+
+def _match_collection_identifier(
+    collections: list[DocumentCollection],
+    identifier: object,
+) -> DocumentCollection | None:
+    token = str(identifier or "").strip().lower()
+    if not token:
+        return None
+
+    for collection in collections:
+        if token == str(collection.id).lower():
+            return collection
+        if token == str(collection.collection_id).lower():
+            return collection
+        key_value = (collection.key or "").strip().lower()
+        if key_value and token == key_value:
+            return collection
+    return None
+
+
+def _parse_limit(value: object, *, default: int = 25) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(5, min(200, numeric))
+
+
+def _parse_bool(value: object, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if not token:
+        return default
+    if token in {"1", "true", "yes", "on"}:
+        return True
+    if token in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
+def _human_readable_bytes(size: object) -> str:
+    try:
+        numeric = float(size)
+    except (TypeError, ValueError):
+        return "—"
+    if numeric < 0:
+        return "—"
+    units = ("B", "KB", "MB", "GB", "TB")
+    value = float(numeric)
+    for unit in units:
+        if value < 1024 or unit == units[-1]:
+            if unit == "B":
+                return f"{int(value)} B"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{int(value)} B"
+
+
+def _describe_blob(blob) -> dict[str, object]:
+    size = getattr(blob, "size", None)
+    return {
+        "type": getattr(blob, "type", None),
+        "size": size,
+        "size_display": _human_readable_bytes(size),
+        "sha256": getattr(blob, "sha256", None),
+        "media_type": getattr(blob, "media_type", None),
+        "uri": getattr(blob, "uri", None),
+    }
+
+
+def _dict_items(mapping: Mapping[str, object] | None) -> list[dict[str, str]]:
+    if not isinstance(mapping, Mapping):
+        return []
+    return [
+        {"key": str(key), "value": _stringify_metadata_value(value)}
+        for key, value in sorted(mapping.items(), key=lambda item: str(item[0]))
+    ]
+
+
+def _build_search_blob(payload: Mapping[str, object]) -> str:
+    helpers = []
+    ingestion = payload.get("ingestion", {}) if isinstance(payload, Mapping) else {}
+    helpers.extend(
+        [
+            payload.get("document_id"),
+            payload.get("title"),
+            payload.get("workflow_id"),
+            payload.get("version"),
+            payload.get("collection_id"),
+            payload.get("document_collection_id"),
+            payload.get("origin_uri"),
+            payload.get("language"),
+            payload.get("source"),
+            payload.get("external_provider"),
+            payload.get("external_id"),
+            ingestion.get("state") if isinstance(ingestion, Mapping) else None,
+            ingestion.get("trace_id") if isinstance(ingestion, Mapping) else None,
+            ingestion.get("run_id") if isinstance(ingestion, Mapping) else None,
+            ingestion.get("ingestion_run_id") if isinstance(ingestion, Mapping) else None,
+        ]
+    )
+    helpers.extend(payload.get("tags", []))
+    for item in payload.get("external_ref_items", []):
+        helpers.append(item.get("value"))
+    normalized_tokens = [
+        str(value).strip().lower()
+        for value in helpers
+        if isinstance(value, str) and value.strip()
+    ]
+    return " ".join(normalized_tokens)
+
+
+def _serialize_document_payload(
+    doc,
+    lifecycle: DocumentLifecycleState | None,
+) -> dict[str, object]:
+    """Flatten NormalizedDocument + lifecycle metadata for display."""
+
+    external_ref = getattr(doc.meta, "external_ref", None) or {}
+    lifecycle_state = lifecycle.state if lifecycle else getattr(
+        doc, "lifecycle_state", ""
+    )
+    ingestion_payload = {
+        "state": lifecycle_state,
+        "changed_at": getattr(lifecycle, "changed_at", None),
+        "trace_id": getattr(lifecycle, "trace_id", ""),
+        "run_id": getattr(lifecycle, "run_id", ""),
+        "ingestion_run_id": getattr(lifecycle, "ingestion_run_id", ""),
+        "reason": getattr(lifecycle, "reason", ""),
+        "policy_events": list(getattr(lifecycle, "policy_events", []) or []),
+    }
+
+    payload = {
+        "document_id": str(doc.ref.document_id),
+        "workflow_id": doc.ref.workflow_id,
+        "version": doc.ref.version or "",
+        "collection_id": (
+            str(doc.ref.collection_id) if doc.ref.collection_id else ""
+        ),
+        "document_collection_id": (
+            str(doc.meta.document_collection_id)
+            if doc.meta.document_collection_id
+            else ""
+        ),
+        "title": doc.meta.title or "",
+        "language": doc.meta.language or "",
+        "tags": list(doc.meta.tags or []),
+        "origin_uri": doc.meta.origin_uri or "",
+        "external_ref_items": _dict_items(external_ref),
+        "external_provider": external_ref.get("provider"),
+        "external_id": external_ref.get("external_id"),
+        "created_at": doc.created_at,
+        "source": doc.source or "",
+        "checksum": doc.checksum,
+        "lifecycle_state": doc.lifecycle_state,
+        "blob": _describe_blob(doc.blob),
+        "download_url": reverse("documents:download", args=[doc.ref.document_id]),
+        "ingestion": ingestion_payload,
+        "meta": {
+            "crawl_timestamp": doc.meta.crawl_timestamp,
+            "pipeline_config": doc.meta.pipeline_config or {},
+            "parse_stats": doc.meta.parse_stats or {},
+        },
+    }
+    payload["search_blob"] = _build_search_blob(payload)
+    return payload
+
+
+def _filter_documents(documents: list[dict[str, object]], query: str) -> list[dict[str, object]]:
+    normalized = str(query or "").strip().lower()
+    if not normalized:
+        return documents
+    tokens = [token for token in normalized.split() if token]
+    if not tokens:
+        return documents
+    filtered: list[dict[str, object]] = []
+    for doc in documents:
+        search_blob = doc.get("search_blob", "")
+        if not isinstance(search_blob, str):
+            continue
+        blob = search_blob.lower()
+        if all(token in blob for token in tokens):
+            filtered.append(doc)
+    return filtered
+
+
+def _summaries_for_documents(documents: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+    source_counter: Counter[str] = Counter()
+    lifecycle_counter: Counter[str] = Counter()
+
+    for doc in documents:
+        source_counter[doc.get("source") or ""] += 1
+        ingestion = doc.get("ingestion", {}) if isinstance(doc, Mapping) else {}
+        lifecycle_counter[ingestion.get("state") or ""] += 1
+
+    def _serialize(counter: Counter[str]) -> list[dict[str, object]]:
+        entries = []
+        for key, count in counter.items():
+            label = key or "unknown"
+            entries.append({"label": label, "count": count})
+        entries.sort(key=lambda item: item["label"])
+        return entries
+
+    return {
+        "sources": _serialize(source_counter),
+        "lifecycle": _serialize(lifecycle_counter),
+    }
 
 
 _RERANK_MODEL_FALLBACK = "fast"
@@ -441,6 +699,183 @@ def rag_tools(request):
                 getattr(settings, "CRAWLER_DRY_RUN_DEFAULT", False)
             ),
             "manual_collection_id": manual_collection_id,
+        },
+    )
+
+
+def document_space(request):
+    """Expose a developer workbench for inspecting document collections."""
+
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return _tenant_required_response(exc)
+
+    try:
+        ensure_manual_collection(tenant_id)
+    except Exception:
+        logger.warning("document_space.ensure_manual_collection_failed", exc_info=True)
+
+    tenant_obj = getattr(request, "tenant", None)
+    if tenant_obj is None:
+        try:
+            tenant_obj = TenantContext.resolve_identifier(tenant_id)
+        except Exception:
+            tenant_obj = None
+
+    collections_qs = DocumentCollection.objects.select_related("case")
+    if tenant_obj is not None:
+        collections_qs = collections_qs.filter(tenant=tenant_obj)
+    else:
+        collections_qs = collections_qs.filter(tenant__schema_name=tenant_schema)
+
+    collections = list(collections_qs.order_by("name", "created_at"))
+    serialized_collections = [_serialize_collection(item) for item in collections]
+
+    requested_collection = request.GET.get("collection")
+    selected_collection = _match_collection_identifier(
+        collections, requested_collection
+    )
+    collection_warning = bool(requested_collection and not selected_collection)
+    if selected_collection is None and collections:
+        selected_collection = collections[0]
+        requested_collection = str(selected_collection.id)
+
+    limit = _parse_limit(request.GET.get("limit"))
+    limit_options = [10, 25, 50, 100, 200]
+    if limit not in limit_options:
+        limit_options = sorted(set(limit_options + [limit]))
+    latest_only = _parse_bool(request.GET.get("latest"), default=True)
+    search_term = str(request.GET.get("q", "") or "").strip()
+    cursor_param = str(request.GET.get("cursor", "") or "").strip()
+    workflow_filter = str(request.GET.get("workflow", "") or "").strip()
+
+    documents_payload: list[dict[str, object]] = []
+    documents_error: str | None = None
+    next_cursor: str | None = None
+
+    if selected_collection:
+        repository = _get_documents_repository()
+        list_fn = (
+            repository.list_latest_by_collection
+            if latest_only
+            else repository.list_by_collection
+        )
+        try:
+            document_refs, next_cursor = list_fn(
+                tenant_id=tenant_id,
+                collection_id=selected_collection.collection_id,
+                limit=limit,
+                cursor=cursor_param or None,
+                workflow_id=workflow_filter or None,
+            )
+        except Exception:
+            logger.exception(
+                "document_space.list_failed",
+                extra={
+                    "tenant_id": tenant_id,
+                    "collection_id": str(selected_collection.collection_id),
+                },
+            )
+            documents_error = (
+                "Dokumentenliste konnte nicht geladen werden. Prüfe die Logs."
+            )
+        else:
+            fetched_docs = []
+            for ref in document_refs:
+                try:
+                    doc = repository.get(
+                        tenant_id=tenant_id,
+                        document_id=ref.document_id,
+                        version=ref.version,
+                        prefer_latest=latest_only or ref.version is None,
+                        workflow_id=ref.workflow_id,
+                    )
+                except Exception:
+                    logger.warning(
+                        "document_space.document_fetch_failed",
+                        exc_info=True,
+                        extra={
+                            "tenant_id": tenant_id,
+                            "document_id": str(ref.document_id),
+                        },
+                    )
+                    continue
+                if doc is None:
+                    continue
+                fetched_docs.append(doc)
+
+            lifecycle_map: dict[tuple[object, str], DocumentLifecycleState] = {}
+            if fetched_docs:
+                lifecycle_records = DocumentLifecycleState.objects.filter(
+                    tenant_id=tenant_id,
+                    document_id__in=[doc.ref.document_id for doc in fetched_docs],
+                )
+                lifecycle_map = {
+                    (record.document_id, record.workflow_id or ""): record
+                    for record in lifecycle_records
+                }
+
+            for doc in fetched_docs:
+                lifecycle_key = (doc.ref.document_id, doc.ref.workflow_id)
+                payload = _serialize_document_payload(
+                    doc, lifecycle_map.get(lifecycle_key)
+                )
+                documents_payload.append(payload)
+
+    filtered_documents = _filter_documents(documents_payload, search_term)
+    summaries = _summaries_for_documents(filtered_documents)
+    document_summary = {
+        "fetched": len(documents_payload),
+        "displayed": len(filtered_documents),
+        "limit": limit,
+    }
+
+    selected_collection_payload = None
+    if selected_collection:
+        selected_collection_payload = next(
+            (
+                entry
+                for entry in serialized_collections
+                if entry["id"] == str(selected_collection.id)
+            ),
+            None,
+        )
+
+    query_defaults = {
+        "collection": requested_collection or "",
+        "limit": limit,
+        "latest": "1" if latest_only else "0",
+        "workflow": workflow_filter,
+        "q": search_term,
+    }
+
+    return render(
+        request,
+        "theme/document_space.html",
+        {
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
+            "collections": serialized_collections,
+            "selected_collection": selected_collection_payload,
+            "selected_collection_identifier": requested_collection or "",
+            "documents": filtered_documents,
+            "document_summary": document_summary,
+            "summaries": summaries,
+            "search_term": search_term,
+            "latest_only": latest_only,
+        "limit": limit,
+            "limit_options": limit_options,
+            "cursor": cursor_param,
+            "next_cursor": next_cursor,
+            "workflow_filter": workflow_filter,
+            "documents_error": documents_error,
+            "collection_warning": collection_warning,
+            "has_collections": bool(collections),
+            "query_defaults": query_defaults,
+            "next_query": (
+                {**query_defaults, "cursor": next_cursor} if next_cursor else None
+            ),
         },
     )
 

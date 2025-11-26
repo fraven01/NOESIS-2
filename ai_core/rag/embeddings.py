@@ -16,6 +16,11 @@ try:  # pragma: no cover - optional dependency for tests
 except Exception:  # pragma: no cover - handled at runtime
     litellm_embedding = None
 
+try:  # pragma: no cover - optional dependency for OpenAI SDK
+    from openai import OpenAI
+except Exception:  # pragma: no cover - handled at runtime
+    OpenAI = None
+
 
 logger = get_logger(__name__)
 T = TypeVar("T")
@@ -197,31 +202,36 @@ class EmbeddingClient:
         cfg,
         timeout_s: float | None,
     ) -> List[List[float]]:
-        if litellm_embedding is None:
-            raise EmbeddingProviderUnavailable("litellm package is not installed")
+        # Use OpenAI SDK to communicate with LiteLLM proxy
+        # This is the recommended approach for LiteLLM proxy usage
+        if OpenAI is None:
+            raise EmbeddingProviderUnavailable("openai package is not installed")
 
-        api_base = cfg.litellm_base_url.rstrip("/") + "/v1"
-        kwargs = {
-            "model": model,
-            "input": list(inputs),
-            "api_base": api_base,
-            "api_key": os.environ.get("LITELLM_MASTER_KEY"),
-        }
-        if timeout_s is not None and timeout_s > 0:
-            kwargs["timeout"] = timeout_s
+        api_base = cfg.litellm_base_url.rstrip("/")
+        api_key = os.environ.get("LITELLM_MASTER_KEY", "sk-1234")
 
-        response = self._execute_with_timeout(
-            lambda: litellm_embedding(**kwargs), timeout_s
+        # Create OpenAI client pointing to LiteLLM proxy
+        client = OpenAI(
+            base_url=api_base,
+            api_key=api_key,
+            timeout=timeout_s if timeout_s and timeout_s > 0 else None,
         )
-        data = getattr(response, "data", None)
-        if not isinstance(data, Sequence):
+
+        def _call():
+            response = client.embeddings.create(
+                input=list(inputs),
+                model=model,
+            )
+            return response
+
+        response = self._execute_with_timeout(_call, timeout_s)
+
+        if not response.data:
             return []
 
         vectors: List[List[float]] = []
-        for item in data:
-            embedding_values = getattr(item, "embedding", None)
-            if embedding_values is None and isinstance(item, dict):
-                embedding_values = item.get("embedding")
+        for item in response.data:
+            embedding_values = item.embedding
             if embedding_values is None:
                 return []
             try:
