@@ -47,6 +47,7 @@ class ToolContext(BaseModel):
     invocation_id: UUID
     now_iso: datetime
     idempotency_key: Optional[str] = None
+    tenant_schema: Optional[str] = None
     timeouts_ms: Optional[PositiveInt] = None
     budget_tokens: Optional[int] = None
     locale: Optional[str] = None
@@ -103,6 +104,7 @@ def tool_context_from_scope(
         "ingestion_run_id": scope.ingestion_run_id,
         "workflow_id": scope.workflow_id,
         "case_id": scope.case_id,
+        "tenant_schema": scope.tenant_schema,
         "idempotency_key": scope.idempotency_key,
         "now_iso": now or scope.timestamp,
     }

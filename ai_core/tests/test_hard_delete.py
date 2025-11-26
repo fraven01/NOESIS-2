@@ -3,37 +3,16 @@ import uuid
 import pytest
 from django.core.exceptions import PermissionDenied
 
-from ai_core.rag import vector_client
 from ai_core.rag.hard_delete import hard_delete
-from ai_core.rag.schemas import Chunk
+from documents.service_facade import DELETE_OUTBOX
 from organizations.models import Organization, OrgMembership
 from profiles.models import UserProfile
 from users.models import User
 
 
-def _insert_document(tenant_id: str, embedding_dim: int = 1536) -> str:
-    vector_client.reset_default_client()
-    chunk = Chunk(
-        content="Doc A",
-        meta={
-            "tenant": tenant_id,
-            "hash": "hash-doc-a",
-            "external_id": "doc-a",
-            "source": "tests",
-        },
-        embedding=[float(i) / embedding_dim for i in range(1, embedding_dim + 1)],
-    )
-    client = vector_client.get_default_client()
-    client.upsert_chunks([chunk])
-    with client.connection() as conn:  # type: ignore[attr-defined]
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT id FROM documents WHERE tenant_id = %s",
-                (uuid.UUID(tenant_id),),
-            )
-            row = cur.fetchone()
-    assert row is not None, "document insertion failed"
-    return str(row[0])
+@pytest.fixture(autouse=True)
+def _clear_outbox():
+    DELETE_OUTBOX.clear()
 
 
 @pytest.mark.django_db
@@ -42,7 +21,7 @@ def test_hard_delete_service_key(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
 
-    document_id = _insert_document(tenant_id)
+    document_id = str(uuid.uuid4())
 
     spans: list[dict[str, object]] = []
 
@@ -67,10 +46,12 @@ def test_hard_delete_service_key(monkeypatch, settings):
         trace_id="trace-123",
     )
 
-    assert result["documents_deleted"] == 1
+    assert result["status"] == "queued"
     assert result["deleted_ids"] == [document_id]
-    assert result["not_found"] == 0
+    assert result["not_found"] == 1
     assert result["visibility"] == "deleted"
+    assert DELETE_OUTBOX[-1]["document_ids"] == (document_id,)
+    assert DELETE_OUTBOX[-1]["trace_id"] == "trace-123"
 
     repeat = hard_delete(
         tenant_id,
@@ -81,23 +62,13 @@ def test_hard_delete_service_key(monkeypatch, settings):
         trace_id="trace-124",
     )
 
-    assert repeat["documents_deleted"] == 0
+    assert repeat["status"] == "queued"
     assert repeat["not_found"] == 1
-
     assert len(spans) == 2, "expected Langfuse spans for each invocation"
     assert spans[0]["node_name"] == "rag.hard_delete"
     assert spans[0]["trace_id"] == "trace-123"
-    assert spans[0]["metadata"]["documents_deleted"] == 1
+    assert spans[0]["metadata"]["documents_requested"] == 1
     assert spans[1]["trace_id"] == "trace-124"
-
-    with vector_client.get_default_client().connection() as conn:  # type: ignore[attr-defined]
-        with conn.cursor() as cur:
-            cur.execute(
-                "SELECT COUNT(*) FROM documents WHERE tenant_id = %s",
-                (uuid.UUID(tenant_id),),
-            )
-            remaining = cur.fetchone()[0]
-    assert remaining == 0
 
 
 @pytest.mark.django_db
@@ -106,7 +77,7 @@ def test_hard_delete_service_key_with_scoped_session(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
 
-    document_id = _insert_document(tenant_id)
+    document_id = str(uuid.uuid4())
 
     trace_id = "trace-321"
     case_id = "case-123"
@@ -132,11 +103,17 @@ def test_hard_delete_service_key_with_scoped_session(monkeypatch, settings):
         trace_id=trace_id,
         session_salt=session_salt,
         session_scope=(tenant_id, case_id, session_salt),
+        case_id=case_id,
+        tenant_schema="tenant_schema",
+        ingestion_run_id="ing-1",
     )
 
-    assert result["documents_deleted"] == 1
+    assert result["status"] == "queued"
     assert spans, "expected span emission"
     assert spans[0]["metadata"].get("session_salt") == session_salt
+    assert DELETE_OUTBOX[-1]["tenant_schema"] == "tenant_schema"
+    assert DELETE_OUTBOX[-1]["ingestion_run_id"] == "ing-1"
+    assert DELETE_OUTBOX[-1]["case_id"] == case_id
 
 
 @pytest.mark.django_db
@@ -145,7 +122,7 @@ def test_hard_delete_requires_authorisation(monkeypatch, settings):
     settings.RAG_INTERNAL_KEYS = ["service-key"]
     tenant_id = str(uuid.uuid4())
 
-    document_id = _insert_document(tenant_id)
+    document_id = str(uuid.uuid4())
 
     with pytest.raises(PermissionDenied):
         hard_delete(tenant_id, [document_id], "cleanup", "TCK-2")
@@ -155,7 +132,7 @@ def test_hard_delete_requires_authorisation(monkeypatch, settings):
 @pytest.mark.usefixtures("rag_database")
 def test_hard_delete_allows_admin_user(monkeypatch, settings):
     tenant_id = str(uuid.uuid4())
-    document_id = _insert_document(tenant_id)
+    document_id = str(uuid.uuid4())
 
     user = User.objects.create_user(username="admin", email="admin@example.com")
     UserProfile.objects.update_or_create(
@@ -169,16 +146,20 @@ def test_hard_delete_allows_admin_user(monkeypatch, settings):
         "manual",
         "TCK-3",
         actor={"user_id": user.pk},
+        tenant_schema="tenant_schema",
+        ingestion_run_id="ing-2",
     )
 
-    assert result["documents_deleted"] == 1
+    assert result["status"] == "queued"
+    assert DELETE_OUTBOX[-1]["tenant_schema"] == "tenant_schema"
+    assert DELETE_OUTBOX[-1]["ingestion_run_id"] == "ing-2"
 
 
 @pytest.mark.django_db
 @pytest.mark.usefixtures("rag_database")
 def test_hard_delete_allows_org_admin(monkeypatch, settings):
     tenant_id = str(uuid.uuid4())
-    document_id = _insert_document(tenant_id)
+    document_id = str(uuid.uuid4())
 
     user = User.objects.create_user(username="org-admin", email="org@example.com")
     UserProfile.objects.update_or_create(user=user, defaults={"is_active": True})
@@ -197,4 +178,5 @@ def test_hard_delete_allows_org_admin(monkeypatch, settings):
         actor={"user_id": user.pk, "organization_id": str(organization.id)},
     )
 
-    assert result["documents_deleted"] == 1
+    assert result["status"] == "queued"
+    assert DELETE_OUTBOX[-1]["document_ids"] == (document_id,)

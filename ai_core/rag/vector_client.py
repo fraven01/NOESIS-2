@@ -5034,6 +5034,85 @@ class PgVectorClient:
                 conn.rollback()
                 raise
 
+    def hard_delete_documents(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Sequence[object],
+    ) -> Mapping[str, int]:
+        """Permanently remove documents, chunks and embeddings for a tenant."""
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        resolved_ids: list[uuid.UUID] = []
+        for raw in document_ids:
+            if raw in {None, "", "None"}:
+                continue
+            try:
+                resolved = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            resolved_ids.append(resolved)
+
+        if not resolved_ids:
+            return {"documents": 0, "chunks": 0, "embeddings": 0}
+
+        documents_table = self._table("documents")
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+
+        delete_embeddings_sql = sql.SQL(
+            """
+            DELETE FROM {embeddings}
+             WHERE chunk_id IN (
+                SELECT id
+                  FROM {chunks}
+                 WHERE document_id = ANY(%s)
+                   AND tenant_id = %s
+            )
+            """
+        ).format(embeddings=embeddings_table, chunks=chunks_table)
+
+        delete_chunks_sql = sql.SQL(
+            """
+            DELETE FROM {chunks}
+             WHERE document_id = ANY(%s)
+               AND tenant_id = %s
+            """
+        ).format(chunks=chunks_table)
+
+        delete_documents_sql = sql.SQL(
+            """
+            DELETE FROM {documents}
+             WHERE tenant_id = %s
+               AND id = ANY(%s)
+            """
+        ).format(documents=documents_table)
+
+        params = (resolved_ids, str(tenant_uuid))
+
+        with self._connection() as conn:  # type: ignore[attr-defined]
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(delete_embeddings_sql, params)
+                    embeddings_deleted = cur.rowcount or 0
+
+                    cur.execute(delete_chunks_sql, params)
+                    chunks_deleted = cur.rowcount or 0
+
+                    cur.execute(delete_documents_sql, (str(tenant_uuid), resolved_ids))
+                    documents_deleted = cur.rowcount or 0
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        return {
+            "documents": int(documents_deleted),
+            "chunks": int(chunks_deleted),
+            "embeddings": int(embeddings_deleted),
+        }
+
     def _compute_storage_hash(
         self,
         cur,
