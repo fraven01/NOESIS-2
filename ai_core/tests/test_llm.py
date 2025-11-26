@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import datetime
 import json
-from email.utils import format_datetime
 from typing import Any
 
 import pytest
@@ -15,7 +13,6 @@ from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
     X_KEY_ALIAS_HEADER,
-    X_RETRY_ATTEMPT_HEADER,
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )

@@ -20,7 +20,6 @@ from ai_core.graphs.framework_analysis_graph import build_graph
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
     FrameworkAnalysisErrorCode,
-    FrameworkAnalysisOutput,
     map_framework_error_to_status,
 )
 from ai_core.infra.resp import apply_std_headers
