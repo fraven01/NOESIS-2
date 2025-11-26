@@ -453,17 +453,24 @@ def _ensure_document_collection(
 
     case_obj = None
     if case_identifier:
-        try:
-            case_uuid = UUID(str(case_identifier))
-            case_obj = Case.objects.filter(id=case_uuid, tenant=tenant).first()
-        except Exception:
-            logger.debug(
-                "collection_model.case_resolution_failed",
-                extra={
-                    "collection_id": str(collection_uuid),
-                    "case_identifier": case_identifier,
-                },
-            )
+        case_identifier_str = str(case_identifier)
+        case_obj = Case.objects.filter(
+            external_id=case_identifier_str, tenant=tenant
+        ).first()
+
+        if case_obj is None:
+            try:
+                case_uuid = UUID(case_identifier_str)
+            except Exception:
+                logger.debug(
+                    "collection_model.case_resolution_failed",
+                    extra={
+                        "collection_id": str(collection_uuid),
+                        "case_identifier": case_identifier,
+                    },
+                )
+            else:
+                case_obj = Case.objects.filter(id=case_uuid, tenant=tenant).first()
 
     try:
         DocumentCollection.objects.get_or_create(
