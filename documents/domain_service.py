@@ -222,9 +222,10 @@ class DocumentDomainService:
     ) -> None:
         """Delete a document and emit a vector deletion request."""
 
+        doc_id = document.id
         attributes = {
             "tenant_id": str(document.tenant_id),
-            "document_id": str(document.id),
+            "document_id": str(doc_id),
             "soft_delete": soft_delete,
             "reason": reason,
         }
@@ -233,22 +234,27 @@ class DocumentDomainService:
         dispatcher_fn = dispatcher or self._deletion_dispatcher
         vector_store = self._require_vector_store()
 
-        with transaction.atomic():
+        payload = {
+            "type": "document_delete",
+            "document_id": str(doc_id),
+            "document_ids": (str(doc_id),),
+            "tenant_id": str(document.tenant_id),
+            "reason": reason,
+        }
+
+        def _dispatch_cleanup() -> None:
             vector_store.hard_delete_documents(
                 tenant_id=str(document.tenant_id),
-                document_ids=[document.id],
+                document_ids=[doc_id],
             )
 
-            payload = {
-                "type": "document_delete",
-                "document_id": str(document.id),
-                "tenant_id": str(document.tenant_id),
-                "reason": reason,
-            }
             if dispatcher_fn:
-                transaction.on_commit(lambda: dispatcher_fn(payload))
+                dispatcher_fn(payload)
             else:
                 logger.info("document_delete_outbox", extra=payload)
+
+        with transaction.atomic():
+            DocumentCollectionMembership.objects.filter(document=document).delete()
 
             if soft_delete:
                 if hasattr(document, "soft_deleted_at"):
@@ -259,9 +265,11 @@ class DocumentDomainService:
                         "soft_delete_flag_ignored_missing_field",
                         extra={"model": "Document", "id": str(document.id)},
                     )
+                transaction.on_commit(_dispatch_cleanup)
                 return
 
             document.delete()
+            transaction.on_commit(_dispatch_cleanup)
 
     def delete_collection(
         self,

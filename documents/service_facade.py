@@ -21,6 +21,7 @@ from documents.domain_service import (
     DocumentDomainService,
     IngestionDispatcher,
 )
+from documents.models import Document
 
 _DELETE_OUTBOX: list[dict[str, Any]] = []
 _COLLECTION_OUTBOX: list[dict[str, Any]] = []
@@ -162,25 +163,33 @@ def delete_document(
 
     from ai_core.rag.vector_client import get_default_client
 
-    normalized_ids = []
+    normalized_ids: list[UUID] = []
+    invalid_ids: list[object] = []
     for doc_id in document_ids:
         try:
-            normalized_ids.append(_coerce_uuid(doc_id))
+            normalized_ids.append(UUID(str(doc_id)))
         except Exception:
-            continue
+            invalid_ids.append(doc_id)
+
+    if invalid_ids:
+        raise ValueError("invalid_document_ids", tuple(str(i) for i in invalid_ids))
+
+    if not normalized_ids:
+        raise ValueError("document_ids_required")
 
     vector_client = get_default_client()
-    delete_result = vector_client.hard_delete_documents(
-        tenant_id=str(scope.tenant_id),
-        document_ids=normalized_ids,
+    tenant_uuid = UUID(str(scope.tenant_id))
+    tenant_schema_ctx = (
+        schema_context(scope.tenant_schema) if scope.tenant_schema else nullcontext()
     )
 
+    ingestion_run_id = str(scope.ingestion_run_id or uuid4())
     request = QueuedDeleteRequest(
         tenant_id=str(scope.tenant_id),
         trace_id=str(scope.trace_id),
         invocation_id=str(scope.invocation_id),
-        ingestion_run_id=str(scope.ingestion_run_id or uuid4()),
-        document_ids=tuple(normalized_ids),
+        ingestion_run_id=ingestion_run_id,
+        document_ids=tuple(str(doc_id) for doc_id in normalized_ids),
         queued_at=timezone.now().isoformat(),
         case_id=str(scope.case_id) if scope.case_id else None,
         tenant_schema=scope.tenant_schema,
@@ -188,14 +197,37 @@ def delete_document(
         ticket_ref=ticket_ref,
         actor=actor,
     )
-    _DELETE_OUTBOX.append(request.__dict__)
 
-    documents_deleted = int(delete_result.get("documents", 0))
-    chunks_deleted = int(delete_result.get("chunks", 0))
-    embeddings_deleted = int(delete_result.get("embeddings", 0))
-    invalid_count = len(document_ids) - len(normalized_ids)
-    missing_count = max(len(normalized_ids) - documents_deleted, 0)
-    not_found = max(invalid_count + missing_count, 0)
+    def _dispatch_delete(payload: Mapping[str, object]) -> None:
+        enriched = {
+            **payload,
+            "trace_id": request.trace_id,
+            "invocation_id": request.invocation_id,
+            "ingestion_run_id": request.ingestion_run_id,
+            "queued_at": request.queued_at,
+            "case_id": request.case_id,
+            "tenant_schema": request.tenant_schema,
+            "reason": request.reason,
+            "ticket_ref": request.ticket_ref,
+            "actor": actor,
+        }
+        _DELETE_OUTBOX.append(enriched)
+
+    service = DocumentDomainService(
+        vector_store=vector_client, deletion_dispatcher=_dispatch_delete
+    )
+
+    with tenant_schema_ctx:
+        documents = list(
+            Document.objects.filter(id__in=normalized_ids, tenant_id=tenant_uuid)
+        )
+        for document in documents:
+            service.delete_document(document, reason=reason)
+
+    documents_deleted = len(documents)
+    not_found = len(normalized_ids) - documents_deleted
+    chunks_deleted = 0
+    embeddings_deleted = 0
 
     return {
         "status": "queued",
