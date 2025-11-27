@@ -65,6 +65,26 @@ def _run_on_commit_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("django.db.transaction.on_commit", lambda fn, using=None: fn())
 
 
+@pytest.fixture(autouse=True, scope="module")
+def _preserve_module_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the shared module tenant alive across tests.
+
+    The autouse cleanup fixture in ``conftest.py`` drops all tracked schemas
+    after each test. Since this module reuses a module-scoped tenant, we need
+    to ensure its schema is preserved for the duration of the suite.
+    """
+
+    from testsupport import tenant_fixtures
+
+    def _cleanup(*, preserve=None):
+        preserved = set(preserve or ())
+        preserved.add("autotest-domain-service")
+        return tenant_fixtures.cleanup_test_tenants(preserve=preserved)
+
+    monkeypatch.setattr(tenant_fixtures, "cleanup_test_tenants", _cleanup)
+    monkeypatch.setattr("conftest.cleanup_test_tenants", _cleanup)
+
+
 @pytest.fixture
 def vector_store() -> _VectorStoreStub:
     return _VectorStoreStub()
