@@ -1194,22 +1194,18 @@ def _ensure_document_collection_record(
 
     case_obj = None
     if case_id:
-        case_obj = (
-            Case.objects.filter(
-                tenant=tenant_obj,
-                external_id=str(case_id).strip(),
-            ).first()
-        )
-
-    collection = (
-        DocumentCollection.objects.filter(
-            tenant=tenant_obj, collection_id=collection_uuid
+        case_obj = Case.objects.filter(
+            tenant=tenant_obj,
+            external_id=str(case_id).strip(),
         ).first()
-    )
+
+    collection = DocumentCollection.objects.filter(
+        tenant=tenant_obj, collection_id=collection_uuid
+    ).first()
     if collection is None and key:
-        collection = (
-            DocumentCollection.objects.filter(tenant=tenant_obj, key=key).first()
-        )
+        collection = DocumentCollection.objects.filter(
+            tenant=tenant_obj, key=key
+        ).first()
 
     metadata_payload = {"source": source} if source else {}
 

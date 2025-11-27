@@ -251,7 +251,11 @@ def _build_search_blob(payload: Mapping[str, object]) -> str:
             ingestion.get("state") if isinstance(ingestion, Mapping) else None,
             ingestion.get("trace_id") if isinstance(ingestion, Mapping) else None,
             ingestion.get("run_id") if isinstance(ingestion, Mapping) else None,
-            ingestion.get("ingestion_run_id") if isinstance(ingestion, Mapping) else None,
+            (
+                ingestion.get("ingestion_run_id")
+                if isinstance(ingestion, Mapping)
+                else None
+            ),
         ]
     )
     helpers.extend(payload.get("tags", []))
@@ -272,8 +276,8 @@ def _serialize_document_payload(
     """Flatten NormalizedDocument + lifecycle metadata for display."""
 
     external_ref = getattr(doc.meta, "external_ref", None) or {}
-    lifecycle_state = lifecycle.state if lifecycle else getattr(
-        doc, "lifecycle_state", ""
+    lifecycle_state = (
+        lifecycle.state if lifecycle else getattr(doc, "lifecycle_state", "")
     )
     ingestion_payload = {
         "state": lifecycle_state,
@@ -289,9 +293,7 @@ def _serialize_document_payload(
         "document_id": str(doc.ref.document_id),
         "workflow_id": doc.ref.workflow_id,
         "version": doc.ref.version or "",
-        "collection_id": (
-            str(doc.ref.collection_id) if doc.ref.collection_id else ""
-        ),
+        "collection_id": (str(doc.ref.collection_id) if doc.ref.collection_id else ""),
         "document_collection_id": (
             str(doc.meta.document_collection_id)
             if doc.meta.document_collection_id
@@ -321,7 +323,9 @@ def _serialize_document_payload(
     return payload
 
 
-def _filter_documents(documents: list[dict[str, object]], query: str) -> list[dict[str, object]]:
+def _filter_documents(
+    documents: list[dict[str, object]], query: str
+) -> list[dict[str, object]]:
     normalized = str(query or "").strip().lower()
     if not normalized:
         return documents
@@ -339,7 +343,9 @@ def _filter_documents(documents: list[dict[str, object]], query: str) -> list[di
     return filtered
 
 
-def _summaries_for_documents(documents: list[dict[str, object]]) -> dict[str, list[dict[str, object]]]:
+def _summaries_for_documents(
+    documents: list[dict[str, object]],
+) -> dict[str, list[dict[str, object]]]:
     source_counter: Counter[str] = Counter()
     lifecycle_counter: Counter[str] = Counter()
 
@@ -864,7 +870,7 @@ def document_space(request):
             "summaries": summaries,
             "search_term": search_term,
             "latest_only": latest_only,
-        "limit": limit,
+            "limit": limit,
             "limit_options": limit_options,
             "cursor": cursor_param,
             "next_cursor": next_cursor,
