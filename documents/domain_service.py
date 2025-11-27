@@ -40,10 +40,14 @@ class DocumentDomainService:
         ingestion_dispatcher: IngestionDispatcher | None = None,
         deletion_dispatcher: DeletionDispatcher | None = None,
         vector_store: object | None = None,
+        allow_missing_ingestion_dispatcher_for_tests: bool = False,
     ) -> None:
         self._ingestion_dispatcher = ingestion_dispatcher
         self._deletion_dispatcher = deletion_dispatcher
         self._vector_store = vector_store
+        self._allow_missing_ingestion_dispatcher_for_tests = (
+            allow_missing_ingestion_dispatcher_for_tests
+        )
 
     def ingest_document(
         self,
@@ -57,6 +61,7 @@ class DocumentDomainService:
         scope: str | None = None,
         dispatcher: IngestionDispatcher | None = None,
         document_id: UUID | None = None,
+        allow_missing_ingestion_dispatcher_for_tests: bool | None = None,
     ) -> PersistedDocumentIngest:
         """Persist or update a document and queue downstream processing.
 
@@ -68,8 +73,23 @@ class DocumentDomainService:
         """
 
         dispatcher_fn = dispatcher or self._ingestion_dispatcher
+        allow_missing_dispatcher = (
+            self._allow_missing_ingestion_dispatcher_for_tests
+            if allow_missing_ingestion_dispatcher_for_tests is None
+            else allow_missing_ingestion_dispatcher_for_tests
+        )
         if dispatcher_fn is None:
-            raise ValueError("ingestion_dispatcher_required")
+            logger.error(
+                "ingestion_dispatcher_missing",
+                extra={
+                    "tenant_id": str(tenant.id),
+                    "source": source,
+                    "scope": scope,
+                    "embedding_profile": embedding_profile,
+                },
+            )
+            if not allow_missing_dispatcher:
+                raise ValueError("ingestion_dispatcher_required")
 
         metadata_payload = dict(metadata or {})
         if document_id is not None:
@@ -110,14 +130,15 @@ class DocumentDomainService:
                 )
                 collection_ids.append(collection.id)
 
-            transaction.on_commit(
-                lambda: dispatcher_fn(
-                    document.id,
-                    tuple(collection_ids),
-                    embedding_profile,
-                    scope,
+            if dispatcher_fn:
+                transaction.on_commit(
+                    lambda: dispatcher_fn(
+                        document.id,
+                        tuple(collection_ids),
+                        embedding_profile,
+                        scope,
+                    )
                 )
-            )
 
         return PersistedDocumentIngest(
             document=document, collection_ids=tuple(collection_ids)
