@@ -6,9 +6,9 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Optional
 from uuid import UUID, NAMESPACE_URL, uuid5
 
-from psycopg2 import Error as PsycopgError, sql
-
 from common.logging import get_logger
+from customers.models import Tenant
+from documents.domain_service import DocumentDomainService
 from .vector_client import PgVectorClient, get_default_client
 
 if TYPE_CHECKING:
@@ -70,66 +70,23 @@ def ensure_manual_collection(
     """Ensure the manual collection exists for ``tenant_id`` and return its UUID."""
 
     collection_uuid = manual_collection_uuid(tenant_id, slug=slug)
-    tenant_uuid = _normalise_tenant_uuid(tenant_id)
+    tenant = _resolve_tenant(tenant_id)
+    if tenant is None:
+        raise ValueError("manual_collection_requires_tenant")
+
     vector_client = client or get_default_client()
+    domain_service = DocumentDomainService(vector_store=vector_client)
 
-    try:
-        with vector_client.connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    sql.SQL(
-                        """
-                        INSERT INTO {} (tenant_id, id, slug, version_label)
-                        VALUES (%s, %s, %s, %s)
-                        ON CONFLICT (tenant_id, id) DO UPDATE
-                        SET slug = EXCLUDED.slug,
-                            version_label = EXCLUDED.version_label
-                        """
-                    ).format(vector_client._table("collections")),
-                    (
-                        str(tenant_uuid),
-                        str(collection_uuid),
-                        slug,
-                        label,
-                    ),
-                )
-            conn.commit()
-    except PsycopgError as exc:  # pragma: no cover - defensive guard
-        _LOGGER.warning(
-            "manual_collection.ensure_failed",
-            extra={
-                "tenant_id": str(tenant_uuid),
-                "collection_id": str(collection_uuid),
-                "error": str(exc),
-            },
-        )
-    except Exception:  # pragma: no cover - defensive guard
-        _LOGGER.exception(
-            "manual_collection.ensure_unexpected_error",
-            extra={
-                "tenant_id": str(tenant_uuid),
-                "collection_id": str(collection_uuid),
-            },
-        )
-        raise
+    collection = domain_service.ensure_collection(
+        tenant=tenant,
+        key=slug,
+        name=label,
+        metadata={"slug": slug, "label": label},
+        collection_id=collection_uuid,
+        scope="manual",
+    )
 
-    try:
-        ensure_manual_collection_model(
-            tenant_id=tenant_id,
-            collection_uuid=collection_uuid,
-            slug=slug,
-            label=label,
-        )
-    except Exception:  # pragma: no cover - defensive guard
-        _LOGGER.exception(
-            "manual_collection.model_ensure_failed",
-            extra={
-                "tenant_id": str(tenant_uuid),
-                "collection_id": str(collection_uuid),
-            },
-        )
-
-    return str(collection_uuid)
+    return str(collection.collection_id)
 
 
 def _resolve_tenant(tenant_id: object) -> "Tenant | None":
@@ -162,7 +119,6 @@ def ensure_manual_collection_model(
         return None
 
     DocumentCollection = _get_document_collection_model()
-
     try:
         collection, _ = DocumentCollection.objects.get_or_create(
             tenant=tenant,
