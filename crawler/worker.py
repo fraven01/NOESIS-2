@@ -619,7 +619,7 @@ class CrawlerWorker:
             if ensured is not None:
                 collections.append(ensured)
 
-        document = service.ingest_document(
+        ingest_result = service.ingest_document(
             tenant=tenant,
             source=source,
             content_hash=content_hash,
@@ -629,7 +629,7 @@ class CrawlerWorker:
             scope=scope,
             dispatcher=lambda *_: None,
         )
-        return str(document.id)
+        return str(ingest_result.document.id)
 
     def _ensure_collection_with_warning(
         self,

@@ -310,7 +310,7 @@ def _register_documents_for_builds(
                 scope=scope,
             )
 
-        document = service.ingest_document(
+        ingest_result = service.ingest_document(
             tenant=tenant,
             source=str(source),
             content_hash=str(checksum),
@@ -323,7 +323,7 @@ def _register_documents_for_builds(
             dispatcher=lambda *_: None,
         )
 
-        document_id = str(document.id)
+        document_id = str(ingest_result.document.id)
         build.document_id = document_id
         build.state["document_id"] = document_id
 
