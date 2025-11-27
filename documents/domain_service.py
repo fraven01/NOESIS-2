@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Callable, Iterable, Mapping, Sequence
 from uuid import UUID, uuid4
 
@@ -20,6 +21,14 @@ logger = logging.getLogger(__name__)
 
 IngestionDispatcher = Callable[[UUID, Sequence[UUID], str | None, str | None], None]
 DeletionDispatcher = Callable[[Mapping[str, object]], None]
+
+
+@dataclass(frozen=True)
+class PersistedDocumentIngest:
+    """Result bundle for document ingestion persistence."""
+
+    document: Document
+    collection_ids: tuple[UUID, ...]
 
 
 class DocumentDomainService:
@@ -47,48 +56,60 @@ class DocumentDomainService:
         embedding_profile: str | None = None,
         scope: str | None = None,
         dispatcher: IngestionDispatcher | None = None,
-    ) -> Document:
+        document_id: UUID | None = None,
+    ) -> PersistedDocumentIngest:
         """Persist or update a document and queue downstream processing.
 
         The operation is idempotent for a given ``(source, content_hash)`` tuple
-        within a tenant. It will create missing collections, manage
-        memberships and schedule an ingestion job after the database
-        transaction committed successfully.
+        within a tenant. It will create missing collections, manage memberships
+        and schedule an ingestion job after the database transaction committed
+        successfully. A dispatcher is required so that vector ingestion runs
+        only after persistence completed.
         """
 
-        document, created = Document.objects.update_or_create(
-            tenant=tenant,
-            source=source,
-            hash=content_hash,
-            defaults={"metadata": dict(metadata or {})},
-        )
-        if not created and metadata:
-            document.metadata = dict(metadata)
-            document.save(update_fields=["metadata", "updated_at"])
-
-        collection_instances: list[DocumentCollection] = []
-        for collection in collections:
-            if isinstance(collection, DocumentCollection):
-                instance = collection
-            else:
-                instance = self.ensure_collection(
-                    tenant=tenant,
-                    key=str(collection),
-                    embedding_profile=embedding_profile,
-                    scope=scope,
-                )
-            collection_instances.append(instance)
-
-        collection_ids: list[UUID] = []
-        for collection in collection_instances:
-            _, _ = DocumentCollectionMembership.objects.get_or_create(
-                document=document,
-                collection=collection,
-            )
-            collection_ids.append(collection.id)
-
         dispatcher_fn = dispatcher or self._ingestion_dispatcher
-        if dispatcher_fn:
+        if dispatcher_fn is None:
+            raise ValueError("ingestion_dispatcher_required")
+
+        metadata_payload = dict(metadata or {})
+        if document_id is not None:
+            metadata_payload.setdefault("document_id", str(document_id))
+
+        with transaction.atomic():
+            document, created = Document.objects.update_or_create(
+                tenant=tenant,
+                source=source,
+                hash=content_hash,
+                defaults={
+                    "metadata": metadata_payload,
+                    **({"id": document_id} if document_id is not None else {}),
+                },
+            )
+            if not created and metadata:
+                document.metadata = dict(metadata_payload)
+                document.save(update_fields=["metadata", "updated_at"])
+
+            collection_instances: list[DocumentCollection] = []
+            for collection in collections:
+                if isinstance(collection, DocumentCollection):
+                    instance = collection
+                else:
+                    instance = self.ensure_collection(
+                        tenant=tenant,
+                        key=str(collection),
+                        embedding_profile=embedding_profile,
+                        scope=scope,
+                    )
+                collection_instances.append(instance)
+
+            collection_ids: list[UUID] = []
+            for collection in collection_instances:
+                _, _ = DocumentCollectionMembership.objects.get_or_create(
+                    document=document,
+                    collection=collection,
+                )
+                collection_ids.append(collection.id)
+
             transaction.on_commit(
                 lambda: dispatcher_fn(
                     document.id,
@@ -97,17 +118,10 @@ class DocumentDomainService:
                     scope,
                 )
             )
-        else:
-            logger.info(
-                "document_ingest_dispatch_skipped",
-                extra={
-                    "document_id": str(document.id),
-                    "collection_ids": [str(cid) for cid in collection_ids],
-                    "scope": scope,
-                },
-            )
 
-        return document
+        return PersistedDocumentIngest(
+            document=document, collection_ids=tuple(collection_ids)
+        )
 
     def ensure_collection(
         self,

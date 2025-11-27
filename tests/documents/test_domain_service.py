@@ -179,7 +179,7 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         collection_id = collection.id
         collection_uuid = collection.collection_id
 
-        document = service.ingest_document(
+        ingest_result = service.ingest_document(
             tenant=tenant,
             source="crawler",
             content_hash="cafebabe",
@@ -188,6 +188,7 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
             embedding_profile="profile-d",
             scope="round-trip",
         )
+        document = ingest_result.document
 
         doc_id = document.id
         assert doc_id is not None

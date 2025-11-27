@@ -627,7 +627,7 @@ class CrawlerWorker:
             collections=collections,
             embedding_profile=embedding_profile,
             scope=scope,
-            dispatcher=None,
+            dispatcher=lambda *_: None,
         )
         return str(document.id)
 

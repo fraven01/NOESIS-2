@@ -1439,7 +1439,7 @@ def handle_document_upload(
             ),
             embedding_profile=metadata_obj.get("embedding_profile"),
             scope=metadata_obj.get("scope"),
-            dispatcher=None,
+            dispatcher=lambda *_: None,
         )
         document_uuid = document_record.id
     else:

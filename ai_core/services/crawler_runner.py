@@ -320,7 +320,7 @@ def _register_documents_for_builds(
             ),
             embedding_profile=embedding_profile,
             scope=scope,
-            dispatcher=None,
+            dispatcher=lambda *_: None,
         )
 
         document_id = str(document.id)
