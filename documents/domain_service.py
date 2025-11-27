@@ -10,7 +10,6 @@ from uuid import UUID, uuid4
 from django.db import transaction
 from django.db.models import Count
 from django.utils import timezone
-from psycopg2 import sql
 
 from ai_core.infra.observability import record_span
 from customers.models import Tenant
@@ -361,63 +360,27 @@ class DocumentDomainService:
         vector_store = self._require_vector_store()
 
         ensure_fn = getattr(vector_store, "ensure_collection", None)
-        if callable(ensure_fn):
-            ensure_fn(
-                tenant_id=str(tenant.id),
-                collection_id=str(collection.collection_id),
-                embedding_profile=embedding_profile,
-                scope=scope,
-            )
-            return
+        if not callable(ensure_fn):
+            raise RuntimeError("Vector store client must support collection ensure")
 
-        connection = getattr(vector_store, "connection", None)
-        table_resolver = getattr(vector_store, "_table", None)
-        if callable(connection) and callable(table_resolver):
-            collections_table = table_resolver("collections")
-            with connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        sql.SQL(
-                            """
-                            INSERT INTO {} (tenant_id, id)
-                            VALUES (%s, %s)
-                            ON CONFLICT (tenant_id, id) DO NOTHING
-                            """
-                        ).format(collections_table),
-                        (str(tenant.id), str(collection.collection_id)),
-                    )
-                conn.commit()
-            return
-
-        raise RuntimeError("Vector store client does not support collection sync")
+        ensure_fn(
+            tenant_id=str(tenant.id),
+            collection_id=str(collection.collection_id),
+            embedding_profile=embedding_profile,
+            scope=scope,
+        )
 
     def _delete_vector_collection_record(self, collection: DocumentCollection) -> None:
         vector_store = self._require_vector_store()
 
         delete_fn = getattr(vector_store, "delete_collection", None)
-        if callable(delete_fn):
-            delete_fn(
-                tenant_id=str(collection.tenant_id),
-                collection_id=str(collection.collection_id),
-            )
-            return
+        if not callable(delete_fn):
+            raise RuntimeError("Vector store client must support collection deletion")
 
-        connection = getattr(vector_store, "connection", None)
-        table_resolver = getattr(vector_store, "_table", None)
-        if callable(connection) and callable(table_resolver):
-            collections_table = table_resolver("collections")
-            with connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(
-                        sql.SQL(
-                            "DELETE FROM {} WHERE tenant_id = %s AND id = %s"
-                        ).format(collections_table),
-                        (str(collection.tenant_id), str(collection.collection_id)),
-                    )
-                conn.commit()
-            return
-
-        raise RuntimeError("Vector store client does not support collection deletion")
+        delete_fn(
+            tenant_id=str(collection.tenant_id),
+            collection_id=str(collection.collection_id),
+        )
 
     def _require_vector_store(self):
         if self._vector_store is None:
