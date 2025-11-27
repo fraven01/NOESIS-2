@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterable, Mapping
 from importlib import import_module
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID, UUID, uuid4
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
@@ -71,6 +71,9 @@ from ai_core.graphs.upload_ingestion_graph import (
     UploadIngestionError,
     UploadIngestionGraph,
 )
+from ai_core.rag.vector_client import get_default_client
+from customers.tenant_context import TenantContext
+from documents.domain_service import DocumentDomainService
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -395,6 +398,166 @@ def _persist_collection_scope(
             metadata = {}
         metadata["collection_id"] = collection_id
         object_store.write_json(path, metadata)
+
+
+def _resolve_tenant_for_documents(meta: Mapping[str, object]):
+    identifier = meta.get("tenant_schema") or meta.get("tenant_id")
+    if not identifier:
+        return None
+    try:
+        return TenantContext.resolve_identifier(identifier, allow_pk=True)
+    except Exception:
+        logger.exception(
+            "documents.resolve_tenant_failed",
+            extra={"tenant_identifier": identifier},
+        )
+        return None
+
+
+def _ensure_collection_with_warning(
+    service: DocumentDomainService,
+    tenant,
+    identifier: object,
+    *,
+    embedding_profile: str | None,
+    scope: str | None,
+) -> DocumentCollection | None:
+    """Ensure a collection exists; create missing IDs with a warning (review later)."""
+
+    try:
+        collection_uuid = UUID(str(identifier))
+    except Exception:
+        collection_uuid = None
+
+    if collection_uuid is not None:
+        exists = DocumentCollection.objects.filter(
+            tenant=tenant, collection_id=collection_uuid
+        ).exists()
+        if not exists:
+            logger.warning(
+                "documents.collection_missing_created",
+                extra={
+                    "tenant_id": str(getattr(tenant, "id", tenant)),
+                    "collection_id": str(collection_uuid),
+                    "reason": "missing_reference",
+                },
+            )
+
+    return service.ensure_collection(
+        tenant=tenant,
+        key=str(identifier),
+        embedding_profile=embedding_profile,
+        scope=scope,
+        collection_id=collection_uuid,
+    )
+
+
+def _ensure_document_collection(
+    *,
+    collection_id: object,
+    tenant_identifier: object,
+    case_identifier: object | None,
+    metadata: Mapping[str, object] | None = None,
+) -> None:
+    try:
+        collection_uuid = UUID(str(collection_id))
+    except (TypeError, ValueError):
+        logger.debug(
+            "collection_model.invalid_collection_id",
+            extra={"collection_id": collection_id},
+        )
+        return
+
+    from customers.tenant_context import TenantContext
+
+    try:
+        tenant = TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
+    except Exception:
+        logger.exception(
+            "collection_model.tenant_resolution_failed",
+            extra={"collection_id": str(collection_uuid)},
+        )
+        return
+
+    if tenant is None:
+        logger.info(
+            "collection_model.missing_tenant",
+            extra={"collection_id": str(collection_uuid)},
+        )
+        return
+
+    try:
+        from cases.models import Case
+        from documents.models import DocumentCollection
+    except Exception:
+        logger.exception(
+            "collection_model.import_failed",
+            extra={"collection_id": str(collection_uuid)},
+        )
+        return
+
+    meta_payload = metadata if isinstance(metadata, Mapping) else {}
+
+    def _coerce_label(*keys: str) -> str | None:
+        for key in keys:
+            value = meta_payload.get(key)
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed:
+                    return trimmed
+        return None
+
+    name = _coerce_label("collection_name", "name", "label", "title")
+    key = _coerce_label("collection_key", "key", "slug")
+    fallback_label = str(collection_uuid)
+    if not name:
+        name = fallback_label
+    if not key:
+        key = name
+
+    case_obj = None
+    if case_identifier:
+        case_identifier_str = str(case_identifier)
+        case_obj = Case.objects.filter(
+            external_id=case_identifier_str, tenant=tenant
+        ).first()
+
+        if case_obj is None:
+            try:
+                case_uuid = UUID(case_identifier_str)
+            except Exception:
+                logger.debug(
+                    "collection_model.case_resolution_failed",
+                    extra={
+                        "collection_id": str(collection_uuid),
+                        "case_identifier": case_identifier,
+                    },
+                )
+            else:
+                case_obj = Case.objects.filter(id=case_uuid, tenant=tenant).first()
+
+    try:
+        DocumentCollection.objects.get_or_create(
+            id=collection_uuid,
+            defaults={
+                "tenant": tenant,
+                "case": case_obj,
+                "collection_id": collection_uuid,
+                "name": name,
+                "key": key,
+                "metadata": meta_payload,
+                "type": "",
+                "visibility": "",
+            },
+        )
+    except Exception:
+        logger.exception(
+            "collection_model.get_or_create_failed",
+            extra={
+                "collection_id": str(collection_uuid),
+                "tenant_id": getattr(tenant, "schema_name", str(tenant)),
+            },
+        )
 
 
 def _coerce_transition_result(
@@ -1020,6 +1183,14 @@ def start_ingestion_run(
     if collection_scope:
         meta["collection_id"] = collection_scope
 
+    if collection_scope:
+        _ensure_document_collection(
+            collection_id=collection_scope,
+            tenant_identifier=meta.get("tenant_schema") or meta.get("tenant_id"),
+            case_identifier=meta.get("case_id"),
+            metadata=request_data if isinstance(request_data, Mapping) else None,
+        )
+
     try:
         normalized_profile = (
             str(validated_data.embedding_profile).strip()
@@ -1361,6 +1532,21 @@ def handle_document_upload(
             label=MANUAL_COLLECTION_LABEL,
         )
 
+    tenant = _resolve_tenant_for_documents(meta)
+    domain_service = (
+        DocumentDomainService(vector_store=get_default_client()) if tenant else None
+    )
+    ensured_collection = None
+    if metadata_obj.get("collection_id") and domain_service and tenant:
+        ensured_collection = _ensure_collection_with_warning(
+            domain_service,
+            tenant,
+            metadata_obj["collection_id"],
+            embedding_profile=metadata_obj.get("embedding_profile"),
+            scope=metadata_obj.get("scope"),
+        )
+        if ensured_collection is not None:
+            metadata_obj["collection_id"] = str(ensured_collection.collection_id)
     document_uuid = uuid4()
 
     file_bytes = upload.read()
@@ -1389,6 +1575,32 @@ def handle_document_upload(
     checksum = hashlib.sha256(file_bytes).hexdigest()
     encoded_blob = base64.b64encode(file_bytes).decode("ascii")
 
+    document_metadata_payload = dict(metadata_obj)
+    document_metadata_payload.setdefault("filename", original_name)
+    document_metadata_payload.setdefault("content_hash", checksum)
+    document_metadata_payload.setdefault("content_type", _infer_media_type(upload))
+
+    if domain_service and tenant:
+        ingest_result = domain_service.ingest_document(
+            tenant=tenant,
+            source=document_metadata_payload.get("origin_uri")
+            or document_metadata_payload.get("external_id")
+            or original_name,
+            content_hash=checksum,
+            metadata=document_metadata_payload,
+            collections=(
+                (ensured_collection,) if ensured_collection is not None else ()
+            ),
+            embedding_profile=metadata_obj.get("embedding_profile"),
+            scope=metadata_obj.get("scope"),
+            dispatcher=lambda *_: None,
+        )
+        document_uuid = ingest_result.document.id
+        collection_ids = ingest_result.collection_ids
+    else:
+        document_uuid = uuid4()
+        collection_ids: tuple[UUID, ...] = ()
+
     document_meta = _build_document_meta(
         meta, metadata_obj, external_id, media_type=_infer_media_type(upload)
     )
@@ -1398,7 +1610,11 @@ def handle_document_upload(
         "tenant_id": document_meta.tenant_id,
         "workflow_id": document_meta.workflow_id,
         "document_id": document_uuid,
-        "collection_id": metadata_obj.get("collection_id"),
+        "collection_id": (
+            collection_ids[0]
+            if collection_ids
+            else metadata_obj.get("collection_id")
+        ),
         "version": metadata_obj.get("version"),
     }
     document_ref = DocumentRef(**ref_payload)

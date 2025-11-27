@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import asdict, is_dataclass, dataclass
 from collections.abc import Mapping
 from typing import Any, Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from rest_framework import status
@@ -25,6 +25,10 @@ from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
+from ai_core.rag.vector_client import get_default_client
+from customers.tenant_context import TenantContext
+from documents.domain_service import DocumentDomainService
+from documents.models import DocumentCollection
 
 import ai_core.services as services_module
 from . import _get_documents_repository, _make_json_safe
@@ -88,6 +92,15 @@ def run_crawler_runner(
     )
     if not state_builds:
         raise ValueError("No origins resolved for crawler run.")
+
+    tenant = _resolve_tenant(meta.get("tenant_id"))
+    if tenant:
+        _register_documents_for_builds(
+            tenant=tenant,
+            builds=state_builds,
+            embedding_profile=request_model.embedding_profile,
+            scope=request_model.scope,
+        )
 
     workflow_id = state_builds[0].state.get("workflow_id") or context.workflow_id
     fingerprint_match = _check_idempotency_fingerprint(
@@ -249,6 +262,135 @@ def _check_idempotency_fingerprint(
         pass
 
     return False
+
+
+def _register_documents_for_builds(
+    *,
+    tenant,
+    builds: list[CrawlerStateBundle],
+    embedding_profile: str | None,
+    scope: str | None,
+) -> None:
+    service = DocumentDomainService(vector_store=get_default_client())
+
+    for build in builds:
+        normalized = build.state.get("normalized_document_input")
+        if not isinstance(normalized, Mapping):
+            continue
+
+        metadata = normalized.get("meta") if isinstance(normalized, Mapping) else None
+        metadata_dict = dict(metadata or {})
+
+        blob_payload = normalized.get("blob") if isinstance(normalized, Mapping) else None
+        checksum = None
+        if isinstance(blob_payload, Mapping):
+            checksum = blob_payload.get("sha256")
+        if checksum is None:
+            checksum = normalized.get("checksum")
+        if not checksum:
+            logger.warning(
+                "crawler_runner.document_registration_missing_checksum",
+                extra={"origin": build.origin},
+            )
+            continue
+
+        source = metadata_dict.get("origin_uri") or build.origin
+        collection_identifier = build.collection_id
+        ref_payload = normalized.get("ref") if isinstance(normalized, Mapping) else None
+        if collection_identifier is None and isinstance(ref_payload, Mapping):
+            collection_identifier = ref_payload.get("collection_id")
+
+        collection_instance = None
+        if collection_identifier is not None:
+            collection_instance = _ensure_collection_with_warning(
+                service,
+                tenant,
+                collection_identifier,
+                embedding_profile=embedding_profile,
+                scope=scope,
+            )
+
+        ingest_result = service.ingest_document(
+            tenant=tenant,
+            source=str(source),
+            content_hash=str(checksum),
+            metadata=metadata_dict,
+            collections=(
+                (collection_instance,) if collection_instance is not None else ()
+            ),
+            embedding_profile=embedding_profile,
+            scope=scope,
+            dispatcher=lambda *_: None,
+        )
+
+        document_id = str(ingest_result.document.id)
+        build.document_id = document_id
+        build.state["document_id"] = document_id
+
+        if isinstance(normalized, Mapping):
+            normalized_mutable = dict(normalized)
+            ref = normalized_mutable.get("ref")
+            if isinstance(ref, Mapping):
+                ref = dict(ref)
+            else:
+                ref = {}
+            ref["document_id"] = document_id
+            if collection_instance is not None:
+                ref["collection_id"] = str(collection_instance.collection_id)
+            normalized_mutable["ref"] = ref
+            normalized_mutable["checksum"] = checksum
+            build.state["normalized_document_input"] = normalized_mutable
+
+
+def _ensure_collection_with_warning(
+    service: DocumentDomainService,
+    tenant,
+    identifier: object,
+    *,
+    embedding_profile: str | None,
+    scope: str | None,
+) -> DocumentCollection | None:
+    """Ensure a collection exists; create missing IDs with a warning (review later)."""
+
+    try:
+        collection_uuid = UUID(str(identifier))
+    except Exception:
+        collection_uuid = None
+
+    if collection_uuid is not None:
+        exists = DocumentCollection.objects.filter(
+            tenant=tenant, collection_id=collection_uuid
+        ).exists()
+        if not exists:
+            logger.warning(
+                "crawler_runner.collection_missing_created",
+                extra={
+                    "tenant_id": str(tenant.id),
+                    "collection_id": str(collection_uuid),
+                    "reason": "missing_reference",
+                },
+            )
+
+    return service.ensure_collection(
+        tenant=tenant,
+        key=str(identifier),
+        embedding_profile=embedding_profile,
+        scope=scope,
+        collection_id=collection_uuid,
+    )
+
+
+def _resolve_tenant(identifier: object):
+    if identifier is None:
+        return None
+    try:
+        resolved = TenantContext.resolve_identifier(identifier, allow_pk=True)
+    except Exception:
+        logger.exception(
+            "crawler_runner.resolve_tenant_failed", extra={"tenant_id": identifier}
+        )
+        return None
+    return resolved
 
 
 def _run_graph_inline(

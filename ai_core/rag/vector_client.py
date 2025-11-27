@@ -636,6 +636,9 @@ def _prepare_scope_filters(
             collected.append(candidate)
         if collected:
             collection_ids_filter = collected
+        else:
+            # Explicitly treat empty sequences as no collection filter to keep tenant-wide search.
+            collection_ids_filter = None
 
     has_single_collection_filter = False
     if "collection_id" in normalized_filters:
@@ -1770,6 +1773,9 @@ class PgVectorClient:
             elif kind == "document_external_id":
                 where_clauses.append("d.external_id = %s")
                 where_params.append(normalised)
+        # We intentionally use OR logic (union) between case_id and collection filters to
+        # allow retrieval from the current case and selected knowledge collections
+        # simultaneously; intersection is not desired here.
         if case_filter_value is not None and effective_collection_filter:
             if legacy_doc_class_filter:
                 where_clauses.append(
@@ -1885,6 +1891,9 @@ class PgVectorClient:
             def _build_vector_sql(
                 where_sql_value: str, select_columns: str, order_by_clause: str
             ) -> str:
+                # where_sql_value contains union (OR) scope predicates between case and
+                # collection filters to intentionally broaden context when both are
+                # provided.
                 return f"""
                     SELECT
                         {select_columns}
@@ -4070,15 +4079,15 @@ class PgVectorClient:
             content_hash = str(doc.get("content_hash", doc.get("hash", "")))
             collection_value = doc.get("collection_id")
             collection_uuid: uuid.UUID | None = None
-            if collection_value:
+            if collection_value not in {None, ""}:
                 try:
                     collection_uuid = (
                         collection_value
                         if isinstance(collection_value, uuid.UUID)
                         else uuid.UUID(str(collection_value))
                     )
-                except (TypeError, ValueError):
-                    collection_uuid = None
+                except (TypeError, ValueError) as exc:
+                    raise ValueError("invalid_collection_id") from exc
             workflow_raw = doc.get("workflow_id")
             workflow_text: str | None = None
             if workflow_raw not in {None, "", "None"}:
@@ -5024,6 +5033,85 @@ class PgVectorClient:
             except Exception:
                 conn.rollback()
                 raise
+
+    def hard_delete_documents(
+        self,
+        *,
+        tenant_id: str,
+        document_ids: Sequence[object],
+    ) -> Mapping[str, int]:
+        """Permanently remove documents, chunks and embeddings for a tenant."""
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        resolved_ids: list[uuid.UUID] = []
+        for raw in document_ids:
+            if raw in {None, "", "None"}:
+                continue
+            try:
+                resolved = raw if isinstance(raw, uuid.UUID) else uuid.UUID(str(raw))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            resolved_ids.append(resolved)
+
+        if not resolved_ids:
+            return {"documents": 0, "chunks": 0, "embeddings": 0}
+
+        documents_table = self._table("documents")
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+
+        delete_embeddings_sql = sql.SQL(
+            """
+            DELETE FROM {embeddings}
+             WHERE chunk_id IN (
+                SELECT id
+                  FROM {chunks}
+                 WHERE document_id = ANY(%s)
+                   AND tenant_id = %s
+            )
+            """
+        ).format(embeddings=embeddings_table, chunks=chunks_table)
+
+        delete_chunks_sql = sql.SQL(
+            """
+            DELETE FROM {chunks}
+             WHERE document_id = ANY(%s)
+               AND tenant_id = %s
+            """
+        ).format(chunks=chunks_table)
+
+        delete_documents_sql = sql.SQL(
+            """
+            DELETE FROM {documents}
+             WHERE tenant_id = %s
+               AND id = ANY(%s)
+            """
+        ).format(documents=documents_table)
+
+        params = (resolved_ids, str(tenant_uuid))
+
+        with self._connection() as conn:  # type: ignore[attr-defined]
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(delete_embeddings_sql, params)
+                    embeddings_deleted = cur.rowcount or 0
+
+                    cur.execute(delete_chunks_sql, params)
+                    chunks_deleted = cur.rowcount or 0
+
+                    cur.execute(delete_documents_sql, (str(tenant_uuid), resolved_ids))
+                    documents_deleted = cur.rowcount or 0
+
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        return {
+            "documents": int(documents_deleted),
+            "chunks": int(chunks_deleted),
+            "embeddings": int(embeddings_deleted),
+        }
 
     def _compute_storage_hash(
         self,

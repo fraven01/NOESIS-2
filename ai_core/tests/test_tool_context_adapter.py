@@ -14,6 +14,7 @@ def test_tool_context_from_scope_preserves_runtime_ids_and_defaults():
         trace_id="trace-123",
         invocation_id=str(uuid4()),
         run_id="run-abc",
+        tenant_schema="tenant-schema",
         case_id="case-xyz",
         workflow_id="workflow-1",
         idempotency_key="idem-1",
@@ -26,6 +27,7 @@ def test_tool_context_from_scope_preserves_runtime_ids_and_defaults():
     assert tool_context.ingestion_run_id is None
     assert tool_context.case_id == "case-xyz"
     assert tool_context.workflow_id == "workflow-1"
+    assert tool_context.tenant_schema == "tenant-schema"
     assert tool_context.idempotency_key == "idem-1"
     assert tool_context.locale == "de-DE"
     assert tool_context.now_iso == timestamp
@@ -37,6 +39,7 @@ def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
         trace_id="trace-456",
         invocation_id=str(uuid4()),
         ingestion_run_id="ingest-123",
+        tenant_schema="tenant-schema-2",
     )
 
     override_now = datetime(2024, 2, 1, tzinfo=timezone.utc)
@@ -45,6 +48,7 @@ def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
     assert tool_context.run_id is None
     assert tool_context.ingestion_run_id == "ingest-123"
     assert tool_context.trace_id == "trace-456"
+    assert tool_context.tenant_schema == "tenant-schema-2"
     assert tool_context.budget_tokens == 512
     assert tool_context.now_iso == override_now
 

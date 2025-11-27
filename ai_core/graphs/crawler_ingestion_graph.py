@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from datetime import timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
 
 from pydantic import ValidationError
 from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
 from ai_core import api as ai_core_api
+from ai_core.contracts.scope import ScopeContext
 from ai_core.contracts.payloads import (
     CompletionPayload,
     FrontierData,
@@ -52,6 +53,7 @@ from ai_core.rag.ingestion_contracts import (
     IngestionProfileResolution,
     resolve_ingestion_profile,
 )
+from documents.service_facade import ingest_document
 from documents import metrics as document_metrics
 from documents.api import LifecycleStatusUpdate, NormalizedDocumentPayload
 from documents.contracts import NormalizedDocument
@@ -661,40 +663,87 @@ class CrawlerIngestionGraph:
         embedding_state: Mapping[str, Any],
         chunk_info: ChunkComputation,
     ) -> EmbeddingResult:
-        ingestion_tasks = self._ingestion_tasks()
-        embed_result = ingestion_tasks.embed(chunk_info.meta, chunk_info.chunks_path)
-        embeddings_path = str(embed_result.get("path"))
-        artifacts = self._artifacts(state)
-        artifacts["embeddings_path"] = embeddings_path
-
-        upsert_kwargs: Dict[str, Any] = {}
-        tenant_schema = embedding_state.get("tenant_schema")
-        if tenant_schema is not None:
-            upsert_kwargs["tenant_schema"] = tenant_schema
-        vector_client = embedding_state.get("client")
-        if vector_client is not None:
-            upsert_kwargs["vector_client"] = vector_client
-        vector_factory = embedding_state.get("client_factory")
-        if vector_factory is not None:
-            upsert_kwargs["vector_client_factory"] = vector_factory
-
-        inserted = ingestion_tasks.upsert(
-            chunk_info.meta,
-            embeddings_path,
-            **upsert_kwargs,
+        tenant_schema_value = (
+            embedding_state.get("tenant_schema")
+            if isinstance(embedding_state, Mapping)
+            else None
         )
+        scope = ScopeContext(
+            tenant_id=str(chunk_info.meta["tenant_id"]),
+            trace_id=str(state.get("trace_id") or uuid4()),
+            invocation_id=str(uuid4()),
+            ingestion_run_id=str(state.get("ingestion_run_id") or uuid4()),
+            case_id=str(chunk_info.meta.get("case_id"))
+            if chunk_info.meta.get("case_id")
+            else None,
+            tenant_schema=str(tenant_schema_value) if tenant_schema_value else None,
+        )
+
+        ingestion_tasks = self._ingestion_tasks()
+
+        def _dispatch_ingestion(
+            document_id: uuid.UUID,
+            collection_ids: Sequence[uuid.UUID],
+            embedding_profile: str | None,
+            scope_value: str | None,
+        ) -> None:
+            dispatch_meta = dict(chunk_info.meta)
+            dispatch_meta["document_id"] = str(document_id)
+            if collection_ids:
+                dispatch_meta["collection_id"] = str(collection_ids[0])
+            if embedding_profile and not dispatch_meta.get("embedding_profile"):
+                dispatch_meta["embedding_profile"] = embedding_profile
+            if scope_value and not dispatch_meta.get("scope"):
+                dispatch_meta["scope"] = scope_value
+
+            upsert_kwargs: dict[str, Any] = {}
+            if embedding_state:
+                tenant_schema_dispatch = embedding_state.get("tenant_schema")
+                if tenant_schema_dispatch is not None:
+                    upsert_kwargs["tenant_schema"] = tenant_schema_dispatch
+                vector_client = embedding_state.get("client")
+                if vector_client is not None:
+                    upsert_kwargs["vector_client"] = vector_client
+                vector_factory = embedding_state.get("client_factory")
+                if vector_factory is not None:
+                    upsert_kwargs["vector_client_factory"] = vector_factory
+
+            embed_result = ingestion_tasks.embed(dispatch_meta, chunk_info.chunks_path)
+            embeddings_path = str(embed_result.get("path"))
+            ingestion_tasks.upsert(dispatch_meta, embeddings_path, **upsert_kwargs)
+
+        ingestion_result = ingest_document(
+            scope,
+            meta=chunk_info.meta,
+            chunks_path=chunk_info.chunks_path,
+            embedding_state=embedding_state,
+            dispatcher=_dispatch_ingestion,
+        )
+        artifacts = self._artifacts(state)
+        artifacts["document_id"] = ingestion_result.get("document_id")
+        artifacts["collection_ids"] = ingestion_result.get("collection_ids")
+        inserted = ingestion_result.get("status") == "queued"
 
         workflow_id_value = chunk_info.meta.get("workflow_id")
         workflow_id = None
         if workflow_id_value not in (None, ""):
             workflow_id = str(workflow_id_value)
 
-        collection_value = chunk_info.meta.get("collection_id")
+        collection_value = None
+        collection_ids = ingestion_result.get("collection_ids")
+        if isinstance(collection_ids, list) and collection_ids:
+            collection_value = collection_ids[0]
+        elif chunk_info.meta.get("collection_id"):
+            collection_value = chunk_info.meta.get("collection_id")
         collection_id = None
         if collection_value not in (None, ""):
             collection_id = str(collection_value)
 
-        document_value = chunk_info.meta.get("document_id") or normalized.document_id
+        document_value = (
+            ingestion_result.get("document_id")
+            or chunk_info.meta.get("document_id")
+            or normalized.document_id
+        )
 
         chunk_meta_model = ChunkMeta(
             tenant_id=str(chunk_info.meta["tenant_id"]),
@@ -714,7 +763,7 @@ class CrawlerIngestionGraph:
         )
 
         return EmbeddingResult(
-            status="upserted" if inserted else "skipped",
+            status="queued" if inserted else "skipped",
             chunks_inserted=int(inserted),
             embedding_profile=chunk_info.profile.profile_id,
             vector_space_id=chunk_info.profile.resolution.vector_space.id,

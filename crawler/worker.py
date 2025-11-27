@@ -7,6 +7,7 @@ import hashlib
 import mimetypes
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping, Optional, Tuple
+from uuid import UUID
 from urllib.parse import urljoin, urlparse
 
 from lxml import html
@@ -17,6 +18,10 @@ from ai_core.tasks import run_ingestion_graph
 from common.assets import AssetIngestPayload, BlobWriter
 from common.assets.hashing import perceptual_hash, sha256_bytes
 from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
+from documents.domain_service import DocumentDomainService
+from customers.tenant_context import TenantContext
+from ai_core.rag.vector_client import get_default_client
+from documents.models import DocumentCollection
 
 from .errors import CrawlerError
 from .fetcher import FetchRequest, FetchResult, FetchStatus
@@ -61,6 +66,7 @@ class CrawlerWorker:
         self._fetcher = fetcher
         self._ingestion_task = ingestion_task
         self._ingestion_event_emitter = ingestion_event_emitter
+        self._domain_service: DocumentDomainService | None = None
         if blob_writer is not None:
             self._blob_writer_factory = blob_writer_factory or (
                 lambda *_args, **_kwargs: blob_writer
@@ -196,6 +202,20 @@ class CrawlerWorker:
         raw_meta.setdefault("content_hash", payload_checksum)
         raw_meta.setdefault("content_length", payload_size)
 
+        resolved_document_id = self._register_document(
+            tenant_id=tenant_id,
+            source=request.canonical_source,
+            content_hash=payload_checksum,
+            metadata=raw_meta,
+            collection_identifier=raw_meta.get("collection_id"),
+            embedding_profile=ingestion_overrides.get("embedding_profile")
+            if isinstance(ingestion_overrides, Mapping)
+            else None,
+            scope=ingestion_overrides.get("scope")
+            if isinstance(ingestion_overrides, Mapping)
+            else None,
+        )
+
         raw_document: dict[str, Any] = {
             "metadata": raw_meta,
             "payload_path": payload_path,
@@ -204,6 +224,8 @@ class CrawlerWorker:
             raw_document["document_id"] = document_id
         elif "document_id" in raw_meta:
             raw_document["document_id"] = raw_meta["document_id"]
+        elif resolved_document_id is not None:
+            raw_document["document_id"] = resolved_document_id
 
         state["raw_document"] = raw_document
         state.setdefault("raw_payload_path", payload_path)
@@ -563,6 +585,105 @@ class CrawlerWorker:
         )
         uri, *_rest = writer.put(payload)
         return uri
+
+    def _register_document(
+        self,
+        *,
+        tenant_id: str,
+        source: str,
+        content_hash: str,
+        metadata: Mapping[str, Any],
+        collection_identifier: object | None,
+        embedding_profile: str | None,
+        scope: str | None,
+    ) -> str | None:
+        tenant = self._resolve_tenant(tenant_id)
+        if tenant is None:
+            logger.warning(
+                "crawler.document_registration_skipped",
+                extra={"tenant_id": tenant_id, "reason": "tenant_not_found"},
+            )
+            return None
+
+        service = self._get_domain_service()
+
+        collections: list[DocumentCollection] = []
+        if collection_identifier is not None:
+            ensured = self._ensure_collection_with_warning(
+                service,
+                tenant,
+                collection_identifier,
+                embedding_profile=embedding_profile,
+                scope=scope,
+            )
+            if ensured is not None:
+                collections.append(ensured)
+
+        ingest_result = service.ingest_document(
+            tenant=tenant,
+            source=source,
+            content_hash=content_hash,
+            metadata=metadata,
+            collections=collections,
+            embedding_profile=embedding_profile,
+            scope=scope,
+            dispatcher=lambda *_: None,
+        )
+        return str(ingest_result.document.id)
+
+    def _ensure_collection_with_warning(
+        self,
+        service: DocumentDomainService,
+        tenant,
+        identifier: object,
+        *,
+        embedding_profile: str | None,
+        scope: str | None,
+    ) -> DocumentCollection | None:
+        """Ensure a collection exists; create missing IDs with a warning (review later)."""
+
+        try:
+            collection_uuid = UUID(str(identifier))
+        except Exception:
+            collection_uuid = None
+
+        if collection_uuid is not None:
+            exists = DocumentCollection.objects.filter(
+                tenant=tenant, collection_id=collection_uuid
+            ).exists()
+            if not exists:
+                logger.warning(
+                    "crawler.collection_missing_created",
+                    extra={
+                        "tenant_id": str(tenant.id),
+                        "collection_id": str(collection_uuid),
+                        "reason": "missing_reference",
+                    },
+                )
+
+        return service.ensure_collection(
+            tenant=tenant,
+            key=str(identifier),
+            embedding_profile=embedding_profile,
+            scope=scope,
+            collection_id=collection_uuid,
+        )
+
+    def _resolve_tenant(self, tenant_identifier: str):
+        try:
+            return TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
+        except Exception:
+            logger.exception(
+                "crawler.resolve_tenant_failed", extra={"tenant_id": tenant_identifier}
+            )
+            return None
+
+    def _get_domain_service(self) -> DocumentDomainService:
+        if self._domain_service is None:
+            self._domain_service = DocumentDomainService(
+                vector_store=get_default_client()
+            )
+        return self._domain_service
 
 
 __all__ = ["CrawlerWorker", "WorkerPublishResult"]
