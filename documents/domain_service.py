@@ -237,6 +237,7 @@ class DocumentDomainService:
         payload = {
             "type": "document_delete",
             "document_id": str(doc_id),
+            "document_ids": (str(doc_id),),
             "tenant_id": str(document.tenant_id),
             "reason": reason,
         }
