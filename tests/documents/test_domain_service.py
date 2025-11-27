@@ -46,6 +46,9 @@ class _VectorStoreStub:
             {"tenant_id": tenant_id, "document_ids": tuple(document_ids)}
         )
 
+    def dispatch_delete(self, payload: dict[str, Any]) -> None:
+        self.document_deletes.append(payload)
+
     def delete_collection(self, *, tenant_id: str, collection_id: str) -> None:
         self.collection_deletes.append(
             {"tenant_id": tenant_id, "collection_id": collection_id}
@@ -60,14 +63,6 @@ def _silence_spans(monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.fixture(autouse=True)
 def _run_on_commit_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("django.db.transaction.on_commit", lambda fn, using=None: fn())
-
-
-@pytest.fixture(autouse=True)
-def _skip_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "testsupport.tenant_fixtures.cleanup_test_tenants", lambda *_, **__: []
-    )
-    monkeypatch.setattr("conftest.cleanup_test_tenants", lambda *_, **__: [])
 
 
 @pytest.fixture
@@ -131,7 +126,9 @@ def test_ensure_collection_is_idempotent(tenant: Tenant, vector_store: _VectorSt
 def test_delete_document_removes_record_and_vector_entry(
     tenant: Tenant, vector_store: _VectorStoreStub
 ):
-    service = DocumentDomainService(vector_store=vector_store)
+    service = DocumentDomainService(
+        vector_store=vector_store, deletion_dispatcher=vector_store.dispatch_delete
+    )
 
     with schema_context(tenant.schema_name):
         document = Document.objects.create(
@@ -146,10 +143,15 @@ def test_delete_document_removes_record_and_vector_entry(
 
         assert not Document.objects.filter(id=doc_id).exists()
 
-    assert len(vector_store.document_deletes) == 1
-    delete_payload = vector_store.document_deletes[0]
-    assert delete_payload["tenant_id"] == str(tenant.id)
-    assert delete_payload["document_ids"] == (doc_id,)
+    assert vector_store.document_deletes == [
+        {
+            "type": "document_delete",
+            "document_id": str(doc_id),
+            "document_ids": (str(doc_id),),
+            "tenant_id": str(tenant.id),
+            "reason": None,
+        }
+    ]
 
 
 @pytest.mark.django_db
@@ -165,7 +167,9 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         dispatched.append((document_id, collection_ids, embedding_profile, scope))
 
     service = DocumentDomainService(
-        vector_store=vector_store, ingestion_dispatcher=_capture_dispatch
+        vector_store=vector_store,
+        ingestion_dispatcher=_capture_dispatch,
+        deletion_dispatcher=vector_store.dispatch_delete,
     )
 
     with schema_context(tenant.schema_name), transaction.atomic():
@@ -221,8 +225,11 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         service.delete_document(document)
 
     assert vector_store.document_deletes[-1] == {
+        "type": "document_delete",
+        "document_id": str(doc_id),
+        "document_ids": (str(doc_id),),
         "tenant_id": str(tenant.id),
-        "document_ids": (doc_id,),
+        "reason": None,
     }
     with schema_context(tenant.schema_name):
         assert not Document.objects.filter(id=doc_id).exists()
@@ -253,6 +260,23 @@ def test_ingest_document_allows_test_flag_for_missing_dispatcher(tenant: Tenant)
         )
 
         assert Document.objects.filter(id=result.document.id).exists()
+
+
+def test_delete_document_requires_dispatcher(tenant: Tenant, vector_store: _VectorStoreStub):
+    service = DocumentDomainService(vector_store=vector_store)
+
+    with schema_context(tenant.schema_name):
+        document = Document.objects.create(
+            tenant=tenant,
+            source="upload",
+            hash="missing-dispatcher",
+            metadata={},
+        )
+
+        with pytest.raises(ValueError):
+            service.delete_document(document)
+
+        assert Document.objects.filter(id=document.id).exists()
 
 
 @pytest.mark.django_db
