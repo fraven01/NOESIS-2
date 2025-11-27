@@ -228,6 +228,33 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         assert not Document.objects.filter(id=doc_id).exists()
 
 
+def test_ingest_document_requires_dispatcher(tenant: Tenant):
+    service = DocumentDomainService(vector_store=None)
+
+    with schema_context(tenant.schema_name):
+        with pytest.raises(ValueError):
+            service.ingest_document(
+                tenant=tenant,
+                source="upload",
+                content_hash="missing-dispatcher",
+            )
+
+
+def test_ingest_document_allows_test_flag_for_missing_dispatcher(tenant: Tenant):
+    service = DocumentDomainService(
+        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+    )
+
+    with schema_context(tenant.schema_name):
+        result = service.ingest_document(
+            tenant=tenant,
+            source="upload",
+            content_hash="allow-missing-dispatcher",
+        )
+
+        assert Document.objects.filter(id=result.document.id).exists()
+
+
 @pytest.mark.django_db
 def test_delete_collection_preserves_shared_documents(
     tenant: Tenant, vector_store: _VectorStoreStub
