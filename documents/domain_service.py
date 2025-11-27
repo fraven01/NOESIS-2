@@ -232,7 +232,12 @@ class DocumentDomainService:
         record_span("documents.delete_document", attributes=attributes)
 
         dispatcher_fn = dispatcher or self._deletion_dispatcher
-        vector_store = self._require_vector_store()
+        if dispatcher_fn is None:
+            logger.error(
+                "deletion_dispatcher_missing",
+                extra={"tenant_id": str(document.tenant_id), "document_id": str(doc_id)},
+            )
+            raise ValueError("deletion_dispatcher_required")
 
         payload = {
             "type": "document_delete",
@@ -243,15 +248,19 @@ class DocumentDomainService:
         }
 
         def _dispatch_cleanup() -> None:
-            vector_store.hard_delete_documents(
-                tenant_id=str(document.tenant_id),
-                document_ids=[doc_id],
-            )
-
-            if dispatcher_fn:
-                dispatcher_fn(payload)
-            else:
-                logger.info("document_delete_outbox", extra=payload)
+            attempts = 0
+            while True:
+                attempts += 1
+                try:
+                    dispatcher_fn(payload)
+                    return
+                except Exception:
+                    logger.exception(
+                        "document_delete_dispatch_failed",
+                        extra={**payload, "attempt": attempts},
+                    )
+                    if attempts >= 3:
+                        raise
 
         with transaction.atomic():
             DocumentCollectionMembership.objects.filter(document=document).delete()
@@ -265,10 +274,9 @@ class DocumentDomainService:
                         "soft_delete_flag_ignored_missing_field",
                         extra={"model": "Document", "id": str(document.id)},
                     )
-                transaction.on_commit(_dispatch_cleanup)
-                return
+            else:
+                document.delete()
 
-            document.delete()
             transaction.on_commit(_dispatch_cleanup)
 
     def delete_collection(

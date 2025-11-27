@@ -171,7 +171,17 @@ def hard_delete(  # type: ignore[override]
     actor_payload = dict(actor or {})
     actor_payload.update({"operator": operator, "mode": actor_mode})
 
-    domain_service = DocumentDomainService(vector_store=get_default_client())
+    vector_client = get_default_client()
+
+    def _dispatch_delete(payload: Mapping[str, object]) -> None:
+        vector_client.hard_delete_documents(
+            tenant_id=str(payload["tenant_id"]),
+            document_ids=[uuid.UUID(doc_id) for doc_id in payload["document_ids"]],
+        )
+
+    domain_service = DocumentDomainService(
+        vector_store=vector_client, deletion_dispatcher=_dispatch_delete
+    )
     documents = list(
         Document.objects.filter(id__in=requested_ids, tenant_id=tenant_uuid)
     )
