@@ -76,6 +76,12 @@ class Document(models.Model):
     source = models.CharField(max_length=255)
     external_id = models.CharField(max_length=255, blank=True, null=True)
     metadata = models.JSONField(blank=True, default=dict)
+    lifecycle_state = models.CharField(
+        max_length=32,
+        default="pending",
+        db_index=True,
+    )
+    lifecycle_updated_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -91,6 +97,10 @@ class Document(models.Model):
                 fields=("tenant", "source"), name="document_tenant_source_idx"
             ),
             models.Index(fields=("tenant", "hash"), name="document_tenant_hash_idx"),
+            models.Index(
+                fields=("tenant", "lifecycle_state"),
+                name="doc_tenant_state_idx",
+            ),
         ]
 
 

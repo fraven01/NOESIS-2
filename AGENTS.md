@@ -31,6 +31,28 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - `ToolContext` führt verpflichtend `tenant_id` und `trace_id` (neben den Laufzeit-IDs gemäß Glossar).
 - Observability Hooks und Sampling: `ai_core.infra.observability`.
 
+## Document Lifecycle (Unified Architecture)
+- **Vollständiger Plan**: [docs/architecture/unified-document-lifecycle-plan.md](docs/architecture/unified-document-lifecycle-plan.md)
+- **Domain Service**: Zentrale Autorität für alle Document Operations (`DocumentDomainService`)
+- **Lifecycle States**: 6 MVP-States (`pending`, `ingesting`, `embedded`, `active`, `failed`, `deleted`)
+- **Ingestion Flows**: Alle Pfade (Crawler, Manual, API) nutzen einheitlichen Entry Point
+- **Collection Service**: Dedizierte Service-Schicht für Collection Management
+- **Dev APIs**: Nur unter `DEBUG` verfügbar (`/api/dev/documents/`, `/api/dev/collections/`)
+- **Health Check**: `/api/health/document-lifecycle/`
+
+### API Contracts
+- `DocumentDomainService.ingest_document()` - Single document ingestion
+- `DocumentDomainService.bulk_ingest_documents()` - Bulk ingestion (Crawler-optimiert)
+- `DocumentDomainService.update_lifecycle_state()` - Lifecycle transitions mit Validierung
+- `DocumentDomainService.ensure_collection()` - Idempotente Collection-Erstellung
+- `CollectionService.ensure_manual_collection()` - Spezialisiert für Manual Uploads
+
+### Integration Points
+- **Crawler**: `ai_core/services/crawler_runner.py` → `bulk_ingest_documents()`
+- **Manual Upload**: Frontend → Dev API → `ingest_document()`
+- **Service Facade**: `documents/service_facade.py` → Domain Service (dünn)
+- **Vector Store Sync**: Dispatcher-Pattern für transaktionssichere Enqueuing
+
 ## Ereignisse & Trigger
 | Quelle | Trigger | Beschreibung | Primärquelle |
 | --- | --- | --- | --- |

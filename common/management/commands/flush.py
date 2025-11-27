@@ -22,7 +22,8 @@ class Command(DjangoFlushCommand):
     def handle(self, *args, **options):
         options = dict(options)
         log_cascade = not options.pop("no_cascade_log", False)
-        allow_cascade = options.setdefault("allow_cascade", True)
+        options["allow_cascade"] = True
+        allow_cascade = options["allow_cascade"]
         if log_cascade:
             LOGGER.info("flushing database (allow_cascade=%s)", allow_cascade)
         return super().handle(*args, **options)

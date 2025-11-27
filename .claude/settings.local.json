@@ -18,7 +18,8 @@
       "Bash(timeout 180 npm run test:py)",
       "Bash(python debug_serialization.py:*)",
       "Bash(npm run lint:fix:*)",
-      "Bash(python3 -c:*)"
+      "Bash(python3 -c:*)",
+      "Bash(npm run dev:manage:*)"
     ],
     "deny": [],
     "ask": []

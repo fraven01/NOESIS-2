@@ -9,7 +9,8 @@ from django_tenants.utils import schema_context
 
 from customers.models import Tenant
 from testsupport.tenant_fixtures import create_test_tenant
-from documents.domain_service import DocumentDomainService
+from documents.domain_service import DocumentDomainService, DocumentIngestSpec
+from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document, DocumentCollection, DocumentCollectionMembership
 
 
@@ -65,35 +66,17 @@ def _run_on_commit_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("django.db.transaction.on_commit", lambda fn, using=None: fn())
 
 
-@pytest.fixture(autouse=True, scope="module")
-def _preserve_module_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Keep the shared module tenant alive across tests.
-
-    The autouse cleanup fixture in ``conftest.py`` drops all tracked schemas
-    after each test. Since this module reuses a module-scoped tenant, we need
-    to ensure its schema is preserved for the duration of the suite.
-    """
-
-    from testsupport import tenant_fixtures
-
-    def _cleanup(*, preserve=None):
-        preserved = set(preserve or ())
-        preserved.add("autotest-domain-service")
-        return tenant_fixtures.cleanup_test_tenants(preserve=preserved)
-
-    monkeypatch.setattr(tenant_fixtures, "cleanup_test_tenants", _cleanup)
-    monkeypatch.setattr("conftest.cleanup_test_tenants", _cleanup)
-
-
 @pytest.fixture
 def vector_store() -> _VectorStoreStub:
     return _VectorStoreStub()
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 def tenant(django_db_blocker) -> Tenant:
+    schema_name = f"autotest-domain-service-{uuid.uuid4().hex[:8]}"
     with django_db_blocker.unblock():
-        return create_test_tenant(schema_name="autotest-domain-service", migrate=True)
+        tenant = create_test_tenant(schema_name=schema_name, migrate=True)
+    return tenant
 
 
 @pytest.mark.django_db
@@ -112,7 +95,9 @@ def test_ensure_collection_syncs_django_and_vector(
             metadata={"channel": "crawler"},
         )
 
-        assert DocumentCollection.objects.filter(tenant=tenant, key="alpha").count() == 1
+        assert (
+            DocumentCollection.objects.filter(tenant=tenant, key="alpha").count() == 1
+        )
 
     assert vector_store.ensure_calls == [
         {
@@ -125,7 +110,9 @@ def test_ensure_collection_syncs_django_and_vector(
 
 
 @pytest.mark.django_db
-def test_ensure_collection_is_idempotent(tenant: Tenant, vector_store: _VectorStoreStub):
+def test_ensure_collection_is_idempotent(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
     service = DocumentDomainService(vector_store=vector_store)
 
     with schema_context(tenant.schema_name):
@@ -176,7 +163,9 @@ def test_delete_document_removes_record_and_vector_entry(
 
 @pytest.mark.django_db
 def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub):
-    dispatched: list[tuple[uuid.UUID, tuple[uuid.UUID, ...], str | None, str | None]] = []
+    dispatched: list[
+        tuple[uuid.UUID, tuple[uuid.UUID, ...], str | None, str | None]
+    ] = []
 
     def _capture_dispatch(
         document_id: uuid.UUID,
@@ -224,7 +213,12 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         service.delete_collection(collection, reason="cleanup")
 
     assert len(dispatched) == 1
-    dispatched_document, dispatched_collections, dispatched_profile, dispatched_scope = dispatched[0]
+    (
+        dispatched_document,
+        dispatched_collections,
+        dispatched_profile,
+        dispatched_scope,
+    ) = dispatched[0]
     assert dispatched_document == doc_id
     assert dispatched_collections == (collection_id,)
     assert dispatched_profile == "profile-d"
@@ -237,7 +231,9 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
     ]
     with schema_context(tenant.schema_name):
         assert not DocumentCollection.objects.filter(id=collection_id).exists()
-        assert not DocumentCollectionMembership.objects.filter(document=document).exists()
+        assert not DocumentCollectionMembership.objects.filter(
+            document=document
+        ).exists()
         # Document remains for audit purposes until explicit removal via the domain service
         assert Document.objects.filter(id=doc_id).exists()
 
@@ -282,7 +278,80 @@ def test_ingest_document_allows_test_flag_for_missing_dispatcher(tenant: Tenant)
         assert Document.objects.filter(id=result.document.id).exists()
 
 
-def test_delete_document_requires_dispatcher(tenant: Tenant, vector_store: _VectorStoreStub):
+def test_ingest_document_sets_initial_lifecycle_state(tenant: Tenant):
+    service = DocumentDomainService(
+        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+    )
+
+    with schema_context(tenant.schema_name):
+        result = service.ingest_document(
+            tenant=tenant,
+            source="upload",
+            content_hash="lifecycle",
+            initial_lifecycle_state=DocumentLifecycleState.INGESTING,
+        )
+
+        document = Document.objects.get(id=result.document.id)
+        assert document.lifecycle_state == DocumentLifecycleState.INGESTING.value
+        assert document.lifecycle_updated_at is not None
+
+
+def test_bulk_ingest_documents_persists_specs(tenant: Tenant):
+    service = DocumentDomainService(
+        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+    )
+
+    specs = [
+        DocumentIngestSpec(source="upload", content_hash="bulk-a", metadata={}),
+        DocumentIngestSpec(source="upload", content_hash="bulk-b", metadata={}),
+    ]
+
+    with schema_context(tenant.schema_name):
+        result = service.bulk_ingest_documents(tenant=tenant, documents=specs)
+
+        assert result.succeeded == 2
+        hashes = set(
+            Document.objects.filter(hash__in=["bulk-a", "bulk-b"]).values_list(
+                "hash", flat=True
+            )
+        )
+        assert hashes == {"bulk-a", "bulk-b"}
+
+
+def test_bulk_ingest_documents_handles_partial_failures(
+    tenant: Tenant, monkeypatch: pytest.MonkeyPatch
+):
+    service = DocumentDomainService(
+        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+    )
+
+    original_ingest = DocumentDomainService.ingest_document
+
+    def _failing_ingest(self, *args, **kwargs):
+        if kwargs.get("content_hash") == "bulk-bad":
+            raise ValueError("expected-test-failure")
+        return original_ingest(self, *args, **kwargs)
+
+    monkeypatch.setattr(DocumentDomainService, "ingest_document", _failing_ingest)
+
+    specs = [
+        DocumentIngestSpec(source="upload", content_hash="bulk-ok", metadata={}),
+        DocumentIngestSpec(source="upload", content_hash="bulk-bad", metadata={}),
+    ]
+
+    with schema_context(tenant.schema_name):
+        result = service.bulk_ingest_documents(tenant=tenant, documents=specs)
+
+        assert result.succeeded == 1
+        assert len(result.failed) == 1
+        assert result.failed[0][0].content_hash == "bulk-bad"
+        assert Document.objects.filter(hash="bulk-ok").exists()
+        assert not Document.objects.filter(hash="bulk-bad").exists()
+
+
+def test_delete_document_requires_dispatcher(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
     service = DocumentDomainService(vector_store=vector_store)
 
     with schema_context(tenant.schema_name):
@@ -297,6 +366,31 @@ def test_delete_document_requires_dispatcher(tenant: Tenant, vector_store: _Vect
             service.delete_document(document)
 
         assert Document.objects.filter(id=document.id).exists()
+
+
+def test_update_lifecycle_state_enforces_transitions(tenant: Tenant):
+    service = DocumentDomainService(
+        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+    )
+
+    with schema_context(tenant.schema_name):
+        document = Document.objects.create(
+            tenant=tenant,
+            source="upload",
+            hash="transition",
+            metadata={},
+        )
+
+        service.update_lifecycle_state(
+            document=document, new_state=DocumentLifecycleState.INGESTING
+        )
+        document.refresh_from_db()
+        assert document.lifecycle_state == DocumentLifecycleState.INGESTING.value
+
+        with pytest.raises(ValueError):
+            service.update_lifecycle_state(
+                document=document, new_state=DocumentLifecycleState.PENDING
+            )
 
 
 @pytest.mark.django_db

@@ -15,6 +15,7 @@ from ai_core.infra.observability import record_span
 from customers.models import Tenant
 
 from .models import Document, DocumentCollection, DocumentCollectionMembership
+from .lifecycle import DocumentLifecycleState, VALID_TRANSITIONS
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,50 @@ class PersistedDocumentIngest:
 
     document: Document
     collection_ids: tuple[UUID, ...]
+
+
+@dataclass(frozen=True)
+class DocumentIngestSpec:
+    """Specification payload for a single bulk ingestion entry."""
+
+    source: str
+    content_hash: str
+    metadata: Mapping[str, object]
+    collections: Sequence[str | UUID | DocumentCollection] = ()
+    embedding_profile: str | None = None
+    scope: str | None = None
+    document_id: UUID | None = None
+    initial_lifecycle_state: DocumentLifecycleState | str = (
+        DocumentLifecycleState.PENDING
+    )
+
+
+@dataclass(frozen=True)
+class BulkIngestRecord:
+    """Successful bulk ingestion record."""
+
+    spec: DocumentIngestSpec
+    result: PersistedDocumentIngest
+
+
+@dataclass(frozen=True)
+class BulkIngestResult:
+    """Aggregate result for bulk ingestion operations."""
+
+    records: list[BulkIngestRecord]
+    failed: list[tuple[DocumentIngestSpec, Exception]]
+
+    @property
+    def ingested(self) -> list[PersistedDocumentIngest]:
+        return [entry.result for entry in self.records]
+
+    @property
+    def succeeded(self) -> int:
+        return len(self.records)
+
+    @property
+    def total(self) -> int:
+        return self.succeeded + len(self.failed)
 
 
 class DocumentDomainService:
@@ -60,6 +105,9 @@ class DocumentDomainService:
         scope: str | None = None,
         dispatcher: IngestionDispatcher | None = None,
         document_id: UUID | None = None,
+        initial_lifecycle_state: (
+            DocumentLifecycleState | str
+        ) = DocumentLifecycleState.PENDING,
         allow_missing_ingestion_dispatcher_for_tests: bool | None = None,
     ) -> PersistedDocumentIngest:
         """Persist or update a document and queue downstream processing.
@@ -94,6 +142,9 @@ class DocumentDomainService:
         if document_id is not None:
             metadata_payload.setdefault("document_id", str(document_id))
 
+        lifecycle_state = DocumentLifecycleState(initial_lifecycle_state)
+        lifecycle_timestamp = timezone.now()
+
         with transaction.atomic():
             document, created = Document.objects.update_or_create(
                 tenant=tenant,
@@ -101,6 +152,8 @@ class DocumentDomainService:
                 hash=content_hash,
                 defaults={
                     "metadata": metadata_payload,
+                    "lifecycle_state": lifecycle_state.value,
+                    "lifecycle_updated_at": lifecycle_timestamp,
                     **({"id": document_id} if document_id is not None else {}),
                 },
             )
@@ -143,6 +196,118 @@ class DocumentDomainService:
             document=document, collection_ids=tuple(collection_ids)
         )
 
+    def bulk_ingest_documents(
+        self,
+        *,
+        tenant: Tenant,
+        documents: Sequence[DocumentIngestSpec],
+        dispatcher: IngestionDispatcher | None = None,
+        allow_missing_ingestion_dispatcher_for_tests: bool | None = None,
+    ) -> BulkIngestResult:
+        """Ingest multiple documents in sequence and aggregate the outcome."""
+
+        if not documents:
+            return BulkIngestResult(records=[], failed=[])
+
+        dispatcher_fn = dispatcher or self._ingestion_dispatcher
+        allow_missing_dispatcher = (
+            self._allow_missing_ingestion_dispatcher_for_tests
+            if allow_missing_ingestion_dispatcher_for_tests is None
+            else allow_missing_ingestion_dispatcher_for_tests
+        )
+        if dispatcher_fn is None and not allow_missing_dispatcher:
+            raise ValueError("ingestion_dispatcher_required")
+
+        collection_cache: dict[str, DocumentCollection] = {}
+        successes: list[BulkIngestRecord] = []
+        failures: list[tuple[DocumentIngestSpec, Exception]] = []
+
+        for spec in documents:
+            try:
+                collection_instances: list[DocumentCollection] = []
+                for collection in spec.collections:
+                    if isinstance(collection, DocumentCollection):
+                        instance = collection
+                    else:
+                        cache_key = str(collection)
+                        instance = collection_cache.get(cache_key)
+                        if instance is None:
+                            instance = self.ensure_collection(
+                                tenant=tenant,
+                                key=cache_key,
+                                embedding_profile=spec.embedding_profile,
+                                scope=spec.scope,
+                            )
+                            collection_cache[cache_key] = instance
+                    collection_instances.append(instance)
+
+                result = self.ingest_document(
+                    tenant=tenant,
+                    source=spec.source,
+                    content_hash=spec.content_hash,
+                    metadata=spec.metadata,
+                    collections=collection_instances,
+                    embedding_profile=spec.embedding_profile,
+                    scope=spec.scope,
+                    dispatcher=dispatcher_fn,
+                    document_id=spec.document_id,
+                    initial_lifecycle_state=spec.initial_lifecycle_state,
+                    allow_missing_ingestion_dispatcher_for_tests=allow_missing_dispatcher,
+                )
+                successes.append(BulkIngestRecord(spec=spec, result=result))
+            except Exception as exc:  # pragma: no cover - defensive aggregation
+                failures.append((spec, exc))
+                logger.exception(
+                    "documents.bulk_ingest_failed",
+                    extra={
+                        "tenant_id": str(tenant.id),
+                        "source": spec.source,
+                        "hash": spec.content_hash,
+                    },
+                )
+
+        return BulkIngestResult(records=successes, failed=failures)
+
+    def update_lifecycle_state(
+        self,
+        *,
+        document: Document,
+        new_state: DocumentLifecycleState | str,
+        reason: str | None = None,
+        validate_transition: bool = True,
+    ) -> Document:
+        """Update document lifecycle state and emit observability breadcrumbs."""
+
+        desired_state = DocumentLifecycleState(new_state)
+        current_state = DocumentLifecycleState(
+            document.lifecycle_state or DocumentLifecycleState.PENDING.value
+        )
+
+        if validate_transition:
+            allowed = VALID_TRANSITIONS.get(current_state, set())
+            if desired_state not in allowed:
+                raise ValueError(
+                    f"invalid_lifecycle_transition: {current_state.value}->{desired_state.value}"
+                )
+
+        document.lifecycle_state = desired_state.value
+        document.lifecycle_updated_at = timezone.now()
+        document.save(
+            update_fields=["lifecycle_state", "lifecycle_updated_at", "updated_at"]
+        )
+
+        logger.info(
+            "document_lifecycle_updated",
+            extra={
+                "document_id": str(document.id),
+                "tenant_id": str(document.tenant_id),
+                "new_state": desired_state.value,
+                "previous_state": current_state.value,
+                "reason": reason,
+            },
+        )
+        return document
+
     def ensure_collection(
         self,
         *,
@@ -173,7 +338,10 @@ class DocumentDomainService:
         record_span("documents.ensure_collection", attributes=attributes)
 
         with transaction.atomic():
-            collection, created = DocumentCollection.objects.select_for_update().get_or_create(
+            (
+                collection,
+                created,
+            ) = DocumentCollection.objects.select_for_update().get_or_create(
                 tenant=tenant, key=key, defaults=defaults
             )
 
@@ -234,7 +402,10 @@ class DocumentDomainService:
         if dispatcher_fn is None:
             logger.error(
                 "deletion_dispatcher_missing",
-                extra={"tenant_id": str(document.tenant_id), "document_id": str(doc_id)},
+                extra={
+                    "tenant_id": str(document.tenant_id),
+                    "document_id": str(doc_id),
+                },
             )
             raise ValueError("deletion_dispatcher_required")
 
@@ -386,3 +557,14 @@ class DocumentDomainService:
         if self._vector_store is None:
             raise RuntimeError("Vector store client is required for this operation")
         return self._vector_store
+
+
+__all__ = [
+    "DocumentDomainService",
+    "IngestionDispatcher",
+    "DeletionDispatcher",
+    "PersistedDocumentIngest",
+    "DocumentIngestSpec",
+    "BulkIngestRecord",
+    "BulkIngestResult",
+]

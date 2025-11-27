@@ -6,7 +6,7 @@ import hashlib
 from dataclasses import asdict, is_dataclass, dataclass
 from collections.abc import Mapping
 from typing import Any, Callable
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from django.conf import settings
 from rest_framework import status
@@ -27,8 +27,11 @@ from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
 from ai_core.rag.vector_client import get_default_client
 from customers.tenant_context import TenantContext
-from documents.domain_service import DocumentDomainService
-from documents.models import DocumentCollection
+from documents.domain_service import (
+    DocumentDomainService,
+    DocumentIngestSpec,
+    BulkIngestRecord,
+)
 
 import ai_core.services as services_module
 from . import _get_documents_repository, _make_json_safe
@@ -95,7 +98,7 @@ def run_crawler_runner(
 
     tenant = _resolve_tenant(meta.get("tenant_id"))
     if tenant:
-        _register_documents_for_builds(
+        _prime_build_documents(
             tenant=tenant,
             builds=state_builds,
             embedding_profile=request_model.embedding_profile,
@@ -264,24 +267,71 @@ def _check_idempotency_fingerprint(
     return False
 
 
-def _register_documents_for_builds(
+def _prime_build_documents(
     *,
     tenant,
     builds: list[CrawlerStateBundle],
     embedding_profile: str | None,
     scope: str | None,
 ) -> None:
-    service = DocumentDomainService(vector_store=get_default_client())
+    spec_pairs = _build_ingest_specs(
+        builds=builds, embedding_profile=embedding_profile, scope=scope
+    )
+    if not spec_pairs:
+        return
+
+    def dispatcher_stub(*_):
+        return None
+
+    service = DocumentDomainService(
+        vector_store=get_default_client(),
+        ingestion_dispatcher=dispatcher_stub,
+    )
+
+    specs = [spec for _, spec in spec_pairs]
+    spec_map = {id(spec): build for build, spec in spec_pairs}
+    bulk_result = service.bulk_ingest_documents(
+        tenant=tenant,
+        documents=specs,
+        dispatcher=dispatcher_stub,
+        allow_missing_ingestion_dispatcher_for_tests=True,
+    )
+
+    for record in bulk_result.records:
+        build = spec_map.get(id(record.spec))
+        if build is None:
+            continue
+        _apply_ingest_result_to_build(build, record)
+
+    for failed_spec, exc in bulk_result.failed:
+        logger.warning(
+            "crawler_runner.bulk_ingest_failed",
+            extra={
+                "tenant_id": str(tenant.id),
+                "source": failed_spec.source,
+                "hash": failed_spec.content_hash,
+            },
+            exc_info=exc,
+        )
+
+
+def _build_ingest_specs(
+    *,
+    builds: list[CrawlerStateBundle],
+    embedding_profile: str | None,
+    scope: str | None,
+) -> list[tuple[CrawlerStateBundle, DocumentIngestSpec]]:
+    pairs: list[tuple[CrawlerStateBundle, DocumentIngestSpec]] = []
 
     for build in builds:
         normalized = build.state.get("normalized_document_input")
         if not isinstance(normalized, Mapping):
             continue
 
-        metadata = normalized.get("meta") if isinstance(normalized, Mapping) else None
+        metadata = normalized.get("meta")
         metadata_dict = dict(metadata or {})
 
-        blob_payload = normalized.get("blob") if isinstance(normalized, Mapping) else None
+        blob_payload = normalized.get("blob")
         checksum = None
         if isinstance(blob_payload, Mapping):
             checksum = blob_payload.get("sha256")
@@ -296,88 +346,55 @@ def _register_documents_for_builds(
 
         source = metadata_dict.get("origin_uri") or build.origin
         collection_identifier = build.collection_id
-        ref_payload = normalized.get("ref") if isinstance(normalized, Mapping) else None
+        ref_payload = normalized.get("ref")
         if collection_identifier is None and isinstance(ref_payload, Mapping):
             collection_identifier = ref_payload.get("collection_id")
 
-        collection_instance = None
-        if collection_identifier is not None:
-            collection_instance = _ensure_collection_with_warning(
-                service,
-                tenant,
-                collection_identifier,
-                embedding_profile=embedding_profile,
-                scope=scope,
-            )
+        collections: list[str] = []
+        if collection_identifier:
+            collections.append(str(collection_identifier))
 
-        ingest_result = service.ingest_document(
-            tenant=tenant,
+        spec = DocumentIngestSpec(
             source=str(source),
             content_hash=str(checksum),
             metadata=metadata_dict,
-            collections=(
-                (collection_instance,) if collection_instance is not None else ()
-            ),
+            collections=tuple(collections),
             embedding_profile=embedding_profile,
             scope=scope,
-            dispatcher=lambda *_: None,
         )
+        pairs.append((build, spec))
 
-        document_id = str(ingest_result.document.id)
-        build.document_id = document_id
-        build.state["document_id"] = document_id
-
-        if isinstance(normalized, Mapping):
-            normalized_mutable = dict(normalized)
-            ref = normalized_mutable.get("ref")
-            if isinstance(ref, Mapping):
-                ref = dict(ref)
-            else:
-                ref = {}
-            ref["document_id"] = document_id
-            if collection_instance is not None:
-                ref["collection_id"] = str(collection_instance.collection_id)
-            normalized_mutable["ref"] = ref
-            normalized_mutable["checksum"] = checksum
-            build.state["normalized_document_input"] = normalized_mutable
+    return pairs
 
 
-def _ensure_collection_with_warning(
-    service: DocumentDomainService,
-    tenant,
-    identifier: object,
-    *,
-    embedding_profile: str | None,
-    scope: str | None,
-) -> DocumentCollection | None:
-    """Ensure a collection exists; create missing IDs with a warning (review later)."""
+def _apply_ingest_result_to_build(
+    build: CrawlerStateBundle, record: BulkIngestRecord
+) -> None:
+    document_id = str(record.result.document.id)
+    build.document_id = document_id
+    build.state["document_id"] = document_id
 
-    try:
-        collection_uuid = UUID(str(identifier))
-    except Exception:
-        collection_uuid = None
+    normalized = build.state.get("normalized_document_input")
+    if not isinstance(normalized, Mapping):
+        return
 
-    if collection_uuid is not None:
-        exists = DocumentCollection.objects.filter(
-            tenant=tenant, collection_id=collection_uuid
-        ).exists()
-        if not exists:
-            logger.warning(
-                "crawler_runner.collection_missing_created",
-                extra={
-                    "tenant_id": str(tenant.id),
-                    "collection_id": str(collection_uuid),
-                    "reason": "missing_reference",
-                },
-            )
+    normalized_mutable = dict(normalized)
+    ref_payload = normalized_mutable.get("ref")
+    if isinstance(ref_payload, Mapping):
+        ref_payload = dict(ref_payload)
+    else:
+        ref_payload = {}
 
-    return service.ensure_collection(
-        tenant=tenant,
-        key=str(identifier),
-        embedding_profile=embedding_profile,
-        scope=scope,
-        collection_id=collection_uuid,
-    )
+    ref_payload["document_id"] = document_id
+    collection_ids = record.result.collection_ids
+    if collection_ids:
+        collection_identifier = str(collection_ids[0])
+        ref_payload["collection_id"] = collection_identifier
+        build.collection_id = collection_identifier
+
+    normalized_mutable["ref"] = ref_payload
+    normalized_mutable["checksum"] = record.spec.content_hash
+    build.state["normalized_document_input"] = normalized_mutable
 
 
 def _resolve_tenant(identifier: object):

@@ -123,9 +123,7 @@ class Migration(migrations.Migration):
             model_name="documentcollectionmembership",
             index=models.Index(fields=["document"], name="collection_document_idx"),
         ),
-        migrations.RunPython(
-            deduplicate_collection_keys, migrations.RunPython.noop
-        ),
+        migrations.RunPython(deduplicate_collection_keys, migrations.RunPython.noop),
         migrations.AddConstraint(
             model_name="documentcollectionmembership",
             constraint=models.UniqueConstraint(

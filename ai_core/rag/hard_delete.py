@@ -96,7 +96,9 @@ def _resolve_actor(actor: Mapping[str, object] | None) -> tuple[str, str]:
     )
 
 
-def _emit_span(trace_id: str | None, metadata: MutableMapping[str, object | None]) -> None:
+def _emit_span(
+    trace_id: str | None, metadata: MutableMapping[str, object | None]
+) -> None:
     if not trace_id:
         return
     try:

@@ -22,8 +22,8 @@ def populate_document_tenants(apps, schema_editor):
         )
 
     lifecycle_map = {}
-    lifecycle_records = (
-        Lifecycle.objects.values("document_id", "tenant_id").order_by("document_id")
+    lifecycle_records = Lifecycle.objects.values("document_id", "tenant_id").order_by(
+        "document_id"
     )
     for lifecycle_record in lifecycle_records.iterator():
         lifecycle_map.setdefault(lifecycle_record["document_id"], set()).add(
@@ -40,13 +40,13 @@ def populate_document_tenants(apps, schema_editor):
             document.save(update_fields=["tenant"])
         elif len(tenant_ids) == 0:
             raise ValueError(
-                "Cannot determine tenant for document %s; assign memberships or lifecycle records before migrating"%
-                document.id
+                "Cannot determine tenant for document %s; assign memberships or lifecycle records before migrating"
+                % document.id
             )
         else:
             raise ValueError(
-                "Document %s is associated with multiple tenants; normalize memberships before migrating"%
-                document.id
+                "Document %s is associated with multiple tenants; normalize memberships before migrating"
+                % document.id
             )
 
 

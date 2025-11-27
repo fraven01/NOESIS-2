@@ -22,9 +22,9 @@ from ai_core.graphs.external_knowledge_graph import (
 )
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_SLUG,
-    ensure_manual_collection,
     manual_collection_uuid,
 )
+from documents.collection_service import CollectionService
 from ai_core.rag.routing_rules import (
     get_routing_table,
     is_collection_routing_enabled,
@@ -80,11 +80,11 @@ def _resolve_manual_collection(
     manual_id: str | None = None
     if tenant_id:
         try:
-            base_value = (
-                ensure_manual_collection(tenant_id)
-                if ensure
-                else manual_collection_uuid(tenant_id)
-            )
+            if ensure:
+                service = CollectionService()
+                base_value = service.ensure_manual_collection(tenant_id)
+            else:
+                base_value = manual_collection_uuid(tenant_id)
             manual_id = str(base_value)
         except ValueError:
             logger.info(
@@ -718,7 +718,8 @@ def document_space(request):
         return _tenant_required_response(exc)
 
     try:
-        ensure_manual_collection(tenant_id)
+        service = CollectionService()
+        service.ensure_manual_collection(tenant_id)
     except Exception:
         logger.warning("document_space.ensure_manual_collection_failed", exc_info=True)
 

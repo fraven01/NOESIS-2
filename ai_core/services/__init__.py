@@ -21,7 +21,7 @@ import time
 from collections.abc import Iterable, Mapping
 from importlib import import_module
 from typing import Any
-from uuid import UUID, UUID, uuid4
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
@@ -1611,9 +1611,7 @@ def handle_document_upload(
         "workflow_id": document_meta.workflow_id,
         "document_id": document_uuid,
         "collection_id": (
-            collection_ids[0]
-            if collection_ids
-            else metadata_obj.get("collection_id")
+            collection_ids[0] if collection_ids else metadata_obj.get("collection_id")
         ),
         "version": metadata_obj.get("version"),
     }

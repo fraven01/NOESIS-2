@@ -7,7 +7,16 @@ from dataclasses import dataclass
 from datetime import timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
-from typing import Any, Callable, Dict, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Mapping,
+    MutableMapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from pydantic import ValidationError
 from uuid import UUID, uuid4
@@ -673,17 +682,19 @@ class CrawlerIngestionGraph:
             trace_id=str(state.get("trace_id") or uuid4()),
             invocation_id=str(uuid4()),
             ingestion_run_id=str(state.get("ingestion_run_id") or uuid4()),
-            case_id=str(chunk_info.meta.get("case_id"))
-            if chunk_info.meta.get("case_id")
-            else None,
+            case_id=(
+                str(chunk_info.meta.get("case_id"))
+                if chunk_info.meta.get("case_id")
+                else None
+            ),
             tenant_schema=str(tenant_schema_value) if tenant_schema_value else None,
         )
 
         ingestion_tasks = self._ingestion_tasks()
 
         def _dispatch_ingestion(
-            document_id: uuid.UUID,
-            collection_ids: Sequence[uuid.UUID],
+            document_id: UUID,
+            collection_ids: Sequence[UUID],
             embedding_profile: str | None,
             scope_value: str | None,
         ) -> None:

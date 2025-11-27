@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from lxml import html
 
 from ai_core.infra import object_store
+from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
 from common.assets import AssetIngestPayload, BlobWriter
@@ -25,6 +26,8 @@ from documents.models import DocumentCollection
 
 from .errors import CrawlerError
 from .fetcher import FetchRequest, FetchResult, FetchStatus
+
+logger = get_logger(__name__)
 
 IngestionTask = Callable[[Mapping[str, Any], Optional[Mapping[str, Any]]], Any]
 
@@ -208,12 +211,16 @@ class CrawlerWorker:
             content_hash=payload_checksum,
             metadata=raw_meta,
             collection_identifier=raw_meta.get("collection_id"),
-            embedding_profile=ingestion_overrides.get("embedding_profile")
-            if isinstance(ingestion_overrides, Mapping)
-            else None,
-            scope=ingestion_overrides.get("scope")
-            if isinstance(ingestion_overrides, Mapping)
-            else None,
+            embedding_profile=(
+                ingestion_overrides.get("embedding_profile")
+                if isinstance(ingestion_overrides, Mapping)
+                else None
+            ),
+            scope=(
+                ingestion_overrides.get("scope")
+                if isinstance(ingestion_overrides, Mapping)
+                else None
+            ),
         )
 
         raw_document: dict[str, Any] = {

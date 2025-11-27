@@ -15,12 +15,14 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 
+from django.conf import settings
 from django.contrib import admin
 from django.urls import include, path
 
 from drf_spectacular.views import SpectacularAPIView
 
 from common.views import DemoView
+from documents.health import document_lifecycle_health
 from noesis2.api.docs import (
     BrandedSpectacularRedocView,
     BrandedSpectacularSwaggerView,
@@ -49,4 +51,14 @@ urlpatterns = [
     ),
     path("tenant-demo/", DemoView.as_view(), name="tenant-demo"),
     path("invite/accept/<str:token>/", accept_invitation, name="accept-invitation"),
+    path(
+        "api/health/document-lifecycle/",
+        document_lifecycle_health,
+        name="document-lifecycle-health",
+    ),
 ]
+
+if settings.DEBUG:
+    urlpatterns += [
+        path("api/dev/documents/", include("documents.dev_urls")),
+    ]

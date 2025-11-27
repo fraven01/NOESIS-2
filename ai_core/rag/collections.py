@@ -2,48 +2,38 @@
 
 from __future__ import annotations
 
-from contextlib import suppress
+import warnings
 from typing import TYPE_CHECKING, Optional
-from uuid import UUID, NAMESPACE_URL, uuid5
+from uuid import UUID
 
 from common.logging import get_logger
 from customers.models import Tenant
-from documents.domain_service import DocumentDomainService
-from .vector_client import PgVectorClient, get_default_client
+from documents.collection_service import (
+    CollectionService,
+    DEFAULT_MANUAL_COLLECTION_LABEL,
+    DEFAULT_MANUAL_COLLECTION_SLUG,
+)
+from .vector_client import PgVectorClient
 
 if TYPE_CHECKING:
-    from customers.models import Tenant
     from documents.models import DocumentCollection
 
-MANUAL_COLLECTION_SLUG = "manual-search"
-MANUAL_COLLECTION_LABEL = "Manual Search"
+MANUAL_COLLECTION_SLUG = DEFAULT_MANUAL_COLLECTION_SLUG
+MANUAL_COLLECTION_LABEL = DEFAULT_MANUAL_COLLECTION_LABEL
 
 _LOGGER = get_logger(__name__)
+_COLLECTION_SERVICE: CollectionService | None = None
 
 
-def _normalise_tenant_uuid(tenant_id: object) -> UUID:
-    """Return a UUID for ``tenant_id`` compatible with vector client mapping."""
-
-    if isinstance(tenant_id, UUID):
-        return tenant_id
-
-    text = str(tenant_id or "").strip()
-    if not text or text.lower() == "none":
-        raise ValueError("tenant_id_required")
-    with suppress(ValueError, TypeError):
-        return UUID(text)
-
-    normalised = text.lower()
-    derived = uuid5(NAMESPACE_URL, f"tenant:{normalised}")
-    _LOGGER.info(
-        "manual_collection.tenant_id_coerced",
-        extra={
-            "tenant_id": text,
-            "normalised_tenant_id": normalised,
-            "derived_tenant_uuid": str(derived),
-        },
-    )
-    return derived
+def _get_collection_service(
+    *, vector_client: object | None = None
+) -> CollectionService:
+    if vector_client is not None:
+        return CollectionService(vector_client=vector_client)
+    global _COLLECTION_SERVICE
+    if _COLLECTION_SERVICE is None:
+        _COLLECTION_SERVICE = CollectionService()
+    return _COLLECTION_SERVICE
 
 
 def manual_collection_uuid(
@@ -53,11 +43,7 @@ def manual_collection_uuid(
 ) -> UUID:
     """Return the deterministic UUID for the tenant's manual collection."""
 
-    tenant_uuid = _normalise_tenant_uuid(tenant_id)
-    slug_text = str(slug or "").strip().lower()
-    if not slug_text:
-        raise ValueError("manual_collection_slug_required")
-    return uuid5(NAMESPACE_URL, f"collection:{tenant_uuid}:{slug_text}")
+    return CollectionService.manual_collection_uuid(tenant_id, slug=slug)
 
 
 def ensure_manual_collection(
@@ -69,24 +55,17 @@ def ensure_manual_collection(
 ) -> str:
     """Ensure the manual collection exists for ``tenant_id`` and return its UUID."""
 
-    collection_uuid = manual_collection_uuid(tenant_id, slug=slug)
-    tenant = _resolve_tenant(tenant_id)
-    if tenant is None:
-        raise ValueError("manual_collection_requires_tenant")
-
-    vector_client = client or get_default_client()
-    domain_service = DocumentDomainService(vector_store=vector_client)
-
-    collection = domain_service.ensure_collection(
-        tenant=tenant,
-        key=slug,
-        name=label,
-        metadata={"slug": slug, "label": label},
-        collection_id=collection_uuid,
-        scope="manual",
+    warnings.warn(
+        "ensure_manual_collection is deprecated, use CollectionService instead",
+        DeprecationWarning,
+        stacklevel=2,
     )
-
-    return str(collection.collection_id)
+    service = _get_collection_service(vector_client=client)
+    return service.ensure_manual_collection(
+        tenant_id=tenant_id,
+        slug=slug,
+        label=label,
+    )
 
 
 def _resolve_tenant(tenant_id: object) -> "Tenant | None":

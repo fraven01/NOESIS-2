@@ -21,10 +21,10 @@ from documents.domain_service import (
     DocumentDomainService,
     IngestionDispatcher,
 )
+from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document
 
 _DELETE_OUTBOX: list[dict[str, Any]] = []
-_COLLECTION_OUTBOX: list[dict[str, Any]] = []
 
 
 @dataclass(frozen=True)
@@ -46,22 +46,6 @@ class QueuedDeleteRequest:
 
 def _coerce_uuid(value: object) -> str:
     return str(UUID(str(value)))
-
-
-def ensure_collection(scope: ScopeContext, *, collection_id: str | None) -> dict[str, Any]:
-    """Queue a collection ensure request with full scope context."""
-
-    payload = {
-        "tenant_id": scope.tenant_id,
-        "collection_id": collection_id,
-        "trace_id": scope.trace_id,
-        "invocation_id": scope.invocation_id,
-        "ingestion_run_id": scope.ingestion_run_id or scope.run_id,
-        "tenant_schema": scope.tenant_schema,
-        "queued_at": timezone.now().isoformat(),
-    }
-    _COLLECTION_OUTBOX.append(payload)
-    return payload
 
 
 def ingest_document(
@@ -119,9 +103,7 @@ def ingest_document(
 
     service = DocumentDomainService(ingestion_dispatcher=dispatcher_fn)
     tenant_schema_ctx = (
-        schema_context(scope.tenant_schema)
-        if scope.tenant_schema
-        else nullcontext()
+        schema_context(scope.tenant_schema) if scope.tenant_schema else nullcontext()
     )
 
     with tenant_schema_ctx:
@@ -135,6 +117,7 @@ def ingest_document(
             scope=metadata.get("scope"),
             dispatcher=dispatcher_fn,
             document_id=document_uuid,
+            initial_lifecycle_state=DocumentLifecycleState.INGESTING,
         )
 
     return {
@@ -148,6 +131,7 @@ def ingest_document(
         "collection_ids": [str(cid) for cid in ingest_result.collection_ids],
         "embedding_profile": metadata.get("embedding_profile"),
         "vector_space_id": metadata.get("vector_space_id"),
+        "lifecycle_state": ingest_result.document.lifecycle_state,
     }
 
 
@@ -252,7 +236,6 @@ __all__ = [
     "DELETE_OUTBOX",
     "QueuedDeleteRequest",
     "delete_document",
-    "ensure_collection",
     "ingest_document",
 ]
 
