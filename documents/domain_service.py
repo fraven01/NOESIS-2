@@ -39,14 +39,10 @@ class DocumentDomainService:
         ingestion_dispatcher: IngestionDispatcher | None = None,
         deletion_dispatcher: DeletionDispatcher | None = None,
         vector_store: object | None = None,
-        allow_missing_ingestion_dispatcher_for_tests: bool = False,
     ) -> None:
         self._ingestion_dispatcher = ingestion_dispatcher
         self._deletion_dispatcher = deletion_dispatcher
         self._vector_store = vector_store
-        self._allow_missing_ingestion_dispatcher_for_tests = (
-            allow_missing_ingestion_dispatcher_for_tests
-        )
 
     def ingest_document(
         self,
@@ -60,7 +56,6 @@ class DocumentDomainService:
         scope: str | None = None,
         dispatcher: IngestionDispatcher | None = None,
         document_id: UUID | None = None,
-        allow_missing_ingestion_dispatcher_for_tests: bool | None = None,
     ) -> PersistedDocumentIngest:
         """Persist or update a document and queue downstream processing.
 
@@ -72,11 +67,6 @@ class DocumentDomainService:
         """
 
         dispatcher_fn = dispatcher or self._ingestion_dispatcher
-        allow_missing_dispatcher = (
-            self._allow_missing_ingestion_dispatcher_for_tests
-            if allow_missing_ingestion_dispatcher_for_tests is None
-            else allow_missing_ingestion_dispatcher_for_tests
-        )
         if dispatcher_fn is None:
             logger.error(
                 "ingestion_dispatcher_missing",
@@ -87,8 +77,7 @@ class DocumentDomainService:
                     "embedding_profile": embedding_profile,
                 },
             )
-            if not allow_missing_dispatcher:
-                raise ValueError("ingestion_dispatcher_required")
+            raise ValueError("ingestion_dispatcher_required")
 
         metadata_payload = dict(metadata or {})
         if document_id is not None:
@@ -194,21 +183,15 @@ class DocumentDomainService:
                     },
                 )
 
-            self._ensure_vector_collection(
-                tenant=tenant,
-                collection=collection,
-                embedding_profile=embedding_profile,
-                scope=scope,
+            transaction.on_commit(
+                lambda: self._ensure_vector_collection(
+                    tenant=tenant,
+                    collection=collection,
+                    embedding_profile=embedding_profile,
+                    scope=scope,
+                )
             )
 
-        logger.info(
-            "documents.collection.vector_sync_success",
-            extra={
-                "tenant_id": str(tenant.id),
-                "collection_id": str(collection.collection_id),
-                "key": key,
-            },
-        )
         return collection
 
     def delete_document(
@@ -252,6 +235,10 @@ class DocumentDomainService:
                 attempts += 1
                 try:
                     dispatcher_fn(payload)
+                    logger.info(
+                        "documents.delete_document.dispatched",
+                        extra={**payload, "attempt": attempts},
+                    )
                     return
                 except Exception:
                     logger.exception(
@@ -265,14 +252,8 @@ class DocumentDomainService:
             DocumentCollectionMembership.objects.filter(document=document).delete()
 
             if soft_delete:
-                if hasattr(document, "soft_deleted_at"):
-                    setattr(document, "soft_deleted_at", timezone.now())
-                    document.save(update_fields=["soft_deleted_at", "updated_at"])
-                else:
-                    logger.warning(
-                        "soft_delete_flag_ignored_missing_field",
-                        extra={"model": "Document", "id": str(document.id)},
-                    )
+                document.soft_deleted_at = timezone.now()
+                document.save(update_fields=["soft_deleted_at", "updated_at"])
             else:
                 document.delete()
 
@@ -289,16 +270,6 @@ class DocumentDomainService:
         """Delete a collection and emit vector cleanup instructions."""
 
         soft_delete_requested = soft_delete
-        if soft_delete_requested:
-            if hasattr(collection, "soft_deleted_at"):
-                setattr(collection, "soft_deleted_at", timezone.now())
-                collection.save(update_fields=["soft_deleted_at", "updated_at"])
-            else:
-                logger.warning(
-                    "soft_delete_flag_ignored_missing_field",
-                    extra={"model": "DocumentCollection", "id": str(collection.id)},
-                )
-
         attributes = {
             "tenant_id": str(collection.tenant_id),
             "collection_id": str(collection.collection_id),
@@ -308,12 +279,23 @@ class DocumentDomainService:
         record_span("documents.delete_collection", attributes=attributes)
 
         dispatcher_fn = dispatcher or self._deletion_dispatcher
+        if dispatcher_fn is None:
+            logger.error(
+                "deletion_dispatcher_missing",
+                extra={
+                    "tenant_id": str(collection.tenant_id),
+                    "collection_id": str(collection.collection_id),
+                },
+            )
+            raise ValueError("deletion_dispatcher_required")
+
         vector_store = self._require_vector_store()
 
         with transaction.atomic():
             related_document_ids = list(
                 collection.documents.values_list("id", flat=True)
             )
+            exclusive_document_ids: list[UUID] = []
             if related_document_ids:
                 exclusive_document_ids = list(
                     DocumentCollectionMembership.objects.filter(
@@ -325,29 +307,28 @@ class DocumentDomainService:
                     .values_list("document_id", flat=True)
                 )
 
-                if exclusive_document_ids:
-                    vector_store.hard_delete_documents(
-                        tenant_id=str(collection.tenant_id),
-                        document_ids=exclusive_document_ids,
-                    )
-
-            self._delete_vector_collection_record(collection)
-
             payload = {
                 "type": "collection_delete",
                 "collection_id": str(collection.collection_id),
                 "tenant_id": str(collection.tenant_id),
                 "reason": reason,
             }
-            if dispatcher_fn:
-                transaction.on_commit(lambda: dispatcher_fn(payload))
-            else:
-                logger.info("collection_delete_outbox", extra=payload)
+
+            transaction.on_commit(
+                lambda exclusive_document_ids=exclusive_document_ids,
+                payload=payload: self._dispatch_collection_cleanup(
+                    exclusive_document_ids=exclusive_document_ids,
+                    payload=payload,
+                    dispatcher_fn=dispatcher_fn,
+                    vector_store=vector_store,
+                )
+            )
 
             if soft_delete_requested:
-                return
-
-            collection.delete()
+                collection.soft_deleted_at = timezone.now()
+                collection.save(update_fields=["soft_deleted_at", "updated_at"])
+            else:
+                collection.delete()
 
     def _ensure_vector_collection(
         self,
@@ -363,26 +344,89 @@ class DocumentDomainService:
         if not callable(ensure_fn):
             raise RuntimeError("Vector store client must support collection ensure")
 
-        ensure_fn(
-            tenant_id=str(tenant.id),
-            collection_id=str(collection.collection_id),
-            embedding_profile=embedding_profile,
-            scope=scope,
-        )
+        payload = {
+            "tenant_id": str(tenant.id),
+            "collection_id": str(collection.collection_id),
+            "embedding_profile": embedding_profile,
+            "scope": scope,
+        }
+        try:
+            ensure_fn(**payload)
+        except Exception:
+            logger.exception(
+                "documents.collection.vector_sync_failed",
+                extra=payload,
+            )
+            raise
 
-    def _delete_vector_collection_record(self, collection: DocumentCollection) -> None:
-        vector_store = self._require_vector_store()
+        logger.info("documents.collection.vector_sync_success", extra=payload)
+
+    def _delete_vector_collection_record(
+        self,
+        *,
+        tenant_id: str,
+        collection_id: UUID | str,
+        vector_store: object | None = None,
+    ) -> None:
+        vector_store = vector_store or self._require_vector_store()
 
         delete_fn = getattr(vector_store, "delete_collection", None)
         if not callable(delete_fn):
             raise RuntimeError("Vector store client must support collection deletion")
 
-        delete_fn(
-            tenant_id=str(collection.tenant_id),
-            collection_id=str(collection.collection_id),
-        )
+        payload = {
+            "tenant_id": str(tenant_id),
+            "collection_id": str(collection_id),
+        }
+        try:
+            delete_fn(**payload)
+        except Exception:
+            logger.exception(
+                "documents.collection.vector_delete_failed",
+                extra=payload,
+            )
+            raise
+
+        logger.info("documents.collection.vector_delete_success", extra=payload)
 
     def _require_vector_store(self):
         if self._vector_store is None:
             raise RuntimeError("Vector store client is required for this operation")
         return self._vector_store
+
+    def _dispatch_collection_cleanup(
+        self,
+        *,
+        exclusive_document_ids: Sequence[UUID] | Sequence[str],
+        payload: Mapping[str, object],
+        dispatcher_fn: DeletionDispatcher,
+        vector_store: object,
+    ) -> None:
+        extra = dict(payload)
+        try:
+            if exclusive_document_ids:
+                vector_store.hard_delete_documents(
+                    tenant_id=str(payload["tenant_id"]),
+                    document_ids=list(exclusive_document_ids),
+                )
+
+            self._delete_vector_collection_record(
+                tenant_id=str(payload["tenant_id"]),
+                collection_id=payload["collection_id"],
+                vector_store=vector_store,
+            )
+        except Exception:
+            logger.exception(
+                "documents.collection.vector_cleanup_failed",
+                extra={**extra, "exclusive_document_ids": list(exclusive_document_ids)},
+            )
+            raise
+
+        try:
+            dispatcher_fn(payload)
+            logger.info("documents.collection.delete_dispatched", extra=extra)
+        except Exception:
+            logger.exception(
+                "documents.collection.delete_dispatch_failed", extra=extra
+            )
+            raise

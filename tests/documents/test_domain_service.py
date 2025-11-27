@@ -21,6 +21,7 @@ class _VectorStoreStub:
         self.ensure_calls: list[dict[str, Any]] = []
         self.document_deletes: list[dict[str, Any]] = []
         self.collection_deletes: list[dict[str, Any]] = []
+        self.dispatch_payloads: list[dict[str, Any]] = []
 
     def ensure_collection(
         self,
@@ -47,7 +48,7 @@ class _VectorStoreStub:
         )
 
     def dispatch_delete(self, payload: dict[str, Any]) -> None:
-        self.document_deletes.append(payload)
+        self.dispatch_payloads.append(payload)
 
     def delete_collection(self, *, tenant_id: str, collection_id: str) -> None:
         self.collection_deletes.append(
@@ -65,7 +66,7 @@ def _run_on_commit_immediately(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("django.db.transaction.on_commit", lambda fn, using=None: fn())
 
 
-@pytest.fixture(autouse=True, scope="module")
+@pytest.fixture(autouse=True)
 def _preserve_module_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the shared module tenant alive across tests.
 
@@ -76,10 +77,12 @@ def _preserve_module_tenant_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from testsupport import tenant_fixtures
 
+    original_cleanup = tenant_fixtures.cleanup_test_tenants
+
     def _cleanup(*, preserve=None):
         preserved = set(preserve or ())
         preserved.add("autotest-domain-service")
-        return tenant_fixtures.cleanup_test_tenants(preserve=preserved)
+        return original_cleanup(preserve=preserved)
 
     monkeypatch.setattr(tenant_fixtures, "cleanup_test_tenants", _cleanup)
     monkeypatch.setattr("conftest.cleanup_test_tenants", _cleanup)
@@ -163,7 +166,7 @@ def test_delete_document_removes_record_and_vector_entry(
 
         assert not Document.objects.filter(id=doc_id).exists()
 
-    assert vector_store.document_deletes == [
+    assert vector_store.dispatch_payloads == [
         {
             "type": "document_delete",
             "document_id": str(doc_id),
@@ -235,6 +238,12 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
     assert vector_store.collection_deletes == [
         {"tenant_id": str(tenant.id), "collection_id": str(collection_uuid)}
     ]
+    assert vector_store.dispatch_payloads[0] == {
+        "type": "collection_delete",
+        "collection_id": str(collection_uuid),
+        "tenant_id": str(tenant.id),
+        "reason": "cleanup",
+    }
     with schema_context(tenant.schema_name):
         assert not DocumentCollection.objects.filter(id=collection_id).exists()
         assert not DocumentCollectionMembership.objects.filter(document=document).exists()
@@ -244,7 +253,7 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
     with schema_context(tenant.schema_name):
         service.delete_document(document)
 
-    assert vector_store.document_deletes[-1] == {
+    assert vector_store.dispatch_payloads[-1] == {
         "type": "document_delete",
         "document_id": str(doc_id),
         "document_ids": (str(doc_id),),
@@ -267,21 +276,6 @@ def test_ingest_document_requires_dispatcher(tenant: Tenant):
             )
 
 
-def test_ingest_document_allows_test_flag_for_missing_dispatcher(tenant: Tenant):
-    service = DocumentDomainService(
-        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
-    )
-
-    with schema_context(tenant.schema_name):
-        result = service.ingest_document(
-            tenant=tenant,
-            source="upload",
-            content_hash="allow-missing-dispatcher",
-        )
-
-        assert Document.objects.filter(id=result.document.id).exists()
-
-
 def test_delete_document_requires_dispatcher(tenant: Tenant, vector_store: _VectorStoreStub):
     service = DocumentDomainService(vector_store=vector_store)
 
@@ -299,11 +293,31 @@ def test_delete_document_requires_dispatcher(tenant: Tenant, vector_store: _Vect
         assert Document.objects.filter(id=document.id).exists()
 
 
+def test_soft_delete_document_marks_timestamp(tenant: Tenant, vector_store: _VectorStoreStub):
+    service = DocumentDomainService(
+        vector_store=vector_store, deletion_dispatcher=vector_store.dispatch_delete
+    )
+
+    with schema_context(tenant.schema_name):
+        document = Document.objects.create(
+            tenant=tenant, source="upload", hash="soft-delete", metadata={}
+        )
+
+        service.delete_document(document, soft_delete=True, reason="cleanup")
+
+        refreshed = Document.objects.get(id=document.id)
+        assert refreshed.soft_deleted_at is not None
+        assert refreshed.metadata == {}
+        assert refreshed.id == document.id
+
+
 @pytest.mark.django_db
 def test_delete_collection_preserves_shared_documents(
     tenant: Tenant, vector_store: _VectorStoreStub
 ):
-    service = DocumentDomainService(vector_store=vector_store)
+    service = DocumentDomainService(
+        vector_store=vector_store, deletion_dispatcher=vector_store.dispatch_delete
+    )
 
     with schema_context(tenant.schema_name):
         primary_collection = service.ensure_collection(
@@ -346,3 +360,4 @@ def test_delete_collection_preserves_shared_documents(
             "collection_id": str(primary_collection.collection_id),
         }
     ]
+    assert vector_store.dispatch_payloads[-1]["type"] == "collection_delete"
