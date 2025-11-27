@@ -20,7 +20,6 @@ from documents.domain_service import DocumentDomainService
 from documents.models import Document
 from organizations.models import OrgMembership
 from profiles.models import UserProfile
-from .vector_client import get_default_client
 
 logger = get_logger(__name__)
 
@@ -131,6 +130,25 @@ def _build_scope(
     )
 
 
+def _dispatch_delete_to_reaper(payload: Mapping[str, object]) -> None:
+    trace_id = payload.get("trace_id") or payload.get("traceID")
+    attributes = {
+        "tenant_id": payload.get("tenant_id"),
+        "document_ids": payload.get("document_ids"),
+        "reason": payload.get("reason"),
+        "trace_id": trace_id,
+    }
+    record_span("rag.reaper.dispatch", attributes=attributes)
+
+    from ai_core.rag.vector_client import get_default_client
+
+    vector_client = get_default_client()
+    vector_client.hard_delete_documents(
+        tenant_id=str(payload["tenant_id"]),
+        document_ids=[uuid.UUID(doc_id) for doc_id in payload["document_ids"]],
+    )
+
+
 @shared_task(
     base=ScopedTask,
     name="rag.hard_delete",
@@ -171,17 +189,22 @@ def hard_delete(  # type: ignore[override]
     actor_payload = dict(actor or {})
     actor_payload.update({"operator": operator, "mode": actor_mode})
 
-    vector_client = get_default_client()
-
     def _dispatch_delete(payload: Mapping[str, object]) -> None:
-        vector_client.hard_delete_documents(
-            tenant_id=str(payload["tenant_id"]),
-            document_ids=[uuid.UUID(doc_id) for doc_id in payload["document_ids"]],
-        )
+        enriched: dict[str, object | None] = {
+            **payload,
+            "trace_id": scope.trace_id,
+            "invocation_id": scope.invocation_id,
+            "ingestion_run_id": scope.ingestion_run_id,
+            "queued_at": timezone.now().isoformat(),
+            "case_id": scope.case_id,
+            "tenant_schema": scope.tenant_schema,
+            "reason": reason,
+            "ticket_ref": ticket_ref,
+            "actor": actor_payload,
+        }
+        _dispatch_delete_to_reaper(enriched)
 
-    domain_service = DocumentDomainService(
-        vector_store=vector_client, deletion_dispatcher=_dispatch_delete
-    )
+    domain_service = DocumentDomainService(deletion_dispatcher=_dispatch_delete)
     documents = list(
         Document.objects.filter(id__in=requested_ids, tenant_id=tenant_uuid)
     )
