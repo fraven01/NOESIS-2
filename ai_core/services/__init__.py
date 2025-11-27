@@ -71,12 +71,16 @@ from ai_core.graphs.upload_ingestion_graph import (
     UploadIngestionError,
     UploadIngestionGraph,
 )
+from ai_core.rag.vector_client import get_default_client
+from customers.tenant_context import TenantContext
+from documents.domain_service import DocumentDomainService
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
     InlineBlob,
     NormalizedDocument,
 )
+from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 
 from ..case_events import emit_ingestion_case_event
@@ -386,6 +390,58 @@ def _persist_collection_scope(
             metadata = {}
         metadata["collection_id"] = collection_id
         object_store.write_json(path, metadata)
+
+
+def _resolve_tenant_for_documents(meta: Mapping[str, object]):
+    identifier = meta.get("tenant_schema") or meta.get("tenant_id")
+    if not identifier:
+        return None
+    try:
+        return TenantContext.resolve_identifier(identifier, allow_pk=True)
+    except Exception:
+        logger.exception(
+            "documents.resolve_tenant_failed",
+            extra={"tenant_identifier": identifier},
+        )
+        return None
+
+
+def _ensure_collection_with_warning(
+    service: DocumentDomainService,
+    tenant,
+    identifier: object,
+    *,
+    embedding_profile: str | None,
+    scope: str | None,
+) -> DocumentCollection | None:
+    """Ensure a collection exists; create missing IDs with a warning (review later)."""
+
+    try:
+        collection_uuid = UUID(str(identifier))
+    except Exception:
+        collection_uuid = None
+
+    if collection_uuid is not None:
+        exists = DocumentCollection.objects.filter(
+            tenant=tenant, collection_id=collection_uuid
+        ).exists()
+        if not exists:
+            logger.warning(
+                "documents.collection_missing_created",
+                extra={
+                    "tenant_id": str(getattr(tenant, "id", tenant)),
+                    "collection_id": str(collection_uuid),
+                    "reason": "missing_reference",
+                },
+            )
+
+    return service.ensure_collection(
+        tenant=tenant,
+        key=str(identifier),
+        embedding_profile=embedding_profile,
+        scope=scope,
+        collection_id=collection_uuid,
+    )
 
 
 def _ensure_document_collection(
@@ -1322,13 +1378,21 @@ def handle_document_upload(
         )
 
     metadata_obj = metadata_model.model_dump()
-    if metadata_obj.get("collection_id"):
-        _ensure_document_collection(
-            collection_id=metadata_obj["collection_id"],
-            tenant_identifier=meta.get("tenant_schema") or meta.get("tenant_id"),
-            case_identifier=meta.get("case_id"),
-            metadata=metadata_obj,
+    tenant = _resolve_tenant_for_documents(meta)
+    domain_service = (
+        DocumentDomainService(vector_store=get_default_client()) if tenant else None
+    )
+    ensured_collection = None
+    if metadata_obj.get("collection_id") and domain_service and tenant:
+        ensured_collection = _ensure_collection_with_warning(
+            domain_service,
+            tenant,
+            metadata_obj["collection_id"],
+            embedding_profile=metadata_obj.get("embedding_profile"),
+            scope=metadata_obj.get("scope"),
         )
+        if ensured_collection is not None:
+            metadata_obj["collection_id"] = str(ensured_collection.collection_id)
     document_uuid = uuid4()
 
     file_bytes = upload.read()
@@ -1356,6 +1420,30 @@ def handle_document_upload(
 
     checksum = hashlib.sha256(file_bytes).hexdigest()
     encoded_blob = base64.b64encode(file_bytes).decode("ascii")
+
+    document_metadata_payload = dict(metadata_obj)
+    document_metadata_payload.setdefault("filename", original_name)
+    document_metadata_payload.setdefault("content_hash", checksum)
+    document_metadata_payload.setdefault("content_type", _infer_media_type(upload))
+
+    if domain_service and tenant:
+        document_record = domain_service.ingest_document(
+            tenant=tenant,
+            source=document_metadata_payload.get("origin_uri")
+            or document_metadata_payload.get("external_id")
+            or original_name,
+            content_hash=checksum,
+            metadata=document_metadata_payload,
+            collections=(
+                (ensured_collection,) if ensured_collection is not None else ()
+            ),
+            embedding_profile=metadata_obj.get("embedding_profile"),
+            scope=metadata_obj.get("scope"),
+            dispatcher=None,
+        )
+        document_uuid = document_record.id
+    else:
+        document_uuid = uuid4()
 
     document_meta = _build_document_meta(
         meta, metadata_obj, external_id, media_type=_infer_media_type(upload)

@@ -16,9 +16,11 @@ from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.observability import record_span
 from common.celery import ScopedTask
 from common.logging import get_logger
-from documents.service_facade import delete_document
+from documents.domain_service import DocumentDomainService
+from documents.models import Document
 from organizations.models import OrgMembership
 from profiles.models import UserProfile
+from .vector_client import get_default_client
 
 logger = get_logger(__name__)
 
@@ -169,22 +171,24 @@ def hard_delete(  # type: ignore[override]
     actor_payload = dict(actor or {})
     actor_payload.update({"operator": operator, "mode": actor_mode})
 
-    queued = delete_document(
-        scope,
-        requested_ids,
-        reason=reason,
-        ticket_ref=ticket_ref,
-        actor=actor_payload,
+    domain_service = DocumentDomainService(vector_store=get_default_client())
+    documents = list(
+        Document.objects.filter(id__in=requested_ids, tenant_id=tenant_uuid)
     )
+    for document in documents:
+        domain_service.delete_document(document, reason=reason)
+
+    deleted_ids = [str(doc.id) for doc in documents]
 
     log_payload = {
         "tenant": str(tenant_uuid),
         "documents_requested": len(requested_ids),
+        "documents_deleted": len(deleted_ids),
         "reason": reason,
         "ticket_ref": ticket_ref,
         "operator": operator,
         "mode": actor_mode,
-        "queued_at": queued.get("queued_at") or timezone.now().isoformat(),
+        "queued_at": timezone.now().isoformat(),
         "trace_id": scope.trace_id,
         "ingestion_run_id": scope.ingestion_run_id,
     }
@@ -201,16 +205,14 @@ def hard_delete(  # type: ignore[override]
     logger.info("rag.hard_delete.audit", extra=log_payload)
     _emit_span(trace_id, log_payload)
 
-    response = dict(queued)
-    response.update(
-        {
-            "operator": operator,
-            "actor_mode": actor_mode,
-            "deleted_ids": [str(doc_id) for doc_id in requested_ids],
-            "visibility": Visibility.DELETED.value,
-        }
-    )
-    return response
+    return {
+        "status": "deleted",
+        "operator": operator,
+        "actor_mode": actor_mode,
+        "deleted_ids": deleted_ids,
+        "not_found": len(requested_ids) - len(deleted_ids),
+        "visibility": Visibility.DELETED.value,
+    }
 
 
 __all__ = ["hard_delete"]

@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 
 from django.db import transaction
 from django.utils import timezone
+from psycopg2 import sql
 
+from ai_core.infra.observability import record_span
 from customers.models import Tenant
 
 from .models import Document, DocumentCollection, DocumentCollectionMembership
@@ -115,39 +117,63 @@ class DocumentDomainService:
         embedding_profile: str | None = None,
         scope: str | None = None,
         metadata: Mapping[str, object] | None = None,
+        collection_id: UUID | None = None,
     ) -> DocumentCollection:
         """Return an existing collection or create a new one within a tenant."""
 
+        collection_uuid = collection_id or uuid4()
         defaults = {
             "name": name or key,
-            "collection_id": uuid4(),
+            "collection_id": collection_uuid,
             "embedding_profile": embedding_profile or "",
             "metadata": dict(metadata or {}),
         }
-        collection, created = DocumentCollection.objects.get_or_create(
-            tenant=tenant, key=key, defaults=defaults
-        )
 
-        if created and self._vector_store is not None:
-            ensure_fn = getattr(self._vector_store, "ensure_collection", None)
-            if callable(ensure_fn):
-                try:
-                    ensure_fn(
-                        tenant_id=str(tenant.id),
-                        collection_id=str(collection.collection_id),
-                        embedding_profile=embedding_profile,
-                        scope=scope,
-                    )
-                except Exception:
-                    logger.warning(
-                        "vector_store_ensure_collection_failed",
-                        extra={
-                            "tenant_id": str(tenant.id),
-                            "collection_id": str(collection.collection_id),
-                            "scope": scope,
-                        },
-                        exc_info=True,
-                    )
+        attributes = {
+            "tenant_id": str(tenant.id),
+            "collection_key": key,
+            "collection_id": str(collection_uuid),
+            "scope": scope,
+        }
+        record_span("documents.ensure_collection", attributes=attributes)
+
+        with transaction.atomic():
+            collection, created = DocumentCollection.objects.select_for_update().get_or_create(
+                tenant=tenant, key=key, defaults=defaults
+            )
+
+            if collection_id is not None and collection.collection_id != collection_id:
+                raise ValueError(
+                    "collection_id_mismatch",
+                    collection.collection_id,
+                    collection_id,
+                )
+
+            if created:
+                logger.info(
+                    "documents.collection.created",
+                    extra={
+                        "tenant_id": str(tenant.id),
+                        "collection_id": str(collection.collection_id),
+                        "key": key,
+                    },
+                )
+
+            self._ensure_vector_collection(
+                tenant=tenant,
+                collection=collection,
+                embedding_profile=embedding_profile,
+                scope=scope,
+            )
+
+        logger.info(
+            "documents.collection.vector_sync_success",
+            extra={
+                "tenant_id": str(tenant.id),
+                "collection_id": str(collection.collection_id),
+                "key": key,
+            },
+        )
         return collection
 
     def delete_document(
@@ -160,33 +186,46 @@ class DocumentDomainService:
     ) -> None:
         """Delete a document and emit a vector deletion request."""
 
-        soft_delete_requested = soft_delete
-        if soft_delete_requested:
-            if hasattr(document, "soft_deleted_at"):
-                setattr(document, "soft_deleted_at", timezone.now())
-                document.save(update_fields=["soft_deleted_at", "updated_at"])
-            else:
-                logger.warning(
-                    "soft_delete_flag_ignored_missing_field",
-                    extra={"model": "Document", "id": str(document.id)},
-                )
-
-        payload = {
-            "type": "document_delete",
-            "document_id": str(document.id),
+        attributes = {
             "tenant_id": str(document.tenant_id),
+            "document_id": str(document.id),
+            "soft_delete": soft_delete,
             "reason": reason,
         }
+        record_span("documents.delete_document", attributes=attributes)
+
         dispatcher_fn = dispatcher or self._deletion_dispatcher
-        if dispatcher_fn:
-            transaction.on_commit(lambda: dispatcher_fn(payload))
-        else:
-            logger.info("document_delete_outbox", extra=payload)
+        vector_store = self._require_vector_store()
 
-        if soft_delete_requested:
-            return
+        with transaction.atomic():
+            vector_store.hard_delete_documents(
+                tenant_id=str(document.tenant_id),
+                document_ids=[document.id],
+            )
 
-        document.delete()
+            payload = {
+                "type": "document_delete",
+                "document_id": str(document.id),
+                "tenant_id": str(document.tenant_id),
+                "reason": reason,
+            }
+            if dispatcher_fn:
+                transaction.on_commit(lambda: dispatcher_fn(payload))
+            else:
+                logger.info("document_delete_outbox", extra=payload)
+
+            if soft_delete:
+                if hasattr(document, "soft_deleted_at"):
+                    setattr(document, "soft_deleted_at", timezone.now())
+                    document.save(update_fields=["soft_deleted_at", "updated_at"])
+                else:
+                    logger.warning(
+                        "soft_delete_flag_ignored_missing_field",
+                        extra={"model": "Document", "id": str(document.id)},
+                    )
+                return
+
+            document.delete()
 
     def delete_collection(
         self,
@@ -209,19 +248,115 @@ class DocumentDomainService:
                     extra={"model": "DocumentCollection", "id": str(collection.id)},
                 )
 
-        payload = {
-            "type": "collection_delete",
-            "collection_id": str(collection.collection_id),
+        attributes = {
             "tenant_id": str(collection.tenant_id),
+            "collection_id": str(collection.collection_id),
+            "soft_delete": soft_delete_requested,
             "reason": reason,
         }
-        dispatcher_fn = dispatcher or self._deletion_dispatcher
-        if dispatcher_fn:
-            transaction.on_commit(lambda: dispatcher_fn(payload))
-        else:
-            logger.info("collection_delete_outbox", extra=payload)
+        record_span("documents.delete_collection", attributes=attributes)
 
-        if soft_delete_requested:
+        dispatcher_fn = dispatcher or self._deletion_dispatcher
+        vector_store = self._require_vector_store()
+
+        with transaction.atomic():
+            related_document_ids = list(
+                collection.documents.values_list("id", flat=True)
+            )
+            if related_document_ids:
+                vector_store.hard_delete_documents(
+                    tenant_id=str(collection.tenant_id),
+                    document_ids=related_document_ids,
+                )
+
+            self._delete_vector_collection_record(collection)
+
+            payload = {
+                "type": "collection_delete",
+                "collection_id": str(collection.collection_id),
+                "tenant_id": str(collection.tenant_id),
+                "reason": reason,
+            }
+            if dispatcher_fn:
+                transaction.on_commit(lambda: dispatcher_fn(payload))
+            else:
+                logger.info("collection_delete_outbox", extra=payload)
+
+            if soft_delete_requested:
+                return
+
+            collection.delete()
+
+    def _ensure_vector_collection(
+        self,
+        *,
+        tenant: Tenant,
+        collection: DocumentCollection,
+        embedding_profile: str | None,
+        scope: str | None,
+    ) -> None:
+        vector_store = self._require_vector_store()
+
+        ensure_fn = getattr(vector_store, "ensure_collection", None)
+        if callable(ensure_fn):
+            ensure_fn(
+                tenant_id=str(tenant.id),
+                collection_id=str(collection.collection_id),
+                embedding_profile=embedding_profile,
+                scope=scope,
+            )
             return
 
-        collection.delete()
+        connection = getattr(vector_store, "connection", None)
+        table_resolver = getattr(vector_store, "_table", None)
+        if callable(connection) and callable(table_resolver):
+            collections_table = table_resolver("collections")
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL(
+                            """
+                            INSERT INTO {} (tenant_id, id)
+                            VALUES (%s, %s)
+                            ON CONFLICT (tenant_id, id) DO NOTHING
+                            """
+                        ).format(collections_table),
+                        (str(tenant.id), str(collection.collection_id)),
+                    )
+                conn.commit()
+            return
+
+        raise RuntimeError("Vector store client does not support collection sync")
+
+    def _delete_vector_collection_record(self, collection: DocumentCollection) -> None:
+        vector_store = self._require_vector_store()
+
+        delete_fn = getattr(vector_store, "delete_collection", None)
+        if callable(delete_fn):
+            delete_fn(
+                tenant_id=str(collection.tenant_id),
+                collection_id=str(collection.collection_id),
+            )
+            return
+
+        connection = getattr(vector_store, "connection", None)
+        table_resolver = getattr(vector_store, "_table", None)
+        if callable(connection) and callable(table_resolver):
+            collections_table = table_resolver("collections")
+            with connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        sql.SQL(
+                            "DELETE FROM {} WHERE tenant_id = %s AND id = %s"
+                        ).format(collections_table),
+                        (str(collection.tenant_id), str(collection.collection_id)),
+                    )
+                conn.commit()
+            return
+
+        raise RuntimeError("Vector store client does not support collection deletion")
+
+    def _require_vector_store(self):
+        if self._vector_store is None:
+            raise RuntimeError("Vector store client is required for this operation")
+        return self._vector_store
