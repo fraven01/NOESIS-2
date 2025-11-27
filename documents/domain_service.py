@@ -7,6 +7,7 @@ from typing import Callable, Iterable, Mapping, Sequence
 from uuid import UUID, uuid4
 
 from django.db import transaction
+from django.db.models import Count
 from django.utils import timezone
 from psycopg2 import sql
 
@@ -264,10 +265,21 @@ class DocumentDomainService:
                 collection.documents.values_list("id", flat=True)
             )
             if related_document_ids:
-                vector_store.hard_delete_documents(
-                    tenant_id=str(collection.tenant_id),
-                    document_ids=related_document_ids,
+                exclusive_document_ids = list(
+                    DocumentCollectionMembership.objects.filter(
+                        document_id__in=related_document_ids
+                    )
+                    .values("document_id")
+                    .annotate(collection_count=Count("collection", distinct=True))
+                    .filter(collection_count=1)
+                    .values_list("document_id", flat=True)
                 )
+
+                if exclusive_document_ids:
+                    vector_store.hard_delete_documents(
+                        tenant_id=str(collection.tenant_id),
+                        document_ids=exclusive_document_ids,
+                    )
 
             self._delete_vector_collection_record(collection)
 

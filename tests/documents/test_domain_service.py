@@ -225,3 +225,52 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
     }
     with schema_context(tenant.schema_name):
         assert not Document.objects.filter(id=doc_id).exists()
+
+
+@pytest.mark.django_db
+def test_delete_collection_preserves_shared_documents(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
+    service = DocumentDomainService(vector_store=vector_store)
+
+    with schema_context(tenant.schema_name):
+        primary_collection = service.ensure_collection(
+            tenant=tenant, key="shared-primary", name="Shared Primary"
+        )
+        sibling_collection = service.ensure_collection(
+            tenant=tenant, key="shared-sibling", name="Shared Sibling"
+        )
+
+        document = Document.objects.create(
+            tenant=tenant,
+            source="upload",
+            hash="shared-hash",
+            metadata={"filename": "shared.pdf"},
+        )
+
+        DocumentCollectionMembership.objects.bulk_create(
+            [
+                DocumentCollectionMembership(
+                    document=document, collection=primary_collection
+                ),
+                DocumentCollectionMembership(
+                    document=document, collection=sibling_collection
+                ),
+            ]
+        )
+
+        service.delete_collection(primary_collection)
+
+        assert not DocumentCollection.objects.filter(id=primary_collection.id).exists()
+        assert Document.objects.filter(id=document.id).exists()
+        assert DocumentCollectionMembership.objects.filter(
+            document=document, collection=sibling_collection
+        ).exists()
+
+    assert not vector_store.document_deletes
+    assert vector_store.collection_deletes == [
+        {
+            "tenant_id": str(tenant.id),
+            "collection_id": str(primary_collection.collection_id),
+        }
+    ]
