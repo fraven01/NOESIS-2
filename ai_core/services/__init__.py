@@ -1427,7 +1427,7 @@ def handle_document_upload(
     document_metadata_payload.setdefault("content_type", _infer_media_type(upload))
 
     if domain_service and tenant:
-        document_record = domain_service.ingest_document(
+        ingest_result = domain_service.ingest_document(
             tenant=tenant,
             source=document_metadata_payload.get("origin_uri")
             or document_metadata_payload.get("external_id")
@@ -1439,11 +1439,13 @@ def handle_document_upload(
             ),
             embedding_profile=metadata_obj.get("embedding_profile"),
             scope=metadata_obj.get("scope"),
-            dispatcher=None,
+            dispatcher=lambda *_: None,
         )
-        document_uuid = document_record.id
+        document_uuid = ingest_result.document.id
+        collection_ids = ingest_result.collection_ids
     else:
         document_uuid = uuid4()
+        collection_ids: tuple[UUID, ...] = ()
 
     document_meta = _build_document_meta(
         meta, metadata_obj, external_id, media_type=_infer_media_type(upload)
@@ -1454,7 +1456,11 @@ def handle_document_upload(
         "tenant_id": document_meta.tenant_id,
         "workflow_id": document_meta.workflow_id,
         "document_id": document_uuid,
-        "collection_id": metadata_obj.get("collection_id"),
+        "collection_id": (
+            collection_ids[0]
+            if collection_ids
+            else metadata_obj.get("collection_id")
+        ),
         "version": metadata_obj.get("version"),
     }
     document_ref = DocumentRef(**ref_payload)

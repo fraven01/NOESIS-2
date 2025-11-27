@@ -7,6 +7,7 @@ only depend on a single boundary.
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Mapping, MutableMapping, Sequence
 from uuid import UUID, uuid4
@@ -14,6 +15,12 @@ from uuid import UUID, uuid4
 from django.utils import timezone
 
 from ai_core.contracts.scope import ScopeContext
+from customers.tenant_context import TenantContext
+from django_tenants.utils import schema_context
+from documents.domain_service import (
+    DocumentDomainService,
+    IngestionDispatcher,
+)
 
 _DELETE_OUTBOX: list[dict[str, Any]] = []
 _COLLECTION_OUTBOX: list[dict[str, Any]] = []
@@ -62,44 +69,85 @@ def ingest_document(
     meta: Mapping[str, Any],
     chunks_path: str,
     embedding_state: Mapping[str, Any] | None = None,
+    dispatcher: IngestionDispatcher | None = None,
 ) -> MutableMapping[str, Any]:
-    """Embed and upsert chunks via the ingestion service boundary."""
+    """Persist document metadata and queue vector ingestion."""
 
-    from ai_core import tasks as ingestion_tasks
+    dispatcher_fn = dispatcher
+    if dispatcher_fn is None:
+        raise ValueError("ingestion_dispatcher_required")
 
-    embed_result = ingestion_tasks.embed(dict(meta), chunks_path)
-    embeddings_path = str(embed_result.get("path"))
+    tenant_identifier = meta.get("tenant_id") or scope.tenant_id
+    if not tenant_identifier:
+        raise ValueError("tenant_id_required")
 
-    upsert_kwargs: dict[str, Any] = {}
-    if embedding_state:
-        tenant_schema = embedding_state.get("tenant_schema")
-        if tenant_schema is not None:
-            upsert_kwargs["tenant_schema"] = tenant_schema
-        vector_client = embedding_state.get("client")
-        if vector_client is not None:
-            upsert_kwargs["vector_client"] = vector_client
-        vector_factory = embedding_state.get("client_factory")
-        if vector_factory is not None:
-            upsert_kwargs["vector_client_factory"] = vector_factory
+    try:
+        tenant = TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
+    except Exception as exc:  # pragma: no cover - defensive guard
+        raise ValueError("invalid_tenant_identifier") from exc
 
-    inserted = ingestion_tasks.upsert(meta, embeddings_path, **upsert_kwargs)
+    collection_identifier = meta.get("collection_id")
+    collections: tuple[str, ...]
+    if collection_identifier:
+        collections = (str(collection_identifier),)
+    else:
+        collections = ()
 
-    result: MutableMapping[str, Any] = {
-        "status": "upserted" if inserted else "skipped",
-        "chunks_inserted": int(inserted),
-        "embeddings_path": embeddings_path,
+    metadata = dict(meta)
+    metadata["chunks_path"] = chunks_path
+
+    document_id = metadata.get("document_id")
+    document_uuid: UUID | None = None
+    if document_id:
+        try:
+            document_uuid = UUID(str(document_id))
+        except Exception:
+            document_uuid = None
+
+    content_hash = metadata.get("hash") or metadata.get("content_hash")
+    if not content_hash:
+        raise ValueError("content_hash_required")
+
+    source = (
+        metadata.get("source")
+        or metadata.get("origin_uri")
+        or metadata.get("external_id")
+        or metadata.get("workflow_id")
+        or "unknown"
+    )
+
+    service = DocumentDomainService(ingestion_dispatcher=dispatcher_fn)
+    tenant_schema_ctx = (
+        schema_context(scope.tenant_schema)
+        if scope.tenant_schema
+        else nullcontext()
+    )
+
+    with tenant_schema_ctx:
+        ingest_result = service.ingest_document(
+            tenant=tenant,
+            source=str(source),
+            content_hash=str(content_hash),
+            metadata=metadata,
+            collections=collections,
+            embedding_profile=metadata.get("embedding_profile"),
+            scope=metadata.get("scope"),
+            dispatcher=dispatcher_fn,
+            document_id=document_uuid,
+        )
+
+    return {
+        "status": "queued",
+        "chunks_inserted": 0,
         "trace_id": scope.trace_id,
         "ingestion_run_id": scope.ingestion_run_id,
         "case_id": scope.case_id,
         "tenant_schema": scope.tenant_schema,
+        "document_id": str(ingest_result.document.id),
+        "collection_ids": [str(cid) for cid in ingest_result.collection_ids],
+        "embedding_profile": metadata.get("embedding_profile"),
+        "vector_space_id": metadata.get("vector_space_id"),
     }
-
-    if meta.get("embedding_profile"):
-        result["embedding_profile"] = meta.get("embedding_profile")
-    if meta.get("vector_space_id"):
-        result["vector_space_id"] = meta.get("vector_space_id")
-
-    return result
 
 
 def delete_document(
