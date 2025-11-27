@@ -33,6 +33,7 @@ class DocumentCollection(models.Model):
     visibility = models.CharField(max_length=64, blank=True, default="")
     metadata = models.JSONField(blank=True, default=dict)
     embedding_profile = models.CharField(max_length=255, blank=True, default="")
+    soft_deleted_at = models.DateTimeField(null=True, blank=True)
     documents = models.ManyToManyField(
         "Document",
         through="DocumentCollectionMembership",
@@ -78,6 +79,7 @@ class Document(models.Model):
     metadata = models.JSONField(blank=True, default=dict)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    soft_deleted_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         constraints = [
