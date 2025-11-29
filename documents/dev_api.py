@@ -83,11 +83,13 @@ class DocumentDevViewSet(viewsets.ViewSet):
         )
 
     @action(
-        detail=True,
+        detail=False,
         methods=["get"],
         url_path="(?P<tenant_id>[^/]+)/(?P<document_id>[^/]+)",
     )
-    def retrieve(self, request: Request, tenant_id: str, document_id: str) -> Response:
+    def retrieve_document(
+        self, request: Request, tenant_id: str, document_id: str
+    ) -> Response:
         _require_debug()
 
         tenant = self._resolve_tenant(tenant_id)

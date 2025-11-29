@@ -184,12 +184,12 @@ class GraphContextPayload(BaseModel):
 
     tenant_id: str
     workflow_id: str
-    case_id: str
+    case_id: str | None = None
     trace_id: str | None = None
     run_id: str | None = None
     ingestion_run_id: str | None = None
 
-    @field_validator("tenant_id", "workflow_id", "case_id", mode="before")
+    @field_validator("tenant_id", "workflow_id", mode="before")
     @classmethod
     def _trimmed_required(cls, value: Any) -> str:
         if not isinstance(value, str):
@@ -199,7 +199,7 @@ class GraphContextPayload(BaseModel):
             raise ValueError("value must not be empty")
         return candidate
 
-    @field_validator("trace_id", "run_id", "ingestion_run_id", mode="before")
+    @field_validator("case_id", "trace_id", "run_id", "ingestion_run_id", mode="before")
     @classmethod
     def _normalise_optional(cls, value: Any) -> str | None:
         if value in (None, ""):
@@ -298,7 +298,7 @@ class Transition:
 class _GraphIds:
     tenant_id: str
     workflow_id: str
-    case_id: str
+    case_id: str | None
     trace_id: str
     run_id: str
     collection_scope: str
@@ -1598,14 +1598,15 @@ class _ProductionIngestionTrigger:
         tenant_id = context.get("tenant_id", "dev")
         collection_scope = context.get("collection_scope", "")
         trace_id = context.get("trace_id", "")
-        case_id = context.get("case_id", "local")
+        case_id = context.get("case_id")
 
         headers = {
             "Content-Type": "application/json",
             "X-Tenant-ID": str(tenant_id),
-            "X-Case-ID": str(case_id),
             "X-Trace-ID": str(trace_id),
         }
+        if case_id:
+            headers["X-Case-ID"] = str(case_id)
 
         payload = {
             "workflow_id": "software-docs-ingestion",

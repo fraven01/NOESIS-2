@@ -72,7 +72,7 @@ class GraphContextPayload(BaseModel):
 
     tenant_id: str
     workflow_id: str
-    case_id: str
+    case_id: str | None = None
     trace_id: str | None = None
     run_id: str | None = None
     ingestion_run_id: str | None = None
@@ -96,8 +96,7 @@ class GraphContextPayload(BaseModel):
             raise ValueError("tenant_id_required")
         if not cleaned["workflow_id"]:
             raise ValueError("workflow_id_required")
-        if not cleaned["case_id"]:
-            raise ValueError("case_id_required")
+        # case_id is optional for dev tools
         object.__setattr__(self, "tenant_id", cleaned["tenant_id"])
         object.__setattr__(self, "workflow_id", cleaned["workflow_id"])
         object.__setattr__(self, "case_id", cleaned["case_id"])
@@ -168,7 +167,7 @@ class _GraphIds:
     tenant_id: str
     trace_id: str
     workflow_id: str
-    case_id: str
+    case_id: str | None
     run_id: str
     collection_id: str
     ingestion_run_id: str | None = None

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from common.logging import get_logger
 from customers.models import Tenant
-from documents.models import DocumentIngestionRun
+
+if TYPE_CHECKING:
+    from documents.models import DocumentIngestionRun
 
 from cases import models
 
@@ -50,30 +52,25 @@ def _normalise_case_id(case_id: str) -> str:
     return candidate
 
 
-def get_or_create_case_for(tenant: Tenant, case_id: str) -> models.Case:
-    """Return the case for *tenant* and *case_id*, creating it when missing."""
+class CaseNotFoundError(Exception):
+    """Raised when a requested case ID does not exist."""
+
+
+def resolve_case(tenant: Tenant, case_id: str | None) -> models.Case | None:
+    """Resolve a case by ID, ensuring it exists. Returns None if case_id is empty."""
+    if not case_id:
+        return None
 
     normalized_case_id = _normalise_case_id(case_id)
-    case, created = models.Case.objects.get_or_create(
-        tenant=tenant,
-        external_id=normalized_case_id,
-        defaults={"status": _CASE_STATUS_OPEN},
-    )
-    if created:
-        log.info(
-            "case.created",
-            extra={
-                "tenant": str(getattr(tenant, "schema_name", tenant.pk)),
-                "case_external_id": normalized_case_id,
-                "case_status": case.status,
-                "case_phase": case.phase or "",
-                "trigger_event_type": "case.create",
-            },
+    try:
+        return models.Case.objects.get(tenant=tenant, external_id=normalized_case_id)
+    except models.Case.DoesNotExist:
+        raise CaseNotFoundError(
+            f"Case {normalized_case_id} not found for tenant {getattr(tenant, 'schema_name', tenant.pk)}"
         )
-    return case
 
 
-def _build_ingestion_payload(ingestion_run: DocumentIngestionRun) -> dict[str, object]:
+def _build_ingestion_payload(ingestion_run: "DocumentIngestionRun") -> dict[str, object]:
     payload: dict[str, object] = {
         "run_id": ingestion_run.run_id,
     }
@@ -95,11 +92,14 @@ def _build_ingestion_payload(ingestion_run: DocumentIngestionRun) -> dict[str, o
 
 
 def record_ingestion_case_event(
-    tenant: Tenant, case_id: str, ingestion_run: DocumentIngestionRun
-) -> models.CaseEvent:
+    tenant: Tenant, case_id: str | None, ingestion_run: "DocumentIngestionRun"
+) -> models.CaseEvent | None:
     """Create a case event reflecting the latest ingestion run state."""
 
-    case = get_or_create_case_for(tenant, case_id)
+    case = resolve_case(tenant, case_id)
+    if not case:
+        return None
+
     normalized_status = (ingestion_run.status or "").strip().lower()
     event_type = _INGESTION_STATUS_EVENT_TYPES.get(
         normalized_status, "ingestion_run_updated"

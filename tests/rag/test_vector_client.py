@@ -1686,6 +1686,60 @@ def test_upsert_persists_parent_nodes_metadata() -> None:
     assert stored_parent.get("document_id") == str(document_id)
 
 
+def test_pgvector_collection_management_cleans_related_rows() -> None:
+    vector_client.reset_default_client()
+    client = vector_client.get_default_client()
+    tenant = str(uuid.uuid4())
+    collection_id = str(uuid.uuid4())
+    dim = vector_client.get_embedding_dim()
+    unit_value = 1.0 / math.sqrt(dim)
+    embedding = [unit_value] * dim
+    chunk = Chunk(
+        content="collection cleanup document",
+        meta={
+            "tenant_id": tenant,
+            "external_id": "doc-collection-cleanup",
+            "hash": "hash-collection-cleanup",
+            "source": "unit-test",
+            "collection_id": collection_id,
+        },
+        embedding=embedding,
+    )
+
+    client.ensure_collection(
+        tenant_id=tenant,
+        collection_id=collection_id,
+        embedding_profile="profile-cleanup",
+        scope="unit-test",
+    )
+    assert client.upsert_chunks([chunk]) >= 1
+
+    client.delete_collection(tenant_id=tenant, collection_id=collection_id)
+
+    with client._connection() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM collections WHERE tenant_id = %s AND id = %s",
+                (tenant, collection_id),
+            )
+            assert cur.fetchone()[0] == 0
+
+            cur.execute(
+                "SELECT COUNT(*) FROM document_collections WHERE collection_id = %s",
+                (collection_id,),
+            )
+            assert cur.fetchone()[0] == 0
+
+            for table in ("documents", "chunks", "embeddings"):
+                cur.execute(
+                    sql.SQL("SELECT COUNT(*) FROM {} WHERE collection_id = %s").format(
+                        sql.Identifier(table)
+                    ),
+                    (collection_id,),
+                )
+                remaining = cur.fetchone()[0]
+                assert remaining == 0
+
 def test_near_duplicate_respects_collection_scope(monkeypatch):
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.95")

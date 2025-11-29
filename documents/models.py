@@ -169,7 +169,7 @@ class DocumentIngestionRun(models.Model):
     """Persistent metadata for the last ingestion run per tenant/case."""
 
     tenant_id = models.CharField(max_length=255)
-    case = models.CharField(max_length=255)
+    case = models.CharField(max_length=255, null=True, blank=True)
     collection_id = models.CharField(max_length=255, blank=True, default="")
     run_id = models.CharField(max_length=255)
     status = models.CharField(max_length=32)

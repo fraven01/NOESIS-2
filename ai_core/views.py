@@ -28,11 +28,13 @@ from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
+    META_WORKFLOW_ID_KEY,
     X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
+    X_WORKFLOW_ID_HEADER,
 )
 from common.logging import bind_log_context, get_logger
 from noesis2.api import (
@@ -100,7 +102,7 @@ from .rag.ingestion_contracts import (
 from .views_response_utils import apply_response_headers
 
 from cases.models import Case
-from cases.services import get_or_create_case_for
+from cases.services import CaseNotFoundError, resolve_case
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
@@ -232,10 +234,10 @@ def assert_case_active(
     except (ProgrammingError, OperationalError):
         case = None
 
-    if case is None and getattr(settings, "AUTO_CREATE_CASES", True):
+    if case is None:
         try:
-            case = get_or_create_case_for(tenant_obj, normalized_case_id)
-        except (ProgrammingError, OperationalError):
+            case = resolve_case(tenant_obj, normalized_case_id)
+        except (ProgrammingError, OperationalError, CaseNotFoundError):
             case = None
 
     if case is None:
@@ -442,6 +444,9 @@ def _prepare_request(request: Request):
 
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
+    workflow_id = (request.headers.get(X_WORKFLOW_ID_HEADER) or "").strip()
+    if not workflow_id:
+        workflow_id = uuid4().hex
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
     idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)
@@ -518,9 +523,9 @@ def _prepare_request(request: Request):
                 status.HTTP_400_BAD_REQUEST,
             )
 
-    if not CASE_ID_RE.fullmatch(case_id):
+    if case_id and not CASE_ID_RE.fullmatch(case_id):
         return None, _error_response(
-            "Case header is required and must use the documented format.",
+            "Case header must use the documented format.",
             "invalid_case_header",
             status.HTTP_400_BAD_REQUEST,
         )
@@ -549,15 +554,18 @@ def _prepare_request(request: Request):
             collection_id = candidate
 
     trace_id = uuid4().hex
-    case_error = assert_case_active(request, case_id, tenant_identifier=tenant_schema)
-    if case_error is not None:
-        return None, case_error
+    if case_id:
+        case_error = assert_case_active(request, case_id, tenant_identifier=tenant_schema)
+        if case_error is not None:
+            return None, case_error
     meta = {
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,
         "case_id": case_id,
         "trace_id": trace_id,
     }
+    if workflow_id:
+        meta["workflow_id"] = workflow_id
     if key_alias:
         meta["key_alias"] = key_alias
     if collection_id:
@@ -569,6 +577,10 @@ def _prepare_request(request: Request):
     request.META[META_CASE_ID_KEY] = case_id
     request.META[META_TENANT_ID_KEY] = tenant_id
     request.META[META_TENANT_SCHEMA_KEY] = tenant_schema
+    if workflow_id:
+        request.META[META_WORKFLOW_ID_KEY] = workflow_id
+    else:
+        request.META.pop(META_WORKFLOW_ID_KEY, None)
     if key_alias:
         request.META[META_KEY_ALIAS_KEY] = key_alias
     else:
@@ -581,6 +593,7 @@ def _prepare_request(request: Request):
     log_context = {
         "trace_id": trace_id,
         "case_id": case_id,
+        "workflow_id": workflow_id,
         "tenant_id": tenant_id,
         "tenant": tenant_id,
         "key_alias": key_alias,

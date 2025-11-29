@@ -11,6 +11,7 @@ from cases.models import Case
 from documents.contracts import DocumentMeta, DocumentRef, FileBlob, NormalizedDocument
 from documents.models import DocumentCollection, DocumentLifecycleState
 from documents.repository import InMemoryDocumentsRepository
+from documents.services.document_space_service import DocumentSpaceService
 
 from theme.views import document_space
 
@@ -29,17 +30,18 @@ def test_document_space_requires_tenant():
 @pytest.mark.django_db
 def test_document_space_lists_collections_and_documents(monkeypatch):
     tenant = TenantFactory(schema_name="explore")
-    case = Case.objects.create(
-        tenant=tenant, external_id="CASE-123", title="Framework Einführung"
-    )
-    collection = DocumentCollection.objects.create(
-        tenant=tenant,
-        case=case,
-        name="Framework Docs",
-        key="framework-docs",
-        collection_id=uuid4(),
-        type="framework",
-    )
+    with schema_context(tenant.schema_name):
+        case = Case.objects.create(
+            tenant=tenant, external_id="CASE-123", title="Framework Einführung"
+        )
+        collection = DocumentCollection.objects.create(
+            tenant=tenant,
+            case=case,
+            name="Framework Docs",
+            key="framework-docs",
+            collection_id=uuid4(),
+            type="framework",
+        )
 
     repo = InMemoryDocumentsRepository()
     document_id = uuid4()
@@ -76,18 +78,30 @@ def test_document_space_lists_collections_and_documents(monkeypatch):
     )
     repo.upsert(normalized)
 
-    DocumentLifecycleState.objects.create(
-        tenant_id=tenant.schema_name,
-        document_id=document_id,
-        workflow_id=workflow_id,
-        state="active",
-        trace_id="trace-123",
-        run_id="run-789",
-        ingestion_run_id="ing-456",
-        changed_at=timezone.now(),
-    )
+    with schema_context(tenant.schema_name):
+        DocumentLifecycleState.objects.create(
+            tenant_id=tenant.schema_name,
+            document_id=document_id,
+            workflow_id=workflow_id,
+            state="active",
+            trace_id="trace-123",
+            run_id="run-789",
+            ingestion_run_id="ing-456",
+            changed_at=timezone.now(),
+        )
 
     monkeypatch.setattr("theme.views._get_documents_repository", lambda: repo)
+
+    class _CollectionServiceStub:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def ensure_manual_collection(self, tenant_id: object, **_: object) -> str:
+            self.calls.append(str(tenant_id))
+            return str(collection.collection_id)
+
+    service_stub = DocumentSpaceService(collection_service=_CollectionServiceStub())
+    monkeypatch.setattr("theme.views.DOCUMENT_SPACE_SERVICE", service_stub)
 
     request = RequestFactory().get(
         reverse("document-space"), {"collection": str(collection.id)}

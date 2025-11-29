@@ -44,7 +44,7 @@ from .rag.vector_schema import ensure_vector_space_schema
 log = get_logger(__name__)
 
 
-def _load_case_observability_context(tenant_id: str, case_id: str) -> dict[str, str]:
+def _load_case_observability_context(tenant_id: str, case_id: str | None) -> dict[str, str]:
     if not tenant_id or not case_id:
         return {}
     for filter_kwargs in (
@@ -62,29 +62,29 @@ def _load_case_observability_context(tenant_id: str, case_id: str) -> dict[str, 
     return {}
 
 
-def _meta_store_path(tenant: str, case: str, document_id: str) -> str:
+def _meta_store_path(tenant: str, case: str | None, document_id: str) -> str:
     return "/".join(
         (
             object_store.sanitize_identifier(tenant),
-            object_store.sanitize_identifier(case),
+            object_store.sanitize_identifier(case or "_uncased_"),
             "uploads",
             f"{document_id}.meta.json",
         )
     )
 
 
-def _status_store_path(tenant: str, case: str, document_id: str) -> str:
+def _status_store_path(tenant: str, case: str | None, document_id: str) -> str:
     return "/".join(
         (
             object_store.sanitize_identifier(tenant),
-            object_store.sanitize_identifier(case),
+            object_store.sanitize_identifier(case or "_uncased_"),
             "uploads",
             f"{document_id}.status.json",
         )
     )
 
 
-def _load_pipeline_state(tenant: str, case: str, document_id: str) -> Dict[str, object]:
+def _load_pipeline_state(tenant: str, case: str | None, document_id: str) -> Dict[str, object]:
     status_path = _status_store_path(tenant, case, document_id)
     try:
         raw_state = object_store.read_json(status_path)
@@ -102,7 +102,7 @@ def _load_pipeline_state(tenant: str, case: str, document_id: str) -> Dict[str, 
 
 
 def _write_pipeline_state(
-    tenant: str, case: str, document_id: str, state: Dict[str, object]
+    tenant: str, case: str | None, document_id: str, state: Dict[str, object]
 ) -> None:
     status_path = _status_store_path(tenant, case, document_id)
     serialized: Dict[str, object] = {}
@@ -139,7 +139,7 @@ def _normalize_step_result(result: Dict[str, object]) -> Dict[str, object]:
 
 def _ensure_step(
     tenant: str,
-    case: str,
+    case: str | None,
     document_id: str,
     state: Dict[str, object],
     step_name: str,
@@ -249,7 +249,7 @@ def cleanup_raw_payload_artifact(raw_payload_path: Optional[str]) -> List[str]:
 
 def _mark_cleaned(
     tenant: str,
-    case: str,
+    case: str | None,
     document_id: str,
     state: Dict[str, object],
     removed_paths: Iterable[str],
@@ -415,18 +415,18 @@ def _render_parsed_text(parsed: ParsedResult) -> str:
     return ""
 
 
-def _parsed_text_path(tenant: str, case: str, document_identifier: UUID) -> str:
+def _parsed_text_path(tenant: str, case: str | None, document_identifier: UUID) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(str(case))
+    case_segment = object_store.sanitize_identifier(case or "_uncased_")
     document_segment = object_store.sanitize_identifier(str(document_identifier))
     return "/".join(
         [tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"]
     )
 
 
-def _parsed_blocks_path(tenant: str, case: str, document_identifier: UUID) -> str:
+def _parsed_blocks_path(tenant: str, case: str | None, document_identifier: UUID) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(str(case))
+    case_segment = object_store.sanitize_identifier(case or "_uncased_")
     document_segment = object_store.sanitize_identifier(str(document_identifier))
     return "/".join(
         [tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"]
@@ -455,7 +455,7 @@ def _serialise_text_block(block: ParsedTextBlock) -> Dict[str, object]:
 
 def _persist_parsed_text(
     tenant: str,
-    case: str,
+    case: str | None,
     document_identifier: UUID,
     parsed: ParsedResult,
 ) -> Dict[str, object]:
@@ -571,7 +571,7 @@ def partition_document_ids(
 def process_document(
     self,
     tenant: str,
-    case: str,
+    case: str | None,
     document_id: str,
     embedding_profile: str,
     tenant_schema: Optional[str] = None,
@@ -998,7 +998,7 @@ def process_document(
 @shared_task(base=ScopedTask, queue="ingestion", accepts_scope=True)
 def run_ingestion(
     tenant: str,
-    case: str,
+    case: str | None,
     document_ids: List[str],
     embedding_profile: str,
     *,
@@ -1018,7 +1018,7 @@ def run_ingestion(
     if not trace_id:
         raise InputError("missing_trace_id", "trace_id is required")
 
-    valid_ids, invalid_ids = partition_document_ids(tenant, case, document_ids)
+    valid_ids, invalid_ids = partition_document_ids(tenant, case or "", document_ids)
     dispatch_ids = list(valid_ids if valid_ids else document_ids)
     doc_count = len(valid_ids)
     start_case_context = _load_case_observability_context(tenant, case)
@@ -1322,7 +1322,7 @@ def _determine_failed_documents(
 def _dispatch_dead_letters(
     dead_letter_queue: Optional[str],
     tenant: str,
-    case: str,
+    case: str | None,
     run_id: str,
     trace_id: Optional[str],
     failed_ids: Iterable[str],
@@ -1376,7 +1376,7 @@ def _dispatch_dead_letters(
 def _safe_dispatch_dead_letters(
     dead_letter_queue: Optional[str],
     tenant: str,
-    case: str,
+    case: str | None,
     run_id: str,
     trace_id: Optional[str],
     failed_ids: Iterable[str],

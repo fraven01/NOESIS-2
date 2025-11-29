@@ -407,7 +407,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
             {
                 "urls": ["https://example.com"],
                 "collection_id": "test-collection",
-                "case_id": "test-case",
+                "case_id": "TEST-CASE",
             }
         ),
         content_type="application/json",
@@ -434,7 +434,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     headers = call_request.META
     assert headers["HTTP_X_TENANT_ID"] == tenant_id
     assert headers["HTTP_X_TENANT_SCHEMA"] == tenant_schema
-    assert headers["HTTP_X_CASE_ID"] == "test-case"
+    assert headers["HTTP_X_CASE_ID"] == "TEST-CASE"
     assert "HTTP_X_TRACE_ID" in headers
 
 
@@ -475,7 +475,7 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
                 "collection_id": "manual",
                 "max_candidates": 20,
                 "quality_mode": "standard",
-                "case_id": "local",
+                "case_id": None,
             }
         ),
         content_type="application/json",

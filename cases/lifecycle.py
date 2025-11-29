@@ -19,7 +19,7 @@ from cases.contracts import (
     DEFAULT_CASE_LIFECYCLE_DEFINITION,
     parse_case_lifecycle_definition,
 )
-from cases.services import get_or_create_case_for
+from cases.services import CaseNotFoundError, resolve_case
 
 log = get_logger(__name__)
 
@@ -177,12 +177,21 @@ def update_case_from_collection_search(
         return None
 
     try:
-        case = get_or_create_case_for(tenant, case_id)
+        case = resolve_case(tenant, case_id)
+    except CaseNotFoundError:
+        log.warning(
+            "case_lifecycle_missing_case",
+            extra={"tenant_id": tenant_id, "case": case_id},
+        )
+        return None
     except ValueError:
         log.debug(
             "case_lifecycle_invalid_case",
             extra={"tenant_id": tenant_id, "case": case_id},
         )
+        return None
+
+    if not case:
         return None
 
     safe_state = _normalise_mapping(graph_state)

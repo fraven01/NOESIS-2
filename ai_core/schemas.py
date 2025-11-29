@@ -454,6 +454,8 @@ class CrawlerRunRequest(BaseModel):
     max_document_bytes: int | None = None
     limits: CrawlerRunLimits | None = None
     collection_id: str | None = None
+    embedding_profile: str | None = None
+    scope: str | None = None
 
     @field_validator("origin_url", mode="before")
     @classmethod

@@ -33,6 +33,7 @@ urlpatterns = [
     path("", include("theme.urls")),
     path("admin/", admin.site.urls),
     path("ai/", include("ai_core.urls")),
+    path("cases/", include("cases.urls")),
     path("documents/", include("documents.urls")),
     path("v1/ai/", include(("ai_core.urls_v1", "ai_core_v1"), namespace="ai_core_v1")),
     path(

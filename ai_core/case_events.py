@@ -25,7 +25,7 @@ def _resolve_tenant(tenant_identifier: str) -> Optional[Tenant]:
     return TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
 
 
-def _load_ingestion_run(tenant_id: str, case_id: str) -> Optional[DocumentIngestionRun]:
+def _load_ingestion_run(tenant_id: str, case_id: str | None) -> Optional[DocumentIngestionRun]:
     try:
         return DocumentIngestionRun.objects.get(tenant_id=tenant_id, case=case_id)
     except DocumentIngestionRun.DoesNotExist:
@@ -36,7 +36,7 @@ def _load_ingestion_run(tenant_id: str, case_id: str) -> Optional[DocumentIngest
 
 def emit_ingestion_case_event(
     tenant_identifier: str,
-    case_id: str,
+    case_id: str | None,
     *,
     run_id: str | None = None,
     context: str | None = None,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import Any, Callable, Iterable, Mapping, MutableMapping
 
 from .contracts import normalize_trace_id
@@ -85,8 +86,15 @@ def normalize_tenant_header(headers: HeaderMap) -> str | None:
     return _first_header(headers, TENANT_ALIASES)
 
 
+_CASE_ID_PATTERN = re.compile(r"^[A-Z0-9-]+$")
+
+
 def normalize_case_header(headers: HeaderMap) -> str | None:
-    return _first_header(headers, CASE_ALIASES)
+    value = _first_header(headers, CASE_ALIASES)
+    if value:
+        if not _CASE_ID_PATTERN.match(value):
+            raise ValueError(f"Invalid Case ID format: {value}")
+    return value
 
 
 def normalize_idempotency_key(headers: HeaderMap) -> str | None:

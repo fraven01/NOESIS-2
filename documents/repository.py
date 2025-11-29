@@ -117,7 +117,7 @@ class DocumentLifecycleRecord:
 @dataclass
 class IngestionRunRecord:
     tenant_id: str
-    case: str
+    case: Optional[str]
     run_id: str
     status: str
     queued_at: str
@@ -243,7 +243,7 @@ class DocumentLifecycleStore:
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         document_ids: Iterable[str],
         invalid_document_ids: Iterable[str],
@@ -275,7 +275,7 @@ class DocumentLifecycleStore:
             embedding_profile=_normalize_optional_string(embedding_profile),
             source=_normalize_optional_string(source),
         )
-        key = (tenant_id, case)
+        key = (tenant_id, case or "")
         with self._lock:
             self._ingestion_runs[key] = record
             return record.as_payload()
@@ -284,12 +284,12 @@ class DocumentLifecycleStore:
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         started_at: str,
         document_ids: Iterable[str],
     ) -> Optional[Dict[str, object]]:
-        key = (tenant_id, case)
+        key = (tenant_id, case or "")
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -309,7 +309,7 @@ class DocumentLifecycleStore:
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         finished_at: str,
         duration_ms: float,
@@ -321,7 +321,7 @@ class DocumentLifecycleStore:
         document_ids: Iterable[str],
         error: Optional[str],
     ) -> Optional[Dict[str, object]]:
-        key = (tenant_id, case)
+        key = (tenant_id, case or "")
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -350,9 +350,9 @@ class DocumentLifecycleStore:
             return record.as_payload()
 
     def get_ingestion_run(
-        self, *, tenant_id: str, case: str
+        self, *, tenant_id: str, case: Optional[str]
     ) -> Optional[Dict[str, object]]:
-        key = (tenant_id, case)
+        key = (tenant_id, case or "")
         with self._lock:
             record = self._ingestion_runs.get(key)
             if record is None:
@@ -522,7 +522,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         document_ids: Iterable[str],
         invalid_document_ids: Iterable[str],
@@ -578,7 +578,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         started_at: str,
         document_ids: Iterable[str],
@@ -613,7 +613,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         self,
         *,
         tenant_id: str,
-        case: str,
+        case: Optional[str],
         run_id: str,
         finished_at: str,
         duration_ms: float,
@@ -665,7 +665,7 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         return self.get_ingestion_run(tenant_id=tenant_id, case=case)
 
     def get_ingestion_run(
-        self, *, tenant_id: str, case: str
+        self, *, tenant_id: str, case: Optional[str]
     ) -> Optional[Dict[str, object]]:
         model = _ingestion_model()
         try:

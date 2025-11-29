@@ -4922,6 +4922,135 @@ class PgVectorClient:
         )
         return bool(cur.rowcount)
 
+    def ensure_collection(
+        self,
+        *,
+        tenant_id: str,
+        collection_id: object,
+        embedding_profile: str | None = None,
+        scope: str | None = None,
+    ) -> None:
+        """Ensure a vector collection record exists for ``tenant_id``."""
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        try:
+            collection_uuid = (
+                collection_id
+                if isinstance(collection_id, uuid.UUID)
+                else uuid.UUID(str(collection_id))
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid_collection_id") from exc
+
+        with self._connection() as conn:  # type: ignore[attr-defined]
+            try:
+                with conn.cursor() as cur:
+                    self._ensure_collection_scope(cur, tenant_uuid, collection_uuid)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        logger.info(
+            "rag.collections.ensure",
+            extra={
+                "tenant_id": str(tenant_uuid),
+                "collection_id": str(collection_uuid),
+                "embedding_profile": embedding_profile,
+                "scope": scope,
+            },
+        )
+
+    def delete_collection(
+        self,
+        *,
+        tenant_id: str,
+        collection_id: object,
+    ) -> None:
+        """Remove vector collection metadata and orphaned relations."""
+
+        tenant_uuid = self._coerce_tenant_uuid(tenant_id)
+        try:
+            collection_uuid = (
+                collection_id
+                if isinstance(collection_id, uuid.UUID)
+                else uuid.UUID(str(collection_id))
+            )
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise ValueError("invalid_collection_id") from exc
+
+        documents_table = self._table("documents")
+        chunks_table = self._table("chunks")
+        embeddings_table = self._table("embeddings")
+        relation_table = self._table("document_collections")
+        collections_table = self._table("collections")
+
+        clear_documents_sql = sql.SQL(
+            """
+            UPDATE {documents}
+               SET collection_id = NULL,
+                   metadata = jsonb_strip_nulls(
+                       coalesce(metadata, '{{}}'::jsonb) - 'collection_id'
+                   )
+             WHERE tenant_id = %s
+               AND collection_id = %s
+            """
+        ).format(documents=documents_table)
+
+        delete_chunks_sql = sql.SQL(
+            """
+            DELETE FROM {chunks}
+             WHERE tenant_id = %s
+               AND collection_id = %s
+            """
+        ).format(chunks=chunks_table)
+
+        delete_embeddings_sql = sql.SQL(
+            """
+            DELETE FROM {embeddings}
+             WHERE tenant_id = %s
+               AND collection_id = %s
+            """
+        ).format(embeddings=embeddings_table)
+
+        delete_relations_sql = sql.SQL(
+            """
+            DELETE FROM {relations}
+             WHERE collection_id = %s
+            """
+        ).format(relations=relation_table)
+
+        delete_collection_sql = sql.SQL(
+            """
+            DELETE FROM {collections}
+             WHERE tenant_id = %s
+               AND id = %s
+            """
+        ).format(collections=collections_table)
+
+        params = (str(tenant_uuid), str(collection_uuid))
+
+        with self._connection() as conn:  # type: ignore[attr-defined]
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(delete_embeddings_sql, params)
+                    cur.execute(delete_chunks_sql, params)
+                    cur.execute(clear_documents_sql, params)
+                    cur.execute(delete_relations_sql, (str(collection_uuid),))
+                    cur.execute(delete_collection_sql, params)
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+
+        logger.info(
+            "rag.collections.deleted",
+            extra={
+                "tenant_id": str(tenant_uuid),
+                "collection_id": str(collection_uuid),
+            },
+        )
+
     def update_lifecycle_state(
         self,
         *,
