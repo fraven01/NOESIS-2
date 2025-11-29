@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 from collections import Counter
 from dataclasses import dataclass
 import json
@@ -86,7 +85,9 @@ class DocumentSpaceService:
             selected_collection = self._match_collection_identifier(
                 collections, params.requested_collection
             )
-            collection_warning = bool(params.requested_collection and not selected_collection)
+            collection_warning = bool(
+                params.requested_collection and not selected_collection
+            )
             requested_identifier = params.requested_collection or ""
             if selected_collection is None and collections:
                 selected_collection = collections[0]

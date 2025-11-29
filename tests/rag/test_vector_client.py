@@ -1740,6 +1740,7 @@ def test_pgvector_collection_management_cleans_related_rows() -> None:
                 remaining = cur.fetchone()[0]
                 assert remaining == 0
 
+
 def test_near_duplicate_respects_collection_scope(monkeypatch):
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "skip")
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_THRESHOLD", "0.95")

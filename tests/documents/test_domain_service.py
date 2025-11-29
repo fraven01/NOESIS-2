@@ -407,7 +407,9 @@ def test_update_lifecycle_state_enforces_transitions(tenant: Tenant):
             )
 
 
-def test_soft_delete_document_marks_timestamp(tenant: Tenant, vector_store: _VectorStoreStub):
+def test_soft_delete_document_marks_timestamp(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
     service = DocumentDomainService(
         vector_store=vector_store, deletion_dispatcher=vector_store.dispatch_delete
     )

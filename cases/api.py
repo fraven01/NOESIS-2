@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
 
-from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import serializers, status, viewsets
@@ -14,7 +12,6 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from cases.models import Case
-from common.constants import X_TENANT_ID_HEADER
 from customers.tenant_context import TenantContext, TenantRequiredError
 
 

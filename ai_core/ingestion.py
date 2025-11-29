@@ -44,7 +44,9 @@ from .rag.vector_schema import ensure_vector_space_schema
 log = get_logger(__name__)
 
 
-def _load_case_observability_context(tenant_id: str, case_id: str | None) -> dict[str, str]:
+def _load_case_observability_context(
+    tenant_id: str, case_id: str | None
+) -> dict[str, str]:
     if not tenant_id or not case_id:
         return {}
     for filter_kwargs in (
@@ -84,7 +86,9 @@ def _status_store_path(tenant: str, case: str | None, document_id: str) -> str:
     )
 
 
-def _load_pipeline_state(tenant: str, case: str | None, document_id: str) -> Dict[str, object]:
+def _load_pipeline_state(
+    tenant: str, case: str | None, document_id: str
+) -> Dict[str, object]:
     status_path = _status_store_path(tenant, case, document_id)
     try:
         raw_state = object_store.read_json(status_path)
@@ -424,7 +428,9 @@ def _parsed_text_path(tenant: str, case: str | None, document_identifier: UUID) 
     )
 
 
-def _parsed_blocks_path(tenant: str, case: str | None, document_identifier: UUID) -> str:
+def _parsed_blocks_path(
+    tenant: str, case: str | None, document_identifier: UUID
+) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
     case_segment = object_store.sanitize_identifier(case or "_uncased_")
     document_segment = object_store.sanitize_identifier(str(document_identifier))

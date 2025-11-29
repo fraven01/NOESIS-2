@@ -487,8 +487,7 @@ class DocumentDomainService:
             }
 
             transaction.on_commit(
-                lambda exclusive_document_ids=exclusive_document_ids,
-                payload=payload: self._dispatch_collection_cleanup(
+                lambda exclusive_document_ids=exclusive_document_ids, payload=payload: self._dispatch_collection_cleanup(
                     exclusive_document_ids=exclusive_document_ids,
                     payload=payload,
                     dispatcher_fn=dispatcher_fn,
@@ -561,22 +560,6 @@ class DocumentDomainService:
 
         logger.info("documents.collection.vector_delete_success", extra=payload)
 
-    def _require_vector_store(self):
-        if self._vector_store is None:
-            raise RuntimeError("Vector store client is required for this operation")
-        return self._vector_store
-
-
-__all__ = [
-    "DocumentDomainService",
-    "IngestionDispatcher",
-    "DeletionDispatcher",
-    "PersistedDocumentIngest",
-    "DocumentIngestSpec",
-    "BulkIngestRecord",
-    "BulkIngestResult",
-]
-
     def _dispatch_collection_cleanup(
         self,
         *,
@@ -609,7 +592,21 @@ __all__ = [
             dispatcher_fn(payload)
             logger.info("documents.collection.delete_dispatched", extra=extra)
         except Exception:
-            logger.exception(
-                "documents.collection.delete_dispatch_failed", extra=extra
-            )
+            logger.exception("documents.collection.delete_dispatch_failed", extra=extra)
             raise
+
+    def _require_vector_store(self):
+        if self._vector_store is None:
+            raise RuntimeError("Vector store client is required for this operation")
+        return self._vector_store
+
+
+__all__ = [
+    "DocumentDomainService",
+    "IngestionDispatcher",
+    "DeletionDispatcher",
+    "PersistedDocumentIngest",
+    "DocumentIngestSpec",
+    "BulkIngestRecord",
+    "BulkIngestResult",
+]

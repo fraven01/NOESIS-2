@@ -70,7 +70,9 @@ def resolve_case(tenant: Tenant, case_id: str | None) -> models.Case | None:
         )
 
 
-def _build_ingestion_payload(ingestion_run: "DocumentIngestionRun") -> dict[str, object]:
+def _build_ingestion_payload(
+    ingestion_run: "DocumentIngestionRun",
+) -> dict[str, object]:
     payload: dict[str, object] = {
         "run_id": ingestion_run.run_id,
     }

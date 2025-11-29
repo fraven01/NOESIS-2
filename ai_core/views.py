@@ -555,7 +555,9 @@ def _prepare_request(request: Request):
 
     trace_id = uuid4().hex
     if case_id:
-        case_error = assert_case_active(request, case_id, tenant_identifier=tenant_schema)
+        case_error = assert_case_active(
+            request, case_id, tenant_identifier=tenant_schema
+        )
         if case_error is not None:
             return None, case_error
     meta = {

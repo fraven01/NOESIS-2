@@ -45,7 +45,9 @@ class RedisIngestionStatusStore:
             return None
         return payload
 
-    def _persist(self, tenant_id: str, case: str | None, payload: dict[str, object]) -> None:
+    def _persist(
+        self, tenant_id: str, case: str | None, payload: dict[str, object]
+    ) -> None:
         self._client().set(self._key(tenant_id, case), json.dumps(payload))
 
     def record_ingestion_run_queued(
@@ -299,7 +301,9 @@ def mark_ingestion_run_completed(
     )
 
 
-def get_latest_ingestion_run(tenant_id: str, case: str | None) -> dict[str, object] | None:
+def get_latest_ingestion_run(
+    tenant_id: str, case: str | None
+) -> dict[str, object] | None:
     """Return the latest recorded ingestion run for the tenant/case pair."""
 
     payload = _LIFECYCLE_STORE.get_ingestion_run(tenant_id=tenant_id, case=case)

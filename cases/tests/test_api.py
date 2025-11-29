@@ -12,7 +12,9 @@ class CaseApiTests(APITestCase):
     """Test Case management API."""
 
     def setUp(self):
-        self.tenant = Tenant.objects.create(schema_name="test_tenant", name="Test Tenant")
+        self.tenant = Tenant.objects.create(
+            schema_name="test_tenant", name="Test Tenant"
+        )
         self.other_tenant = Tenant.objects.create(
             schema_name="other_tenant", name="Other Tenant"
         )
@@ -35,9 +37,7 @@ class CaseApiTests(APITestCase):
 
     def test_create_case_duplicate_external_id(self):
         """Test creating a case with duplicate external_id for same tenant."""
-        Case.objects.create(
-            tenant=self.tenant, title="Existing", external_id="case-1"
-        )
+        Case.objects.create(tenant=self.tenant, title="Existing", external_id="case-1")
         data = {"title": "Duplicate", "external_id": "case-1"}
         response = self.client.post(
             self.url,
@@ -48,9 +48,7 @@ class CaseApiTests(APITestCase):
 
     def test_list_cases_tenant_isolation(self):
         """Test listing cases respects tenant isolation."""
-        Case.objects.create(
-            tenant=self.tenant, title="My Case", external_id="my-case"
-        )
+        Case.objects.create(tenant=self.tenant, title="My Case", external_id="my-case")
         Case.objects.create(
             tenant=self.other_tenant, title="Other Case", external_id="other-case"
         )

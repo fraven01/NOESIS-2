@@ -40,7 +40,6 @@ from documents.services.document_space_service import (
 from ai_core.views import crawl_selected as _core_crawl_selected
 
 
-
 logger = get_logger(__name__)
 DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
 build_graph = build_external_knowledge_graph  # Backwards compatibility for tests
@@ -150,11 +149,6 @@ def _human_readable_bytes(size: object) -> str:
             return f"{value:.1f} {unit}"
         value /= 1024
     return f"{int(value)} B"
-
-
-
-
-
 
 
 _RERANK_MODEL_FALLBACK = "fast"
