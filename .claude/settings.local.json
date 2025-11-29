@@ -21,7 +21,8 @@
       "Bash(python3 -c:*)",
       "Bash(npm run dev:manage:*)",
       "Bash(git checkout:*)",
-      "Bash(npm run dev:restart:*)"
+      "Bash(npm run dev:restart:*)",
+      "Bash(npm run win:dev:test:*)"
     ],
     "deny": [],
     "ask": []

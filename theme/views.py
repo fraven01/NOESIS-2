@@ -103,6 +103,8 @@ def _resolve_manual_collection(
             return manual_id, manual_id
         if requested_text == manual_id:
             return manual_id, manual_id
+        if requested_text.lower() == "manual":
+            return manual_id, manual_id
 
     if requested_text.lower() == MANUAL_COLLECTION_SLUG:
         return manual_id, manual_id
@@ -760,7 +762,9 @@ def web_search_ingest_selected(request):
                 {
                     "error": "Crawler call failed",
                     "status_code": response.status_code,
-                    "detail": response_data.get("error", str(response_data)),
+                    "detail": response_data.get(
+                        "details", response_data.get("detail", str(response_data))
+                    ),
                 },
                 status=response.status_code,
             )

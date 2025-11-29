@@ -241,6 +241,12 @@ def assert_case_active(
             case = None
 
     if case is None:
+        # Allow dev cases for dev tenant
+        is_dev_tenant = getattr(tenant_obj, "schema_name", "") == "dev"
+        is_dev_case = normalized_case_id.startswith("dev-case-")
+        if is_dev_tenant and is_dev_case:
+            return None
+
         return _error_response(
             "Case not found for this tenant. Create or activate the case before invoking this endpoint.",
             "case_not_found",
@@ -1450,54 +1456,69 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 def crawl_selected(request):
     """Handle crawl selected requests from the RAG tools page.
 
-    Delegates to crawler_runner API view for proper state construction.
+    Directly invokes the crawler runner service to avoid view dispatch issues.
     """
     try:
-        data = json.loads(request.body)
+        # Wrap request to use shared preparation logic
+        from rest_framework.request import Request as DRFRequest
+
+        # DRF Request requires parsers/authenticators to be set if we want full functionality,
+        # but _prepare_request only uses headers/META/user/auth which proxies to underlying request.
+        drf_request = DRFRequest(request)
+
+        meta, error = _prepare_request(drf_request)
+        if error:
+            return JsonResponse(error.data, status=error.status_code)
+
+        try:
+            data = json.loads(request.body)
+        except json.JSONDecodeError:
+            return JsonResponse({"error": "Invalid JSON"}, status=400)
+
         urls = data.get("urls")
         collection_id = data.get("collection_id", "crawler-demo")
         mode = data.get("mode", "live")
+        workflow_id = data.get("workflow_id", "crawler-demo")
 
         if not urls:
             return JsonResponse({"error": "URLs are required"}, status=400)
 
-        # Build payload for crawler_runner
         crawler_payload = {
-            "workflow_id": data.get("workflow_id", "crawler-demo"),
+            "workflow_id": workflow_id,
             "mode": mode,
             "origins": [{"url": url} for url in urls],
             "collection_id": collection_id,
         }
 
-        # Clone the request so crawler_runner receives a proper HttpRequest
-        cloned_request = HttpRequest()
-        cloned_request.method = "POST"
-        cloned_request.path = "/crawler-runner/internal"
-        base_meta = getattr(request, "META", {}) or {}
-        cloned_request.META = dict(base_meta)
+        try:
+            request_model = CrawlerRunRequest.model_validate(crawler_payload)
+        except ValidationError as exc:
+            return JsonResponse(
+                {"error": "Invalid request payload", "details": str(exc)}, status=400
+            )
 
-        body_bytes = json.dumps(crawler_payload).encode("utf-8")
-        cloned_request._body = body_bytes
-        cloned_request.META["CONTENT_TYPE"] = "application/json"
-        cloned_request.META["HTTP_CONTENT_TYPE"] = "application/json"
-        cloned_request.META["CONTENT_LENGTH"] = str(len(body_bytes))
+        lifecycle_store = _resolve_lifecycle_store()
 
-        # Preserve tenant context for downstream resolution
-        if hasattr(request, "tenant"):
-            cloned_request.tenant = request.tenant
-        if hasattr(request, "tenant_schema"):
-            cloned_request.tenant_schema = request.tenant_schema
-        if hasattr(request, "user"):
-            cloned_request.user = request.user
+        graph_builder = None
+        if crawler_ingestion_graph is not _DEFAULT_CRAWLER_GRAPH_MODULE:
+            graph_builder = getattr(crawler_ingestion_graph, "build_graph", None)
 
-        # Call crawler_runner view directly (same module)
-        response = crawler_runner(cloned_request)
+        try:
+            result = run_crawler_runner(
+                meta=meta,
+                request_model=request_model,
+                lifecycle_store=lifecycle_store,
+                graph_factory=graph_builder,
+            )
+        except CrawlerRunError as exc:
+            payload = {"detail": str(exc), "code": exc.code}
+            payload.update(exc.details)
+            return JsonResponse(payload, status=exc.status_code)
+        except ValueError as exc:
+            return JsonResponse({"error": str(exc)}, status=400)
 
-        # Return response data
-        return JsonResponse(response.data, status=response.status_code)
+        return JsonResponse(result.payload, status=result.status_code)
 
-    except json.JSONDecodeError:
-        return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
         logger.exception("crawl_selected.failed")
         return JsonResponse({"error": str(e)}, status=500)

@@ -79,8 +79,8 @@
     manual: 'manual',
     live: 'live',
     ingest: 'live',
-    store_only: 'live',
-    fetch_only: 'live',
+    store_only: 'store_only',
+    fetch_only: 'fetch_only',
   };
 
   function mapCrawlerMode(value) {

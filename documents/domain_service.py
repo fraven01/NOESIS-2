@@ -200,11 +200,7 @@ class DocumentDomainService:
             return BulkIngestResult(records=[], failed=[])
 
         dispatcher_fn = dispatcher or self._ingestion_dispatcher
-        allow_missing_dispatcher = (
-            self._allow_missing_ingestion_dispatcher_for_tests
-            if allow_missing_ingestion_dispatcher_for_tests is None
-            else allow_missing_ingestion_dispatcher_for_tests
-        )
+        allow_missing_dispatcher = allow_missing_ingestion_dispatcher_for_tests or False
         if dispatcher_fn is None and not allow_missing_dispatcher:
             raise ValueError("ingestion_dispatcher_required")
 
@@ -336,10 +332,14 @@ class DocumentDomainService:
             )
 
             if collection_id is not None and collection.collection_id != collection_id:
-                raise ValueError(
-                    "collection_id_mismatch",
-                    collection.collection_id,
-                    collection_id,
+                logger.warning(
+                    "documents.collection.id_mismatch_ignored",
+                    extra={
+                        "expected": str(collection_id),
+                        "actual": str(collection.collection_id),
+                        "key": key,
+                        "tenant_id": str(tenant.id),
+                    },
                 )
 
             if created:

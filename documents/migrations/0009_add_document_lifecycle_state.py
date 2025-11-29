@@ -7,7 +7,7 @@ class Migration(migrations.Migration):
 
     dependencies = [
         ("customers", "0006_tenant_case_lifecycle_definition"),
-        ("documents", "0007_document_tenant_scope"),
+        ("documents", "0008_document_soft_deleted_at_and_more"),
     ]
 
     operations = [

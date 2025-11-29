@@ -178,7 +178,7 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
 
 
 @pytest.mark.django_db
-@patch("theme.views.ensure_manual_collection")
+@patch("documents.collection_service.CollectionService.ensure_manual_collection")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_defaults_to_manual_collection(
     mock_crawl_selected, mock_ensure
@@ -338,7 +338,7 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
 
 
 @pytest.mark.django_db
-@patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
+@patch("documents.collection_service.CollectionService.ensure_manual_collection", return_value="manual-uuid")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
     """Test that web_search_ingest_selected dispatches crawl_selected for each URL."""
@@ -379,7 +379,7 @@ def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
 
 
 @pytest.mark.django_db
-@patch("theme.views.ensure_manual_collection", return_value="manual-uuid")
+@patch("documents.collection_service.CollectionService.ensure_manual_collection", return_value="manual-uuid")
 @patch("theme.views.crawl_selected")
 def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     mock_crawl_selected,

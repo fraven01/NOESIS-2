@@ -925,6 +925,14 @@ class CrawlerIngestionGraph:
             last_transition = transition
             self._emit(node.name, transition, run_id)
 
+            control = working_state.get("control")
+            if (
+                isinstance(control, Mapping)
+                and control.get("mode") == "fetch_only"
+                and node.name == "document_pipeline"
+            ):
+                continue_flow = False
+
         finish_transition, _ = self._run_finish(working_state)
         finish_transition = self._with_transition_metadata(
             finish_transition, working_state
@@ -1646,6 +1654,9 @@ class CrawlerIngestionGraph:
         artifacts.setdefault("status_updates", []).append(status_update)
 
         ingest_action = "upsert" if decision.decision in {"new", "changed"} else "skip"
+        control = state.get("control")
+        if isinstance(control, Mapping) and control.get("mode") == "store_only":
+            ingest_action = "skip"
         state["ingest_action"] = ingest_action
 
         transition = _transition(

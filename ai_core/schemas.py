@@ -432,7 +432,7 @@ class CrawlerRunRequest(BaseModel):
     """Request payload used by the crawler LangGraph runner."""
 
     workflow_id: str | None = None
-    mode: Literal["live", "manual"] = "live"
+    mode: Literal["live", "manual", "store_only", "fetch_only"] = "live"
     origins: list[CrawlerOriginConfig] | None = None
     origin_url: str | None = None
     provider: str = "web"

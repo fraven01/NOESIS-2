@@ -86,7 +86,7 @@ def normalize_tenant_header(headers: HeaderMap) -> str | None:
     return _first_header(headers, TENANT_ALIASES)
 
 
-_CASE_ID_PATTERN = re.compile(r"^[A-Z0-9-]+$")
+_CASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 def normalize_case_header(headers: HeaderMap) -> str | None:

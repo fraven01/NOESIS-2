@@ -294,7 +294,7 @@ def test_ingest_document_requires_dispatcher(tenant: Tenant):
 
 def test_ingest_document_sets_initial_lifecycle_state(tenant: Tenant):
     service = DocumentDomainService(
-        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+        vector_store=None, ingestion_dispatcher=lambda *args: None
     )
 
     with schema_context(tenant.schema_name):
@@ -312,7 +312,7 @@ def test_ingest_document_sets_initial_lifecycle_state(tenant: Tenant):
 
 def test_bulk_ingest_documents_persists_specs(tenant: Tenant):
     service = DocumentDomainService(
-        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+        vector_store=None, ingestion_dispatcher=lambda *args: None
     )
 
     specs = [
@@ -336,7 +336,7 @@ def test_bulk_ingest_documents_handles_partial_failures(
     tenant: Tenant, monkeypatch: pytest.MonkeyPatch
 ):
     service = DocumentDomainService(
-        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+        vector_store=None, ingestion_dispatcher=lambda *args: None
     )
 
     original_ingest = DocumentDomainService.ingest_document
@@ -384,7 +384,7 @@ def test_delete_document_requires_dispatcher(
 
 def test_update_lifecycle_state_enforces_transitions(tenant: Tenant):
     service = DocumentDomainService(
-        vector_store=None, allow_missing_ingestion_dispatcher_for_tests=True
+        vector_store=None, ingestion_dispatcher=lambda *args: None
     )
 
     with schema_context(tenant.schema_name):

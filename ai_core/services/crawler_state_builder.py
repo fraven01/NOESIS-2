@@ -356,6 +356,7 @@ def build_crawler_state(
             "tags": list(tags),
             "shadow_mode": bool(request_data.shadow_mode or dry_run),
             "dry_run": dry_run,
+            "mode": request_data.mode,
         }
         if review:
             control["review"] = review
