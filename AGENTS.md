@@ -8,6 +8,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 ## Zweck & Geltungsbereich
 - **Master-Referenz** für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
 - **Für Claude Code**: Siehe [`CLAUDE.md`](CLAUDE.md) für operational workflows (Setup, Commands, häufige Aufgaben).
+- **Für Gemini Code**: Siehe [`Gemini.md`](Gemini.md) für denselben Agenten-Kontext; verweist auf diese Master-Referenz.
 - **Für Codex**: Diese Datei enthält alle erforderlichen Contracts und Architektur-Referenzen.
 - Vor Änderungen prüfe den Verzeichnispfad auf spezifischere `AGENTS.md`-Dateien (z. B. `theme/AGENTS.md`, `theme/components/AGENTS.md`) und befolge stets die tiefste Anweisung.
 - Dieses Dokument dient als Einstieg und Navigationshilfe; es enthält keine sich wiederholenden Inhalte aus den Primärquellen.
@@ -15,6 +16,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 ## Systemkontext
 - Die Systemlandschaft (Web, Worker, Ingestion, LiteLLM, Datenpfade) und die zugehörigen Diagramme sind in der [Architekturübersicht](docs/architektur/overview.md) beschrieben.
 - Laufzeitpfade pro Umgebung sowie die Sequenz von Deploy- zu RAG-Flows befinden sich in den Mermaid-Diagrammen derselben Quelle.
+- ID-Semantik, Propagation und Case-Lifecycle sind in den Architektur-Referenzen unter `docs/architecture/` dokumentiert: [`id-semantics`](docs/architecture/id-semantics.md), [`id-propagation`](docs/architecture/id-propagation.md), [`id-sync-checklist`](docs/architecture/id-sync-checklist.md) und zugehörige ADRs (`docs/architecture/adrs/ADR-00x-*.md`).
 
 ## Rollen & Funktionsblöcke
 - **Web- & Worker-Services** verantworten HTTP-Verarbeitung und Celery-Queues laut [Architekturübersicht](docs/architektur/overview.md).

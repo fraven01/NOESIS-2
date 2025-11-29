@@ -1,29 +1,36 @@
-# Gemini Agent Context
+# Gemini Leitfaden
 
-Dieses Dokument enthält wesentlichen Kontext für den Gemini-Agenten, um in der NOESIS 2-Umgebung zu arbeiten.
-This document provides essential context for the Gemini agent to operate within the NOESIS 2 environment.
+Operativer Leitfaden für den Gemini-Code-Agenten in NOESIS 2. **Alle Contracts, Glossar und Architektur gelten identisch wie für Codex und Claude** und werden zentral in [`AGENTS.md`](AGENTS.md) gepflegt.
 
-## ID Contracts and Semantics
+## Zweck & Geltungsbereich
+- Gleicher Wissensstand wie Claude Code und Codex: folgt denselben Contracts, Workflows und Paketschranken.
+- Primärquelle für Architektur & IDs: [`AGENTS.md`](AGENTS.md) und die Referenzen unter `docs/`.
+- Vor Änderungen auf spezifischere Leitfäden im Verzeichnispfad prüfen (z. B. `theme/AGENTS.md`).
 
-The following IDs are used throughout the NOESIS 2 system. Consistent use is critical for tracing, tenancy, and stability.
+## ID-Architektur & Lifecycle (Kurzreferenz)
+- Pflichtfelder für Tool-Aufrufe: `tenant_id`, `trace_id`, `invocation_id` **und genau eine** Laufzeit-ID (`run_id` XOR `ingestion_run_id`).
+- HTTP-Header: `X-Tenant-ID` (immer), `X-Trace-ID` (immer), `X-Case-ID` (fachlich, wenn Case-Kontext besteht).
+- ID-Semantik & Propagation: siehe [`docs/architecture/id-semantics.md`](docs/architecture/id-semantics.md) und [`docs/architecture/id-propagation.md`](docs/architecture/id-propagation.md); Lifecycle-Events & Checkliste in [`docs/architecture/id-sync-checklist.md`](docs/architecture/id-sync-checklist.md) und ADRs unter `docs/architecture/adrs/`.
 
-- **`tenant_id`**: Identifies a tenant. **MUST** be present in all operations involving tenant-specific data.
-- **`case_id`**: Identifies a business case within a tenant (e.g., a ticket or request). Used for end-to-end tracking.
-- **`trace_id`**: Correlates a single request across all services. Essential for observability.
-- **`span_id`**: Identifies a single operation within a trace.
-- **`workflow_id`**: Identifies a specific business workflow or graph.
-- **`run_id`**: A unique ID for a single execution of a LangGraph agent.
-- **`ingestion_run_id`**: A specialized ID for data ingestion processes.
-- **`idempotency_key`**: A client-provided key for `POST` requests to prevent duplicate execution.
-- **`invocation_id`**: Unique ID for each individual tool invocation within a workflow.
-- **`document_id`**: Uniquely identifies a document.
-- **`collection_id`**: Identifies a logical collection of documents.
-- **`document_version_id`**: Unique ID for a specific version of a document.
+## Architektur & Systemverständnis (Kurzfassung)
+- Mandantenfähige Django-Plattform mit LangGraph-Agenten und Celery-Workern (`agents`, `ingestion`).
+- RAG-Store: PostgreSQL + `pgvector`; LLM-Zugriff über LiteLLM (Gemini, Vertex AI, weitere Modelle).
+- Observability: Langfuse Traces + ELK Logs; korrelieren immer über `trace_id`.
+- Vollständige Architektur: [docs/architektur/overview.md](docs/architektur/overview.md).
 
-### Usage
+## Arbeitsweise & Commands (Pointer)
+- Entwicklung & Tests: Siehe Befehle in [`CLAUDE.md`](CLAUDE.md) (Docker-Setup, Linting, Tests, RAG-Management); dieselben Kommandos gelten für Gemini.
+- API & SDK: `npm run api:schema`, `make sdk`.
+- RAG-Werkzeuge: `python manage.py rag_routing_rules`, `python manage.py sync_rag_schemas`, `python manage.py check_rag_schemas`.
 
-- Incoming HTTP requests require `X-Tenant-ID` header. `X-Case-ID` is optional.
-- Tool calls within agents receive a `ToolContext` containing `tenant_id`, `trace_id`, and either `run_id` or `ingestion_run_id`.
-- The `require_ids` function in `ai_core.ids.contracts` is used for validation.
+## Navigation (Primärquellen)
+1. **Master-Referenz**: [`AGENTS.md`](AGENTS.md) – Contracts, Glossar, Schnittstellen, Paketgrenzen.
+2. **Agenten & Tools**: [docs/agents/overview.md](docs/agents/overview.md), [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md).
+3. **IDs & Lifecycle**: [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md), [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md), ADRs unter `docs/architecture/adrs/`.
+4. **Multi-Tenancy**: [docs/multi-tenancy.md](docs/multi-tenancy.md).
+5. **Entwicklung & Betrieb**: [docs/development/onboarding.md](docs/development/onboarding.md), [docs/cicd/pipeline.md](docs/cicd/pipeline.md), [docs/operations/scaling.md](docs/operations/scaling.md).
 
-For more details, see the full documentation: [ID-Verträge und Semantik](docs/ids.md).
+## Governance
+- Änderungen an Contracts/IDs zuerst in [`AGENTS.md`](AGENTS.md) und den Architektur-Docs dokumentieren; Gemini.md bleibt referenzierend.
+- Pull Requests sollen aktualisierte Quellen verlinken und Idempotenz sicherstellen.
+- Bei Fragen: zuerst [`AGENTS.md`](AGENTS.md), dann Primärquellen unter `docs/`.
