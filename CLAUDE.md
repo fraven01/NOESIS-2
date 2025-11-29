@@ -6,6 +6,7 @@ Zentrale Navigationsdatei für Claude Code bei der Arbeit mit NOESIS 2. Dieses D
 
 ## Zweck & Geltungsbereich
 - **Operational Guide** für Claude Code in diesem Repository
+- Gleicher Wissensstand wie Gemini Code und Codex: alle drei nutzen dieselben Contracts & Workflows
 - Alle Contracts, Glossar, Architektur → siehe [`AGENTS.md`](AGENTS.md)
 - Vor Änderungen prüfe den Verzeichnispfad auf spezifischere Leitfäden (z. B. `theme/AGENTS.md`)
 - Dieser Guide enthält nur Claude-spezifische Arbeitsweisen und Workflows
@@ -301,24 +302,25 @@ make sdk                   # Generate SDKs
 1. **[AGENTS.md](AGENTS.md)** - Hauptleitfaden (Contracts, Glossar, Schnittstellen)
 2. [docs/architektur/overview.md](docs/architektur/overview.md) - Systemarchitektur
 3. [docs/multi-tenancy.md](docs/multi-tenancy.md) - Mandantenfähigkeit
+4. [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md) & [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md) - ID-Semantik & End-to-End-Propagation (plus ADRs unter `docs/architecture/adrs/`)
 
 ### AI Core
-4. [docs/agents/overview.md](docs/agents/overview.md) - LangGraph-Agenten
-5. [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md) - Tool-Verträge
-6. [docs/rag/overview.md](docs/rag/overview.md) - RAG-Architektur
-7. [docs/rag/ingestion.md](docs/rag/ingestion.md) - Ingestion-Pipeline
+5. [docs/agents/overview.md](docs/agents/overview.md) - LangGraph-Agenten
+6. [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md) - Tool-Verträge
+7. [docs/rag/overview.md](docs/rag/overview.md) - RAG-Architektur
+8. [docs/rag/ingestion.md](docs/rag/ingestion.md) - Ingestion-Pipeline
 
 ### Entwicklung & Betrieb
-8. [docs/development/onboarding.md](docs/development/onboarding.md) - Einstieg
-9. [README.md](README.md) - Projekt-README
-10. [docs/operations/scaling.md](docs/operations/scaling.md) - Skalierung
-11. [docs/runbooks/migrations.md](docs/runbooks/migrations.md) - Migrationen
+9. [docs/development/onboarding.md](docs/development/onboarding.md) - Einstieg
+10. [README.md](README.md) - Projekt-README
+11. [docs/operations/scaling.md](docs/operations/scaling.md) - Skalierung
+12. [docs/runbooks/migrations.md](docs/runbooks/migrations.md) - Migrationen
 
 ### Observability & CI/CD
-12. [docs/observability/langfuse.md](docs/observability/langfuse.md) - Langfuse
-13. [docs/observability/elk.md](docs/observability/elk.md) - ELK-Stack
-14. [docs/cicd/pipeline.md](docs/cicd/pipeline.md) - CI/CD-Pipeline
-15. [docs/security/secrets.md](docs/security/secrets.md) - Security
+13. [docs/observability/langfuse.md](docs/observability/langfuse.md) - Langfuse
+14. [docs/observability/elk.md](docs/observability/elk.md) - ELK-Stack
+15. [docs/cicd/pipeline.md](docs/cicd/pipeline.md) - CI/CD-Pipeline
+16. [docs/security/secrets.md](docs/security/secrets.md) - Security
 
 ## Quick Reference (für schnelle Lookups)
 
