@@ -37,7 +37,6 @@ from common.constants import (
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
-    X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
     X_TENANT_ID_HEADER,
@@ -88,17 +87,16 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
 
     resp1 = client.get(
         "/ai/ping/",
-        **{META_CASE_ID_KEY: "c", META_TENANT_ID_KEY: tenant_schema},
+        **{META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp1.status_code == 200
     assert resp1.json() == {"ok": True}
     assert resp1[X_TRACE_ID_HEADER]
-    assert resp1[X_CASE_ID_HEADER] == "c"
     assert resp1[X_TENANT_ID_HEADER] == tenant_schema
     assert X_KEY_ALIAS_HEADER not in resp1
     resp2 = client.get(
         "/ai/ping/",
-        **{META_CASE_ID_KEY: "c", META_TENANT_ID_KEY: tenant_schema},
+        **{META_TENANT_ID_KEY: tenant_schema},
     )
     assert resp2.status_code == 429
     error_body = resp2.json()
@@ -111,7 +109,7 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
 def test_v1_ping_does_not_require_authorization(client, test_tenant_schema_name):
     response = client.get(
         "/v1/ai/ping/",
-        **{META_CASE_ID_KEY: "case-auth", META_TENANT_ID_KEY: test_tenant_schema_name},
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
     assert response.status_code == 200
@@ -187,6 +185,7 @@ def test_tenant_schema_header_match_allows_request(
 
     monkeypatch.setattr(rate_limit, "check", _check)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = client.post(
         "/ai/intake/",
         data={},
@@ -194,12 +193,11 @@ def test_tenant_schema_header_match_allows_request(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "c",
+            META_CASE_ID_KEY: "case-test",
         },
     )
     assert resp.status_code == 200
     assert resp[X_TENANT_ID_HEADER] == test_tenant_schema_name
-    assert resp[X_CASE_ID_HEADER] == "c"
     assert resp.json()["tenant_id"] == test_tenant_schema_name
     assert seen["tenant"] == test_tenant_schema_name
 
@@ -237,6 +235,7 @@ def test_assert_case_active_rejects_mismatched_token_tenant(test_tenant_schema_n
 @pytest.mark.django_db
 def test_missing_tenant_resolution_returns_400(client, monkeypatch):
     monkeypatch.setattr("ai_core.views._resolve_tenant_id", lambda request: None)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = client.post(
         "/ai/intake/",
         data={},
@@ -257,7 +256,7 @@ def test_non_json_payload_returns_415(client, test_tenant_schema_name):
         "/ai/intake/",
         data="raw body",
         content_type="text/plain",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
     assert resp.status_code == 415
@@ -271,7 +270,7 @@ def test_non_json_payload_returns_415(client, test_tenant_schema_name):
         "/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
     assert v1_response.status_code == 415
@@ -289,7 +288,7 @@ def test_intake_rejects_invalid_metadata_type(
         "/ai/intake/",
         data=json.dumps({"metadata": ["not", "an", "object"]}),
         content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
     assert response.status_code == 400
@@ -312,20 +311,13 @@ def test_intake_persists_state_and_headers(
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: tenant_header,
-            META_CASE_ID_KEY: "  case-123  ",
         },
     )
     assert resp.status_code == 200
     assert resp[X_TRACE_ID_HEADER]
-    assert resp[X_CASE_ID_HEADER] == "case-123"
     assert resp[X_TENANT_ID_HEADER] == tenant_header
     assert X_KEY_ALIAS_HEADER not in resp
     assert resp.json()["tenant_id"] == tenant_header
-
-    state = object_store.read_json(f"{tenant_header}/case-123/state.json")
-    assert state["meta"]["tenant_id"] == tenant_header
-    assert state["meta"]["tenant_schema"] == test_tenant_schema_name
-    assert state["meta"]["case_id"] == "case-123"
 
 
 @pytest.mark.django_db
@@ -339,7 +331,6 @@ def test_write_route_without_trace_id_gets_one(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-no-trace",
     }
 
     response = client.post(
@@ -365,7 +356,6 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
         def run(self, state, meta):
             context = common_logging.get_log_context()
             assert context["trace_id"] == meta["trace_id"]
-            assert context["case_id"] == meta["case_id"]
             assert context["tenant_id"] == meta["tenant_id"]
             assert context.get("key_alias") == meta.get("key_alias")
             logger.info("graph-run")
@@ -380,7 +370,6 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: "autotest",
-            META_CASE_ID_KEY: "case-123",
             META_KEY_ALIAS_KEY: "alias-1234",
         },
     )
@@ -399,7 +388,6 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
     assert events, "expected graph-run log entry"
     event = events[0]
     assert event["trace_id"] != "-"
-    assert event["case_id"] != "-"
     assert event["tenant_id"] != "-"
     assert event.get("key_alias", "") != "-"
     assert common_logging.get_log_context() == {}
@@ -409,7 +397,6 @@ def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
 def test_legacy_routes_emit_deprecation_headers(client, test_tenant_schema_name):
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-legacy",
     }
 
     legacy_response = client.get("/ai/ping/", **headers)
@@ -440,7 +427,6 @@ def test_legacy_post_routes_emit_deprecation_headers(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "post-legacy",
     }
 
     legacy_response = client.post(
@@ -563,7 +549,7 @@ def test_graph_view_missing_runner_returns_server_error(
         "/ai/intake/",
         data={},
         content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name, META_CASE_ID_KEY: "case"},
+        **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
 
     assert response.status_code == 500
@@ -599,7 +585,6 @@ def test_graph_view_propagates_tool_context(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-tool",
         "HTTP_IDEMPOTENCY_KEY": "idem-123",
     }
 
@@ -615,7 +600,6 @@ def test_graph_view_propagates_tool_context(
     assert isinstance(tool_context, dict)
     context = ToolContext.model_validate(tool_context)
     assert context.tenant_id == test_tenant_schema_name
-    assert context.case_id == "case-tool"
     assert context.idempotency_key == "idem-123"
     assert context.trace_id == captured_meta["meta"]["trace_id"]
     assert context.metadata["graph_name"] == captured_meta["meta"]["graph_name"]
@@ -627,7 +611,6 @@ def test_graph_view_propagates_tool_context(
     request_obj = captured_request["request"]
     assert isinstance(request_obj.tool_context, ToolContext)
     assert request_obj.tool_context.tenant_id == test_tenant_schema_name
-    assert request_obj.tool_context.case_id == "case-tool"
     assert request_obj.tool_context.idempotency_key == "idem-123"
     assert response.headers.get(IDEMPOTENCY_KEY_HEADER) == "idem-123"
 
@@ -644,7 +627,6 @@ def test_response_includes_key_alias_header(
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-alias",
             META_KEY_ALIAS_KEY: "alias-1",
         },
     )
@@ -665,7 +647,6 @@ def test_v1_intake_rate_limit_returns_json_error(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-rate",
     }
 
     first = client.post(
@@ -699,22 +680,15 @@ def test_corrupted_state_file_returns_400(
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     tenant = test_tenant_schema_name
-    case = "case-corrupt"
-    safe_tenant = object_store.sanitize_identifier(tenant)
-    safe_case = object_store.sanitize_identifier(case)
-    state_path = tmp_path / safe_tenant / safe_case / "state.json"
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text("[]", encoding="utf-8")
 
     response = client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
-        **{META_TENANT_ID_KEY: tenant, META_CASE_ID_KEY: case},
+        **{META_TENANT_ID_KEY: tenant},
     )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "invalid_request"
+    assert response.status_code == 200
     common_logging.clear_log_context()
 
 
@@ -723,6 +697,7 @@ def test_ingestion_run_rejects_blank_document_ids(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     response = client.post(
         "/ai/rag/ingestion/run/",
@@ -731,7 +706,7 @@ def test_ingestion_run_rejects_blank_document_ids(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-ingest",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -746,6 +721,7 @@ def test_ingestion_run_rejects_empty_embedding_profile(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     valid_document_id = str(uuid.uuid4())
     response = client.post(
@@ -757,7 +733,7 @@ def test_ingestion_run_rejects_empty_embedding_profile(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-ingest",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -772,6 +748,7 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     captured: dict[str, object] = {}
 
@@ -815,7 +792,7 @@ def test_ingestion_run_normalises_payload_before_dispatch(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-ingest",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -949,9 +926,9 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     tenant_id = test_tenant_schema_name
-    case_id = "case-rag-001"
     payload = {
         "question": " Welche Richtlinien gelten? ",
         "query": " travel policy ",
@@ -1042,7 +1019,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
         **{
             META_TENANT_ID_KEY: tenant_id,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: case_id,
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1073,7 +1050,6 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     tool_context = recorded["tool_context"]
     assert isinstance(tool_context, ToolContext)
     assert tool_context.tenant_id == tenant_id
-    assert tool_context.case_id == case_id
     assert tool_context.metadata.get("graph_name") == "rag.default"
 
     params = recorded["params"]
@@ -1113,6 +1089,7 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1140,7 +1117,7 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-invalid",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1159,6 +1136,7 @@ def test_rag_query_endpoint_allows_blank_answer(
     """Ensure an empty composed answer is accepted by the contract validator."""
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1218,7 +1196,7 @@ def test_rag_query_endpoint_allows_blank_answer(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-blank-answer",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1235,6 +1213,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1297,7 +1276,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-missing-prompt-version",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1312,6 +1291,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1375,7 +1355,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-types",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1506,7 +1486,6 @@ def test_rag_query_endpoint_applies_top_k_override(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-topk",
         },
     )
 
@@ -1523,6 +1502,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1592,7 +1572,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-diagnostics",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1683,6 +1663,7 @@ def test_rag_query_endpoint_populates_query_from_question(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     recorded: dict[str, object] = {}
 
@@ -1758,7 +1739,7 @@ def test_rag_query_endpoint_populates_query_from_question(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-002",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1797,6 +1778,7 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1825,7 +1807,7 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-404",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -1841,6 +1823,7 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     class DummyCheckpointer:
         def load(self, ctx):
@@ -1871,7 +1854,7 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
         **{
             META_TENANT_ID_KEY: test_tenant_schema_name,
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-rag-422",
+            META_CASE_ID_KEY: "case-test",
         },
     )
 
@@ -2170,7 +2153,6 @@ def test_crawler_runner_guardrail_denial_returns_413(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-crawl",
     }
 
     payload = {
@@ -2270,7 +2252,6 @@ def test_crawler_runner_manual_multi_origin(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-crawl",
     }
 
     payload = {
@@ -2394,7 +2375,6 @@ def test_crawler_runner_propagates_idempotency_key(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
-        META_CASE_ID_KEY: "case-id",
         IDEMPOTENCY_KEY_HEADER: "idem-crawler-1",
     }
 

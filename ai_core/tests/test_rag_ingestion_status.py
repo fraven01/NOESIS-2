@@ -7,7 +7,6 @@ from ai_core.ingestion_status import (
 )
 from ai_core.infra import rate_limit
 from common.constants import (
-    META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -18,7 +17,8 @@ def test_rag_ingestion_status_returns_latest_run(
     client, monkeypatch, test_tenant_schema_name
 ):
     tenant = test_tenant_schema_name
-    case = "case-status"
+    case = ""  # Empty for caseless
+    # create_case(case)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
 
     run_id = "run-123"
@@ -59,7 +59,7 @@ def test_rag_ingestion_status_returns_latest_run(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: case,
         },
     )
 
@@ -76,14 +76,20 @@ def test_rag_ingestion_status_returns_latest_run(
 def test_rag_ingestion_status_returns_404_when_empty(
     client, monkeypatch, test_tenant_schema_name
 ):
+
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
+
+    # Case creation removed
+    # tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    # with tenant_context(tenant):
+    #     Case.objects.create(tenant=tenant, external_id="case-none")
 
     response = client.get(
         "/ai/rag/ingestion/status/",
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-none",
+            # META_CASE_ID_KEY: "case-none",
         },
     )
 

@@ -385,7 +385,7 @@ def _persist_collection_scope(
     tenant_id: str, case_id: str, document_ids: Iterable[str], collection_id: str
 ) -> None:
     tenant_segment = object_store.sanitize_identifier(tenant_id)
-    case_segment = object_store.sanitize_identifier(case_id)
+    case_segment = object_store.sanitize_identifier(case_id or "uncased")
     for document_id in document_ids:
         if not document_id:
             continue
@@ -647,8 +647,9 @@ def _map_upload_graph_skip(
         )
 
     if decision == "skip_invalid_input":
+        reason = accept_transition.reason if accept_transition else "unknown"
         return _error_response(
-            "Upload payload is invalid.",
+            f"Upload payload is invalid: {reason}",
             "invalid_upload_payload",
             status.HTTP_400_BAD_REQUEST,
         )
@@ -723,7 +724,12 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
     try:
         normalized_meta = _normalize_meta(request)
     except ValueError as exc:
-        return _error_response(str(exc), "invalid_request", status.HTTP_400_BAD_REQUEST)
+        error_msg = str(exc)
+        # Use specific error code for case header validation errors
+        error_code = (
+            "invalid_case_header" if "Case header" in error_msg else "invalid_request"
+        )
+        return _error_response(error_msg, error_code, status.HTTP_400_BAD_REQUEST)
 
     tool_context_data = normalized_meta.get("tool_context")
     tool_context: ToolContext | None = None
@@ -1499,7 +1505,12 @@ def handle_document_upload(
         )
 
     metadata_obj = metadata_model.model_dump()
-    manual_collection_scope = str(manual_collection_uuid(meta["tenant_id"]))
+
+    # Resolve tenant to ensure consistent UUID generation for manual collection
+    tenant_for_scope = _resolve_tenant_for_documents(meta)
+    tenant_id_for_scope = tenant_for_scope.id if tenant_for_scope else meta["tenant_id"]
+    manual_collection_scope = str(manual_collection_uuid(tenant_id_for_scope))
+
     manual_scope_assigned = False
 
     existing_scope = metadata_obj.get("collection_id")
@@ -1538,15 +1549,25 @@ def handle_document_upload(
     )
     ensured_collection = None
     if metadata_obj.get("collection_id") and domain_service and tenant:
-        ensured_collection = _ensure_collection_with_warning(
-            domain_service,
-            tenant,
-            metadata_obj["collection_id"],
-            embedding_profile=metadata_obj.get("embedding_profile"),
-            scope=metadata_obj.get("scope"),
-        )
+        if manual_scope_assigned:
+            ensured_collection = domain_service.ensure_collection(
+                tenant=tenant,
+                key=MANUAL_COLLECTION_SLUG,
+                collection_id=UUID(manual_collection_scope),
+                embedding_profile=metadata_obj.get("embedding_profile"),
+                scope=metadata_obj.get("scope"),
+            )
+        else:
+            ensured_collection = _ensure_collection_with_warning(
+                domain_service,
+                tenant,
+                metadata_obj["collection_id"],
+                embedding_profile=metadata_obj.get("embedding_profile"),
+                scope=metadata_obj.get("scope"),
+            )
         if ensured_collection is not None:
             metadata_obj["collection_id"] = str(ensured_collection.collection_id)
+
     document_uuid = uuid4()
 
     file_bytes = upload.read()
@@ -1606,12 +1627,17 @@ def handle_document_upload(
     )
     meta.setdefault("workflow_id", document_meta.workflow_id)
 
+    print(
+        f"DEBUG: collection_ids={collection_ids!r} metadata_obj_collection_id={metadata_obj.get('collection_id')!r}"
+    )
     ref_payload: dict[str, object] = {
         "tenant_id": document_meta.tenant_id,
         "workflow_id": document_meta.workflow_id,
         "document_id": document_uuid,
         "collection_id": (
-            collection_ids[0] if collection_ids else metadata_obj.get("collection_id")
+            metadata_obj.get("collection_id")
+            if metadata_obj.get("collection_id")
+            else (collection_ids[0] if collection_ids else None)
         ),
         "version": metadata_obj.get("version"),
     }
@@ -1688,7 +1714,7 @@ def handle_document_upload(
             )
         if reason.startswith("input_missing"):
             return _error_response(
-                "Upload payload is invalid.",
+                f"Upload payload is invalid: {reason}",
                 "invalid_upload_payload",
                 status.HTTP_400_BAD_REQUEST,
             )

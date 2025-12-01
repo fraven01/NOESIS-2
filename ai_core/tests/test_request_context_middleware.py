@@ -292,6 +292,7 @@ def test_middleware_rejects_conflicting_run_scope():
     assert response.status_code == 400
     assert json.loads(response.content.decode()) == {
         "detail": "Exactly one of run_id or ingestion_run_id must be provided",
+        "code": "invalid_request",
     }
     assert called is False
 

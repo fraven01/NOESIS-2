@@ -14,7 +14,6 @@ from ai_core.infra import object_store, rate_limit
 from ai_core.rag import vector_client as rag_vector_client
 from ai_core.views import make_fallback_external_id
 from common.constants import (
-    META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -29,7 +28,7 @@ def test_upload_ingest_query_end2end(
     rag_database,
 ):
     tenant = test_tenant_schema_name
-    case = "case-e2e"
+    case = ""  # Empty for caseless
     http_client = client
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
@@ -56,12 +55,12 @@ def test_upload_ingest_query_end2end(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 202
     body = resp.json()
-    assert body["workflow_id"] == case
+    assert body["workflow_id"]  # Generated UUID
     doc_id = body["document_id"]
     trace_id = body["trace_id"]
 
@@ -156,7 +155,7 @@ def test_upload_ingest_query_end2end(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 410
@@ -177,7 +176,6 @@ def test_ingestion_run_reports_missing_documents(
     rag_database,
 ):
     tenant = test_tenant_schema_name
-    case = "case-e2e"
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -200,7 +198,7 @@ def test_ingestion_run_reports_missing_documents(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: case,
         },
     )
     assert resp.status_code == 202
@@ -230,7 +228,7 @@ def test_ingestion_run_reports_missing_documents(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: case,
         },
     )
 

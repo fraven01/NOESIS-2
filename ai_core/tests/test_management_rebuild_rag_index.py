@@ -19,7 +19,6 @@ from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
 from tests.plugins.rag_db import drop_schema, reset_vector_schema
 from common.constants import (
-    META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -246,12 +245,14 @@ def test_rebuild_rag_index_health_check(
     tmp_path,
     settings,
     test_tenant_schema_name,
+    create_case,
 ) -> None:
     vector_client.reset_default_client()
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "off")
 
     tenant = test_tenant_schema_name
-    case = "case-index-health"
+    case = ""  # Empty for caseless
+    # create_case(case)
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
@@ -273,7 +274,7 @@ def test_rebuild_rag_index_health_check(
             **{
                 META_TENANT_SCHEMA_KEY: tenant,
                 META_TENANT_ID_KEY: tenant,
-                META_CASE_ID_KEY: case,
+                # META_CASE_ID_KEY: case,
             },
         )
         assert response.status_code == 202

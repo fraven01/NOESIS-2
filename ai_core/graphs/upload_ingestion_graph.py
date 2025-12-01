@@ -255,7 +255,7 @@ class UploadIngestionGraph:
     def _node_accept_upload(self, state: MutableMapping[str, Any]) -> GraphTransition:
         payload = state["input"]
         tenant_id = self._require_str(payload, "tenant_id")
-        uploader_id = self._require_str(payload, "uploader_id")
+        uploader_id = self._normalize_optional_str(payload.get("uploader_id"))
         trace_id = self._require_str(payload, "trace_id")
         visibility = self._resolve_visibility(payload.get("visibility"))
         workflow_id = (

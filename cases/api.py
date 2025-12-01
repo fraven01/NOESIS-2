@@ -4,7 +4,7 @@ from __future__ import annotations
 
 
 from django.utils import timezone
-from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
+from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
@@ -13,14 +13,17 @@ from rest_framework.response import Response
 
 from cases.models import Case
 from customers.tenant_context import TenantContext, TenantRequiredError
+from noesis2.api import JSON_ERROR_STATUSES, default_extend_schema
+from noesis2.api.serializers import IdempotentResponseSerializer
 
 
-class CaseSerializer(serializers.ModelSerializer):
+class CaseSerializer(IdempotentResponseSerializer, serializers.ModelSerializer):
     """Serializer for Case model."""
 
     class Meta:
         model = Case
         fields = [
+            "idempotent",
             "id",
             "external_id",
             "title",
@@ -32,6 +35,7 @@ class CaseSerializer(serializers.ModelSerializer):
             "closed_at",
         ]
         read_only_fields = [
+            "idempotent",
             "id",
             "status",
             "phase",
@@ -44,6 +48,13 @@ class CaseSerializer(serializers.ModelSerializer):
         """Ensure external_id is valid."""
         return value.strip()
 
+    def to_representation(self, instance):
+        """Add idempotent flag to serialized output."""
+        data = super().to_representation(instance)
+        # Cases don't support idempotent replay, always False
+        data["idempotent"] = False
+        return data
+
 
 class CreateCaseSerializer(CaseSerializer):
     """Serializer for creating a new Case."""
@@ -52,8 +63,14 @@ class CreateCaseSerializer(CaseSerializer):
         fields = CaseSerializer.Meta.fields
 
 
-@extend_schema_view(
-    list=extend_schema(
+class CaseViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing Cases."""
+
+    serializer_class = CaseSerializer
+    lookup_field = "external_id"
+    lookup_value_regex = "[^/]+"  # Allow special chars in external_id if needed
+
+    @default_extend_schema(
         summary="List Cases",
         description="List all cases for the current tenant.",
         parameters=[
@@ -64,22 +81,27 @@ class CreateCaseSerializer(CaseSerializer):
                 type=str,
             ),
         ],
-    ),
-    retrieve=extend_schema(
+    )
+    def list(self, request, *args, **kwargs):
+        """List cases for the current tenant."""
+        return super().list(request, *args, **kwargs)
+
+    @default_extend_schema(
         summary="Get Case",
         description="Retrieve details of a specific case.",
-    ),
-    create=extend_schema(
+    )
+    def retrieve(self, request, *args, **kwargs):
+        """Retrieve a specific case."""
+        return super().retrieve(request, *args, **kwargs)
+
+    @default_extend_schema(
         summary="Create Case",
         description="Create a new case for the current tenant.",
-    ),
-)
-class CaseViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing Cases."""
-
-    serializer_class = CaseSerializer
-    lookup_field = "external_id"
-    lookup_value_regex = "[^/]+"  # Allow special chars in external_id if needed
+        error_statuses=JSON_ERROR_STATUSES,
+    )
+    def create(self, request, *args, **kwargs):
+        """Create a new case."""
+        return super().create(request, *args, **kwargs)
 
     def get_queryset(self):
         """Return cases for the current tenant only."""

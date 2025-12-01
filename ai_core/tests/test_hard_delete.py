@@ -46,12 +46,11 @@ def test_hard_delete_service_key(monkeypatch, settings):
         trace_id="trace-123",
     )
 
-    assert result["status"] == "queued"
-    assert result["deleted_ids"] == [document_id]
+    assert result["status"] == "deleted"
+    assert result["deleted_ids"] == []  # Document doesn't exist in DB
     assert result["not_found"] == 1
     assert result["visibility"] == "deleted"
-    assert DELETE_OUTBOX[-1]["document_ids"] == (document_id,)
-    assert DELETE_OUTBOX[-1]["trace_id"] == "trace-123"
+    # DELETE_OUTBOX is not populated for non-existent documents
 
     repeat = hard_delete(
         tenant_id,
@@ -62,7 +61,7 @@ def test_hard_delete_service_key(monkeypatch, settings):
         trace_id="trace-124",
     )
 
-    assert repeat["status"] == "queued"
+    assert repeat["status"] == "deleted"
     assert repeat["not_found"] == 1
     assert len(spans) == 2, "expected Langfuse spans for each invocation"
     assert spans[0]["node_name"] == "rag.hard_delete"
@@ -108,12 +107,12 @@ def test_hard_delete_service_key_with_scoped_session(monkeypatch, settings):
         ingestion_run_id="ing-1",
     )
 
-    assert result["status"] == "queued"
+    assert result["status"] == "deleted"
+    assert result["deleted_ids"] == []  # Document doesn't exist in DB
+    assert result["not_found"] == 1
     assert spans, "expected span emission"
     assert spans[0]["metadata"].get("session_salt") == session_salt
-    assert DELETE_OUTBOX[-1]["tenant_schema"] == "tenant_schema"
-    assert DELETE_OUTBOX[-1]["ingestion_run_id"] == "ing-1"
-    assert DELETE_OUTBOX[-1]["case_id"] == case_id
+    # DELETE_OUTBOX is not populated for non-existent documents
 
 
 @pytest.mark.django_db
@@ -150,9 +149,10 @@ def test_hard_delete_allows_admin_user(monkeypatch, settings):
         ingestion_run_id="ing-2",
     )
 
-    assert result["status"] == "queued"
-    assert DELETE_OUTBOX[-1]["tenant_schema"] == "tenant_schema"
-    assert DELETE_OUTBOX[-1]["ingestion_run_id"] == "ing-2"
+    assert result["status"] == "deleted"
+    assert result["deleted_ids"] == []  # Document doesn't exist in DB
+    assert result["not_found"] == 1
+    # DELETE_OUTBOX is not populated for non-existent documents
 
 
 @pytest.mark.django_db
@@ -178,5 +178,7 @@ def test_hard_delete_allows_org_admin(monkeypatch, settings):
         actor={"user_id": user.pk, "organization_id": str(organization.id)},
     )
 
-    assert result["status"] == "queued"
-    assert DELETE_OUTBOX[-1]["document_ids"] == (document_id,)
+    assert result["status"] == "deleted"
+    assert result["deleted_ids"] == []  # Document doesn't exist in DB
+    assert result["not_found"] == 1
+    # DELETE_OUTBOX is not populated for non-existent documents

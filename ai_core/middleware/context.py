@@ -45,7 +45,14 @@ class RequestContextMiddleware:
         except TenantRequiredError as exc:
             return self._tenant_required_response(exc)
         except ValueError as exc:
-            return JsonResponse({"detail": str(exc)}, status=400)
+            error_msg = str(exc)
+            # Use specific error code for case header validation errors
+            error_code = (
+                "invalid_case_header"
+                if "Case header" in error_msg
+                else "invalid_request"
+            )
+            return JsonResponse({"detail": error_msg, "code": error_code}, status=400)
         else:
             bind_contextvars(**meta["log_context"])
 

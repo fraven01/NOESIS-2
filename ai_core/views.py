@@ -452,7 +452,8 @@ def _prepare_request(request: Request):
     case_id = (request.headers.get(X_CASE_ID_HEADER) or "").strip()
     workflow_id = (request.headers.get(X_WORKFLOW_ID_HEADER) or "").strip()
     if not workflow_id:
-        workflow_id = uuid4().hex
+        # Default workflow_id to case_id if available, otherwise generate UUID
+        workflow_id = case_id or uuid4().hex
     key_alias_header = request.headers.get(X_KEY_ALIAS_HEADER)
     collection_header = request.headers.get(X_COLLECTION_ID_HEADER)
     idempotency_header = request.headers.get(IDEMPOTENCY_KEY_HEADER)

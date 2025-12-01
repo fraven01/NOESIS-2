@@ -103,6 +103,10 @@ def normalize_meta(request: Any) -> dict:
 
     missing = [key for key in REQUIRED_KEYS if not meta.get(key)]
     if missing:
+        if "case_id" in missing:
+            raise ValueError(
+                "Case header is required and must use the documented format."
+            )
         raise ValueError(f"missing required meta keys: {', '.join(sorted(missing))}")
 
     context_metadata = {

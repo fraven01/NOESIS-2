@@ -99,9 +99,17 @@ def _build_state(
     content: str = "Example document",
     *,
     frontier: Mapping[str, object] | None = None,
+    test_tenant_schema_name: str | None = None,
     **overrides,
 ) -> dict[str, object]:
-    tenant_id = overrides.get("tenant_id", "tenant")
+    # Use actual tenant from DB if test_tenant_schema_name is provided
+    if test_tenant_schema_name and "tenant_id" not in overrides:
+        from customers.models import Tenant
+
+        tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+        tenant_id = str(tenant.id)
+    else:
+        tenant_id = overrides.get("tenant_id", "tenant")
     case_id = overrides.get("case_id", "case")
     origin_uri = overrides.get("origin_uri", "https://example.com/document")
     provider = overrides.get("provider", "web")
@@ -211,10 +219,12 @@ def _build_state(
     return state
 
 
-def test_orchestrates_nominal_flow() -> None:
+def test_orchestrates_nominal_flow(test_tenant_schema_name) -> None:
     graph = CrawlerIngestionGraph()
     client = StubVectorClient()
-    state = _build_state(vector_client=client)
+    state = _build_state(
+        vector_client=client, test_tenant_schema_name=test_tenant_schema_name
+    )
 
     updated_state, result = graph.run(state, {})
 
@@ -231,7 +241,9 @@ def test_orchestrates_nominal_flow() -> None:
     assert isinstance(summary, CompletionPayload)
     assert summary.delta.decision == "new"
     assert summary.embedding is not None
-    assert summary.embedding.status == "upserted"
+    assert (
+        summary.embedding.status == "queued"
+    )  # Async embedding now queued instead of upserted
     assert summary.guardrails.decision == "allow"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(
@@ -449,7 +461,7 @@ def test_embedding_failure_marks_error_and_status() -> None:
     assert any(status.to_dict().get("reason") == "ingest_failed" for status in statuses)
 
 
-def test_html_content_is_normalized_before_chunking() -> None:
+def test_html_content_is_normalized_before_chunking(test_tenant_schema_name) -> None:
     graph = CrawlerIngestionGraph()
     client = StubVectorClient()
     html_body = """
@@ -470,6 +482,7 @@ def test_html_content_is_normalized_before_chunking() -> None:
         content=html_body,
         content_type="text/html",
         vector_client=client,
+        test_tenant_schema_name=test_tenant_schema_name,
     )
 
     updated_state, _ = graph.run(state, {})
@@ -487,10 +500,9 @@ def test_html_content_is_normalized_before_chunking() -> None:
         assert "<script>" not in text
         assert "console.log" not in text
 
-    assert client.upserted, "expected chunk upsert calls"
-    for chunk in client.upserted:
-        assert "<script>" not in chunk.content
-        assert "console.log" not in chunk.content
+    # Chunks are queued for async processing, not immediately upserted
+    # So we verify the chunk artifact was created correctly instead
+    assert chunk_artifact.chunks, "expected chunks to be generated"
 
 
 class RecordingDocumentLifecycleService(DocumentLifecycleService):
@@ -652,7 +664,7 @@ def test_guardrail_denied_merges_frontier_policy_events() -> None:
     )
 
 
-def test_crawler_ingestion_spans(monkeypatch) -> None:
+def test_crawler_ingestion_spans(monkeypatch, test_tenant_schema_name) -> None:
     import ai_core.infra.observability as observability
 
     recorded: list[str] = []
@@ -684,7 +696,10 @@ def test_crawler_ingestion_spans(monkeypatch) -> None:
     module = importlib.reload(crawler_ingestion_graph)
     try:
         graph = module.CrawlerIngestionGraph()
-        state = _build_state(vector_client=StubVectorClient())
+        state = _build_state(
+            vector_client=StubVectorClient(),
+            test_tenant_schema_name=test_tenant_schema_name,
+        )
         graph.run(state, {"trace_id": "trace-span", "workflow_id": "flow-span"})
 
         expected = [

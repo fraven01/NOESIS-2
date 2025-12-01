@@ -12,12 +12,15 @@ class CaseApiTests(APITestCase):
     """Test Case management API."""
 
     def setUp(self):
-        self.tenant = Tenant.objects.create(
-            schema_name="test_tenant", name="Test Tenant"
-        )
-        self.other_tenant = Tenant.objects.create(
-            schema_name="other_tenant", name="Other Tenant"
-        )
+        from django_tenants.utils import get_public_schema_name, schema_context
+
+        with schema_context(get_public_schema_name()):
+            self.tenant = Tenant.objects.create(
+                schema_name="test_tenant", name="Test Tenant"
+            )
+            self.other_tenant = Tenant.objects.create(
+                schema_name="other_tenant", name="Other Tenant"
+            )
         self.url = reverse("cases:case-list")
 
     def test_create_case(self):

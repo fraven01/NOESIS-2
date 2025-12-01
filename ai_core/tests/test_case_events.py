@@ -11,7 +11,13 @@ from documents.models import DocumentIngestionRun
 def test_emit_ingestion_case_event_records_latest_run(
     test_tenant_schema_name, monkeypatch
 ):
+    from cases.models import Case
+    from django_tenants.utils import tenant_context
+
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    with tenant_context(tenant):
+        Case.objects.create(tenant=tenant, external_id="case-hook")
+
     DocumentIngestionRun.objects.create(
         tenant_id=tenant.schema_name,
         case="case-hook",

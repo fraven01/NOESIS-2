@@ -50,6 +50,7 @@ class FilesystemObjectStore(ObjectStore):
 
         sanitized = re.sub(r"[^A-Za-z0-9._-]", "_", value)[:128]
         if not sanitized:
+            print(f"DEBUG: unsafe_identifier value={value!r}")
             raise ValueError("unsafe_identifier")
         return sanitized
 

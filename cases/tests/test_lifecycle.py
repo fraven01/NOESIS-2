@@ -11,6 +11,10 @@ from customers.models import Tenant
 @pytest.mark.django_db
 def test_update_case_from_collection_search_creates_events(test_tenant_schema_name):
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    from django_tenants.utils import tenant_context
+
+    with tenant_context(tenant):
+        Case.objects.create(tenant=tenant, external_id="case-lifecycle")
 
     state = {
         "context": {
@@ -51,6 +55,10 @@ def test_update_case_from_collection_search_sets_completed_phase(
     test_tenant_schema_name,
 ):
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    from django_tenants.utils import tenant_context
+
+    with tenant_context(tenant):
+        Case.objects.create(tenant=tenant, external_id="case-phase")
 
     state = {
         "context": {"workflow_id": "wf-321"},

@@ -93,7 +93,9 @@ def normalize_case_header(headers: HeaderMap) -> str | None:
     value = _first_header(headers, CASE_ALIASES)
     if value:
         if not _CASE_ID_PATTERN.match(value):
-            raise ValueError(f"Invalid Case ID format: {value}")
+            raise ValueError(
+                "Case header is required and must use the documented format."
+            )
     return value
 
 

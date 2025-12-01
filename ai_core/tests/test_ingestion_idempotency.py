@@ -9,7 +9,6 @@ from types import SimpleNamespace
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
 from common.constants import (
-    META_CASE_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
@@ -22,11 +21,13 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     monkeypatch,
     tmp_path,
     test_tenant_schema_name,
+    create_case,
 ):
     tenant = test_tenant_schema_name
-    case = "case-idempotent"
+    case = ""  # Empty for caseless
     external_id = "demo-hello-1759389009"
 
+    # create_case(case)
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
@@ -48,7 +49,7 @@ def test_ingestion_idempotency_skips_unchanged_documents(
             **{
                 META_TENANT_SCHEMA_KEY: tenant,
                 META_TENANT_ID_KEY: tenant,
-                META_CASE_ID_KEY: case,
+                # META_CASE_ID_KEY: case,
             },
         )
         assert response.status_code == 202
@@ -132,12 +133,14 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
     monkeypatch,
     tmp_path,
     test_tenant_schema_name,
+    create_case,
 ):
     tenant = test_tenant_schema_name
-    case = "case-race"
+    case = ""  # Empty for caseless
     external_id = "race-hello-external-id"
     content = "Concurrent hello!"
 
+    # create_case(case)
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
@@ -159,7 +162,7 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
             **{
                 META_TENANT_SCHEMA_KEY: tenant,
                 META_TENANT_ID_KEY: tenant,
-                META_CASE_ID_KEY: case,
+                # META_CASE_ID_KEY: case,
             },
         )
         assert response.status_code == 202

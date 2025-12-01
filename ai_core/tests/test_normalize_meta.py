@@ -76,8 +76,7 @@ def test_normalize_meta_raises_on_missing_required_keys(monkeypatch):
         normalize_meta(request)
 
     message = str(excinfo.value)
-    assert "case_id" in message
-    assert "trace_id" in message
+    assert "Case header is required" in message
 
 
 @pytest.mark.django_db

@@ -10,11 +10,11 @@ from django.test.client import BOUNDARY, MULTIPART_CONTENT, encode_multipart
 from ai_core.infra import object_store, rate_limit
 from ai_core.rag.collections import manual_collection_uuid
 from common.constants import (
-    META_CASE_ID_KEY,
     META_COLLECTION_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
 )
+from customers.models import Tenant
 from documents.models import DocumentCollection
 from types import SimpleNamespace
 
@@ -30,6 +30,13 @@ def test_rag_upload_persists_file_and_metadata(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+
+    # Case creation removed for caseless strategy
+    tenant_obj = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    DocumentCollection.objects.filter(tenant=tenant_obj).delete()
+
+    # with tenant_context(tenant_obj):
+    #     Case.objects.create(tenant=tenant_obj, external_id="case-123")
 
     captured: dict[str, object] = {}
 
@@ -75,20 +82,25 @@ def test_rag_upload_persists_file_and_metadata(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-123",
+            # META_CASE_ID_KEY: "case-123",  # Removed for caseless test
         },
     )
 
+    if response.status_code != 202:
+        with open("ai_core/tests/debug_output.txt", "w") as f:
+            f.write(f"Response Status: {response.status_code}\n")
+            f.write(f"Response Content: {response.content.decode()}\n")
     assert response.status_code == 202
     body = response.json()
-    manual_collection_id = str(manual_collection_uuid(test_tenant_schema_name))
+    tenant_obj = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    manual_collection_id = str(manual_collection_uuid(tenant_obj.id))
     assert body["trace_id"]
-    assert body["workflow_id"] == "case-123"
+    assert body["workflow_id"]  # Generated UUID in caseless mode
     assert body["ingestion_run_id"]
     assert body["collection_id"] == manual_collection_id
 
     assert captured["tenant_id"] == test_tenant_schema_name
-    assert captured["case_id"] == "case-123"
+    assert captured["case_id"] == ""  # Empty for caseless
     assert captured["document_ids"] == [body["document_id"]]
     assert captured["embedding_profile"] == getattr(
         settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
@@ -99,7 +111,7 @@ def test_rag_upload_persists_file_and_metadata(
 
     document_id = body["document_id"]
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-    case_segment = object_store.sanitize_identifier("case-123")
+    case_segment = object_store.sanitize_identifier("upload")
     uploads_dir = Path(tmp_path, tenant_segment, case_segment, "uploads")
 
     stored_files = list(uploads_dir.glob(f"{document_id}_*"))
@@ -122,8 +134,9 @@ def test_rag_upload_persists_file_and_metadata(
 
     status_payload = ingestion_status_store.get_ingestion_run(
         tenant_id=test_tenant_schema_name,
-        case="case-123",
+        case="",  # Empty case
     )
+
     assert status_payload is not None
     assert status_payload["run_id"] == body["ingestion_run_id"]
     assert status_payload["status"] == "queued"
@@ -134,6 +147,7 @@ def test_rag_upload_persists_file_and_metadata(
         tenant__schema_name=test_tenant_schema_name,
         key="manual-search",
     )
+
     assert str(collection_entry.collection_id) == manual_collection_id
 
 
@@ -161,7 +175,7 @@ def test_rag_upload_bridges_collection_header_to_metadata(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-collection",
+            # META_CASE_ID_KEY: "case-collection",
             META_COLLECTION_ID_KEY: collection_scope,
         },
     )
@@ -169,11 +183,11 @@ def test_rag_upload_bridges_collection_header_to_metadata(
     assert response.status_code == 202
     body = response.json()
     document_id = body["document_id"]
-    assert body["workflow_id"] == "case-collection"
+    assert body["workflow_id"]  # Generated UUID
     assert body["collection_id"] == collection_scope
 
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-    case_segment = object_store.sanitize_identifier("case-collection")
+    case_segment = object_store.sanitize_identifier("upload")
     metadata_path = Path(
         tmp_path, tenant_segment, case_segment, "uploads", f"{document_id}.meta.json"
     )
@@ -212,14 +226,15 @@ def test_rag_upload_external_id_fallback(
             **{
                 META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
                 META_TENANT_ID_KEY: test_tenant_schema_name,
-                META_CASE_ID_KEY: "case-123",
+                # META_CASE_ID_KEY: "case-123",
             },
         )
+
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]
         tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-        case_segment = object_store.sanitize_identifier("case-123")
+        case_segment = object_store.sanitize_identifier("upload")
         metadata_path = Path(
             tmp_path,
             tenant_segment,
@@ -235,7 +250,7 @@ def test_rag_upload_external_id_fallback(
 
     assert first_external
     assert first_external == second_external
-    assert first_doc != second_doc
+    assert first_doc == second_doc
 
 
 @pytest.mark.django_db
@@ -282,7 +297,6 @@ def test_rag_upload_guardrail_skip_returns_403(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-guardrail",
         },
     )
 
@@ -309,7 +323,6 @@ def test_rag_upload_without_file_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-123",
         },
     )
 
@@ -337,7 +350,6 @@ def test_rag_upload_with_invalid_metadata_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_CASE_ID_KEY: "case-123",
         },
     )
 

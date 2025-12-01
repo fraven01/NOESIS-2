@@ -8,6 +8,11 @@ from documents.models import DocumentIngestionRun
 @pytest.mark.django_db
 def test_record_ingestion_case_event_creates_event(test_tenant_schema_name):
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
+    from cases.models import Case
+    from django_tenants.utils import tenant_context
+
+    with tenant_context(tenant):
+        Case.objects.create(tenant=tenant, external_id="case-event")
     run = DocumentIngestionRun.objects.create(
         tenant_id=tenant.schema_name,
         case="case-event",
