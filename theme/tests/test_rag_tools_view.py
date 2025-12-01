@@ -36,7 +36,7 @@ def test_rag_tools_page_is_accessible():
     assert response.status_code == 200
     content = response.content.decode()
 
-    assert "RAG Manual Testing" in content
+    assert "RAG Developer Workbench" in content
     assert "Upload Document" in content
     assert "Ingestion Control" in content
     assert "Ingestion Status" in content

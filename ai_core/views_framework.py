@@ -5,8 +5,8 @@ from __future__ import annotations
 from uuid import uuid4
 
 from drf_spectacular.utils import (
-    OpenApiParameter,
     OpenApiExample,
+    OpenApiParameter,
     OpenApiResponse,
     inline_serializer,
 )
@@ -116,6 +116,106 @@ def _prepare_framework_request(request: Request) -> tuple[dict, Response | None]
     return meta, None
 
 
+FRAMEWORK_ANALYSIS_REQUEST_EXAMPLES = [
+    OpenApiExample(
+        "Basic Analysis",
+        value={
+            "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
+            "document_id": "650e8400-e29b-41d4-a716-446655440001",
+        },
+        description="Analyze a specific document in a collection",
+        request_only=True,
+    ),
+    OpenApiExample(
+        "Collection-Wide Analysis",
+        value={
+            "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
+        },
+        description="Analyze all documents in a collection",
+        request_only=True,
+    ),
+    OpenApiExample(
+        "Force Reanalysis",
+        value={
+            "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
+            "force_reanalysis": True,
+            "confidence_threshold": 0.80,
+        },
+        description="Force reanalysis with custom confidence threshold",
+        request_only=True,
+    ),
+]
+
+FRAMEWORK_ANALYSIS_REQUEST = inline_serializer(
+    name="FrameworkAnalysisRequest",
+    fields={
+        "document_collection_id": serializers.UUIDField(),
+        "document_id": serializers.UUIDField(required=False, allow_null=True),
+        "force_reanalysis": serializers.BooleanField(required=False),
+        "confidence_threshold": serializers.FloatField(
+            required=False, min_value=0.0, max_value=1.0
+        ),
+    },
+)
+
+FRAMEWORK_ANALYSIS_RESPONSE_EXAMPLE = OpenApiExample(
+    "Success",
+    value={
+        "profile_id": "750e8400-e29b-41d4-a716-446655440002",
+        "version": 1,
+        "gremium_identifier": "KBR",
+        "completeness_score": 0.75,
+        "missing_components": ["zugriffsrechte"],
+        "hitl_required": False,
+        "hitl_reasons": [],
+        "idempotent": True,
+        "structure": {
+            "systembeschreibung": {
+                "location": "main",
+                "outline_path": "2",
+                "heading": "Section 2 Systembeschreibung",
+                "chunk_ids": ["chunk1", "chunk2"],
+                "page_numbers": [2, 3],
+                "confidence": 0.92,
+                "validated": True,
+                "validation_notes": "Plausible",
+            },
+            "funktionsbeschreibung": {
+                "location": "annex",
+                "outline_path": "Anlage 1",
+                "confidence": 0.88,
+                "validated": True,
+            },
+            "auswertungen": {
+                "location": "annex_group",
+                "outline_path": "Anlage 3",
+                "annex_root": "Anlage 3",
+                "subannexes": ["3.1", "3.2"],
+                "confidence": 0.85,
+                "validated": True,
+                "validation_notes": "Plausible",
+            },
+            "zugriffsrechte": {
+                "location": "not_found",
+                "confidence": 0.0,
+                "validated": False,
+            },
+        },
+        "analysis_metadata": {
+            "detected_type": "kbv",
+            "type_confidence": 0.95,
+            "gremium_name_raw": "Konzernbetriebsrat der Telefonica Deutschland",
+            "gremium_identifier": "KBR",
+            "completeness_score": 0.75,
+            "missing_components": ["zugriffsrechte"],
+            "analysis_timestamp": "2025-01-15T10:30:00Z",
+            "model_version": "framework_analysis_v1",
+        },
+    },
+    response_only=True,
+)
+
+
 FRAMEWORK_ANALYSIS_SCHEMA = {
     "summary": "Analyze Framework Agreement",
     "description": """
@@ -129,36 +229,8 @@ The analysis identifies:
 
 Returns a FrameworkProfile with structural metadata and completeness score.
 """,
-    "request": {
-        "application/json": {
-            "examples": [
-                OpenApiExample(
-                    "Basic Analysis",
-                    value={
-                        "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
-                        "document_id": "650e8400-e29b-41d4-a716-446655440001",
-                    },
-                    description="Analyze a specific document in a collection",
-                ),
-                OpenApiExample(
-                    "Collection-Wide Analysis",
-                    value={
-                        "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
-                    },
-                    description="Analyze all documents in a collection",
-                ),
-                OpenApiExample(
-                    "Force Reanalysis",
-                    value={
-                        "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
-                        "force_reanalysis": True,
-                        "confidence_threshold": 0.80,
-                    },
-                    description="Force reanalysis with custom confidence threshold",
-                ),
-            ]
-        }
-    },
+    "request": FRAMEWORK_ANALYSIS_REQUEST,
+    "examples": FRAMEWORK_ANALYSIS_REQUEST_EXAMPLES,
     "responses": {
         200: OpenApiResponse(
             response=inline_serializer(
@@ -181,63 +253,7 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                 },
             ),
             description="Analysis completed successfully",
-            examples=[
-                OpenApiExample(
-                    "Success",
-                    value={
-                        "profile_id": "750e8400-e29b-41d4-a716-446655440002",
-                        "version": 1,
-                        "gremium_identifier": "KBR",
-                        "completeness_score": 0.75,
-                        "missing_components": ["zugriffsrechte"],
-                        "hitl_required": False,
-                        "hitl_reasons": [],
-                        "idempotent": True,
-                        "structure": {
-                            "systembeschreibung": {
-                                "location": "main",
-                                "outline_path": "2",
-                                "heading": "§ 2 Systembeschreibung",
-                                "chunk_ids": ["chunk1", "chunk2"],
-                                "page_numbers": [2, 3],
-                                "confidence": 0.92,
-                                "validated": True,
-                                "validation_notes": "Plausible",
-                            },
-                            "funktionsbeschreibung": {
-                                "location": "annex",
-                                "outline_path": "Anlage 1",
-                                "confidence": 0.88,
-                                "validated": True,
-                            },
-                            "auswertungen": {
-                                "location": "annex_group",
-                                "outline_path": "Anlage 3",
-                                "annex_root": "Anlage 3",
-                                "subannexes": ["3.1", "3.2"],
-                                "confidence": 0.85,
-                                "validated": True,
-                                "validation_notes": "Plausible",
-                            },
-                            "zugriffsrechte": {
-                                "location": "not_found",
-                                "confidence": 0.0,
-                                "validated": False,
-                            },
-                        },
-                        "analysis_metadata": {
-                            "detected_type": "kbv",
-                            "type_confidence": 0.95,
-                            "gremium_name_raw": "Konzernbetriebsrat der Telefónica Deutschland",
-                            "gremium_identifier": "KBR",
-                            "completeness_score": 0.75,
-                            "missing_components": ["zugriffsrechte"],
-                            "analysis_timestamp": "2025-01-15T10:30:00Z",
-                            "model_version": "framework_analysis_v1",
-                        },
-                    },
-                )
-            ],
+            examples=[FRAMEWORK_ANALYSIS_RESPONSE_EXAMPLE],
         ),
         400: OpenApiResponse(
             response=OpenApiTypes.OBJECT,
@@ -250,6 +266,7 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                         "detail": "Request body is not valid JSON.",
                     },
                     media_type="application/json",
+                    response_only=True,
                 )
             ],
         ),
@@ -269,6 +286,7 @@ Returns a FrameworkProfile with structural metadata and completeness score.
                         "detail": "Request payload must be encoded as application/json.",
                     },
                     media_type="application/json",
+                    response_only=True,
                 )
             ],
         ),

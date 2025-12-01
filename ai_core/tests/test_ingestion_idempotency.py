@@ -21,10 +21,9 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     monkeypatch,
     tmp_path,
     test_tenant_schema_name,
-    create_case,
 ):
     tenant = test_tenant_schema_name
-    case = ""  # Empty for caseless
+    case = "upload"  # Empty for caseless
     external_id = "demo-hello-1759389009"
 
     # create_case(case)
@@ -57,11 +56,11 @@ def test_ingestion_idempotency_skips_unchanged_documents(
         document_id = body["document_id"]
         trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
-        case_segment = object_store.sanitize_identifier(case)
+        workflow_segment = "upload"
         metadata_path = Path(
             store_path,
             tenant_segment,
-            case_segment,
+            workflow_segment,
             "uploads",
             f"{document_id}.meta.json",
         )
@@ -133,10 +132,9 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
     monkeypatch,
     tmp_path,
     test_tenant_schema_name,
-    create_case,
-):
+) -> None:
     tenant = test_tenant_schema_name
-    case = ""  # Empty for caseless
+    case = ""  # Caseless uploads should fall back to the default workflow folder
     external_id = "race-hello-external-id"
     content = "Concurrent hello!"
 
@@ -170,11 +168,11 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
         document_id = body["document_id"]
         trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
-        case_segment = object_store.sanitize_identifier(case)
+        workflow_segment = "upload"
         metadata_path = Path(
             store_path,
             tenant_segment,
-            case_segment,
+            workflow_segment,
             "uploads",
             f"{document_id}.meta.json",
         )
@@ -187,22 +185,24 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         future_a = executor.submit(
-            process_document,
-            tenant,
-            case,
-            doc_a,
-            "standard",
-            tenant_schema=tenant,
-            trace_id=trace_a,
+            lambda: process_document(
+                tenant,
+                case,
+                doc_a,
+                "standard",
+                tenant_schema=tenant,
+                trace_id=trace_a,
+            )
         )
         future_b = executor.submit(
-            process_document,
-            tenant,
-            case,
-            doc_b,
-            "standard",
-            tenant_schema=tenant,
-            trace_id=trace_b,
+            lambda: process_document(
+                tenant,
+                case,
+                doc_b,
+                "standard",
+                tenant_schema=tenant,
+                trace_id=trace_b,
+            )
         )
         res_a = future_a.result()
         res_b = future_b.result()

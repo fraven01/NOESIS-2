@@ -79,6 +79,9 @@ class TenantFactoryHelper:
                     tenant.delete(force_drop=True)
                 except TypeError:
                     tenant.delete()
+                except Exception:
+                    # Fallback if deletion fails (e.g. active connections)
+                    pass
         self._schemas.clear()
 
 

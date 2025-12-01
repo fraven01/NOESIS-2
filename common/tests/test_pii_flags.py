@@ -167,7 +167,7 @@ def test_mask_text_deterministic_under_scope(pii_config_env):
     assert "<EMAIL_" in first
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_scoped_task_uses_tenant_profiles(tenant_factory):
     tenant_disabled = tenant_factory(
         schema_name="scope-disabled",
@@ -238,7 +238,7 @@ def test_scoped_task_uses_tenant_profiles(tenant_factory):
     assert enabled_config["session_scope"]
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_load_tenant_pii_config_is_cached(tenant_factory, django_assert_num_queries):
     tenant = tenant_factory(
         schema_name="cache-tenant",
@@ -261,7 +261,7 @@ def test_load_tenant_pii_config_is_cached(tenant_factory, django_assert_num_quer
     assert first["deterministic"] is True
 
 
-@pytest.mark.django_db
+@pytest.mark.django_db(transaction=True)
 def test_load_tenant_pii_config_accepts_schema_name(tenant_factory):
     tenant = tenant_factory(
         schema_name="cache-tenant-schema",

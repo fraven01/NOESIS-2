@@ -459,6 +459,7 @@ SPECTACULAR_SETTINGS = {
         },
     },
     "POSTPROCESSING_HOOKS": [
+        "noesis2.api.schema.normalize_openapi_examples",
         "noesis2.api.schema.inject_trace_response_header",
         "drf_spectacular.hooks.postprocess_schema_enums",
     ],

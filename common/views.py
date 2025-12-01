@@ -1,9 +1,9 @@
 from django.http import JsonResponse
 from rest_framework.response import Response
 from rest_framework.views import APIView
+from drf_spectacular.utils import OpenApiExample
 
 from .tenants import TenantSchemaRequiredMixin, tenant_schema_required
-from drf_spectacular.utils import OpenApiExample
 from noesis2.api import curl_code_sample
 from noesis2.api.schema import default_extend_schema
 from noesis2.api.serializers import TenantDemoResponseSerializer

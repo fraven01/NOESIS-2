@@ -114,7 +114,7 @@ logger = get_logger(__name__)
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
     tenant = object_store.sanitize_identifier(meta["tenant_id"])
-    case = object_store.sanitize_identifier(meta["case_id"])
+    case = object_store.sanitize_identifier(meta.get("case_id") or "upload")
     return "/".join([tenant, case, *parts])
 
 

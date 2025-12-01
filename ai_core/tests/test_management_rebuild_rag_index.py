@@ -245,13 +245,12 @@ def test_rebuild_rag_index_health_check(
     tmp_path,
     settings,
     test_tenant_schema_name,
-    create_case,
 ) -> None:
     vector_client.reset_default_client()
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "off")
 
     tenant = test_tenant_schema_name
-    case = ""  # Empty for caseless
+    case = "upload"  # Empty for caseless
     # create_case(case)
     store_path = tmp_path / "object-store"
     monkeypatch.setattr(object_store, "BASE_PATH", store_path)
@@ -282,11 +281,11 @@ def test_rebuild_rag_index_health_check(
         document_id = body["document_id"]
         trace_id = body["trace_id"]
         tenant_segment = object_store.sanitize_identifier(tenant)
-        case_segment = object_store.sanitize_identifier(case)
+        workflow_segment = "upload"
         metadata_path = Path(
             store_path,
             tenant_segment,
-            case_segment,
+            workflow_segment,
             "uploads",
             f"{document_id}.meta.json",
         )

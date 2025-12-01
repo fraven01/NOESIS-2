@@ -12,6 +12,7 @@ from typing import Dict, List, MutableMapping, Sequence, Type, TypeVar
 
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import (
+    OpenApiExample,
     OpenApiParameter,
     extend_schema as spectacular_extend_schema,
     extend_schema_view as spectacular_extend_schema_view,
@@ -311,3 +312,38 @@ def inject_trace_response_header(generator, request, public, result):
                 headers.update(trace_response_headers())
 
     return result
+
+
+def normalize_openapi_examples(generator, request, public, result):
+    """Ensure OpenAPI examples are JSON/YAML serializable in the final schema."""
+
+    from drf_spectacular.plumbing import build_examples_list
+
+    def _normalize_examples(value):
+        if isinstance(value, OpenApiExample):
+            return build_examples_list([value])
+        if isinstance(value, list):
+            if any(isinstance(item, OpenApiExample) for item in value):
+                return build_examples_list(
+                    [item for item in value if isinstance(item, OpenApiExample)]
+                )
+            return [_normalize_examples(item) for item in value]
+        if isinstance(value, MutableMapping):
+            return {key: _normalize_examples(val) for key, val in value.items()}
+        return value
+
+    def _walk(node):
+        if isinstance(node, MutableMapping):
+            for key, val in list(node.items()):
+                if key == "examples":
+                    node[key] = _normalize_examples(val)
+                else:
+                    node[key] = _walk(val)
+            return node
+        if isinstance(node, list):
+            return [_walk(item) for item in node]
+        if isinstance(node, OpenApiExample):
+            return build_examples_list([node])
+        return node
+
+    return _walk(result)
