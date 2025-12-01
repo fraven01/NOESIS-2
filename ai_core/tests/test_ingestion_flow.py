@@ -29,7 +29,6 @@ def test_upload_ingest_query_end2end(
     rag_database,
 ):
     tenant = test_tenant_schema_name
-    case = ""  # Empty for caseless
     http_client = client
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
@@ -56,7 +55,7 @@ def test_upload_ingest_query_end2end(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            # META_CASE_ID_KEY: case,
+            # META_CASE_ID_KEY: "",  # Caseless mode
         },
     )
     assert resp.status_code == 202

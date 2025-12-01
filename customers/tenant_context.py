@@ -71,7 +71,7 @@ class TenantContext:
                     return tenant
                 except (Tenant.DoesNotExist, ValueError):
                     pass
-            
+
             # Check for UUID PK (if the model uses UUIDs) or if the string is a valid UUID
             # This handles cases where the PK is a UUID or passed as a UUID string
             try:
@@ -79,12 +79,13 @@ class TenantContext:
                 # Note: If PK is integer, querying with UUID string might fail or warn depending on DB adapter
                 # but we only do this if it looks like a UUID (contains hyphens etc)
                 from uuid import UUID
+
                 try:
                     UUID(raw_value)
                     is_uuid = True
                 except ValueError:
                     is_uuid = False
-                
+
                 if is_uuid:
                     tenant = Tenant.objects.get(pk=raw_value)
                     log.warning(

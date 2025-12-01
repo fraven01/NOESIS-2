@@ -243,7 +243,9 @@ def assert_case_active(
     if case is None:
         # Allow dev cases for dev tenant
         is_dev_tenant = getattr(tenant_obj, "schema_name", "") in ("dev", "autotest")
-        is_dev_case = normalized_case_id.startswith("dev-case-") or normalized_case_id == "upload"
+        is_dev_case = (
+            normalized_case_id.startswith("dev-case-") or normalized_case_id == "upload"
+        )
         if is_dev_tenant and is_dev_case:
             return None
 

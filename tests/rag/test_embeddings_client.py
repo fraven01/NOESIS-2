@@ -52,7 +52,7 @@ def test_embed_promotes_fallback_for_retryable_status_codes(
                     err = Exception("boom")
                     err.status_code = status_code
                     raise err
-                
+
                 data = []
                 for idx, _ in enumerate(input):
                     item = SimpleNamespace(embedding=[float(idx + 1)])
@@ -62,6 +62,7 @@ def test_embed_promotes_fallback_for_retryable_status_codes(
         class MockClient:
             def __init__(self):
                 self.embeddings = MockEmbeddings()
+
         return MockClient()
 
     mocker.patch("ai_core.rag.embeddings.OpenAI", side_effect=_fake_openai_init)
@@ -98,6 +99,7 @@ def test_embed_stops_after_unauthorised_error(mock_config, mocker):
         class MockClient:
             def __init__(self):
                 self.embeddings = MockEmbeddings()
+
         return MockClient()
 
     mocker.patch("ai_core.rag.embeddings.OpenAI", side_effect=_fake_openai_init)
@@ -128,7 +130,7 @@ def test_timeout_promotes_fallback_and_surfaces_timeout_error(mock_config, mocke
             def create(self, input, model):
                 if model == "text-embedding-primary":
                     raise TimeoutError("primary timed out")
-                
+
                 data = []
                 for _ in input:
                     item = SimpleNamespace(embedding=[1.0])
@@ -138,6 +140,7 @@ def test_timeout_promotes_fallback_and_surfaces_timeout_error(mock_config, mocke
         class MockClient:
             def __init__(self):
                 self.embeddings = MockEmbeddings()
+
         return MockClient()
 
     mocker.patch("ai_core.rag.embeddings.OpenAI", side_effect=_fake_openai_init)
@@ -179,7 +182,7 @@ def test_empty_or_null_payload_returns_empty_batch(mock_config, mocker, provider
                     return SimpleNamespace(data=None)
                 if provider_data == []:
                     return SimpleNamespace(data=[])
-                
+
                 # Case [{"not_embedding": []}]
                 # We return an object where .embedding is None or missing?
                 # If missing, AttributeError.
@@ -197,6 +200,7 @@ def test_empty_or_null_payload_returns_empty_batch(mock_config, mocker, provider
         class MockClient:
             def __init__(self):
                 self.embeddings = MockEmbeddings()
+
         return MockClient()
 
     mocker.patch("ai_core.rag.embeddings.OpenAI", side_effect=_fake_openai_init)

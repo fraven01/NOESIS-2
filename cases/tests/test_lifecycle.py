@@ -29,7 +29,9 @@ def test_update_case_from_collection_search_creates_events(test_tenant_schema_na
         ],
     }
 
-    result = update_case_from_collection_search(tenant.schema_name, "case-lifecycle", state)
+    result = update_case_from_collection_search(
+        tenant.schema_name, "case-lifecycle", state
+    )
 
     case = Case.objects.get(external_id="case-lifecycle", tenant=tenant)
     assert case.phase == "external_review"
