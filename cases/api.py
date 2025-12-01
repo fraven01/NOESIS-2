@@ -35,13 +35,13 @@ class CaseSerializer(IdempotentResponseSerializer, serializers.ModelSerializer):
             "closed_at",
         ]
         read_only_fields = [
-            "idempotent",
             "id",
             "status",
             "phase",
             "created_at",
             "updated_at",
             "closed_at",
+            "metadata",
         ]
 
     def validate_external_id(self, value: str) -> str:
@@ -54,6 +54,12 @@ class CaseSerializer(IdempotentResponseSerializer, serializers.ModelSerializer):
         # Cases don't support idempotent replay, always False
         data["idempotent"] = False
         return data
+
+    def create(self, validated_data):
+        """Create a new case instance."""
+        # Remove non-model fields
+        validated_data.pop("idempotent", None)
+        return super().create(validated_data)
 
 
 class CreateCaseSerializer(CaseSerializer):

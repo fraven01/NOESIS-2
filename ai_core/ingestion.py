@@ -68,7 +68,7 @@ def _meta_store_path(tenant: str, case: str | None, document_id: str) -> str:
     return "/".join(
         (
             object_store.sanitize_identifier(tenant),
-            object_store.sanitize_identifier(case or "_uncased_"),
+            object_store.sanitize_identifier(case or "upload"),
             "uploads",
             f"{document_id}.meta.json",
         )
@@ -79,7 +79,7 @@ def _status_store_path(tenant: str, case: str | None, document_id: str) -> str:
     return "/".join(
         (
             object_store.sanitize_identifier(tenant),
-            object_store.sanitize_identifier(case or "_uncased_"),
+            object_store.sanitize_identifier(case or "upload"),
             "uploads",
             f"{document_id}.status.json",
         )
@@ -421,7 +421,7 @@ def _render_parsed_text(parsed: ParsedResult) -> str:
 
 def _parsed_text_path(tenant: str, case: str | None, document_identifier: UUID) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(case or "_uncased_")
+    case_segment = object_store.sanitize_identifier(case or "upload")
     document_segment = object_store.sanitize_identifier(str(document_identifier))
     return "/".join(
         [tenant_segment, case_segment, "text", f"{document_segment}.parsed.txt"]
@@ -432,7 +432,7 @@ def _parsed_blocks_path(
     tenant: str, case: str | None, document_identifier: UUID
 ) -> str:
     tenant_segment = object_store.sanitize_identifier(str(tenant))
-    case_segment = object_store.sanitize_identifier(case or "_uncased_")
+    case_segment = object_store.sanitize_identifier(case or "upload")
     document_segment = object_store.sanitize_identifier(str(document_identifier))
     return "/".join(
         [tenant_segment, case_segment, "text", f"{document_segment}.parsed.json"]

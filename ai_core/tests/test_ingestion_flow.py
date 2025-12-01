@@ -16,6 +16,7 @@ from ai_core.views import make_fallback_external_id
 from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
+    META_CASE_ID_KEY,
 )
 
 
@@ -65,7 +66,7 @@ def test_upload_ingest_query_end2end(
     trace_id = body["trace_id"]
 
     tenant_segment = object_store.sanitize_identifier(tenant)
-    case_segment = object_store.sanitize_identifier(case)
+    case_segment = object_store.sanitize_identifier("upload")
     metadata_path = Path(
         tmp_path, tenant_segment, case_segment, "uploads", f"{doc_id}.meta.json"
     )
@@ -75,7 +76,7 @@ def test_upload_ingest_query_end2end(
     # Ingestion (direkt Task ausführen; alternativ run_ingestion.delay(...) und warten)
     result = process_document(
         tenant,
-        case,
+        "upload",
         doc_id,
         "standard",
         tenant_schema=tenant,
@@ -85,7 +86,7 @@ def test_upload_ingest_query_end2end(
     assert result["embedding_profile"] == "standard"
     assert result["vector_space_id"] == "global"
 
-    parsed_path = ingestion._parsed_blocks_path(tenant, case, UUID(doc_id))
+    parsed_path = ingestion._parsed_blocks_path(tenant, "upload", UUID(doc_id))
     parsed_payload = object_store.read_json(parsed_path)
     blocks = parsed_payload.get("blocks", [])
     assert blocks, "expected parsed blocks to be persisted"
@@ -95,7 +96,7 @@ def test_upload_ingest_query_end2end(
     assert first_block.get("page_index") is None
 
     status_state = object_store.read_json(
-        ingestion._status_store_path(tenant, case, doc_id)
+        ingestion._status_store_path(tenant, "upload", doc_id)
     )
     chunk_step = status_state["steps"]["chunk"]
     chunk_path = chunk_step["path"]
@@ -198,7 +199,7 @@ def test_ingestion_run_reports_missing_documents(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            # META_CASE_ID_KEY: case,
+            META_CASE_ID_KEY: "upload",
         },
     )
     assert resp.status_code == 202
@@ -228,7 +229,7 @@ def test_ingestion_run_reports_missing_documents(
         **{
             META_TENANT_SCHEMA_KEY: tenant,
             META_TENANT_ID_KEY: tenant,
-            # META_CASE_ID_KEY: case,
+            META_CASE_ID_KEY: "upload",
         },
     )
 

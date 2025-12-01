@@ -139,7 +139,7 @@ def apply_lifecycle_definition(
         if not transitions:
             continue
         for from_phase, to_phase in transitions:
-            if from_phase is not None and from_phase != new_phase:
+            if from_phase is not None and from_phase != (new_phase or ""):
                 continue
             if not to_phase:
                 continue

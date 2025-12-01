@@ -56,18 +56,46 @@ class TenantContext:
         except Tenant.DoesNotExist:
             pass
 
-        if allow_pk and raw_value.isdigit():
+        if allow_pk:
+            # Check for integer PK
+            if raw_value.isdigit():
+                try:
+                    tenant = Tenant.objects.get(pk=raw_value)
+                    log.warning(
+                        "tenant_resolution_pk_lookup",
+                        extra={
+                            "identifier": raw_value,
+                            "tenant_schema": tenant.schema_name,
+                        },
+                    )
+                    return tenant
+                except (Tenant.DoesNotExist, ValueError):
+                    pass
+            
+            # Check for UUID PK (if the model uses UUIDs) or if the string is a valid UUID
+            # This handles cases where the PK is a UUID or passed as a UUID string
             try:
-                tenant = Tenant.objects.get(pk=raw_value)
-                log.warning(
-                    "tenant_resolution_pk_lookup",
-                    extra={
-                        "identifier": raw_value,
-                        "tenant_schema": tenant.schema_name,
-                    },
-                )
-                return tenant
-            except (Tenant.DoesNotExist, ValueError):
+                # Attempt to parse as UUID to verify format, then query
+                # Note: If PK is integer, querying with UUID string might fail or warn depending on DB adapter
+                # but we only do this if it looks like a UUID (contains hyphens etc)
+                from uuid import UUID
+                try:
+                    UUID(raw_value)
+                    is_uuid = True
+                except ValueError:
+                    is_uuid = False
+                
+                if is_uuid:
+                    tenant = Tenant.objects.get(pk=raw_value)
+                    log.warning(
+                        "tenant_resolution_uuid_pk_lookup",
+                        extra={
+                            "identifier": raw_value,
+                            "tenant_schema": tenant.schema_name,
+                        },
+                    )
+                    return tenant
+            except (Tenant.DoesNotExist, ValueError, TypeError):
                 pass
 
         return None

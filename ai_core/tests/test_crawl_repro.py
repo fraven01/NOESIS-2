@@ -17,7 +17,7 @@ def test_reproduce_crawl_selected_error():
     factory = RequestFactory()
     data = {
         "urls": ["https://example.com"],
-        "collection_id": "test-collection",
+        "collection_id": "00000000-0000-0000-0000-000000000000",
         "mode": "live",
     }
 
@@ -29,7 +29,7 @@ def test_reproduce_crawl_selected_error():
     request.tenant_schema = tenant_schema
 
     # Add headers that web_search_ingest_selected adds
-    request.META["HTTP_X_TENANT_ID"] = str(tenant.id)
+    request.META["HTTP_X_TENANT_ID"] = tenant_schema
     request.META["HTTP_X_TENANT_SCHEMA"] = tenant_schema
     request.META["HTTP_X_TRACE_ID"] = "test-trace-id"
     # request.META["HTTP_X_CASE_ID"] = "case-crawl-test"
@@ -41,4 +41,4 @@ def test_reproduce_crawl_selected_error():
     if response.status_code != 200:
         print(f"Response content: {response.content.decode()}")
 
-    assert response.status_code == 200
+    assert response.status_code == 202

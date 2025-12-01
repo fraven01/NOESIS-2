@@ -75,7 +75,7 @@ class CollectionService:
         if tenant is None:
             raise ValueError("tenant_not_found")
 
-        collection_uuid = self.manual_collection_uuid(tenant.id, slug=slug)
+        collection_uuid = self.manual_collection_uuid(tenant.schema_name, slug=slug)
         metadata_payload = dict(metadata or {})
         metadata_payload.setdefault("slug", slug)
         metadata_payload.setdefault("label", label)

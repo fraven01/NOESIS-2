@@ -26,7 +26,7 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
     ) -> NormalizedDocument:
         self.saved.append(doc)
         tenant_segment = object_store.sanitize_identifier(doc.ref.tenant_id)
-        workflow_segment = object_store.sanitize_identifier(doc.ref.workflow_id)
+        workflow_segment = object_store.sanitize_identifier("upload")
         storage_prefix = f"{tenant_segment}/{workflow_segment}/uploads"
         filename = f"{doc.ref.document_id}_upload.bin"
         upload_path = f"{storage_prefix}/{filename}"

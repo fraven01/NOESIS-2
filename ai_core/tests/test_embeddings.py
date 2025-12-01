@@ -44,14 +44,23 @@ def test_embed_timeout_enforces_limit_and_logs_key_alias(monkeypatch, settings) 
 
     calls: list[dict[str, object]] = []
 
-    def _fake_embedding(**kwargs: object) -> object:
-        calls.append(dict(kwargs))
-        model = kwargs.get("model")
-        if model == "primary":
-            time.sleep(0.05)
-        return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])])
+    def _fake_openai_init(*args, **kwargs):
+        timeout = kwargs.get("timeout")
 
-    monkeypatch.setattr(embeddings, "litellm_embedding", _fake_embedding)
+        class MockEmbeddings:
+            def create(self, input, model):
+                calls.append({"model": model, "timeout": timeout})
+                if model == "primary":
+                    time.sleep(0.05)
+                return SimpleNamespace(data=[SimpleNamespace(embedding=[0.1, 0.2])])
+
+        class MockClient:
+            def __init__(self):
+                self.embeddings = MockEmbeddings()
+
+        return MockClient()
+
+    monkeypatch.setattr(embeddings, "OpenAI", _fake_openai_init)
 
     dummy_logger = _DummyLogger()
     monkeypatch.setattr(embeddings, "logger", dummy_logger)

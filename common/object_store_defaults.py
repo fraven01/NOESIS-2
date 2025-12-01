@@ -45,6 +45,7 @@ class FilesystemObjectStore(ObjectStore):
         return path
 
     def sanitize_identifier(self, value: str) -> str:
+        value = str(value)
         if ".." in value or "/" in value or os.sep in value:
             raise ValueError("unsafe_identifier")
 

@@ -47,7 +47,7 @@ def test_ensure_collection_injects_collection_type() -> None:
 def test_ensure_manual_collection_uses_domain_service(monkeypatch: pytest.MonkeyPatch):
     domain = _StubDomainService()
     service = CollectionService(domain_service=domain)
-    tenant = SimpleNamespace(id=uuid.uuid4())
+    tenant = SimpleNamespace(id=uuid.uuid4(), schema_name="autotest")
 
     monkeypatch.setattr(
         "documents.collection_service.TenantContext.resolve_identifier",

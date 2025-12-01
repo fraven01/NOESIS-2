@@ -1506,10 +1506,9 @@ def handle_document_upload(
 
     metadata_obj = metadata_model.model_dump()
 
-    # Resolve tenant to ensure consistent UUID generation for manual collection
-    tenant_for_scope = _resolve_tenant_for_documents(meta)
-    tenant_id_for_scope = tenant_for_scope.id if tenant_for_scope else meta["tenant_id"]
-    manual_collection_scope = str(manual_collection_uuid(tenant_id_for_scope))
+    # Use schema name for consistent UUID generation
+    tenant_identifier = meta.get("tenant_schema") or meta["tenant_id"]
+    manual_collection_scope = str(manual_collection_uuid(tenant_identifier))
 
     manual_scope_assigned = False
 

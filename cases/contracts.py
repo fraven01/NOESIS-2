@@ -101,7 +101,10 @@ DEFAULT_CASE_LIFECYCLE_DEFINITION = CaseLifecycleDefinition(
         CaseLifecycleTransition(
             from_phase="intake",
             to_phase="evidence_collection",
-            trigger_events=["ingestion_run_completed"],
+            trigger_events=[
+                "ingestion_run_completed",
+                "collection_search:ingest_triggered",
+            ],
         ),
         CaseLifecycleTransition(
             from_phase=None,
@@ -112,7 +115,17 @@ DEFAULT_CASE_LIFECYCLE_DEFINITION = CaseLifecycleDefinition(
             ],
         ),
         CaseLifecycleTransition(
+            from_phase=None,
+            to_phase="external_review",
+            trigger_events=["collection_search:hitl_pending"],
+        ),
+        CaseLifecycleTransition(
             from_phase="evidence_collection",
+            to_phase="external_review",
+            trigger_events=["collection_search:hitl_pending"],
+        ),
+        CaseLifecycleTransition(
+            from_phase="intake",
             to_phase="external_review",
             trigger_events=["collection_search:hitl_pending"],
         ),

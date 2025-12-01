@@ -12,6 +12,7 @@ from common.constants import (
     META_COLLECTION_ID_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
+    META_CASE_ID_KEY,
 )
 
 
@@ -68,7 +69,7 @@ def test_rag_ingestion_run_queues_task(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-123",
+            META_CASE_ID_KEY: "upload",
         },
     )
 
@@ -82,7 +83,7 @@ def test_rag_ingestion_run_queues_task(
 
     assert captured == {
         "tenant_id": test_tenant_schema_name,
-        "case_id": "",  # Empty for caseless
+        "case_id": "upload",
         "document_ids": [str(document_id)],
         "embedding_profile": "standard",
         "trace_id": body["trace_id"],
@@ -101,7 +102,7 @@ def test_rag_ingestion_run_persists_collection_header_scope(
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-    case_segment = object_store.sanitize_identifier("")
+    case_segment = object_store.sanitize_identifier("upload")
     document_id = str(uuid.uuid4())
 
     meta_path = (
@@ -146,7 +147,7 @@ def test_rag_ingestion_run_persists_collection_header_scope(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-collection-run",
+            META_CASE_ID_KEY: "upload",
             META_COLLECTION_ID_KEY: collection_scope,
         },
     )
@@ -171,7 +172,7 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-123",
+            META_CASE_ID_KEY: "upload",
         },
     )
 
@@ -197,7 +198,7 @@ def test_rag_ingestion_run_without_profile_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-123",
+            META_CASE_ID_KEY: "upload",
         },
     )
 
@@ -227,7 +228,7 @@ def test_rag_ingestion_run_with_invalid_priority_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-123",
+            META_CASE_ID_KEY: "upload",
         },
     )
 
@@ -256,7 +257,7 @@ def test_rag_ingestion_run_with_invalid_document_id_returns_400(
         **{
             META_TENANT_SCHEMA_KEY: test_tenant_schema_name,
             META_TENANT_ID_KEY: test_tenant_schema_name,
-            # META_CASE_ID_KEY: "case-uuid-check",
+            META_CASE_ID_KEY: "upload",
         },
     )
 

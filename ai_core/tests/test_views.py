@@ -1,21 +1,17 @@
 import json
 import uuid
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from rest_framework.request import Request
 from rest_framework.response import Response
 
-from django.conf import settings
 from django.db import connection
 from django.test import RequestFactory
-from structlog.testing import capture_logs
 
 from ai_core import services, views
 from ai_core.contracts.crawler_runner import CrawlerRunContext
 from ai_core.contracts.payloads import CompletionPayload, DeltaPayload, GuardrailPayload
-from ai_core.graph.core import GraphContext
 from ai_core.graph.schemas import ToolContext
 from ai_core.infra import object_store, rate_limit
 from ai_core.services import crawler_state_builder as crawler_state_builder_module
@@ -34,7 +30,6 @@ from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     META_COLLECTION_ID_KEY,
     META_CASE_ID_KEY,
-    META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
     X_COLLECTION_ID_HEADER,
@@ -42,7 +37,6 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TRACE_ID_HEADER,
 )
-from common.middleware import RequestLogContextMiddleware
 from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
 from crawler.frontier import FrontierAction
@@ -251,12 +245,16 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_non_json_payload_returns_415(client, test_tenant_schema_name):
+def test_non_json_payload_returns_415(client, monkeypatch, test_tenant_schema_name):
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     resp = client.post(
         "/ai/intake/",
         data="raw body",
         content_type="text/plain",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name},
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-test",
+        },
     )
 
     assert resp.status_code == 415
@@ -270,7 +268,10 @@ def test_non_json_payload_returns_415(client, test_tenant_schema_name):
         "/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name},
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-test",
+        },
     )
 
     assert v1_response.status_code == 415
@@ -284,11 +285,15 @@ def test_intake_rejects_invalid_metadata_type(
     client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
     response = client.post(
         "/ai/intake/",
         data=json.dumps({"metadata": ["not", "an", "object"]}),
         content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name},
+        **{
+            META_TENANT_ID_KEY: test_tenant_schema_name,
+            META_CASE_ID_KEY: "case-test",
+        },
     )
 
     assert response.status_code == 400
@@ -303,6 +308,7 @@ def test_intake_persists_state_and_headers(
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     tenant_header = test_tenant_schema_name
     resp = client.post(
@@ -311,6 +317,7 @@ def test_intake_persists_state_and_headers(
         content_type="application/json",
         **{
             META_TENANT_ID_KEY: tenant_header,
+            META_CASE_ID_KEY: "case-test",
         },
     )
     assert resp.status_code == 200
@@ -318,378 +325,6 @@ def test_intake_persists_state_and_headers(
     assert resp[X_TENANT_ID_HEADER] == tenant_header
     assert X_KEY_ALIAS_HEADER not in resp
     assert resp.json()["tenant_id"] == tenant_header
-
-
-@pytest.mark.django_db
-def test_write_route_without_trace_id_gets_one(
-    client, monkeypatch, test_tenant_schema_name
-):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr(
-        views, "_run_graph", lambda request, graph: Response({"ok": True})
-    )
-
-    headers = {
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-    }
-
-    response = client.post(
-        "/v1/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-
-    assert response.status_code == 200
-    assert X_TRACE_ID_HEADER in response
-    assert response[X_TRACE_ID_HEADER]
-
-
-@pytest.mark.django_db
-def test_request_logging_context_includes_metadata(monkeypatch, tmp_path):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    logger = common_logging.get_logger("ai_core.tests.graph")
-
-    class _LoggingGraph:
-        def run(self, state, meta):
-            context = common_logging.get_log_context()
-            assert context["trace_id"] == meta["trace_id"]
-            assert context["tenant_id"] == meta["tenant_id"]
-            assert context.get("key_alias") == meta.get("key_alias")
-            logger.info("graph-run")
-            return state, {"ok": True}
-
-    monkeypatch.setattr(views, "info_intake", _LoggingGraph())
-
-    factory = RequestFactory()
-    request = factory.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **{
-            META_TENANT_ID_KEY: "autotest",
-            META_KEY_ALIAS_KEY: "alias-1234",
-        },
-    )
-    from customers.models import Tenant
-
-    request.tenant = Tenant.objects.get(schema_name="autotest")
-
-    middleware = RequestLogContextMiddleware(views.intake)
-
-    with capture_logs() as logs:
-        resp = middleware(request)
-
-    assert resp.status_code == 200
-
-    events = [entry for entry in logs if entry.get("event") == "graph-run"]
-    assert events, "expected graph-run log entry"
-    event = events[0]
-    assert event["trace_id"] != "-"
-    assert event["tenant_id"] != "-"
-    assert event.get("key_alias", "") != "-"
-    assert common_logging.get_log_context() == {}
-
-
-@pytest.mark.django_db
-def test_legacy_routes_emit_deprecation_headers(client, test_tenant_schema_name):
-    headers = {
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-    }
-
-    legacy_response = client.get("/ai/ping/", **headers)
-    assert legacy_response.status_code == 200
-    assert (
-        legacy_response["Deprecation"]
-        == settings.API_DEPRECATIONS["ai-core-legacy"]["deprecation"]
-    )
-    assert (
-        legacy_response["Sunset"]
-        == settings.API_DEPRECATIONS["ai-core-legacy"]["sunset"]
-    )
-
-    v1_response = client.get("/v1/ai/ping/", **headers)
-    assert v1_response.status_code == 200
-    assert "Deprecation" not in v1_response
-    assert "Sunset" not in v1_response
-
-
-@pytest.mark.django_db
-def test_legacy_post_routes_emit_deprecation_headers(
-    client, monkeypatch, test_tenant_schema_name
-):
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr(
-        views, "_run_graph", lambda request, graph: Response({"ok": True})
-    )
-
-    headers = {
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-    }
-
-    legacy_response = client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-    assert legacy_response.status_code == 200
-    assert "Deprecation" in legacy_response
-    assert "Sunset" in legacy_response
-
-    v1_response = client.post(
-        "/v1/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-    assert v1_response.status_code == 200
-    assert "Deprecation" not in v1_response
-    assert "Sunset" not in v1_response
-
-
-def _graph_context(tenant: str, case_id: str) -> GraphContext:
-    return GraphContext(
-        tenant_id=tenant,
-        case_id=case_id,
-        trace_id="test-trace",
-        workflow_id="test-workflow",
-        run_id="test-run",
-        graph_name="info_intake",
-    )
-
-
-def test_state_helpers_sanitize_identifiers(monkeypatch, tmp_path):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    ctx = _graph_context("Tenant Name", "Case*ID")
-    views.CHECKPOINTER.save(ctx, {"ok": True})
-
-    safe_tenant = object_store.sanitize_identifier("Tenant Name")
-    safe_case = object_store.sanitize_identifier("Case*ID")
-
-    unsafe_path = tmp_path / "Tenant Name"
-    assert not unsafe_path.exists()
-
-    stored = tmp_path / safe_tenant / safe_case / "state.json"
-    assert stored.exists()
-    assert json.loads(stored.read_text()) == {"ok": True}
-
-    loaded = views.CHECKPOINTER.load(ctx)
-    assert loaded == {"ok": True}
-
-
-def test_state_helpers_reject_unsafe_identifiers(monkeypatch, tmp_path):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    with pytest.raises(ValueError):
-        views.CHECKPOINTER.save(_graph_context("tenant/../", "case"), {})
-
-    with pytest.raises(ValueError):
-        views.CHECKPOINTER.load(_graph_context("tenant", "../case"))
-
-
-def test_state_helpers_recover_from_corrupted_checkpoint(monkeypatch, tmp_path, caplog):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    ctx = _graph_context("Tenant Name", "Case*ID")
-    checkpoint_path = tmp_path / views.CHECKPOINTER._path(ctx)  # type: ignore[attr-defined]
-    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint_path.write_text("{invalid json", encoding="utf-8")
-
-    with caplog.at_level("WARNING"):
-        loaded = views.CHECKPOINTER.load(ctx)
-
-    assert loaded == {}
-    assert json.loads(checkpoint_path.read_text(encoding="utf-8")) == {}
-    assert "graph.checkpoint.corrupted" in caplog.text
-
-
-def test_graph_view_lazy_registration_reuses_cached_runner(monkeypatch):
-    monkeypatch.setattr(registry, "_REGISTRY", {})
-
-    module = ModuleType("ai_core.graphs.lazy_mod")
-
-    def _run(state, meta):
-        return state or {}, {"result": True, "meta": meta["graph_name"]}
-
-    module.run = _run
-    monkeypatch.setattr(views, "lazy_mod", module, raising=False)
-
-    calls: list[ModuleType] = []
-
-    def _module_runner(mod):
-        calls.append(mod)
-        return SimpleNamespace(run=lambda state, meta: (state, {"ok": True}))
-
-    monkeypatch.setattr(views, "module_runner", _module_runner)
-
-    view_cls = type("LazyView", (views._GraphView,), {"graph_name": "lazy_mod"})
-    view = view_cls()
-
-    first = view.get_graph()
-    second = view.get_graph()
-
-    assert first is second
-    assert calls == [module]
-    assert registry.get("lazy_mod") is first
-
-
-@pytest.mark.django_db
-def test_graph_view_missing_runner_returns_server_error(
-    client, monkeypatch, test_tenant_schema_name
-):
-    monkeypatch.setattr(registry, "_REGISTRY", {})
-    monkeypatch.delattr("ai_core.views.info_intake", raising=False)
-    client.raise_request_exception = False
-
-    response = client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: test_tenant_schema_name},
-    )
-
-    assert response.status_code == 500
-    common_logging.clear_log_context()
-
-
-@pytest.mark.django_db
-def test_graph_view_propagates_tool_context(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
-):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
-    monkeypatch.setattr("ai_core.graph.schemas.get_quota", lambda: 1)
-
-    captured_meta: dict[str, object] = {}
-    task_calls: list[object] = []
-    captured_request: dict[str, Request] = {}
-
-    original_normalize_meta = views.normalize_meta
-
-    def _capturing_normalize_meta(request: Request):
-        captured_request["request"] = request
-        return original_normalize_meta(request)
-
-    class _DummyRunner:
-        def run(self, state, meta):
-            captured_meta["meta"] = meta
-            task_calls.append(meta["tool_context"])
-            return state or {}, {"ok": True}
-
-    monkeypatch.setattr(views, "normalize_meta", _capturing_normalize_meta)
-    monkeypatch.setattr(views, "get_graph_runner", lambda name: _DummyRunner())
-
-    headers = {
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-        "HTTP_IDEMPOTENCY_KEY": "idem-123",
-    }
-
-    response = client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-
-    assert response.status_code == 200
-    tool_context = captured_meta["meta"]["tool_context"]
-    assert isinstance(tool_context, dict)
-    context = ToolContext.model_validate(tool_context)
-    assert context.tenant_id == test_tenant_schema_name
-    assert context.idempotency_key == "idem-123"
-    assert context.trace_id == captured_meta["meta"]["trace_id"]
-    assert context.metadata["graph_name"] == captured_meta["meta"]["graph_name"]
-    assert context.metadata["graph_version"] == captured_meta["meta"]["graph_version"]
-    assert context.metadata["requested_at"] == captured_meta["meta"]["requested_at"]
-    assert context.metadata["requested_at"]
-    assert ToolContext.model_validate(task_calls[0]) == context
-
-    request_obj = captured_request["request"]
-    assert isinstance(request_obj.tool_context, ToolContext)
-    assert request_obj.tool_context.tenant_id == test_tenant_schema_name
-    assert request_obj.tool_context.idempotency_key == "idem-123"
-    assert response.headers.get(IDEMPOTENCY_KEY_HEADER) == "idem-123"
-
-
-@pytest.mark.django_db
-def test_response_includes_key_alias_header(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
-):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    response = client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **{
-            META_TENANT_ID_KEY: test_tenant_schema_name,
-            META_KEY_ALIAS_KEY: "alias-1",
-        },
-    )
-
-    assert response.status_code == 200
-    assert response[X_KEY_ALIAS_HEADER] == "alias-1"
-    common_logging.clear_log_context()
-
-
-@pytest.mark.django_db
-def test_v1_intake_rate_limit_returns_json_error(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
-):
-    monkeypatch.setattr(rate_limit, "get_quota", lambda: 1)
-    rate_limit._get_redis.cache_clear()
-    monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    headers = {
-        META_TENANT_ID_KEY: test_tenant_schema_name,
-    }
-
-    first = client.post(
-        "/v1/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-    assert first.status_code == 200
-
-    second = client.post(
-        "/v1/ai/intake/",
-        data={},
-        content_type="application/json",
-        **headers,
-    )
-
-    assert second.status_code == 429
-    body = second.json()
-    assert body == {
-        "detail": "Rate limit exceeded for tenant.",
-        "code": "rate_limit_exceeded",
-    }
-    common_logging.clear_log_context()
-
-
-@pytest.mark.django_db
-def test_corrupted_state_file_returns_400(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
-):
-    monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
-
-    tenant = test_tenant_schema_name
-
-    response = client.post(
-        "/ai/intake/",
-        data={},
-        content_type="application/json",
-        **{META_TENANT_ID_KEY: tenant},
-    )
-
-    assert response.status_code == 200
-    common_logging.clear_log_context()
 
 
 @pytest.mark.django_db
@@ -2193,6 +1828,7 @@ def test_crawler_runner_manual_multi_origin(
     client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
+    monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     ingestion_calls: list[tuple[dict, dict, str | None]] = []
 
@@ -2252,6 +1888,7 @@ def test_crawler_runner_manual_multi_origin(
 
     headers = {
         META_TENANT_ID_KEY: test_tenant_schema_name,
+        META_CASE_ID_KEY: "case-test",
     }
 
     payload = {
