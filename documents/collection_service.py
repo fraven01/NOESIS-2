@@ -150,7 +150,6 @@ class CollectionService:
             return None
 
 
-
 __all__ = [
     "CollectionService",
     "CollectionType",

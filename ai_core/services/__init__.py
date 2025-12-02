@@ -1511,8 +1511,7 @@ def handle_document_upload(
     canonical_tenant_identifier = (
         tenant_obj.schema_name
         if tenant_obj is not None and getattr(tenant_obj, "schema_name", None)
-        else meta.get("tenant_schema")
-        or meta["tenant_id"]
+        else meta.get("tenant_schema") or meta["tenant_id"]
     )
     manual_collection_scope = str(manual_collection_uuid(canonical_tenant_identifier))
 
