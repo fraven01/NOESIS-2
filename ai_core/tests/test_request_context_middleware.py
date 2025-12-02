@@ -178,6 +178,7 @@ def test_middleware_rejects_missing_tenant(monkeypatch):
     assert get_contextvars() == {}
 
 
+@pytest.mark.django_db
 def test_middleware_rejects_header_only_when_headers_disallowed(monkeypatch):
     public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
     monkeypatch.setattr(connection, "schema_name", public_schema, raising=False)
@@ -290,10 +291,9 @@ def test_middleware_rejects_conflicting_run_scope():
     response = middleware(request)
 
     assert response.status_code == 400
-    assert json.loads(response.content.decode()) == {
-        "detail": "Exactly one of run_id or ingestion_run_id must be provided",
-        "code": "invalid_request",
-    }
+    data = json.loads(response.content.decode())
+    assert data["code"] == "invalid_request"
+    assert "Exactly one of run_id or ingestion_run_id" in data["detail"]
     assert called is False
 
 

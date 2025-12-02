@@ -8,6 +8,7 @@ from types import SimpleNamespace
 
 from ai_core.ingestion import process_document
 from ai_core.infra import object_store, rate_limit
+from ai_core.tests.utils import make_test_ids
 from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
@@ -22,8 +23,9 @@ def test_ingestion_idempotency_skips_unchanged_documents(
     tmp_path,
     test_tenant_schema_name,
 ):
-    tenant = test_tenant_schema_name
-    case = "upload"  # Empty for caseless
+    ids = make_test_ids(tenant_id=test_tenant_schema_name, case_id="upload")
+    tenant = ids["tenant_id"]
+    case = ids["case_id"]
     external_id = "demo-hello-1759389009"
 
     # create_case(case)
@@ -133,8 +135,9 @@ def test_ingestion_concurrent_same_external_id_is_idempotent(
     tmp_path,
     test_tenant_schema_name,
 ) -> None:
-    tenant = test_tenant_schema_name
-    case = ""  # Caseless uploads should fall back to the default workflow folder
+    ids = make_test_ids(tenant_id=test_tenant_schema_name, case_id="")
+    tenant = ids["tenant_id"]
+    case = ids["case_id"]
     external_id = "race-hello-external-id"
     content = "Concurrent hello!"
 

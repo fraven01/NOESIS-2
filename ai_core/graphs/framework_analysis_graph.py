@@ -224,7 +224,7 @@ class FrameworkAnalysisGraph:
                 trace_id=state["trace_id"],
                 case_id="framework-analysis",
                 invocation_id=uuid4(),
-                run_id=uuid4(),
+                run_id=str(uuid4()),
             )
 
             # Fetch first chunks
@@ -292,6 +292,7 @@ class FrameworkAnalysisGraph:
             )
 
         except Exception as e:
+            logger.error(f"Error in detect_type_and_gremium: {e}", exc_info=True)
             return (
                 _transition(
                     decision="type_detection_failed",
@@ -310,7 +311,7 @@ class FrameworkAnalysisGraph:
                 trace_id=state["trace_id"],
                 case_id="framework-analysis",
                 invocation_id=uuid4(),
-                run_id=uuid4(),
+                run_id=str(uuid4()),
             )
 
             retrieve_params = retrieve.RetrieveInput(
@@ -338,6 +339,7 @@ class FrameworkAnalysisGraph:
             )
 
         except Exception as e:
+            logger.error("Error in extract_toc", exc_info=True)
             return (
                 _transition(
                     decision="toc_extraction_failed",
@@ -356,7 +358,7 @@ class FrameworkAnalysisGraph:
                 trace_id=state["trace_id"],
                 case_id="framework-analysis",
                 invocation_id=uuid4(),
-                run_id=uuid4(),
+                run_id=str(uuid4()),
             )
 
             # Semantic search per component
@@ -434,6 +436,7 @@ class FrameworkAnalysisGraph:
             )
 
         except Exception as e:
+            logger.error("Error in locate_components", exc_info=True)
             return (
                 _transition(
                     decision="location_failed",

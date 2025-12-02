@@ -6,6 +6,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 *Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für die heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flows.*
 
 ## Zweck & Geltungsbereich
+
 - **Master-Referenz** für alle Beiträge in diesem Repository. Entscheidungen und Detailregeln werden ausschließlich in den Primärdokumenten unter `docs/` gepflegt und hier verlinkt.
 - **Für Claude Code**: Siehe [`CLAUDE.md`](CLAUDE.md) für operational workflows (Setup, Commands, häufige Aufgaben).
 - **Für Gemini Code**: Siehe [`Gemini.md`](Gemini.md) für denselben Agenten-Kontext; verweist auf diese Master-Referenz.
@@ -14,11 +15,14 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - Dieses Dokument dient als Einstieg und Navigationshilfe; es enthält keine sich wiederholenden Inhalte aus den Primärquellen.
 
 ## Systemkontext
+
 - Die Systemlandschaft (Web, Worker, Ingestion, LiteLLM, Datenpfade) und die zugehörigen Diagramme sind in der [Architekturübersicht](docs/architektur/overview.md) beschrieben.
 - Laufzeitpfade pro Umgebung sowie die Sequenz von Deploy- zu RAG-Flows befinden sich in den Mermaid-Diagrammen derselben Quelle.
 - ID-Semantik, Propagation und Case-Lifecycle sind in den Architektur-Referenzen unter `docs/architecture/` dokumentiert: [`id-semantics`](docs/architecture/id-semantics.md), [`id-propagation`](docs/architecture/id-propagation.md), [`id-sync-checklist`](docs/architecture/id-sync-checklist.md) und zugehörige ADRs (`docs/architecture/adrs/ADR-00x-*.md`).
+- **Für Implementierer**: Der [`id-guide-for-agents.md`](docs/architecture/id-guide-for-agents.md) bietet konkrete Implementierungsregeln und Code-Beispiele für Agenten.
 
 ## Rollen & Funktionsblöcke
+
 - **Web- & Worker-Services** verantworten HTTP-Verarbeitung und Celery-Queues laut [Architekturübersicht](docs/architektur/overview.md).
 - **Agenten (LangGraph)** orchestrieren Retrieval und Guardrails nach [Agenten-Übersicht](docs/agents/overview.md).
 - **RAG & Ingestion** decken Loader→Embedding→pgvector gemäß [RAG-Overview](docs/rag/overview.md) und [Ingestion-Leitfaden](docs/rag/ingestion.md) ab.
@@ -29,11 +33,13 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - **Security & Secrets** verwalten Plattform- und AI-Schlüssel gemäß [Security Guide](docs/security/secrets.md).
 
 ### Agenten-Kurzreferenz
+
 - Vollständiger Einstieg: [docs/agents/overview.md](docs/agents/overview.md); Graphen liegen unter `ai_core/graphs/...` (u. a. `rag`, `external_knowledge`).
 - `ToolContext` führt verpflichtend `tenant_id` und `trace_id` (neben den Laufzeit-IDs gemäß Glossar).
 - Observability Hooks und Sampling: `ai_core.infra.observability`.
 
 ## Document Lifecycle (Unified Architecture)
+
 - **Vollständiger Plan**: [docs/architecture/unified-document-lifecycle-plan.md](docs/architecture/unified-document-lifecycle-plan.md)
 - **Domain Service**: Zentrale Autorität für alle Document Operations (`DocumentDomainService`)
 - **Lifecycle States**: 6 MVP-States (`pending`, `ingesting`, `embedded`, `active`, `failed`, `deleted`)
@@ -43,6 +49,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - **Health Check**: `/api/health/document-lifecycle/`
 
 ### API Contracts
+
 - `DocumentDomainService.ingest_document()` - Single document ingestion
 - `DocumentDomainService.bulk_ingest_documents()` - Bulk ingestion (Crawler-optimiert)
 - `DocumentDomainService.update_lifecycle_state()` - Lifecycle transitions mit Validierung
@@ -50,12 +57,14 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - `CollectionService.ensure_manual_collection()` - Spezialisiert für Manual Uploads
 
 ### Integration Points
+
 - **Crawler**: `ai_core/services/crawler_runner.py` → `bulk_ingest_documents()`
 - **Manual Upload**: Frontend → Dev API → `ingest_document()`
 - **Service Facade**: `documents/service_facade.py` → Domain Service (dünn)
 - **Vector Store Sync**: Dispatcher-Pattern für transaktionssichere Enqueuing
 
 ## Ereignisse & Trigger
+
 | Quelle | Trigger | Beschreibung | Primärquelle |
 | --- | --- | --- | --- |
 | GitHub Actions | Pull Request oder Merge nach `main` | Startet alle CI/CD-Stufen von Lint bis Deploy. | [docs/cicd/pipeline.md#pipeline-stufen](docs/cicd/pipeline.md#pipeline-stufen) |
@@ -65,6 +74,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 | Langfuse Observability | Fehlerquote > 5 % oder Kosten > 80 % Budget | Löst Alerts für Agenten, Ingestion und LiteLLM aus. | [docs/observability/langfuse.md#felder-und-sampling](docs/observability/langfuse.md#felder-und-sampling) |
 
 ## Inputs & Outputs
+
 | Datenobjekt | Schema/Ort | Besitzer | Primärquelle |
 | --- | --- | --- | --- |
 | Tenant-Schemata | PostgreSQL Public- & Tenant-Schemas (`django-tenants`) | Platform Engineering | [docs/multi-tenancy.md#architektur](docs/multi-tenancy.md#architektur) |
@@ -74,6 +84,7 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 | Secrets & Konfigurationswerte | `.env`, GitHub Secrets, Secret Manager Versionen | Security & Platform | [docs/security/secrets.md#env-verträge](docs/security/secrets.md#env-verträge) |
 
 ## Schichten & Verantwortlichkeiten
+
 - **Business/Orchestrierung**
   - In NOESIS 2 liegen die Graphen unter `ai_core/graphs` (vormals `process_graphs`).
   - [ai_core/graphs/README.md](ai_core/graphs/README.md)  
@@ -94,10 +105,12 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
     Beschreibt die Middleware-Schicht für Telemetrie, Caching und Fehlerbehandlung zwischen Kernel und Capabilities.
 
 Hinweise:
+
 - Siehe Frontend Master Prompt: [docs/frontend-master-prompt.md](docs/frontend-master-prompt.md)
 - PII Scope & Maskierung: [docs/pii-scope.md](docs/pii-scope.md)
 
 ## Tool-Verträge (Layer 2 – Norm)
+
   Alle Tools verwenden: `ToolContext`, `*Input`, `*Output`, `ToolError`.
   Pflicht-Tags: `tenant_id`, `trace_id`, `invocation_id` sowie genau eine Laufzeit-ID (`run_id` **oder** `ingestion_run_id`); optional `idempotency_key`.
   Typed-Errors: `InputError|NotFound|RateLimited|Timeout|Upstream|Internal` (siehe `ToolErrorType` Enum in `ai_core/tools/errors.py`).
@@ -109,10 +122,12 @@ Hinweise:
   Tool-Hüllmodelle basieren auf Pydantic `BaseModel` mit `frozen=True` (immutable), siehe [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md); Agenten müssen diese Unveränderlichkeit bei Änderungen an Tool-Inputs/Outputs respektieren.
 
 ## Guardrails & Header
+
 Jeder Agentenaufruf setzt: `X-Tenant-ID`, `X-Trace-ID` (obligatorisch), `X-Case-ID` (optional), `Idempotency-Key` (optional, POST), automatische PII-Maskierung.
 LangGraph-Knoten & Timeouts siehe Agenten-Übersicht; Idempotenz & Traces sind verpflichtend.
 
 ## Paketgrenzen (Import-Regeln)
+
 services → shared (nur nach unten)  
 tools → services, shared  
 `ai_core/graphs` (vormals `process_graphs`) → tools, shared  
@@ -120,7 +135,9 @@ tenant_logic → `ai_core/graphs`, tools, shared
 Frontend ist getrennt (keine Rückimporte).
 
 ## Generierung mit Codex (Scaffolding)
+
 Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
+
 1) Contracts & Adapter (Layer 2)  
 2) Services-Skeletons (Layer 1)  
 3) Graphen (Layer 3) (LangGraph-Flows, intern auch „Agenten“ genannt). Physischer Speicherort in NOESIS 2: `ai_core/graphs/`.
@@ -128,6 +145,7 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 5) Frontend-Scaffold + Storybook (Layer 5)
 
 ## Schnittstellen & Contracts
+
 | Interface | Endpunkt/Topic | Kurzbeschreibung | Primärquelle |
 | --- | --- | --- | --- |
 | AI Core REST | `/ai/ping/`, `/ai/intake/`, `/v1/ai/rag/query/` | HTTP-Endpunkte mit Tenant-Headern, orchestriert durch LangGraph. | [docs/agents/overview.md#kontrollfluss](docs/agents/overview.md#kontrollfluss) |
@@ -138,22 +156,26 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 | Langfuse API | `LANGFUSE_HOST` (`/api/public`, `/api/ingest`) | Erfasst Traces, Metrics, Alerts und Sampling-Konfiguration. | [docs/observability/langfuse.md#datenfluss](docs/observability/langfuse.md#datenfluss) |
 
 ## Laufzeit & Betrieb
+
 - Skalierungs- und Ressourcenregeln pro Dienst stehen in den [Operations Guidelines](docs/operations/scaling.md).
 - Deploy- und Traffic-Shift-Abläufe folgen der [CI/CD-Dokumentation](docs/cicd/pipeline.md) inklusive Approval-Stufen und Smoke-Checks.
 - Runbooks zu Migrationen und Incidents liegen unter [docs/runbooks/](docs/runbooks) und ergänzen diese Übersicht.
 - Migrations-Runbook (Django/Tenants): [docs/runbooks/migrations.md](docs/runbooks/migrations.md)
 
 ## Sicherheit
+
 - ENV-Verträge, Secret-Rotation und Log-Scopes werden im [Security Guide](docs/security/secrets.md) definiert.
 - LiteLLM Master-Key Verwaltung, Auth und Rate-Limits folgen [LiteLLM Admin GUI](docs/litellm/admin-gui.md).
 - PII-Redaction und Zugriffskontrolle für Traces werden in [Langfuse Guide](docs/observability/langfuse.md) erläutert.
 
 ## Qualität & KPIs
+
 - Überwachung der Fehlerraten, Kosten und Queue-Längen erfolgt über Langfuse-Dashboards laut [Observability Guide](docs/observability/langfuse.md).
 - Skalierungs- und Kostenlimits sind in [Operations](docs/operations/scaling.md) dokumentiert.
 - QA-Abbruchkriterien und Smoke-Checklisten liegen in [docs/qa/checklists.md](docs/qa/checklists.md).
 
 ## Teststrategie
+
 - CI/CD-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD-Dokumentation](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
 - Lokale Kommandos (`pytest`, `npm run lint`, `npm run build:css`) werden in der [README.md](README.md#testing) und [README.md → Linting & Formatierung](README.md#linting--formatierung) dokumentiert.
 
@@ -188,25 +210,28 @@ Diese Tabelle definiert die kanonischen Begriffe und Datenfelder in NOESIS 2.
 Beziehungsmatrix: Ein **Tenant** enthält viele **Cases**, jeder **Case** enthält viele **Workflows**, und jeder **Workflow** kann viele **Runs** erzeugen. Tools benötigen zusätzlich zu den oben genannten Kontexten immer ``trace_id``, ``invocation_id`` und genau eine Laufzeit-ID (``run_id`` oder ``ingestion_run_id``); Graphen setzen ``case_id`` und ``workflow_id`` sobald der fachliche Kontext bekannt ist, ``run_id`` wird pro Ausführung neu generiert und bleibt strikt technisch.
 
 ## Commands
+
 test: pytest -q
 lint: ruff check . && black --check . && mypy .
 typecheck: mypy .
 format: black .
 
 ## Governance & Änderungen
+
 - Architektur-, Security-, RAG- oder Betriebsanpassungen werden zuerst in den jeweiligen Primärquellen unter `docs/` dokumentiert.
 - Runbooks besitzen ihre eigenen Changelogs (siehe [docs/runbooks/](docs/runbooks)); verweise in Pull Requests auf aktualisierte Quellen.
 - Bewahre Idempotenz: aktualisiere diese Datei nur bei neuen Links, Begriffsklärungen oder widersprüchlichen Aussagen.
 
 ## Navigationsverzeichnis
+
 1. [Architekturübersicht](docs/architektur/overview.md)
 2. [Multi-Tenancy Leitfaden](docs/multi-tenancy.md) & [Tenant-Management](docs/tenant-management.md)
 3. [RAG Overview](docs/rag/overview.md), [Ingestion](docs/rag/ingestion.md) & [Schema](docs/rag/schema.sql)
-4. [Agenten-Übersicht](docs/agents/overview.md)
+4. [Agenten-Übersicht](docs/agents/overview.md) & [ID-Guide für Agenten](docs/architecture/id-guide-for-agents.md)
 5. [LiteLLM Admin GUI](docs/litellm/admin-gui.md)
 6. [Observability Langfuse](docs/observability/langfuse.md)
 7. [Operations & Scaling](docs/operations/scaling.md)
-8. [Security & Secrets](docs/security/secrets.md) 
+8. [Security & Secrets](docs/security/secrets.md)
 9. [CI/CD Pipeline](docs/cicd/pipeline.md)
 10. [Runbooks](docs/runbooks) & [QA Checklisten](docs/qa/checklists.md)
 11. [README Einstieg & Kommandos](README.md)

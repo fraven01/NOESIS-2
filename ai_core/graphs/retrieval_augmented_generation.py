@@ -131,6 +131,26 @@ def _normalise_snippets(
 
 
 def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
+    # 1. Try to use pre-built tool_context from meta (injected by normalize_meta)
+    prebuilt = meta.get("tool_context")
+    if isinstance(prebuilt, dict):
+        return ToolContext(**prebuilt)
+    if isinstance(prebuilt, ToolContext):
+        return prebuilt
+
+    # 2. Try to build from scope_context if available
+    scope_data = meta.get("scope_context")
+    if scope_data:
+        from ai_core.contracts.scope import ScopeContext
+        from ai_core.tool_contracts.base import tool_context_from_scope
+        
+        if isinstance(scope_data, dict):
+             scope = ScopeContext.model_validate(scope_data)
+             return tool_context_from_scope(scope, metadata=dict(meta))
+        if isinstance(scope_data, ScopeContext):
+             return tool_context_from_scope(scope_data, metadata=dict(meta))
+
+    # 3. Legacy fallback (manual construction)
     tenant_raw = meta.get("tenant_id")
     tenant_text = str(tenant_raw or "").strip()
     if not tenant_text:
@@ -152,7 +172,7 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
 
     override_flag = meta.get("visibility_override_allowed")
     trace_raw = meta.get("trace_id")
-    trace_id = str(trace_raw).strip() if trace_raw is not None else None
+    trace_id = str(trace_raw).strip() if trace_raw is not None else "trace-fallback"
 
     return ToolContext(
         tenant_id=tenant_text,

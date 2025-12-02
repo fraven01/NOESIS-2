@@ -14,6 +14,7 @@ from .headers import (
     normalize_idempotency_key,
     normalize_tenant_header,
 )
+from .http_scope import normalize_request
 
 __all__ = [
     "CorrelationIds",
@@ -24,6 +25,7 @@ __all__ = [
     "normalize_case_header",
     "normalize_idempotency_key",
     "normalize_trace_id",
+    "normalize_request",
     "normalize_tenant_header",
     "require_ids",
 ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Mapping, MutableMapping
+from uuid import uuid4
 
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
@@ -20,12 +21,12 @@ from common.constants import (
     X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
     X_TRACE_ID_HEADER,
+    META_WORKFLOW_ID_KEY,
+    X_WORKFLOW_ID_HEADER,
 )
 
+from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.rate_limit import get_quota
-from ai_core.tool_contracts import ToolContext
-
-REQUIRED_KEYS = {"tenant_id", "case_id", "trace_id", "graph_name", "graph_version"}
 
 
 def _coalesce(request: Any, header: str, meta_key: str) -> str | None:
@@ -62,73 +63,149 @@ def _resolve_graph_name(request: Any) -> str:
     raise ValueError("graph name could not be determined from request")
 
 
+def _normalize_header_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return str(value).strip() or None
+
+
+def _resolve_tenant_schema(request: Any) -> str | None:
+    tenant_schema = _coalesce(request, X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
+    if tenant_schema:
+        return tenant_schema
+
+    from customers.tenant_context import TenantContext
+
+    tenant = TenantContext.from_request(request, require=False)
+    if tenant:
+        return tenant.schema_name
+    return None
+
+
+def _build_scope_context(request: Any) -> ScopeContext:
+    """Build a canonical ScopeContext from the request or attached scope."""
+    existing_scope = getattr(request, "scope_context", None)
+    if isinstance(existing_scope, ScopeContext):
+        return existing_scope
+
+    # If request is an HttpRequest, use the normalizer
+    from django.http import HttpRequest
+    if isinstance(request, HttpRequest):
+        from ai_core.ids import normalize_request
+        return normalize_request(request)
+
+    # Fallback for non-HttpRequest objects (e.g. dicts or mocks)
+    # This logic mimics the normalizer but for generic objects
+    tenant_id_raw = _coalesce(request, X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
+    trace_id = _coalesce(request, X_TRACE_ID_HEADER, META_TRACE_ID_KEY) or uuid4().hex
+    case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
+    workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
+    idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
+    tenant_schema = _resolve_tenant_schema(request)
+
+    headers: Mapping[str, str] = getattr(request, "headers", {}) or {}
+    meta: MutableMapping[str, Any] = getattr(request, "META", {}) or {}
+    invocation_id = _normalize_header_value(
+        getattr(request, "invocation_id", None)
+        or headers.get("X-Invocation-ID")
+        or meta.get("HTTP_X_INVOCATION_ID")
+    ) or uuid4().hex
+    
+    run_id = _normalize_header_value(
+        getattr(request, "run_id", None)
+        or headers.get("X-Run-ID")
+        or meta.get("HTTP_X_RUN_ID")
+    )
+    ingestion_run_id = _normalize_header_value(
+        getattr(request, "ingestion_run_id", None)
+        or headers.get("X-Ingestion-Run-ID")
+        or meta.get("HTTP_X_INGESTION_RUN_ID")
+    )
+
+    if not tenant_id_raw:
+        raise ValueError("missing required meta keys: tenant_id")
+
+    tenant_id = str(tenant_id_raw).strip()
+    if not tenant_id:
+        raise ValueError("missing required meta keys: tenant_id")
+        
+    if not ingestion_run_id and not run_id:
+        run_id = uuid4().hex
+
+    scope_kwargs = {
+        "tenant_id": tenant_id,
+        "trace_id": trace_id,
+        "invocation_id": invocation_id,
+        "run_id": run_id,
+        "ingestion_run_id": ingestion_run_id,
+        "case_id": case_id,
+        "workflow_id": workflow_id,
+        "idempotency_key": idempotency_key,
+        "tenant_schema": tenant_schema,
+        "timestamp": datetime.now(timezone.utc),
+    }
+
+    return ScopeContext.model_validate(scope_kwargs)
+
+
 def normalize_meta(request: Any) -> dict:
     """Return a normalised metadata mapping for graph executions."""
 
-    tenant_id = _coalesce(request, X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
-    case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
-    trace_id = _coalesce(request, X_TRACE_ID_HEADER, META_TRACE_ID_KEY)
+    scope = _build_scope_context(request)
+
+    if not scope.case_id:
+        raise ValueError("Case header is required and must use the documented format.")
+
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")
-    idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
     collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
+    key_alias = _coalesce(request, X_KEY_ALIAS_HEADER, META_KEY_ALIAS_KEY)
 
-    tenant_schema = _coalesce(request, X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
-
-    if not tenant_schema:
-        from customers.tenant_context import TenantContext
-
-        tenant = TenantContext.from_request(request, require=False)
-        if tenant:
-            tenant_schema = tenant.schema_name
+    requested_at = scope.timestamp.isoformat()
 
     meta = {
-        "tenant_id": tenant_id,
-        "case_id": case_id,
-        "trace_id": trace_id,
+        "tenant_id": scope.tenant_id,
+        "case_id": scope.case_id,
+        "trace_id": scope.trace_id,
         "graph_name": graph_name,
         "graph_version": graph_version,
-        "requested_at": datetime.now(timezone.utc).isoformat(),
+        "requested_at": requested_at,
         "rate_limit": {"quota": get_quota()},
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
     }
 
-    if tenant_schema:
-        meta["tenant_schema"] = tenant_schema
+    if scope.tenant_schema:
+        meta["tenant_schema"] = scope.tenant_schema
+    if scope.idempotency_key:
+        meta["idempotency_key"] = scope.idempotency_key
+    if scope.run_id:
+        meta["run_id"] = scope.run_id
+    if scope.ingestion_run_id:
+        meta["ingestion_run_id"] = scope.ingestion_run_id
 
-    key_alias = _coalesce(request, X_KEY_ALIAS_HEADER, META_KEY_ALIAS_KEY)
     if key_alias:
         meta["key_alias"] = key_alias
     if collection_id:
         meta["collection_id"] = collection_id
 
-    missing = [key for key in REQUIRED_KEYS if not meta.get(key)]
-    if missing:
-        if "case_id" in missing:
-            raise ValueError(
-                "Case header is required and must use the documented format."
-            )
-        raise ValueError(f"missing required meta keys: {', '.join(sorted(missing))}")
-
     context_metadata = {
         "graph_name": graph_name,
         "graph_version": graph_version,
-        "requested_at": meta["requested_at"],
+        "requested_at": requested_at,
     }
     if collection_id:
         context_metadata["collection_id"] = collection_id
 
-    tool_context = ToolContext(
-        tenant_id=meta["tenant_id"],
-        case_id=meta["case_id"],
-        trace_id=meta["trace_id"],
-        idempotency_key=idempotency_key,
-        tenant_schema=tenant_schema,
-        metadata=context_metadata,
-    )
+    meta["context_metadata"] = context_metadata
+    
+    # Use tool_context_from_scope to build ToolContext
+    # We pass metadata as an override/addition
+    tool_context = scope.to_tool_context(metadata=context_metadata)
 
     meta["tool_context"] = tool_context.model_dump(exclude_none=True)
-    if idempotency_key:
-        meta["idempotency_key"] = idempotency_key
 
     return meta
 

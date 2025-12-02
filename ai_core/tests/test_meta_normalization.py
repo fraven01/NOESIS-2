@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+print("DEBUG: Loading ai_core/tests/test_meta_normalization.py")
+
 from datetime import datetime
 from types import SimpleNamespace
 from uuid import uuid4
@@ -10,7 +12,6 @@ import pytest
 
 from ai_core.graph import schemas
 from ai_core.graph.schemas import normalize_meta
-from ai_core.tool_contracts import ToolContext
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -72,6 +73,7 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
 
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
+    from ai_core.tool_contracts import ToolContext
     context = ToolContext.model_validate(tool_context)
     assert str(context.tenant_id) == tenant_id
     assert context.case_id == "case-42"
@@ -116,6 +118,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
 
     assert meta["graph_version"] == "v0"
     tool_context = meta["tool_context"]
+    from ai_core.tool_contracts import ToolContext
     context = ToolContext.model_validate(tool_context)
     assert context.idempotency_key == "idem-1"
     assert context.metadata["graph_version"] == "v0"
@@ -140,6 +143,7 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
 
     tool_context = meta["tool_context"]
     assert isinstance(tool_context, dict)
+    from ai_core.tool_contracts import ToolContext
     context = ToolContext.model_validate(tool_context)
     assert str(context.tenant_id) == tenant_id
     assert context.case_id == "case-b"
@@ -168,6 +172,7 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
     meta = normalize_meta(request)
 
     assert meta["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    from ai_core.tool_contracts import ToolContext
     context = ToolContext.model_validate(meta["tool_context"])
     assert (
         context.metadata.get("collection_id") == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"

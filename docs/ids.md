@@ -35,45 +35,6 @@ Diese IDs identifizieren Datenartefakte innerhalb des Systems.
 | `collection_id` | Dokumenten-Sammlung | Identifiziert eine logische Sammlung von zusammengehörigen Dokumenten. | Wird bei der Erstellung einer Sammlung generiert oder vom Aufrufer bereitgestellt. |
 | `document_version_id` | Dokumenten-Version | Eindeutige ID für eine spezifische Version eines Dokuments. Ermöglicht das Handling und die Nachverfolgung von Dokumentenänderungen. | System (Dokumentenverwaltung) |
 
-## Anwendung und Validierung
-
-- **Header**: Eingehende HTTP-Anfragen an das Backend **müssen** die Header `X-Tenant-ID` und `X-Case-ID` enthalten.
-- **Tool-Kontext**: Alle Tool-Aufrufe innerhalb von Agenten erhalten einen `ToolContext`, der `tenant_id`, `trace_id` und entweder `run_id` oder `ingestion_run_id` enthalten muss.
-- **Validierung**: Die `require_ids`-Funktion in `ai_core.ids.contracts` wird verwendet, um sicherzustellen, dass die erforderlichen IDs in Metadaten und Kontexten vorhanden sind.
-
-## Kontext-Objekte
-
-Die folgenden Kontextobjekte werden für die Weitergabe von IDs innerhalb des Graphen- und Tool-Layers verwendet.
-
-### ToolContext
-
-| Feld | Pflicht | Beschreibung |
-|---|---|---|
-| `tenant_id` | ja | Mandantenbezug der aktuellen Ausführung. |
-| `trace_id` | ja | End-to-End-Korrelation; wird vom Systemeingang übernommen oder erzeugt. |
-| `workflow_id` | optional | Identifiziert den aktiven Prozess- oder LangGraph-Workflow. |
-| `case_id` | optional | Geschäftskontext für Rückfragen, HITL und Audits. |
-| `run_id` | bedingt | Laufzeit-ID für Graph-Ausführungen; obligatorisch, wenn kein `ingestion_run_id` gesetzt ist. |
-| `ingestion_run_id` | bedingt | Laufzeit-ID für Ingestion-Flows; obligatorisch, wenn kein `run_id` gesetzt ist. |
-| `worker_call_id` | optional | Eindeutige ID pro Tool-Aufruf zur Korrelation externer API-Calls. |
-
-### GraphContext
-
-| Feld | Pflicht | Beschreibung |
-|---|---|---|
-| `tenant_id` | ja | Mandantenbezug für den gesamten Graph. |
-| `trace_id` | ja | End-to-End-Korrelation; darf nach Initialisierung nicht überschrieben werden. |
-| `workflow_id` | ja | Identifiziert den ausgeführten Graphen oder Geschäftsprozess. |
-| `case_id` | optional | Geschäftskontext für Agentenentscheidungen. |
-| `run_id` | ja | Frische Laufzeit-ID je Graph-Execution, die in alle Spans und Events übernommen wird. |
-| `ingestion_run_id` | optional | Wird gesetzt, wenn eine Graph-Ausführung Ingestion anstößt. |
-| `collection_id` | optional | Verweist auf die betroffene Dokument-Sammlung. |
-
-## Erzeugung & Immutabilität
-
-- **`trace_id`**: Wird vom aufrufenden System geliefert. Ist beim Graph-Einstieg leer, wird eine neue ID erzeugt und anschließend unverändert propagiert.
-- **`run_id`**: Für jede Graph-Ausführung neu erzeugen und in allen Spans/Events verwenden.
-- **`worker_call_id`**: Pro Tool-Aufruf neu erzeugen, um einzelne externe API-Calls korrelieren zu können.
 - **`ingestion_run_id`**: Nur erzeugen, wenn der Flow tatsächlich Ingestion triggert. Die ID wird von der Stelle erzeugt, die den Ingestion-Lauf startet (nicht vom Search-Worker).
 
 ## Konsistente Attributnamen für Spans und Logs

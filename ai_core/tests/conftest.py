@@ -125,7 +125,8 @@ def _auto_documents_repository(documents_repository_stub):
 
 @pytest.fixture(autouse=True)
 def ingestion_status_store(monkeypatch):
-    store = PersistentDocumentLifecycleStore()
+    from ai_core.tests.doubles import MemoryDocumentLifecycleStore
+    store = MemoryDocumentLifecycleStore()
     monkeypatch.setattr(ingestion_status, "_LIFECYCLE_STORE", store, raising=False)
     yield store
 

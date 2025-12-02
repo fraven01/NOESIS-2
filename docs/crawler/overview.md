@@ -18,10 +18,10 @@ Aufbau der übrigen App-Dokumentationen.
   AI-Core.【F:crawler/worker.py†L1-L174】
 - Der LangGraph orchestriert Guardrails, Normalisierung, Lifecycle und Delta
   über die Documents- und Guardrails-APIs. Follow-up-Aktionen (z. B. Embedding)
-  werden nachgelagert ausgelöst und protokolliert.【F:ai_core/graphs/crawler_ingestion_graph.py†L1-L210】【F:ai_core/tasks.py†L1576-L1597】
+  werden nachgelagert ausgelöst und protokolliert.
 - Telemetrie und Policy-Events laufen Ende-zu-Ende über Langfuse; der Worker
-  liefert dafür nur noch Fetch-Daten und IDs, während AI-Core die Dokument- und
-  Delta-Metriken erzeugt.【F:crawler/worker.py†L105-L174】
+  liefert dafür nur noch Fetch-Daten und IDs. `ScopeContext` (mit `ingestion_run_id`)
+  stellt sicher, dass alle Spans korrekt korreliert werden.
 
 ## Ingestion-Graph
 

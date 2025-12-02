@@ -5,14 +5,13 @@ import uuid
 from typing import Any, Mapping, MutableMapping
 
 from django.http import HttpRequest, HttpResponse, JsonResponse
+from pydantic import ValidationError
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from ai_core.contracts.scope import ScopeContext
 from ai_core.ids import (
     coerce_trace_id,
-    normalize_case_header,
-    normalize_idempotency_key,
-    normalize_tenant_header,
+    normalize_request,
 )
 from ai_core.infra.resp import apply_std_headers
 from customers.tenant_context import TenantContext, TenantRequiredError
@@ -53,6 +52,13 @@ class RequestContextMiddleware:
                 else "invalid_request"
             )
             return JsonResponse({"detail": error_msg, "code": error_code}, status=400)
+        except ValidationError as exc:
+             # Handle Pydantic validation errors from ScopeContext
+             # We take the first error message for simplicity
+             error_msg = str(exc)
+             if exc.errors():
+                 error_msg = exc.errors()[0]["msg"]
+             return JsonResponse({"detail": error_msg, "code": "invalid_request"}, status=400)
         else:
             bind_contextvars(**meta["log_context"])
 
@@ -64,27 +70,32 @@ class RequestContextMiddleware:
 
     def _gather_metadata(self, request: HttpRequest) -> dict[str, Mapping[str, str]]:
         headers = request.META
-        trace_id, span_id = self._resolve_trace_and_span(request)
-        traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
+        
+        # Use the normalizer as the Single Source of Truth
+        scope_context = normalize_request(request)
+        request.scope_context = scope_context
 
-        tenant = TenantContext.from_request(request, allow_headers=False, require=True)
-        tenant_id = getattr(tenant, "schema_name", None)
-        case_id = normalize_case_header(headers)
+        # Extract values from scope_context for logging and response headers
+        trace_id = scope_context.trace_id
+        tenant_id = scope_context.tenant_id
+        case_id = scope_context.case_id
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
-        idempotency_key = normalize_idempotency_key(headers)
-
+        idempotency_key = scope_context.idempotency_key
+        
+        # Span ID is not in ScopeContext, so we resolve it separately or keep it if needed
+        # The original code had _resolve_trace_and_span, but ScopeContext handles trace_id.
+        # We can keep span_id logic if it's critical, but ScopeContext is the authority on trace_id.
+        # For now, let's re-use the span_id extraction if trace_id matches, or just skip it if not critical.
+        # Actually, let's keep it simple and consistent with the plan: use ScopeContext.
+        # If span_id is needed for logging, we can extract it from headers manually or via a helper,
+        # but ScopeContext doesn't store it.
+        # Let's check if we can get span_id from the traceparent header if present.
+        _, span_id = self._resolve_trace_and_span(request)
+        
+        traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
         http_method = request.method.upper() if request.method else ""
         http_route = self._resolve_route(request)
         client_ip = self._resolve_client_ip(headers)
-
-        scope_context = self._build_scope_context(
-            request,
-            trace_id=trace_id,
-            tenant_id=tenant_id,
-            case_id=case_id,
-            idempotency_key=idempotency_key,
-        )
-        request.scope_context = scope_context
 
         log_context: dict[str, str] = {
             "trace.id": trace_id,
@@ -165,45 +176,6 @@ class RequestContextMiddleware:
                 span_id = uuid.uuid4().hex[:16]
 
         return trace_id, span_id
-
-    def _build_scope_context(
-        self,
-        request: HttpRequest,
-        *,
-        trace_id: str,
-        tenant_id: str | None,
-        case_id: str | None,
-        idempotency_key: str | None,
-    ) -> ScopeContext:
-        headers = request.META
-
-        invocation_id = self._normalize_header(headers.get(self.INVOCATION_ID_HEADER))
-        run_id = self._normalize_header(headers.get(self.RUN_ID_HEADER))
-        ingestion_run_id = self._normalize_header(
-            headers.get(self.INGESTION_RUN_ID_HEADER)
-        )
-        workflow_id = self._normalize_header(headers.get(self.WORKFLOW_ID_HEADER))
-
-        if run_id and ingestion_run_id:
-            raise ValueError(
-                "Exactly one of run_id or ingestion_run_id must be provided"
-            )
-
-        scope_kwargs = {
-            "tenant_id": tenant_id or normalize_tenant_header(headers),
-            "trace_id": trace_id,
-            "invocation_id": invocation_id or uuid.uuid4().hex,
-            "case_id": case_id,
-            "workflow_id": workflow_id,
-            "idempotency_key": idempotency_key,
-        }
-
-        if ingestion_run_id:
-            scope_kwargs["ingestion_run_id"] = ingestion_run_id
-        else:
-            scope_kwargs["run_id"] = run_id or uuid.uuid4().hex
-
-        return ScopeContext.model_validate(scope_kwargs)
 
     @staticmethod
     def _normalize_header(value: Any) -> str | None:

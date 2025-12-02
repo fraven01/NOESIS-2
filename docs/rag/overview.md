@@ -1,8 +1,11 @@
 # Warum
+
 Retrieval-Augmented Generation (RAG) verbindet strukturierte Tenant-Daten mit LLM-Antworten. Dieses Kapitel erklärt das Zielbild und zeigt, wie Ingestion, Speicherung und Agenten zusammenspielen.
 
 # Wie
+
 ## Architektur
+
 ```mermaid
 flowchart LR
     L[Loader] --> S[Splitter]
@@ -30,6 +33,7 @@ flowchart LR
 - Retriever filtert per `tenant_id` und blendet nicht-aktive Lifecycle-Stände (`documents.lifecycle <> 'active'`) standardmäßig aus; optional folgt Re-Ranking (z.B. Cross-Encoder) bevor Agenten reagieren (siehe [Lifecycle-Notiz](lifecycle.md#soft-delete)). Die vollständigen Eingabe-/Ausgabeverträge (`RetrieveInput`, `RetrieveOutput`, Meta-Felder) sind im Kapitel [Retrieval Contracts](retrieval-contracts.md) dokumentiert und dienen als Referenz für Tool- und API-Aufrufe.
 
 ## Mandantenfähigkeit
+
 Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenant_id` trennt Zugriffe und wird vom Retriever gefiltert. Für wachsende Last kann optional ein Silo/Schemas je Tenant aufgebaut werden.
 
 | Modell | Beschreibung | Einsatz |
@@ -39,6 +43,7 @@ Standardweg: Embeddings und Metadaten liegen in einem gemeinsamen Schema, `tenan
 | Hybrid | Kern-Tabellen pro Schema, Embeddings global mit `tenant_id` | Wenn LiteLLM und Django gemeinsame Daten teilen müssen |
 
 ## Collection-Scopes
+
 `collection_id` ergänzt `tenant_id` und `case_id` als optionale Persistenz- und Filterdimension. Die Scope-Information kann aus drei Quellen kommen und wird strikt priorisiert: `filters.collection_ids` (Liste) > `collection_id` im Body > `X-Collection-ID` Header (inkl. Alias-Varianten wie `collection_id`). Der Header darf fehlende Body-Werte ergänzen, aber niemals gesetzte Felder überschreiben.
 
 - **Upload & Storage:** Upload-Requests dürfen die Collection im Body oder via Header setzen. Der Web-Layer persistiert den Scope in `documents.collection_id` und spiegelt ihn in der abgelegten `.meta.json`, falls der Body keinen Wert geliefert hat. Bestehende Clients ohne Collection bleiben unverändert funktionsfähig, weil die Spalte `NULL` zulässt.
@@ -52,11 +57,12 @@ Neben `collection_id` existieren zwei weitere, orthogonale Scopes:
 
 - **`tenant_id`** – harte Isolation und Billing-Einheit. Jeder Request muss einen Tenant liefern und wird serverseitig erzwungen.
 - **`collection_id`/`collection_scope`** – technischer Vector-Store-Scope (UUID) bzw. `DocumentCollection.key`. Bestimmt, welche Chunks adressiert werden.
-- **`case_id`** – verweist auf `Case.external_id` und bildet die Business-Akte ab. Header, ToolContext und Graph-State propagieren diesen Wert; Retriever können damit gezielt Case-spezifische Chunks filtern.
+- **`case_id`** – verweist auf `Case.external_id` und bildet die Business-Akte ab. Header, `ScopeContext` und Graph-State propagieren diesen Wert; Retriever können damit gezielt Case-spezifische Chunks filtern.
 
 Alle drei Scopes landen als Trace-/Event-Tags in Langfuse, sodass komplette Case-Verläufe (Upload → Ingestion → Graph) nachvollziehbar bleiben.
 
 ## Mehrdimensionale Profile
+
 Wir unterscheiden künftig drei orthogonale Dimensionen, die Einfluss auf den Vektor-Speicher haben: (1) **Tenant** bzw. gebuchtes Service-Level, (2) **Prozesskontext** (z. B. Draft, Review, Final) und (3) **Dokumentklasse** (z. B. juristische Dokumente, technische Handbücher). Das aktuelle Setup unterstützt zwar Tenants über `tenant_id`, koppelt aber alle weiteren Dimensionen an ein einziges Embedding-Profil (`vector(1536)` + `oai-embed-large`).
 
 > **Begriff Vector Space:** Ein Vector Space ist die kleinste persistente Einheit des RAG-Stores mit fester `embedding_dim`, eindeutigem Backend (z. B. pgvector, Faiss) und eigener Tabelle bzw. eigenem Schema. Jeder Vector Space korrespondiert mit einem Eintrag in `RAG_VECTOR_STORES` und den Staging-/Prod-Datenpfaden aus der [Architekturübersicht](../architektur/overview.md#datenpfade-und-tenancy). Damit verankern wir „Dimension ist physische Eigenschaft des Stores“ als Schnittstellenvertrag; Details zum Ingestionspfad stehen im [RAG-Store-Kapitel](ingestion.md).
@@ -64,6 +70,7 @@ Wir unterscheiden künftig drei orthogonale Dimensionen, die Einfluss auf den Ve
 Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
 
 1. **Embedding-Profile definieren:** Führe eine Konfigurationsstruktur (z. B. `EMBEDDING_PROFILES`) ein, die pro Profil den LiteLLM-Alias, die erwartete Dimension und den Ziel-Vector-Space beschreibt. Beispiel:
+
    ```python
    EMBEDDING_PROFILES = {
        "standard": {"model": "oai-embed-large", "dimension": 1536, "vector_space": "global"},
@@ -71,6 +78,7 @@ Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
        "fast": {"model": "oai-embed-small", "dimension": 1536, "vector_space": "fast"},
    }
    ```
+
    Jeder Vector Space verweist auf ein dediziertes Schema oder Backend mit passender `vector(n)`-Spalte.
    Startzeit-Gate: `ai_core.rag.embedding_config.validate_embedding_configuration()` prüft Dimensionen und referenzierte Spaces.
 
@@ -88,6 +96,7 @@ Für ein skalierbares Zielbild dokumentieren wir folgende Anpassungen:
 Mit dieser Schichtung bleibt LiteLLM weiterhin die abstrakte Schnittstelle zu den Modell-Anbietern, während Persistenz und Kostensteuerung pro Dimension kontrolliert werden können. Standard-Tenants nutzen weiterhin das globale Profil; Großkunden oder hochwertige Prozessschritte lassen sich gezielt auf erweiterte Vector Spaces routen, ohne Dimensionen zu mischen.
 
 ### Persistenz & Schema-Guards
+
 Neben den Validierungen in Worker und Router muss auch das Datenbankschema Guardrails enthalten. `docs/rag/schema.sql` erhält je Vector Space einen expliziten Block – bevorzugt separate Tabellen oder Schemata. Beispiel für ein Premium-Profil:
 
 ```sql
@@ -105,6 +114,7 @@ CREATE TABLE rag_premium_embeddings (
 Falls eine gemeinsame Tabelle unvermeidlich ist, erzwingt mindestens ein `CHECK` auf einer Meta-Spalte die erlaubte Dimension und der Upsert-Pfad prüft `len(embedding)` zur Laufzeit – erst nach erfolgreichem Guard wird geschrieben. Diese Guardrails sind Bestandteil der Migrations-Runbooks und Staging-Smoke-Tests.
 
 ### Betriebs- & Migrationspfad
+
 Profilwechsel folgen einem festen Ablauf (Runbooks unter [docs/runbooks](../runbooks) beschreiben Details):
 
 1. **Vector Space provisionieren:** Neues Schema/Backend samt Tabellen, Indexen und Guardrails erstellen.
@@ -113,6 +123,7 @@ Profilwechsel folgen einem festen Ablauf (Runbooks unter [docs/runbooks](../runb
 4. **Router-Switch:** Konfiguration/Feature-Flag umschalten, Monitoring beobachten und erst bei stabilen Zahlen den Altbestand dekommissionieren.
 
 ## VectorStore Router
+
 Der VectorStore Router kapselt die Auswahl des Backends und erzwingt, dass jede Suche mit einer gültigen `tenant_id` ausgeführt wird. Er normalisiert Filter, deckelt `top_k` hart auf zehn Ergebnisse und schützt damit Agenten vor übermäßigen Resultatmengen. Silos pro Tenant lassen sich später über zusätzliche Router-Scopes konfigurieren, während der Standard weiterhin auf den globalen Store zeigt. Weil der Router immer aktiv ist, entfällt das frühere Feature-Flagging für RAG. Tests können dank Fake-Stores ohne PostgreSQL durchgeführt werden, während optionale Integrationsläufe weiterhin gegen pgvector laufen. Die Delegation sorgt zugleich dafür, dass PII-Redaktionen und Hash-Prüfungen im bestehenden `PgVectorClient` unverändert greifen.
 
 Standardmäßig injiziert der Router `visibility="active"` in jede Anfrage, sodass Soft-Deletes ohne weitere Flags unsichtbar bleiben. Nur wenn der Guard (`visibility_override_allowed`) dies erlaubt, werden die Modi `all` oder `deleted` weitergegeben. Die effektive Einstellung wird im Retrieval-Ergebnis unter `meta.visibility_effective` gespiegelt und steht damit für Observability und Debugging bereit.
@@ -155,11 +166,13 @@ Selektoren für Routing-Regeln (`tenant`, `process`, `doc_class`) werden beim La
 - Empfehlung: Passe `RAG_MIN_SIM` nur in Ausnahmefällen an (z. B. für stark verrauschte Datenquellen). Werte < 0.05 führen häufig zu kaum verwertbaren Treffern; dokumentiere abweichende Settings im jeweiligen Projekt-Runbook.
 
 ## Löschkonzept
+
 - Dokumente erhalten Hashes (siehe [Schema](schema.sql)) und `metadata` mit Herkunft.
 - Löschläufe laufen als Ingestion-Task mit Modus „delete“ und setzen `documents.lifecycle = 'retired'` (Soft Delete). Hard Delete optional über `DELETE ... WHERE tenant_id = ?`.
 - Nach dem Löschen wird `VACUUM`/`ANALYZE` ausgeführt (Staging monatlich, Prod wöchentlich). Index-Rebuild via [Migrations-Runbook](../runbooks/migrations.md).
 
 # Schritte
+
 1. Plane Tenant-Strategie laut Tabelle und dokumentiere sie im Architektur-Overview.
 2. Implementiere Ingestion-Pipelines mit Parametern aus [RAG-Ingestion](ingestion.md) und schreibe Embeddings in das Schema aus [schema.sql](schema.sql).
 3. Aktiviere Observability für Agenten und Retriever über [Langfuse](../observability/langfuse.md), bevor Nutzer Zugriff erhalten.

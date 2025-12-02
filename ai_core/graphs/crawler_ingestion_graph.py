@@ -889,6 +889,10 @@ class CrawlerIngestionGraph:
         working_state.setdefault("artifacts", {})
         working_state.setdefault("transitions", {})
         run_id = working_state.setdefault("graph_run_id", str(uuid4()))
+        if not working_state.get("ingestion_run_id"):
+            working_state["ingestion_run_id"] = meta_payload.get(
+                "ingestion_run_id"
+            ) or str(uuid4())
 
         artifacts = working_state.setdefault("artifacts", {})
         try:

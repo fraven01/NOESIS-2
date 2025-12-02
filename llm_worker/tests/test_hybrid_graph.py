@@ -6,6 +6,7 @@ from typing import Any, Mapping
 import pytest
 from django.core.cache import cache
 
+from ai_core.tests.utils import make_test_meta
 from llm_worker.domain_policies import DomainPolicy, DomainPolicyAction
 from llm_worker.graphs import build_hybrid_graph
 from llm_worker.graphs.hybrid_search_and_score import (
@@ -56,23 +57,25 @@ def _base_state() -> dict[str, Any]:
 
 
 def _base_meta() -> dict[str, Any]:
-    return {
-        "tenant_id": "11111111-1111-4111-8111-111111111111",
-        "case_id": "CASE-123",
-        "trace_id": "TRACE-123",
-        "run_id": "run-1",
-        "workflow_id": "workflow-1",
-        "scoring_context": {
-            "question": "Which policies govern residency?",
-            "purpose": "research",
-            "jurisdiction": "DE",
-            "output_target": "briefing",
-            "preferred_sources": ["https://example.com"],
-            "disallowed_sources": ["https://old.example.com"],
-            "collection_scope": "compliance",
-            "min_diversity_buckets": 3,
+    return make_test_meta(
+        tenant_id="11111111-1111-4111-8111-111111111111",
+        case_id="CASE-123",
+        trace_id="TRACE-123",
+        run_id="run-1",
+        workflow_id="workflow-1",
+        extra={
+            "scoring_context": {
+                "question": "Which policies govern residency?",
+                "purpose": "research",
+                "jurisdiction": "DE",
+                "output_target": "briefing",
+                "preferred_sources": ["https://example.com"],
+                "disallowed_sources": ["https://old.example.com"],
+                "collection_scope": "compliance",
+                "min_diversity_buckets": 3,
+            },
         },
-    }
+    )
 
 
 def _fake_rag() -> list[RAGCoverageSummary]:

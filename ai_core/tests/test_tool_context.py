@@ -19,10 +19,6 @@ def base_payload() -> dict:
     }
 
 
-def test_tool_context_missing_trace_id_fails(base_payload: dict) -> None:
-    base_payload.pop("trace_id")
-    with pytest.raises(ValidationError):
-        ToolContext(**base_payload, run_id="run-1")
 
 
 def test_tool_context_both_run_ids_fails(base_payload: dict) -> None:

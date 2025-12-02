@@ -46,7 +46,8 @@ from common.constants import (
 )
 
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
-from ai_core.graph.schemas import ToolContext, merge_state
+from ai_core.graph.schemas import merge_state
+from ai_core.tool_contracts import ToolContext
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.graphs.cost_tracking import coerce_cost_value, track_ledger_costs
 from ai_core.llm.client import LlmClientError, RateLimitError

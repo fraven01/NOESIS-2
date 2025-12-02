@@ -5,6 +5,7 @@ Zentrale Navigationsdatei für Claude Code bei der Arbeit mit NOESIS 2. Dieses D
 *Hinweis: Der Begriff „Pipeline" ist eine historische Bezeichnung für die heute als „Graph" (LangGraph) bezeichneten Orchestrierungs-Flows.*
 
 ## Zweck & Geltungsbereich
+
 - **Operational Guide** für Claude Code in diesem Repository
 - Gleicher Wissensstand wie Gemini Code und Codex: alle drei nutzen dieselben Contracts & Workflows
 - Alle Contracts, Glossar, Architektur → siehe [`AGENTS.md`](AGENTS.md)
@@ -14,7 +15,9 @@ Zentrale Navigationsdatei für Claude Code bei der Arbeit mit NOESIS 2. Dieses D
 ## Systemverständnis (Kurzfassung)
 
 ### Architektur-Überblick
+
 NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden Hauptkomponenten:
+
 - **Web-Service**: Django/Gunicorn für HTTP & Admin
 - **Worker-Services**: Celery mit zwei Queues (`agents`, `ingestion`)
 - **Agenten**: LangGraph-Orchestrierung für RAG-Flows
@@ -25,6 +28,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 **Vollständige Architektur & Contracts**: [AGENTS.md](AGENTS.md) → [docs/architektur/overview.md](docs/architektur/overview.md)
 
 ### Technologie-Stack
+
 - Backend: Django 5.x, Python 3.12+
 - Async: Celery, Redis
 - DB: PostgreSQL mit `pgvector`, `django-tenants`
@@ -35,14 +39,17 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 ## Contracts & Pflichtfelder (Kurzreferenz)
 
 **Vollständige Contracts**: [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm)
+**Implementierungs-Guide**: [docs/architecture/id-guide-for-agents.md](docs/architecture/id-guide-for-agents.md)
 
 ### Pflicht-Tags für alle Tool-Aufrufe
+
 - `tenant_id` (UUID)
 - `trace_id` (string)
 - `invocation_id` (UUID)
 - Genau **eine** Laufzeit-ID: `run_id` **XOR** `ingestion_run_id`
 
 ### HTTP-Header (Pflicht)
+
 - `X-Tenant-ID` (UUID)
 - `X-Trace-ID` (string)
 
@@ -51,6 +58,7 @@ NOESIS 2 ist eine mandantenfähige Django-Plattform (Python 3.12+) mit folgenden
 ## Entwicklungsworkflow (Claude-spezifisch)
 
 ### Lokales Setup (Docker)
+
 ```bash
 # Setup
 cp .env.example .env
@@ -66,6 +74,7 @@ npm run dev:reset    # Komplett-Reset
 **Windows-Varianten**: `npm run win:dev:*`
 
 ### Tests
+
 ```bash
 npm run test:py        # Python-Tests (Docker)
 npm run test:py:cov    # Mit Coverage
@@ -76,6 +85,7 @@ npm run e2e            # Playwright E2E
 Test-DB: `noesis2_test` (isoliert von Dev-Daten)
 
 ### Linting & Formatierung
+
 ```bash
 npm run lint         # Ruff + Black (Check)
 npm run lint:fix     # Auto-Fix
@@ -83,6 +93,7 @@ npm run format       # Prettier
 ```
 
 ### API & SDKs
+
 ```bash
 npm run api:schema   # Export OpenAPI
 make sdk             # Generate TS/Python SDKs
@@ -93,22 +104,29 @@ make sdk             # Generate TS/Python SDKs
 **Vollständige RAG-Architektur**: [docs/rag/overview.md](docs/rag/overview.md)
 
 ### Vector Spaces
+
 Konfiguriert über `RAG_VECTOR_STORES`:
+
 - `global` (default): 1536-dimensional, pgvector
 - Optional: `enterprise` mit separatem Schema/Dimension
 
 ### Embedding-Profile
+
 Konfiguriert über `RAG_EMBEDDING_PROFILES`:
+
 - `standard`: oai-embed-large, 1536D, global space
 - `premium`: vertex_ai/text-embedding-004, 3072D, enterprise space
 
 ### Routing-Regeln
+
 In `config/rag_routing_rules.yaml`:
+
 - Default-Profil (Pflicht)
 - Optionale Overrides nach: `tenant`, `process`, `doc_class`
 - Case-insensitive, Spezifität nach Anzahl gesetzter Felder
 
 Management-Befehle:
+
 ```bash
 python manage.py rag_routing_rules [--tenant=X --process=Y --doc-class=Z]
 python manage.py rag_schema_smoke --space=global
@@ -119,11 +137,13 @@ python manage.py check_rag_schemas   # Health-Check
 ## Arbeitsweise mit Claude Code
 
 ### Vor dem Start
+
 1. **Lies [`AGENTS.md`](AGENTS.md)** für vollständige Verträge & Architektur
 2. Prüfe spezifischere `AGENTS.md` im Arbeitsverzeichnis
 3. Konsultiere verlinkte Primärquellen für Details
 
 ### Bei Änderungen
+
 1. **Contracts zuerst**: Tool-Inputs/-Outputs definieren (siehe [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm))
 2. **Layer-Regeln beachten**: Import-Hierarchie in [AGENTS.md#Paketgrenzen](AGENTS.md#paketgrenzen-import-regeln)
 3. **Tests schreiben**: Unit → Integration → E2E
@@ -132,12 +152,14 @@ python manage.py check_rag_schemas   # Health-Check
 6. **Linting**: `npm run lint:fix` vor Commit
 
 ### Bei Fehlern
+
 1. Prüfe Langfuse-Traces (`trace_id` suchen)
 2. Konsultiere ELK-Logs für Chaos/Performance
 3. Siehe Runbooks: [docs/runbooks/](docs/runbooks/)
 4. Error-Codes in `ai_core/tools/errors.py` (Typed Errors: `InputError`, `NotFound`, `RateLimited`, `Timeout`, `Upstream`, `Internal`)
 
 ### Bei RAG-Arbeiten
+
 1. Lies [docs/rag/overview.md](docs/rag/overview.md)
 2. Verstehe Vector Spaces & Profile
 3. Prüfe Routing-Regeln vor Änderungen
@@ -145,6 +167,7 @@ python manage.py check_rag_schemas   # Health-Check
 5. **WARNUNG**: Dimensionen dürfen **nie** gemischt werden (Migration erforderlich!)
 
 ### Bei Graph-Entwicklung
+
 1. Lies [ai_core/graphs/README.md](ai_core/graphs/README.md)
 2. Nutze `GraphNode` & `GraphTransition`
 3. Teste mit Fake-Services/Retrievers
@@ -156,6 +179,7 @@ python manage.py check_rag_schemas   # Health-Check
 **Vollständige Multi-Tenancy-Architektur**: [docs/multi-tenancy.md](docs/multi-tenancy.md)
 
 ### Tenant-Setup
+
 ```bash
 # Neuer Tenant
 make tenant-new SCHEMA=demo NAME="Demo" DOMAIN=demo.local
@@ -168,6 +192,7 @@ make jobs:migrate
 ```
 
 ### Tenant-Isolation (Kurzfassung)
+
 - DB: Schema pro Tenant (`django-tenants`)
 - RAG: `tenant_id`-Filter in pgvector
 - API: `X-Tenant-ID` Header verpflichtend
@@ -178,12 +203,14 @@ make jobs:migrate
 **Vollständige Observability-Guides**: [docs/observability/langfuse.md](docs/observability/langfuse.md), [docs/observability/elk.md](docs/observability/elk.md)
 
 ### Langfuse (Traces & Metrics)
+
 - Host: `LANGFUSE_HOST`
 - Keys: `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`
 - Tags: `tenant_id`, `trace_id`, `case_id`, `workflow_id`
 - Spans: Automatisch für Tools & Graphs
 
 ### ELK-Stack (Logs)
+
 ```bash
 # Lokal starten
 docker compose -f docker/elk/docker-compose.yml up -d
@@ -195,6 +222,7 @@ docker compose -f docker/elk/docker-compose.yml up -d
 ## Häufige Aufgaben (Step-by-Step)
 
 ### Neues Tool erstellen
+
 1. Definiere Input/Output-Modelle in `ai_core/tools/`
 2. Verwende `ToolContext`, `ToolOutput[IT, OT]` (siehe [AGENTS.md#Tool-Verträge](AGENTS.md#tool-verträge-layer-2--norm))
 3. Implementiere Error-Handling mit `ToolError` (Typed Errors)
@@ -203,6 +231,7 @@ docker compose -f docker/elk/docker-compose.yml up -d
 6. Dokumentiere in Tool-Contract-Docs
 
 ### Neuen Graph hinzufügen
+
 1. Erstelle Graph in `ai_core/graphs/`
 2. Definiere Knoten mit `GraphNode`
 3. Nutze `GraphTransition` für Übergänge
@@ -212,6 +241,7 @@ docker compose -f docker/elk/docker-compose.yml up -d
 7. Dokumentiere in [ai_core/graphs/README.md](ai_core/graphs/README.md)
 
 ### Embedding-Profil ändern
+
 1. **WARNUNG**: Dimensionswechsel = Migration!
 2. Prüfe `RAG_EMBEDDING_PROFILES` in Settings
 3. Validiere mit `validate_embedding_configuration()`
@@ -221,6 +251,7 @@ docker compose -f docker/elk/docker-compose.yml up -d
 7. Dokumentiere in [docs/rag/configuration.md](docs/rag/configuration.md)
 
 ### Deployment
+
 1. Merge in `main` triggert CI/CD
 2. Pipeline: Lint → Test → Build → Deploy Staging
 3. Smoke-Checks in Staging
@@ -233,6 +264,7 @@ Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 ## Qualitätsregeln (Claude-Checkliste)
 
 ### Code-Qualität
+
 - Ruff + Black für Python (immer `npm run lint:fix` vor Commit!)
 - TypeScript strict mode
 - 100% Type-Hints in Tool-Contracts
@@ -240,6 +272,7 @@ Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 - `model_json_schema()` ist kanonische Quelle für Schemas
 
 ### Test-Coverage
+
 - Unit-Tests für alle Tools & Nodes
 - Integration-Tests für Graphs
 - E2E für kritische Pfade
@@ -247,6 +280,7 @@ Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 - Load-Tests (k6, Locust) manuell
 
 ### Dokumentation
+
 - README in jedem Paket
 - Docstrings für öffentliche APIs
 - JSON-Schema-Export für Tools
@@ -254,6 +288,7 @@ Details: [docs/cicd/pipeline.md](docs/cicd/pipeline.md)
 - Changelog in Pull Requests
 
 ### Security
+
 - PII-Maskierung verpflichtend (siehe [docs/pii-scope.md](docs/pii-scope.md))
 - Secrets via `.env` oder Secret Manager
 - Keine API-Keys in Code/Logs
@@ -299,24 +334,29 @@ make sdk                   # Generate SDKs
 ## Navigation (Primärquellen)
 
 ### Contracts & Architektur (AGENTS.md)
+
 1. **[AGENTS.md](AGENTS.md)** - Hauptleitfaden (Contracts, Glossar, Schnittstellen)
 2. [docs/architektur/overview.md](docs/architektur/overview.md) - Systemarchitektur
 3. [docs/multi-tenancy.md](docs/multi-tenancy.md) - Mandantenfähigkeit
-4. [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md) & [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md) - ID-Semantik & End-to-End-Propagation (plus ADRs unter `docs/architecture/adrs/`)
+4. [docs/architecture/id-semantics.md](docs/architecture/id-semantics.md) & [docs/architecture/id-propagation.md](docs/architecture/id-propagation.md) - ID-Semantik & End-to-End-Propagation
+5. [docs/architecture/id-guide-for-agents.md](docs/architecture/id-guide-for-agents.md) - Praktischer Implementierungs-Guide für Agenten
 
 ### AI Core
+
 5. [docs/agents/overview.md](docs/agents/overview.md) - LangGraph-Agenten
 6. [docs/agents/tool-contracts.md](docs/agents/tool-contracts.md) - Tool-Verträge
 7. [docs/rag/overview.md](docs/rag/overview.md) - RAG-Architektur
 8. [docs/rag/ingestion.md](docs/rag/ingestion.md) - Ingestion-Pipeline
 
 ### Entwicklung & Betrieb
+
 9. [docs/development/onboarding.md](docs/development/onboarding.md) - Einstieg
 10. [README.md](README.md) - Projekt-README
 11. [docs/operations/scaling.md](docs/operations/scaling.md) - Skalierung
 12. [docs/runbooks/migrations.md](docs/runbooks/migrations.md) - Migrationen
 
 ### Observability & CI/CD
+
 13. [docs/observability/langfuse.md](docs/observability/langfuse.md) - Langfuse
 14. [docs/observability/elk.md](docs/observability/elk.md) - ELK-Stack
 15. [docs/cicd/pipeline.md](docs/cicd/pipeline.md) - CI/CD-Pipeline

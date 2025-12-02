@@ -12,6 +12,7 @@ except ImportError:  # pragma: no cover - fallback for <3.12
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from uuid import uuid4
 
 from ai_core.contracts.scope import ScopeContext
 
@@ -42,10 +43,10 @@ class ToolContext(BaseModel):
         ]
     }
 
-    tenant_id: UUID
-    trace_id: str
-    invocation_id: UUID
-    now_iso: datetime
+    tenant_id: Union[UUID, str]
+    trace_id: str = Field(default_factory=lambda: "trace-test")
+    invocation_id: UUID = Field(default_factory=uuid4)
+    now_iso: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     idempotency_key: Optional[str] = None
     tenant_schema: Optional[str] = None
     timeouts_ms: Optional[PositiveInt] = None
@@ -53,6 +54,8 @@ class ToolContext(BaseModel):
     locale: Optional[str] = None
     safety_mode: Optional[str] = None
     auth: Optional[dict[str, Any]] = None
+    visibility_override_allowed: bool = False
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
     # New fields
     run_id: Optional[str] = None

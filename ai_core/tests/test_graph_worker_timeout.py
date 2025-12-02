@@ -2,22 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
 from celery import exceptions as celery_exceptions
 from django.conf import settings
 
 from ai_core import services
-from ai_core.graph.schemas import ToolContext
-
+from ai_core.tool_contracts import ToolContext
 
 class _DummyCheckpointer:
-    """Fake checkpointer that stores state in memory."""
-
     def __init__(self) -> None:
         self.saved: list[tuple[Any, Any]] = []
 
@@ -52,18 +51,32 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
         body=json.dumps({"query": "test"}).encode(),
     )
 
+    tenant_id = str(uuid4())
+    invocation_id = str(uuid4())
     tool_context = ToolContext(
-        tenant_id="tenant-test",
+        tenant_id=tenant_id,
         case_id="case-test",
         trace_id="trace-test",
+        invocation_id=invocation_id,
+        now_iso=datetime.now(timezone.utc),
+        run_id="run-test",
     )
 
     normalized_meta = {
-        "tenant_id": "tenant-test",
+        "tenant_id": tenant_id,
         "case_id": "case-test",
         "trace_id": "trace-test",
+        "run_id": "run-test",
         "graph_name": "rag.default",
         "graph_version": "v1",
+        "scope_context": {
+            "tenant_id": tenant_id,
+            "case_id": "case-test",
+            "trace_id": "trace-test",
+            "invocation_id": str(invocation_id),
+            "run_id": "run-test",
+            "timestamp": tool_context.now_iso.isoformat(),
+        },
         "tool_context": tool_context,
     }
 
@@ -85,7 +98,7 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
     def fake_with_scope_apply_async(signature, scope):  # type: ignore[no-untyped-def]
         # Verify the signature was called correctly
         assert signature is not None
-        assert scope["tenant_id"] == "tenant-test"
+        assert scope["tenant_id"] == tenant_id
         assert scope["case_id"] == "case-test"
         assert scope["trace_id"] == "trace-test"
         return mock_async_result
@@ -136,18 +149,32 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
         body=json.dumps({"query": "test"}).encode(),
     )
 
+    tenant_id = str(uuid4())
+    invocation_id = str(uuid4())
     tool_context = ToolContext(
-        tenant_id="tenant-test",
+        tenant_id=tenant_id,
         case_id="case-test",
         trace_id="trace-test",
+        invocation_id=invocation_id,
+        now_iso=datetime.now(timezone.utc),
+        run_id="run-test",
     )
 
     normalized_meta = {
-        "tenant_id": "tenant-test",
+        "tenant_id": tenant_id,
         "case_id": "case-test",
         "trace_id": "trace-test",
+        "run_id": "run-test",
         "graph_name": "rag.default",
         "graph_version": "v1",
+        "scope_context": {
+            "tenant_id": tenant_id,
+            "case_id": "case-test",
+            "trace_id": "trace-test",
+            "invocation_id": str(invocation_id),
+            "run_id": "run-test",
+            "timestamp": tool_context.now_iso.isoformat(),
+        },
         "tool_context": tool_context,
     }
 
@@ -164,7 +191,7 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
     def fake_with_scope_apply_async(signature, scope):  # type: ignore[no-untyped-def]
         # Verify the signature was called correctly
         assert signature is not None
-        assert scope["tenant_id"] == "tenant-test"
+        assert scope["tenant_id"] == tenant_id
         assert scope["case_id"] == "case-test"
         assert scope["trace_id"] == "trace-test"
         return mock_async_result
@@ -189,7 +216,7 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
         "status": "queued",
         "task_id": "task-456",
         "graph": "rag.default",
-        "tenant_id": "tenant-test",
+        "tenant_id": tenant_id,
         "case_id": "case-test",
         "trace_id": "trace-test",
     }

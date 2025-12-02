@@ -737,10 +737,20 @@ class HybridSearchAndScoreGraph:
                 },
             }
             retrieve_params = retrieve.RetrieveInput.from_state(retrieve_state)
+            # Extract runtime IDs
+            run_id = meta.get("run_id")
+            ingestion_run_id = meta.get("ingestion_run_id")
+
+            # Enforce XOR rule: if neither is present, generate a run_id
+            if not run_id and not ingestion_run_id:
+                run_id = str(uuid5(UUID(int=0), f"hybrid-run-{query_hash}"))
+
             tool_context = ToolContext(
                 tenant_id=tenant_id,
                 case_id=case_id,
                 trace_id=trace_id or None,
+                run_id=str(run_id) if run_id else None,
+                ingestion_run_id=str(ingestion_run_id) if ingestion_run_id else None,
                 tenant_schema=meta.get("tenant_schema"),
                 visibility_override_allowed=bool(
                     meta.get("visibility_override_allowed", False)

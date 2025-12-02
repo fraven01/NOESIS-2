@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 import json
 from types import SimpleNamespace
 from typing import Any
+from uuid import uuid4
 
 import pytest
 
 from ai_core import services
-from ai_core.graph.schemas import ToolContext
+from ai_core.tool_contracts import ToolContext
 
 
 class _DummyCheckpointer:
@@ -41,17 +43,32 @@ def test_execute_graph_emits_cost_summary_and_updates_observation(monkeypatch):
         body=json.dumps({}).encode(),
     )
 
+    tenant_id = str(uuid4())
+    run_id = "run-1"
+    invocation_id = str(uuid4())
     tool_context = ToolContext(
-        tenant_id="tenant-123",
+        tenant_id=tenant_id,
         case_id="case-456",
         trace_id="trace-abc",
+        invocation_id=invocation_id,
+        now_iso=datetime.now(timezone.utc),
+        run_id=run_id,
     )
     normalized_meta = {
-        "tenant_id": "tenant-123",
+        "tenant_id": tenant_id,
         "case_id": "case-456",
         "trace_id": "trace-abc",
         "graph_name": "custom.graph",
         "graph_version": "v7",
+        "run_id": run_id,
+        "scope_context": {
+            "tenant_id": tenant_id,
+            "case_id": "case-456",
+            "trace_id": "trace-abc",
+            "invocation_id": str(invocation_id),
+            "run_id": run_id,
+            "timestamp": tool_context.now_iso.isoformat(),
+        },
         "tool_context": tool_context,
         "ledger": {"id": "ledger-run-1"},
         "cost": {"total_usd": 0.05},
@@ -109,7 +126,7 @@ def test_execute_graph_emits_cost_summary_and_updates_observation(monkeypatch):
         if call.get("metadata", {}).get("ledger.id") == "ledger-run-1"
     )
     metadata = initial_observation["metadata"]
-    assert metadata["tenant.id"] == "tenant-123"
+    assert metadata["tenant.id"] == str(tenant_id)
     assert metadata["case.id"] == "case-456"
     assert metadata["graph.version"] == "v7"
     assert metadata["cost.total_usd"] == pytest.approx(0.05)
@@ -124,7 +141,7 @@ def test_execute_graph_emits_cost_summary_and_updates_observation(monkeypatch):
     event_name, payload = emitted_events[-1]
     assert event_name == "cost.summary"
     assert payload["total_usd"] == pytest.approx(0.12)
-    assert payload["tenant_id"] == "tenant-123"
+    assert payload["tenant_id"] == tenant_id
     assert payload["case_id"] == "case-456"
     assert payload["graph_version"] == "v7"
     assert payload["components"][0]["source"] == "meta"
