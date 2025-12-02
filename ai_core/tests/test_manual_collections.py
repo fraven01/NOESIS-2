@@ -49,7 +49,7 @@ def test_ensure_manual_collection_routes_through_collection_service(
     assert collection_id == "collection-id"
     assert captured["vector_client"] is dummy_client
     assert captured["ensure_kwargs"] == {
-        "tenant_id": tenant_id,
+        "tenant": tenant_id,
         "slug": "custom-slug",
         "label": "Custom Label",
     }

@@ -37,17 +37,17 @@ def _get_collection_service(
 
 
 def manual_collection_uuid(
-    tenant_id: object,
+    tenant: object,
     *,
     slug: str = MANUAL_COLLECTION_SLUG,
 ) -> UUID:
     """Return the deterministic UUID for the tenant's manual collection."""
 
-    return CollectionService.manual_collection_uuid(tenant_id, slug=slug)
+    return CollectionService.manual_collection_uuid(tenant, slug=slug)
 
 
 def ensure_manual_collection(
-    tenant_id: object,
+    tenant: object,
     *,
     slug: str = MANUAL_COLLECTION_SLUG,
     label: str = MANUAL_COLLECTION_LABEL,
@@ -62,7 +62,7 @@ def ensure_manual_collection(
     )
     service = _get_collection_service(vector_client=client)
     return service.ensure_manual_collection(
-        tenant_id=tenant_id,
+        tenant=tenant,
         slug=slug,
         label=label,
     )

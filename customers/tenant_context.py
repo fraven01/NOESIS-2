@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from uuid import UUID
 
 from django.conf import settings
 from django.db import connection
@@ -33,13 +34,13 @@ class TenantContext:
 
     @staticmethod
     def resolve_identifier(
-        identifier: str | int | None, *, allow_pk: bool = False
+        identifier: str | int | UUID | None, *, allow_pk: bool = False
     ) -> Tenant | None:
-        """Resolve a Tenant object from a schema identifier or optional PK.
+        """Resolve a Tenant object from a schema identifier or optional PK/UUID.
 
         Args:
-            identifier: The tenant identifier (schema string or numeric PK).
-            allow_pk: When ``True``, also attempt lookup by primary key.
+            identifier: The tenant identifier (schema string, numeric PK, or UUID/UUID string).
+            allow_pk: When ``True``, also attempt lookup by primary key/UUID.
 
         Returns:
             The Tenant object if found, else None.

@@ -96,8 +96,8 @@ def test_document_space_lists_collections_and_documents(monkeypatch):
         def __init__(self) -> None:
             self.calls: list[str] = []
 
-        def ensure_manual_collection(self, tenant_id: object, **_: object) -> str:
-            self.calls.append(str(tenant_id))
+        def ensure_manual_collection(self, tenant: object, **_: object) -> str:
+            self.calls.append(str(tenant))
             return str(collection.collection_id)
 
     service_stub = DocumentSpaceService(collection_service=_CollectionServiceStub())

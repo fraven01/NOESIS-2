@@ -147,7 +147,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
 
 def test_middleware_rejects_missing_tenant(monkeypatch):
     monkeypatch.setattr(
-        "ai_core.middleware.context.TenantContext.from_request",
+        "customers.tenant_context.TenantContext.from_request",
         lambda *args, **kwargs: (_ for _ in ()).throw(
             TenantRequiredError("Tenant could not be resolved from request")
         ),

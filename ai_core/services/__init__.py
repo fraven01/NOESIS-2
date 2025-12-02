@@ -1507,9 +1507,14 @@ def handle_document_upload(
 
     metadata_obj = metadata_model.model_dump()
 
-    # Use schema name for consistent UUID generation
-    tenant_identifier = meta.get("tenant_schema") or meta["tenant_id"]
-    manual_collection_scope = str(manual_collection_uuid(tenant_identifier))
+    tenant_obj = _resolve_tenant_for_documents(meta)
+    canonical_tenant_identifier = (
+        tenant_obj.schema_name
+        if tenant_obj is not None and getattr(tenant_obj, "schema_name", None)
+        else meta.get("tenant_schema")
+        or meta["tenant_id"]
+    )
+    manual_collection_scope = str(manual_collection_uuid(canonical_tenant_identifier))
 
     manual_scope_assigned = False
 
@@ -1523,7 +1528,7 @@ def handle_document_upload(
     if not metadata_obj.get("collection_id"):
         manual_scope_assigned = True
         try:
-            ensure_manual_collection(meta["tenant_id"])
+            ensure_manual_collection(tenant_obj or canonical_tenant_identifier)
         except Exception:  # pragma: no cover - defensive guard
             logger.warning(
                 "upload.ensure_manual_collection_failed",
@@ -1534,7 +1539,7 @@ def handle_document_upload(
 
     if manual_scope_assigned and metadata_obj.get("collection_id"):
         _ensure_document_collection_record(
-            tenant_schema=meta["tenant_schema"],
+            tenant_schema=str(canonical_tenant_identifier),
             tenant_id=meta["tenant_id"],
             case_id=meta.get("case_id"),
             collection_id=metadata_obj["collection_id"],
@@ -1543,7 +1548,7 @@ def handle_document_upload(
             label=MANUAL_COLLECTION_LABEL,
         )
 
-    tenant = _resolve_tenant_for_documents(meta)
+    tenant = tenant_obj
     domain_service = (
         DocumentDomainService(vector_store=get_default_client()) if tenant else None
     )

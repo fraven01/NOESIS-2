@@ -130,7 +130,7 @@ class CollectionDevViewSet(viewsets.ViewSet):
         metadata = payload.get("metadata") or {}
 
         collection_id = self._service.ensure_manual_collection(
-            tenant_id=tenant_id,
+            tenant=tenant_id,
             slug=key,
             label=str(name),
             metadata=metadata if isinstance(metadata, Mapping) else {},

@@ -19,8 +19,8 @@ class _CollectionServiceStub:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def ensure_manual_collection(self, tenant_id: object, **_: object) -> str:
-        tenant_str = str(tenant_id)
+    def ensure_manual_collection(self, tenant: object, **_: object) -> str:
+        tenant_str = str(tenant)
         self.calls.append(tenant_str)
         return tenant_str
 
