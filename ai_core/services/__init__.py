@@ -1336,8 +1336,8 @@ def _build_document_meta(
 
 def _ensure_document_collection_record(
     *,
-    tenant_schema: str,
-    tenant_id: str,
+    tenant: object,
+    tenant_identifier: str,
     collection_id: object,
     case_id: str | None,
     source: str = "upload",
@@ -1357,16 +1357,18 @@ def _ensure_document_collection_record(
     except (TypeError, ValueError, AttributeError):
         logger.warning(
             "document_collection.ensure.invalid_id",
-            extra={"tenant_id": tenant_id, "collection_id": collection_id},
+            extra={"tenant_id": tenant_identifier, "collection_id": collection_id},
         )
         return
 
-    try:
-        tenant_obj = Tenant.objects.get(schema_name=tenant_schema)
-    except Tenant.DoesNotExist:
+    tenant_obj = _resolve_tenant_for_documents({"tenant_id": tenant_identifier})
+    if tenant_obj is None and isinstance(tenant, Tenant):
+        tenant_obj = tenant
+
+    if tenant_obj is None:
         logger.warning(
             "document_collection.ensure_missing_tenant",
-            extra={"tenant_id": tenant_id, "tenant_schema": tenant_schema},
+            extra={"tenant_id": tenant_identifier},
         )
         return
 
@@ -1403,8 +1405,7 @@ def _ensure_document_collection_record(
             logger.warning(
                 "document_collection.ensure_record_failed",
                 extra={
-                    "tenant_id": tenant_id,
-                    "tenant_schema": tenant_schema,
+                    "tenant_id": tenant_identifier,
                     "collection_id": str(collection_uuid),
                 },
                 exc_info=True,
@@ -1508,12 +1509,15 @@ def handle_document_upload(
     metadata_obj = metadata_model.model_dump()
 
     tenant_obj = _resolve_tenant_for_documents(meta)
-    canonical_tenant_identifier = (
-        tenant_obj.schema_name
-        if tenant_obj is not None and getattr(tenant_obj, "schema_name", None)
-        else meta.get("tenant_schema") or meta["tenant_id"]
-    )
-    manual_collection_scope = str(manual_collection_uuid(canonical_tenant_identifier))
+    if tenant_obj is None:
+        return _error_response(
+            "Tenant could not be resolved for upload.",
+            "tenant_not_found",
+            status.HTTP_400_BAD_REQUEST,
+        )
+
+    canonical_tenant_identifier = tenant_obj.schema_name
+    manual_collection_scope = str(manual_collection_uuid(tenant_obj))
 
     manual_scope_assigned = False
 
@@ -1527,7 +1531,7 @@ def handle_document_upload(
     if not metadata_obj.get("collection_id"):
         manual_scope_assigned = True
         try:
-            ensure_manual_collection(tenant_obj or canonical_tenant_identifier)
+            ensure_manual_collection(tenant_obj)
         except Exception:  # pragma: no cover - defensive guard
             logger.warning(
                 "upload.ensure_manual_collection_failed",
@@ -1538,8 +1542,8 @@ def handle_document_upload(
 
     if manual_scope_assigned and metadata_obj.get("collection_id"):
         _ensure_document_collection_record(
-            tenant_schema=str(canonical_tenant_identifier),
-            tenant_id=meta["tenant_id"],
+            tenant=tenant_obj,
+            tenant_identifier=str(meta.get("tenant_id") or canonical_tenant_identifier),
             case_id=meta.get("case_id"),
             collection_id=metadata_obj["collection_id"],
             source="upload",

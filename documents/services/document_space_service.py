@@ -76,7 +76,7 @@ class DocumentSpaceService:
         repository: DocumentsRepository,
     ) -> DocumentSpaceResult:
         with schema_context(tenant_schema):
-            self._ensure_manual_collection(tenant_id)
+            self._ensure_manual_collection(tenant)
             collections = self._load_collections(tenant, tenant_schema)
             serialized_collections = [
                 self._serialize_collection(item) for item in collections
@@ -166,9 +166,11 @@ class DocumentSpaceService:
             next_cursor=next_cursor,
         )
 
-    def _ensure_manual_collection(self, tenant_id: str) -> None:
+    def _ensure_manual_collection(self, tenant: Tenant | None) -> None:
+        if tenant is None:
+            return
         try:
-            self._collection_service.ensure_manual_collection(tenant_id)
+            self._collection_service.ensure_manual_collection(tenant)
         except Exception:
             logger.warning(
                 "document_space.ensure_manual_collection_failed",

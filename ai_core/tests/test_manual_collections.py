@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-import uuid
-
 import pytest
 
 from ai_core.rag.collections import (
@@ -9,21 +7,24 @@ from ai_core.rag.collections import (
     ensure_manual_collection_model,
     manual_collection_uuid,
 )
+from customers.models import Tenant
+from uuid import UUID, uuid4
 
 
 def test_manual_collection_uuid_is_deterministic():
-    tenant_id = "Tenant-Example"
-    first = manual_collection_uuid(tenant_id)
-    second = manual_collection_uuid(tenant_id.lower())
+    tenant_id = uuid4()
+    tenant = Tenant(id=tenant_id, schema_name="tenant-example")
+    first = manual_collection_uuid(tenant)
+    second = manual_collection_uuid(tenant)
 
-    assert isinstance(first, uuid.UUID)
+    assert isinstance(first, UUID)
     assert first == second
 
 
 def test_ensure_manual_collection_routes_through_collection_service(
     monkeypatch: pytest.MonkeyPatch,
 ):
-    tenant_id = "tenant-seed"
+    tenant = Tenant(id=uuid4(), schema_name="tenant-seed")
     dummy_client = object()
 
     captured: dict[str, object] = {}
@@ -40,7 +41,7 @@ def test_ensure_manual_collection_routes_through_collection_service(
 
     with pytest.deprecated_call():
         collection_id = ensure_manual_collection(
-            tenant_id,
+            tenant,
             slug="custom-slug",
             label="Custom Label",
             client=dummy_client,
@@ -49,7 +50,7 @@ def test_ensure_manual_collection_routes_through_collection_service(
     assert collection_id == "collection-id"
     assert captured["vector_client"] is dummy_client
     assert captured["ensure_kwargs"] == {
-        "tenant": tenant_id,
+        "tenant": tenant,
         "slug": "custom-slug",
         "label": "Custom Label",
     }

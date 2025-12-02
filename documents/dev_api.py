@@ -118,6 +118,13 @@ class CollectionDevViewSet(viewsets.ViewSet):
     def ensure(self, request: Request, tenant_id: str) -> Response:
         _require_debug()
 
+        tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+        if tenant_obj is None:
+            return Response(
+                {"detail": "tenant not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         payload: Mapping[str, object] = request.data or {}
         key = str(payload.get("key") or "")
         if not key:
@@ -130,7 +137,7 @@ class CollectionDevViewSet(viewsets.ViewSet):
         metadata = payload.get("metadata") or {}
 
         collection_id = self._service.ensure_manual_collection(
-            tenant=tenant_id,
+            tenant=tenant_obj,
             slug=key,
             label=str(name),
             metadata=metadata if isinstance(metadata, Mapping) else {},

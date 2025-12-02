@@ -153,6 +153,34 @@ def test_ensure_collection_is_idempotent(
 
 
 @pytest.mark.django_db
+def test_ensure_collection_overwrites_mismatched_id(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
+    service = DocumentDomainService(vector_store=vector_store)
+    existing_uuid = uuid.uuid4()
+    expected_uuid = uuid.uuid4()
+
+    with schema_context(tenant.schema_name):
+        DocumentCollection.objects.create(
+            tenant=tenant,
+            name="Existing",
+            key="shared",
+            collection_id=existing_uuid,
+            type="manual",
+        )
+
+        updated = service.ensure_collection(
+            tenant=tenant,
+            key="shared",
+            name="Shared",
+            collection_id=expected_uuid,
+        )
+
+    assert updated.collection_id == expected_uuid
+    assert vector_store.ensure_calls[-1]["collection_id"] == str(expected_uuid)
+
+
+@pytest.mark.django_db
 def test_delete_document_removes_record_and_vector_entry(
     tenant: Tenant, vector_store: _VectorStoreStub
 ):
