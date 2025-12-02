@@ -15,6 +15,7 @@ from ai_core.tools.web_search import (
     ToolOutcome,
     WebSearchResponse,
 )
+from ai_core.tests.utils import GraphTestMixin
 
 
 class StubStrategyGenerator:
@@ -139,8 +140,6 @@ class StubCoverageVerifier:
         return payload
 
 
-from ai_core.tests.utils import GraphTestMixin
-
 class TestCollectionSearchGraph(GraphTestMixin):
     def _initial_state(self) -> dict[str, Any]:
         return self.make_graph_state(
@@ -156,8 +155,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
             trace_id="trace-1",
             run_id="run-1",
         )
-
-
 
     def test_run_returns_search_results(self) -> None:
         strategy = StubStrategyGenerator()
@@ -199,7 +196,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
         ]
         assert search_payload["strategy"]["queries"] == expected_queries
 
-
     def test_search_failure_aborts_flow(self) -> None:
         strategy = StubStrategyGenerator()
 
@@ -223,7 +219,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert result["outcome"] == "search_failed"
         assert result["search"]["errors"]
         assert hybrid_executor.calls == []
-
 
     def test_search_without_results_returns_no_candidates(self) -> None:
         strategy = StubStrategyGenerator()
@@ -254,7 +249,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
 
-
     def test_auto_ingest_disabled_by_default(self) -> None:
         """Test that auto_ingest=False (default) does not trigger ingestion."""
         strategy = StubStrategyGenerator()
@@ -275,13 +269,14 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert ingestion_trigger.calls == []
         assert result.get("ingestion") is None
 
-
     def test_auto_ingest_triggers_with_high_scores(self, monkeypatch) -> None:
         """Test auto_ingest=True triggers ingestion for results with score >= 60."""
         strategy = StubStrategyGenerator()
 
         class HighScoreSearchWorker(StubWebSearchWorker):
-            def run(self, *, query: str, context: Mapping[str, Any]) -> WebSearchResponse:
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
                 self.calls.append((query, context))
                 # Return results with high scores
                 results = [
@@ -361,7 +356,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert len(urls) > 0
         assert context["tenant_id"] == "tenant-1"
 
-
     def test_auto_ingest_fallback_to_lower_threshold(self, monkeypatch) -> None:
         """Test auto_ingest falls back to score >= 50 when < 3 results with score >= 60."""
         strategy = StubStrategyGenerator()
@@ -421,7 +415,6 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert result["outcome"] == "auto_ingest_triggered"
         assert len(ingestion_trigger.calls) == 1
 
-
     def test_auto_ingest_fails_with_insufficient_quality(self) -> None:
         """Test auto_ingest fails when no results meet minimum quality threshold."""
         strategy = StubStrategyGenerator()
@@ -457,4 +450,3 @@ class TestCollectionSearchGraph(GraphTestMixin):
 
         assert result["outcome"] == "auto_ingest_failed_quality_threshold"
         assert ingestion_trigger.calls == []
-

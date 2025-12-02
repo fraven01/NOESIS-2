@@ -8,13 +8,12 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from pydantic import ValidationError
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
-from ai_core.contracts.scope import ScopeContext
 from ai_core.ids import (
     coerce_trace_id,
     normalize_request,
 )
 from ai_core.infra.resp import apply_std_headers
-from customers.tenant_context import TenantContext, TenantRequiredError
+from customers.tenant_context import TenantRequiredError
 
 
 class RequestContextMiddleware:
@@ -53,12 +52,14 @@ class RequestContextMiddleware:
             )
             return JsonResponse({"detail": error_msg, "code": error_code}, status=400)
         except ValidationError as exc:
-             # Handle Pydantic validation errors from ScopeContext
-             # We take the first error message for simplicity
-             error_msg = str(exc)
-             if exc.errors():
-                 error_msg = exc.errors()[0]["msg"]
-             return JsonResponse({"detail": error_msg, "code": "invalid_request"}, status=400)
+            # Handle Pydantic validation errors from ScopeContext
+            # We take the first error message for simplicity
+            error_msg = str(exc)
+            if exc.errors():
+                error_msg = exc.errors()[0]["msg"]
+            return JsonResponse(
+                {"detail": error_msg, "code": "invalid_request"}, status=400
+            )
         else:
             bind_contextvars(**meta["log_context"])
 
@@ -70,7 +71,7 @@ class RequestContextMiddleware:
 
     def _gather_metadata(self, request: HttpRequest) -> dict[str, Mapping[str, str]]:
         headers = request.META
-        
+
         # Use the normalizer as the Single Source of Truth
         scope_context = normalize_request(request)
         request.scope_context = scope_context
@@ -81,7 +82,7 @@ class RequestContextMiddleware:
         case_id = scope_context.case_id
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
         idempotency_key = scope_context.idempotency_key
-        
+
         # Span ID is not in ScopeContext, so we resolve it separately or keep it if needed
         # The original code had _resolve_trace_and_span, but ScopeContext handles trace_id.
         # We can keep span_id logic if it's critical, but ScopeContext is the authority on trace_id.
@@ -91,7 +92,7 @@ class RequestContextMiddleware:
         # but ScopeContext doesn't store it.
         # Let's check if we can get span_id from the traceparent header if present.
         _, span_id = self._resolve_trace_and_span(request)
-        
+
         traceparent = self._normalize_header(headers.get(self.TRACEPARENT_HEADER))
         http_method = request.method.upper() if request.method else ""
         http_route = self._resolve_route(request)

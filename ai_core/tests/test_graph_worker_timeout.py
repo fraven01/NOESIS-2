@@ -16,6 +16,7 @@ from django.conf import settings
 from ai_core import services
 from ai_core.tool_contracts import ToolContext
 
+
 class _DummyCheckpointer:
     def __init__(self) -> None:
         self.saved: list[tuple[Any, Any]] = []

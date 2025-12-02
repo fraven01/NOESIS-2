@@ -79,12 +79,12 @@ def make_test_ids(
 ) -> dict[str, Any]:
     """
     Generate a consistent set of test IDs.
-    
+
     Enforces the XOR rule between run_id and ingestion_run_id.
     """
     if run_id and ingestion_run_id:
         raise ValueError("Cannot specify both run_id and ingestion_run_id")
-    
+
     if not run_id and not ingestion_run_id:
         run_id = str(uuid.uuid4())
 
@@ -94,12 +94,12 @@ def make_test_ids(
         "case_id": case_id,
         "workflow_id": workflow_id,
     }
-    
+
     if run_id:
         ids["run_id"] = run_id
     if ingestion_run_id:
         ids["ingestion_run_id"] = ingestion_run_id
-        
+
     return {k: v for k, v in ids.items() if v is not None}
 
 
@@ -109,11 +109,10 @@ def make_test_meta(
 ) -> dict[str, Any]:
     """
     Create a standard metadata dictionary for graph execution.
-    
+
     Accepts all arguments from `make_test_ids` via kwargs.
     """
     ids = make_test_ids(**kwargs)
     if extra:
         ids.update(extra)
     return ids
-

@@ -143,12 +143,12 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
     if scope_data:
         from ai_core.contracts.scope import ScopeContext
         from ai_core.tool_contracts.base import tool_context_from_scope
-        
+
         if isinstance(scope_data, dict):
-             scope = ScopeContext.model_validate(scope_data)
-             return tool_context_from_scope(scope, metadata=dict(meta))
+            scope = ScopeContext.model_validate(scope_data)
+            return tool_context_from_scope(scope, metadata=dict(meta))
         if isinstance(scope_data, ScopeContext):
-             return tool_context_from_scope(scope_data, metadata=dict(meta))
+            return tool_context_from_scope(scope_data, metadata=dict(meta))
 
     # 3. Legacy fallback (manual construction)
     tenant_raw = meta.get("tenant_id")

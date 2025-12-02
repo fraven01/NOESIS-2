@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
-from pydantic import ValidationError
 
 from ai_core.tool_contracts.base import ToolContext
 
@@ -17,8 +16,6 @@ def base_payload() -> dict:
         "invocation_id": uuid4(),
         "now_iso": datetime.now(timezone.utc),
     }
-
-
 
 
 def test_tool_context_both_run_ids_fails(base_payload: dict) -> None:

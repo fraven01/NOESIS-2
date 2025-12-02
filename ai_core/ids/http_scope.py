@@ -12,23 +12,12 @@ from ai_core.ids import (
     coerce_trace_id,
     normalize_case_header,
     normalize_idempotency_key,
-    normalize_tenant_header,
 )
 from common.constants import (
-    META_CASE_ID_KEY,
-    META_IDEMPOTENCY_KEY,
-    META_KEY_ALIAS_KEY,
-    META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
-    META_TRACE_ID_KEY,
     META_WORKFLOW_ID_KEY,
-    X_CASE_ID_HEADER,
-    X_KEY_ALIAS_HEADER,
-    X_TENANT_ID_HEADER,
     X_TENANT_SCHEMA_HEADER,
-    X_TRACE_ID_HEADER,
     X_WORKFLOW_ID_HEADER,
-    IDEMPOTENCY_KEY_HEADER,
 )
 
 
@@ -79,14 +68,15 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
     # Priority:
     # 1. TenantContext (resolved from domain/URL/middleware)
     # 2. Explicit Headers (X-Tenant-Id) - REMOVED to enforce TenantContext policy
-    
+
     from customers.tenant_context import TenantContext
+
     tenant = TenantContext.from_request(request, require=False)
-    
+
     tenant_id: str | None = None
     if tenant:
         tenant_id = tenant.schema_name
-    
+
     # We no longer check headers manually here. TenantContext.from_request should handle it
     # if configured to allow headers.
 
@@ -94,6 +84,7 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
         # If still no tenant_id, we cannot proceed as ScopeContext requires it.
         # We rely on TenantContext to have checked headers if allowed.
         from customers.tenant_context import TenantRequiredError
+
         raise TenantRequiredError("Tenant could not be resolved from request")
 
     # 3. Case ID
@@ -108,17 +99,21 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
     # 6. Tenant Schema
     tenant_schema = _coalesce(request, X_TENANT_SCHEMA_HEADER, META_TENANT_SCHEMA_KEY)
     if not tenant_schema and tenant_id:
-         # If we have a tenant_id but no explicit schema, they are often the same
-         # But we'll leave it None unless explicitly provided or resolved from context
-         from customers.tenant_context import TenantContext
-         tenant = TenantContext.from_request(request, require=False)
-         if tenant and tenant.schema_name == tenant_id:
-             tenant_schema = tenant.schema_name
+        # If we have a tenant_id but no explicit schema, they are often the same
+        # But we'll leave it None unless explicitly provided or resolved from context
+        from customers.tenant_context import TenantContext
+
+        tenant = TenantContext.from_request(request, require=False)
+        if tenant and tenant.schema_name == tenant_id:
+            tenant_schema = tenant.schema_name
 
     # 7. Invocation ID
-    invocation_id = _normalize_header_value(
-        headers.get("X-Invocation-ID") or meta.get("HTTP_X_INVOCATION_ID")
-    ) or uuid.uuid4().hex
+    invocation_id = (
+        _normalize_header_value(
+            headers.get("X-Invocation-ID") or meta.get("HTTP_X_INVOCATION_ID")
+        )
+        or uuid.uuid4().hex
+    )
 
     # 8. Run ID / Ingestion Run ID
     run_id = _normalize_header_value(

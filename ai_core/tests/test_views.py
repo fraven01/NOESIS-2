@@ -327,9 +327,6 @@ def test_intake_persists_state_and_headers(
     assert resp.json()["tenant_id"] == tenant_header
 
 
-
-
-
 def test_rag_query_request_collection_list_overrides_body():
     list_id_one = str(uuid.uuid4())
     list_id_two = str(uuid.uuid4())

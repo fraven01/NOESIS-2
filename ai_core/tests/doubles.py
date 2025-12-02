@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from collections.abc import Iterable
+from datetime import datetime
 from threading import RLock
-from typing import Dict, Iterable, Optional, Tuple, Any
+from typing import Any, Optional
 from uuid import UUID
 from dataclasses import dataclass
 
@@ -36,12 +37,12 @@ class MockTenantContext:
             tenant_id = request.headers.get("X-Tenant-Id")
             if tenant_id:
                 return MockTenant(schema_name=tenant_id)
-        
+
         meta = getattr(request, "META", {})
         tenant_id = meta.get("HTTP_X_TENANT_ID") or meta.get("tenant_id")
         if tenant_id:
             return MockTenant(schema_name=tenant_id)
-            
+
         return None
 
     @classmethod
@@ -49,16 +50,15 @@ class MockTenantContext:
         return MockTenant(schema_name=identifier)
 
 
-
 class MemoryDocumentLifecycleStore(DocumentLifecycleStore):
     """In-memory lifecycle persistence for document states and ingestion runs."""
 
     def __init__(self) -> None:
         self._lock = RLock()
-        self._documents: Dict[
-            Tuple[str, Optional[str], UUID], DocumentLifecycleRecord
+        self._documents: dict[
+            tuple[str, Optional[str], UUID], DocumentLifecycleRecord
         ] = {}
-        self._ingestion_runs: Dict[Tuple[str, str], IngestionRunRecord] = {}
+        self._ingestion_runs: dict[tuple[str, str], IngestionRunRecord] = {}
 
     # Document lifecycle -------------------------------------------------
 
@@ -133,7 +133,7 @@ class MemoryDocumentLifecycleStore(DocumentLifecycleStore):
         collection_id: Optional[str] = None,
         embedding_profile: Optional[str] = None,
         source: Optional[str] = None,
-    ) -> Dict[str, object]:
+    ) -> dict[str, object]:
         normalized_ids = tuple(
             value
             for value in (_normalize_identifier(v) for v in document_ids)
@@ -169,7 +169,7 @@ class MemoryDocumentLifecycleStore(DocumentLifecycleStore):
         run_id: str,
         started_at: str,
         document_ids: Iterable[str],
-    ) -> Optional[Dict[str, object]]:
+    ) -> Optional[dict[str, object]]:
         key = (tenant_id, case or "")
         normalized_ids = tuple(
             value
@@ -201,7 +201,7 @@ class MemoryDocumentLifecycleStore(DocumentLifecycleStore):
         invalid_document_ids: Iterable[str],
         document_ids: Iterable[str],
         error: Optional[str],
-    ) -> Optional[Dict[str, object]]:
+    ) -> Optional[dict[str, object]]:
         key = (tenant_id, case or "")
         normalized_ids = tuple(
             value
@@ -232,7 +232,7 @@ class MemoryDocumentLifecycleStore(DocumentLifecycleStore):
 
     def get_ingestion_run(
         self, *, tenant_id: str, case: Optional[str]
-    ) -> Optional[Dict[str, object]]:
+    ) -> Optional[dict[str, object]]:
         key = (tenant_id, case or "")
         with self._lock:
             record = self._ingestion_runs.get(key)

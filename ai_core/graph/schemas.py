@@ -93,8 +93,10 @@ def _build_scope_context(request: Any) -> ScopeContext:
 
     # If request is an HttpRequest, use the normalizer
     from django.http import HttpRequest
+
     if isinstance(request, HttpRequest):
         from ai_core.ids import normalize_request
+
         return normalize_request(request)
 
     # Fallback for non-HttpRequest objects (e.g. dicts or mocks)
@@ -108,12 +110,15 @@ def _build_scope_context(request: Any) -> ScopeContext:
 
     headers: Mapping[str, str] = getattr(request, "headers", {}) or {}
     meta: MutableMapping[str, Any] = getattr(request, "META", {}) or {}
-    invocation_id = _normalize_header_value(
-        getattr(request, "invocation_id", None)
-        or headers.get("X-Invocation-ID")
-        or meta.get("HTTP_X_INVOCATION_ID")
-    ) or uuid4().hex
-    
+    invocation_id = (
+        _normalize_header_value(
+            getattr(request, "invocation_id", None)
+            or headers.get("X-Invocation-ID")
+            or meta.get("HTTP_X_INVOCATION_ID")
+        )
+        or uuid4().hex
+    )
+
     run_id = _normalize_header_value(
         getattr(request, "run_id", None)
         or headers.get("X-Run-ID")
@@ -131,7 +136,7 @@ def _build_scope_context(request: Any) -> ScopeContext:
     tenant_id = str(tenant_id_raw).strip()
     if not tenant_id:
         raise ValueError("missing required meta keys: tenant_id")
-        
+
     if not ingestion_run_id and not run_id:
         run_id = uuid4().hex
 
@@ -200,7 +205,7 @@ def normalize_meta(request: Any) -> dict:
         context_metadata["collection_id"] = collection_id
 
     meta["context_metadata"] = context_metadata
-    
+
     # Use tool_context_from_scope to build ToolContext
     # We pass metadata as an override/addition
     tool_context = scope.to_tool_context(metadata=context_metadata)

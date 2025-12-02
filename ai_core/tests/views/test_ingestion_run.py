@@ -2,7 +2,6 @@ import json
 import uuid
 from types import SimpleNamespace
 
-import pytest
 from ai_core import views, services
 from ai_core.infra import rate_limit
 from ai_core.tests.doubles import MockTenantContext, MockTenant

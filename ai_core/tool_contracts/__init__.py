@@ -9,12 +9,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class ToolContext(BaseModel):
     """Runtime metadata accompanying every tool invocation.
-    
+
     (Duplicated from base.py to avoid circular imports and maintain compatibility)
     """
 
     model_config = ConfigDict(frozen=True)
-    
+
     tenant_id: Union[UUID, str]
     trace_id: str = Field(default_factory=lambda: "trace-test")
     invocation_id: UUID = Field(default_factory=uuid4)
@@ -35,7 +35,7 @@ class ToolContext(BaseModel):
     document_id: Optional[str] = None
     document_version_id: Optional[str] = None
     case_id: Optional[str] = None
-    
+
     # Extra fields from original __init__.py
     visibility_override_allowed: bool = False
     metadata: Dict[str, Any] = Field(default_factory=dict)

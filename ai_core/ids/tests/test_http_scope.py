@@ -1,6 +1,5 @@
 """Tests for HTTP request normalization."""
 
-import uuid
 from unittest.mock import Mock, patch
 
 from django.http import HttpRequest
@@ -34,14 +33,14 @@ class TestNormalizeRequest(TestCase):
             "HTTP_IDEMPOTENCY_KEY": "idem-key",
             "HTTP_X_TENANT_SCHEMA": "schema-test",
         }
-        
+
         # Mock TenantContext to return a tenant matching the header
         mock_tenant = Mock()
         mock_tenant.schema_name = "test-tenant"
         self.mock_tenant_context.from_request.return_value = mock_tenant
 
         scope = normalize_request(request)
-        
+
         assert isinstance(scope, ScopeContext)
         assert scope.tenant_id == "test-tenant"
         assert scope.case_id == "case-123"
@@ -57,23 +56,24 @@ class TestNormalizeRequest(TestCase):
         """Test that missing tenant_id raises ValidationError (via ScopeContext)."""
         request = HttpRequest()
         request.META = {}
-        
+
         from customers.tenant_context import TenantRequiredError
+
         with self.assertRaises(TenantRequiredError):
-             normalize_request(request)
+            normalize_request(request)
 
     def test_tenant_context_fallback(self):
         """Test fallback to TenantContext if header is missing."""
         request = HttpRequest()
         request.META = {}
-        
+
         # Setup mock to return a tenant
         mock_tenant = Mock()
         mock_tenant.schema_name = "fallback-tenant"
         self.mock_tenant_context.from_request.return_value = mock_tenant
-        
+
         scope = normalize_request(request)
-        
+
         assert scope.tenant_id == "fallback-tenant"
 
     def test_xor_run_id_ingestion_run_id(self):
@@ -84,12 +84,14 @@ class TestNormalizeRequest(TestCase):
             "HTTP_X_RUN_ID": "run-1",
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
-        
+
         mock_tenant = Mock()
         mock_tenant.schema_name = "t1"
         self.mock_tenant_context.from_request.return_value = mock_tenant
 
-        with self.assertRaisesRegex(ValueError, "Exactly one of run_id or ingestion_run_id"):
+        with self.assertRaisesRegex(
+            ValueError, "Exactly one of run_id or ingestion_run_id"
+        ):
             normalize_request(request)
 
     def test_auto_generate_ids(self):
@@ -98,13 +100,13 @@ class TestNormalizeRequest(TestCase):
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
         }
-        
+
         mock_tenant = Mock()
         mock_tenant.schema_name = "t1"
         self.mock_tenant_context.from_request.return_value = mock_tenant
 
         scope = normalize_request(request)
-        
+
         assert scope.tenant_id == "t1"
         assert scope.trace_id is not None
         assert scope.invocation_id is not None
@@ -118,12 +120,12 @@ class TestNormalizeRequest(TestCase):
             "HTTP_X_TENANT_ID": "t1",
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
-        
+
         mock_tenant = Mock()
         mock_tenant.schema_name = "t1"
         self.mock_tenant_context.from_request.return_value = mock_tenant
 
         scope = normalize_request(request)
-        
+
         assert scope.ingestion_run_id == "ing-1"
         assert scope.run_id is None

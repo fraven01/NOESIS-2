@@ -80,7 +80,7 @@ def ensure_tenant_domain(
             # Defensive check: ensure tenant is actually persisted to avoid IntegrityError
             if not Tenant.objects.filter(id=tenant.id).exists():
                 tenant.save()
-            
+
             domain_obj.tenant = tenant
             domain_obj.is_primary = is_primary
             domain_obj.save(update_fields=["tenant", "is_primary"])
