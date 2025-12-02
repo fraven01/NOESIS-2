@@ -92,7 +92,7 @@ def test_rag_upload_persists_file_and_metadata(
             f.write(f"Response Content: {response.content.decode()}\n")
     assert response.status_code == 202
     body = response.json()
-    manual_collection_id = str(manual_collection_uuid(test_tenant_schema_name))
+    manual_collection_id = str(manual_collection_uuid(tenant_obj))
     assert body["trace_id"]
     assert body["workflow_id"]  # Generated UUID in caseless mode
     assert body["ingestion_run_id"]

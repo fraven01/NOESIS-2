@@ -75,9 +75,7 @@ class CollectionService:
         label: str = DEFAULT_MANUAL_COLLECTION_LABEL,
         metadata: Mapping[str, object] | None = None,
     ) -> str:
-        tenant_obj = self._resolve_tenant(tenant)
-        if tenant_obj is None:
-            raise ValueError("tenant_not_found")
+        tenant_obj = self._require_tenant(tenant)
 
         collection_uuid = self.manual_collection_uuid(tenant_obj, slug=slug)
         metadata_payload = dict(metadata or {})
@@ -103,7 +101,14 @@ class CollectionService:
         *,
         slug: str = DEFAULT_MANUAL_COLLECTION_SLUG,
     ) -> UUID:
-        tenant_seed = CollectionService._canonical_tenant_seed(tenant)
+        tenant_obj = CollectionService._require_tenant(tenant)
+
+        tenant_seed: object | None = getattr(tenant_obj, "id", None)
+        if tenant_seed is None:
+            tenant_seed = getattr(tenant_obj, "pk", None)
+        if tenant_seed is None or not CollectionService._looks_like_uuid(tenant_seed):
+            tenant_seed = getattr(tenant_obj, "schema_name", None)
+
         tenant_uuid = CollectionService._normalise_tenant_uuid(tenant_seed)
         slug_text = str(slug or "").strip().lower()
         if not slug_text:
@@ -135,6 +140,21 @@ class CollectionService:
             pass
 
         return uuid5(NAMESPACE_URL, f"tenant:{text.lower()}")
+
+    @staticmethod
+    def _looks_like_uuid(value: object) -> bool:
+        try:
+            UUID(str(value))
+            return True
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    @staticmethod
+    def _require_tenant(candidate: object) -> Tenant:
+        tenant_obj = CollectionService._resolve_tenant(candidate)
+        if tenant_obj is None:
+            raise ValueError("tenant_not_found")
+        return tenant_obj
 
     @staticmethod
     def _resolve_tenant(candidate: object) -> Tenant | None:

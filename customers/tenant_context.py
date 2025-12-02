@@ -120,6 +120,8 @@ class TenantContext:
            resolution is only attempted when ``allow_pk`` is explicitly set to ``True``
            to support CLI/fixtures.
         3) Explicit headers (``X-Tenant-Schema`` then ``X-Tenant-ID``) when ``allow_headers``
+           is enabled. ``X-Tenant-ID`` accepts schema names and primary keys/UUIDs for
+           tenants.
 
         The resolved tenant is cached on ``request._tenant_context_cache`` to avoid
         repeated lookups. When ``require`` is ``True`` and no tenant is found, a
@@ -170,7 +172,7 @@ class TenantContext:
             if tenant is None:
                 id_header = _get(X_TENANT_ID_HEADER, META_TENANT_ID_KEY)
                 if id_header:
-                    tenant = TenantContext.resolve_identifier(id_header)
+                    tenant = TenantContext.resolve_identifier(id_header, allow_pk=True)
 
         setattr(request, "_tenant_context_cache", tenant)
 

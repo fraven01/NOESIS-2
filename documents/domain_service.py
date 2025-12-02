@@ -333,7 +333,7 @@ class DocumentDomainService:
 
             if collection_id is not None and collection.collection_id != collection_id:
                 logger.warning(
-                    "documents.collection.id_mismatch_ignored",
+                    "documents.collection.id_mismatch_overwritten",
                     extra={
                         "expected": str(collection_id),
                         "actual": str(collection.collection_id),
@@ -341,6 +341,8 @@ class DocumentDomainService:
                         "tenant_id": str(tenant.id),
                     },
                 )
+                collection.collection_id = collection_id
+                collection.save(update_fields=["collection_id", "updated_at"])
 
             if created:
                 logger.info(

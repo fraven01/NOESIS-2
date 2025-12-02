@@ -112,6 +112,19 @@ def test_from_request_resolves_headers_when_allowed(monkeypatch):
 
 
 @pytest.mark.django_db
+def test_from_request_resolves_header_pk(monkeypatch):
+    tenant = TenantFactory()
+    request = RequestFactory().get("/", HTTP_X_TENANT_ID=str(tenant.pk))
+
+    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+    monkeypatch.setattr(connection, "schema_name", public_schema, raising=False)
+
+    resolved = TenantContext.from_request(request)
+
+    assert resolved == tenant
+
+
+@pytest.mark.django_db
 def test_from_request_raises_when_required_and_missing(monkeypatch):
     request = RequestFactory().get("/")
 
