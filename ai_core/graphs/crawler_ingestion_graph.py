@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass
-from datetime import timedelta
+from dataclasses import dataclass, asdict, is_dataclass
+from datetime import datetime, timedelta
 import traceback
 from types import MappingProxyType, SimpleNamespace
 from typing import (
@@ -18,7 +18,7 @@ from typing import (
     Tuple,
 )
 
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel
 from uuid import UUID, uuid4
 
 from ai_core.api import EmbeddingResult
@@ -517,7 +517,14 @@ class CrawlerIngestionGraph:
     ) -> Optional[Dict[str, Any]]:
         if parse_artifact is None:
             return None
-        text_blocks = getattr(parse_artifact, "text_blocks", None)
+
+        if isinstance(parse_artifact, Mapping):
+            text_blocks = parse_artifact.get("text_blocks")
+            stats = parse_artifact.get("statistics")
+        else:
+            text_blocks = getattr(parse_artifact, "text_blocks", None)
+            stats = getattr(parse_artifact, "statistics", None)
+
         if not text_blocks:
             return None
         blocks: list[Dict[str, Any]] = []
@@ -533,7 +540,7 @@ class CrawlerIngestionGraph:
             blocks.append(payload)
         if not blocks:
             return None
-        stats = getattr(parse_artifact, "statistics", {}) or {}
+
         statistics = dict(stats) if isinstance(stats, Mapping) else {}
         return {"blocks": blocks, "statistics": statistics, "text": fallback_text}
 
@@ -945,7 +952,7 @@ class CrawlerIngestionGraph:
         self._emit("finish", finish_transition, run_id)
 
         working_state["transitions"] = {
-            name: payload.result for name, payload in transitions.items()
+            name: payload.result.model_dump() for name, payload in transitions.items()
         }
         summary = finish_transition if finish_transition else last_transition
         result: Dict[str, Any] = {
@@ -954,7 +961,8 @@ class CrawlerIngestionGraph:
             "severity": summary.severity if summary else None,
             "graph_run_id": run_id,
             "transitions": {
-                name: payload.result for name, payload in transitions.items()
+                name: payload.result.model_dump()
+                for name, payload in transitions.items()
             },
         }
         if summary is not None:
@@ -968,6 +976,7 @@ class CrawlerIngestionGraph:
             extra={"graph_run_id": run_id},
         )
         self.start_crawl(working_state)
+
         return working_state, result
 
     def _require(self, state: Dict[str, Any], key: str) -> Any:
@@ -1551,7 +1560,31 @@ class CrawlerIngestionGraph:
 
         artifacts["document_pipeline_phase"] = result_state.phase
         artifacts["document_processing_context"] = result_state.context
-        artifacts["parse_artifact"] = result_state.parse_artifact
+        if result_state.parse_artifact:
+            # DocumentParseArtifact is a dataclass.
+            # We must convert it to a pure dict for JSON serialization.
+            # We use a custom serializer to handle nested Pydantic models and UUIDs.
+
+            def _serialize_artifact(obj: Any) -> Any:
+                if is_dataclass(obj) and not isinstance(obj, type):
+                    return {k: _serialize_artifact(v) for k, v in asdict(obj).items()}
+                if isinstance(obj, BaseModel):
+                    return obj.model_dump(mode="json")
+                if isinstance(obj, (list, tuple)):
+                    return [_serialize_artifact(v) for v in obj]
+                if isinstance(obj, dict):
+                    return {k: _serialize_artifact(v) for k, v in obj.items()}
+                if isinstance(obj, UUID):
+                    return str(obj)
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+                return obj
+
+            artifacts["parse_artifact"] = _serialize_artifact(
+                result_state.parse_artifact
+            )
+        else:
+            artifacts["parse_artifact"] = None
         artifacts["chunk_artifact"] = result_state.chunk_artifact
         if result_state.error is not None:
             artifacts["document_pipeline_error"] = repr(result_state.error)

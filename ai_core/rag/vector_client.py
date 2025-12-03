@@ -1008,7 +1008,14 @@ class PgVectorClient:
             retry_base_delay_ms if retry_base_delay_ms is not None else env_retry_delay
         )
         self._statement_timeout_ms = timeout_value
-        self._pool = SimpleConnectionPool(minconn, maxconn, dsn)
+        try:
+            self._pool = SimpleConnectionPool(minconn, maxconn, dsn)
+        except OperationalError:
+            # Allow instantiation without DB for test collection/builds
+            logger.warning(
+                "Could not connect to vector DB; continuing in disconnected mode."
+            )
+            self._pool = None
         self._prepare_lock = threading.Lock()
         self._indexes_ready = False
         self._retries = max(1, retries_value)
@@ -1110,7 +1117,8 @@ class PgVectorClient:
     def close(self) -> None:
         """Close all pooled connections."""
 
-        self._pool.closeall()
+        if self._pool:
+            self._pool.closeall()
 
     @staticmethod
     def _normalise_result_row(

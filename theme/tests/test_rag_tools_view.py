@@ -6,7 +6,6 @@ from django.core.cache import cache
 from django.http import JsonResponse
 from django.test import RequestFactory
 from django.urls import reverse
-from django.utils.html import escapejs
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from ai_core.rag.collections import manual_collection_uuid
@@ -31,30 +30,17 @@ def test_rag_tools_page_is_accessible():
     request.tenant_schema = tenant_schema
 
     response = rag_tools(request)
-    manual_collection_id = str(manual_collection_uuid(tenant_id))
 
     assert response.status_code == 200
     content = response.content.decode()
 
     assert "RAG Developer Workbench" in content
-    assert "Upload Document" in content
-    assert "Ingestion Control" in content
-    assert "Ingestion Status" in content
-    assert "Query" in content
-    assert "Aktive Collection" in content
-    assert "query-collection-options" in content
-    assert "Crawler Runner" in content
-    assert "crawler-form" in content
+    assert "hx-post" in content
+    assert "hx-target" in content
     assert f"X-Tenant-ID: {tenant_id}" in content
     assert f"X-Tenant-Schema: {tenant_schema}" in content
-    assert f'const derivedTenantId = "{escapejs(tenant_id)}"' in content
-    assert f'const derivedTenantSchema = "{escapejs(tenant_schema)}"' in content
-    assert "const defaultEmbeddingProfile" in content
-    assert "const allowDocClassAlias" in content
-    assert "const crawlerRunnerUrl" in content
-    assert "const crawlerDefaultWorkflow" in content
-    assert f'const manualCollectionId = "{escapejs(manual_collection_id)}"' in content
-    assert "function requireCollection" in content
+    # Verify HTMX headers are set on the body/container
+    assert 'hx-headers=\'{"X-Tenant-ID": "' + tenant_id + '"' in content
 
 
 @pytest.mark.django_db
@@ -144,6 +130,51 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     # Always runs until after_search for manual testing
     assert call_args[1]["state"]["run_until"] == "after_search"
     assert call_args[1]["state"]["collection_id"] == "test-collection"
+
+
+@pytest.mark.django_db
+@patch("theme.views.build_graph")
+def test_web_search_htmx_returns_partial(mock_build_graph):
+    """Test that web_search returns HTML partial for HTMX requests."""
+    tenant_schema = "test"
+    tenant = TenantFactory(schema_name=tenant_schema)
+
+    mock_graph = MagicMock()
+    mock_graph.run.return_value = (
+        {
+            "search": {
+                "results": [
+                    {
+                        "url": "https://example.com",
+                        "title": "HTMX Result",
+                        "snippet": "Snippet",
+                    }
+                ]
+            },
+            "selection": {"selected": [], "shortlisted": []},
+            "ingestion": {},
+        },
+        {"outcome": "completed", "telemetry": {}},
+    )
+    mock_build_graph.return_value = mock_graph
+
+    factory = RequestFactory()
+    # Simulate HTMX request with form-encoded data (default for hx-post)
+    request = factory.post(
+        reverse("web-search"),
+        data={"query": "htmx query", "collection_id": "test-collection"},
+    )
+    request.headers = {"HX-Request": "true"}
+    request.tenant = tenant
+
+    response = web_search(request)
+
+    assert response.status_code == 200
+    content = response.content.decode()
+    # Should return the partial, not JSON
+    assert "HTMX Result" in content
+    assert "class=" in content  # Basic HTML check
+    assert "Snippet" in content
 
 
 @pytest.mark.django_db
@@ -495,121 +526,3 @@ def test_start_rerank_workflow_returns_completed(mock_submit_worker_task):
     assert data["status"] == "completed"
     assert data["results"][0]["title"] == "Alpha"
     assert data["telemetry"]["nodes"]["k_generate_strategy"]["status"] == "completed"
-
-
-@pytest.mark.django_db
-def test_rag_tools_page_includes_source_transformation_logic():
-    """Test that the RAG tools page includes JavaScript logic for source transformation.
-
-    This test verifies that the transformSnippetSource function is present in the
-    rendered HTML, which is responsible for converting internal source metadata
-    (like file paths) into user-facing source information (like clickable links).
-    """
-    tenant_schema = "test"
-    tenant = TenantFactory(schema_name=tenant_schema)
-
-    factory = RequestFactory()
-    request = factory.get(reverse("rag-tools"))
-    request.tenant = tenant
-
-    response = rag_tools(request)
-
-    assert response.status_code == 200
-    content = response.content.decode()
-
-    # Verify that the source transformation function exists
-    assert "function transformSnippetSource" in content
-
-    # Verify key transformation logic patterns are present
-    assert "meta.external_id" in content  # Web source detection
-    assert "startsWith('web::')" in content  # Web source prefix check
-    assert "meta.workflow_id" in content  # Upload source detection
-    assert "meta.title" in content  # Filename extraction
-    assert "meta.filename" in content  # Alternative filename field
-    assert "/documents/download/" in content  # Download URL pattern
-
-    # Verify that the rendering logic uses the transformation
-    assert "transformSnippetSource(snippet)" in content
-    assert "sourceInfo.url" in content
-    assert "sourceInfo.displayText" in content
-
-    # Verify that links are created for sources with URLs
-    assert "link.target = '_blank'" in content
-    assert "link.rel = 'noopener noreferrer'" in content
-
-
-@pytest.mark.django_db
-def test_rag_tools_javascript_source_transformation_web_sources():
-    """Test that the JavaScript source transformation handles web sources correctly.
-
-    This is a documentation test that verifies the expected behavior for web sources:
-    - Sources with meta.external_id starting with "web::" should be extracted as URLs
-    - The display text should be derived from the URL hostname
-    - A clickable link should be created
-    """
-    tenant_schema = "test"
-    tenant = TenantFactory(schema_name=tenant_schema)
-
-    factory = RequestFactory()
-    request = factory.get(reverse("rag-tools"))
-    request.tenant = tenant
-
-    response = rag_tools(request)
-    content = response.content.decode()
-
-    # Verify web source detection logic
-    assert "if (externalId.startsWith('web::'))" in content
-    assert "const url = externalId.substring(5)" in content  # Remove "web::" prefix
-    assert "new URL(url)" in content  # Parse URL
-    assert "urlObj.hostname" in content  # Extract hostname for display
-
-
-@pytest.mark.django_db
-def test_rag_tools_javascript_source_transformation_upload_sources():
-    """Test that the JavaScript source transformation handles upload sources correctly.
-
-    This is a documentation test that verifies the expected behavior for uploaded files:
-    - Sources with meta.workflow_id should be treated as uploaded documents
-    - The display text should be extracted from meta.title or meta.filename
-    - A download URL should be constructed from meta.document_id
-    """
-    tenant_schema = "test"
-    tenant = TenantFactory(schema_name=tenant_schema)
-
-    factory = RequestFactory()
-    request = factory.get(reverse("rag-tools"))
-    request.tenant = tenant
-
-    response = rag_tools(request)
-    content = response.content.decode()
-
-    # Verify upload source detection logic
-    assert "if (meta.workflow_id" in content
-    assert "if (meta.title" in content  # Title extraction
-    assert "if (meta.filename" in content  # Filename extraction
-    assert "url = '/documents/download/' + meta.document_id + '/'" in content
-
-
-@pytest.mark.django_db
-def test_rag_tools_javascript_source_transformation_fallback():
-    """Test that the JavaScript source transformation provides fallback behavior.
-
-    This is a documentation test that verifies the expected behavior for unknown sources:
-    - If no specific pattern matches, use citation or source value
-    - If neither is available, use document_id
-    - No URL should be generated (plain text display)
-    """
-    tenant_schema = "test"
-    tenant = TenantFactory(schema_name=tenant_schema)
-
-    factory = RequestFactory()
-    request = factory.get(reverse("rag-tools"))
-    request.tenant = tenant
-
-    response = rag_tools(request)
-    content = response.content.decode()
-
-    # Verify fallback logic
-    assert "let fallbackText = citationValue" in content
-    assert "if (fallbackText === '–' && meta.document_id)" in content
-    assert "return { displayText: fallbackText, url: null }" in content

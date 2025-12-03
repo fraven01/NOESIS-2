@@ -124,7 +124,7 @@ def _normalise_collection_mapping(
         normalised[normalised_key] = _coerce_confidence(
             value, field_name="caption_min_confidence"
         )
-    return MappingProxyType(dict(normalised))
+    return dict(normalised)
 
 
 @dataclass(frozen=True)
@@ -494,12 +494,12 @@ class DocumentChunkArtifact:
         for chunk in self.chunks:
             if not isinstance(chunk, Mapping):
                 raise ValueError("chunk_artifact_chunks")
-            serialised.append(MappingProxyType(dict(chunk)))
+            serialised.append(dict(chunk))
         object.__setattr__(self, "chunks", tuple(serialised))
 
         if not isinstance(self.statistics, Mapping):
             raise ValueError("chunk_artifact_statistics")
-        object.__setattr__(self, "statistics", MappingProxyType(dict(self.statistics)))
+        object.__setattr__(self, "statistics", dict(self.statistics))
 
 
 @dataclass(frozen=True)
@@ -665,14 +665,14 @@ class DocumentParseArtifact:
         for block in self.text_blocks:
             if not isinstance(block, Mapping):
                 raise ValueError("parse_artifact_text_blocks")
-            serialised_blocks.append(MappingProxyType(dict(block)))
+            serialised_blocks.append(dict(block))
         object.__setattr__(self, "text_blocks", tuple(serialised_blocks))
 
         object.__setattr__(self, "asset_refs", tuple(self.asset_refs))
 
         if not isinstance(self.statistics, Mapping):
             raise ValueError("parse_artifact_statistics")
-        object.__setattr__(self, "statistics", MappingProxyType(dict(self.statistics)))
+        object.__setattr__(self, "statistics", dict(self.statistics))
 
 
 def _import_guarded(module_names: Union[str, Sequence[str]], *, code: str):

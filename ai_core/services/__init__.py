@@ -1440,8 +1440,8 @@ def _ensure_document_collection_record(
             logger.warning(
                 "document_collection.ensure_record_update_failed",
                 extra={
-                    "tenant_id": tenant_id,
-                    "tenant_schema": tenant_schema,
+                    "tenant_id": tenant_identifier,
+                    "tenant_schema": getattr(tenant_obj, "schema_name", None),
                     "collection_id": str(collection_uuid),
                 },
                 exc_info=True,

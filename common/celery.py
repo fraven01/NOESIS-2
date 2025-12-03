@@ -44,6 +44,10 @@ class ContextTask(Task):
         self._request_override = self._REQUEST_OVERRIDE_SENTINEL
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
+        import sys
+
+        sys.stderr.write(f"DEBUG: ContextTask.__call__ ENTERED for {self.name}\n")
+        sys.stderr.flush()
         clear_log_context()
         context = self._gather_context(args, kwargs)
         if context:
@@ -183,6 +187,10 @@ class ScopedTask(ContextTask):
     _SCOPE_FIELDS = ("tenant_id", "case_id", "trace_id", "session_salt")
 
     def __call__(self, *args: Any, **kwargs: Any):  # noqa: D401
+        import sys
+
+        sys.stderr.write(f"DEBUG: ScopedTask.__call__ ENTERED for {self.name}\n")
+        sys.stderr.flush()
         call_kwargs = dict(kwargs)
         scope_kwargs: dict[str, Any] = {}
         provided_scope_fields: dict[str, bool] = {}

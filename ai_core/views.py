@@ -5,6 +5,8 @@ import json
 import re
 import uuid
 from collections.abc import Mapping
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 from pathlib import Path
 from types import ModuleType
@@ -18,6 +20,7 @@ from django.core.exceptions import PermissionDenied
 from django.http import HttpRequest, JsonResponse
 from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from django.views.decorators.http import require_POST
+from pydantic import BaseModel
 from ai_core.graph.core import FileCheckpointer
 
 from common.constants import (
@@ -1462,6 +1465,7 @@ def crawl_selected(request):
     Directly invokes the crawler runner service to avoid view dispatch issues.
     """
     try:
+        print("DEBUG: crawl_selected CALLED")
         # Wrap request to use shared preparation logic
         from rest_framework.request import Request as DRFRequest
 
@@ -1497,7 +1501,7 @@ def crawl_selected(request):
             request_model = CrawlerRunRequest.model_validate(crawler_payload)
         except ValidationError as exc:
             return JsonResponse(
-                {"error": "Invalid request payload", "details": str(exc)}, status=400
+                {"error": "Invalid request", "details": exc.errors()}, status=400
             )
 
         lifecycle_store = _resolve_lifecycle_store()
@@ -1520,10 +1524,46 @@ def crawl_selected(request):
         except ValueError as exc:
             return JsonResponse({"error": str(exc)}, status=400)
 
-        return JsonResponse(result.payload, status=result.status_code)
+        try:
+
+            def _recursive_serialize(obj):
+                if isinstance(obj, dict):
+                    return {k: _recursive_serialize(v) for k, v in obj.items()}
+                if isinstance(obj, (list, tuple)):
+                    return [_recursive_serialize(v) for v in obj]
+                if hasattr(obj, "__dataclass_fields__"):
+                    return _recursive_serialize(asdict(obj))
+                if is_dataclass(obj) and not isinstance(obj, type):
+                    return _recursive_serialize(asdict(obj))
+                if isinstance(obj, BaseModel):
+                    return _recursive_serialize(obj.model_dump(mode="json"))
+                if isinstance(obj, uuid.UUID):
+                    return str(obj)
+                if isinstance(obj, datetime):
+                    return obj.isoformat()
+
+                if "ParsedResult" in str(type(obj)):
+                    return {
+                        "text_blocks": _recursive_serialize(
+                            getattr(obj, "text_blocks", [])
+                        ),
+                        "assets": _recursive_serialize(getattr(obj, "assets", [])),
+                        "statistics": _recursive_serialize(
+                            getattr(obj, "statistics", {})
+                        ),
+                    }
+
+                return obj
+
+            sanitized_payload = _recursive_serialize(result.payload)
+            return JsonResponse(sanitized_payload, status=result.status_code)
+        except Exception as exc:
+            # Raise a new exception with the payload details so it appears in the traceback
+            raise ValueError(f"Payload serialization failed: {exc}") from exc
 
     except Exception as e:
         logger.exception("crawl_selected.failed")
+        print(f"DEBUG: crawl_selected exception: {e}")
         return JsonResponse({"error": str(e)}, status=500)
 
 

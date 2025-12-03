@@ -53,6 +53,9 @@ def test_ingestion_idempotency_skips_unchanged_documents(
                 # META_CASE_ID_KEY: case,
             },
         )
+        print(
+            f"DEBUG: response status={response.status_code} content={response.content}"
+        )
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]

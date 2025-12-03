@@ -60,7 +60,7 @@ def test_ensure_manual_collection_model_creates_document_collection(
     monkeypatch: pytest.MonkeyPatch,
 ):
     tenant = object()
-    collection_uuid = uuid.uuid4()
+    collection_uuid = uuid4()
     captured: dict[str, object] = {}
 
     class _DummyManager:

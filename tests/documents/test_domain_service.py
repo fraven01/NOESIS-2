@@ -9,7 +9,11 @@ from django_tenants.utils import schema_context
 
 from customers.models import Tenant
 from testsupport.tenant_fixtures import create_test_tenant
-from documents.domain_service import DocumentDomainService, DocumentIngestSpec
+from documents.domain_service import (
+    CollectionIdConflictError,
+    DocumentDomainService,
+    DocumentIngestSpec,
+)
 from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document, DocumentCollection, DocumentCollectionMembership
 
@@ -153,9 +157,10 @@ def test_ensure_collection_is_idempotent(
 
 
 @pytest.mark.django_db
-def test_ensure_collection_overwrites_mismatched_id(
+def test_ensure_collection_overwrites_mismatched_id_when_allowed(
     tenant: Tenant, vector_store: _VectorStoreStub
 ):
+    """Test that collection_id can be overwritten when explicitly allowed."""
     service = DocumentDomainService(vector_store=vector_store)
     existing_uuid = uuid.uuid4()
     expected_uuid = uuid.uuid4()
@@ -174,10 +179,46 @@ def test_ensure_collection_overwrites_mismatched_id(
             key="shared",
             name="Shared",
             collection_id=expected_uuid,
+            allow_collection_id_override=True,
         )
 
     assert updated.collection_id == expected_uuid
     assert vector_store.ensure_calls[-1]["collection_id"] == str(expected_uuid)
+
+
+@pytest.mark.django_db
+def test_ensure_collection_raises_error_on_id_mismatch_by_default(
+    tenant: Tenant, vector_store: _VectorStoreStub
+):
+    """Test that collection_id conflicts raise error by default."""
+    service = DocumentDomainService(vector_store=vector_store)
+    existing_uuid = uuid.uuid4()
+    different_uuid = uuid.uuid4()
+
+    with schema_context(tenant.schema_name):
+        # Create collection with one ID
+        DocumentCollection.objects.create(
+            tenant=tenant,
+            key="test-key",
+            name="Test Collection",
+            collection_id=existing_uuid,
+        )
+
+        # Attempt to ensure with different ID (without override flag)
+        with pytest.raises(CollectionIdConflictError) as exc_info:
+            service.ensure_collection(
+                tenant=tenant,
+                key="test-key",
+                collection_id=different_uuid,
+            )
+
+        # Verify exception details
+        error = exc_info.value
+        assert error.key == "test-key"
+        assert error.existing_id == existing_uuid
+        assert error.requested_id == different_uuid
+        assert error.tenant_id == str(tenant.id)
+        assert "allow_collection_id_override=True" in str(error)
 
 
 @pytest.mark.django_db

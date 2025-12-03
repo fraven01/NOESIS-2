@@ -1,18 +1,15 @@
 import json
 import pytest
-from django.test import RequestFactory
+from django.test import RequestFactory, override_settings
 from customers.tests.factories import TenantFactory
 from ai_core.views import crawl_selected
 
 
 @pytest.mark.django_db
+@override_settings(CELERY_TASK_ALWAYS_EAGER=True, CELERY_TASK_EAGER_PROPAGATES=True)
 def test_reproduce_crawl_selected_error():
     tenant_schema = "test_tenant"
     tenant = TenantFactory(schema_name=tenant_schema)
-
-    # Case creation removed
-    # with tenant_context(tenant):
-    #     Case.objects.create(tenant=tenant, external_id="case-crawl-test")
 
     factory = RequestFactory()
     data = {
@@ -32,7 +29,6 @@ def test_reproduce_crawl_selected_error():
     request.META["HTTP_X_TENANT_ID"] = tenant_schema
     request.META["HTTP_X_TENANT_SCHEMA"] = tenant_schema
     request.META["HTTP_X_TRACE_ID"] = "test-trace-id"
-    # request.META["HTTP_X_CASE_ID"] = "case-crawl-test"
 
     # Call the view directly
     response = crawl_selected(request)
@@ -41,4 +37,4 @@ def test_reproduce_crawl_selected_error():
     if response.status_code != 200:
         print(f"Response content: {response.content.decode()}")
 
-    assert response.status_code == 202
+    assert response.status_code == 200

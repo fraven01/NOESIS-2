@@ -53,6 +53,7 @@ class CollectionService:
         metadata: Mapping[str, object] | None = None,
         collection_id: UUID | None = None,
         collection_type: str = CollectionType.USER,
+        allow_collection_id_override: bool = False,
     ):
         metadata_payload = dict(metadata or {})
         metadata_payload.setdefault("collection_type", collection_type)
@@ -65,6 +66,7 @@ class CollectionService:
             scope=scope,
             metadata=metadata_payload,
             collection_id=collection_id,
+            allow_collection_id_override=allow_collection_id_override,
         )
 
     def ensure_manual_collection(
@@ -83,6 +85,9 @@ class CollectionService:
         metadata_payload.setdefault("label", label)
         metadata_payload.setdefault("collection_type", CollectionType.SYSTEM)
 
+        # Allow override for manual collections since the UUID is deterministic
+        # (uuid5 based on tenant + slug). If a mismatch occurs, it indicates
+        # either a bug in the generation logic or manual DB modification.
         collection = self.ensure_collection(
             tenant=tenant_obj,
             key=slug,
@@ -92,6 +97,7 @@ class CollectionService:
             metadata=metadata_payload,
             collection_id=collection_uuid,
             collection_type=CollectionType.SYSTEM,
+            allow_collection_id_override=True,
         )
         return str(collection.collection_id)
 

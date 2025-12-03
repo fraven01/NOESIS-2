@@ -40,6 +40,30 @@ from .crawler_state_builder import build_crawler_state
 logger = get_logger(__name__)
 
 
+def debug_check_json_serializable(obj, path=""):
+    import json
+    import inspect
+
+    class DebugEncoder(json.JSONEncoder):
+        def default(self, o):
+            if (
+                inspect.ismethod(o)
+                or inspect.isfunction(o)
+                or inspect.isbuiltin(o)
+                or type(o).__name__ == "method"
+            ):
+                raise Exception(f"DEBUG FOUND METHOD: {o} type={type(o)}")
+            try:
+                return super().default(o)
+            except TypeError:
+                raise Exception(f"DEBUG FOUND NON-SERIALIZABLE: {o} type={type(o)}")
+
+    try:
+        json.dumps(obj, cls=DebugEncoder)
+    except Exception as exc:
+        raise Exception(f"DEBUG CHECK FAILED at {path}: {exc}") from exc
+
+
 @dataclass(slots=True)
 class CrawlerRunnerCoordinatorResult:
     """Return value for crawler ingestion coordination."""
@@ -57,6 +81,9 @@ def run_crawler_runner(
     graph_factory: Callable[[], object] | None = None,
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
+    import sys
+
+    sys.stderr.write("DEBUG: run_crawler_runner started\n")
 
     if request_model.collection_id:
         meta["collection_id"] = request_model.collection_id
@@ -98,6 +125,7 @@ def run_crawler_runner(
 
     tenant = _resolve_tenant(meta.get("tenant_id"))
     if tenant:
+        sys.stderr.write("DEBUG: calling _prime_build_documents\n")
         _prime_build_documents(
             tenant=tenant,
             builds=state_builds,
@@ -127,6 +155,7 @@ def run_crawler_runner(
                 extra={"graph_name": graph_name},
             )
             inline_graph = None
+    sys.stderr.write("DEBUG: starting loop\n")
     for build in state_builds:
         task_payload = {"state": build.state, "graph_name": graph_name}
         scope = {
@@ -145,6 +174,7 @@ def run_crawler_runner(
                 graph_runner=inline_graph,
             )
         else:
+
             result, completed = submit_worker_task(
                 task_payload=task_payload,
                 scope=scope,
@@ -153,6 +183,16 @@ def run_crawler_runner(
                 initial_cost_total=None,
                 timeout_s=wait_timeout,
             )
+
+            try:
+                with open("/app/debug_runner.log", "a") as f:
+                    f.write(
+                        f"DEBUG: submit_worker_task result keys: {list(result.keys())}\n"
+                    )
+                    f.write(f"DEBUG: submit_worker_task result: {result}\n")
+            except Exception:
+                pass
+
         task_id = result.get("task_id")
         if task_id:
             task_ids.append(
@@ -191,6 +231,14 @@ def run_crawler_runner(
             meta,
             idempotent_flag,
         )
+        try:
+            with open("/app/debug_runner.log", "a") as f:
+                f.write(
+                    f"DEBUG: response_payload keys: {list(response_payload.keys())}\n"
+                )
+                f.write(f"DEBUG: response_payload: {response_payload}\n")
+        except Exception:
+            pass
         return CrawlerRunnerCoordinatorResult(
             payload=response_payload,
             status_code=status.HTTP_200_OK,
@@ -522,7 +570,7 @@ def _build_synchronous_payload(
             _summarize_origin_entry(build, state_data, result_payload, ingestion_run_id)
         )
 
-    return {
+    payload = {
         "workflow_id": workflow_id,
         "mode": request_model.mode,
         "collection_id": request_model.collection_id,
@@ -532,6 +580,8 @@ def _build_synchronous_payload(
         "errors": errors_payload,
         "idempotent": idempotent_flag,
     }
+    debug_check_json_serializable(payload, "sync_payload_internal")
+    return payload
 
 
 def _maybe_start_ingestion(

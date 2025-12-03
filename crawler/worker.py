@@ -668,12 +668,18 @@ class CrawlerWorker:
                     },
                 )
 
+        # Allow override since crawler collection IDs are typically derived from
+        # external sources (URLs, references). If a mismatch occurs, it likely
+        # indicates a re-crawl with a different ID source.
+        # TODO: Consider stricter validation - check if collection with key exists
+        # and has different ID before allowing override.
         return service.ensure_collection(
             tenant=tenant,
             key=str(identifier),
             embedding_profile=embedding_profile,
             scope=scope,
             collection_id=collection_uuid,
+            allow_collection_id_override=True,
         )
 
     def _resolve_tenant(self, tenant_identifier: str):

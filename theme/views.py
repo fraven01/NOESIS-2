@@ -38,6 +38,8 @@ from documents.services.document_space_service import (
 )
 
 from ai_core.views import crawl_selected as _core_crawl_selected
+from ai_core.graphs.framework_analysis_graph import build_graph as build_framework_graph
+from ai_core.tools.framework_contracts import FrameworkAnalysisInput
 
 
 logger = get_logger(__name__)
@@ -466,12 +468,22 @@ def rag_tools(request):
 
     manual_collection_id, _ = _resolve_manual_collection(tenant_id, None)
 
+    # Manage Dev Session Case ID
+    case_id = request.session.get("dev_case_id")
+    if not case_id:
+        import time
+        from uuid import uuid4
+
+        case_id = f"dev-case-{int(time.time())}-{uuid4().hex[:6]}"
+        request.session["dev_case_id"] = case_id
+
     return render(
         request,
         "theme/rag_tools.html",
         {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
+            "case_id": case_id,
             "default_embedding_profile": getattr(
                 settings, "RAG_DEFAULT_EMBEDDING_PROFILE", "standard"
             ),
@@ -572,7 +584,15 @@ def web_search(request):
     """Execute the external knowledge graph for manual RAG searches."""
 
     try:
-        data = json.loads(request.body)
+        if request.headers.get("HX-Request"):
+            # HTMX sends form-encoded data by default unless configured for JSON
+            # We'll support both for robustness
+            if request.content_type == "application/json":
+                data = json.loads(request.body)
+            else:
+                data = request.POST
+        else:
+            data = json.loads(request.body)
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
 
@@ -671,6 +691,18 @@ def web_search(request):
         if reranked_results is not None:
             response_data["results"] = reranked_results
 
+    if request.headers.get("HX-Request"):
+        return render(
+            request,
+            "theme/partials/_web_search_results.html",
+            {
+                "results": response_data.get("results"),
+                "search": response_data.get("search"),
+                "trace_id": trace_id,
+                "collection_id": collection_id,
+            },
+        )
+
     return JsonResponse(response_data)
 
 
@@ -683,8 +715,30 @@ def web_search_ingest_selected(request):
     Returns a summary of started ingestion tasks.
     """
     try:
-        data = json.loads(request.body)
+        if request.headers.get("HX-Request"):
+            if request.content_type == "application/json":
+                data = json.loads(request.body)
+            else:
+                data = request.POST
+                # Handle list of URLs from form data if needed, though usually this endpoint expects JSON
+                # For HTMX, we might need to parse 'urls' from a list input or comma string
+                if "urls" not in data and "urls[]" in data:
+                    data = data.copy()
+                    data["urls"] = request.POST.getlist("urls[]")
+                elif "urls" in data and isinstance(data["urls"], str):
+                    # If it's a single string, wrap it or split it?
+                    # The partial sends a JSON string in hx-vals, so it should come as a param
+                    # But hx-vals with JSON format usually requires hx-ext="json-enc" or manual parsing
+                    # Let's assume standard form data for now, but the partial used hx-vals='{"urls": ...}' which sends as params
+                    pass
+        else:
+            data = json.loads(request.body)
+
         urls = data.get("urls", [])
+        if isinstance(urls, str):
+            # If it came as a single string (e.g. from hx-vals simple key-value), wrap it
+            urls = [urls]
+
         mode = data.get("mode", "live")  # Pass mode to crawler
 
         logger.info("web_search_ingest_selected", url_count=len(urls), mode=mode)
@@ -746,6 +800,20 @@ def web_search_ingest_selected(request):
             response_data = {}
 
         if response.status_code in (200, 202):
+            if request.headers.get("HX-Request"):
+                return render(
+                    request,
+                    "theme/partials/_ingestion_status.html",
+                    {
+                        "status": (
+                            "accepted" if response.status_code == 202 else "completed"
+                        ),
+                        "result": response_data,
+                        "task_ids": response_data.get("task_ids"),
+                        "url_count": len(urls),
+                    },
+                )
+
             return JsonResponse(
                 {
                     "status": (
@@ -758,16 +826,35 @@ def web_search_ingest_selected(request):
                 status=response.status_code,
             )
         else:
-            return JsonResponse(
-                {
-                    "error": "Crawler call failed",
-                    "status_code": response.status_code,
-                    "detail": response_data.get(
-                        "details", response_data.get("detail", str(response_data))
-                    ),
-                },
-                status=response.status_code,
-            )
+            if request.headers.get("HX-Request"):
+                return render(
+                    request,
+                    "theme/partials/_ingestion_status.html",
+                    {
+                        "status": (
+                            "accepted" if response.status_code == 202 else "completed"
+                        ),
+                        "result": response_data,
+                        "task_ids": response_data.get("task_ids"),
+                        "url_count": len(urls),
+                        "error": (
+                            response_data.get("details")
+                            if response.status_code != 200
+                            else None
+                        ),
+                    },
+                )
+            else:
+                return JsonResponse(
+                    {
+                        "error": "Crawler call failed",
+                        "status_code": response.status_code,
+                        "detail": response_data.get(
+                            "details", response_data.get("detail", str(response_data))
+                        ),
+                    },
+                    status=response.status_code,
+                )
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
@@ -896,6 +983,19 @@ def start_rerank_workflow(request):
             "cost_summary": result_payload.get("cost_summary"),
             "message": str(outcome_label).replace("_", " ").capitalize(),
         }
+
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_web_search_results.html",
+                {
+                    "results": response_payload.get("results"),
+                    "search": response_payload.get("search"),
+                    "trace_id": trace_id,
+                    "collection_id": collection_id,
+                },
+            )
+
         return JsonResponse(response_payload)
 
     except json.JSONDecodeError:
@@ -903,6 +1003,190 @@ def start_rerank_workflow(request):
     except Exception as e:
         logger.exception("start_rerank_workflow.failed")
         return JsonResponse({"error": str(e)}, status=500)
+
+
+@require_POST
+def crawler_submit(request):
+    """Handle crawler form submission via HTMX."""
+    if not request.headers.get("HX-Request"):
+        return JsonResponse({"error": "HTMX required"}, status=400)
+
+    try:
+        # Parse form data
+        data = request.POST
+
+        # Build payload (mimic JS buildCrawlerPayload)
+        payload = {
+            "workflow_id": data.get("workflow_id"),
+            "mode": data.get("mode", "live"),
+            "origin_url": data.get("origin_url"),
+            "document_id": data.get("document_id"),
+            "title": data.get("title"),
+            "language": data.get("language"),
+            "provider": data.get("provider"),
+            "content_type": data.get("content_type"),
+            "content": data.get("content"),
+            "collection_id": data.get("collection_id"),
+            "manual_review": data.get("review"),
+        }
+
+        # Handle booleans (checkboxes send 'on' or nothing)
+        payload["fetch"] = data.get("fetch") == "on"
+        payload["shadow_mode"] = data.get("shadow_mode") == "on"
+        payload["dry_run"] = data.get("dry_run") == "on"
+        payload["force_retire"] = data.get("force_retire") == "on"
+        payload["recompute_delta"] = data.get("recompute_delta") == "on"
+
+        # Handle snapshot
+        if data.get("snapshot") == "on":
+            payload["snapshot"] = {"enabled": True}
+            if data.get("snapshot_label"):
+                payload["snapshot"]["label"] = data.get("snapshot_label")
+
+        # Handle tags
+        tags = data.get("tags")
+        if tags:
+            payload["tags"] = [t.strip() for t in tags.split(",") if t.strip()]
+
+        # Handle max_document_bytes
+        if data.get("max_document_bytes"):
+            try:
+                payload["max_document_bytes"] = int(data.get("max_document_bytes"))
+            except (ValueError, TypeError):
+                pass
+
+        # Handle origin_urls list
+        origin_urls_text = data.get("origin_urls", "")
+        if origin_urls_text:
+            additional_origins = [
+                url.strip() for url in origin_urls_text.splitlines() if url.strip()
+            ]
+            if additional_origins:
+                # If we have multiple origins, we need to structure the 'origins' list
+                # The primary 'origin_url' is also included in the logic usually
+                origins = []
+                if payload.get("origin_url"):
+                    origins.append({"url": payload["origin_url"]})
+
+                for url in additional_origins:
+                    origins.append({"url": url})
+
+                # Deduplicate based on URL
+                seen = set()
+                unique_origins = []
+                for o in origins:
+                    if o["url"] not in seen:
+                        seen.add(o["url"])
+                        unique_origins.append(o)
+
+                payload["origins"] = unique_origins
+
+        # Call crawler_runner
+        from ai_core.views import crawler_runner
+        from django.http import HttpRequest
+
+        # Create a mock Django request
+        django_request = HttpRequest()
+        django_request.method = "POST"
+        django_request.META = request.META.copy()
+
+        body = json.dumps(payload).encode("utf-8")
+        django_request._body = body
+        django_request.META["CONTENT_TYPE"] = "application/json"
+        django_request.META["CONTENT_LENGTH"] = str(len(body))
+
+        # Ensure tenant headers
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        django_request.META["HTTP_X_TENANT_ID"] = tenant_id
+        django_request.META["HTTP_X_TENANT_SCHEMA"] = tenant_schema
+
+        # Copy tenant context
+        if hasattr(request, "tenant"):
+            django_request.tenant = request.tenant
+
+        response = crawler_runner(django_request)
+
+        try:
+            response_data = json.loads(response.content.decode())
+        except (json.JSONDecodeError, AttributeError):
+            response_data = {}
+
+        return render(
+            request,
+            "theme/partials/_crawler_status.html",
+            {
+                "result": response_data,
+                "task_ids": response_data.get("task_ids"),
+                "error": (
+                    response_data.get("detail") if response.status_code >= 400 else None
+                ),
+            },
+        )
+
+    except Exception as e:
+        logger.exception("crawler_submit.failed")
+        return render(request, "theme/partials/_crawler_status.html", {"error": str(e)})
+
+
+@require_POST
+def ingestion_submit(request):
+    """Handle ingestion form submission via HTMX."""
+    if not request.headers.get("HX-Request"):
+        return JsonResponse({"error": "HTMX required"}, status=400)
+
+    try:
+        # Parse form data
+        data = request.POST
+
+        # Build payload
+        payload = {
+            "document_ids": data.get("document_ids"),
+            "embedding_profile": data.get("embedding_profile"),
+        }
+
+        # Call rag_ingestion_run
+        from ai_core.views import rag_ingestion_run
+        from django.http import HttpRequest
+
+        # Create a mock Django request
+        django_request = HttpRequest()
+        django_request.method = "POST"
+        django_request.META = request.META.copy()
+
+        body = json.dumps(payload).encode("utf-8")
+        django_request._body = body
+        django_request.META["CONTENT_TYPE"] = "application/json"
+        django_request.META["CONTENT_LENGTH"] = str(len(body))
+
+        # Ensure tenant headers
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+        django_request.META["HTTP_X_TENANT_ID"] = tenant_id
+        django_request.META["HTTP_X_TENANT_SCHEMA"] = tenant_schema
+
+        # Copy tenant context
+        if hasattr(request, "tenant"):
+            django_request.tenant = request.tenant
+
+        response = rag_ingestion_run(django_request)
+
+        try:
+            response_data = json.loads(response.content.decode())
+        except (json.JSONDecodeError, AttributeError):
+            response_data = {}
+
+        return render(
+            request,
+            "theme/partials/_generic_json_response.html",
+            {"data": response_data},
+        )
+
+    except Exception as e:
+        logger.exception("ingestion_submit.failed")
+        return render(
+            request,
+            "theme/partials/_generic_json_response.html",
+            {"data": {"error": str(e)}},
+        )
 
 
 def framework_analysis_tool(request):
@@ -924,3 +1208,56 @@ def framework_analysis_tool(request):
             "default_collection_id": manual_collection_id,
         },
     )
+
+
+@require_POST
+def framework_analysis_submit(request):
+    """
+    Handle HTMX submission for framework analysis.
+    Returns a partial HTML response with the analysis result.
+    """
+    tenant_id = request.headers.get("X-Tenant-ID")
+    tenant_schema = request.headers.get("X-Tenant-Schema") or "public"
+    trace_id = request.headers.get("X-Trace-ID") or uuid4().hex
+
+    if not tenant_id:
+        return JsonResponse({"error": "Tenant ID missing"}, status=400)
+
+    try:
+        # Parse form data
+        collection_id = request.POST.get("document_collection_id")
+        document_id = request.POST.get("document_id") or None
+        force_reanalysis = request.POST.get("force_reanalysis") == "on"
+        confidence_threshold = float(request.POST.get("confidence_threshold", 0.7))
+
+        input_params = FrameworkAnalysisInput(
+            document_collection_id=collection_id,
+            document_id=document_id,
+            force_reanalysis=force_reanalysis,
+            confidence_threshold=confidence_threshold,
+        )
+
+        graph = build_framework_graph()
+        output = graph.run(
+            input_params=input_params,
+            tenant_id=tenant_id,
+            tenant_schema=tenant_schema,
+            trace_id=trace_id,
+        )
+
+        response_data = output.model_dump(mode="json")
+
+        # Return as generic JSON response partial
+        return render(
+            request,
+            "theme/partials/_generic_json_response.html",
+            {"data": response_data},
+        )
+
+    except Exception as e:
+        logger.exception("framework_analysis_submit_failed")
+        return render(
+            request,
+            "theme/partials/_generic_json_response.html",
+            {"data": {"error": str(e)}},
+        )

@@ -24,7 +24,6 @@ from documents.contracts import DocumentBlobDescriptorV1, NormalizedDocumentInpu
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 from documents.pipeline import (
     DocumentChunkArtifact,
-    DocumentParseArtifact,
     DocumentProcessingContext,
 )
 
@@ -230,12 +229,13 @@ def test_orchestrates_nominal_flow(test_tenant_schema_name) -> None:
 
     assert updated_state is not state
     transitions = result["transitions"]
-    assert transitions["update_status_normalized"].decision == "status_updated"
-    assert transitions["enforce_guardrails"].decision == "allow"
-    assert transitions["document_pipeline"].decision == "processed"
-    assert transitions["ingest_decision"].decision == "new"
-    assert transitions["ingest"].decision == "embedding_triggered"
-    assert transitions["finish"].decision == "new"
+    assert transitions["update_status_normalized"]["decision"] == "status_updated"
+    assert transitions["enforce_guardrails"]["decision"] == "allow"
+    assert transitions["document_pipeline"]["decision"] == "processed"
+    assert transitions["ingest_decision"]["decision"] == "new"
+
+    assert transitions["ingest"]["decision"] == "embedding_triggered"
+    assert transitions["finish"]["decision"] == "new"
     assert result["decision"] == "new"
     summary = updated_state["summary"]
     assert isinstance(summary, CompletionPayload)
@@ -253,7 +253,8 @@ def test_orchestrates_nominal_flow(test_tenant_schema_name) -> None:
     assert isinstance(
         artifacts["document_processing_context"], DocumentProcessingContext
     )
-    assert isinstance(artifacts["parse_artifact"], DocumentParseArtifact)
+    # parse_artifact is serialized to a dict in the graph
+    assert isinstance(artifacts["parse_artifact"], dict)
     assert isinstance(artifacts["chunk_artifact"], DocumentChunkArtifact)
     assert artifacts["document_pipeline_phase"]
     assert artifacts["document_pipeline_run_until"] == "full"
@@ -289,8 +290,8 @@ def test_guardrail_denied_short_circuits(monkeypatch) -> None:
     assert "document_pipeline" not in transitions
     assert "ingest_decision" not in transitions
     assert "ingest" not in transitions
-    assert transitions["enforce_guardrails"].decision == "deny"
-    assert transitions["finish"].decision == "denied"
+    assert transitions["enforce_guardrails"]["decision"] == "deny"
+    assert transitions["finish"]["decision"] == "denied"
     assert result["decision"] == "denied"
     summary = updated_state["summary"]
     assert isinstance(summary, CompletionPayload)
@@ -380,9 +381,9 @@ def test_delta_unchanged_skips_embedding() -> None:
     assert "embedding" not in summary
     assert result["decision"] == "unchanged"
     transitions = result["transitions"]
-    assert transitions["document_pipeline"].decision == "processed"
-    assert transitions["ingest_decision"].decision == "unchanged"
-    assert transitions["ingest"].decision == "skipped"
+    assert transitions["document_pipeline"]["decision"] == "processed"
+    assert transitions["ingest_decision"]["decision"] == "unchanged"
+    assert transitions["ingest"]["decision"] == "skipped"
     statuses = updated_state["artifacts"].get("status_updates", [])
     assert any(status.to_dict().get("reason") == "hash_match" for status in statuses)
     assert updated_state["ingest_action"] == "skip"
@@ -398,7 +399,7 @@ def test_repository_upsert_invoked() -> None:
 
     updated_state, result = graph.run(state, {})
 
-    assert result["transitions"]["document_pipeline"].decision == "processed"
+    assert result["transitions"]["document_pipeline"]["decision"] == "processed"
     artifacts = updated_state["artifacts"]
     assert artifacts.get("document_pipeline_phase")
     normalized = artifacts["normalized_document"]
@@ -418,7 +419,7 @@ def test_repository_upsert_failure_records_error() -> None:
 
     assert result["decision"] == "error"
     transitions = result["transitions"]
-    assert transitions["document_pipeline"].decision == "error"
+    assert transitions["document_pipeline"]["decision"] == "error"
     artifacts = updated_state["artifacts"]
     assert artifacts.get("document_pipeline_error")
     statuses = artifacts.get("status_updates", [])
@@ -602,9 +603,9 @@ def test_guardrail_frontier_state_propagation() -> None:
         "policy_events": ["robots_disallow"],
     }
     guardrail_transition = result["transitions"]["enforce_guardrails"]
-    guardrail_section = guardrail_transition.guardrail
+    guardrail_section = guardrail_transition["guardrail"]
     assert guardrail_section is not None
-    assert guardrail_section.policy_events == ("robots_disallow",)
+    assert tuple(guardrail_section["policy_events"]) == ("robots_disallow",)
     summary = updated_state["summary"]
     assert isinstance(summary, CompletionPayload)
     summary_attrs = summary.guardrails.attributes
@@ -626,12 +627,12 @@ def test_delta_includes_meta_frontier_backoff() -> None:
 
     updated_state, result = graph.run(state, meta)
 
-    delta_section = result["transitions"]["ingest_decision"].delta
+    delta_section = result["transitions"]["ingest_decision"]["delta"]
     assert delta_section is not None
-    delta_attrs = dict(delta_section.attributes)
+    delta_attrs = dict(delta_section["attributes"])
     assert delta_attrs["frontier"]["earliest_visit_at"] == scheduled_at.isoformat()
     assert delta_attrs["frontier"]["decision"] == "defer"
-    assert delta_attrs["policy_events"] == ("failure_backoff",)
+    assert tuple(delta_attrs["policy_events"]) == ("failure_backoff",)
     summary = updated_state["summary"]
     assert isinstance(summary, CompletionPayload)
     summary_attrs = summary.delta.attributes
@@ -649,9 +650,9 @@ def test_guardrail_denied_merges_frontier_policy_events() -> None:
 
     updated_state, result = graph.run(state, {})
 
-    guardrail_section = result["transitions"]["enforce_guardrails"].guardrail
+    guardrail_section = result["transitions"]["enforce_guardrails"]["guardrail"]
     assert guardrail_section is not None
-    assert guardrail_section.policy_events == (
+    assert tuple(guardrail_section["policy_events"]) == (
         "max_document_bytes",
         "robots_disallow",
     )
@@ -736,7 +737,7 @@ def test_crawler_transition_metadata_contains_ids() -> None:
     updated_state, result = graph.run(state, meta)
 
     transitions = result["transitions"]
-    for context in (transition.context for transition in transitions.values()):
+    for context in (transition["context"] for transition in transitions.values()):
         assert context["trace_id"] == "trace-meta"
         assert context["workflow_id"] == "flow-meta"
 
@@ -744,7 +745,7 @@ def test_crawler_transition_metadata_contains_ids() -> None:
     expected_document_id = str(normalized.document_id)
     doc_ids = {
         context["document_id"]
-        for context in (transition.context for transition in transitions.values())
+        for context in (transition["context"] for transition in transitions.values())
         if context.get("document_id")
     }
     assert expected_document_id in doc_ids

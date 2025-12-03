@@ -39,6 +39,10 @@ def run_graph(  # type: ignore[no-untyped-def]
     In 202-Fallback-Modus kann das Result-Backend deaktiviert sein;
     siehe GRAPH_WORKER_TIMEOUT_S.
     """
+    import sys
+
+    sys.stderr.write("DEBUG: run_graph ENTERED\n")
+    sys.stderr.flush()
 
     # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
     # so ScopedTask/with_scope_apply_async can attach masking context without
@@ -70,6 +74,11 @@ def run_graph(  # type: ignore[no-untyped-def]
                 new_state, result = runner.run(runner_state, runner_meta)
         finally:
             runner_meta.pop("ledger_logger", None)
+            # Ensure ledger_logger is removed from the state if it was copied there
+            if "new_state" in locals() and isinstance(new_state, dict):
+                state_meta = new_state.get("meta")
+                if isinstance(state_meta, dict):
+                    state_meta.pop("ledger_logger", None)
 
     cost_summary = tracker.summary(ledger_identifier)
     # Round total_usd to 4 decimal places to reduce noise in logs/traces

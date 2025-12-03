@@ -23,6 +23,40 @@ IngestionDispatcher = Callable[[UUID, Sequence[UUID], str | None, str | None], N
 DeletionDispatcher = Callable[[Mapping[str, object]], None]
 
 
+class CollectionIdConflictError(ValueError):
+    """Raised when a collection exists with a different collection_id.
+
+    This error is raised when ensure_collection is called with a collection_id
+    that differs from an existing collection's ID. This typically indicates:
+    1. Manual database modification
+    2. Race condition during creation
+    3. Bug in ID generation logic
+
+    Overwriting the collection_id without proper migration will orphan vector
+    store data under the old ID, leading to data loss.
+    """
+
+    def __init__(
+        self, *, key: str, existing_id: UUID, requested_id: UUID, tenant_id: str
+    ):
+        self.key = key
+        self.existing_id = existing_id
+        self.requested_id = requested_id
+        self.tenant_id = tenant_id
+
+        super().__init__(
+            f"Collection '{key}' in tenant {tenant_id} has collection_id={existing_id}, "
+            f"but {requested_id} was requested. This likely indicates:\n"
+            f"  1. Manual DB modification\n"
+            f"  2. Race condition\n"
+            f"  3. Bug in ID generation\n\n"
+            f"⚠️  Overwriting the ID will orphan vector store data!\n\n"
+            f"To proceed:\n"
+            f"  - Pass allow_collection_id_override=True (⚠️ DANGEROUS)\n"
+            f"  - Or investigate why the IDs differ"
+        )
+
+
 @dataclass(frozen=True)
 class PersistedDocumentIngest:
     """Result bundle for document ingestion persistence."""
@@ -304,8 +338,32 @@ class DocumentDomainService:
         scope: str | None = None,
         metadata: Mapping[str, object] | None = None,
         collection_id: UUID | None = None,
+        allow_collection_id_override: bool = False,
     ) -> DocumentCollection:
-        """Return an existing collection or create a new one within a tenant."""
+        """Return an existing collection or create a new one within a tenant.
+
+        Args:
+            tenant: The tenant owning the collection.
+            key: Unique key identifying the collection within the tenant.
+            name: Human-readable name for the collection.
+            embedding_profile: Optional embedding profile for the collection.
+            scope: Optional scope for the collection.
+            metadata: Optional metadata dictionary.
+            collection_id: Optional explicit collection_id to set. If provided and
+                a collection with the same key exists but has a different ID,
+                an error will be raised unless allow_collection_id_override is True.
+            allow_collection_id_override: If True, allows overwriting an existing
+                collection's collection_id. ⚠️ WARNING: This will orphan vector
+                store data under the old ID! Only use for deterministic ID
+                generation or migrations.
+
+        Returns:
+            The collection instance (created or existing).
+
+        Raises:
+            CollectionIdConflictError: If collection_id differs from existing
+                collection and allow_collection_id_override is False.
+        """
 
         collection_uuid = collection_id or uuid4()
         defaults = {
@@ -332,13 +390,22 @@ class DocumentDomainService:
             )
 
             if collection_id is not None and collection.collection_id != collection_id:
-                logger.warning(
-                    "documents.collection.id_mismatch_overwritten",
+                if not allow_collection_id_override:
+                    raise CollectionIdConflictError(
+                        key=key,
+                        existing_id=collection.collection_id,
+                        requested_id=collection_id,
+                        tenant_id=str(tenant.id),
+                    )
+
+                logger.error(
+                    "documents.collection.id_override_forced",
                     extra={
-                        "expected": str(collection_id),
-                        "actual": str(collection.collection_id),
-                        "key": key,
                         "tenant_id": str(tenant.id),
+                        "key": key,
+                        "old_id": str(collection.collection_id),
+                        "new_id": str(collection_id),
+                        "WARNING": "Vector data under old ID is now orphaned!",
                     },
                 )
                 collection.collection_id = collection_id
@@ -604,6 +671,7 @@ class DocumentDomainService:
 
 
 __all__ = [
+    "CollectionIdConflictError",
     "DocumentDomainService",
     "IngestionDispatcher",
     "DeletionDispatcher",
