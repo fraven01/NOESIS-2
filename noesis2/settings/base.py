@@ -191,11 +191,11 @@ API_DOCS_DESCRIPTION = "OpenAPI schema for NOESIS 2 multi-tenant endpoints."
 if COMMON_HEADERS_INFO_BOX:
     API_DOCS_DESCRIPTION = f"{API_DOCS_DESCRIPTION}\n\n{COMMON_HEADERS_INFO_BOX}"
 
-# Documents repository: default to a filesystem-backed adapter so web and worker
-# share the same document space in development. Can be overridden via env.
+# Documents repository: default to the database-backed adapter; can be overridden
+# (e.g., to the filesystem adapter) via env for local development.
 DOCUMENTS_REPOSITORY_CLASS = env(
     "DOCUMENTS_REPOSITORY_CLASS",
-    default="ai_core.adapters.object_store_repository.ObjectStoreDocumentsRepository",
+    default="ai_core.adapters.db_documents_repository.DbDocumentsRepository",
 )
 
 DOCUMENT_LIFECYCLE_STORE_CLASS = env(
