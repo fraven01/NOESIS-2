@@ -3,6 +3,7 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from django.conf import settings
 
 from ai_core import ingestion_status
 from ai_core.infra import object_store
@@ -109,6 +110,12 @@ def documents_repository_stub(monkeypatch) -> ObjectStoreDocumentsRepository:
     from ai_core import services, views
 
     repository = ObjectStoreDocumentsRepository()
+    monkeypatch.setattr(
+        settings,
+        "DOCUMENTS_REPOSITORY_CLASS",
+        "ai_core.adapters.object_store_repository.ObjectStoreDocumentsRepository",
+        raising=False,
+    )
     monkeypatch.setattr(views, "DOCUMENTS_REPOSITORY", repository, raising=False)
     monkeypatch.setattr(services, "_DOCUMENTS_REPOSITORY", None, raising=False)
     try:
