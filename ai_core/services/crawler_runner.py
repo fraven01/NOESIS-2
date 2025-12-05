@@ -328,12 +328,66 @@ def _prime_build_documents(
     if not spec_pairs:
         return
 
-    def dispatcher_stub(*_):
-        return None
+    # Create real dispatcher that triggers ingestion tasks
+    def ingestion_dispatcher(
+        document_id,  # UUID
+        collection_ids,  # tuple of UUIDs
+        embedding_profile_override,  # str | None
+        scope_override,  # str | None
+    ):
+        """Dispatch ingestion task to process the document."""
+        try:
+            tenant_id = str(tenant.id)
+            profile = embedding_profile_override or embedding_profile or "standard"
+
+            logger.info(
+                "crawler_runner.ingestion_dispatching",
+                extra={
+                    "tenant_id": tenant_id,
+                    "document_id": str(document_id),
+                    "collection_ids": [str(cid) for cid in collection_ids],
+                    "embedding_profile": profile,
+                },
+            )
+
+            # Use the same approach as _maybe_start_ingestion
+            payload = {
+                "document_ids": [str(document_id)],
+                "embedding_profile": profile,
+            }
+            if collection_ids:
+                payload["collection_id"] = str(collection_ids[0])
+
+            meta = {
+                "tenant_id": tenant_id,
+                "case_id": "",  # Empty case_id for crawler context
+                "tenant_schema": tenant_id,
+            }
+
+            # Call start_ingestion_run which handles the task dispatch correctly
+            services_module.start_ingestion_run(payload, meta, idempotency_key=None)
+
+            logger.info(
+                "crawler_runner.ingestion_dispatched",
+                extra={
+                    "tenant_id": tenant_id,
+                    "document_id": str(document_id),
+                    "collection_ids": [str(cid) for cid in collection_ids],
+                    "embedding_profile": profile,
+                },
+            )
+        except Exception:
+            logger.exception(
+                "crawler_runner.ingestion_dispatch_failed",
+                extra={
+                    "tenant_id": str(tenant.id),
+                    "document_id": str(document_id),
+                },
+            )
 
     service = DocumentDomainService(
         vector_store=get_default_client(),
-        ingestion_dispatcher=dispatcher_stub,
+        ingestion_dispatcher=ingestion_dispatcher,
     )
 
     specs = [spec for _, spec in spec_pairs]
@@ -341,8 +395,8 @@ def _prime_build_documents(
     bulk_result = service.bulk_ingest_documents(
         tenant=tenant,
         documents=specs,
-        dispatcher=dispatcher_stub,
-        allow_missing_ingestion_dispatcher_for_tests=True,
+        dispatcher=ingestion_dispatcher,
+        allow_missing_ingestion_dispatcher_for_tests=False,
     )
 
     for record in bulk_result.records:

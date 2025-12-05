@@ -16,6 +16,7 @@ from ai_core.infra import object_store
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
+from ai_core.tasks import ingestion_run as run_ingestion_task
 from common.assets import AssetIngestPayload, BlobWriter
 from common.assets.hashing import perceptual_hash, sha256_bytes
 from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
@@ -634,9 +635,95 @@ class CrawlerWorker:
             collections=collections,
             embedding_profile=embedding_profile,
             scope=scope,
-            dispatcher=lambda *_: None,
+            dispatcher=self._create_ingestion_dispatcher(
+                tenant_id=str(tenant.id),
+                embedding_profile=embedding_profile,
+            ),
+        )
+        logger.info(
+            "crawler.document_registered",
+            extra={
+                "tenant_id": str(tenant.id),
+                "document_id": str(ingest_result.document.id),
+                "collection_ids": [str(cid) for cid in ingest_result.collection_ids],
+            },
         )
         return str(ingest_result.document.id)
+
+    def _create_ingestion_dispatcher(
+        self, tenant_id: str, embedding_profile: str | None
+    ):
+        """Create a dispatcher function that dispatches ingestion tasks to Celery."""
+        logger.info(
+            "crawler.dispatcher_created",
+            extra={
+                "tenant_id": tenant_id,
+                "embedding_profile": embedding_profile,
+            },
+        )
+
+        def dispatcher(
+            document_id,  # UUID
+            collection_ids,  # tuple of UUIDs
+            embedding_profile_override,  # str | None
+            scope,  # str | None
+        ):
+            # Dispatch ingestion task to process the document
+            # This will create chunks and embeddings
+            logger.info(
+                "crawler.dispatcher_called",
+                extra={
+                    "tenant_id": tenant_id,
+                    "document_id": str(document_id),
+                    "collection_ids": [str(cid) for cid in collection_ids],
+                    "embedding_profile_override": embedding_profile_override,
+                    "scope": scope,
+                },
+            )
+            try:
+                # Use the embedding_profile passed to dispatcher if available,
+                # otherwise use the one from registration
+                profile = embedding_profile_override or embedding_profile or "standard"
+
+                logger.info(
+                    "crawler.ingestion_dispatch_starting",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                        "profile": profile,
+                    },
+                )
+
+                # Dispatch the ingestion task asynchronously
+                # The task will process the document, create chunks, and embed them
+                run_ingestion_task.delay(
+                    tenant_id,
+                    None,  # case_id (not used in crawler context)
+                    [str(document_id)],  # document_ids
+                    profile,  # embedding_profile
+                    tenant_schema=tenant_id,  # tenant_schema defaults to tenant_id
+                )
+                logger.info(
+                    "crawler.ingestion_dispatched",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                        "collection_ids": [str(cid) for cid in collection_ids],
+                        "embedding_profile": profile,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "crawler.ingestion_dispatch_failed",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                    },
+                )
+                # Don't raise - allow document registration to complete
+                # The ingestion can be retried manually if needed
+
+        return dispatcher
 
     def _ensure_collection_with_warning(
         self,

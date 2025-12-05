@@ -48,8 +48,7 @@
                         class="block w-full rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500">
                         <option value="">All Collections</option>
                         {% for collection in collections %}
-                        <option value="{{ collection.selector }}" {% if
-                            collection.selector==selected_collection_identifier %}selected{% endif %}>
+                        <option value="{{ collection.selector }}" {% if collection.selector == selected_collection_identifier %}selected{% endif %}>
                             {{ collection.name }} ({{ collection.key }})
                         </option>
                         {% endfor %}

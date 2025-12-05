@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from celery import shared_task
+from django.db import connection
 
 from ai_core.graph.registry import get as get_graph_runner
 from ai_core.graphs.cost_tracking import track_ledger_costs
@@ -43,6 +44,23 @@ def run_graph(  # type: ignore[no-untyped-def]
 
     sys.stderr.write("DEBUG: run_graph ENTERED\n")
     sys.stderr.flush()
+
+    # Set tenant schema context for database queries
+    # This ensures document models are accessed in the correct tenant schema
+    if tenant_id:
+        try:
+            from customers.models import Tenant
+
+            tenant = Tenant.objects.get(schema_name=str(tenant_id))
+            connection.set_tenant(tenant)
+            sys.stderr.write(f"DEBUG: Tenant schema set to {tenant.schema_name}\n")
+            sys.stderr.flush()
+        except Tenant.DoesNotExist:
+            # Log warning but continue - some graphs might not need DB access
+            sys.stderr.write(
+                f"WARNING: Tenant {tenant_id} not found, using default schema\n"
+            )
+            sys.stderr.flush()
 
     # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
     # so ScopedTask/with_scope_apply_async can attach masking context without
