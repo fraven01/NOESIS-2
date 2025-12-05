@@ -17,6 +17,7 @@ import base64
 import hashlib
 import json
 import logging
+import mimetypes
 import time
 from collections.abc import Iterable, Mapping
 from importlib import import_module
@@ -152,6 +153,14 @@ def _make_json_safe(value):  # type: ignore[no-untyped-def]
     from dataclasses import asdict, is_dataclass
     from datetime import date as _date, datetime as _datetime
 
+    try:
+        from documents.parsers import ParsedResult
+
+        if isinstance(value, ParsedResult):
+            return _make_json_safe(asdict(value))
+    except (ImportError, TypeError):
+        pass
+
     if hasattr(value, "model_dump"):
         try:
             return _make_json_safe(value.model_dump())
@@ -170,6 +179,10 @@ def _make_json_safe(value):  # type: ignore[no-untyped-def]
         }
     if isinstance(value, (list, tuple, set)):
         return [_make_json_safe(v) for v in value]
+    if hasattr(value, "__dict__") and not isinstance(
+        value, (str, bytes, bytearray, type)
+    ):
+        return _make_json_safe(vars(value))
     return value
 
 
@@ -1604,10 +1617,17 @@ def handle_document_upload(
     checksum = hashlib.sha256(file_bytes).hexdigest()
     encoded_blob = base64.b64encode(file_bytes).decode("ascii")
 
+    # Improved MIME type detection
+    detected_mime = _infer_media_type(upload)
+    if detected_mime == "application/octet-stream":
+        guessed_type, _ = mimetypes.guess_type(original_name)
+        if guessed_type:
+            detected_mime = guessed_type
+
     document_metadata_payload = dict(metadata_obj)
     document_metadata_payload.setdefault("filename", original_name)
     document_metadata_payload.setdefault("content_hash", checksum)
-    document_metadata_payload.setdefault("content_type", _infer_media_type(upload))
+    document_metadata_payload.setdefault("content_type", detected_mime)
 
     if domain_service and tenant:
         ingest_result = domain_service.ingest_document(
@@ -1630,8 +1650,11 @@ def handle_document_upload(
         document_uuid = uuid4()
         collection_ids: tuple[UUID, ...] = ()
 
+    if not metadata_obj.get("title"):
+        metadata_obj["title"] = original_name
+
     document_meta = _build_document_meta(
-        meta, metadata_obj, external_id, media_type=_infer_media_type(upload)
+        meta, metadata_obj, external_id, media_type=detected_mime
     )
     meta.setdefault("workflow_id", document_meta.workflow_id)
 
@@ -1653,7 +1676,7 @@ def handle_document_upload(
 
     blob = InlineBlob(
         type="inline",
-        media_type=_infer_media_type(upload),
+        media_type=detected_mime,
         base64=encoded_blob,
         sha256=checksum,
         size=len(file_bytes),

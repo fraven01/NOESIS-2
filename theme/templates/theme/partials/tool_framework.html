@@ -1,0 +1,80 @@
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+    <!-- Analysis Config (Left Column) -->
+    <div class="lg:col-span-4 space-y-6">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <h3 class="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Analysis Setup
+            </h3>
+
+            <form hx-post="{% url 'framework-analysis-submit' %}" hx-target="#framework-results-area"
+                hx-swap="innerHTML" class="space-y-4">
+                {% csrf_token %}
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Document Collection ID</label>
+                    <input type="text" name="collection_id" required placeholder="UUID"
+                        class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Specific Document ID (Optional)</label>
+                    <input type="text" name="document_id" placeholder="UUID"
+                        class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Confidence Threshold</label>
+                    <div class="flex items-center gap-4">
+                        <input type="range" name="confidence_threshold" min="0" max="1" step="0.1" value="0.7"
+                            class="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer"
+                            oninput="this.nextElementSibling.value = this.value">
+                        <output class="text-sm font-medium text-slate-700 w-8">0.7</output>
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-100 pt-4">
+                    <div class="flex items-center justify-between">
+                        <label class="text-sm text-slate-700 font-medium">Force Re-analysis</label>
+                        <div
+                            class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                            <input type="checkbox" name="force_reanalysis" id="toggle-reanalysis"
+                                class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer" />
+                            <label for="toggle-reanalysis"
+                                class="toggle-label block overflow-hidden h-5 rounded-full bg-slate-300 cursor-pointer"></label>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit"
+                    class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all">
+                    Analyze Framework
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Analysis Dashboard (Right Column) -->
+    <div class="lg:col-span-8">
+        <div id="framework-results-area" class="space-y-6">
+
+            <!-- Empty State -->
+            <div
+                class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 min-h-[500px] flex flex-col items-center justify-center text-center">
+                <div class="bg-slate-50 p-4 rounded-full mb-4">
+                    <svg class="h-8 w-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-3 7h3m-3 4h3m-6-4h.01M9 16h.01" />
+                    </svg>
+                </div>
+                <h3 class="text-sm font-medium text-slate-900">No Analysis Loaded</h3>
+                <p class="mt-1 text-sm text-slate-500 max-w-sm">Select a document collection to detect framework
+                    agreements and analyze their structure.</p>
+            </div>
+
+        </div>
+    </div>
+</div>

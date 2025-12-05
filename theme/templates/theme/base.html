@@ -1,22 +1,86 @@
 {% load static %}
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-    <meta charset="utf-8" />
-    <title>{% block title %}NOESIS 2{% endblock %}</title>
-    <script>
-      (function () {
-        const t = localStorage.getItem("theme");
-        const m = window.matchMedia("(prefers-color-scheme: dark)").matches;
-        if (t === "dark" || (!t && m)) {
-          document.documentElement.classList.add("dark");
+  <meta charset="utf-8" />
+  <title>{% block title %}NOESIS 2{% endblock %}</title>
+  <script>
+    (function () {
+      const t = localStorage.getItem("theme");
+      const m = window.matchMedia("(prefers-color-scheme: dark)").matches;
+      if (t === "dark" || (!t && m)) {
+        document.documentElement.classList.add("dark");
+      }
+    })();
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+          },
+          colors: {
+            brand: {
+              50: '#eff6ff',
+              100: '#dbeafe',
+              500: '#3b82f6',
+              600: '#2563eb',
+              700: '#1d4ed8',
+              900: '#1e3a8a',
+            }
+          }
         }
-      })();
-    </script>
-    <link href="{% static 'css/output.css' %}" rel="stylesheet">
-    {% block head %}{% endblock %}
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: 'Inter', sans-serif;
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    /* Glassmorphism utilities */
+    .glass {
+      background: rgba(255, 255, 255, 0.7);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+    }
+  </style>
+  <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+  <script defer src="https://unpkg.com/alpinejs@3.13.5/dist/cdn.min.js"></script>
+  {% block head %}{% endblock %}
 </head>
+
 <body>
-    {% block content %}{% endblock %}
+  {% block content %}{% endblock %}
 </body>
+
 </html>

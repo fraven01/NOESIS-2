@@ -6,6 +6,11 @@ $compose = 'docker compose -f docker-compose.yml -f docker-compose.dev.yml'
 Write-Host '[dev-reset] Down + prune project volumes'
 try { iex "$compose down -v --remove-orphans" } catch { Write-Warning $_ }
 
+Write-Host '[dev-reset] Clearing local object store (.ai_core_store)'
+if (Test-Path ".ai_core_store") {
+    Remove-Item -Recurse -Force ".ai_core_store"
+}
+
 Write-Host '[dev-reset] Build fresh images'
 iex "$compose build --no-cache --pull"
 

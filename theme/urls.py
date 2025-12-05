@@ -4,7 +4,18 @@ from . import views
 
 urlpatterns = [
     path("", views.home, name="home"),
-    path("rag-tools/", views.rag_tools, name="rag-tools"),
+    # RAG Workbench (Command Center)
+    path("rag-tools/", views.workbench_index, name="rag-tools"),
+    # Workbench Partials (HTMX)
+    path("rag-tools/tool/search/", views.tool_search, name="tool-search"),
+    path("rag-tools/tool/ingestion/", views.tool_ingestion, name="tool-ingestion"),
+    path("rag-tools/tool/crawler/", views.tool_crawler, name="tool-crawler"),
+    path("rag-tools/tool/framework/", views.tool_framework, name="tool-framework"),
+    path("rag-tools/tool/chat/", views.tool_chat, name="tool-chat"),
+    path(
+        "rag-tools/tool/documents/", views.document_explorer, name="document_explorer"
+    ),
+    # Functional Endpoints
     path("document-space/", views.document_space, name="document-space"),
     path("rag-tools/web-search/", views.web_search, name="web-search"),
     path(
@@ -36,5 +47,10 @@ urlpatterns = [
         "framework-analysis/submit/",
         views.framework_analysis_submit,
         name="framework-analysis-submit",
+    ),
+    path(
+        "rag-tools/chat-submit/",
+        views.chat_submit,
+        name="chat-submit",
     ),
 ]

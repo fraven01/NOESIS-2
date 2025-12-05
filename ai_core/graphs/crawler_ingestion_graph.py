@@ -924,6 +924,12 @@ class CrawlerIngestionGraph:
         last_transition: Optional[GraphTransition] = None
 
         for node in nodes:
+            import sys
+
+            sys.stderr.write(
+                f"DEBUG: Executing node {node.name}, continue_flow={continue_flow}\n"
+            )
+            sys.stderr.flush()
             if not continue_flow:
                 break
             try:
@@ -1485,6 +1491,12 @@ class CrawlerIngestionGraph:
     def _run_document_pipeline(
         self, state: Dict[str, Any]
     ) -> Tuple[GraphTransition, bool]:
+        import sys
+
+        sys.stderr.write("DEBUG: _run_document_pipeline CALLED\n")
+        sys.stderr.flush()
+        # raise RuntimeError("DEBUG: SCREAM TEST - _run_document_pipeline REACHED")
+
         artifacts = self._artifacts(state)
         normalized: NormalizedDocumentPayload = artifacts["normalized_document"]
         dry_run = bool(state.get("dry_run"))
@@ -1560,31 +1572,45 @@ class CrawlerIngestionGraph:
 
         artifacts["document_pipeline_phase"] = result_state.phase
         artifacts["document_processing_context"] = result_state.context
+
+        def _serialize_artifact(obj: Any) -> Any:
+            if is_dataclass(obj) and not isinstance(obj, type):
+                return {k: _serialize_artifact(v) for k, v in asdict(obj).items()}
+            if isinstance(obj, BaseModel):
+                return obj.model_dump(mode="json")
+            if isinstance(obj, (list, tuple)):
+                return [_serialize_artifact(v) for v in obj]
+            if isinstance(obj, dict):
+                return {k: _serialize_artifact(v) for k, v in obj.items()}
+            if isinstance(obj, UUID):
+                return str(obj)
+            if isinstance(obj, datetime):
+                return obj.isoformat()
+            return obj
+
         if result_state.parse_artifact:
-            # DocumentParseArtifact is a dataclass.
-            # We must convert it to a pure dict for JSON serialization.
-            # We use a custom serializer to handle nested Pydantic models and UUIDs.
-
-            def _serialize_artifact(obj: Any) -> Any:
-                if is_dataclass(obj) and not isinstance(obj, type):
-                    return {k: _serialize_artifact(v) for k, v in asdict(obj).items()}
-                if isinstance(obj, BaseModel):
-                    return obj.model_dump(mode="json")
-                if isinstance(obj, (list, tuple)):
-                    return [_serialize_artifact(v) for v in obj]
-                if isinstance(obj, dict):
-                    return {k: _serialize_artifact(v) for k, v in obj.items()}
-                if isinstance(obj, UUID):
-                    return str(obj)
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-                return obj
-
             artifacts["parse_artifact"] = _serialize_artifact(
                 result_state.parse_artifact
             )
         else:
             artifacts["parse_artifact"] = None
+
+        # Ensure prefetched_parse_result is also serializable if present
+        if "prefetched_parse_result" in artifacts:
+            artifacts["prefetched_parse_result"] = _serialize_artifact(
+                artifacts["prefetched_parse_result"]
+            )
+
+        # DEBUG LOGGING
+        import sys
+
+        sys.stderr.write(f"DEBUG: artifacts keys: {list(artifacts.keys())}\n")
+        for k, v in artifacts.items():
+            sys.stderr.write(f"DEBUG: artifacts[{k}] type: {type(v)}\n")
+            if "ParsedResult" in str(type(v)):
+                sys.stderr.write(f"DEBUG: FOUND ParsedResult in {k}!\n")
+        sys.stderr.flush()
+
         artifacts["chunk_artifact"] = result_state.chunk_artifact
         if result_state.error is not None:
             artifacts["document_pipeline_error"] = repr(result_state.error)

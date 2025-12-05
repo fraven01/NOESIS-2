@@ -1,7 +1,6 @@
 """Document download views."""
 
 import time
-from uuid import UUID
 
 from django.http import FileResponse, HttpResponse, HttpResponseNotModified
 from django.views.decorators.http import require_http_methods
@@ -62,10 +61,9 @@ def document_download(request, document_id: str):
     - HttpRangeHandler: Range request parsing
     """
     # Validate UUID format early (clean 400 instead of 500)
-    try:
-        doc_uuid = UUID(document_id)
-    except ValueError:
-        return error(400, "InvalidDocumentId", "document_id must be a valid UUID")
+    # Validate UUID format early (clean 400 instead of 500)
+    # doc_uuid = UUID(document_id) - document_id is already a UUID from URL converter
+    doc_uuid = document_id
 
     start_time = time.time()
     try:

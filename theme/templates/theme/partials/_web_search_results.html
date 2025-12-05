@@ -1,76 +1,176 @@
-{% if results %}
-<div class="space-y-4">
-    <div class="flex items-center justify-between">
-        <h3 class="text-sm font-medium text-slate-700">Ergebnisse ({{ results|length }})</h3>
-        {% if trace_id %}
-        <span class="text-xs text-slate-400">Trace: {{ trace_id }}</span>
-        {% endif %}
-    </div>
+{% if results or search.strategy %}
+<div class="space-y-6">
+    <!-- 1. Search Strategy Section -->
+    {% if search.strategy %}
+    <div class="rounded-lg border border-indigo-100 bg-indigo-50/50 p-4">
+        <h4 class="mb-3 flex items-center gap-2 text-sm font-semibold text-indigo-900">
+            <svg class="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+            </svg>
+            Search Strategy
+        </h4>
 
-    {% for result in results %}
-    <div
-        class="group relative rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-indigo-300 hover:shadow-md">
-        <div class="flex items-start justify-between gap-4">
-            <div class="min-w-0 flex-1 space-y-1">
-                <h4 class="truncate font-medium text-slate-900">
-                    <a href="{{ result.url }}" target="_blank" rel="noopener noreferrer"
-                        class="hover:text-indigo-600 hover:underline">
-                        {{ result.title|default:result.url }}
-                    </a>
-                </h4>
-                <p class="truncate text-xs text-slate-500">{{ result.url }}</p>
+        <div class="space-y-3">
+            <!-- Queries -->
+            <div>
+                <p class="mb-1.5 text-xs font-medium text-indigo-800 uppercase tracking-wider">Generated Queries</p>
+                <div class="space-y-1">
+                    {% for query in search.strategy.plan.queries %}
+                    <div
+                        class="flex items-start gap-2 text-sm text-indigo-700 bg-white/60 rounded px-2 py-1 border border-indigo-100/50">
+                        <span class="mt-1 flex h-1.5 w-1.5 flex-shrink-0 rounded-full bg-indigo-400"></span>
+                        <span>{{ query }}</span>
+                    </div>
+                    {% endfor %}
+                </div>
             </div>
-            <div class="flex flex-col items-end gap-1">
-                {% if result.score %}
-                <span
-                    class="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
-                    title="Original Score">
-                    S: {{ result.score|floatformat:2 }}
-                </span>
-                {% endif %}
+
+            <!-- Policies (if any) -->
+            {% if search.strategy.plan.policies_applied %}
+            <div>
+                <p class="mb-1.5 text-xs font-medium text-indigo-800 uppercase tracking-wider">Applied Policies</p>
+                <div class="flex flex-wrap gap-2">
+                    {% for policy in search.strategy.plan.policies_applied %}
+                    <span
+                        class="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-medium text-indigo-700 border border-indigo-200">
+                        {{ policy }}
+                    </span>
+                    {% endfor %}
+                </div>
             </div>
-        </div>
-
-        {% if result.content %}
-        <p class="mt-2 text-sm text-slate-600 line-clamp-3">{{ result.content }}</p>
-        {% elif result.snippet %}
-        <p class="mt-2 text-sm text-slate-600 line-clamp-3">{{ result.snippet }}</p>
-        {% endif %}
-
-        {% if result.rerank %}
-        <div class="mt-3 flex items-start gap-3 rounded-md bg-indigo-50 p-2 text-xs">
-            <span class="font-bold text-indigo-700">Rerank: {{ result.rerank.score|floatformat:4 }}</span>
-            {% if result.rerank.reasoning %}
-            <p class="text-indigo-800">{{ result.rerank.reasoning }}</p>
             {% endif %}
         </div>
-        {% endif %}
+    </div>
+    {% endif %}
 
-        <div class="mt-3 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
-            <button type="button"
-                class="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
-                hx-post="{% url 'rag_tools_ingest_selected' %}"
-                hx-vals='{"urls": ["{{ result.url }}"], "collection_id": "{{ collection_id }}"}'
-                hx-target="#ingestion-status-panel" hx-swap="innerHTML">
-                Ingest this
-            </button>
+    <!-- 2. Search Execution Section -->
+    {% if search.responses %}
+    <div class="rounded-lg border border-slate-200 bg-slate-50/50 p-4">
+        <h4 class="mb-3 flex items-center gap-2 text-sm font-semibold text-slate-900">
+            <svg class="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+            </svg>
+            Search Execution
+        </h4>
+        <div class="grid gap-2 sm:grid-cols-2">
+            {% for response in search.responses %}
+            <div
+                class="flex items-center justify-between rounded-md border border-slate-200 bg-white px-3 py-2 text-sm shadow-sm">
+                <div class="min-w-0 flex-1">
+                    <p class="truncate font-medium text-slate-700" title="{{ response.query }}">{{ response.query }}</p>
+                    <p class="text-xs text-slate-400">Call ID: {{ response.worker_call_id|slice:":8" }}...</p>
+                </div>
+                <div class="ml-3 flex flex-shrink-0 items-center gap-2">
+                    {% if response.decision == "ok" %}
+                    <span
+                        class="inline-flex items-center rounded-full bg-green-50 px-2 py-0.5 text-xs font-medium text-green-700 ring-1 ring-inset ring-green-600/20">
+                        {{ response.result_count }} results
+                    </span>
+                    {% else %}
+                    <span
+                        class="inline-flex items-center rounded-full bg-red-50 px-2 py-0.5 text-xs font-medium text-red-700 ring-1 ring-inset ring-red-600/10">
+                        Error
+                    </span>
+                    {% endif %}
+                </div>
+            </div>
+            {% endfor %}
         </div>
     </div>
-    {% endfor %}
+    {% endif %}
+
+    <!-- 3. Results Section -->
+    {% if results %}
+    <div>
+        <div class="mb-4 flex items-center justify-between border-b border-slate-200 pb-2">
+            <h3 class="text-sm font-medium text-slate-900">Ranked Results ({{ results|length }})</h3>
+            {% if trace_id %}
+            <span class="font-mono text-xs text-slate-400" title="Trace ID">#{{ trace_id|slice:":8" }}</span>
+            {% endif %}
+        </div>
+
+        <div class="space-y-4">
+            {% for result in results %}
+            <div
+                class="group relative rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-indigo-300 hover:shadow-md">
+                <div class="flex items-start justify-between gap-4">
+                    <div class="min-w-0 flex-1 space-y-1">
+                        <h4 class="truncate font-medium text-slate-900">
+                            <a href="{{ result.url }}" target="_blank" rel="noopener noreferrer"
+                                class="hover:text-indigo-600 hover:underline">
+                                {{ result.title|default:result.url }}
+                            </a>
+                        </h4>
+                        <p class="truncate text-xs text-slate-500">{{ result.url }}</p>
+                    </div>
+                    <div class="flex flex-col items-end gap-1">
+                        {% if result.embedding_rank_score %}
+                        <div class="flex flex-col items-end gap-0.5">
+                            <span
+                                class="inline-flex items-center rounded-full bg-indigo-100 px-2 py-0.5 text-xs font-bold text-indigo-700"
+                                title="Hybrid Score">
+                                H: {{ result.embedding_rank_score|floatformat:1 }}
+                            </span>
+                            <div class="flex gap-1 text-[10px] text-slate-400">
+                                <span title="Embedding Similarity">E: {{ result.embedding_similarity|floatformat:1
+                                    }}</span>
+                                <span title="Heuristic Score">R: {{ result.heuristic_score|floatformat:1 }}</span>
+                            </div>
+                        </div>
+                        {% elif result.score %}
+                        <span
+                            class="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+                            title="Original Score">
+                            S: {{ result.score|floatformat:2 }}
+                        </span>
+                        {% endif %}
+                    </div>
+                </div>
+
+                {% if result.content %}
+                <p class="mt-2 text-sm text-slate-600 line-clamp-3">{{ result.content }}</p>
+                {% elif result.snippet %}
+                <p class="mt-2 text-sm text-slate-600 line-clamp-3">{{ result.snippet }}</p>
+                {% endif %}
+
+                {% if result.rerank %}
+                <div class="mt-3 flex items-start gap-3 rounded-md bg-indigo-50 p-2 text-xs">
+                    <span class="font-bold text-indigo-700">Rerank: {{ result.rerank.score|floatformat:4 }}</span>
+                    {% if result.rerank.reasoning %}
+                    <p class="text-indigo-800">{{ result.rerank.reasoning }}</p>
+                    {% endif %}
+                </div>
+                {% endif %}
+
+                <div class="mt-3 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                    <form hx-post="{% url 'web-search-ingest-selected' %}" hx-target="#ingestion-status-panel"
+                        hx-swap="innerHTML" class="inline">
+                        <input type="hidden" name="urls" value="{{ result.url }}">
+                        <input type="hidden" name="collection_id" value="{{ collection_id }}">
+                        <button type="submit"
+                            class="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
+                            Ingest this
+                        </button>
+                    </form>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+    {% elif search.strategy %}
+    <div class="rounded-md border border-slate-200 bg-slate-50 p-8 text-center">
+        <p class="text-sm text-slate-500">Search executed but no results matched the criteria.</p>
+    </div>
+    {% else %}
+    <div class="rounded-md border border-slate-200 bg-slate-50 p-8 text-center">
+        <p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>
+    </div>
+    {% endif %}
 </div>
 {% else %}
 <div class="rounded-md border border-slate-200 bg-slate-50 p-8 text-center">
     <p class="text-sm text-slate-500">Keine Ergebnisse gefunden.</p>
-</div>
-{% endif %}
-
-{% if search %}
-<div class="mt-6 space-y-2">
-    <details>
-        <summary class="cursor-pointer text-xs font-medium text-slate-500 hover:text-slate-700">Raw Response JSON
-        </summary>
-        <pre
-            class="mt-2 max-h-64 overflow-auto rounded-lg bg-slate-950 p-4 text-xs text-slate-300">{{ search|pprint }}</pre>
-    </details>
 </div>
 {% endif %}

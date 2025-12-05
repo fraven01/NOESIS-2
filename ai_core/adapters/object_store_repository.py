@@ -5,7 +5,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, Tuple, List
+from typing import Dict, Optional, Tuple, List
 from uuid import UUID
 
 from ai_core.infra import object_store
@@ -115,6 +115,234 @@ class ObjectStoreDocumentsRepository(DocumentsRepository):
 
         meta, path = max(candidates, key=_candidate_key)
         return _rebuild_document_from_meta(tenant_id, document_id, meta, path)
+
+    def list_by_collection(
+        self,
+        tenant_id: str,
+        collection_id: UUID,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+        latest_only: bool = False,
+        *,
+        workflow_id: Optional[str] = None,
+    ) -> Tuple[List[DocumentRef], Optional[str]]:
+        if latest_only:
+            return self.list_latest_by_collection(
+                tenant_id, collection_id, limit, cursor, workflow_id=workflow_id
+            )
+
+        tenant_segment = object_store.sanitize_identifier(tenant_id)
+        base = object_store.BASE_PATH / tenant_segment
+
+        if not base.exists():
+            return [], None
+
+        entries: List[Tuple[Tuple, NormalizedDocument]] = []
+
+        # Walk workflows and collect matching meta files
+        for wf_dir in base.iterdir():
+            if not wf_dir.is_dir():
+                continue
+            if workflow_id and wf_dir.name != object_store.sanitize_identifier(
+                workflow_id
+            ):
+                continue
+
+            uploads_dir = wf_dir / "uploads"
+            if not uploads_dir.exists():
+                continue
+
+            for meta_path in uploads_dir.glob("*.meta.json"):
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta_collection_id = meta.get("collection_id")
+                    if meta_collection_id and str(meta_collection_id) == str(
+                        collection_id
+                    ):
+                        doc_id_str = meta_path.name.replace(".meta.json", "")
+                        try:
+                            doc_id = UUID(doc_id_str)
+                        except ValueError:
+                            continue
+
+                        doc = _rebuild_document_from_meta(
+                            tenant_id, doc_id, meta, meta_path
+                        )
+                        entries.append(self._document_entry(doc))
+                except Exception:
+                    continue
+
+        entries.sort(key=lambda entry: entry[0])
+        start = self._cursor_start(entries, cursor)
+        sliced = entries[start : start + limit]
+        refs = [entry[1].ref.model_copy(deep=True) for entry in sliced]
+        next_cursor = self._next_cursor(entries, start, limit)
+
+        return refs, next_cursor
+
+    def list_latest_by_collection(
+        self,
+        tenant_id: str,
+        collection_id: UUID,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+        *,
+        workflow_id: Optional[str] = None,
+    ) -> Tuple[List[DocumentRef], Optional[str]]:
+
+        tenant_segment = object_store.sanitize_identifier(tenant_id)
+        base = object_store.BASE_PATH / tenant_segment
+
+        if not base.exists():
+            return [], None
+
+        latest: Dict[UUID, NormalizedDocument] = {}
+
+        # Walk workflows and collect matching meta files
+        for wf_dir in base.iterdir():
+            if not wf_dir.is_dir():
+                continue
+            if workflow_id and wf_dir.name != object_store.sanitize_identifier(
+                workflow_id
+            ):
+                continue
+
+            uploads_dir = wf_dir / "uploads"
+            if not uploads_dir.exists():
+                continue
+
+            for meta_path in uploads_dir.glob("*.meta.json"):
+                try:
+                    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                    meta_collection_id = meta.get("collection_id")
+                    if meta_collection_id and str(meta_collection_id) == str(
+                        collection_id
+                    ):
+                        doc_id_str = meta_path.name.replace(".meta.json", "")
+                        try:
+                            doc_id = UUID(doc_id_str)
+                        except ValueError:
+                            continue
+
+                        doc = _rebuild_document_from_meta(
+                            tenant_id, doc_id, meta, meta_path
+                        )
+
+                        current = latest.get(doc.ref.document_id)
+                        if current is None or self._newer(doc, current):
+                            latest[doc.ref.document_id] = doc
+                except Exception:
+                    continue
+
+        entries = [self._document_entry(doc) for doc in latest.values()]
+        entries.sort(key=lambda entry: entry[0])
+        start = self._cursor_start(entries, cursor)
+        sliced = entries[start : start + limit]
+        refs = [entry[1].ref.model_copy(deep=True) for entry in sliced]
+        next_cursor = self._next_cursor(entries, start, limit)
+
+        return refs, next_cursor
+
+    # Helpers copied from InMemoryDocumentsRepository to support listing
+
+    @staticmethod
+    def _encode_cursor(parts: List[str]) -> str:
+        payload = "|".join(parts)
+        encoded = base64.urlsafe_b64encode(payload.encode("utf-8"))
+        return encoded.decode("ascii")
+
+    @staticmethod
+    def _decode_cursor(cursor: str) -> List[str]:
+        try:
+            decoded = base64.urlsafe_b64decode(cursor.encode("ascii"))
+            text = decoded.decode("utf-8")
+            return text.split("|")
+        except Exception:
+            raise ValueError("cursor_invalid")
+
+    def _document_entry(
+        self, doc: NormalizedDocument
+    ) -> Tuple[Tuple[float, str, str, str], NormalizedDocument]:
+        version_key = doc.ref.version or ""
+        # Handle potential None created_at (though NormalizedDocument usually has it)
+        ts = doc.created_at.timestamp() if doc.created_at else 0.0
+        key = (
+            -ts,
+            str(doc.ref.document_id),
+            doc.ref.workflow_id or "",
+            version_key,
+        )
+        return key, doc
+
+    def _cursor_start(
+        self,
+        entries: List[Tuple[Tuple, object]],
+        cursor: Optional[str],
+    ) -> int:
+        if not cursor:
+            return 0
+        try:
+            parts = self._decode_cursor(cursor)
+        except ValueError:
+            return 0
+
+        if not parts:
+            return 0
+
+        # Best-effort matching based on parts length
+        cursor_key: Tuple = ()
+        try:
+            if len(parts) == 4:
+                timestamp = datetime.fromisoformat(parts[0])
+                cursor_key = (-timestamp.timestamp(), parts[1], parts[2], parts[3])
+            elif len(parts) == 3:
+                timestamp = datetime.fromisoformat(parts[0])
+                cursor_key = (-timestamp.timestamp(), parts[1], parts[2])
+            elif len(parts) == 2:
+                timestamp = datetime.fromisoformat(parts[0])
+                cursor_key = (-timestamp.timestamp(), parts[1])
+        except (ValueError, TypeError):
+            return 0
+
+        if not cursor_key:
+            return 0
+
+        index = 0
+        for idx, (key, _) in enumerate(entries):
+            if key <= cursor_key:
+                index = idx + 1
+        return index
+
+    def _next_cursor(
+        self,
+        entries: List[Tuple[Tuple, object]],
+        start: int,
+        limit: int,
+    ) -> Optional[str]:
+        end = start + limit
+        if end >= len(entries):
+            return None
+        key, obj = entries[end - 1]
+
+        doc: NormalizedDocument = obj  # type: ignore
+        parts = [
+            doc.created_at.isoformat() if doc.created_at else datetime.min.isoformat(),
+            str(doc.ref.document_id),
+            doc.ref.workflow_id or "",
+            doc.ref.version or "",
+        ]
+        return self._encode_cursor(parts)
+
+    @staticmethod
+    def _newer(left: NormalizedDocument, right: NormalizedDocument) -> bool:
+        if left.created_at and right.created_at:
+            if left.created_at > right.created_at:
+                return True
+            if left.created_at < right.created_at:
+                return False
+        left_version = left.ref.version or ""
+        right_version = right.ref.version or ""
+        return left_version > right_version
 
 
 def _extract_payload(doc: NormalizedDocument) -> bytes:

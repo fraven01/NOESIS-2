@@ -1,0 +1,124 @@
+<div class="grid grid-cols-1 lg:grid-cols-12 gap-8" x-data="{ searchType: 'external_knowledge' }">
+    <!-- Search Config (Left Column) -->
+    <div class="lg:col-span-4 space-y-6">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 p-6">
+            <h3 class="text-base font-semibold text-slate-900 mb-4 flex items-center gap-2">
+                <svg class="w-5 h-5 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                Search Configuration
+            </h3>
+
+            <div id="ingestion-status-panel"></div>
+
+            <form hx-post="{% url 'web-search' %}" hx-target="#search-results-area" hx-swap="innerHTML"
+                class="space-y-4">
+                {% csrf_token %}
+                <input type="hidden" name="case_id" value="{{ case_id }}">
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-2">Search Type</label>
+                    <div class="flex items-center space-x-4">
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="radio" name="search_type" value="external_knowledge" x-model="searchType"
+                                class="form-radio h-4 w-4 text-indigo-600 border-slate-300 focus:ring-indigo-500">
+                            <span class="ml-2 text-sm text-slate-700">External Knowledge</span>
+                        </label>
+                        <label class="inline-flex items-center cursor-pointer">
+                            <input type="radio" name="search_type" value="collection_search" x-model="searchType"
+                                class="form-radio h-4 w-4 text-indigo-600 border-slate-300 focus:ring-indigo-500">
+                            <span class="ml-2 text-sm text-slate-700">Collection Search</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">Query</label>
+                    <textarea name="query" rows="3" required placeholder="What are you looking for?"
+                        class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
+                </div>
+
+                <div>
+                    <label class="block text-sm font-medium text-slate-700 mb-1">
+                        Purpose
+                        <span x-show="searchType === 'collection_search'" class="text-red-500">*</span>
+                    </label>
+                    <input type="text" name="purpose" :required="searchType === 'collection_search'"
+                        placeholder="Research, Fact Check..."
+                        class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                    <p x-show="searchType === 'collection_search'" class="mt-1 text-xs text-slate-500">Required for
+                        strategy generation.</p>
+                </div>
+
+                <div class="grid grid-cols-2 gap-4">
+                    <div x-show="searchType === 'collection_search'" x-transition>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Quality Mode</label>
+                        <select name="quality_mode"
+                            class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                            <option value="standard">Standard</option>
+                            <option value="software_docs_strict">Software Docs (Strict)</option>
+                            <option value="law_evergreen">Law (Evergreen)</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Collection</label>
+                        <input type="text" name="collection_id" placeholder="Default"
+                            class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                    </div>
+                </div>
+
+                <div class="border-t border-slate-100 pt-4 space-y-3">
+                    <div class="flex items-center justify-between" x-show="searchType === 'collection_search'"
+                        x-transition>
+                        <label class="text-sm text-slate-700 font-medium">Auto-Ingest Results</label>
+                        <div
+                            class="relative inline-block w-10 mr-2 align-middle select-none transition duration-200 ease-in">
+                            <input type="checkbox" name="auto_ingest" id="toggle-ingest"
+                                class="toggle-checkbox absolute block w-5 h-5 rounded-full bg-white border-4 appearance-none cursor-pointer" />
+                            <label for="toggle-ingest"
+                                class="toggle-label block overflow-hidden h-5 rounded-full bg-slate-300 cursor-pointer"></label>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit"
+                    class="w-full flex justify-center py-2.5 px-4 border border-transparent rounded-lg shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-all">
+                    Execute Search
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- Results Area (Right Column) -->
+    <div class="lg:col-span-8">
+        <div id="search-results-area" class="space-y-6">
+
+            <!-- Empty State -->
+            <div
+                class="bg-white rounded-xl shadow-sm border border-slate-200 p-8 min-h-[500px] flex flex-col items-center justify-center text-center">
+                <div class="bg-slate-50 p-4 rounded-full mb-4">
+                    <svg class="h-8 w-8 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M8 16l2.879-2.879m0 0a3 3 0 104.243-4.242 3 3 0 00-4.243 4.242zM21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+                <h3 class="text-sm font-medium text-slate-900">No Search Results</h3>
+                <p class="mt-1 text-sm text-slate-500 max-w-sm">Enter a query and configure your search parameters to
+                    retrieve documents from the collection or external sources.</p>
+            </div>
+
+        </div>
+    </div>
+</div>
+
+<style>
+    .toggle-checkbox:checked {
+        right: 0;
+        border-color: #68D391;
+    }
+
+    .toggle-checkbox:checked+.toggle-label {
+        background-color: #68D391;
+    }
+</style>

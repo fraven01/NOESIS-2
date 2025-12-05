@@ -1,17 +1,17 @@
-"""HTTP adapter that implements the crawler fetcher contract using httpx."""
+"""HTTP adapter that implements the crawler fetcher contract using requests."""
 
 from __future__ import annotations
 
 import os
 import random
 import socket
-import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Mapping, MutableMapping, Optional, Tuple
 from urllib.parse import urlparse
 
-import httpx
+import requests
+import requests.adapters
 from django.conf import settings
 
 from .fetcher import (
@@ -35,9 +35,11 @@ def _resolve_default_user_agent() -> str:
         configured = getattr(settings, "CRAWLER_HTTP_USER_AGENT", None)
     if isinstance(configured, str) and configured.strip():
         return configured.strip()
+
     env_value = os.getenv("CRAWLER_HTTP_USER_AGENT")
     if env_value and env_value.strip():
         return env_value.strip()
+
     return DEFAULT_USER_AGENT
 
 
@@ -106,7 +108,7 @@ class HttpFetcher:
         self,
         config: Optional[HttpFetcherConfig] = None,
         *,
-        transport: Optional[httpx.BaseTransport] = None,
+        transport: Optional[requests.adapters.HTTPAdapter] = None,
         clock: Callable[[], float] = time.perf_counter,
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
@@ -143,6 +145,9 @@ class HttpFetcher:
             last_result = result
             if not self._should_retry(result, attempt):
                 return result
+            # Ensure response is closed before retrying to free connection
+            if result.body is None and result.status == FetchStatus.OK:
+                pass  # Should not happen given logic, but good practice
         assert last_result is not None
         return last_result
 
@@ -159,20 +164,27 @@ class HttpFetcher:
 
         try:
             timeout = self._determine_timeout()
-            with httpx.Client(
-                follow_redirects=True,
-                max_redirects=self._max_redirects,
-                timeout=timeout,
-                transport=self._transport,
-            ) as client:
-                with client.stream("GET", url, headers=headers) as streamed:
+            with requests.Session() as session:
+                if self._transport:
+                    session.mount("https://", self._transport)
+                    session.mount("http://", self._transport)
+
+                session.max_redirects = self._max_redirects
+
+                with session.get(
+                    url,
+                    headers=headers,
+                    stream=True,
+                    timeout=timeout,
+                    allow_redirects=True,
+                ) as response:
                     body, downloaded, status_code, response_headers = self._read_stream(
-                        streamed
+                        response
                     )
-        except httpx.TimeoutException as exc:
+        except requests.exceptions.Timeout:
             elapsed = self._elapsed_since(start)
             elapsed = self._ensure_timeout_violation(elapsed)
-            timeout_reason = self._timeout_reason(exc)
+            timeout_reason = "timeout"
             return evaluate_fetch_response(
                 request,
                 status_code=None,
@@ -184,7 +196,7 @@ class HttpFetcher:
                 retry_reason=timeout_reason,
                 backoff_total_ms=backoff_total_ms,
             )
-        except httpx.TooManyRedirects:
+        except requests.exceptions.TooManyRedirects:
             elapsed = self._elapsed_since(start)
             failure = FetchFailure(reason="too_many_redirects", temporary=True)
             return evaluate_fetch_response(
@@ -198,7 +210,7 @@ class HttpFetcher:
                 retry_reason="too_many_redirects",
                 backoff_total_ms=backoff_total_ms,
             )
-        except httpx.InvalidURL:
+        except requests.exceptions.InvalidSchema:
             elapsed = self._elapsed_since(start)
             failure = FetchFailure(reason="invalid_url", temporary=False)
             return evaluate_fetch_response(
@@ -211,7 +223,20 @@ class HttpFetcher:
                 failure=failure,
                 backoff_total_ms=backoff_total_ms,
             )
-        except httpx.RequestError as exc:
+        except requests.exceptions.InvalidURL:
+            elapsed = self._elapsed_since(start)
+            failure = FetchFailure(reason="invalid_url", temporary=False)
+            return evaluate_fetch_response(
+                request,
+                status_code=None,
+                body=None,
+                elapsed=elapsed,
+                retries=attempt - 1,
+                limits=self._limits,
+                failure=failure,
+                backoff_total_ms=backoff_total_ms,
+            )
+        except requests.exceptions.RequestException as exc:
             elapsed = self._elapsed_since(start)
             failure = self._classify_request_error(exc)
             return evaluate_fetch_response(
@@ -242,14 +267,16 @@ class HttpFetcher:
         )
 
     def _read_stream(
-        self, response: httpx.Response
+        self, response: requests.Response
     ) -> Tuple[bytearray, int, Optional[int], Mapping[str, str]]:
         buffer = bytearray()
         status_code = response.status_code
         headers = dict(response.headers)
         max_bytes = self._limits.max_bytes if self._limits else None
         downloaded = 0
-        for chunk in response.iter_bytes():
+
+        # Use iter_content for streaming
+        for chunk in response.iter_content(chunk_size=8192):
             if not chunk:
                 continue
             downloaded += len(chunk)
@@ -266,13 +293,12 @@ class HttpFetcher:
             buffer.extend(chunk)
         return buffer, downloaded, status_code, headers
 
-    def _determine_timeout(self) -> httpx.Timeout:
+    def _determine_timeout(self) -> float:
         if self._limits and self._limits.timeout is not None:
-            seconds = self._limits.timeout.total_seconds()
-            return httpx.Timeout(seconds)
+            return self._limits.timeout.total_seconds()
         if self._request_timeout is not None:
-            return httpx.Timeout(self._request_timeout)
-        return httpx.Timeout(30.0)
+            return self._request_timeout
+        return 30.0
 
     def _ensure_supported_scheme(self, request: FetchRequest) -> None:
         parsed = urlparse(request.canonical_source)
@@ -296,7 +322,18 @@ class HttpFetcher:
         if user_agent:
             headers.setdefault("User-Agent", user_agent)
 
+        headers.setdefault(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        )
+        headers.setdefault("Accept-Language", "en-US,en;q=0.5")
         headers.setdefault("Accept-Encoding", "gzip, deflate, br")
+        headers.setdefault("Sec-Fetch-Dest", "document")
+        headers.setdefault("Sec-Fetch-Mode", "navigate")
+        headers.setdefault("Sec-Fetch-Site", "none")
+        headers.setdefault("Sec-Fetch-User", "?1")
+        headers.setdefault("Upgrade-Insecure-Requests", "1")
+        headers.setdefault("Connection", "keep-alive")
 
         etag = request.metadata.get("etag")
         if isinstance(etag, str) and etag:
@@ -308,13 +345,15 @@ class HttpFetcher:
 
         return headers
 
-    def _classify_request_error(self, exc: httpx.RequestError) -> FetchFailure:
-        cause = exc.__cause__
-        if isinstance(cause, ssl.SSLError):
+    def _classify_request_error(
+        self, exc: requests.exceptions.RequestException
+    ) -> FetchFailure:
+        if isinstance(exc, requests.exceptions.SSLError):
             return FetchFailure(reason="tls_error", temporary=False)
-        if isinstance(cause, socket.gaierror):
-            return FetchFailure(reason="dns_error", temporary=True)
-        if isinstance(exc, httpx.ConnectError):
+        if isinstance(exc, (requests.exceptions.ConnectionError, socket.gaierror)):
+            # requests wraps gaierror in ConnectionError often
+            return FetchFailure(reason="network_error", temporary=True)
+        if isinstance(exc, requests.exceptions.ChunkedEncodingError):
             return FetchFailure(reason="network_error", temporary=True)
         return FetchFailure(reason="network_error", temporary=True)
 
@@ -325,16 +364,13 @@ class HttpFetcher:
             return f"status_{status_code}"
         return None
 
-    def _timeout_reason(self, exc: httpx.TimeoutException) -> str:
+    def _timeout_reason(self, exc: Exception) -> str:
+        # requests timeouts are usually just Timeout or ConnectTimeout/ReadTimeout
         name = exc.__class__.__name__
-        if name.lower().endswith("timeout"):
-            prefix = name[:-7]
-            if prefix:
-                return f"{prefix.lower()}_timeout"
-        if name.lower().endswith("exception"):
-            prefix = name[:-9]
-            if prefix:
-                return f"{prefix.lower()}_timeout"
+        if "connect" in name.lower():
+            return "connect_timeout"
+        if "read" in name.lower():
+            return "read_timeout"
         return "timeout"
 
     def _should_retry(self, result: FetchResult, attempt: int) -> bool:

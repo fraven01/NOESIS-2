@@ -671,6 +671,17 @@ def _summarize_origin_entry(
         "snapshot_requested": build.snapshot_requested,
         "snapshot_label": build.snapshot_label,
     }
+    chunk_count = 0
+    artifacts = state.get("artifacts")
+    if isinstance(artifacts, Mapping):
+        parse_artifact = artifacts.get("parse_artifact") or artifacts.get(
+            "prefetched_parse_result"
+        )
+        if isinstance(parse_artifact, Mapping):
+            text_blocks = parse_artifact.get("text_blocks")
+            if isinstance(text_blocks, (list, tuple)):
+                chunk_count = len(text_blocks)
+
     entry: dict[str, object] = {
         "origin": build.origin,
         "provider": build.provider,
@@ -684,6 +695,7 @@ def _summarize_origin_entry(
         "collection_id": build.collection_id,
         "review": build.review,
         "dry_run": build.dry_run,
+        "chunk_count": chunk_count,
     }
     if ingestion_run_id:
         entry["ingestion_run_id"] = ingestion_run_id

@@ -1,0 +1,222 @@
+{% extends "theme/base.html" %}
+{% load static %}
+
+{% block content %}
+<div class="flex h-screen overflow-hidden bg-slate-50 font-sans" x-data="{ 
+    activeTab: 'search',
+    init() {
+        if (window.location.hash) {
+            this.activeTab = window.location.hash.substring(1);
+        }
+        // Trigger initial load for the active tab
+        this.$nextTick(() => {
+            const btn = document.getElementById('tab-btn-' + this.activeTab);
+            if (btn) {
+                htmx.trigger(btn, 'click');
+            }
+        });
+    },
+    setTab(tab) {
+        this.activeTab = tab;
+        window.location.hash = tab;
+    }
+}">
+
+    <!-- Sidebar Navigation -->
+    <aside class="w-72 bg-white border-r border-slate-200 flex flex-col shadow-xl z-20 relative">
+        <div class="p-6 border-b border-slate-100 bg-gradient-to-r from-white to-slate-50">
+            <h2 class="text-xl font-bold text-slate-900 flex items-center gap-3 tracking-tight">
+                <div class="p-2 bg-indigo-600 rounded-lg shadow-lg shadow-indigo-500/30">
+                    <svg class="w-5 h-5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+                    </svg>
+                </div>
+                <span
+                    class="bg-clip-text text-transparent bg-gradient-to-r from-slate-900 to-slate-700">Workbench</span>
+            </h2>
+            <p class="text-xs font-medium text-slate-400 mt-2 ml-1 uppercase tracking-wider">RAG Command Center</p>
+        </div>
+
+        <nav class="flex-1 overflow-y-auto p-4 space-y-2">
+            <!-- Search & Retrieval -->
+            <button @click="setTab('search')" id="tab-btn-search"
+                :class="activeTab === 'search' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool-search' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'search' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                Search & Retrieval
+            </button>
+
+            <!-- RAG Chat -->
+            <button @click="setTab('chat')" id="tab-btn-chat"
+                :class="activeTab === 'chat' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool-chat' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'chat' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                </svg>
+                RAG Chat
+            </button>
+
+            <!-- Ingestion Pipeline -->
+            <button @click="setTab('ingestion')" id="tab-btn-ingestion"
+                :class="activeTab === 'ingestion' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool-ingestion' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'ingestion' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                </svg>
+                Ingestion Pipeline
+            </button>
+
+            <!-- Web Crawler -->
+            <button @click="setTab('crawler')" id="tab-btn-crawler"
+                :class="activeTab === 'crawler' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool-crawler' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'crawler' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                Web Crawler
+            </button>
+
+            <!-- Document Explorer -->
+            <button @click="setTab('documents')" id="tab-btn-documents"
+                :class="activeTab === 'documents' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'document_explorer' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'documents' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Document Explorer
+            </button>
+
+            <!-- Framework Analysis -->
+            <button @click="setTab('framework')" id="tab-btn-framework"
+                :class="activeTab === 'framework' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool-framework' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'framework' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+                Framework Analysis
+            </button>
+        </nav>
+
+        <!-- Context Info -->
+        <div class="p-4 border-t border-slate-200 bg-slate-50/50 backdrop-blur-sm">
+            <div class="bg-white rounded-lg border border-slate-200 p-3 shadow-sm space-y-2">
+                <div class="flex justify-between items-center text-xs">
+                    <span class="text-slate-500 font-medium">Tenant</span>
+                    <span class="font-mono text-indigo-600 bg-indigo-50 px-1.5 py-0.5 rounded">{{ tenant_id }}</span>
+                </div>
+                <div class="flex justify-between items-center text-xs">
+                    <span class="text-slate-500 font-medium">Schema</span>
+                    <span class="font-mono text-slate-700">{{ tenant_schema }}</span>
+                </div>
+                <div class="flex justify-between items-center text-xs">
+                    <span class="text-slate-500 font-medium">Case ID</span>
+                    <span class="font-mono text-slate-700 truncate max-w-[100px]" title="{{ case_id }}">{{
+                        case_id|default:"-" }}</span>
+                </div>
+            </div>
+        </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col overflow-hidden bg-slate-50 relative">
+        <!-- Top Header -->
+        <header class="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-8 shadow-sm z-10">
+            <div class="flex items-center gap-4">
+                <nav class="flex" aria-label="Breadcrumb">
+                    <ol class="flex items-center space-x-2">
+                        <li>
+                            <a href="#" class="text-slate-400 hover:text-slate-500">
+                                <svg class="flex-shrink-0 h-5 w-5" xmlns="http://www.w3.org/2000/svg"
+                                    viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
+                                    <path
+                                        d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
+                                </svg>
+                            </a>
+                        </li>
+                        <li>
+                            <div class="flex items-center">
+                                <svg class="flex-shrink-0 h-5 w-5 text-slate-300" xmlns="http://www.w3.org/2000/svg"
+                                    fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                    <path d="M5.555 17.776l8-16 .894.448-8 16-.894-.448z" />
+                                </svg>
+                                <a href="#"
+                                    class="ml-2 text-sm font-medium text-slate-500 hover:text-slate-700">Tools</a>
+                            </div>
+                        </li>
+                        <li>
+                            <div class="flex items-center">
+                                <svg class="flex-shrink-0 h-5 w-5 text-slate-300" xmlns="http://www.w3.org/2000/svg"
+                                    fill="currentColor" viewBox="0 0 20 20" aria-hidden="true">
+                                    <path d="M5.555 17.776l8-16 .894.448-8 16-.894-.448z" />
+                                </svg>
+                                <span class="ml-2 text-sm font-medium text-indigo-600"
+                                    x-text="activeTab.charAt(0).toUpperCase() + activeTab.slice(1)">Current</span>
+                            </div>
+                        </li>
+                    </ol>
+                </nav>
+            </div>
+            <div class="flex items-center gap-4">
+                <div
+                    class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs ring-2 ring-white shadow-sm">
+                    AI
+                </div>
+            </div>
+        </header>
+
+        <!-- Content Scroll Area -->
+        <div class="flex-1 overflow-y-auto p-8 scroll-smooth">
+            <div id="workspace-content" class="max-w-7xl mx-auto space-y-6 transition-all duration-300 ease-in-out">
+                <!-- Loading State -->
+                <div class="flex flex-col items-center justify-center h-[60vh] text-slate-400">
+                    <div class="relative">
+                        <div class="w-16 h-16 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin">
+                        </div>
+                        <div class="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2">
+                            <svg class="w-6 h-6 text-indigo-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M13 10V3L4 14h7v7l9-11h-7z" />
+                            </svg>
+                        </div>
+                    </div>
+                    <p class="mt-6 text-sm font-medium text-slate-500 animate-pulse">Initializing RAG Workbench...</p>
+                </div>
+            </div>
+        </div>
+    </main>
+
+</div>
+{% endblock %}

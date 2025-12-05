@@ -1,0 +1,46 @@
+<div class="h-[calc(100vh-12rem)] max-w-5xl mx-auto">
+    <!-- Chat Area (Full Width) -->
+    <div class="flex flex-col h-full">
+        <div class="bg-white rounded-xl shadow-sm border border-slate-200 flex flex-col h-full overflow-hidden">
+
+            <!-- Chat History -->
+            <div id="chat-history" class="flex-1 overflow-y-auto p-6 space-y-6 bg-slate-50">
+                <!-- Welcome Message -->
+                <div class="flex items-start gap-4">
+                    <div
+                        class="flex-shrink-0 h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs">
+                        AI</div>
+                    <div
+                        class="bg-white p-4 rounded-2xl rounded-tl-none shadow-sm border border-slate-100 text-sm text-slate-700 max-w-[80%]">
+                        <p>Hello! I'm your RAG assistant. How can I help you analyze your documents today?</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Input Area -->
+            <div class="p-4 bg-white border-t border-slate-200">
+                <form hx-post="{% url 'chat-submit' %}" hx-target="#chat-history" hx-swap="beforeend" class="relative">
+                    {% csrf_token %}
+                    <input type="hidden" name="case_id" value="{{ case_id }}">
+
+                    <div class="relative rounded-md shadow-sm">
+                        <textarea name="message" rows="1"
+                            class="form-textarea block w-full rounded-xl border-slate-300 pl-4 pr-12 py-3 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm resize-none"
+                            placeholder="Type your message..."
+                            onkeydown="if(event.keyCode == 13 && !event.shiftKey) { event.preventDefault(); this.form.requestSubmit(); }"></textarea>
+
+                        <button type="submit"
+                            class="absolute bottom-2 right-2 inline-flex items-center p-1.5 border border-transparent rounded-full shadow-sm text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8" />
+                            </svg>
+                        </button>
+                    </div>
+                    <p class="mt-2 text-xs text-slate-400 text-center">Press Enter to send, Shift + Enter for new line
+                    </p>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>

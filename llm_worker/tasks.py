@@ -91,6 +91,39 @@ def run_graph(  # type: ignore[no-untyped-def]
         "cost_summary": cost_summary,
     }
 
+    def _recursive_serialize(obj: Any) -> Any:
+        from dataclasses import fields, is_dataclass
+        from datetime import datetime
+        import uuid
+        from types import MappingProxyType
+        from pydantic import BaseModel
+
+        if isinstance(obj, dict):
+            return {k: _recursive_serialize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple, set, frozenset)):
+            return [_recursive_serialize(v) for v in obj]
+        if isinstance(obj, MappingProxyType):
+            return _recursive_serialize(dict(obj))
+        if is_dataclass(obj) and not isinstance(obj, type):
+            # Avoid asdict() because it uses deepcopy which fails on MappingProxyType
+            return {
+                f.name: _recursive_serialize(getattr(obj, f.name)) for f in fields(obj)
+            }
+        if isinstance(obj, BaseModel):
+            return _recursive_serialize(obj.model_dump(mode="json"))
+        if isinstance(obj, uuid.UUID):
+            return str(obj)
+        if isinstance(obj, datetime):
+            return obj.isoformat()
+
+        return obj
+
+    try:
+        payload = _recursive_serialize(payload)
+    except Exception as exc:
+        sys.stderr.write(f"DEBUG: Serialization failed: {exc}\n")
+        sys.stderr.flush()
+
     lifecycle_result = emit_case_lifecycle_for_collection_search(
         graph_name=graph_name,
         tenant_id=tenant_id,

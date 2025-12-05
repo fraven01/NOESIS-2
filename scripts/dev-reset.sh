@@ -7,6 +7,9 @@ COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 echo "[dev-reset] Down + prune project volumes"
 $COMPOSE down -v --remove-orphans || true
 
+echo "[dev-reset] Clearing local object store (.ai_core_store)"
+rm -rf .ai_core_store
+
 echo "[dev-reset] Build fresh images"
 $COMPOSE build --no-cache --pull
 

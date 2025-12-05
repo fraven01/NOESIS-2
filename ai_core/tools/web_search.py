@@ -108,11 +108,11 @@ class WebSearchContext(BaseModel):
     tenant_id: str
     trace_id: str
     workflow_id: str
-    case_id: str
+    case_id: str | None = None
     run_id: str
     worker_call_id: str | None = None
 
-    @field_validator("tenant_id", "trace_id", "workflow_id", "case_id", "run_id")
+    @field_validator("tenant_id", "trace_id", "workflow_id", "run_id")
     @classmethod
     def _ensure_non_empty(cls, value: str) -> str:
         text = (value or "").strip()

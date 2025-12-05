@@ -32,8 +32,34 @@
                     <dt class="text-slate-500">URLs:</dt>
                     <dd class="font-mono text-slate-900">{{ url_count }}</dd>
                 </div>
+                {% if result.origins %}
+                <div class="mt-2 border-t border-slate-100 pt-2 space-y-2">
+                    {% for origin in result.origins %}
+                    <div class="space-y-1">
+                        <div class="flex justify-between">
+                            <dt class="text-slate-500">Source:</dt>
+                            <dd class="font-mono text-slate-900 truncate max-w-[200px]" title="{{ origin.origin }}">{{
+                                origin.origin }}</dd>
+                        </div>
+                        {% if origin.document_id %}
+                        <div class="flex justify-between">
+                            <dt class="text-slate-500 pl-2">Doc ID:</dt>
+                            <dd class="font-mono text-slate-900" title="{{ origin.document_id }}">{{
+                                origin.document_id|slice:":8" }}...</dd>
+                        </div>
+                        {% endif %}
+                        {% if origin.chunk_count %}
+                        <div class="flex justify-between">
+                            <dt class="text-slate-500 pl-2">Chunks:</dt>
+                            <dd class="font-mono text-slate-900">{{ origin.chunk_count }}</dd>
+                        </div>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+                {% endif %}
                 {% if task_ids %}
-                <div class="flex justify-between">
+                <div class="flex justify-between border-t border-slate-100 pt-2 mt-2">
                     <dt class="text-slate-500">Tasks:</dt>
                     <dd class="font-mono text-slate-900">{{ task_ids|join:", " }}</dd>
                 </div>

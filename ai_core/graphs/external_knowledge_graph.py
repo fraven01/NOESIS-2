@@ -386,6 +386,7 @@ class ExternalKnowledgeGraph:
                 rejected_count += 1
                 continue
             validated.append(result.model_dump(mode="json"))
+
         shortlisted = validated[: self._config.top_n]
         selected: Mapping[str, Any] | None = None
         if shortlisted:

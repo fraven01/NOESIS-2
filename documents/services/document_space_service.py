@@ -76,6 +76,7 @@ class DocumentSpaceService:
         repository: DocumentsRepository,
     ) -> DocumentSpaceResult:
         with schema_context(tenant_schema):
+
             self._ensure_manual_collection(tenant)
             collections = self._load_collections(tenant, tenant_schema)
             serialized_collections = [
@@ -316,10 +317,20 @@ class DocumentSpaceService:
 
     @staticmethod
     def _describe_blob(blob) -> dict[str, object]:
+        size_bytes = getattr(blob, "size", 0) or 0
+        size_display = "0 B"
+        if size_bytes > 0:
+            if size_bytes < 1024:
+                size_display = f"{size_bytes} B"
+            elif size_bytes < 1024 * 1024:
+                size_display = f"{size_bytes / 1024:.1f} KB"
+            else:
+                size_display = f"{size_bytes / (1024 * 1024):.1f} MB"
+
         return {
             "type": getattr(blob, "type", None),
-            "size": getattr(blob, "size", None),
-            "size_display": getattr(blob, "size_display", None),
+            "size": size_bytes,
+            "size_display": size_display,
             "sha256": getattr(blob, "sha256", None),
             "media_type": getattr(blob, "media_type", None),
             "uri": getattr(blob, "uri", None),

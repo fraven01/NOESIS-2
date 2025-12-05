@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import re
 import uuid
 from datetime import timezone as datetime_timezone
 from typing import Callable
@@ -243,6 +244,22 @@ def build_crawler_state(
             fetch_backoff_total_ms = fetch_payload.backoff_total_ms
             http_status = fetch_payload.status_code
             etag_value = fetch_payload.headers.get("ETag")
+
+            # Extract title from HTML if available and not already set
+            if effective_content_type == "text/html" and body_bytes:
+                try:
+                    html_content = body_bytes.decode("utf-8", errors="ignore")
+                    title_match = re.search(
+                        r"<title>(.*?)</title>", html_content, re.IGNORECASE | re.DOTALL
+                    )
+                    if title_match:
+                        extracted_title = title_match.group(1).strip()
+                        if extracted_title:
+                            # Only override if we don't have a better title
+                            if not origin.title and not request_data.title:
+                                origin.title = extracted_title
+                except Exception:
+                    pass
 
         if effective_content_type is None:
             effective_content_type = "application/octet-stream"
