@@ -41,7 +41,9 @@ class DbDocumentsRepository(DocumentsRepository):
         Tenant = apps.get_model("customers", "Tenant")
 
         metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
-        collection_id = doc_copy.ref.collection_id or doc_copy.meta.document_collection_id
+        collection_id = (
+            doc_copy.ref.collection_id or doc_copy.meta.document_collection_id
+        )
 
         with transaction.atomic():
             try:
@@ -89,13 +91,16 @@ class DbDocumentsRepository(DocumentsRepository):
                 },
             )
 
-        return self.get(
-            doc_copy.ref.tenant_id,
-            document.id,
-            doc_copy.ref.version,
-            workflow_id=workflow,
-            prefer_latest=True,
-        ) or doc_copy
+        return (
+            self.get(
+                doc_copy.ref.tenant_id,
+                document.id,
+                doc_copy.ref.version,
+                workflow_id=workflow,
+                prefer_latest=True,
+            )
+            or doc_copy
+        )
 
     def get(
         self,
@@ -199,7 +204,9 @@ def _build_document_from_metadata(document) -> Optional[NormalizedDocument]:
     return normalized
 
 
-def _collection_queryset(tenant_id: str, collection_id: UUID, workflow_id: Optional[str]):
+def _collection_queryset(
+    tenant_id: str, collection_id: UUID, workflow_id: Optional[str]
+):
     DocumentCollectionMembership = apps.get_model(
         "documents", "DocumentCollectionMembership"
     )
@@ -225,7 +232,9 @@ def _collection_queryset(tenant_id: str, collection_id: UUID, workflow_id: Optio
     return queryset.order_by("-document__created_at", "document__id")
 
 
-def _select_lifecycle_state(model, tenant_id: str, document_id: UUID, workflow_id: Optional[str]):
+def _select_lifecycle_state(
+    model, tenant_id: str, document_id: UUID, workflow_id: Optional[str]
+):
     workflow_key = _workflow_storage_key(workflow_id)
     filters = {"tenant_id": tenant_id, "document_id": document_id}
     if workflow_id is not None:
