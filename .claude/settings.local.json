@@ -22,7 +22,9 @@
       "Bash(npm run dev:manage:*)",
       "Bash(git checkout:*)",
       "Bash(npm run dev:restart:*)",
-      "Bash(npm run win:dev:test:*)"
+      "Bash(npm run win:dev:test:*)",
+      "Bash(ls:*)",
+      "Bash(grep:*)"
     ],
     "deny": [],
     "ask": []

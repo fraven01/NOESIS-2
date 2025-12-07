@@ -18,6 +18,7 @@ PyMuPDF
 pdfplumber
 pikepdf
 langdetect>=1.0.9,<2.0
+langgraph
 markdown-it-py<4
 mdit-py-plugins
 python-docx

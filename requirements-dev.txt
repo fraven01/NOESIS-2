@@ -55,6 +55,14 @@ click==8.3.0
     #   black
     #   pip-tools
     #   typer
+colorama==0.4.6
+    # via
+    #   -c requirements.txt
+    #   build
+    #   click
+    #   openapi-python-client
+    #   pytest
+    #   tqdm
 coverage[toml]==7.10.7
     # via pytest-cov
 cryptography==46.0.3
@@ -105,6 +113,8 @@ httpx==0.28.1
     # via
     #   -c requirements.txt
     #   langfuse
+    #   langgraph-sdk
+    #   langsmith
     #   openai
     #   openapi-python-client
 idna==3.10
@@ -127,6 +137,20 @@ jiter==0.11.0
     # via
     #   -c requirements.txt
     #   openai
+jsonpatch==1.33
+    # via
+    #   -c requirements.txt
+    #   langchain-core
+jsonpointer==3.0.0
+    # via
+    #   -c requirements.txt
+    #   jsonpatch
+langchain-core==1.1.1
+    # via
+    #   -c requirements.txt
+    #   langgraph
+    #   langgraph-checkpoint
+    #   langgraph-prebuilt
 langdetect==1.0.9
     # via
     #   -c requirements.txt
@@ -135,6 +159,27 @@ langfuse==3.8.0
     # via
     #   -c requirements.txt
     #   -r requirements-dev.in
+langgraph==1.0.4
+    # via
+    #   -c requirements.txt
+    #   -r requirements-dev.in
+langgraph-checkpoint==3.0.1
+    # via
+    #   -c requirements.txt
+    #   langgraph
+    #   langgraph-prebuilt
+langgraph-prebuilt==1.0.5
+    # via
+    #   -c requirements.txt
+    #   langgraph
+langgraph-sdk==0.2.12
+    # via
+    #   -c requirements.txt
+    #   langgraph
+langsmith==0.4.55
+    # via
+    #   -c requirements.txt
+    #   langchain-core
 lxml[html-clean]==6.0.2
     # via
     #   -c requirements.txt
@@ -203,12 +248,23 @@ opentelemetry-semantic-conventions==0.58b0
     # via
     #   -c requirements.txt
     #   opentelemetry-sdk
+orjson==3.11.4
+    # via
+    #   -c requirements.txt
+    #   langgraph-sdk
+    #   langsmith
+ormsgpack==1.12.0
+    # via
+    #   -c requirements.txt
+    #   langgraph-checkpoint
 packaging==25.0
     # via
     #   -c requirements.txt
     #   black
     #   build
+    #   langchain-core
     #   langfuse
+    #   langsmith
     #   pikepdf
     #   pytest
 pathspec==0.12.1
@@ -251,7 +307,10 @@ pycparser==2.23
 pydantic==2.11.9
     # via
     #   -c requirements.txt
+    #   langchain-core
     #   langfuse
+    #   langgraph
+    #   langsmith
     #   openai
     #   openapi-python-client
 pydantic-core==2.33.2
@@ -300,6 +359,10 @@ python-pptx==1.0.2
     #   -r requirements-dev.in
 pytokens==0.1.10
     # via black
+pyyaml==6.0.2
+    # via
+    #   -c requirements.txt
+    #   langchain-core
 readability-lxml==0.8.4.1
     # via
     #   -c requirements.txt
@@ -308,7 +371,13 @@ requests==2.32.5
     # via
     #   -c requirements.txt
     #   langfuse
+    #   langsmith
     #   opentelemetry-exporter-otlp-proto-http
+    #   requests-toolbelt
+requests-toolbelt==1.0.0
+    # via
+    #   -c requirements.txt
+    #   langsmith
 rich==14.1.0
     # via typer
 ruamel-yaml==0.18.15
@@ -337,6 +406,10 @@ sqlparse==0.5.3
     # via
     #   -c requirements.txt
     #   django
+tenacity==9.1.2
+    # via
+    #   -c requirements.txt
+    #   langchain-core
 tqdm==4.67.1
     # via
     #   -c requirements.txt
@@ -346,6 +419,7 @@ typer==0.17.4
 typing-extensions==4.15.0
     # via
     #   -c requirements.txt
+    #   langchain-core
     #   openai
     #   openapi-python-client
     #   opentelemetry-api
@@ -366,11 +440,17 @@ typing-inspection==0.4.2
 tzdata==2025.2
     # via
     #   -c requirements.txt
+    #   django
     #   faker
 urllib3==2.5.0
     # via
     #   -c requirements.txt
     #   requests
+uuid-utils==0.12.0
+    # via
+    #   -c requirements.txt
+    #   langchain-core
+    #   langsmith
 wheel==0.45.1
     # via pip-tools
 wrapt==1.17.3
@@ -382,10 +462,18 @@ xlsxwriter==3.2.9
     # via
     #   -c requirements.txt
     #   python-pptx
+xxhash==3.6.0
+    # via
+    #   -c requirements.txt
+    #   langgraph
 zipp==3.23.0
     # via
     #   -c requirements.txt
     #   importlib-metadata
+zstandard==0.25.0
+    # via
+    #   -c requirements.txt
+    #   langsmith
 
 # The following packages are considered to be unsafe in a requirements file:
 # pip

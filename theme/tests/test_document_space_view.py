@@ -80,7 +80,7 @@ def test_document_space_lists_collections_and_documents(monkeypatch):
 
     with schema_context(tenant.schema_name):
         DocumentLifecycleState.objects.create(
-            tenant_id=tenant.schema_name,
+            tenant_id=tenant,
             document_id=document_id,
             workflow_id=workflow_id,
             state="active",

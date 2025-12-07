@@ -7,8 +7,8 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
-from typing import Dict, Iterable, List, Mapping, Optional, Tuple
-from uuid import UUID
+from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Tuple
+from uuid import UUID, uuid4
 
 from django.apps import apps
 from django.conf import settings
@@ -16,7 +16,7 @@ from django.core.exceptions import AppRegistryNotReady, ImproperlyConfigured
 from django.db import transaction
 from django.utils.module_loading import import_string
 
-from common.logging import log_context
+from common.logging import get_log_context, log_context
 
 from .contracts import (
     Asset,
@@ -36,6 +36,8 @@ from .logging_utils import (
 )
 from .storage import ObjectStoreStorage, Storage
 
+if TYPE_CHECKING:
+    from ai_core.contracts.scope import ScopeContext
 
 logger = logging.getLogger(__name__)
 
@@ -88,11 +90,73 @@ def _normalize_timestamp(value: Optional[datetime]) -> datetime:
     return value.astimezone(timezone.utc)
 
 
+def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    candidate = str(value).strip()
+    return candidate or None
+
+
+def _resolve_runtime_metadata(
+    *,
+    log_ctx: Optional[Mapping[str, str]] = None,
+    existing_run_id: Optional[str] = None,
+    existing_ingestion_run_id: Optional[str] = None,
+    existing_trace_id: Optional[str] = None,
+) -> Tuple[str, str, str]:
+    """Return (run_id, ingestion_run_id, trace_id) honoring the XOR constraint."""
+
+    context = log_ctx or {}
+    context_run_id = (
+        _normalize_optional_string(context.get("run_id")) if context else None
+    )
+    context_ingestion_run_id = (
+        _normalize_optional_string(context.get("ingestion_run_id")) if context else None
+    )
+    context_trace_id = (
+        _normalize_optional_string(context.get("trace_id")) if context else None
+    )
+
+    if context_run_id and context_ingestion_run_id:
+        raise ValueError("lifecycle_runtime_id_conflict")
+
+    normalized_run_id = _normalize_optional_string(existing_run_id) or ""
+    normalized_ingestion_run_id = (
+        _normalize_optional_string(existing_ingestion_run_id) or ""
+    )
+    normalized_trace_id = _normalize_optional_string(existing_trace_id)
+
+    run_id = normalized_run_id
+    ingestion_run_id = normalized_ingestion_run_id
+
+    if context_run_id:
+        run_id = context_run_id
+        ingestion_run_id = ""
+    elif context_ingestion_run_id:
+        ingestion_run_id = context_ingestion_run_id
+        run_id = ""
+
+    if run_id and ingestion_run_id:
+        raise ValueError("lifecycle_runtime_id_conflict")
+
+    if not run_id and not ingestion_run_id:
+        run_id = str(uuid4())
+
+    trace_id = context_trace_id or normalized_trace_id or run_id or ingestion_run_id
+    if not trace_id:
+        trace_id = str(uuid4())
+
+    return run_id or "", ingestion_run_id or "", trace_id
+
+
 @dataclass(frozen=True)
 class DocumentLifecycleRecord:
     tenant_id: str
     document_id: UUID
     workflow_id: Optional[str]
+    trace_id: Optional[str] = None
+    run_id: Optional[str] = None
+    ingestion_run_id: Optional[str] = None
     state: str = field(default=ACTIVE_STATE)
     changed_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     reason: Optional[str] = None
@@ -111,6 +175,12 @@ class DocumentLifecycleRecord:
             payload["reason"] = self.reason
         if self.policy_events:
             payload["policy_events"] = list(self.policy_events)
+        if self.trace_id:
+            payload["trace_id"] = self.trace_id
+        if self.run_id:
+            payload["run_id"] = self.run_id
+        if self.ingestion_run_id:
+            payload["ingestion_run_id"] = self.ingestion_run_id
         return payload
 
 
@@ -197,6 +267,7 @@ class DocumentLifecycleStore:
         normalized_events = _normalize_policy_events(policy_events)
         normalized_workflow = (workflow_id or None) and str(workflow_id)
         timestamp = _normalize_timestamp(changed_at)
+        log_ctx = get_log_context()
 
         key = (tenant_id, normalized_workflow, document_id)
 
@@ -214,10 +285,24 @@ class DocumentLifecycleStore:
             if not normalized_events and previous is not None:
                 normalized_events = previous.policy_events
 
+            run_id, ingestion_run_id, trace_id = _resolve_runtime_metadata(
+                log_ctx=log_ctx,
+                existing_run_id=getattr(previous, "run_id", None) if previous else None,
+                existing_ingestion_run_id=(
+                    getattr(previous, "ingestion_run_id", None) if previous else None
+                ),
+                existing_trace_id=(
+                    getattr(previous, "trace_id", None) if previous else None
+                ),
+            )
+
             record = DocumentLifecycleRecord(
                 tenant_id=tenant_id,
                 document_id=document_id,
                 workflow_id=normalized_workflow,
+                trace_id=trace_id,
+                run_id=run_id or None,
+                ingestion_run_id=ingestion_run_id or None,
                 state=normalized_state,
                 changed_at=timestamp,
                 reason=normalized_reason,
@@ -366,6 +451,25 @@ class DocumentLifecycleStore:
 
 
 def _workflow_storage_key(value: Optional[str]) -> str:
+    """
+    Normalize workflow_id for database storage.
+
+    This function provides DEFENSIVE normalization (whitespace trimming only).
+    It assumes the value has already passed contract validation via
+    `normalize_workflow_id()` which enforces strict charset rules ([A-Za-z0-9._-]).
+
+    Design rationale:
+    - Contract layer (normalize_workflow_id): Business rule enforcement
+    - Storage layer (this function): Defensive cleanup + None handling
+
+    This separation allows contract evolution without breaking storage queries.
+
+    Args:
+        value: Workflow identifier (may be None or contain whitespace)
+
+    Returns:
+        Normalized storage key (empty string for None/empty values)
+    """
     return (str(value).strip() if value else "").strip()
 
 
@@ -405,6 +509,13 @@ def _stored_identifier_sequence(value: Optional[Iterable[object]]) -> Tuple[str,
     return tuple(normalized)
 
 
+def _tenant_storage_key(value: object) -> str:
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("tenant_id_required")
+    return normalized
+
+
 def _lifecycle_model():
     return apps.get_model("documents", "DocumentLifecycleState")
 
@@ -436,13 +547,15 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         normalized_workflow = (workflow_id or None) and str(workflow_id)
         timestamp = _normalize_timestamp(changed_at)
         workflow_key = _workflow_storage_key(normalized_workflow)
+        tenant_key = _tenant_storage_key(tenant_id)
+        log_ctx = get_log_context()
 
         model = _lifecycle_model()
 
         with transaction.atomic():
             try:
                 instance = model.objects.select_for_update().get(
-                    tenant_id=tenant_id,
+                    tenant_id_id=tenant_key,
                     document_id=document_id,
                     workflow_id=workflow_key,
                 )
@@ -469,21 +582,34 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
 
             if instance is None:
                 instance = model(
-                    tenant_id=tenant_id,
+                    tenant_id_id=tenant_key,
                     document_id=document_id,
                     workflow_id=workflow_key,
                 )
+
+            run_id, ingestion_run_id, trace_id = _resolve_runtime_metadata(
+                log_ctx=log_ctx,
+                existing_run_id=getattr(instance, "run_id", None),
+                existing_ingestion_run_id=getattr(instance, "ingestion_run_id", None),
+                existing_trace_id=getattr(instance, "trace_id", None),
+            )
 
             instance.state = normalized_state
             instance.changed_at = timestamp
             instance.reason = normalized_reason or ""
             instance.policy_events = list(normalized_events)
+            instance.run_id = run_id
+            instance.ingestion_run_id = ingestion_run_id
+            instance.trace_id = trace_id
             instance.save()
 
         return DocumentLifecycleRecord(
-            tenant_id=tenant_id,
+            tenant_id=tenant_key,
             document_id=document_id,
             workflow_id=normalized_workflow,
+            trace_id=trace_id,
+            run_id=_normalize_optional_string(run_id),
+            ingestion_run_id=_normalize_optional_string(ingestion_run_id),
             state=normalized_state,
             changed_at=timestamp,
             reason=normalized_reason,
@@ -498,20 +624,28 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
         workflow_id: Optional[str],
     ) -> Optional[DocumentLifecycleRecord]:
         workflow_key = _workflow_storage_key((workflow_id or None) and str(workflow_id))
+        tenant_key = _tenant_storage_key(tenant_id)
         model = _lifecycle_model()
         try:
             instance = model.objects.get(
-                tenant_id=tenant_id,
+                tenant_id_id=tenant_key,
                 document_id=document_id,
                 workflow_id=workflow_key,
             )
         except model.DoesNotExist:  # type: ignore[attr-defined]
             return None
 
+        run_id = _normalize_optional_string(instance.run_id)
+        ingestion_run_id = _normalize_optional_string(instance.ingestion_run_id)
+        trace_id = _stored_reason(instance.trace_id) or ""
+
         return DocumentLifecycleRecord(
-            tenant_id=tenant_id,
+            tenant_id=tenant_key,
             document_id=document_id,
             workflow_id=_workflow_from_storage(instance.workflow_id),
+            trace_id=trace_id,
+            run_id=run_id,
+            ingestion_run_id=ingestion_run_id,
             state=instance.state,
             changed_at=_normalize_timestamp(instance.changed_at),
             reason=_stored_reason(instance.reason),
@@ -705,20 +839,6 @@ class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
             model_ingestion.objects.all().delete()
 
 
-def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    candidate = str(value).strip()
-    return candidate or None
-
-
-def _normalize_identifier(value: object) -> Optional[str]:
-    candidate = str(value).strip()
-    if not candidate:
-        return None
-    return candidate
-
-
 def _load_default_lifecycle_store() -> DocumentLifecycleStore:
     class_path = "documents.repository.PersistentDocumentLifecycleStore"
     try:
@@ -740,6 +860,13 @@ def _load_default_lifecycle_store() -> DocumentLifecycleStore:
         return DocumentLifecycleStore()
 
 
+def _normalize_identifier(value: object) -> Optional[str]:
+    candidate = str(value).strip()
+    if not candidate:
+        return None
+    return candidate
+
+
 DEFAULT_LIFECYCLE_STORE = _load_default_lifecycle_store()
 
 
@@ -747,7 +874,10 @@ class DocumentsRepository:
     """Abstract persistence interface for normalized documents."""
 
     def upsert(
-        self, doc: NormalizedDocument, workflow_id: Optional[str] = None
+        self,
+        doc: NormalizedDocument,
+        workflow_id: Optional[str] = None,
+        scope: Optional["ScopeContext"] = None,
     ) -> NormalizedDocument:
         """Create or replace a document instance."""
 
@@ -902,7 +1032,12 @@ class InMemoryDocumentsRepository(DocumentsRepository):
 
     @log_call("docs.upsert")
     def upsert(
-        self, doc: NormalizedDocument, workflow_id: Optional[str] = None
+        self,
+        doc: NormalizedDocument,
+        workflow_id: Optional[str] = None,
+        scope: Optional[
+            "ScopeContext"
+        ] = None,  # scope unused in-memory but kept for parity
     ) -> NormalizedDocument:
         doc_copy = doc.model_copy(deep=True)
         doc_copy = self._materialize_document(doc_copy)

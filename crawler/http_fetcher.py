@@ -5,11 +5,13 @@ from __future__ import annotations
 import os
 import random
 import socket
+import ssl
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Mapping, MutableMapping, Optional, Tuple
 from urllib.parse import urlparse
 
+import httpx
 import requests
 import requests.adapters
 from django.conf import settings
@@ -146,7 +148,7 @@ class HttpFetcher:
             if not self._should_retry(result, attempt):
                 return result
             # Ensure response is closed before retrying to free connection
-            if result.body is None and result.status == FetchStatus.OK:
+            if result.payload is None and result.status is FetchStatus.FETCHED:
                 pass  # Should not happen given logic, but good practice
         assert last_result is not None
         return last_result
@@ -161,6 +163,17 @@ class HttpFetcher:
         crawl_delay = request.politeness.crawl_delay
         if crawl_delay and crawl_delay > 0:
             self._sleep(crawl_delay)
+
+        # If a httpx transport is supplied (used in tests), use httpx directly.
+        if self._transport and self._is_httpx_transport(self._transport):
+            return self._perform_httpx_request(
+                request,
+                url,
+                headers,
+                attempt=attempt,
+                backoff_total_ms=backoff_total_ms,
+                start=start,
+            )
 
         try:
             timeout = self._determine_timeout()
@@ -300,6 +313,103 @@ class HttpFetcher:
             return self._request_timeout
         return 30.0
 
+    def _perform_httpx_request(
+        self,
+        request: FetchRequest,
+        url: str,
+        headers: Mapping[str, str],
+        *,
+        attempt: int,
+        backoff_total_ms: float,
+        start: float,
+    ) -> FetchResult:
+        timeout = self._determine_timeout()
+        try:
+            with httpx.Client(
+                transport=self._transport,
+                follow_redirects=True,
+                timeout=timeout,
+                max_redirects=self._max_redirects,
+            ) as client:
+                with client.stream("GET", url, headers=headers) as response:
+                    (
+                        body,
+                        downloaded,
+                        status_code,
+                        response_headers,
+                    ) = self._read_httpx_stream(response)
+        except httpx.ReadTimeout as exc:
+            elapsed = self._ensure_timeout_violation(self._elapsed_since(start))
+            timeout_reason = self._timeout_reason(exc)
+            failure = FetchFailure(reason=timeout_reason, temporary=True)
+            return evaluate_fetch_response(
+                request,
+                status_code=None,
+                body=None,
+                elapsed=elapsed,
+                retries=attempt - 1,
+                limits=self._limits,
+                failure=failure,
+                retry_reason=timeout_reason,
+                backoff_total_ms=backoff_total_ms,
+            )
+        except httpx.TooManyRedirects:
+            elapsed = self._elapsed_since(start)
+            failure = FetchFailure(reason="too_many_redirects", temporary=True)
+            return evaluate_fetch_response(
+                request,
+                status_code=None,
+                body=None,
+                elapsed=elapsed,
+                retries=attempt - 1,
+                limits=self._limits,
+                failure=failure,
+                retry_reason="too_many_redirects",
+                backoff_total_ms=backoff_total_ms,
+            )
+        except httpx.InvalidURL:
+            elapsed = self._elapsed_since(start)
+            failure = FetchFailure(reason="invalid_url", temporary=False)
+            return evaluate_fetch_response(
+                request,
+                status_code=None,
+                body=None,
+                elapsed=elapsed,
+                retries=attempt - 1,
+                limits=self._limits,
+                failure=failure,
+                backoff_total_ms=backoff_total_ms,
+            )
+        except httpx.HTTPError as exc:
+            elapsed = self._elapsed_since(start)
+            failure = self._classify_httpx_error(exc)
+            return evaluate_fetch_response(
+                request,
+                status_code=None,
+                body=None,
+                elapsed=elapsed,
+                retries=attempt - 1,
+                limits=self._limits,
+                failure=failure,
+                retry_reason=failure.reason,
+                backoff_total_ms=backoff_total_ms,
+            )
+
+        elapsed = self._elapsed_since(start)
+        body_bytes = bytes(body)
+        return evaluate_fetch_response(
+            request,
+            status_code=status_code,
+            body=body_bytes,
+            headers=response_headers,
+            elapsed=elapsed,
+            retries=attempt - 1,
+            limits=self._limits,
+            downloaded_bytes=downloaded,
+            retry_reason=self._retry_reason_from_status(status_code),
+            backoff_total_ms=backoff_total_ms,
+        )
+
     def _ensure_supported_scheme(self, request: FetchRequest) -> None:
         parsed = urlparse(request.canonical_source)
         scheme = (parsed.scheme or "").lower()
@@ -357,6 +467,15 @@ class HttpFetcher:
             return FetchFailure(reason="network_error", temporary=True)
         return FetchFailure(reason="network_error", temporary=True)
 
+    def _classify_httpx_error(self, exc: httpx.HTTPError) -> FetchFailure:
+        if isinstance(exc, httpx.ConnectError):
+            if isinstance(exc.__cause__, ssl.SSLCertVerificationError):
+                return FetchFailure(reason="tls_error", temporary=False)
+            return FetchFailure(reason="network_error", temporary=True)
+        if isinstance(exc, httpx.ReadTimeout):
+            return FetchFailure(reason=self._timeout_reason(exc), temporary=True)
+        return FetchFailure(reason="network_error", temporary=True)
+
     def _retry_reason_from_status(self, status_code: Optional[int]) -> Optional[str]:
         if status_code is None:
             return None
@@ -396,3 +515,32 @@ class HttpFetcher:
             if elapsed <= min_elapsed:
                 return min_elapsed + 1e-6
         return elapsed
+
+    def _is_httpx_transport(self, transport: object) -> bool:
+        return hasattr(transport, "handle_request")
+
+    def _read_httpx_stream(
+        self, response: httpx.Response
+    ) -> Tuple[bytearray, int, Optional[int], Mapping[str, str]]:
+        buffer = bytearray()
+        status_code = response.status_code
+        headers = dict(response.headers)
+        max_bytes = self._limits.max_bytes if self._limits else None
+        downloaded = 0
+
+        for chunk in response.iter_bytes():
+            if not chunk:
+                continue
+            downloaded += len(chunk)
+            if max_bytes is not None:
+                remaining = max_bytes - len(buffer)
+                if remaining <= 0:
+                    break
+                if len(chunk) >= remaining:
+                    if remaining > 0:
+                        buffer.extend(chunk[:remaining])
+                    break
+                buffer.extend(chunk)
+                continue
+            buffer.extend(chunk)
+        return buffer, downloaded, status_code, headers

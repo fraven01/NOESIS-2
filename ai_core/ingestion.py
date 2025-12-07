@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import json
 from importlib import import_module
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
@@ -92,6 +93,8 @@ def _load_pipeline_state(
     status_path = _status_store_path(tenant, case, document_id)
     try:
         raw_state = object_store.read_json(status_path)
+    except (json.decoder.JSONDecodeError, ValueError):
+        return {"steps": {}, "attempts": 0}
     except FileNotFoundError:
         return {
             "steps": {},
@@ -1024,7 +1027,29 @@ def run_ingestion(
     if not trace_id:
         raise InputError("missing_trace_id", "trace_id is required")
 
-    valid_ids, invalid_ids = partition_document_ids(tenant, case or "", document_ids)
+    # Set tenant schema for django-tenants routing
+    from customers.models import Tenant
+    from django.db import connection
+
+    if tenant_schema:
+        try:
+            tenant_obj = Tenant.objects.get(schema_name=tenant_schema)
+            connection.set_tenant(tenant_obj)
+            log.debug(
+                "Tenant schema set for ingestion",
+                extra={"tenant_schema": tenant_schema},
+            )
+        except Tenant.DoesNotExist:
+            log.warning(
+                "Tenant not found for schema",
+                extra={"tenant_schema": tenant_schema},
+            )
+
+    # Use schema name for partitioning if available, as repository expects schema_name
+    partition_tenant = tenant_schema if tenant_schema else tenant
+    valid_ids, invalid_ids = partition_document_ids(
+        partition_tenant, case or "", document_ids
+    )
     dispatch_ids = list(valid_ids if valid_ids else document_ids)
     doc_count = len(valid_ids)
     start_case_context = _load_case_observability_context(tenant, case)

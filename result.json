@@ -1,0 +1,10 @@
+{
+  "status": 200,
+  "error_found": true,
+  "error_message": "Critical Error: relation &quot;documents_documentcollection&quot; does not exist",
+  "debug_info": "<!-- DEBUG_INFO: tenant_id=, tenant_schema=, collections_count=0 -->",
+  "titles": [
+    "(Empty state displayed)"
+  ],
+  "collections": []
+}

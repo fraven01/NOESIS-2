@@ -69,16 +69,16 @@ class DocumentSpaceService:
     def build_context(
         self,
         *,
-        tenant_id: str,
-        tenant_schema: str,
-        tenant: Tenant | None,
+        tenant_context: str,
+        tenant_obj: Tenant | None,
         params: DocumentSpaceRequest,
         repository: DocumentsRepository,
     ) -> DocumentSpaceResult:
+        tenant_schema = tenant_context
         with schema_context(tenant_schema):
 
-            self._ensure_manual_collection(tenant)
-            collections = self._load_collections(tenant, tenant_schema)
+            self._ensure_manual_collection(tenant_obj)
+            collections = self._load_collections(tenant_obj, tenant_schema)
             serialized_collections = [
                 self._serialize_collection(item) for item in collections
             ]
@@ -106,32 +106,30 @@ class DocumentSpaceService:
                 )
                 try:
                     document_refs, next_cursor = list_fn(
-                        tenant_id=tenant_id,
+                        tenant_id=tenant_schema,
                         collection_id=selected_collection.collection_id,
                         limit=params.limit,
                         cursor=params.cursor or None,
                         workflow_id=params.workflow_filter or None,
                     )
-                except Exception:
+                except Exception as e:
                     logger.exception(
                         "document_space.list_failed",
                         extra={
-                            "tenant_id": tenant_id,
+                            "tenant_id": tenant_schema,
                             "collection_id": str(selected_collection.collection_id),
                         },
                     )
-                    documents_error = (
-                        "Dokumentenliste konnte nicht geladen werden. Prüfe die Logs."
-                    )
+                    documents_error = f"Fehler beim Laden: {str(e)}"
                 else:
                     fetched_docs = self._fetch_documents(
                         repository=repository,
-                        tenant_id=tenant_id,
+                        tenant_id=tenant_schema,
                         document_refs=document_refs,
                         latest_only=params.latest_only,
                     )
                     lifecycle_map = self._load_lifecycle_states(
-                        tenant_id=tenant_id,
+                        tenant_id=tenant_schema,
                         documents=fetched_docs,
                     )
                     for doc in fetched_docs:
@@ -233,7 +231,7 @@ class DocumentSpaceService:
             return {}
         document_ids = [doc.ref.document_id for doc in documents]
         lifecycle_records = DocumentLifecycleState.objects.filter(
-            tenant_id=tenant_id,
+            tenant_id_id=tenant_id,
             document_id__in=document_ids,
         )
         lifecycle_map: dict[tuple[UUID, str | None], DocumentLifecycleState] = {}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -47,7 +48,11 @@ class DocumentCollection(models.Model):
             models.UniqueConstraint(
                 fields=("tenant", "key"),
                 name="document_collection_unique_key",
-            )
+            ),
+            models.UniqueConstraint(
+                fields=("tenant", "collection_id"),
+                name="unique_collection_id_per_tenant",
+            ),
         ]
         indexes = [
             models.Index(
@@ -139,11 +144,16 @@ class DocumentCollectionMembership(models.Model):
 class DocumentLifecycleState(models.Model):
     """Latest lifecycle status for a document within a tenant workflow."""
 
-    tenant_id = models.CharField(max_length=255)
+    tenant_id = models.ForeignKey(
+        "customers.Tenant",
+        on_delete=models.CASCADE,
+        to_field="schema_name",
+        db_column="tenant_id",
+    )
     document_id = models.UUIDField()
     workflow_id = models.CharField(max_length=255, blank=True, default="")
     state = models.CharField(max_length=32)
-    trace_id = models.CharField(max_length=255, blank=True, default="")
+    trace_id = models.CharField(max_length=255, blank=False, null=False)
     run_id = models.CharField(max_length=255, blank=True, default="")
     ingestion_run_id = models.CharField(max_length=255, blank=True, default="")
     changed_at = models.DateTimeField()
@@ -152,12 +162,31 @@ class DocumentLifecycleState(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    def clean(self):
+        """Validate that exactly one runtime identifier is provided."""
+        super().clean()
+
+        has_run_id = bool(self.run_id)
+        has_ingestion_run_id = bool(self.ingestion_run_id)
+
+        if has_run_id == has_ingestion_run_id:
+            raise ValidationError(
+                "Exactly one of run_id or ingestion_run_id must be provided"
+            )
+
     class Meta:
         constraints = [
             models.UniqueConstraint(
                 fields=("tenant_id", "document_id", "workflow_id"),
                 name="document_lifecycle_unique_record",
-            )
+            ),
+            models.CheckConstraint(
+                check=(
+                    (models.Q(run_id="") & ~models.Q(ingestion_run_id=""))
+                    | (~models.Q(run_id="") & models.Q(ingestion_run_id=""))
+                ),
+                name="lifecycle_runtime_id_xor",
+            ),
         ]
         indexes = [
             models.Index(
@@ -206,5 +235,54 @@ class DocumentIngestionRun(models.Model):
             models.Index(
                 fields=("tenant_id", "run_id"),
                 name="doc_ing_run_tenant_run_idx",
+            ),
+        ]
+
+
+class DocumentAsset(models.Model):
+    """
+    Persistence for non-document assets (chunks, images, etc.) associated with a document.
+    These are logical assets that may or may not map 1:1 to a file blob.
+    """
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    tenant = models.ForeignKey(
+        "customers.Tenant",
+        on_delete=models.PROTECT,
+        related_name="document_assets",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="assets",
+    )
+    workflow_id = models.CharField(max_length=255)
+    asset_id = models.UUIDField()
+    collection_id = models.UUIDField(null=True, blank=True)
+
+    media_type = models.CharField(max_length=255)
+    blob_metadata = models.JSONField(blank=True, default=dict)
+
+    # Optional content cache (e.g. for text chunks)
+    content = models.TextField(blank=True, null=True)
+
+    metadata = models.JSONField(blank=True, default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("tenant", "asset_id", "workflow_id"),
+                name="document_asset_unique_identity",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("tenant", "document"),
+                name="doc_asset_tenant_doc_idx",
+            ),
+            models.Index(
+                fields=("tenant", "asset_id"),
+                name="doc_asset_tenant_asset_idx",
             ),
         ]

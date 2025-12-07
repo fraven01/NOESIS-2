@@ -244,7 +244,7 @@ def test_upload_ingestion_spans(monkeypatch) -> None:
         assert recorded[: len(node_expected)] == node_expected
         assert phases == node_expected
         assert all(entry.get("trace_id") == payload["trace_id"] for entry in snapshots)
-        workflow_expected = payload.get("workflow_id", "upload")
+        workflow_expected = payload.get("workflow_id", "ad-hoc")
         assert all(entry.get("workflow_id") == workflow_expected for entry in snapshots)
         doc_entries = [entry for entry in snapshots if entry.get("document_id")]
         assert doc_entries

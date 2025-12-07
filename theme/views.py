@@ -66,7 +66,9 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
     tenant_schema = getattr(tenant_obj, "schema_name", None)
     if tenant_schema is None:
         tenant_schema = getattr(tenant_obj, "tenant_id", None)
-    tenant_id = getattr(tenant_obj, "tenant_id", None) or tenant_schema
+
+    # Strict Policy: The ID is the Schema Name
+    tenant_id = tenant_schema
 
     if tenant_schema is None or tenant_id is None:
         raise TenantRequiredError("Tenant could not be resolved from request")
@@ -546,9 +548,8 @@ def document_space(request):
         search_term=search_term,
     )
     result = DOCUMENT_SPACE_SERVICE.build_context(
-        tenant_id=tenant_id,
-        tenant_schema=tenant_schema,
-        tenant=tenant_obj,
+        tenant_context=tenant_id,
+        tenant_obj=tenant_obj,
         params=params,
         repository=repository,
     )
@@ -579,6 +580,8 @@ def document_space(request):
                 if result.next_cursor
                 else None
             ),
+            "debug_tenant": str(tenant_obj),
+            "debug_collections_count": len(result.collections),
             **result.as_context(),
         },
     )
@@ -588,73 +591,82 @@ def document_explorer(request):
     """Developer workbench tool for inspecting document collections (HTMX partial)."""
 
     try:
-        tenant_id, tenant_schema = _tenant_context_from_request(request)
-    except TenantRequiredError as exc:
-        return _tenant_required_response(exc)
-
-    tenant_obj = getattr(request, "tenant", None)
-    if tenant_obj is None:
         try:
-            tenant_obj = TenantContext.resolve_identifier(tenant_id)
-        except Exception:
-            tenant_obj = None
+            tenant_id, tenant_schema = _tenant_context_from_request(request)
+        except TenantRequiredError as exc:
+            return _tenant_required_response(exc)
 
-    requested_collection = request.GET.get("collection")
-    limit = _parse_limit(request.GET.get("limit"))
-    limit_options = [10, 25, 50, 100, 200]
-    if limit not in limit_options:
-        limit_options = sorted(set(limit_options + [limit]))
-    latest_only = _parse_bool(request.GET.get("latest"), default=True)
-    search_term = str(request.GET.get("q", "") or "").strip()
-    cursor_param = str(request.GET.get("cursor", "") or "").strip()
-    workflow_filter = str(request.GET.get("workflow", "") or "").strip()
+        tenant_obj = getattr(request, "tenant", None)
+        if tenant_obj is None:
+            try:
+                tenant_obj = TenantContext.resolve_identifier(tenant_id)
+            except Exception:
+                tenant_obj = None
 
-    repository = _get_documents_repository()
-    params = DocumentSpaceRequest(
-        requested_collection=requested_collection,
-        limit=limit,
-        latest_only=latest_only,
-        cursor=cursor_param or None,
-        workflow_filter=workflow_filter or None,
-        search_term=search_term,
-    )
-    result = DOCUMENT_SPACE_SERVICE.build_context(
-        tenant_id=tenant_id,
-        tenant_schema=tenant_schema,
-        tenant=tenant_obj,
-        params=params,
-        repository=repository,
-    )
+        requested_collection = request.GET.get("collection")
+        limit = _parse_limit(request.GET.get("limit"))
+        limit_options = [10, 25, 50, 100, 200]
+        if limit not in limit_options:
+            limit_options = sorted(set(limit_options + [limit]))
+        latest_only = _parse_bool(request.GET.get("latest"), default=True)
+        search_term = str(request.GET.get("q", "") or "").strip()
+        cursor_param = str(request.GET.get("cursor", "") or "").strip()
+        workflow_filter = str(request.GET.get("workflow", "") or "").strip()
 
-    query_defaults = {
-        "collection": result.selected_collection_identifier or "",
-        "limit": limit,
-        "latest": "1" if latest_only else "0",
-        "workflow": workflow_filter,
-        "q": search_term,
-    }
+        repository = _get_documents_repository()
+        params = DocumentSpaceRequest(
+            requested_collection=requested_collection,
+            limit=limit,
+            latest_only=latest_only,
+            cursor=cursor_param or None,
+            workflow_filter=workflow_filter or None,
+            search_term=search_term,
+        )
+        result = DOCUMENT_SPACE_SERVICE.build_context(
+            tenant_context=tenant_id,
+            tenant_obj=tenant_obj,
+            params=params,
+            repository=repository,
+        )
 
-    return render(
-        request,
-        "theme/partials/tool_documents.html",
-        {
-            "tenant_id": tenant_id,
-            "tenant_schema": tenant_schema,
-            "search_term": search_term,
-            "latest_only": latest_only,
+        query_defaults = {
+            "collection": result.selected_collection_identifier or "",
             "limit": limit,
-            "limit_options": limit_options,
-            "cursor": cursor_param,
-            "workflow_filter": workflow_filter,
-            "query_defaults": query_defaults,
-            "next_query": (
-                {**query_defaults, "cursor": result.next_cursor}
-                if result.next_cursor
-                else None
-            ),
-            **result.as_context(),
-        },
-    )
+            "latest": "1" if latest_only else "0",
+            "workflow": workflow_filter,
+            "q": search_term,
+        }
+
+        return render(
+            request,
+            "theme/partials/tool_documents.html",
+            {
+                "tenant_id": tenant_id,
+                "tenant_schema": tenant_schema,
+                "search_term": search_term,
+                "latest_only": latest_only,
+                "limit": limit,
+                "limit_options": limit_options,
+                "cursor": cursor_param,
+                "workflow_filter": workflow_filter,
+                "query_defaults": query_defaults,
+                "next_query": (
+                    {**query_defaults, "cursor": result.next_cursor}
+                    if result.next_cursor
+                    else None
+                ),
+                "debug_tenant": str(tenant_obj),
+                "debug_collections_count": len(result.collections),
+                **result.as_context(),
+            },
+        )
+    except Exception as exc:
+        logger.exception("document_explorer.crashed")
+        return render(
+            request,
+            "theme/partials/tool_documents.html",
+            {"documents_error": f"Critical Error: {str(exc)}"},
+        )
 
 
 @require_POST
@@ -969,8 +981,15 @@ def web_search_ingest_selected(request):
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
     except Exception as e:
+        import traceback
+        import sys
+
+        print("!!! WEB SEARCH INGEST SELECTED FAILED !!!", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
         logger.exception("web_search_ingest_selected.failed")
-        return JsonResponse({"error": str(e)}, status=500)
+        return JsonResponse(
+            {"error": str(e), "traceback": traceback.format_exc()}, status=500
+        )
 
 
 @require_POST

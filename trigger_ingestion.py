@@ -1,78 +1,57 @@
 import os
 import sys
-import json
 import django
-from django.core.files.uploadedfile import SimpleUploadedFile
 
-# Setup Django environment
 sys.path.append(os.getcwd())
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "noesis2.settings.development")
-django.setup()
+try:
+    django.setup()
+except Exception as e:
+    print(f"Django setup failed: {e}")
+    sys.exit(1)
 
-from ai_core.services import handle_document_upload  # noqa: E402
-from customers.models import Tenant  # noqa: E402
+from django.test import Client
+from documents.models import DocumentCollection
 
 
-def simulate_upload():
-    print("Simulating document upload...")
+def trigger():
+    print("Triggering ingestion via Django Client...")
+    c = Client()
 
-    # Get a tenant (e.g., dev)
-    tenant = Tenant.objects.filter(schema_name="dev").first()
-    if not tenant:
-        print("Tenant 'dev' not found.")
-        return
+    # Needs matching tenant. 'dev' tenant usually maps to localhost.
+    # We might need to start a tenant session or headers.
+    # DocumentsRepository filters by proper tenant.
 
-    print(f"Using tenant: {tenant.schema_name}")
+    # We need a valid collection ID.
+    try:
+        col = DocumentCollection.objects.first()
+        col_id = (
+            str(col.id) if col else "93758ef2-b0e2-4545-9383-751722026369"
+        )  # fallback from logs
+        print(f"Using Collection ID: {col_id}")
+    except Exception:
+        col_id = "00000000-0000-0000-0000-000000000000"
+        print("Could not fetch collection, using zero UUID")
 
-    # Create dummy PDF file
-    pdf_content = b"%PDF-1.4 dummy content"
-    pdf_file = SimpleUploadedFile(
-        "test_upload.pdf", pdf_content, content_type="application/octet-stream"
+    payload = {
+        "workflow_id": "ad-hoc",
+        "urls": ["https://de.wikipedia.org/wiki/Bamberg"],
+        "collection_id": col_id,
+        "mode": "crawl_new",
+        "depth": 1,
+    }
+
+    response = c.post(
+        "/rag-tools/api/crawler/run/",
+        data=payload,
+        content_type="application/json",
+        HTTP_X_TENANT_ID="dev",
+        HTTP_X_WORKFLOW_ID="ad-hoc",
     )
 
-    # Create dummy HTML file
-    html_content = b"<html><head><title>Extracted Title</title></head><body><h1>Hello</h1></body></html>"
-    html_file = SimpleUploadedFile(
-        "test_upload.html", html_content, content_type="text/html"
-    )
-
-    # Metadata with missing title to test fallback
-    metadata = {"collection_id": None}
-
-    # Set tenant context
-    from django.db import connection
-
-    connection.set_tenant(tenant)
-
-    # 1. Test PDF Upload (should default title to filename)
-    print("\nUploading PDF...")
-    try:
-        result_pdf = handle_document_upload(
-            upload=pdf_file,
-            metadata_raw=json.dumps(metadata),
-            meta={
-                "tenant_id": tenant.schema_name,
-                "case_id": None,
-            },  # Assuming schema_name is used as tenant_id in meta
-            idempotency_key=None,
-        )
-        print(f"PDF Upload Result: {result_pdf}")
-    except Exception as e:
-        print(f"PDF Upload Failed: {e}")
-
-    # 2. Test HTML Upload (should detect mime type)
-    print("\nUploading HTML...")
-    try:
-        result_html = handle_document_upload(
-            upload=html_file,
-            metadata_raw=json.dumps(metadata),
-            meta={"tenant_id": tenant.schema_name, "case_id": None},
-            idempotency_key=None,
-        )
-        print(f"HTML Upload Result: {result_html}")
-    except Exception as e:
-        print(f"HTML Upload Failed: {e}")
+    print(f"Response Status: {response.status_code}")
+    print(f"Response Content: {response.content}")
 
 
 if __name__ == "__main__":
-    simulate_upload()
+    trigger()

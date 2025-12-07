@@ -1,0 +1,11 @@
+GET http://localhost:8000/rag-tools/tool/documents/
+HTML View Status: 404
+Server Error Content Snippet:
+MATCH: pre.exception_value { font-family: sans-serif; color: #575757; font-size: 1.5em; margin: 10px 0 10px 0; }
+  #summary { background: #ffc; }
+  #explanation { background:#eee; border-bottom: 0px none; }
+  pre.exception_value { font-family: sans-serif; color: #575757; font-size: 1.5em; margin: 10px 0 10px 0; }
+  </style>
+  </head>
+  <body>
+  <header id="summary">

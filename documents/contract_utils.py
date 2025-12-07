@@ -6,6 +6,7 @@ import re
 import unicodedata
 from typing import Iterable, List, Optional
 
+from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 
 _INVISIBLE_CATEGORIES = {"Cf", "Cc", "Cs"}
 _TAG_RE = re.compile(r"^[A-Za-z0-9._-]+$", re.ASCII)
@@ -71,6 +72,26 @@ def normalize_workflow_id(value: str) -> str:
     if not _WORKFLOW_ID_RE.fullmatch(normalized):
         raise ValueError("workflow_invalid_char")
     return normalized
+
+
+def resolve_workflow_id(
+    value: Optional[str],
+    *,
+    required: bool = False,
+    placeholder: str = DEFAULT_WORKFLOW_PLACEHOLDER,
+) -> str:
+    """
+    Normalize a workflow_id or supply a consistent placeholder when optional.
+
+    If ``required`` is True and the value is empty/None, a ValueError is raised.
+    """
+
+    candidate = normalize_optional_string(value)
+    if candidate is not None:
+        return normalize_workflow_id(candidate)
+    if required:
+        raise ValueError("workflow_required")
+    return normalize_workflow_id(placeholder)
 
 
 def normalize_title(value: Optional[str]) -> Optional[str]:

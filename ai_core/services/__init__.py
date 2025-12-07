@@ -32,6 +32,7 @@ from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
 from rest_framework.response import Response
+from ai_core.contracts.scope import ScopeContext
 from ai_core.infra.observability import (
     emit_event,
     observe_span,
@@ -84,6 +85,7 @@ from documents.contracts import (
 )
 from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
+from ai_core.adapters.db_documents_repository import DbDocumentsRepository
 from cases.models import Case
 from customers.models import Tenant
 from ai_core.rag.collections import (
@@ -225,26 +227,23 @@ def _get_checkpointer():  # type: ignore[no-untyped-def]
 
 
 def _build_documents_repository() -> DocumentsRepository:
-    repository_setting = getattr(settings, "DOCUMENTS_REPOSITORY", None)
-    if isinstance(repository_setting, DocumentsRepository):
-        return repository_setting
-    if callable(repository_setting):
-        candidate = repository_setting()
-        if isinstance(candidate, DocumentsRepository):
-            return candidate
+    """Build the appropriate documents repository based on settings."""
+    if settings.TESTING:
+        return InMemoryDocumentsRepository()
 
+    # Check for explicit override in settings (e.g. for specific environments)
     repository_class_setting = getattr(settings, "DOCUMENTS_REPOSITORY_CLASS", None)
     if repository_class_setting:
         try:
             repository_class = import_string(repository_class_setting)
-        except Exception as exc:  # pragma: no cover - defensive guard
-            raise RuntimeError("invalid_documents_repository_class") from exc
-        candidate = repository_class()
-        if not isinstance(candidate, DocumentsRepository):
-            raise TypeError("documents_repository_invalid_instance")
-        return candidate
+            candidate = repository_class()
+            if isinstance(candidate, DocumentsRepository):
+                return candidate
+        except Exception:
+            logger.warning("invalid_documents_repository_class_setting", exc_info=True)
 
-    return InMemoryDocumentsRepository()
+    # Default to DB repository for production/dev
+    return DbDocumentsRepository()
 
 
 def _get_documents_repository() -> DocumentsRepository:
@@ -253,10 +252,6 @@ def _get_documents_repository() -> DocumentsRepository:
         repo = getattr(views, "DOCUMENTS_REPOSITORY", None)
         if isinstance(repo, DocumentsRepository):
             return repo
-        if callable(repo):
-            candidate = repo()
-            if isinstance(candidate, DocumentsRepository):
-                return candidate
     except Exception:
         pass
 
@@ -1712,10 +1707,22 @@ def handle_document_upload(
 
     graph_context: dict[str, object] = {}
 
+    def _build_scope() -> ScopeContext:
+        return ScopeContext(
+            tenant_id=str(meta["tenant_id"]),
+            trace_id=str(meta.get("trace_id") or uuid4()),
+            invocation_id=str(uuid4()),
+            ingestion_run_id=str(ingestion_run_id),
+            case_id=str(meta["case_id"]) if meta.get("case_id") else None,
+            workflow_id=(
+                str(document_meta.workflow_id) if document_meta.workflow_id else None
+            ),
+        )
+
     def _persist_via_repository(_: Mapping[str, object]) -> dict[str, object]:
         try:
             repository = _get_documents_repository()
-            repository.upsert(normalized_document)
+            repository.upsert(normalized_document, scope=_build_scope())
         except Exception:
             logger.exception(
                 "Failed to persist uploaded document via repository",

@@ -57,6 +57,7 @@ from .contract_utils import (
     normalize_title,
     truncate_text,
     validate_bbox,
+    resolve_workflow_id,
 )
 
 from .contracts_context import (
@@ -955,8 +956,7 @@ class NormalizedDocumentInputV1(BaseModel):
         source = self.source or "crawler"
         self.source = source
 
-        if self.workflow_id is None:
-            self.workflow_id = source
+        self.workflow_id = resolve_workflow_id(self.workflow_id, required=False)
 
         metadata_provider = self.metadata.get("provider") if self.metadata else None
         provider = self.provider

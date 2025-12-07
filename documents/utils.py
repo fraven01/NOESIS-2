@@ -18,6 +18,9 @@ def get_upload_file_path(
     from ai_core.infra import object_store
 
     tenant_segment = object_store.sanitize_identifier(tenant_id)
+    # Defensive sanitization (workflow_id is already validated by normalize_workflow_id
+    # to be filesystem-safe [A-Za-z0-9._-], but we apply strict sanitization here as
+    # a defense-in-depth measure)
     workflow_segment = object_store.sanitize_identifier(workflow_id or "default")
     filename = f"{document_id}_upload.bin"
 

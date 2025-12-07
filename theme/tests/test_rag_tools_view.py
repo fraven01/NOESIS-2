@@ -22,12 +22,17 @@ from theme.views import (
 def test_rag_tools_page_is_accessible():
     tenant_schema = "workbench"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
+    # tenant_id defaults to schema_name if no explicit tenant_id attribute exists
+    tenant_id = getattr(tenant, "tenant_id", None) or tenant.schema_name
 
     factory = RequestFactory()
     request = factory.get(reverse("rag-tools"))
     request.tenant = tenant
     request.tenant_schema = tenant_schema
+    # RequestFactory doesn't create sessions, so we need to add one manually
+    from django.contrib.sessions.backends.db import SessionStore
+
+    request.session = SessionStore()
 
     response = rag_tools(request)
 
@@ -37,10 +42,16 @@ def test_rag_tools_page_is_accessible():
     assert "RAG Developer Workbench" in content
     assert "hx-post" in content
     assert "hx-target" in content
-    assert f"X-Tenant-ID: {tenant_id}" in content
-    assert f"X-Tenant-Schema: {tenant_schema}" in content
-    # Verify HTMX headers are set on the body/container
+    # Verify HTMX headers are set on the body/container (JSON format)
     assert 'hx-headers=\'{"X-Tenant-ID": "' + tenant_id + '"' in content
+    assert (
+        'hx-headers=\'{"X-Tenant-ID": "'
+        + tenant_id
+        + '", "X-Tenant-Schema": "'
+        + tenant_schema
+        + '"'
+        in content
+    )
 
 
 @pytest.mark.django_db

@@ -122,7 +122,7 @@ def test_document_space_service_builds_context():
 
     with schema_context(tenant.schema_name):
         DocumentLifecycleState.objects.create(
-            tenant_id=tenant.schema_name,
+            tenant_id=tenant,
             document_id=document_id,
             workflow_id=workflow_id,
             state="active",
@@ -143,9 +143,8 @@ def test_document_space_service_builds_context():
         search_term="Service",
     )
     result = service.build_context(
-        tenant_id=tenant.schema_name,
-        tenant_schema=tenant.schema_name,
-        tenant=tenant,
+        tenant_context=tenant.schema_name,
+        tenant_obj=tenant,
         params=params,
         repository=repository,
     )

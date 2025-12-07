@@ -23,6 +23,10 @@ def _coerce_inline_payload(blob: Any) -> Optional[bytes]:
         payload = blob.decoded_payload()
         if isinstance(payload, (bytes, bytearray)):
             return bytes(payload)
+    if hasattr(blob, "resolve_payload_bytes"):
+        payload = blob.resolve_payload_bytes()
+        if isinstance(payload, (bytes, bytearray)):
+            return bytes(payload)
     content = _extract_mapping_candidate(blob, "content")
     if isinstance(content, str):
         return content.encode("utf-8")

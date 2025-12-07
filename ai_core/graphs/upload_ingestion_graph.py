@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
 from uuid import uuid4
 
+from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 from django.conf import settings
 
 
@@ -258,9 +259,9 @@ class UploadIngestionGraph:
         uploader_id = self._normalize_optional_str(payload.get("uploader_id"))
         trace_id = self._require_str(payload, "trace_id")
         visibility = self._resolve_visibility(payload.get("visibility"))
-        workflow_id = (
-            self._normalize_optional_str(payload.get("workflow_id")) or "upload"
-        )
+        workflow_id = self._normalize_optional_str(payload.get("workflow_id"))
+        if not workflow_id:
+            workflow_id = DEFAULT_WORKFLOW_PLACEHOLDER
         case_id = self._normalize_optional_str(payload.get("case_id"))
 
         file_bytes = payload.get("file_bytes")
@@ -523,7 +524,7 @@ class UploadIngestionGraph:
         tenant_id = state["meta"].get("tenant_id")
         if not tenant_id:
             raise UploadIngestionError("tenant_missing_for_guardrail")
-        workflow_id = state["meta"].get("workflow_id") or "upload"
+        workflow_id = state["meta"].get("workflow_id") or DEFAULT_WORKFLOW_PLACEHOLDER
         filename = state["meta"].get("filename") or "upload"
         visibility = state["meta"].get("visibility")
         tags = list(state["meta"].get("tags") or ())
@@ -844,14 +845,27 @@ class UploadIngestionGraph:
 
     def _initial_state(self, payload: Mapping[str, Any]) -> MutableMapping[str, Any]:
         started = datetime.now(timezone.utc).isoformat()
+        workflow_id = payload.get("workflow_id") or "upload"
+        tenant_id = payload.get("tenant_id")
+        trace_id = payload.get("trace_id")
+        ingestion_run_id = payload.get("ingestion_run_id")
         return {
             "input": dict(payload),
             "meta": {
                 "prompt_version": getattr(settings, "PROMPT_VERSION", "v1"),
+                "tenant_id": tenant_id,
+                "trace_id": trace_id,
+                "ingestion_run_id": ingestion_run_id,
+                "workflow_id": workflow_id,
             },
             "ingest": {},
             "doc": {},
             "telemetry": {"started_at": started, "nodes": {}},
+            # Surface key identifiers at top-level for observability tests
+            "tenant_id": tenant_id,
+            "trace_id": trace_id,
+            "ingestion_run_id": ingestion_run_id,
+            "workflow_id": workflow_id,
         }
 
     @staticmethod
@@ -888,9 +902,12 @@ class UploadIngestionGraph:
         tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
         if tenant_id:
             metadata["tenant_id"] = tenant_id
-        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
-        if workflow_id:
-            metadata["workflow_id"] = workflow_id
+        workflow_id = (
+            self._normalize_optional_str(meta_state.get("workflow_id"))
+            or self._normalize_optional_str(state.get("workflow_id"))
+            or "upload"
+        )
+        metadata["workflow_id"] = workflow_id
         ingestion_run_id = self._normalize_optional_str(
             meta_state.get("ingestion_run_id")
         )
@@ -929,9 +946,12 @@ class UploadIngestionGraph:
         trace_id = self._normalize_optional_str(meta_state.get("trace_id"))
         if trace_id:
             metadata["trace_id"] = trace_id
-        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
-        if workflow_id:
-            metadata["workflow_id"] = workflow_id
+        workflow_id = (
+            self._normalize_optional_str(meta_state.get("workflow_id"))
+            or self._normalize_optional_str(state.get("workflow_id"))
+            or "upload"
+        )
+        metadata["workflow_id"] = workflow_id
         ingestion_run_id = self._normalize_optional_str(
             meta_state.get("ingestion_run_id")
         )

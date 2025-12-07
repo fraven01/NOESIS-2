@@ -8,6 +8,7 @@ from typing import Dict, Sequence, Tuple
 from urllib.parse import urlparse
 
 import requests
+from django.conf import settings
 from requests import RequestException
 
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter, S3BlobWriter
@@ -98,6 +99,33 @@ class ObjectStoreStorage(Storage):
 
     @log_call("storage.get")
     def get(self, uri: str) -> bytes:
+        # Handle remote URIs (HTTP/HTTPS and protocol-relative)
+        if uri.startswith("//"):
+            uri = f"https:{uri}"
+
+        parsed = urlparse(uri)
+        scheme = parsed.scheme.lower()
+        if scheme in {"http", "https"}:
+            try:
+                # Use a default timeout if none specified (could make this configurable)
+                headers = {
+                    "User-Agent": getattr(
+                        settings, "CRAWLER_HTTP_USER_AGENT", "noesis-crawler/1.0"
+                    )
+                }
+                response = requests.get(uri, headers=headers, timeout=30.0)
+            except RequestException as exc:
+                raise ValueError("storage_uri_fetch_failed") from exc
+            if response.status_code >= 400:
+                raise ValueError(f"storage_uri_http_error:{response.status_code}")
+            payload = response.content
+            log_extra_exit(
+                uri_kind=uri_kind_from_uri(uri),
+                size_bytes=len(payload),
+            )
+            return payload
+
+        # Default to object store retrieval
         payload = self._writer.get(uri)
         log_extra_exit(uri_kind=uri_kind_from_uri(uri), size_bytes=len(payload))
         return payload

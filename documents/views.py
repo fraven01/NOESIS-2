@@ -61,9 +61,17 @@ def document_download(request, document_id: str):
     - HttpRangeHandler: Range request parsing
     """
     # Validate UUID format early (clean 400 instead of 500)
-    # Validate UUID format early (clean 400 instead of 500)
-    # doc_uuid = UUID(document_id) - document_id is already a UUID from URL converter
-    doc_uuid = document_id
+    from uuid import UUID
+
+    try:
+        if isinstance(document_id, str):
+            doc_uuid = UUID(document_id)
+        else:
+            doc_uuid = document_id  # Already a UUID from URL converter
+    except (ValueError, AttributeError):
+        return error(
+            400, "InvalidDocumentId", f"Invalid document ID format: {document_id}"
+        )
 
     start_time = time.time()
     try:

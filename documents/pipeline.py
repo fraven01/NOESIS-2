@@ -982,7 +982,12 @@ class DocumentProcessingOrchestrator:
             )
             final_state: DocumentProcessingState = graph_state
             try:
-                final_state = self._graph.invoke(graph_state)
+                result = self._graph.invoke(graph_state)
+                # LangGraph returns a dict when using dataclass state
+                if isinstance(result, dict):
+                    final_state = DocumentProcessingState(**result)
+                else:
+                    final_state = result
             finally:
                 final_context = final_state.context.state
                 log_extra_exit(final_state=final_context.value)

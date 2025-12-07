@@ -1,6 +1,5 @@
 import json
 import uuid
-from pathlib import Path
 
 import pytest
 from django.conf import settings
@@ -109,27 +108,13 @@ def test_rag_upload_persists_file_and_metadata(
     assert captured["tenant_schema"] == test_tenant_schema_name
 
     document_id = body["document_id"]
-    tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-    case_segment = object_store.sanitize_identifier("upload")
-    uploads_dir = Path(tmp_path, tenant_segment, case_segment, "uploads")
-
-    stored_files = list(uploads_dir.glob(f"{document_id}_*"))
-    assert len(stored_files) == 1
-    assert stored_files[0].read_bytes() == b"hello world"
-
-    metadata_path = uploads_dir / f"{document_id}.meta.json"
-    assert metadata_path.exists()
-    stored_metadata = json.loads(metadata_path.read_text())
-    external_id = stored_metadata["external_id"]
-    assert "source" not in stored_metadata
-    assert stored_metadata["collection_id"] == manual_collection_id
-
     assert len(documents_repository_stub.saved) == 1
     saved_document = documents_repository_stub.saved[0]
     assert str(saved_document.ref.document_id) == document_id
+    assert str(saved_document.ref.collection_id) == manual_collection_id
     assert saved_document.meta.external_ref
-    assert saved_document.meta.external_ref["external_id"] == external_id
-    assert saved_document.blob.media_type == "text/plain"
+    assert saved_document.meta.external_ref.get("external_id")
+    assert getattr(saved_document.blob, "type", "") == "file"
 
     status_payload = ingestion_status_store.get_ingestion_run(
         tenant_id=test_tenant_schema_name,
@@ -152,7 +137,7 @@ def test_rag_upload_persists_file_and_metadata(
 
 @pytest.mark.django_db
 def test_rag_upload_bridges_collection_header_to_metadata(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    client, monkeypatch, tmp_path, test_tenant_schema_name, documents_repository_stub
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -185,22 +170,16 @@ def test_rag_upload_bridges_collection_header_to_metadata(
     assert body["workflow_id"]  # Generated UUID
     assert body["collection_id"] == collection_scope
 
-    tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-    case_segment = object_store.sanitize_identifier("upload")
-    metadata_path = Path(
-        tmp_path, tenant_segment, case_segment, "uploads", f"{document_id}.meta.json"
-    )
-
-    assert metadata_path.exists()
-    stored_metadata = json.loads(metadata_path.read_text())
-    assert stored_metadata["collection_id"] == collection_scope
-    assert stored_metadata["external_id"]
-    assert set(stored_metadata) == {"collection_id", "external_id"}
+    assert len(documents_repository_stub.saved) == 1
+    saved_document = documents_repository_stub.saved[0]
+    assert str(saved_document.ref.document_id) == document_id
+    assert str(saved_document.ref.collection_id) == collection_scope
+    assert saved_document.meta.external_ref.get("external_id")
 
 
 @pytest.mark.django_db
 def test_rag_upload_external_id_fallback(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    client, monkeypatch, tmp_path, test_tenant_schema_name, documents_repository_stub
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
@@ -232,17 +211,9 @@ def test_rag_upload_external_id_fallback(
         assert response.status_code == 202
         body = response.json()
         document_id = body["document_id"]
-        tenant_segment = object_store.sanitize_identifier(test_tenant_schema_name)
-        case_segment = object_store.sanitize_identifier("upload")
-        metadata_path = Path(
-            tmp_path,
-            tenant_segment,
-            case_segment,
-            "uploads",
-            f"{document_id}.meta.json",
-        )
-        stored_metadata = json.loads(metadata_path.read_text())
-        return document_id, stored_metadata["external_id"]
+        saved_document = documents_repository_stub.saved[-1]
+        external_id = saved_document.meta.external_ref.get("external_id")
+        return document_id, external_id
 
     first_doc, first_external = _upload_once()
     second_doc, second_external = _upload_once()

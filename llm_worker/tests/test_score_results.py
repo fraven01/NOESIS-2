@@ -138,7 +138,8 @@ def test_run_graph_routes_score_results(monkeypatch):
     )
 
     assert payload["state"] == {"step": "start"}
-    assert payload["result"] is sentinel
+    # Note: payload["result"] is a copy due to serialization, not the same object
+    assert payload["result"] == sentinel
     assert payload["cost_summary"] is None
 
 

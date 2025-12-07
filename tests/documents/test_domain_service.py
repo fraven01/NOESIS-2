@@ -312,7 +312,7 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         dispatched_scope,
     ) = dispatched[0]
     assert dispatched_document == doc_id
-    assert dispatched_collections == (collection_id,)
+    assert dispatched_collections == (collection_uuid,)
     assert dispatched_profile == "profile-d"
     assert dispatched_scope == "round-trip"
     assert vector_store.ensure_calls
@@ -335,8 +335,57 @@ def test_document_flow_round_trip(tenant: Tenant, vector_store: _VectorStoreStub
         # Document remains for audit purposes until explicit removal via the domain service
         assert Document.objects.filter(id=doc_id).exists()
 
+
+def test_ingest_document_links_existing_collection_by_uuid(
+    tenant: Tenant, vector_store: _VectorStoreStub
+) -> None:
+    service = DocumentDomainService(
+        vector_store=vector_store, ingestion_dispatcher=lambda *args, **kwargs: None
+    )
+
     with schema_context(tenant.schema_name):
-        service.delete_document(document)
+        collection = service.ensure_collection(
+            tenant=tenant,
+            key="existing",
+            name="Existing",
+            embedding_profile="profile-existing",
+            scope="scope-existing",
+        )
+        existing_count = DocumentCollection.objects.count()
+
+        ingest_result = service.ingest_document(
+            tenant=tenant,
+            source="upload",
+            content_hash="collection-link",
+            collections=(collection.collection_id,),
+            embedding_profile="profile-existing",
+            scope="scope-existing",
+        )
+
+        assert DocumentCollection.objects.count() == existing_count
+        assert (
+            not DocumentCollection.objects.filter(
+                tenant=tenant, key=str(collection.collection_id)
+            )
+            .exclude(id=collection.id)
+            .exists()
+        )
+        assert DocumentCollectionMembership.objects.filter(
+            document=ingest_result.document, collection=collection
+        ).exists()
+        assert vector_store.ensure_calls == [
+            {
+                "tenant_id": str(tenant.id),
+                "collection_id": str(collection.collection_id),
+                "embedding_profile": "profile-existing",
+                "scope": "scope-existing",
+            }
+        ]
+
+    with schema_context(tenant.schema_name):
+        document = ingest_result.document
+        doc_id = document.id
+        service.delete_document(document, dispatcher=vector_store.dispatch_delete)
 
     assert vector_store.dispatch_payloads[-1] == {
         "type": "document_delete",

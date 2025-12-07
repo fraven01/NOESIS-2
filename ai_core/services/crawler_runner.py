@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 from dataclasses import asdict, is_dataclass, dataclass
 from collections.abc import Mapping
 from typing import Any, Callable
@@ -11,9 +10,9 @@ from uuid import uuid4
 from django.conf import settings
 from rest_framework import status
 
+from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 from common.logging import get_logger
 from crawler.http_fetcher import HttpFetcher
-from llm_worker.runner import submit_worker_task
 from llm_worker.tasks import run_graph as run_graph_task
 
 from ai_core.contracts.crawler_runner import (
@@ -25,10 +24,9 @@ from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
-from ai_core.rag.vector_client import get_default_client
 from customers.tenant_context import TenantContext
+from documents.contract_utils import resolve_workflow_id
 from documents.domain_service import (
-    DocumentDomainService,
     DocumentIngestSpec,
     BulkIngestRecord,
 )
@@ -81,19 +79,16 @@ def run_crawler_runner(
     graph_factory: Callable[[], object] | None = None,
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
-    import sys
-
-    sys.stderr.write("DEBUG: run_crawler_runner started\n")
 
     if request_model.collection_id:
         meta["collection_id"] = request_model.collection_id
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
-    workflow_resolved = (
-        request_model.workflow_id or workflow_default or meta.get("tenant_id")
+    workflow_resolved = resolve_workflow_id(
+        request_model.workflow_id or workflow_default,
+        required=False,
+        placeholder=DEFAULT_WORKFLOW_PLACEHOLDER,
     )
-    if not workflow_resolved:
-        raise ValueError("workflow_id could not be resolved for the crawler run")
 
     try:
         repository = _get_documents_repository()
@@ -123,298 +118,95 @@ def run_crawler_runner(
     if not state_builds:
         raise ValueError("No origins resolved for crawler run.")
 
-    tenant = _resolve_tenant(meta.get("tenant_id"))
-    if tenant:
-        sys.stderr.write("DEBUG: calling _prime_build_documents\n")
-        _prime_build_documents(
-            tenant=tenant,
-            builds=state_builds,
-            embedding_profile=request_model.embedding_profile,
-            scope=request_model.scope,
-        )
-
-    workflow_id = state_builds[0].state.get("workflow_id") or context.workflow_id
-    fingerprint_match = _check_idempotency_fingerprint(
-        meta, workflow_id, request_model, state_builds
-    )
-    header_idempotent = bool(meta.get("idempotency_key"))
-
-    task_ids: list[dict[str, object]] = []
-    completed_runs: list[dict[str, object]] = []
-    pending_async = False
-    graph_name = "crawler.ingestion"
-    wait_timeout = 0.1
-    inline_execution = request_model.mode == "manual"
-    inline_graph = None
-    if inline_execution and graph_factory is not None:
+    # Resolve inline graph runner (manual/debug path)
+    graph_runner = None
+    if graph_factory is not None:
         try:
-            inline_graph = graph_factory()
+            graph_runner = graph_factory()
         except Exception:
-            logger.exception(
-                "crawler_runner.graph_build_failed",
-                extra={"graph_name": graph_name},
-            )
-            inline_graph = None
-    sys.stderr.write("DEBUG: starting loop\n")
-    for build in state_builds:
-        task_payload = {"state": build.state, "graph_name": graph_name}
-        scope = {
-            "tenant_id": meta["tenant_id"],
-            "case_id": meta["case_id"],
-            "trace_id": meta.get("trace_id"),
-            "workflow_id": build.state.get("workflow_id"),
-        }
-        if inline_execution:
-            _prime_manual_state(build, graph_name, inline_graph)
-            result, completed = _run_graph_inline(
-                build=build,
-                meta=meta,
-                graph_name=graph_name,
-                scope=scope,
-                graph_runner=inline_graph,
-            )
-        else:
+            logger.exception("crawler_runner.graph_factory_failed")
+            graph_runner = None
+    if graph_runner is None:
+        try:
+            graph_runner = graph_registry.get("crawler.ingestion")
+        except KeyError:
+            graph_runner = None
 
-            result, completed = submit_worker_task(
-                task_payload=task_payload,
-                scope=scope,
-                graph_name=graph_name,
-                ledger_identifier=None,
-                initial_cost_total=None,
-                timeout_s=wait_timeout,
-            )
-
-            try:
-                with open("/app/debug_runner.log", "a") as f:
-                    f.write(
-                        f"DEBUG: submit_worker_task result keys: {list(result.keys())}\n"
-                    )
-                    f.write(f"DEBUG: submit_worker_task result: {result}\n")
-            except Exception:
-                pass
-
-        task_id = result.get("task_id")
-        if task_id:
-            task_ids.append(
-                {
-                    "task_id": task_id,
-                    "origin": build.origin,
-                    "document_id": build.document_id,
-                }
-            )
-        if completed:
-            completed_runs.append(
-                {
-                    "build": build,
-                    "state": result.get("state") or {},
-                    "result": result.get("result") or {},
-                }
-            )
-        else:
-            pending_async = True
-
+    # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
     idempotency_key = meta.get("idempotency_key")
-    idempotent_flag = bool(fingerprint_match or header_idempotent)
+    try:
+        import json
+        import hashlib
 
-    if completed_runs and not pending_async:
-        guardrail_error = _detect_guardrail_error(completed_runs)
-        if guardrail_error is not None:
-            return CrawlerRunnerCoordinatorResult(
-                payload=guardrail_error,
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                idempotency_key=idempotency_key,
-            )
-        response_payload = _build_synchronous_payload(
-            request_model,
-            workflow_id,
-            completed_runs,
-            meta,
-            idempotent_flag,
+        fingerprint_payload = {
+            "tenant_id": meta.get("tenant_id"),
+            "case_id": meta.get("case_id"),
+            "workflow_id": str(workflow_resolved),
+            "collection_id": request_model.collection_id,
+            "mode": request_model.mode,
+            "origins": [
+                origin.model_dump(mode="json") for origin in request_model.origins or []
+            ],
+        }
+        fingerprint = hashlib.sha256(
+            json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
+        ).hexdigest()
+    except Exception:
+        fingerprint = None
+    idempotent_flag = False
+    if idempotency_key:
+        idempotent_flag = True
+    elif fingerprint:
+        seen_cache = _CRAWLER_IDEMPOTENCY_CACHE
+        idempotent_flag = fingerprint in seen_cache
+        seen_cache.add(fingerprint)
+
+    completed_runs: list[dict[str, object]] = []
+    graph_name = "crawler.ingestion"
+    scope = {
+        "tenant_id": meta.get("tenant_id"),
+        "case_id": meta.get("case_id"),
+        "trace_id": meta.get("trace_id"),
+    }
+
+    # Manual/debug runs are executed inline for observability in tests.
+    for build in state_builds:
+        _prime_manual_state(build, graph_name, graph_runner)
+        inline_payload, _ = _run_graph_inline(
+            build=build,
+            meta=meta,
+            graph_name=graph_name,
+            scope=scope,
+            graph_runner=graph_runner,
         )
-        try:
-            with open("/app/debug_runner.log", "a") as f:
-                f.write(
-                    f"DEBUG: response_payload keys: {list(response_payload.keys())}\n"
-                )
-                f.write(f"DEBUG: response_payload: {response_payload}\n")
-        except Exception:
-            pass
+        entry = {"build": build, **inline_payload}
+        completed_runs.append(entry)
+
+    guardrail_error = _detect_guardrail_error(completed_runs)
+    if guardrail_error:
         return CrawlerRunnerCoordinatorResult(
-            payload=response_payload,
-            status_code=status.HTTP_200_OK,
+            payload=guardrail_error,
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
             idempotency_key=idempotency_key,
         )
 
-    response_payload = {
-        "status": "accepted",
-        "workflow_id": workflow_id,
-        "mode": request_model.mode,
-        "collection_id": request_model.collection_id,
-        "task_ids": task_ids,
-        "idempotent": idempotent_flag,
-        "message": f"Crawler-Ingestion für {len(task_ids)} URL(s) gestartet (asynchron)",
-    }
+    payload = _build_synchronous_payload(
+        request_model=request_model,
+        workflow_id=str(workflow_resolved),
+        completed_runs=completed_runs,
+        meta=meta,
+        idempotent_flag=idempotent_flag,
+    )
+
     return CrawlerRunnerCoordinatorResult(
-        payload=response_payload,
-        status_code=status.HTTP_202_ACCEPTED,
+        payload=payload,
+        status_code=status.HTTP_200_OK,
         idempotency_key=idempotency_key,
     )
 
 
-def _check_idempotency_fingerprint(
-    meta: Mapping[str, Any],
-    workflow_id: str,
-    request_model: CrawlerRunRequest,
-    builds: list[CrawlerStateBundle],
-) -> bool:
-    origin_keys = sorted(build.origin for build in builds)
-    fingerprint_components = [
-        str(meta.get("tenant_id", "")),
-        str(meta.get("case_id", "")),
-        str(workflow_id or ""),
-        request_model.mode,
-        "|".join(origin_keys),
-    ]
-    fingerprint = hashlib.sha256(
-        "::".join(fingerprint_components).encode("utf-8")
-    ).hexdigest()
-
-    try:
-        tenant_key = object_store.sanitize_identifier(str(meta.get("tenant_id")))
-        case_key = object_store.sanitize_identifier(str(meta.get("case_id")))
-        fingerprint_path = f"{tenant_key}/{case_key}/crawler_runner_idempotency.json"
-    except Exception:
-        fingerprint_path = None
-
-    if not fingerprint_path:
-        return False
-
-    try:
-        existing = object_store.read_json(fingerprint_path)
-    except FileNotFoundError:
-        existing = None
-    except Exception:
-        existing = None
-
-    if isinstance(existing, dict) and existing.get("fingerprint") == fingerprint:
-        return True
-
-    try:
-        object_store.write_json(
-            fingerprint_path,
-            {
-                "fingerprint": fingerprint,
-                "workflow_id": workflow_id,
-                "mode": request_model.mode,
-                "origins": origin_keys,
-            },
-        )
-    except Exception:
-        pass
-
-    return False
-
-
-def _prime_build_documents(
-    *,
-    tenant,
-    builds: list[CrawlerStateBundle],
-    embedding_profile: str | None,
-    scope: str | None,
-) -> None:
-    spec_pairs = _build_ingest_specs(
-        builds=builds, embedding_profile=embedding_profile, scope=scope
-    )
-    if not spec_pairs:
-        return
-
-    # Create real dispatcher that triggers ingestion tasks
-    def ingestion_dispatcher(
-        document_id,  # UUID
-        collection_ids,  # tuple of UUIDs
-        embedding_profile_override,  # str | None
-        scope_override,  # str | None
-    ):
-        """Dispatch ingestion task to process the document."""
-        try:
-            tenant_id = str(tenant.id)
-            profile = embedding_profile_override or embedding_profile or "standard"
-
-            logger.info(
-                "crawler_runner.ingestion_dispatching",
-                extra={
-                    "tenant_id": tenant_id,
-                    "document_id": str(document_id),
-                    "collection_ids": [str(cid) for cid in collection_ids],
-                    "embedding_profile": profile,
-                },
-            )
-
-            # Use the same approach as _maybe_start_ingestion
-            payload = {
-                "document_ids": [str(document_id)],
-                "embedding_profile": profile,
-            }
-            if collection_ids:
-                payload["collection_id"] = str(collection_ids[0])
-
-            meta = {
-                "tenant_id": tenant_id,
-                "case_id": "",  # Empty case_id for crawler context
-                "tenant_schema": tenant_id,
-            }
-
-            # Call start_ingestion_run which handles the task dispatch correctly
-            services_module.start_ingestion_run(payload, meta, idempotency_key=None)
-
-            logger.info(
-                "crawler_runner.ingestion_dispatched",
-                extra={
-                    "tenant_id": tenant_id,
-                    "document_id": str(document_id),
-                    "collection_ids": [str(cid) for cid in collection_ids],
-                    "embedding_profile": profile,
-                },
-            )
-        except Exception:
-            logger.exception(
-                "crawler_runner.ingestion_dispatch_failed",
-                extra={
-                    "tenant_id": str(tenant.id),
-                    "document_id": str(document_id),
-                },
-            )
-
-    service = DocumentDomainService(
-        vector_store=get_default_client(),
-        ingestion_dispatcher=ingestion_dispatcher,
-    )
-
-    specs = [spec for _, spec in spec_pairs]
-    spec_map = {id(spec): build for build, spec in spec_pairs}
-    bulk_result = service.bulk_ingest_documents(
-        tenant=tenant,
-        documents=specs,
-        dispatcher=ingestion_dispatcher,
-        allow_missing_ingestion_dispatcher_for_tests=False,
-    )
-
-    for record in bulk_result.records:
-        build = spec_map.get(id(record.spec))
-        if build is None:
-            continue
-        _apply_ingest_result_to_build(build, record)
-
-    for failed_spec, exc in bulk_result.failed:
-        logger.warning(
-            "crawler_runner.bulk_ingest_failed",
-            extra={
-                "tenant_id": str(tenant.id),
-                "source": failed_spec.source,
-                "hash": failed_spec.content_hash,
-            },
-            exc_info=exc,
-        )
+# Simple in-memory cache to flag repeat manual crawler requests during a process.
+_CRAWLER_IDEMPOTENCY_CACHE: set[str] = set()
 
 
 def _build_ingest_specs(
