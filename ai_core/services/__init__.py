@@ -27,7 +27,7 @@ from uuid import UUID, uuid4
 from django.conf import settings
 from django.core.files.uploadedfile import UploadedFile
 from django.utils import timezone
-from django.utils.module_loading import import_string
+
 from pydantic import ValidationError
 from rest_framework import status
 from rest_framework.request import Request
@@ -227,22 +227,11 @@ def _get_checkpointer():  # type: ignore[no-untyped-def]
 
 
 def _build_documents_repository() -> DocumentsRepository:
-    """Build the appropriate documents repository based on settings."""
+    """Build the appropriate documents repository."""
     if settings.TESTING:
         return InMemoryDocumentsRepository()
 
-    # Check for explicit override in settings (e.g. for specific environments)
-    repository_class_setting = getattr(settings, "DOCUMENTS_REPOSITORY_CLASS", None)
-    if repository_class_setting:
-        try:
-            repository_class = import_string(repository_class_setting)
-            candidate = repository_class()
-            if isinstance(candidate, DocumentsRepository):
-                return candidate
-        except Exception:
-            logger.warning("invalid_documents_repository_class_setting", exc_info=True)
-
-    # Default to DB repository for production/dev
+    # Strict: Use DB repository for all non-test environments
     return DbDocumentsRepository()
 
 

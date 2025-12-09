@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import uuid
 
-from django.core.exceptions import ValidationError
 from django.db import models
 
 
@@ -138,61 +137,6 @@ class DocumentCollectionMembership(models.Model):
         indexes = [
             models.Index(fields=("collection",), name="document_collection_idx"),
             models.Index(fields=("document",), name="collection_document_idx"),
-        ]
-
-
-class DocumentLifecycleState(models.Model):
-    """Latest lifecycle status for a document within a tenant workflow."""
-
-    tenant_id = models.ForeignKey(
-        "customers.Tenant",
-        on_delete=models.CASCADE,
-        to_field="schema_name",
-        db_column="tenant_id",
-    )
-    document_id = models.UUIDField()
-    workflow_id = models.CharField(max_length=255, blank=True, default="")
-    state = models.CharField(max_length=32)
-    trace_id = models.CharField(max_length=255, blank=False, null=False)
-    run_id = models.CharField(max_length=255, blank=True, default="")
-    ingestion_run_id = models.CharField(max_length=255, blank=True, default="")
-    changed_at = models.DateTimeField()
-    reason = models.TextField(blank=True, default="")
-    policy_events = models.JSONField(blank=True, default=list)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    def clean(self):
-        """Validate that exactly one runtime identifier is provided."""
-        super().clean()
-
-        has_run_id = bool(self.run_id)
-        has_ingestion_run_id = bool(self.ingestion_run_id)
-
-        if has_run_id == has_ingestion_run_id:
-            raise ValidationError(
-                "Exactly one of run_id or ingestion_run_id must be provided"
-            )
-
-    class Meta:
-        constraints = [
-            models.UniqueConstraint(
-                fields=("tenant_id", "document_id", "workflow_id"),
-                name="document_lifecycle_unique_record",
-            ),
-            models.CheckConstraint(
-                check=(
-                    (models.Q(run_id="") & ~models.Q(ingestion_run_id=""))
-                    | (~models.Q(run_id="") & models.Q(ingestion_run_id=""))
-                ),
-                name="lifecycle_runtime_id_xor",
-            ),
-        ]
-        indexes = [
-            models.Index(
-                fields=("tenant_id", "workflow_id"),
-                name="doc_lifecycle_tenant_wf_idx",
-            ),
         ]
 
 

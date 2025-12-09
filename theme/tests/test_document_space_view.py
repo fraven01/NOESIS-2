@@ -9,7 +9,7 @@ from django_tenants.utils import get_public_schema_name, schema_context
 from customers.tests.factories import TenantFactory
 from cases.models import Case
 from documents.contracts import DocumentMeta, DocumentRef, FileBlob, NormalizedDocument
-from documents.models import DocumentCollection, DocumentLifecycleState
+from documents.models import DocumentCollection
 from documents.repository import InMemoryDocumentsRepository
 from documents.services.document_space_service import DocumentSpaceService
 
@@ -78,18 +78,6 @@ def test_document_space_lists_collections_and_documents(monkeypatch):
     )
     repo.upsert(normalized)
 
-    with schema_context(tenant.schema_name):
-        DocumentLifecycleState.objects.create(
-            tenant_id=tenant,
-            document_id=document_id,
-            workflow_id=workflow_id,
-            state="active",
-            trace_id="trace-123",
-            run_id="run-789",
-            ingestion_run_id="ing-456",
-            changed_at=timezone.now(),
-        )
-
     monkeypatch.setattr("theme.views._get_documents_repository", lambda: repo)
 
     class _CollectionServiceStub:
@@ -117,6 +105,5 @@ def test_document_space_lists_collections_and_documents(monkeypatch):
     assert "Framework Docs" in content
     assert "Digitale KBV" in content
     assert str(document_id) in content
-    assert "trace-123" in content
     assert "Workflow Filter" in content
     assert "Download" in content

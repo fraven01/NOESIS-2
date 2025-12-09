@@ -2,7 +2,6 @@ import base64
 from typing import Any
 
 import pytest
-from django.conf import settings
 
 from ai_core import ingestion_status
 from ai_core.infra import object_store
@@ -121,12 +120,7 @@ def documents_repository_stub(monkeypatch) -> CapturingInMemoryDocumentsReposito
     from ai_core import services, views
 
     repository = CapturingInMemoryDocumentsRepository()
-    monkeypatch.setattr(
-        settings,
-        "DOCUMENTS_REPOSITORY_CLASS",
-        None,
-        raising=False,
-    )
+
     monkeypatch.setattr(views, "DOCUMENTS_REPOSITORY", repository, raising=False)
     monkeypatch.setattr(services, "_DOCUMENTS_REPOSITORY", None, raising=False)
     try:

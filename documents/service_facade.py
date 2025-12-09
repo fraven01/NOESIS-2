@@ -71,9 +71,17 @@ def ingest_document(
     except Exception as exc:  # pragma: no cover - defensive guard
         raise ValueError("invalid_tenant_identifier") from exc
 
+    # Prefer collection_key (slug) over collection_id to avoid duplicate creation
+    # The key-based lookup is more reliable than UUID-based lookup
+    collection_key = meta.get("collection_key")
     collection_identifier = meta.get("collection_id")
+
     collections: tuple[str, ...]
-    if collection_identifier:
+    if collection_key:
+        # Use key for reliable lookup (avoids duplicate creation bug)
+        collections = (str(collection_key),)
+    elif collection_identifier:
+        # Fallback to UUID for backwards compatibility
         collections = (str(collection_identifier),)
     else:
         collections = ()

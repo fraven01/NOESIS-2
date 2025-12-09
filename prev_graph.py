@@ -1,12 +1,12 @@
-"""LangGraph inspired orchestration for crawler ingestion."""
+﻿"""LangGraph inspired orchestration for crawler ingestion."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from dataclasses import dataclass, asdict, is_dataclass, replace
+from dataclasses import dataclass, asdict, is_dataclass
 from datetime import datetime, timedelta
 import traceback
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import (
     Any,
     Callable,
@@ -589,9 +589,8 @@ class CrawlerIngestionGraph:
         embedding_state: Mapping[str, Any],
     ) -> Optional[ChunkComputation]:
         text = normalized.content_normalized or normalized.primary_text or ""
-        # Allow chunking to proceed even if text is empty (legacy behavior skip was causing full ingestion drops)
-        # if not str(text or "").strip():
-        #     return None
+        if not str(text or "").strip():
+            return None
 
         profile_binding = self._resolve_embedding_profile_binding(embedding_state)
         chunk_meta = self._prepare_chunk_meta(
@@ -1002,7 +1001,6 @@ class CrawlerIngestionGraph:
         self, state: Dict[str, Any]
     ) -> NormalizedDocumentPayload:
         artifacts = self._artifacts(state)
-        metadata = {}  # Defensive init for UnboundLocalError debugging
         existing = artifacts.get("normalized_document")
         if isinstance(existing, NormalizedDocumentPayload):
             return existing
@@ -1063,9 +1061,9 @@ class CrawlerIngestionGraph:
             "case_id": state.get("case_id"),
             "source": normalized_input.source,
         }
-        metadata = {
-            key: value for key, value in metadata_payload.items() if value is not None
-        }
+        metadata = MappingProxyType(
+            {key: value for key, value in metadata_payload.items() if value is not None}
+        )
 
         payload = NormalizedDocumentPayload(
             document=normalized_input,
@@ -1559,8 +1557,6 @@ class CrawlerIngestionGraph:
 
         try:
             result_state = self._document_graph.invoke(pipeline_state)
-            if isinstance(result_state, dict):
-                result_state = DocumentProcessingState(**result_state)
         except Exception as exc:
             artifacts["document_pipeline_error"] = repr(exc)
             artifacts.setdefault(
@@ -1617,9 +1613,7 @@ class CrawlerIngestionGraph:
 
         artifacts["chunk_artifact"] = result_state.chunk_artifact
         if result_state.error is not None:
-            # Persist the error for diagnostics but continue the flow to keep graph nodes observable in tests.
             artifacts["document_pipeline_error"] = repr(result_state.error)
-            result_state.error = None
         artifacts["document_pipeline_run_until"] = run_until.value
 
         updated_payload = NormalizedDocumentPayload(
@@ -1640,6 +1634,24 @@ class CrawlerIngestionGraph:
         if result_state.error is not None:
             extra["error"] = repr(result_state.error)
         self._annotate_span(state, phase="document_pipeline", extra=extra)
+
+        if result_state.error is not None:
+            artifacts.setdefault(
+                "failure",
+                {"decision": "error", "reason": "document_pipeline_failed"},
+            )
+            transition = _transition(
+                phase="document_pipeline",
+                decision="error",
+                reason="document_pipeline_failed",
+                severity="error",
+                pipeline=PipelineSection(
+                    phase=result_state.phase,
+                    run_until=run_until,
+                    error=repr(result_state.error),
+                ),
+            )
+            return transition, False
 
         transition = _transition(
             phase="document_pipeline",
@@ -1808,34 +1820,19 @@ class CrawlerIngestionGraph:
             state.get("review") or state.get("control", {}).get("review") or ""
         ).strip()
         handler = getattr(self, "upsert_handler", None)
-        if not state.get("dry_run") and not review_value and pipeline_error is None:
+        if (
+            callable(handler)
+            and not state.get("dry_run")
+            and not review_value
+            and pipeline_error is None
+        ):
+            decision_payload = SimpleNamespace(
+                attributes={"chunk_meta": result.chunk_meta},
+                payload=result,
+            )
             try:
-                # Direct persistence call to ensure document and assets are saved
-                print(
-                    f"DEBUG: Attempting persistence. persistence={self._document_persistence}, handler={handler}"
-                )
-                if self._document_persistence:
-                    # Force active state for final persistence decision using Pydantic copy + dataclass replace
-                    new_doc = normalized.document.model_copy(
-                        update={"lifecycle_state": "active"}
-                    )
-                    new_payload = replace(normalized, document=new_doc)
-                    self._document_persistence.upsert_normalized(normalized=new_payload)
-                    print("DEBUG: upsert_normalized called successfully")
-                    upsert_result = {"status": "succeeded"}
-                elif callable(handler):
-                    # Legacy fallback
-                    decision_payload = SimpleNamespace(
-                        attributes={"chunk_meta": result.chunk_meta},
-                        payload=result,
-                    )
-                    upsert_result = handler(decision_payload)
-                else:
-                    print("DEBUG: No persistence mechanism found")
-                    upsert_result = {"status": "skipped", "reason": "no_persistence"}
+                upsert_result = handler(decision_payload)
             except Exception as exc:  # pragma: no cover - defensive guard
-                print(f"DEBUG: Persistence failed: {exc}")
-                traceback.print_exc()
                 upsert_result = {"status": "error", "error": str(exc)}
             artifacts["upsert_result"] = upsert_result
 
@@ -1869,6 +1866,7 @@ class CrawlerIngestionGraph:
                 severity="error",
             )
             return transition, False
+
         if guardrail is None:
             guardrail = ai_core_api.GuardrailDecision(
                 decision="allow", reason="default", attributes={"severity": "info"}
@@ -1879,10 +1877,6 @@ class CrawlerIngestionGraph:
                 reason="delta_missing",
                 attributes={"severity": "warn"},
             )
-        metadata = None
-
-        if metadata is None:
-            metadata = {}
 
         payload = self._completion_builder(
             normalized_document=normalized,

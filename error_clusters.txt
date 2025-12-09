@@ -1,0 +1,54 @@
+Found 4 error clusters:
+
+--- Unknown Error (604 occurrences) ---
+==================================== ERRORS ====================================
+_____________ ERROR at teardown of test_orchestrates_nominal_flow ______________
+
+--- OperationalError: cannot DROP TABLE "auth_permission" because it has pending trigger events (5 occurrences) ---
+Traceback (most recent call last):
+File "/app/testsupport/tenant_fixtures.py", line 132, in cleanup_test_tenants
+tenant.delete(force_drop=True)
+File "/usr/local/lib/python3.12/site-packages/django_tenants/models.py", line 168, in delete
+self._drop_schema(force_drop)
+File "/usr/local/lib/python3.12/site-packages/django_tenants/models.py", line 155, in _drop_schema
+cursor.execute('DROP SCHEMA "%s" CASCADE' % self.schema_name)
+File "/usr/local/lib/python3.12/site-packages/django/db/backends/utils.py", line 79, in execute
+return self._execute_with_wrappers(
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.12/site-packages/django/db/backends/utils.py", line 92, in _execute_with_wrappers
+return executor(sql, params, many, context)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.12/site-packages/django/db/backends/utils.py", line 100, in _execute
+with self.db.wrap_database_errors:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+File "/usr/local/lib/python3.12/site-packages/django/db/u
+
+--- InputError: INGEST_VECTOR_DIMENSION_MISMATCH: dimension mismatch. See README.md (Fehlercodes Abschnitt) for remediation guidance. (1 occurrences) ---
+ERROR    ai_core.ingestion:ingestion.py:1195 {'service.name': 'noesis2', 'service.version': 'unknown', 'deployment.environment': 'unknown', 'trace_id': '', 'span_id': '', 'case_id': None, 'tenant_id': None, 'workflow_id': None, 'run_id': None, 'ingestion_run_id': None, 'collection_id': None, 'document_id': None, 'document_version_id': None, 'exc_info': True, 'tenant': 'tenant-a', 'case': 'case-b', 'event': 'Ingestion group failed', 'level': 'error', 'timestamp': '2025-12-08T22:20:39.318598Z'}
+Traceback (most recent call last):
+File "/app/ai_core/ingestion.py", line 1178, in run_ingestion
+results = async_result.get(
+^^^^^^^^^^^^^^^^^
+File "/app/ai_core/tests/test_ingestion_task.py", line 65, in get
+raise self.should_raise
+ai_core.tools.errors.InputError: INGEST_VECTOR_DIMENSION_MISMATCH: dimension mismatch. See README.md (Fehlercodes Abschnitt) for remediation guidance.
+
+--- SearchProviderError: boom (1 occurrences) ---
+Traceback (most recent call last):
+File "/app/ai_core/graphs/collection_search.py", line 593, in _k_parallel_web_search
+response: WebSearchResponse = self._search_worker.run(
+^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/ai_core/tests/graphs/test_collection_search_graph.py", line 204, in run
+raise SearchProviderError("boom")
+ai_core.tools.web_search.SearchProviderError: boom
+WARNING  ai_core.graphs.collection_search:collection_search.py:612 web search provider failed
+Traceback (most recent call last):
+File "/app/ai_core/graphs/collection_search.py", line 593, in _k_parallel_web_search
+response: WebSearchResponse = self._search_worker.run(
+^^^^^^^^^^^^^^^^^^^^^^^^
+File "/app/ai_core/tests/graphs/test_collection_search_graph.py", line 204, in run
+raise SearchProviderError("boom")
+ai_core.tools.web_search.SearchProviderError: boom
+WARNING  ai_core.graphs.collection_search:collection_search.py:612 web search provider failed
+Traceback (most recent call last):
+File "/app/ai_core/graphs/collection_sear

@@ -17,6 +17,7 @@ from ai_core.graphs.crawler_ingestion_graph import CrawlerIngestionGraph
 
 from ai_core.graphs.document_service import DocumentLifecycleService
 from ai_core.rag.guardrails import GuardrailLimits, GuardrailSignals
+from customers.tests.factories import TenantFactory
 from documents import api as documents_api
 from documents import metrics as document_metrics
 from documents.api import normalize_from_raw
@@ -569,9 +570,10 @@ class RecordingDocumentLifecycleService(DocumentLifecycleService):
 
 
 def test_document_service_adapter_is_injected() -> None:
+    tenant = TenantFactory(schema_name="tenant")
     service = RecordingDocumentLifecycleService()
     graph = CrawlerIngestionGraph(document_service=service)
-    state = _build_state()
+    state = _build_state(tenant_id=str(tenant.id))
 
     updated_state, result = graph.run(state, {})
 

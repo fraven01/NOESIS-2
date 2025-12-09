@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
-from types import MappingProxyType
+
 from typing import Iterable, Mapping, MutableMapping
+from types import MappingProxyType
 
 from common.logging import get_log_context, get_logger
 
@@ -127,7 +128,7 @@ class CrawlerIngestionPayload(BaseModel):
             "content_raw": self.content_raw,
             "content_normalized": self.content_normalized,
         }
-        return MappingProxyType(payload)
+        return dict(payload)
 
 
 def resolve_ingestion_profile(profile: object | None) -> IngestionProfileResolution:
@@ -329,12 +330,12 @@ def _freeze_adapter_metadata(
     metadata: Mapping[str, object] | None,
 ) -> Mapping[str, object]:
     if metadata is None:
-        return MappingProxyType({})
+        return {}
     if isinstance(metadata, MappingProxyType):
-        return metadata
+        return dict(metadata)
     if not isinstance(metadata, Mapping):
-        return MappingProxyType(dict(metadata))
-    return MappingProxyType(dict(metadata))
+        return dict(metadata)
+    return dict(metadata)
 
 
 def _normalize_policy_events(events: Iterable[object]) -> tuple[str, ...]:

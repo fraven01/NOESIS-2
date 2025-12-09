@@ -1,16 +1,16 @@
 labels:
-  default: gpt-5-nano          # Günstigster Einstieg
-  fast: gpt-5-nano             # High Throughput
-  simple-query: gemini-2.5-flash # Gute Balance für RAG
+  default: gpt-5-nano          # Cheapest entry
+  fast: gpt-5-nano             # High throughput
+  simple-query: gpt-5-nano     # Good balance for RAG
   
   # Reasoning & Complex Tasks
-  synthesize: gemini-2.5-flash   # Gemini 3.0 für große Kontexte & Deep Research
-  reasoning: gemini-3.0-pro
-  analyze: gemini-2.5-flash
-  draft: gpt-5.1               # GPT-5.1 ist oft stilistisch sehr stark
+  synthesize: gpt-5.1          # Flagship for long context and deep research
+  reasoning: gpt-5.1
+  analyze: gpt-5-nano
+  draft: gpt-5.1               # Strong writing quality
   
-  # Spezialaufgaben
-  classify: gpt-5-nano         # Reicht für JSON/Klassifizierung
-  extract: claude-4-5-sonnet   # Anthropic ist sehr stark bei strikter Einhaltung von Formaten
+  # Special tasks
+  classify: gpt-5-nano         # Good for JSON/classification
+  extract: claude-4-5-sonnet   # Strong at strict format adherence
 
   embedding: oai-embed-small

@@ -11,7 +11,7 @@ from documents.services.document_space_service import (
     DocumentSpaceRequest,
     DocumentSpaceService,
 )
-from documents.models import DocumentCollection, DocumentLifecycleState
+from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository
 
 
@@ -119,18 +119,6 @@ def test_document_space_service_builds_context():
         created_at=timezone.now(),
         source="upload",
     )
-
-    with schema_context(tenant.schema_name):
-        DocumentLifecycleState.objects.create(
-            tenant_id=tenant,
-            document_id=document_id,
-            workflow_id=workflow_id,
-            state="active",
-            trace_id="trace-456",
-            run_id="run-101",
-            ingestion_run_id="ing-202",
-            changed_at=timezone.now(),
-        )
 
     repository = _RepositoryStub(normalized)
     service = DocumentSpaceService(collection_service=_CollectionServiceStub())

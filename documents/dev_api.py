@@ -56,21 +56,33 @@ class DocumentDevViewSet(viewsets.ViewSet):
         embedding_profile = payload.get("embedding_profile")
         scope = payload.get("scope")
 
-        service = DocumentDomainService(
-            allow_missing_ingestion_dispatcher_for_tests=True
-        )
+        # Do not bypass the full ingestion flow: require a dispatcher so the graph
+        # can normalize and persist the document properly.
+        service = DocumentDomainService()
 
         with schema_context(tenant.schema_name):
-            result = service.ingest_document(
-                tenant=tenant,
-                source=str(source),
-                content_hash=str(content_hash),
-                metadata=metadata,
-                collections=collections,
-                embedding_profile=embedding_profile,
-                scope=scope,
-                initial_lifecycle_state=DocumentLifecycleState.PENDING,
-            )
+            try:
+                result = service.ingest_document(
+                    tenant=tenant,
+                    source=str(source),
+                    content_hash=str(content_hash),
+                    metadata=metadata,
+                    collections=collections,
+                    embedding_profile=embedding_profile,
+                    scope=scope,
+                    initial_lifecycle_state=DocumentLifecycleState.PENDING,
+                )
+            except ValueError as exc:
+                # Keep dev-only endpoint aligned with production flow: refuse
+                # ingestion if the dispatcher (graph) is not available.
+                if str(exc) == "ingestion_dispatcher_required":
+                    return Response(
+                        {
+                            "detail": "ingestion dispatcher is required; use the normal upload/crawler flow so the graph can normalize the document"
+                        },
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                raise
 
         document = result.document
         return Response(

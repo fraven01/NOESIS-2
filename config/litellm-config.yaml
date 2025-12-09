@@ -1,52 +1,54 @@
 general_settings:
   master_key: os.environ/LITELLM_MASTER_KEY
-  default_model_max_tokens: 8192  # Erhöht für Gemini 3.0 / GPT-5
+  default_model_max_tokens: 8192  # Default for GPT-5 tier
   proxy_port: 4000
   num_retries: 2
 
 model_list:
   # ---------------------------------------------------------
-  # GOOGLE (Direct / AI Studio) - State of the Art Nov 2025
+  # GOOGLE (AI Studio) - kept for future use
   # ---------------------------------------------------------
   - model_name: gemini-3.0-pro
     litellm_params:
-      model: gemini/gemini-3-pro-preview  # Release 18.11.2025
+      model: gemini/gemini-3-pro-preview
       api_key: os.environ/GEMINI_API_KEY
     model_info:
-      fallback_models: [gpt-5.1, claude-3-5-sonnet]
+      fallback_models: [gpt-5.1, claude-4-5-sonnet]
 
   - model_name: gemini-2.5-flash
     litellm_params:
-      model: gemini/gemini-2.5-flash # Release Juni 2025
+      model: gemini/gemini-2.5-flash
       api_key: os.environ/GEMINI_API_KEY
+    model_info:
+      fallback_models: [gpt-5-nano, claude-haiku-4.5]
 
   # ---------------------------------------------------------
-  # OPENAI (GPT-5 Series)
+  # OPENAI (Primary)
   # ---------------------------------------------------------
   - model_name: gpt-5-nano
     litellm_params:
-      model: openai/gpt-5-nano  # Korrekter Slug für Nano
+      model: openai/gpt-5-nano
       api_key: os.environ/OPENAI_API_KEY
-      # Falls Nano noch in Preview ist, ggf. 'gpt-5-nano-preview' prüfen
     model_info:
-      fallback_models: [gemini-2.5-flash, claude-haiku-4.5]
+      fallback_models: [gpt-5.1, claude-haiku-4.5]
 
   - model_name: gpt-5.1
     litellm_params:
-      model: openai/gpt-5.1     # Flagship
+      model: openai/gpt-5.1
       api_key: os.environ/OPENAI_API_KEY
+    model_info:
+      fallback_models: [gpt-5-nano, claude-4-5-sonnet]
 
   # ---------------------------------------------------------
   # ANTHROPIC (Direct API)
   # ---------------------------------------------------------
-  - model_name: claude-4-5-sonnet  # Legacy-Alias für die App behalten (optional)
+  - model_name: claude-4-5-sonnet  # Legacy alias for the app
     litellm_params:
-      # Die neue ID laut Anthropic Docs (Release 29.09.2025)
       model: anthropic/claude-sonnet-4-5-20250929
       api_key: os.environ/ANTHROPIC_API_KEY
   - model_name: claude-haiku-4.5
     litellm_params:
-      model: anthropic/claude-3-5-haiku-latest # Oder claude-haiku-4.5 wenn verfügbar
+      model: anthropic/claude-3-5-haiku-latest
       api_key: os.environ/ANTHROPIC_API_KEY
 
   # ---------------------------------------------------------
@@ -54,11 +56,10 @@ model_list:
   # ---------------------------------------------------------
   - model_name: oai-embed-small
     litellm_params:
-      model: openai/text-embedding-3-small  # 1536 Dimensionen
+      model: openai/text-embedding-3-small
       api_key: os.environ/OPENAI_API_KEY
 
   - model_name: oai-embed-large
     litellm_params:
-      model: openai/text-embedding-3-large  # 3072 Dimensionen (oder konfigurierbar)
+      model: openai/text-embedding-3-large
       api_key: os.environ/OPENAI_API_KEY
-

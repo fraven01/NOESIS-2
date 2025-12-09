@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Mapping, Optional, Protocol, Sequence
 from uuid import UUID
 
@@ -14,6 +15,9 @@ from documents.repository import (
     InMemoryDocumentsRepository,
 )
 from common.object_store import ObjectStore, get_default_object_store
+
+
+logger = logging.getLogger(__name__)
 
 
 class DocumentLifecycleService(Protocol):
@@ -55,6 +59,19 @@ class DocumentPersistenceService(Protocol):
         """Persist a normalized document and return the stored representation."""
 
 
+def _resolve_default_repository() -> DocumentsRepository:
+    """Return the configured documents repository, defaulting to DB."""
+    try:
+        from ai_core import services
+
+        repo = services._get_documents_repository()  # type: ignore[attr-defined]
+        if isinstance(repo, DocumentsRepository):
+            return repo
+    except Exception:
+        logger.warning("documents_repository_resolution_failed", exc_info=True)
+    return InMemoryDocumentsRepository()
+
+
 class DocumentsApiLifecycleService:
     """Default implementation delegating to :mod:`documents.api`."""
 
@@ -65,7 +82,7 @@ class DocumentsApiLifecycleService:
         object_store: ObjectStore | None = None,
         lifecycle_store: DocumentLifecycleStore | None = None,
     ) -> None:
-        self._repository = repository
+        self._repository = repository or _resolve_default_repository()
         self._object_store = object_store
         self._lifecycle_store = lifecycle_store
 

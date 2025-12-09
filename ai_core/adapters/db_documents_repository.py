@@ -2,7 +2,7 @@ from __future__ import annotations
 import base64
 from datetime import datetime
 from typing import List, Optional, Tuple
-from uuid import UUID, uuid4
+from uuid import UUID
 import logging
 
 from django.apps import apps
@@ -19,7 +19,6 @@ from documents.contracts import (
 )
 from documents.repository import (
     DocumentsRepository,
-    _workflow_storage_key,
 )
 from documents.storage import ObjectStoreStorage, Storage
 
@@ -68,14 +67,11 @@ class DbDocumentsRepository(DocumentsRepository):
         if workflow != doc_copy.ref.workflow_id:
             raise ValueError("workflow_mismatch")
 
-        workflow_key = _workflow_storage_key(workflow)
-
         Document = apps.get_model("documents", "Document")
         DocumentCollection = apps.get_model("documents", "DocumentCollection")
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
-        DocumentLifecycleState = apps.get_model("documents", "DocumentLifecycleState")
 
         metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
         collection_id = (
@@ -146,42 +142,24 @@ class DbDocumentsRepository(DocumentsRepository):
                         raise
                 document = self._update_document_instance(document, doc_copy, metadata)
 
-        # 3. Memberships & Lifecycle (Side Effects)
-        try:
-            if coll:
+        # 3. Memberships (Side Effects)
+        if coll:
+            try:
                 DocumentCollectionMembership.objects.get_or_create(
                     document=document,
                     collection=coll,
                     defaults={"added_by": "system"},
                 )
-
-            trace_id = scope.trace_id if scope else uuid4().hex
-            run_id_value = ""
-            ingestion_run_id_value = ""
-            if scope:
-                run_id_value = scope.run_id or ""
-                ingestion_run_id_value = scope.ingestion_run_id or ""
-            else:
-                run_id_value = "manual"
-
-            DocumentLifecycleState.objects.update_or_create(
-                tenant_id=tenant,
-                document_id=document.id,
-                workflow_id=workflow_key,
-                defaults={
-                    "state": doc_copy.lifecycle_state,
-                    "changed_at": doc_copy.created_at,
-                    "reason": "",
-                    "policy_events": [],
-                    "trace_id": trace_id,
-                    "run_id": run_id_value,
-                    "ingestion_run_id": ingestion_run_id_value,
-                },
-            )
-        except Exception:
-            # Don't fail the main upsert if side effects flake, but log?
-            # For now, let it bubble as it signifies a DB consistency issue
-            raise
+            except Exception:
+                # Don't fail the main upsert if side effects flake, but log
+                logger.warning(
+                    "collection_membership_failed",
+                    exc_info=True,
+                    extra={
+                        "document_id": str(document.id),
+                        "collection_id": str(collection_id),
+                    },
+                )
 
         return (
             self.get(
@@ -231,7 +209,6 @@ class DbDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str] = None,
     ) -> Optional[NormalizedDocument]:
         Document = apps.get_model("documents", "Document")
-        lifecycle_model = apps.get_model("documents", "DocumentLifecycleState")
 
         tenant = self._resolve_tenant(tenant_id)
         document = Document.objects.filter(
@@ -240,17 +217,32 @@ class DbDocumentsRepository(DocumentsRepository):
         ).first()
         if document is None:
             return None
-
-        lifecycle = _select_lifecycle_state(
-            lifecycle_model, tenant, document_id, workflow_id
-        )
+        lifecycle_state = (document.lifecycle_state or "").strip().lower()
+        # Only filter out terminal states; ingestion expects pending/ingesting documents to be readable.
+        if lifecycle_state in {"deleted", "retired"}:
+            return None
 
         normalized = _build_document_from_metadata(document)
         if normalized is None:
             return None
 
-        if lifecycle is not None:
-            normalized.lifecycle_state = lifecycle.state
+        # Use the document's lifecycle_state field directly
+        normalized.lifecycle_state = document.lifecycle_state
+
+        # Attach persisted assets to mirror in-memory behaviour.
+        try:
+            assets = []
+            for asset_row in document.assets.all():
+                asset = self._build_asset_from_model(asset_row)
+                if asset:
+                    assets.append(asset)
+            normalized.assets = assets
+        except Exception:
+            logger.warning(
+                "document_asset_attach_failed",
+                exc_info=True,
+                extra={"document_id": str(document_id), "tenant_id": tenant_id},
+            )
 
         return normalized
 
@@ -279,6 +271,23 @@ class DbDocumentsRepository(DocumentsRepository):
                 normalized = _build_document_from_metadata(document)
                 if normalized is None:
                     continue
+                try:
+                    assets = []
+                    for asset_row in document.assets.all():
+                        asset = self._build_asset_from_model(asset_row)
+                        if asset:
+                            assets.append(asset)
+                    normalized.assets = assets
+                except Exception:
+                    logger.warning(
+                        "documents.list_by_collection.asset_attach_failed",
+                        extra={
+                            "membership_id": str(membership.id),
+                            "document_id": str(document.id),
+                            "tenant_id": tenant_id,
+                        },
+                        exc_info=True,
+                    )
                 entries.append(self._document_entry(normalized))
             except Exception:
                 logger.warning(
@@ -315,12 +324,34 @@ class DbDocumentsRepository(DocumentsRepository):
         # Iterate through candidates
         # Note: memberships are ordered by -added_at (roughly creation time).
         # We need to find the LATEST version per document_id.
+        logger.info(
+            f"DEBUG: list_latest_by_collection: tenant={tenant_id} collection={collection_id}"
+        )
+        logger.info(f"DEBUG: memberships_count: {memberships.count()}")
         for membership in memberships[:candidate_limit]:
             try:
                 document = membership.document
+                # logger.info(f"DEBUG: checking doc {document.id} | tenant={document.tenant_id}")
                 normalized = _build_document_from_metadata(document)
                 if normalized is None:
                     continue
+                try:
+                    assets = []
+                    for asset_row in document.assets.all():
+                        asset = self._build_asset_from_model(asset_row)
+                        if asset:
+                            assets.append(asset)
+                    normalized.assets = assets
+                except Exception:
+                    logger.warning(
+                        "documents.list_latest_by_collection.asset_attach_failed",
+                        extra={
+                            "membership_id": str(membership.id),
+                            "document_id": str(document.id),
+                            "tenant_id": tenant_id,
+                        },
+                        exc_info=True,
+                    )
 
                 doc_ref = normalized.ref
                 if workflow_id and doc_ref.workflow_id != workflow_id:
@@ -518,8 +549,6 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
-        lifecycle_model = apps.get_model("documents", "DocumentLifecycleState")
-        workflow_key = _workflow_storage_key(workflow_id)
         tenant = self._resolve_tenant(tenant_id)
 
         # Secure filter: Ensure collection belongs to tenant
@@ -527,19 +556,43 @@ class DbDocumentsRepository(DocumentsRepository):
             collection__tenant=tenant, collection__collection_id=collection_id
         )
 
-        if workflow_id is not None:
-            lifecycle_exists = models.Exists(
-                lifecycle_model.objects.filter(
-                    tenant_id=tenant,
-                    workflow_id=workflow_key,
-                    document_id=models.OuterRef("document__id"),
-                )
-            )
-            queryset = queryset.annotate(has_lifecycle=lifecycle_exists).filter(
-                has_lifecycle=True
+        if workflow_id:
+            queryset = queryset.filter(
+                document__metadata__normalized_document__ref__workflow_id=workflow_id
             )
 
-        return queryset.order_by("-added_at", "document_id")
+        # Filter for active documents only
+        return queryset.filter(document__lifecycle_state="active").order_by(
+            "-added_at", "document_id"
+        )
+
+    def delete(
+        self,
+        tenant_id: str,
+        document_id: UUID,
+        *,
+        workflow_id: Optional[str] = None,
+        hard: bool = False,
+    ) -> bool:
+        Document = apps.get_model("documents", "Document")
+        tenant = self._resolve_tenant(tenant_id)
+
+        document = Document.objects.filter(tenant=tenant, id=document_id).first()
+        if document is None:
+            return False
+
+        if hard:
+            # Cascades will remove memberships/assets automatically
+            document.delete()
+            return True
+
+        if document.lifecycle_state == "retired":
+            return False
+
+        document.lifecycle_state = "retired"
+        document.lifecycle_updated_at = datetime.now()
+        document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
+        return True
 
     def _materialize_asset(self, asset: Asset) -> Asset:
         """Ensure asset blobs are stored."""
@@ -640,18 +693,8 @@ def _build_document_from_metadata(document) -> Optional[NormalizedDocument]:
 
     # Align timestamps with the persisted row to support cursor pagination.
     normalized.created_at = document.created_at
+
     return normalized
-
-
-def _select_lifecycle_state(
-    model, tenant, document_id: UUID, workflow_id: Optional[str]
-):
-    workflow_key = _workflow_storage_key(workflow_id)
-    filters = {"tenant_id": tenant, "document_id": document_id}
-    if workflow_id is not None:
-        filters["workflow_id"] = workflow_key
-    qs = model.objects.filter(**filters).order_by("-changed_at")
-    return qs.first()
 
 
 def _apply_cursor_filter(queryset, cursor: Optional[str]):

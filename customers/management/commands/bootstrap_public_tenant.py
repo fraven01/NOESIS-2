@@ -3,6 +3,7 @@ from django.core.management.base import BaseCommand
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
+from documents.collection_service import CollectionService
 
 
 class Command(BaseCommand):
@@ -10,13 +11,40 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--domain", default="localhost")
+        parser.add_argument(
+            "--skip-collections",
+            action="store_true",
+            help="Skip bootstrapping system collections",
+        )
 
     def handle(self, *args, **options):
         # Always operate on the public schema when creating the public tenant/domain
         with schema_context(get_public_schema_name()):
-            tenant, _ = Tenant.objects.get_or_create(
+            tenant, created = Tenant.objects.get_or_create(
                 schema_name=settings.PUBLIC_SCHEMA_NAME, defaults={"name": "Public"}
             )
             Domain.objects.get_or_create(
                 domain=options["domain"], tenant=tenant, defaults={"is_primary": True}
             )
+
+            # Bootstrap system collections for the public tenant
+            if not options.get("skip_collections"):
+                self.stdout.write("Bootstrapping system collections...")
+                try:
+                    service = CollectionService()
+                    collection_id = service.ensure_manual_collection(
+                        tenant=tenant,
+                        slug="manual-search",
+                        label="Manual Search",
+                    )
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"✅ System collection 'manual-search' ready (ID: {collection_id})"
+                        )
+                    )
+                except Exception as exc:
+                    self.stdout.write(
+                        self.style.WARNING(
+                            f"⚠️  Could not bootstrap collections: {str(exc)}"
+                        )
+                    )

@@ -4,7 +4,6 @@ from collections import Counter
 from dataclasses import dataclass
 import json
 from typing import Mapping, Sequence
-from uuid import UUID
 
 from django.urls import reverse
 from django_tenants.utils import schema_context
@@ -12,7 +11,7 @@ from structlog.stdlib import get_logger
 
 from customers.models import Tenant
 from documents.collection_service import CollectionService
-from documents.models import DocumentCollection, DocumentLifecycleState
+from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository
 
 logger = get_logger(__name__)
@@ -128,15 +127,8 @@ class DocumentSpaceService:
                         document_refs=document_refs,
                         latest_only=params.latest_only,
                     )
-                    lifecycle_map = self._load_lifecycle_states(
-                        tenant_id=tenant_schema,
-                        documents=fetched_docs,
-                    )
                     for doc in fetched_docs:
-                        lifecycle_key = (doc.ref.document_id, doc.ref.workflow_id)
-                        payload = self._serialize_document_payload(
-                            doc, lifecycle_map.get(lifecycle_key)
-                        )
+                        payload = self._serialize_document_payload(doc)
                         documents_payload.append(payload)
 
         filtered_documents = self._filter_documents(
@@ -196,8 +188,12 @@ class DocumentSpaceService:
         document_refs: Sequence,
         latest_only: bool,
     ) -> list:
+        logger.info(f"DEBUG: _fetch_documents called with {len(document_refs)} refs")
         fetched_docs = []
-        for ref in document_refs:
+        for idx, ref in enumerate(document_refs):
+            logger.info(
+                f"DEBUG: Fetching ref {idx}: document_id={ref.document_id}, workflow_id={ref.workflow_id}, version={ref.version}"
+            )
             try:
                 doc = repository.get(
                     tenant_id=tenant_id,
@@ -206,38 +202,30 @@ class DocumentSpaceService:
                     prefer_latest=latest_only or ref.version is None,
                     workflow_id=ref.workflow_id,
                 )
-            except Exception:
+                if doc is None:
+                    logger.warning(
+                        f"DEBUG: repository.get returned None for document_id={ref.document_id}"
+                    )
+                else:
+                    logger.info(
+                        f"DEBUG: Successfully fetched document {ref.document_id}"
+                    )
+            except Exception as e:
                 logger.warning(
                     "document_space.document_fetch_failed",
                     exc_info=True,
                     extra={
                         "tenant_id": tenant_id,
                         "document_id": str(getattr(ref, "document_id", "")),
+                        "error": str(e),
                     },
                 )
                 continue
             if doc is None:
                 continue
             fetched_docs.append(doc)
+        logger.info(f"DEBUG: _fetch_documents returning {len(fetched_docs)} documents")
         return fetched_docs
-
-    def _load_lifecycle_states(
-        self,
-        *,
-        tenant_id: str,
-        documents: Sequence,
-    ) -> dict[tuple[UUID, str | None], DocumentLifecycleState]:
-        if not documents:
-            return {}
-        document_ids = [doc.ref.document_id for doc in documents]
-        lifecycle_records = DocumentLifecycleState.objects.filter(
-            tenant_id_id=tenant_id,
-            document_id__in=document_ids,
-        )
-        lifecycle_map: dict[tuple[UUID, str | None], DocumentLifecycleState] = {}
-        for record in lifecycle_records:
-            lifecycle_map[(record.document_id, record.workflow_id or "")] = record
-        return lifecycle_map
 
     def _serialize_collection(
         self, collection: DocumentCollection
@@ -337,20 +325,49 @@ class DocumentSpaceService:
     def _serialize_document_payload(
         self,
         doc,
-        lifecycle: DocumentLifecycleState | None,
     ) -> dict[str, object]:
         external_ref = getattr(doc.meta, "external_ref", None) or {}
-        lifecycle_state = (
-            lifecycle.state if lifecycle else getattr(doc, "lifecycle_state", "")
-        )
+        lifecycle_state = getattr(doc, "lifecycle_state", "")
+
+        # Extract lifecycle metadata from document.metadata['lifecycle']
+        lifecycle_meta = {}
+        doc_metadata = getattr(doc, "metadata", None)
+        if isinstance(doc_metadata, dict):
+            lifecycle_meta = doc_metadata.get("lifecycle", {})
+            if not isinstance(lifecycle_meta, dict):
+                lifecycle_meta = {}
+
+        # Read changed_at from lifecycle metadata or lifecycle_updated_at field
+        changed_at = None
+        changed_str = lifecycle_meta.get("changed_at")
+        if changed_str:
+            try:
+                from datetime import datetime, timezone as dt_timezone
+
+                parsed = datetime.fromisoformat(str(changed_str))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=dt_timezone.utc)
+                changed_at = parsed
+            except (ValueError, AttributeError):
+                pass
+
+        if changed_at is None:
+            lifecycle_updated_at = getattr(doc, "lifecycle_updated_at", None)
+            if lifecycle_updated_at:
+                changed_at = lifecycle_updated_at
+
         ingestion_payload = {
             "state": lifecycle_state,
-            "changed_at": getattr(lifecycle, "changed_at", None),
-            "trace_id": getattr(lifecycle, "trace_id", ""),
-            "run_id": getattr(lifecycle, "run_id", ""),
-            "ingestion_run_id": getattr(lifecycle, "ingestion_run_id", ""),
-            "reason": getattr(lifecycle, "reason", ""),
-            "policy_events": list(getattr(lifecycle, "policy_events", []) or []),
+            "changed_at": changed_at,
+            "trace_id": lifecycle_meta.get("trace_id", "") or "",
+            "run_id": lifecycle_meta.get("run_id", "") or "",
+            "ingestion_run_id": lifecycle_meta.get("ingestion_run_id", "") or "",
+            "reason": lifecycle_meta.get("reason", "") or "",
+            "policy_events": (
+                list(lifecycle_meta.get("policy_events", []))
+                if lifecycle_meta.get("policy_events")
+                else []
+            ),
         }
         payload = {
             "document_id": str(doc.ref.document_id),

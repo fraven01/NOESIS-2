@@ -7,7 +7,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 from math import isfinite
-import math
 import re
 from typing import (
     Any,
@@ -338,7 +337,9 @@ def _ensure_optional_mapping(
         return None
     if not isinstance(value, Mapping):
         raise ValueError(code)
-    return dict(value)
+    from types import MappingProxyType
+
+    return MappingProxyType(dict(value))
 
 
 def _ensure_optional_language(value: Optional[str]) -> Optional[str]:

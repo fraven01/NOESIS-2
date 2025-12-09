@@ -880,11 +880,14 @@ def web_search_ingest_selected(request):
             )
 
         # Build payload for crawl_selected
+        # Pass collection_key (slug) instead of just UUID to avoid duplicate creation
         crawl_payload = {
             "urls": urls,
             "workflow_id": "web-search-ingestion",
-            "collection_id": collection_id,
+            "collection_id": collection_id,  # Keep for backwards compat
+            "collection_key": "manual-search",  # NEW: Use key for reliable lookup
             "mode": mode,
+            "ingestion_run_id": str(uuid4()),  # Required for ingestion graphs
         }
 
         # Create a new request with the crawl payload
@@ -904,7 +907,11 @@ def web_search_ingest_selected(request):
         case_id = str(data.get("case_id") or "").strip() or None
         if case_id:
             crawl_request.META.setdefault("HTTP_X_CASE_ID", case_id)
-        crawl_request.META.setdefault("HTTP_X_TRACE_ID", str(uuid4()))
+
+        # Propagate trace_id from parent or generate new one
+        parent_trace_id = str(data.get("trace_id") or "").strip()
+        trace_id = parent_trace_id if parent_trace_id else str(uuid4())
+        crawl_request.META.setdefault("HTTP_X_TRACE_ID", trace_id)
 
         # Copy tenant context
         if hasattr(request, "tenant"):
@@ -1157,6 +1164,7 @@ def crawler_submit(request):
             "content": data.get("content"),
             "collection_id": data.get("collection_id"),
             "manual_review": data.get("review"),
+            "ingestion_run_id": str(uuid4()),  # Required for crawler ingestion graph
         }
 
         # Handle booleans (checkboxes send 'on' or nothing)
@@ -1284,12 +1292,19 @@ def ingestion_submit(request):
         tenant_id, tenant_schema = _tenant_context_from_request(request)
         case_id = request.POST.get("case_id") or request.headers.get("X-Case-ID")
 
+        # Resolve manual collection for tenant
+        manual_collection_id, _ = _resolve_manual_collection(
+            tenant_id, None, ensure=True
+        )
+
         # Prepare metadata for upload
         meta = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "case_id": case_id,
             "trace_id": uuid4().hex,
+            "collection_id": manual_collection_id,  # Explicitly set collection
+            "workflow_id": "document-upload-manual",  # Workflow type for tracing
         }
 
         # Upload document
@@ -1312,6 +1327,8 @@ def ingestion_submit(request):
         run_payload = {
             "document_ids": [document_id],
             "case_id": case_id,
+            "collection_id": manual_collection_id,  # Explicitly set collection
+            "workflow_id": "document-upload-manual",  # Workflow type for tracing
         }
 
         run_response = start_ingestion_run(
@@ -1454,6 +1471,8 @@ def chat_submit(request):
             "tenant_schema": tenant_schema,
             "case_id": case_id,
             "trace_id": uuid4().hex,
+            "run_id": str(uuid4()),  # Required for ScopeContext validation
+            "workflow_id": "rag-chat-manual",  # Workflow type for tracing
             # Ensure we have a valid tool context
             "tool_context": {
                 "tenant_id": tenant_id,

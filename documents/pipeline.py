@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from importlib import import_module
 from time import perf_counter
-from types import MappingProxyType
+
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -112,7 +112,7 @@ def _normalise_collection_mapping(
     mapping: Optional[Mapping[CollectionKey, float]],
 ) -> Mapping[str, float]:
     if mapping is None:
-        return MappingProxyType({})
+        return {}
     if not isinstance(mapping, Mapping):
         raise ValueError("caption_min_confidence_by_collection_type")
     normalised: dict[str, float] = {}

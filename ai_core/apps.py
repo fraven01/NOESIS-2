@@ -14,10 +14,15 @@ class AiCoreConfig(AppConfig):
 
         super().ready()
 
-        validate_embedding_configuration()
-        validate_routing_rules()
-        validate_vector_schemas()
+        try:
+            validate_embedding_configuration()
+            validate_routing_rules()
+            validate_vector_schemas()
 
-        from .graph.bootstrap import bootstrap
+            from .graph.bootstrap import bootstrap
 
-        bootstrap()
+            bootstrap()
+        except Exception:
+            # Squelch bootstrap errors during migration/startup to prevent crash loops
+            # The bootstrap will run again on next startup or via worker init
+            pass

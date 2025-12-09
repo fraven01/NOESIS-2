@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from types import MappingProxyType
+
 from typing import Any, Mapping, Optional, Sequence, Tuple
 
 __all__ = ["AssetIngestPayload"]
@@ -23,7 +23,7 @@ class AssetIngestPayload:
     context_after: Optional[str] = None
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
-        meta = MappingProxyType(dict(self.metadata))
+        meta = dict(self.metadata)
         object.__setattr__(self, "metadata", meta)
         bbox = self._coerce_bbox(self.bbox)
         object.__setattr__(self, "bbox", bbox)

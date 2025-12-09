@@ -189,10 +189,18 @@ class BlobStorageAdapter:
         Returns:
             BlobDescriptor with checksum (from content or URI hash)
         """
-        try:
-            payload = self._storage.get(file_uri)
-        except (KeyError, ValueError):
-            payload = None
+        payload = None
+        # Try to resolve content if it looks like a local object reference
+        # We don't want to blindly try storage.get() on http/s URLs as that might confusingly
+        # fail if the storage backend is file-based.
+        is_remote = "://" in file_uri and not file_uri.startswith("file://")
+
+        if not is_remote:
+            try:
+                payload = self._storage.get(file_uri)
+            except (KeyError, ValueError, FileNotFoundError):
+                # Treating as external/unreachable reference
+                payload = None
 
         if payload is not None:
             # File exists, compute content hash

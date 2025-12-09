@@ -1562,8 +1562,11 @@ def crawl_selected(request):
             raise ValueError(f"Payload serialization failed: {exc}") from exc
 
     except Exception as e:
-        logger.exception("crawl_selected.failed")
-        print(f"DEBUG: crawl_selected exception: {e}")
+        import traceback
+
+        logger.error(f"crawl_selected traceback: {traceback.format_exc()}")
+        logger.error(f"crawl_selected exception: {repr(e)}", exc_info=True)
+        print(f"DEBUG: crawl_selected exception REPR: {repr(e)}")
         return JsonResponse({"error": str(e)}, status=500)
 
 

@@ -5,6 +5,7 @@ import json
 from importlib import import_module
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Mapping, Optional, Tuple
+from contextlib import nullcontext
 from uuid import UUID
 
 from celery import group, shared_task
@@ -600,302 +601,331 @@ def process_document(
     vector_space_schema: Optional[str] = None
     vector_space_backend: Optional[str] = None
     vector_space_dimension: Optional[int] = None
+
+    # Ensure correct tenant schema context for DB operations
+    from django.db import connection
+    from django_tenants.utils import schema_context
+
+    target_schema = tenant_schema or tenant
+
     try:
-        current_step = "resolve_profile"
-        state["current_step"] = current_step
-        _write_pipeline_state(tenant, case, document_id, state)
-        profile_binding = resolve_ingestion_profile(embedding_profile)
-        resolved_profile_id = profile_binding.profile_id
-        vector_space = profile_binding.resolution.vector_space
-        vector_space_id = vector_space.id
-        vector_space_schema = vector_space.schema
-        vector_space_backend = vector_space.backend
-        vector_space_dimension = vector_space.dimension
-
-        services = import_module("ai_core.services")
-        repository = services._get_documents_repository()  # type: ignore[attr-defined]
-        try:
-            document_uuid = UUID(str(document_id))
-        except (TypeError, ValueError, AttributeError) as exc:
-            error = InputError(
-                "invalid_document_id",
-                "Document identifier is not a valid UUID.",
-                context={"document_id": document_id},
+        with schema_context(target_schema) if target_schema else nullcontext():
+            log.info(
+                "process_document activated schema",
+                extra={
+                    "tenant": tenant,
+                    "tenant_schema": tenant_schema,
+                    "active_schema": connection.schema_name,
+                },
             )
-            state["last_error"] = {
-                "step": current_step,
-                "message": str(error),
-                "retry": getattr(self.request, "retries", 0),
-                "failed_at": time.time(),
-            }
+            current_step = "resolve_profile"
+            state["current_step"] = current_step
             _write_pipeline_state(tenant, case, document_id, state)
-            raise error from exc
+            profile_binding = resolve_ingestion_profile(embedding_profile)
+            resolved_profile_id = profile_binding.profile_id
+            vector_space = profile_binding.resolution.vector_space
+            vector_space_id = vector_space.id
+            vector_space_schema = vector_space.schema
+            vector_space_backend = vector_space.backend
+            vector_space_dimension = vector_space.dimension
 
-        normalized_document = repository.get(tenant, document_uuid, prefer_latest=True)
-        if normalized_document is None:
-            error = InputError(
-                "document_not_found",
-                "Document payload unavailable for ingestion.",
-                context={"document_id": document_id},
+            services = import_module("ai_core.services")
+            repository = services._get_documents_repository()  # type: ignore[attr-defined]
+            try:
+                document_uuid = UUID(str(document_id))
+            except (TypeError, ValueError, AttributeError) as exc:
+                error = InputError(
+                    "invalid_document_id",
+                    "Document identifier is not a valid UUID.",
+                    context={"document_id": document_id},
+                )
+                state["last_error"] = {
+                    "step": current_step,
+                    "message": str(error),
+                    "retry": getattr(self.request, "retries", 0),
+                    "failed_at": time.time(),
+                }
+                _write_pipeline_state(tenant, case, document_id, state)
+                raise error from exc
+
+            normalized_document = repository.get(
+                tenant, document_uuid, prefer_latest=True
             )
-            state["last_error"] = {
-                "step": current_step,
-                "message": str(error),
-                "retry": getattr(self.request, "retries", 0),
-                "failed_at": time.time(),
+
+            if normalized_document is None:
+                error = InputError(
+                    "document_not_found",
+                    "Document payload unavailable for ingestion.",
+                    context={"document_id": document_id},
+                )
+                state["last_error"] = {
+                    "step": current_step,
+                    "message": str(error),
+                    "retry": getattr(self.request, "retries", 0),
+                    "failed_at": time.time(),
+                }
+                _write_pipeline_state(tenant, case, document_id, state)
+                raise error
+
+            blob_payload = _hydrate_blob_payload(repository, normalized_document)
+            blob_media_type = getattr(normalized_document.blob, "media_type", None)
+            meta_media_type = _extract_meta_media_type(normalized_document)
+            if not blob_media_type and meta_media_type:
+                object.__setattr__(
+                    normalized_document.blob, "media_type", meta_media_type
+                )
+                blob_media_type = meta_media_type
+
+            meta: Dict[str, object] = {
+                "tenant_id": tenant,
+                "case_id": case,
+                "workflow_id": normalized_document.ref.workflow_id,
+                "content_hash": normalized_document.checksum,
+                "document_id": str(normalized_document.ref.document_id),
+                "trace_id": trace_id,
             }
-            _write_pipeline_state(tenant, case, document_id, state)
-            raise error
-
-        blob_payload = _hydrate_blob_payload(repository, normalized_document)
-        blob_media_type = getattr(normalized_document.blob, "media_type", None)
-        meta_media_type = _extract_meta_media_type(normalized_document)
-        if not blob_media_type and meta_media_type:
-            object.__setattr__(normalized_document.blob, "media_type", meta_media_type)
-            blob_media_type = meta_media_type
-
-        meta: Dict[str, object] = {
-            "tenant_id": tenant,
-            "case_id": case,
-            "workflow_id": normalized_document.ref.workflow_id,
-            "content_hash": normalized_document.checksum,
-            "document_id": str(normalized_document.ref.document_id),
-            "trace_id": trace_id,
-        }
-        document_collection_id = getattr(
-            normalized_document.meta, "document_collection_id", None
-        )
-        if not document_collection_id:
             document_collection_id = getattr(
-                normalized_document.ref, "document_collection_id", None
+                normalized_document.meta, "document_collection_id", None
             )
-        if tenant_schema:
-            meta["tenant_schema"] = tenant_schema
-        if normalized_document.ref.collection_id is not None:
-            meta["collection_id"] = str(normalized_document.ref.collection_id)
-        if document_collection_id:
-            meta["document_collection_id"] = str(document_collection_id)
+            if not document_collection_id:
+                document_collection_id = getattr(
+                    normalized_document.ref, "document_collection_id", None
+                )
+            if tenant_schema:
+                meta["tenant_schema"] = tenant_schema
+            if normalized_document.ref.collection_id is not None:
+                meta["collection_id"] = str(normalized_document.ref.collection_id)
+            if document_collection_id:
+                meta["document_collection_id"] = str(document_collection_id)
 
-        if not meta.get("tenant_id"):
-            raise InputError(
-                "missing_tenant_id", "tenant_id is required in document meta"
+            if not meta.get("tenant_id"):
+                raise InputError(
+                    "missing_tenant_id", "tenant_id is required in document meta"
+                )
+            if not meta.get("trace_id"):
+                raise InputError(
+                    "missing_trace_id", "trace_id is required in document meta"
+                )
+
+            pipeline_config_overrides = getattr(
+                normalized_document.meta, "pipeline_config", None
             )
-        if not meta.get("trace_id"):
-            raise InputError(
-                "missing_trace_id", "trace_id is required in document meta"
+            normalized_pipeline_config: Dict[str, object] | None = None
+            if isinstance(pipeline_config_overrides, Mapping):
+                normalized_pipeline_config = dict(pipeline_config_overrides)
+                meta["pipeline_config"] = dict(normalized_pipeline_config)
+            elif isinstance(state.get("pipeline_config"), Mapping):
+                normalized_pipeline_config = dict(state["pipeline_config"])
+            else:
+                existing_meta = state.get("meta")
+                if isinstance(existing_meta, Mapping):
+                    existing_meta_override = existing_meta.get("pipeline_config")
+                    if isinstance(existing_meta_override, Mapping):
+                        normalized_pipeline_config = dict(existing_meta_override)
+
+            title = getattr(normalized_document.meta, "title", None)
+            if title:
+                meta["title"] = title
+            language = getattr(normalized_document.meta, "language", None)
+            if language:
+                meta["language"] = language
+            tags = list(getattr(normalized_document.meta, "tags", []) or [])
+            if tags:
+                meta["tags"] = tags
+            origin_uri = getattr(normalized_document.meta, "origin_uri", None)
+            if origin_uri:
+                meta["origin_uri"] = origin_uri
+            if blob_media_type:
+                meta["media_type"] = blob_media_type
+
+            external_id = _extract_external_id(normalized_document)
+            if not external_id:
+                blob_size = getattr(normalized_document.blob, "size", None)
+                size_hint = int(blob_size) if isinstance(blob_size, int) else None
+                external_id = make_fallback_external_id(
+                    str(normalized_document.ref.document_id),
+                    size_hint,
+                    blob_payload,
+                )
+            meta["external_id"] = external_id
+
+            parse_stats_existing = getattr(
+                normalized_document.meta, "parse_stats", None
             )
+            if isinstance(parse_stats_existing, Mapping):
+                meta["parse_stats"] = dict(parse_stats_existing)
 
-        pipeline_config_overrides = getattr(
-            normalized_document.meta, "pipeline_config", None
-        )
-        normalized_pipeline_config: Dict[str, object] | None = None
-        if isinstance(pipeline_config_overrides, Mapping):
-            normalized_pipeline_config = dict(pipeline_config_overrides)
-            meta["pipeline_config"] = dict(normalized_pipeline_config)
-        elif isinstance(state.get("pipeline_config"), Mapping):
-            normalized_pipeline_config = dict(state["pipeline_config"])
-        else:
-            existing_meta = state.get("meta")
-            if isinstance(existing_meta, Mapping):
-                existing_meta_override = existing_meta.get("pipeline_config")
-                if isinstance(existing_meta_override, Mapping):
-                    normalized_pipeline_config = dict(existing_meta_override)
+            if resolved_profile_id:
+                meta["embedding_profile"] = resolved_profile_id
+            if vector_space_id:
+                meta["vector_space_id"] = vector_space_id
+            if vector_space_schema:
+                meta["vector_space_schema"] = vector_space_schema
+            if vector_space_backend:
+                meta["vector_space_backend"] = vector_space_backend
+            if vector_space_dimension is not None:
+                meta["vector_space_dimension"] = vector_space_dimension
 
-        title = getattr(normalized_document.meta, "title", None)
-        if title:
-            meta["title"] = title
-        language = getattr(normalized_document.meta, "language", None)
-        if language:
-            meta["language"] = language
-        tags = list(getattr(normalized_document.meta, "tags", []) or [])
-        if tags:
-            meta["tags"] = tags
-        origin_uri = getattr(normalized_document.meta, "origin_uri", None)
-        if origin_uri:
-            meta["origin_uri"] = origin_uri
-        if blob_media_type:
-            meta["media_type"] = blob_media_type
-
-        external_id = _extract_external_id(normalized_document)
-        if not external_id:
-            blob_size = getattr(normalized_document.blob, "size", None)
-            size_hint = int(blob_size) if isinstance(blob_size, int) else None
-            external_id = make_fallback_external_id(
-                str(normalized_document.ref.document_id),
-                size_hint,
-                blob_payload,
-            )
-        meta["external_id"] = external_id
-
-        parse_stats_existing = getattr(normalized_document.meta, "parse_stats", None)
-        if isinstance(parse_stats_existing, Mapping):
-            meta["parse_stats"] = dict(parse_stats_existing)
-
-        if resolved_profile_id:
-            meta["embedding_profile"] = resolved_profile_id
-        if vector_space_id:
-            meta["vector_space_id"] = vector_space_id
-        if vector_space_schema:
-            meta["vector_space_schema"] = vector_space_schema
-        if vector_space_backend:
-            meta["vector_space_backend"] = vector_space_backend
-        if vector_space_dimension is not None:
-            meta["vector_space_dimension"] = vector_space_dimension
-
-        sanitized_meta_json: Dict[str, object] = {
-            "external_id": external_id,
-            "workflow_id": normalized_document.ref.workflow_id,
-            "document_id": str(normalized_document.ref.document_id),
-        }
-        if resolved_profile_id:
-            sanitized_meta_json["embedding_profile"] = resolved_profile_id
-        if vector_space_id:
-            sanitized_meta_json["vector_space_id"] = vector_space_id
-        if vector_space_schema:
-            sanitized_meta_json["vector_space_schema"] = vector_space_schema
-        if meta.get("collection_id"):
-            sanitized_meta_json["collection_id"] = meta["collection_id"]
-        if document_collection_id:
-            sanitized_meta_json["document_collection_id"] = str(document_collection_id)
-        if title:
-            sanitized_meta_json["title"] = title
-        if language:
-            sanitized_meta_json["language"] = language
-        if origin_uri:
-            sanitized_meta_json["origin_uri"] = origin_uri
-        if blob_media_type:
-            sanitized_meta_json["media_type"] = blob_media_type
-        object_store.write_json(
-            _meta_store_path(tenant, case, document_id), sanitized_meta_json
-        )
-
-        state_meta: Dict[str, object] = {
-            "external_id": external_id,
-            "embedding_profile": resolved_profile_id,
-            "vector_space_id": vector_space_id,
-            "workflow_id": normalized_document.ref.workflow_id,
-            "collection_id": meta.get("collection_id"),
-            "content_hash": normalized_document.checksum,
-            "document_id": str(normalized_document.ref.document_id),
-        }
-        if document_collection_id:
-            state_meta["document_collection_id"] = str(document_collection_id)
-        if normalized_pipeline_config is not None:
-            state_meta["pipeline_config"] = dict(normalized_pipeline_config)
-            state["pipeline_config"] = dict(normalized_pipeline_config)
-        state["meta"] = state_meta
-        _write_pipeline_state(tenant, case, document_id, state)
-
-        pipeline_config = _build_document_pipeline_config(state=state, meta=meta)
-        dispatcher = _build_parser_dispatcher()
-        current_step = "parse"
-        state["current_step"] = current_step
-        _write_pipeline_state(tenant, case, document_id, state)
-        parsed_result = dispatcher.parse(normalized_document, pipeline_config)
-        parse_artifact, reused = _ensure_step(
-            tenant,
-            case,
-            document_id,
-            state,
-            current_step,
-            lambda: _persist_parsed_text(
-                tenant, case, normalized_document.ref.document_id, parsed_result
-            ),
-        )
-        if not reused and parse_artifact.get("path"):
-            created_artifacts.append((current_step, str(parse_artifact["path"])))
-
-        if parsed_result.statistics:
-            meta["parse_stats"] = dict(parsed_result.statistics)
-            state.setdefault("meta", {})["parse_stats"] = dict(parsed_result.statistics)
-            _write_pipeline_state(tenant, case, document_id, state)
-        parse_path = parse_artifact.get("path")
-        blocks_path = parse_artifact.get("blocks_path")
-        if blocks_path:
-            meta["parsed_blocks_path"] = str(blocks_path)
-            state.setdefault("meta", {})["parsed_blocks_path"] = str(blocks_path)
-        if not parse_path:
-            raise InputError(
-                "parse_missing_text",
-                "Parsed document did not yield textual content.",
-                context={"document_id": document_id},
-            )
-
-        current_step = "pii_mask"
-        state["current_step"] = current_step
-        if not getattr(settings, "INGESTION_PII_MASK_ENABLED", True):
-            masked = {"path": parse_path}
-            reused = True
-            # Mark step as skipped in state for traceability
-            state.setdefault("steps", {})[current_step] = {
-                "path": parse_path,
-                "skipped": True,
-                "completed_at": time.time(),
-                "cleaned": True,
+            sanitized_meta_json: Dict[str, object] = {
+                "external_id": external_id,
+                "workflow_id": normalized_document.ref.workflow_id,
+                "document_id": str(normalized_document.ref.document_id),
             }
+            if resolved_profile_id:
+                sanitized_meta_json["embedding_profile"] = resolved_profile_id
+            if vector_space_id:
+                sanitized_meta_json["vector_space_id"] = vector_space_id
+            if vector_space_schema:
+                sanitized_meta_json["vector_space_schema"] = vector_space_schema
+            if meta.get("collection_id"):
+                sanitized_meta_json["collection_id"] = meta["collection_id"]
+            if document_collection_id:
+                sanitized_meta_json["document_collection_id"] = str(
+                    document_collection_id
+                )
+            if title:
+                sanitized_meta_json["title"] = title
+            if language:
+                sanitized_meta_json["language"] = language
+            if origin_uri:
+                sanitized_meta_json["origin_uri"] = origin_uri
+            if blob_media_type:
+                sanitized_meta_json["media_type"] = blob_media_type
+            object_store.write_json(
+                _meta_store_path(tenant, case, document_id), sanitized_meta_json
+            )
+
+            state_meta: Dict[str, object] = {
+                "external_id": external_id,
+                "embedding_profile": resolved_profile_id,
+                "vector_space_id": vector_space_id,
+                "workflow_id": normalized_document.ref.workflow_id,
+                "collection_id": meta.get("collection_id"),
+                "content_hash": normalized_document.checksum,
+                "document_id": str(normalized_document.ref.document_id),
+            }
+            if document_collection_id:
+                state_meta["document_collection_id"] = str(document_collection_id)
+            if normalized_pipeline_config is not None:
+                state_meta["pipeline_config"] = dict(normalized_pipeline_config)
+                state["pipeline_config"] = dict(normalized_pipeline_config)
+            state["meta"] = state_meta
             _write_pipeline_state(tenant, case, document_id, state)
-        else:
-            masked, reused = _ensure_step(
+
+            pipeline_config = _build_document_pipeline_config(state=state, meta=meta)
+            dispatcher = _build_parser_dispatcher()
+            current_step = "parse"
+            state["current_step"] = current_step
+            _write_pipeline_state(tenant, case, document_id, state)
+            parsed_result = dispatcher.parse(normalized_document, pipeline_config)
+            parse_artifact, reused = _ensure_step(
                 tenant,
                 case,
                 document_id,
                 state,
                 current_step,
-                lambda: pipe.pii_mask(meta, parse_path),
+                lambda: _persist_parsed_text(
+                    tenant, case, normalized_document.ref.document_id, parsed_result
+                ),
             )
-            if not reused and masked.get("path"):
-                created_artifacts.append((current_step, str(masked["path"])))
+            if not reused and parse_artifact.get("path"):
+                created_artifacts.append((current_step, str(parse_artifact["path"])))
 
-        current_step = "chunk"
-        state["current_step"] = current_step
-        chunks, reused = _ensure_step(
-            tenant,
-            case,
-            document_id,
-            state,
-            current_step,
-            lambda: pipe.chunk(meta, masked["path"]),
-        )
-        if not reused and chunks.get("path"):
-            created_artifacts.append((current_step, str(chunks["path"])))
+            if parsed_result.statistics:
+                meta["parse_stats"] = dict(parsed_result.statistics)
+                state.setdefault("meta", {})["parse_stats"] = dict(
+                    parsed_result.statistics
+                )
+                _write_pipeline_state(tenant, case, document_id, state)
+            parse_path = parse_artifact.get("path")
+            blocks_path = parse_artifact.get("blocks_path")
+            if blocks_path:
+                meta["parsed_blocks_path"] = str(blocks_path)
+                state.setdefault("meta", {})["parsed_blocks_path"] = str(blocks_path)
+            if not parse_path:
+                raise InputError(
+                    "parse_missing_text",
+                    "Parsed document did not yield textual content.",
+                    context={"document_id": document_id},
+                )
 
-        current_step = "embed"
-        state["current_step"] = current_step
-        emb, reused = _ensure_step(
-            tenant,
-            case,
-            document_id,
-            state,
-            current_step,
-            lambda: pipe.embed(meta, chunks["path"]),
-        )
-        if not reused and emb.get("path"):
-            created_artifacts.append((current_step, str(emb["path"])))
+            current_step = "pii_mask"
+            state["current_step"] = current_step
+            if not getattr(settings, "INGESTION_PII_MASK_ENABLED", True):
+                masked = {"path": parse_path}
+                reused = True
+                # Mark step as skipped in state for traceability
+                state.setdefault("steps", {})[current_step] = {
+                    "path": parse_path,
+                    "skipped": True,
+                    "completed_at": time.time(),
+                    "cleaned": True,
+                }
+                _write_pipeline_state(tenant, case, document_id, state)
+            else:
+                masked, reused = _ensure_step(
+                    tenant,
+                    case,
+                    document_id,
+                    state,
+                    current_step,
+                    lambda: pipe.pii_mask(meta, parse_path),
+                )
+                if not reused and masked.get("path"):
+                    created_artifacts.append((current_step, str(masked["path"])))
 
-        current_step = "upsert"
-        state["current_step"] = current_step
-        _write_pipeline_state(tenant, case, document_id, state)
-        try:
-            upsert_result = pipe.upsert(meta, emb["path"], tenant_schema=tenant_schema)
-        except Exception as exc:
-            retries = getattr(self.request, "retries", 0)
-            state["last_error"] = {
-                "step": current_step,
-                "message": str(exc),
-                "retry": retries,
-                "failed_at": time.time(),
-            }
+            current_step = "chunk"
+            state["current_step"] = current_step
+            chunks, reused = _ensure_step(
+                tenant,
+                case,
+                document_id,
+                state,
+                current_step,
+                lambda: pipe.chunk(meta, masked["path"]),
+            )
+            if not reused and chunks.get("path"):
+                created_artifacts.append((current_step, str(chunks["path"])))
+
+            current_step = "embed"
+            state["current_step"] = current_step
+            emb, reused = _ensure_step(
+                tenant,
+                case,
+                document_id,
+                state,
+                current_step,
+                lambda: pipe.embed(meta, chunks["path"]),
+            )
+            if not reused and emb.get("path"):
+                created_artifacts.append((current_step, str(emb["path"])))
+
+            current_step = "upsert"
+            state["current_step"] = current_step
             _write_pipeline_state(tenant, case, document_id, state)
-            setattr(exc, "_ingestion_step", current_step)
-            raise
-        state.setdefault("steps", {})["upsert"] = {
-            "completed_at": time.time(),
-            "cleaned": True,
-        }
-        state["last_error"] = None
-        state["completed_at"] = time.time()
-        state.pop("current_step", None)
-        _write_pipeline_state(tenant, case, document_id, state)
+            try:
+                upsert_result = pipe.upsert(
+                    meta, emb["path"], tenant_schema=tenant_schema
+                )
+            except Exception as exc:
+                retries = getattr(self.request, "retries", 0)
+                state["last_error"] = {
+                    "step": current_step,
+                    "message": str(exc),
+                    "retry": retries,
+                    "failed_at": time.time(),
+                }
+                _write_pipeline_state(tenant, case, document_id, state)
+                setattr(exc, "_ingestion_step", current_step)
+                raise
+            state.setdefault("steps", {})["upsert"] = {
+                "completed_at": time.time(),
+                "cleaned": True,
+            }
+            state["last_error"] = None
+            state["completed_at"] = time.time()
+            state.pop("current_step", None)
+            _write_pipeline_state(tenant, case, document_id, state)
     except InputError as exc:
         state["last_error"] = {
             "step": current_step,

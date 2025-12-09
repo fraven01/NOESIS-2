@@ -421,22 +421,24 @@ Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden
 - Produktion (Cloud Run)
   - LiteLLM authentifiziert gegen Vertex AI per Service Account (ADC), kein API‑Key nötig.
   - Regionensplit: Cloud Run `europe-west3`, Vertex `us-central1` (siehe `scripts/init_litellm_gcloud.sh` und CI).
-  - Routing: `MODEL_ROUTING.yaml` zeigt auf `vertex_ai/*` Modelle (z. B. `vertex_ai/gemini-2.5-flash`).
-  - Labels → Modelle (Vertex AI):
-    - `default`, `fast`, `simple-query`, `synthesize`, `extract`, `classify`, `analyze` → `vertex_ai/gemini-2.5-flash`
-    - `reasoning`, `draft` → `vertex_ai/gemini-2.5-pro`
-    - `embedding` → `vertex_ai/text-embedding-004`
-  - CI setzt `VERTEXAI_PROJECT` und `VERTEXAI_LOCATION` und pinned die Cloud‑Run Service‑Account‑Identität.
+  - Routing: `MODEL_ROUTING.yaml` zeigt auf OpenAI-Modelle (`gpt-5-nano`, `gpt-5.1`) plus `claude-4-5-sonnet` für Extraction und `oai-embed-small` für Embeddings.
+  - Labels → Modelle:
+    - `default`, `fast`, `simple-query`, `analyze` → `gpt-5-nano`
+    - `synthesize`, `reasoning`, `draft` → `gpt-5.1`
+    - `classify` → `gpt-5-nano`
+    - `extract` → `claude-4-5-sonnet`
+    - `embedding` → `oai-embed-small`
+  - CI setzt `OPENAI_API_KEY` (und optionale Anthropic-Keys) als Secrets.
 
 - Lokal (Docker Compose)
-  - Vertex ADC steht lokal i. d. R. nicht zur Verfügung. Nutze AI‑Studio (Gemini) über LiteLLM‑Config.
-  - Datei `config/litellm-config.yaml` ist für AI‑Studio konfiguriert (`gemini/*` + `GEMINI_API_KEY`).
+- Vertex ADC steht lokal i. d. R. nicht zur Verfügung. Nutze OpenAI über LiteLLM-Config.
+- Datei `config/litellm-config.yaml` ist für `openai/*` konfiguriert (`OPENAI_API_KEY` erforderlich).
   - Erzeuge eine lokale Routing‑Override, damit Django lokale Modelle anspricht:
     ```bash
     cp MODEL_ROUTING.local.yaml.sample MODEL_ROUTING.local.yaml
     ```
   - Setze in `.env` mindestens:
-    - `GEMINI_API_KEY=<dein_ai_studio_key>`
+    - `OPENAI_API_KEY=<dein_openai_key>`
     - `LITELLM_MASTER_KEY=<beliebiger_dev_key>`
   - Starte LiteLLM via Compose und teste:
     ```bash
@@ -445,9 +447,10 @@ Best Practice: In Dev einen gemeinsamen DB‑User für App und LiteLLM verwenden
     ```
 
   - Labels → Modelle (AI Studio):
-    - `default`, `fast`, `simple-query`, `synthesize`, `extract`, `classify`, `analyze` → `gemini-2.5-flash`
-    - `reasoning`, `draft` → `gemini-2.5-pro`
-    - `embedding` → `google/text-embedding-004`
+    - `default`, `fast`, `simple-query`, `analyze` → `gpt-5-nano`
+    - `synthesize`, `reasoning`, `draft` → `gpt-5.1`
+    - `extract` → `claude-4-5-sonnet`
+    - `embedding` → `oai-embed-small`
 
 Hinweis: `MODEL_ROUTING.local.yaml` ist git‑ignored und überschreibt nur lokal. In Prod wird ausschließlich `MODEL_ROUTING.yaml` verwendet.
 

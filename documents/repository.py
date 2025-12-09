@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from threading import RLock
@@ -11,10 +12,8 @@ from typing import TYPE_CHECKING, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID, uuid4
 
 from django.apps import apps
-from django.conf import settings
-from django.core.exceptions import AppRegistryNotReady, ImproperlyConfigured
-from django.db import transaction
-from django.utils.module_loading import import_string
+from django.db import connection
+from django_tenants.utils import schema_context
 
 from common.logging import get_log_context, log_context
 
@@ -95,6 +94,73 @@ def _normalize_optional_string(value: Optional[str]) -> Optional[str]:
         return None
     candidate = str(value).strip()
     return candidate or None
+
+
+def _resolve_changed_timestamp(
+    *,
+    lifecycle_meta: Mapping[str, object],
+    lifecycle_updated_at: Optional[datetime],
+) -> datetime:
+    changed_str = lifecycle_meta.get("changed_at") if lifecycle_meta else None
+    if changed_str:
+        try:
+            parsed = datetime.fromisoformat(str(changed_str))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed
+        except ValueError:
+            pass
+
+    if lifecycle_updated_at:
+        timestamp = lifecycle_updated_at
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        return timestamp
+
+    return datetime.now(timezone.utc)
+
+
+def _ingestion_log_fields(record: "IngestionRunRecord") -> Dict[str, object]:
+    """Structured log payload for ingestion run status transitions."""
+
+    payload: Dict[str, object] = {
+        "tenant_id": record.tenant_id,
+        "case": record.case or "",
+        "run_id": record.run_id,
+        "status": record.status,
+        "trace_id": record.trace_id or "",
+        "collection_id": record.collection_id or "",
+        "embedding_profile": record.embedding_profile or "",
+        "source": record.source or "",
+        "document_ids_count": len(record.document_ids),
+        "invalid_document_ids_count": len(record.invalid_document_ids),
+        "started_at": record.started_at or "",
+        "finished_at": record.finished_at or "",
+    }
+    if record.duration_ms is not None:
+        payload["duration_ms"] = float(record.duration_ms)
+    if record.inserted_documents is not None:
+        payload["inserted_documents"] = int(record.inserted_documents)
+    if record.replaced_documents is not None:
+        payload["replaced_documents"] = int(record.replaced_documents)
+    if record.skipped_documents is not None:
+        payload["skipped_documents"] = int(record.skipped_documents)
+    if record.inserted_chunks is not None:
+        payload["inserted_chunks"] = int(record.inserted_chunks)
+    if record.error:
+        payload["error"] = record.error
+    return payload
+
+
+def _log_ingestion_status(record: "IngestionRunRecord", *, event: str) -> None:
+    try:
+        logger.info(event, extra=_ingestion_log_fields(record))
+    except Exception:
+        logger.debug(
+            "ingestion_run_log_failed",
+            exc_info=True,
+            extra={"tenant_id": record.tenant_id, "run_id": record.run_id},
+        )
 
 
 def _resolve_runtime_metadata(
@@ -196,6 +262,7 @@ class IngestionRunRecord:
     trace_id: Optional[str] = None
     embedding_profile: Optional[str] = None
     source: Optional[str] = None
+    collection_id: Optional[str] = None
     started_at: Optional[str] = None
     finished_at: Optional[str] = None
     duration_ms: Optional[float] = None
@@ -214,6 +281,8 @@ class IngestionRunRecord:
             "document_ids": list(self.document_ids),
             "invalid_document_ids": list(self.invalid_document_ids),
         }
+        if self.collection_id:
+            payload["collection_id"] = self.collection_id
         if self.trace_id:
             payload["trace_id"] = self.trace_id
         if self.embedding_profile:
@@ -348,6 +417,7 @@ class DocumentLifecycleStore:
             for value in (_normalize_identifier(v) for v in invalid_document_ids)
             if value is not None
         )
+        normalized_collection = _normalize_optional_string(collection_id)
         record = IngestionRunRecord(
             tenant_id=tenant_id,
             case=case,
@@ -359,10 +429,12 @@ class DocumentLifecycleStore:
             trace_id=_normalize_optional_string(trace_id),
             embedding_profile=_normalize_optional_string(embedding_profile),
             source=_normalize_optional_string(source),
+            collection_id=normalized_collection,
         )
         key = (tenant_id, case or "")
         with self._lock:
             self._ingestion_runs[key] = record
+            _log_ingestion_status(record, event="ingestion_run_queued")
             return record.as_payload()
 
     def mark_ingestion_run_running(
@@ -388,6 +460,7 @@ class DocumentLifecycleStore:
             record.started_at = str(started_at)
             if normalized_ids:
                 record.document_ids = normalized_ids
+            _log_ingestion_status(record, event="ingestion_run_running")
             return record.as_payload()
 
     def mark_ingestion_run_completed(
@@ -432,6 +505,7 @@ class DocumentLifecycleStore:
             if normalized_ids:
                 record.document_ids = normalized_ids
             record.error = _normalize_optional_string(error)
+            _log_ingestion_status(record, event="ingestion_run_completed")
             return record.as_payload()
 
     def get_ingestion_run(
@@ -448,6 +522,495 @@ class DocumentLifecycleStore:
         with self._lock:
             self._documents.clear()
             self._ingestion_runs.clear()
+
+
+class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
+    """Database-backed lifecycle persistence for ingestion runs."""
+
+    def record_document_state(
+        self,
+        *,
+        tenant_id: str,
+        document_id: UUID,
+        workflow_id: Optional[str],
+        state: str,
+        reason: Optional[str] = None,
+        policy_events: Iterable[object] = (),
+        changed_at: Optional[datetime] = None,
+    ) -> DocumentLifecycleRecord:
+        normalized_state = _normalize_lifecycle_state(state)
+        normalized_workflow = (workflow_id or None) and str(workflow_id)
+        timestamp = _normalize_timestamp(changed_at)
+
+        Document = apps.get_model("documents", "Document")
+        with _tenant_schema_context(tenant_id) as tenant_schema:
+            doc = None
+            try:
+                doc = Document.objects.get(
+                    tenant__schema_name=tenant_schema,
+                    id=document_id,
+                )
+            except Document.DoesNotExist:
+                doc = None
+            except Exception:
+                doc = None
+                logger.exception(
+                    "document_lifecycle_lookup_failed",
+                    extra={
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                    },
+                )
+
+            if doc is not None:
+                persisted_record = self._record_from_document_model(
+                    document=doc,
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    workflow_id=normalized_workflow,
+                )
+                self._cache_document_record(persisted_record)
+
+            record = super().record_document_state(
+                tenant_id=tenant_id,
+                document_id=document_id,
+                workflow_id=workflow_id,
+                state=state,
+                reason=reason,
+                policy_events=policy_events,
+                changed_at=changed_at,
+            )
+
+            if doc is not None:
+                try:
+                    self._persist_document_model(
+                        document=doc,
+                        normalized_state=normalized_state,
+                        normalized_workflow=normalized_workflow,
+                        timestamp=timestamp,
+                        record=record,
+                    )
+                except Exception:
+                    logger.exception(
+                        "document_lifecycle_persist_failed",
+                        extra={
+                            "tenant_id": tenant_id,
+                            "document_id": str(document_id),
+                            "state": normalized_state,
+                        },
+                    )
+
+        return record
+
+    def get_document_state(
+        self,
+        *,
+        tenant_id: str,
+        document_id: UUID,
+        workflow_id: Optional[str],
+    ) -> Optional[DocumentLifecycleRecord]:
+        # Try base (cache) first
+        cached = super().get_document_state(
+            tenant_id=tenant_id, document_id=document_id, workflow_id=workflow_id
+        )
+        if cached:
+            return cached
+
+        # Fallback to DB
+        try:
+            with _tenant_schema_context(tenant_id) as tenant_schema:
+                Document = apps.get_model("documents", "Document")
+                doc = Document.objects.get(
+                    tenant__schema_name=tenant_schema,
+                    id=document_id,
+                )
+
+                normalized_workflow = (workflow_id or None) and str(workflow_id)
+                record = self._record_from_document_model(
+                    document=doc,
+                    tenant_id=tenant_id,
+                    document_id=document_id,
+                    workflow_id=normalized_workflow,
+                )
+
+                # Backfill cache
+                key = (tenant_id, normalized_workflow, document_id)
+                with self._lock:
+                    self._documents[key] = record
+
+                return record
+
+        except Exception:
+            # Document missing or DB error
+            return None
+
+    def _record_from_document_model(
+        self,
+        *,
+        document,
+        tenant_id: str,
+        document_id: UUID,
+        workflow_id: Optional[str],
+    ) -> DocumentLifecycleRecord:
+        lifecycle_meta = document.metadata.get("lifecycle", {})
+        if not isinstance(lifecycle_meta, dict):
+            lifecycle_meta = {}
+
+        current_state = document.lifecycle_state or ACTIVE_STATE
+        if current_state not in _DOCUMENT_TRANSITIONS:
+            current_state = ACTIVE_STATE
+
+        changed_at = _resolve_changed_timestamp(
+            lifecycle_meta=lifecycle_meta,
+            lifecycle_updated_at=document.lifecycle_updated_at,
+        )
+
+        return DocumentLifecycleRecord(
+            tenant_id=tenant_id,
+            document_id=document_id,
+            workflow_id=workflow_id,
+            state=current_state,
+            changed_at=changed_at,
+            reason=_stored_reason(lifecycle_meta.get("reason")),
+            policy_events=_stored_policy_events(lifecycle_meta.get("policy_events")),
+            trace_id=_normalize_optional_string(lifecycle_meta.get("trace_id")),
+            run_id=_normalize_optional_string(lifecycle_meta.get("run_id")),
+            ingestion_run_id=_normalize_optional_string(
+                lifecycle_meta.get("ingestion_run_id")
+            ),
+        )
+
+    def _cache_document_record(self, record: DocumentLifecycleRecord) -> None:
+        key = (record.tenant_id, record.workflow_id, record.document_id)
+        with self._lock:
+            self._documents[key] = record
+
+    def _persist_document_model(
+        self,
+        *,
+        document,
+        normalized_state: str,
+        normalized_workflow: Optional[str],
+        timestamp: datetime,
+        record: DocumentLifecycleRecord,
+    ) -> None:
+        document.lifecycle_state = normalized_state
+        document.lifecycle_updated_at = timestamp
+
+        lifecycle_meta = document.metadata.get("lifecycle", {})
+        if not isinstance(lifecycle_meta, dict):
+            lifecycle_meta = {}
+
+        lifecycle_meta.update(
+            {
+                "state": normalized_state,
+                "changed_at": timestamp.isoformat(),
+            }
+        )
+
+        if normalized_workflow:
+            lifecycle_meta["workflow_id"] = normalized_workflow
+        if record.reason:
+            lifecycle_meta["reason"] = record.reason
+        if record.policy_events:
+            lifecycle_meta["policy_events"] = list(record.policy_events)
+
+        if record.trace_id:
+            lifecycle_meta["trace_id"] = record.trace_id
+        if record.run_id:
+            lifecycle_meta["run_id"] = record.run_id
+        if record.ingestion_run_id:
+            lifecycle_meta["ingestion_run_id"] = record.ingestion_run_id
+
+        document.metadata["lifecycle"] = lifecycle_meta
+        document.save(
+            update_fields=[
+                "lifecycle_state",
+                "lifecycle_updated_at",
+                "metadata",
+                "updated_at",
+            ]
+        )
+
+    def record_ingestion_run_queued(
+        self,
+        *,
+        tenant_id: str,
+        case: Optional[str],
+        run_id: str,
+        document_ids: Iterable[str],
+        invalid_document_ids: Iterable[str],
+        queued_at: str,
+        trace_id: Optional[str] = None,
+        collection_id: Optional[str] = None,
+        embedding_profile: Optional[str] = None,
+        source: Optional[str] = None,
+    ) -> Dict[str, object]:
+        payload = super().record_ingestion_run_queued(
+            tenant_id=tenant_id,
+            case=case,
+            run_id=run_id,
+            document_ids=document_ids,
+            invalid_document_ids=invalid_document_ids,
+            queued_at=queued_at,
+            trace_id=trace_id,
+            collection_id=collection_id,
+            embedding_profile=embedding_profile,
+            source=source,
+        )
+        normalized_collection = _normalize_optional_string(collection_id)
+        try:
+            self._persist_ingestion_run(
+                tenant_id=tenant_id,
+                case=case,
+                collection_id=normalized_collection,
+                values={
+                    "run_id": str(run_id),
+                    "status": "queued",
+                    "queued_at": str(queued_at),
+                    "document_ids": payload.get("document_ids", []),
+                    "invalid_document_ids": payload.get("invalid_document_ids", []),
+                    "trace_id": _normalize_optional_string(trace_id) or "",
+                    "embedding_profile": _normalize_optional_string(embedding_profile)
+                    or "",
+                    "source": _normalize_optional_string(source) or "",
+                    "started_at": "",
+                    "finished_at": "",
+                    "duration_ms": None,
+                    "inserted_documents": None,
+                    "replaced_documents": None,
+                    "skipped_documents": None,
+                    "inserted_chunks": None,
+                    "error": "",
+                },
+            )
+        except Exception:
+            logger.exception(
+                "ingestion_run_queued_persist_failed",
+                extra={"tenant_id": tenant_id, "case": case, "run_id": run_id},
+            )
+        return payload
+
+    def mark_ingestion_run_running(
+        self,
+        *,
+        tenant_id: str,
+        case: Optional[str],
+        run_id: str,
+        started_at: str,
+        document_ids: Iterable[str],
+    ) -> Optional[Dict[str, object]]:
+        normalized_ids = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in document_ids)
+            if value is not None
+        )
+        try:
+            model = self._load_ingestion_run(tenant_id=tenant_id, case=case)
+            if model is None or model.run_id != str(run_id):
+                return super().mark_ingestion_run_running(
+                    tenant_id=tenant_id,
+                    case=case,
+                    run_id=run_id,
+                    started_at=started_at,
+                    document_ids=normalized_ids,
+                )
+
+            if normalized_ids:
+                model.document_ids = list(normalized_ids)
+            model.status = "running"
+            model.started_at = str(started_at)
+            update_fields = ["status", "started_at", "updated_at"]
+            if normalized_ids:
+                update_fields.append("document_ids")
+            model.save(update_fields=update_fields)
+            record = self._record_from_model(model)
+            self._cache_ingestion_record(record)
+            _log_ingestion_status(record, event="ingestion_run_running")
+            return record.as_payload()
+        except Exception:
+            logger.exception(
+                "ingestion_run_running_persist_failed",
+                extra={"tenant_id": tenant_id, "case": case, "run_id": run_id},
+            )
+            return super().mark_ingestion_run_running(
+                tenant_id=tenant_id,
+                case=case,
+                run_id=run_id,
+                started_at=started_at,
+                document_ids=normalized_ids,
+            )
+
+    def mark_ingestion_run_completed(
+        self,
+        *,
+        tenant_id: str,
+        case: Optional[str],
+        run_id: str,
+        finished_at: str,
+        duration_ms: float,
+        inserted_documents: int,
+        replaced_documents: int,
+        skipped_documents: int,
+        inserted_chunks: int,
+        invalid_document_ids: Iterable[str],
+        document_ids: Iterable[str],
+        error: Optional[str],
+    ) -> Optional[Dict[str, object]]:
+        normalized_ids = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in document_ids)
+            if value is not None
+        )
+        normalized_invalid = tuple(
+            value
+            for value in (_normalize_identifier(v) for v in invalid_document_ids)
+            if value is not None
+        )
+        normalized_error = _normalize_optional_string(error)
+        try:
+            model = self._load_ingestion_run(tenant_id=tenant_id, case=case)
+            if model is None or model.run_id != str(run_id):
+                return super().mark_ingestion_run_completed(
+                    tenant_id=tenant_id,
+                    case=case,
+                    run_id=run_id,
+                    finished_at=finished_at,
+                    duration_ms=duration_ms,
+                    inserted_documents=inserted_documents,
+                    replaced_documents=replaced_documents,
+                    skipped_documents=skipped_documents,
+                    inserted_chunks=inserted_chunks,
+                    invalid_document_ids=normalized_invalid,
+                    document_ids=normalized_ids,
+                    error=error,
+                )
+
+            model.status = "failed" if normalized_error else "succeeded"
+            model.finished_at = str(finished_at)
+            model.duration_ms = float(duration_ms)
+            model.inserted_documents = int(inserted_documents)
+            model.replaced_documents = int(replaced_documents)
+            model.skipped_documents = int(skipped_documents)
+            model.inserted_chunks = int(inserted_chunks)
+            model.invalid_document_ids = list(normalized_invalid)
+            if normalized_ids:
+                model.document_ids = list(normalized_ids)
+            model.error = normalized_error or ""
+            update_fields = [
+                "status",
+                "finished_at",
+                "duration_ms",
+                "inserted_documents",
+                "replaced_documents",
+                "skipped_documents",
+                "inserted_chunks",
+                "invalid_document_ids",
+                "error",
+                "updated_at",
+            ]
+            if normalized_ids:
+                update_fields.append("document_ids")
+            model.save(update_fields=update_fields)
+            record = self._record_from_model(model)
+            self._cache_ingestion_record(record)
+            _log_ingestion_status(record, event="ingestion_run_completed")
+            return record.as_payload()
+        except Exception:
+            logger.exception(
+                "ingestion_run_completed_persist_failed",
+                extra={"tenant_id": tenant_id, "case": case, "run_id": run_id},
+            )
+            return super().mark_ingestion_run_completed(
+                tenant_id=tenant_id,
+                case=case,
+                run_id=run_id,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                inserted_documents=inserted_documents,
+                replaced_documents=replaced_documents,
+                skipped_documents=skipped_documents,
+                inserted_chunks=inserted_chunks,
+                invalid_document_ids=normalized_invalid,
+                document_ids=normalized_ids,
+                error=error,
+            )
+
+    def get_ingestion_run(
+        self, *, tenant_id: str, case: Optional[str]
+    ) -> Optional[Dict[str, object]]:
+        try:
+            model = self._load_ingestion_run(tenant_id=tenant_id, case=case)
+            if model is None:
+                return super().get_ingestion_run(tenant_id=tenant_id, case=case)
+            record = self._record_from_model(model)
+            self._cache_ingestion_record(record)
+            return record.as_payload()
+        except Exception:
+            logger.exception(
+                "ingestion_run_lookup_failed",
+                extra={"tenant_id": tenant_id, "case": case},
+            )
+            return super().get_ingestion_run(tenant_id=tenant_id, case=case)
+
+    def _persist_ingestion_run(
+        self,
+        *,
+        tenant_id: str,
+        case: Optional[str],
+        collection_id: Optional[str],
+        values: Mapping[str, object],
+    ) -> None:
+        model_cls = _ingestion_model()
+        normalized_case = _normalize_optional_string(case)
+        defaults = dict(values)
+        defaults["collection_id"] = _normalize_optional_string(collection_id) or ""
+        model_cls.objects.update_or_create(
+            tenant_id=_tenant_storage_key(tenant_id),
+            case=normalized_case,
+            defaults=defaults,
+        )
+
+    def _load_ingestion_run(self, *, tenant_id: str, case: Optional[str]):
+        model_cls = _ingestion_model()
+        normalized_case = _normalize_optional_string(case)
+        try:
+            return model_cls.objects.get(
+                tenant_id=_tenant_storage_key(tenant_id),
+                case=normalized_case,
+            )
+        except model_cls.DoesNotExist:
+            return None
+
+    def _record_from_model(self, model) -> IngestionRunRecord:
+        return IngestionRunRecord(
+            tenant_id=model.tenant_id,
+            case=_normalize_optional_string(model.case),
+            run_id=model.run_id,
+            status=model.status,
+            queued_at=model.queued_at,
+            document_ids=_stored_identifier_sequence(model.document_ids),
+            invalid_document_ids=_stored_identifier_sequence(
+                model.invalid_document_ids
+            ),
+            trace_id=_normalize_optional_string(model.trace_id),
+            embedding_profile=_normalize_optional_string(model.embedding_profile),
+            source=_normalize_optional_string(model.source),
+            collection_id=_normalize_optional_string(model.collection_id),
+            started_at=_normalize_optional_string(model.started_at),
+            finished_at=_normalize_optional_string(model.finished_at),
+            duration_ms=model.duration_ms,
+            inserted_documents=model.inserted_documents,
+            replaced_documents=model.replaced_documents,
+            skipped_documents=model.skipped_documents,
+            inserted_chunks=model.inserted_chunks,
+            error=_normalize_optional_string(model.error),
+        )
+
+    def _cache_ingestion_record(self, record: IngestionRunRecord) -> None:
+        key = (record.tenant_id, record.case or "")
+        with self._lock:
+            self._ingestion_runs[key] = record
 
 
 def _workflow_storage_key(value: Optional[str]) -> str:
@@ -516,348 +1079,19 @@ def _tenant_storage_key(value: object) -> str:
     return normalized
 
 
-def _lifecycle_model():
-    return apps.get_model("documents", "DocumentLifecycleState")
+@contextmanager
+def _tenant_schema_context(tenant_id: str):
+    schema_name = _tenant_storage_key(tenant_id)
+    current_schema = getattr(connection, "schema_name", None)
+    if current_schema == schema_name:
+        yield schema_name
+        return
+    with schema_context(schema_name):
+        yield schema_name
 
 
 def _ingestion_model():
     return apps.get_model("documents", "DocumentIngestionRun")
-
-
-class PersistentDocumentLifecycleStore(DocumentLifecycleStore):
-    """Database-backed lifecycle persistence using Django models."""
-
-    def __init__(self) -> None:
-        super().__init__()
-
-    def record_document_state(
-        self,
-        *,
-        tenant_id: str,
-        document_id: UUID,
-        workflow_id: Optional[str],
-        state: str,
-        reason: Optional[str] = None,
-        policy_events: Iterable[object] = (),
-        changed_at: Optional[datetime] = None,
-    ) -> DocumentLifecycleRecord:
-        normalized_state = _normalize_lifecycle_state(state)
-        normalized_reason = _normalize_reason(reason)
-        normalized_events = _normalize_policy_events(policy_events)
-        normalized_workflow = (workflow_id or None) and str(workflow_id)
-        timestamp = _normalize_timestamp(changed_at)
-        workflow_key = _workflow_storage_key(normalized_workflow)
-        tenant_key = _tenant_storage_key(tenant_id)
-        log_ctx = get_log_context()
-
-        model = _lifecycle_model()
-
-        with transaction.atomic():
-            try:
-                instance = model.objects.select_for_update().get(
-                    tenant_id_id=tenant_key,
-                    document_id=document_id,
-                    workflow_id=workflow_key,
-                )
-            except model.DoesNotExist:  # type: ignore[attr-defined]
-                instance = None
-
-            if instance is not None and instance.state != normalized_state:
-                allowed = _DOCUMENT_TRANSITIONS.get(instance.state, ())
-                if normalized_state not in allowed:
-                    raise ValueError(
-                        f"invalid_lifecycle_transition:{instance.state}->{normalized_state}"
-                    )
-
-            if normalized_reason is None:
-                normalized_reason = (
-                    _stored_reason(getattr(instance, "reason", None))
-                    if instance is not None
-                    else normalized_state
-                )
-            if not normalized_events and instance is not None:
-                normalized_events = _stored_policy_events(
-                    getattr(instance, "policy_events", ())
-                )
-
-            if instance is None:
-                instance = model(
-                    tenant_id_id=tenant_key,
-                    document_id=document_id,
-                    workflow_id=workflow_key,
-                )
-
-            run_id, ingestion_run_id, trace_id = _resolve_runtime_metadata(
-                log_ctx=log_ctx,
-                existing_run_id=getattr(instance, "run_id", None),
-                existing_ingestion_run_id=getattr(instance, "ingestion_run_id", None),
-                existing_trace_id=getattr(instance, "trace_id", None),
-            )
-
-            instance.state = normalized_state
-            instance.changed_at = timestamp
-            instance.reason = normalized_reason or ""
-            instance.policy_events = list(normalized_events)
-            instance.run_id = run_id
-            instance.ingestion_run_id = ingestion_run_id
-            instance.trace_id = trace_id
-            instance.save()
-
-        return DocumentLifecycleRecord(
-            tenant_id=tenant_key,
-            document_id=document_id,
-            workflow_id=normalized_workflow,
-            trace_id=trace_id,
-            run_id=_normalize_optional_string(run_id),
-            ingestion_run_id=_normalize_optional_string(ingestion_run_id),
-            state=normalized_state,
-            changed_at=timestamp,
-            reason=normalized_reason,
-            policy_events=normalized_events,
-        )
-
-    def get_document_state(
-        self,
-        *,
-        tenant_id: str,
-        document_id: UUID,
-        workflow_id: Optional[str],
-    ) -> Optional[DocumentLifecycleRecord]:
-        workflow_key = _workflow_storage_key((workflow_id or None) and str(workflow_id))
-        tenant_key = _tenant_storage_key(tenant_id)
-        model = _lifecycle_model()
-        try:
-            instance = model.objects.get(
-                tenant_id_id=tenant_key,
-                document_id=document_id,
-                workflow_id=workflow_key,
-            )
-        except model.DoesNotExist:  # type: ignore[attr-defined]
-            return None
-
-        run_id = _normalize_optional_string(instance.run_id)
-        ingestion_run_id = _normalize_optional_string(instance.ingestion_run_id)
-        trace_id = _stored_reason(instance.trace_id) or ""
-
-        return DocumentLifecycleRecord(
-            tenant_id=tenant_key,
-            document_id=document_id,
-            workflow_id=_workflow_from_storage(instance.workflow_id),
-            trace_id=trace_id,
-            run_id=run_id,
-            ingestion_run_id=ingestion_run_id,
-            state=instance.state,
-            changed_at=_normalize_timestamp(instance.changed_at),
-            reason=_stored_reason(instance.reason),
-            policy_events=_stored_policy_events(instance.policy_events),
-        )
-
-    def record_ingestion_run_queued(
-        self,
-        *,
-        tenant_id: str,
-        case: Optional[str],
-        run_id: str,
-        document_ids: Iterable[str],
-        invalid_document_ids: Iterable[str],
-        queued_at: str,
-        trace_id: Optional[str] = None,
-        collection_id: Optional[str] = None,
-        embedding_profile: Optional[str] = None,
-        source: Optional[str] = None,
-    ) -> Dict[str, object]:
-        normalized_ids = tuple(
-            value
-            for value in (_normalize_identifier(v) for v in document_ids)
-            if value is not None
-        )
-        normalized_invalid = tuple(
-            value
-            for value in (_normalize_identifier(v) for v in invalid_document_ids)
-            if value is not None
-        )
-
-        model = _ingestion_model()
-
-        with transaction.atomic():
-            instance, _ = model.objects.select_for_update().get_or_create(
-                tenant_id=tenant_id,
-                case=case,
-                defaults={},
-            )
-            instance.run_id = str(run_id)
-            instance.status = "queued"
-            instance.queued_at = str(queued_at)
-            instance.document_ids = list(normalized_ids)
-            instance.invalid_document_ids = list(normalized_invalid)
-            instance.trace_id = _normalize_optional_string(trace_id) or ""
-            instance.collection_id = _normalize_optional_string(collection_id) or ""
-            instance.embedding_profile = (
-                _normalize_optional_string(embedding_profile) or ""
-            )
-            instance.source = _normalize_optional_string(source) or ""
-            instance.error = ""
-            instance.started_at = ""
-            instance.finished_at = ""
-            instance.duration_ms = None
-            instance.inserted_documents = None
-            instance.replaced_documents = None
-            instance.skipped_documents = None
-            instance.inserted_chunks = None
-            instance.save()
-
-        return self.get_ingestion_run(tenant_id=tenant_id, case=case) or {}
-
-    def mark_ingestion_run_running(
-        self,
-        *,
-        tenant_id: str,
-        case: Optional[str],
-        run_id: str,
-        started_at: str,
-        document_ids: Iterable[str],
-    ) -> Optional[Dict[str, object]]:
-        model = _ingestion_model()
-        normalized_ids = tuple(
-            value
-            for value in (_normalize_identifier(v) for v in document_ids)
-            if value is not None
-        )
-
-        with transaction.atomic():
-            try:
-                instance = model.objects.select_for_update().get(
-                    tenant_id=tenant_id, case=case
-                )
-            except model.DoesNotExist:  # type: ignore[attr-defined]
-                return None
-
-            if instance.run_id != run_id:
-                return None
-
-            instance.status = "running"
-            instance.started_at = str(started_at)
-            if normalized_ids:
-                instance.document_ids = list(normalized_ids)
-            instance.save()
-
-        return self.get_ingestion_run(tenant_id=tenant_id, case=case)
-
-    def mark_ingestion_run_completed(
-        self,
-        *,
-        tenant_id: str,
-        case: Optional[str],
-        run_id: str,
-        finished_at: str,
-        duration_ms: float,
-        inserted_documents: int,
-        replaced_documents: int,
-        skipped_documents: int,
-        inserted_chunks: int,
-        invalid_document_ids: Iterable[str],
-        document_ids: Iterable[str],
-        error: Optional[str],
-    ) -> Optional[Dict[str, object]]:
-        model = _ingestion_model()
-        normalized_ids = tuple(
-            value
-            for value in (_normalize_identifier(v) for v in document_ids)
-            if value is not None
-        )
-        normalized_invalid = tuple(
-            value
-            for value in (_normalize_identifier(v) for v in invalid_document_ids)
-            if value is not None
-        )
-
-        with transaction.atomic():
-            try:
-                instance = model.objects.select_for_update().get(
-                    tenant_id=tenant_id, case=case
-                )
-            except model.DoesNotExist:  # type: ignore[attr-defined]
-                return None
-
-            if instance.run_id != run_id:
-                return None
-
-            instance.status = "failed" if error else "succeeded"
-            instance.finished_at = str(finished_at)
-            instance.duration_ms = float(duration_ms)
-            instance.inserted_documents = int(inserted_documents)
-            instance.replaced_documents = int(replaced_documents)
-            instance.skipped_documents = int(skipped_documents)
-            instance.inserted_chunks = int(inserted_chunks)
-            instance.invalid_document_ids = list(normalized_invalid)
-            if normalized_ids:
-                instance.document_ids = list(normalized_ids)
-            normalized_error = _normalize_optional_string(error)
-            instance.error = normalized_error or ""
-            instance.save()
-
-        return self.get_ingestion_run(tenant_id=tenant_id, case=case)
-
-    def get_ingestion_run(
-        self, *, tenant_id: str, case: Optional[str]
-    ) -> Optional[Dict[str, object]]:
-        model = _ingestion_model()
-        try:
-            instance = model.objects.get(tenant_id=tenant_id, case=case)
-        except model.DoesNotExist:  # type: ignore[attr-defined]
-            return None
-
-        payload = IngestionRunRecord(
-            tenant_id=instance.tenant_id,
-            case=instance.case,
-            run_id=instance.run_id,
-            status=instance.status,
-            queued_at=instance.queued_at,
-            document_ids=_stored_identifier_sequence(instance.document_ids),
-            invalid_document_ids=_stored_identifier_sequence(
-                instance.invalid_document_ids
-            ),
-            trace_id=_stored_reason(instance.trace_id),
-            embedding_profile=_stored_reason(instance.embedding_profile),
-            source=_stored_reason(instance.source),
-            started_at=_stored_reason(instance.started_at),
-            finished_at=_stored_reason(instance.finished_at),
-            duration_ms=instance.duration_ms,
-            inserted_documents=instance.inserted_documents,
-            replaced_documents=instance.replaced_documents,
-            skipped_documents=instance.skipped_documents,
-            inserted_chunks=instance.inserted_chunks,
-            error=_stored_reason(instance.error),
-        )
-        return payload.as_payload()
-
-    def reset(self) -> None:
-        model_lifecycle = _lifecycle_model()
-        model_ingestion = _ingestion_model()
-        with transaction.atomic():
-            model_lifecycle.objects.all().delete()
-            model_ingestion.objects.all().delete()
-
-
-def _load_default_lifecycle_store() -> DocumentLifecycleStore:
-    class_path = "documents.repository.PersistentDocumentLifecycleStore"
-    try:
-        if not settings.configured:
-            raise ImproperlyConfigured("settings_not_configured")
-        class_path = getattr(settings, "DOCUMENT_LIFECYCLE_STORE_CLASS", class_path)
-        store_class = import_string(class_path)
-        store_instance = store_class()
-        return store_instance
-    except (
-        ImproperlyConfigured,
-        AppRegistryNotReady,
-    ):  # pragma: no cover - lazy config
-        logger.warning(
-            "lifecycle_store_init_failed",
-            extra={"class_path": class_path},
-            exc_info=True,
-        )
-        return DocumentLifecycleStore()
 
 
 def _normalize_identifier(value: object) -> Optional[str]:
@@ -867,7 +1101,7 @@ def _normalize_identifier(value: object) -> Optional[str]:
     return candidate
 
 
-DEFAULT_LIFECYCLE_STORE = _load_default_lifecycle_store()
+DEFAULT_LIFECYCLE_STORE = PersistentDocumentLifecycleStore()
 
 
 class DocumentsRepository:

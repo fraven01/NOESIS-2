@@ -193,15 +193,6 @@ if COMMON_HEADERS_INFO_BOX:
 
 # Documents repository: default to the database-backed adapter; can be overridden
 # (e.g., to the filesystem adapter) via env for local development.
-DOCUMENTS_REPOSITORY_CLASS = env(
-    "DOCUMENTS_REPOSITORY_CLASS",
-    default="ai_core.adapters.db_documents_repository.DbDocumentsRepository",
-)
-
-DOCUMENT_LIFECYCLE_STORE_CLASS = env(
-    "DOCUMENT_LIFECYCLE_STORE_CLASS",
-    default="documents.repository.PersistentDocumentLifecycleStore",
-)
 
 
 # Crawler HTTP adapter defaults

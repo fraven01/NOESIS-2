@@ -1488,7 +1488,7 @@ def _llm_strategy_generator(request: SearchStrategyRequest) -> SearchStrategy:
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
         total_tokens = usage.get("total_tokens", prompt_tokens + completion_tokens)
-        model_id = response.get("model", "gemini-2.5-flash")
+        model_id = response.get("model", "gpt-5-nano")
         cost_data = response.get("cost")
         if not isinstance(cost_data, Mapping):
             usage_cost = usage.get("cost") if isinstance(usage, Mapping) else None

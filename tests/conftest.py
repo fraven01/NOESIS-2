@@ -1,7 +1,6 @@
 """Global test fixtures for tests/* subtree."""
 
 import pytest
-from django.conf import settings
 from testsupport.tenant_fixtures import cleanup_test_tenants
 
 
@@ -18,12 +17,6 @@ def use_inmemory_lifecycle_store(monkeypatch):
     import documents.repository as repo
 
     store = DocumentLifecycleStore()
-    monkeypatch.setattr(
-        settings,
-        "DOCUMENT_LIFECYCLE_STORE_CLASS",
-        "documents.repository.DocumentLifecycleStore",
-        raising=False,
-    )
     monkeypatch.setattr(repo, "DEFAULT_LIFECYCLE_STORE", store, raising=False)
     yield
 
@@ -38,4 +31,39 @@ def cleanup_tenants_after_test(django_db_blocker):
     """
     yield
     with django_db_blocker.unblock():
-        cleanup_test_tenants()
+        from django.db import connection
+
+        try:
+            cleanup_test_tenants()
+        except Exception:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+
+
+@pytest.fixture
+def tenant(django_db_blocker):
+    """
+    Provide a fresh tenant for tests in tests/ (mirrors fixtures in other trees).
+    """
+    from testsupport.tenant_fixtures import create_test_tenant
+
+    with django_db_blocker.unblock():
+        return create_test_tenant(schema_name="test", name="Test Tenant")
+
+
+@pytest.fixture(autouse=True)
+def force_inmemory_repository(monkeypatch):
+    """
+    Ensure tests in this subtree use the in-memory repository (avoid FK to tenants).
+    """
+    from documents.repository import InMemoryDocumentsRepository
+    import ai_core.services as services
+
+    # Reset cached repo and force in-memory
+    monkeypatch.setattr(
+        services, "_DOCUMENTS_REPOSITORY", InMemoryDocumentsRepository(), raising=False
+    )
+    # monkeypatch.setenv("DOCUMENTS_REPOSITORY_CLASS", "documents.repository.InMemoryDocumentsRepository")
+    yield

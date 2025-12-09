@@ -2,7 +2,6 @@ from django.contrib import admin
 from .models import (
     Document,
     DocumentCollection,
-    DocumentLifecycleState,
     DocumentAsset,
     DocumentIngestionRun,
     DocumentCollectionMembership,
@@ -22,13 +21,6 @@ class DocumentCollectionAdmin(admin.ModelAdmin):
     list_display = ("name", "key", "tenant", "collection_id", "type")
     list_filter = ("type", "visibility", "tenant")
     search_fields = ("name", "key", "collection_id")
-
-
-@admin.register(DocumentLifecycleState)
-class DocumentLifecycleStateAdmin(admin.ModelAdmin):
-    list_display = ("document_id", "tenant_id", "workflow_id", "state", "changed_at")
-    list_filter = ("state", "tenant_id", "workflow_id")
-    search_fields = ("document_id", "run_id")
 
 
 @admin.register(DocumentAsset)

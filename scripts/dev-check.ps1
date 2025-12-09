@@ -32,16 +32,17 @@ function Import-DotEnvVars {
 Import-DotEnvVars -Path ".env"
 
 $DevTenantSchema = if ($env:DEV_TENANT_SCHEMA) { $env:DEV_TENANT_SCHEMA } else { 'dev' }
-$TenantId = if ($env:TENANT_ID) { $env:TENANT_ID } else { 'dev-tenant' }
-$CaseId = if ($env:CASE_ID) { $env:CASE_ID } else { 'local' }
+$TenantId = if ($env:TENANT_ID) { $env:TENANT_ID } else { 'dev' }
+$CaseId = if ($env:CASE_ID) { $env:CASE_ID } else { 'dev-case-local' }
 
 Write-Host "[dev-check] LiteLLM liveliness"
 $ok = $false
-for ($i=0; $i -lt 10; $i++) {
+for ($i = 0; $i -lt 10; $i++) {
   try {
     $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:4000/health/liveliness' -Method GET
     if ($resp.Content -match 'alive') { Write-Host 'LiteLLM alive'; $ok = $true; break }
-  } catch { Start-Sleep -Seconds 1 }
+  }
+  catch { Start-Sleep -Seconds 1 }
 }
 if (-not $ok) { Write-Warning 'LiteLLM liveliness failed' }
 
@@ -51,10 +52,12 @@ try {
   if ($mk) {
     $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:4000/health' -Method GET -Headers @{ 'Authorization' = "Bearer $mk" }
     if ($resp.Content -match '"unhealthy_count":0') { Write-Host 'LiteLLM healthy' }
-  } else {
+  }
+  else {
     Write-Host 'Skipping readiness (no LITELLM_MASTER_KEY)'
   }
-} catch { Write-Warning "LiteLLM readiness failed: $_" }
+}
+catch { Write-Warning "LiteLLM readiness failed: $_" }
 
 Write-Host "[dev-check] LiteLLM chat"
 try {
@@ -62,25 +65,28 @@ try {
   if ($mk) {
     $body = @'
 {
-  "model": "gemini-2.5-flash",
+  "model": "gpt-5-nano",
   "messages": [{"role": "user", "content": "Sag \"ok\""}]
 }
 '@
     $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:4000/v1/chat/completions' -Method POST -ContentType 'application/json' -Headers @{ 'Authorization' = "Bearer $mk" } -Body $body
     if ($resp.Content -match '"choices"') { Write-Host 'Chat OK' } else { Write-Warning 'Chat response unexpected' }
-  } else {
+  }
+  else {
     Write-Host 'Skipping chat (no LITELLM_MASTER_KEY)'
   }
-} catch { Write-Warning "LiteLLM chat failed: $_" }
+}
+catch { Write-Warning "LiteLLM chat failed: $_" }
 
 Write-Host "[dev-check] AI Core ping with tenant headers"
 $ok = $false
-for ($i=0; $i -lt 5; $i++) {
+for ($i = 0; $i -lt 5; $i++) {
   try {
     $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/ai/ping/' -Method GET -Headers @{ 'X-Tenant-Schema' = $DevTenantSchema; 'X-Tenant-ID' = $TenantId; 'X-Case-ID' = $CaseId }
     Write-Host ("Status: {0}" -f $resp.StatusCode)
     $ok = $true; break
-  } catch { Start-Sleep -Seconds 1 }
+  }
+  catch { Start-Sleep -Seconds 1 }
 }
 if (-not $ok) { Write-Warning 'AI ping failed' }
 
@@ -89,19 +95,22 @@ try {
   $payload = '{"question":"Ping?"}'
   $resp = Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/v1/ai/rag/query/' -Method POST -ContentType 'application/json' -Headers @{ 'X-Tenant-Schema' = $DevTenantSchema; 'X-Tenant-ID' = $TenantId; 'X-Case-ID' = $CaseId } -Body $payload
   $content = $resp.Content
-  if ($content.Length -gt 200) { $content.Substring(0,200) + '...' } else { $content }
-} catch { Write-Warning "AI rag query failed: $_" }
+  if ($content.Length -gt 200) { $content.Substring(0, 200) + '...' } else { $content }
+}
+catch { Write-Warning "AI rag query failed: $_" }
 
 try {
   Write-Host "[dev-check] RAG migrate"
   # Apply pgvector schema for configured spaces
   iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-schema"
-} catch { Write-Warning "RAG migrate failed: $_" }
+}
+catch { Write-Warning "RAG migrate failed: $_" }
 
 try {
   Write-Host "[dev-check] RAG health"
   # Disable TTY to avoid interactive psql sessions on Windows
   iex "docker compose -f docker-compose.yml -f docker-compose.dev.yml run --rm -T rag-health"
-} catch { Write-Warning "RAG health failed: $_" }
+}
+catch { Write-Warning "RAG health failed: $_" }
 
 Write-Host "[dev-check] Done"

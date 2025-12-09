@@ -33,7 +33,6 @@ from typing import (
     Optional,
     Union,
 )
-from types import MappingProxyType
 from uuid import UUID
 
 from pydantic import (
@@ -112,14 +111,12 @@ CaptionSource = Literal[
 
 # Default provider names resolved from ingestion sources. Callers may override
 # these values via metadata overrides passed to the ingestion interfaces.
-DEFAULT_PROVIDER_BY_SOURCE = MappingProxyType(
-    {
-        "crawler": "web",
-        "upload": "upload",
-        "integration": "integration",
-        "other": "other",
-    }
-)
+DEFAULT_PROVIDER_BY_SOURCE = {
+    "crawler": "web",
+    "upload": "upload",
+    "integration": "integration",
+    "other": "other",
+}
 
 
 def _decode_base64(value: str) -> bytes:
@@ -1048,7 +1045,7 @@ class NormalizedDocumentInputV1(BaseModel):
 
     @property
     def metadata_map(self) -> Mapping[str, Any]:
-        return MappingProxyType(dict(self.metadata))
+        return dict(self.metadata)
 
     @property
     def media_type(self) -> str:
@@ -1135,7 +1132,7 @@ class NormalizedDocumentInputV1(BaseModel):
             "origin_uri": self.origin_uri,
             "source": self.source,
         }
-        return MappingProxyType({k: v for k, v in payload.items() if v is not None})
+        return dict({k: v for k, v in payload.items() if v is not None})
 
     @classmethod
     def from_raw(

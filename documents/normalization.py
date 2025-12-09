@@ -6,7 +6,7 @@ import base64
 import hashlib
 import re
 from datetime import datetime, timezone
-from types import MappingProxyType
+
 from typing import Any, Iterable, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
@@ -132,8 +132,8 @@ def document_parser_stats(document: NormalizedDocument) -> Mapping[str, object]:
 
     stats = getattr(document.meta, "parse_stats", {}) or {}
     if not isinstance(stats, Mapping):
-        return MappingProxyType({})
-    return MappingProxyType(dict(stats))
+        return {}
+    return dict(stats)
 
 
 def document_payload_bytes(document: NormalizedDocument) -> bytes:

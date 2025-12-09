@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 
 from ai_core.rag.embeddings import EmbeddingBatchResult
+import documents.repository as doc_repo
 from testsupport.tenant_fixtures import (
     DEFAULT_TEST_DOMAIN,
     bootstrap_tenant_schema,
@@ -54,6 +55,17 @@ pytest_plugins = [
 ]
 
 
+@pytest.fixture(autouse=True)
+def default_lifecycle_store(monkeypatch):
+    """Use in-memory lifecycle store in tests to avoid tenant FK churn."""
+
+    store = doc_repo.DocumentLifecycleStore()
+    monkeypatch.setattr(
+        "documents.repository.DEFAULT_LIFECYCLE_STORE", store, raising=False
+    )
+    yield
+
+
 @pytest.fixture(autouse=True, scope="session")
 def ensure_default_pii_secret():
     """Guarantee tests start with hardened PII defaults.
@@ -101,6 +113,17 @@ def tmp_media_root(tmp_path, settings):
     media = tmp_path / "media"
     media.mkdir(parents=True, exist_ok=True)
     settings.MEDIA_ROOT = str(media)
+    yield
+
+
+@pytest.fixture(autouse=True)
+def force_inmemory_repository(monkeypatch):
+    """Use the in-memory documents repository in tests to avoid tenant FK churn."""
+    from documents.repository import InMemoryDocumentsRepository
+    import ai_core.services as services
+
+    repo = InMemoryDocumentsRepository()
+    monkeypatch.setattr(services, "_DOCUMENTS_REPOSITORY", repo, raising=False)
     yield
 
 
@@ -297,4 +320,13 @@ def cleanup_test_tenants_fixture(django_db_blocker):
 
     yield
     with django_db_blocker.unblock():
-        cleanup_test_tenants()
+        from django.db import connection
+
+        try:
+            cleanup_test_tenants()
+        except Exception:
+            # Best-effort rollback/ignore when a test aborted the transaction
+            try:
+                connection.rollback()
+            except Exception:
+                pass

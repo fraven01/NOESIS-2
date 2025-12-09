@@ -16,7 +16,7 @@ curl -s -H "Authorization: Bearer ${LITELLM_MASTER_KEY:-}" http://localhost:4000
 
 cat > /tmp/litellm_chat.json << 'JSON'
 {
-  "model": "gemini-2.5-flash",
+  "model": "gpt-5-nano",
   "messages": [{"role": "user", "content": "Sag \"ok\""}]
 }
 JSON
