@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from types import MappingProxyType
+from pathlib import Path
 from typing import Any, Mapping, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
@@ -121,16 +121,14 @@ class NormalizedDocumentPayload:
         return self.document.checksum
 
     def to_dict(self) -> Mapping[str, Any]:
-        return MappingProxyType(
-            {
-                "document": self.document.model_dump(),
-                "primary_text": self.primary_text,
-                "checksum": self.checksum,
-                "metadata": dict(self.metadata),
-                "content_raw": self.content_raw,
-                "content_normalized": self.content_normalized,
-            }
-        )
+        return {
+            "document": self.document.model_dump(),
+            "primary_text": self.primary_text,
+            "checksum": self.checksum,
+            "metadata": dict(self.metadata),
+            "content_raw": self.content_raw,
+            "content_normalized": self.content_normalized,
+        }
 
 
 @dataclass(frozen=True)
@@ -144,7 +142,7 @@ class LifecycleStatusUpdate:
         return self.record.state
 
     def to_dict(self) -> Mapping[str, Any]:
-        return MappingProxyType(self.record.as_payload())
+        return dict(self.record.as_payload())
 
 
 def normalize_from_raw(
@@ -261,7 +259,7 @@ def normalize_from_raw(
         document=document,
         primary_text=normalized_text,
         payload_bytes=payload_bytes,
-        metadata=MappingProxyType(metadata),
+        metadata=dict(metadata),
         content_raw=content,
         content_normalized=normalized_text,
     )

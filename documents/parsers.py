@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 import math
 from math import isfinite
-from types import MappingProxyType
+import math
 import re
 from typing import (
     Any,
@@ -338,7 +338,7 @@ def _ensure_optional_mapping(
         return None
     if not isinstance(value, Mapping):
         raise ValueError(code)
-    return MappingProxyType(dict(value))
+    return dict(value)
 
 
 def _ensure_optional_language(value: Optional[str]) -> Optional[str]:
@@ -500,7 +500,7 @@ class ParsedTextBlockWithMeta(ParsedTextBlock):
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         super().__post_init__()
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
 
 @dataclass(frozen=True)
@@ -553,7 +553,7 @@ class ParsedAssetWithMeta(ParsedAsset):
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         super().__post_init__()
-        object.__setattr__(self, "metadata", MappingProxyType(dict(self.metadata)))
+        object.__setattr__(self, "metadata", dict(self.metadata))
 
 
 @dataclass(frozen=True)
