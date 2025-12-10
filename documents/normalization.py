@@ -136,13 +136,65 @@ def document_parser_stats(document: NormalizedDocument) -> Mapping[str, object]:
     return dict(stats)
 
 
-def document_payload_bytes(document: NormalizedDocument) -> bytes:
-    """Decode the inline payload embedded in a normalized document."""
+def document_payload_bytes(
+    document: NormalizedDocument, storage: Optional[Any] = None
+) -> bytes:
+    """Decode payload from any blob type.
+
+    Supports InlineBlob (embedded), FileBlob (storage), and ExternalBlob (external storage).
+
+    Args:
+        document: NormalizedDocument containing blob locator
+        storage: Optional storage service for FileBlob/ExternalBlob retrieval.
+                 Required for FileBlob and ExternalBlob, ignored for InlineBlob.
+
+    Returns:
+        Decoded bytes from blob payload
+
+    Raises:
+        ValueError: If blob type is unsupported or storage is missing when required
+
+    Example:
+        # InlineBlob - no storage needed
+        payload = document_payload_bytes(doc_with_inline)
+
+        # FileBlob - storage required
+        payload = document_payload_bytes(doc_with_file, storage=storage_service)
+    """
+    from documents.contracts import InlineBlob, FileBlob, ExternalBlob
 
     blob = document.blob
+
+    # InlineBlob: payload embedded in base64
     if isinstance(blob, InlineBlob):
         return blob.decoded_payload()
-    raise ValueError("unsupported_blob_type")
+
+    # FileBlob: payload in object storage
+    elif isinstance(blob, FileBlob):
+        if storage is None:
+            raise ValueError(
+                f"storage_required_for_file_blob: "
+                f"FileBlob with uri='{blob.uri}' requires storage service parameter"
+            )
+        # Storage interface: get(uri: str) -> bytes
+        return storage.get(blob.uri)
+
+    # ExternalBlob: payload in external storage (S3, GCS, HTTP)
+    elif isinstance(blob, ExternalBlob):
+        if storage is None:
+            raise ValueError(
+                f"storage_required_for_external_blob: "
+                f"ExternalBlob with kind='{blob.kind}' uri='{blob.uri}' requires storage service parameter"
+            )
+        # Storage interface handles different external kinds
+        return storage.get(blob.uri)
+
+    # Unknown blob type
+    else:
+        raise ValueError(
+            f"unsupported_blob_type: {type(blob).__name__} "
+            f"(expected InlineBlob, FileBlob, or ExternalBlob)"
+        )
 
 
 def normalized_primary_text(text: Optional[str]) -> str:

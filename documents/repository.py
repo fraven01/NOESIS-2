@@ -1976,8 +1976,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
     ) -> Optional[NormalizedDocument]:
         selected: Optional[NormalizedDocument] = None
         for stored in self._documents.values():
-            if stored.lifecycle_state != ACTIVE_STATE:
-                continue
+            # Allow documents in any lifecycle state for Document Explorer visibility
             doc = stored.value
             if doc.ref.tenant_id != tenant_id or doc.ref.document_id != document_id:
                 continue
@@ -1996,8 +1995,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         workflow_id: Optional[str],
     ) -> Iterable[NormalizedDocument]:
         for stored in self._documents.values():
-            if stored.lifecycle_state != ACTIVE_STATE:
-                continue
+            # Allow documents in any lifecycle state for Document Explorer visibility
             doc = stored.value
             if doc.ref.tenant_id != tenant_id:
                 continue
@@ -2031,8 +2029,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
     ) -> Optional[NormalizedDocument]:
         latest: Optional[NormalizedDocument] = None
         for stored in self._documents.values():
-            if stored.lifecycle_state != ACTIVE_STATE:
-                continue
+            # Allow documents in any lifecycle state for Document Explorer visibility
             doc = stored.value
             if doc.ref.tenant_id != tenant_id or doc.ref.document_id != document_id:
                 continue

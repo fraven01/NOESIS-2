@@ -1,2 +1,2 @@
 Response Status: 503
-Response Content: {"detail":"Failed to persist uploaded document.","code":"document_persistence_failed"}
+Response Content: {"detail":"Failed to process uploaded document.","code":"upload_graph_failed"}

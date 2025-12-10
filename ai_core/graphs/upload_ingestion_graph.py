@@ -5,26 +5,23 @@ from __future__ import annotations
 import base64
 import hashlib
 import mimetypes
-from dataclasses import fields, is_dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Callable, Dict, Iterable, Mapping, MutableMapping, Optional
+from typing import Any, Callable, Dict, Iterable, Mapping
 from uuid import uuid4
 
 from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 from django.conf import settings
 
-
 from ai_core import api as ai_core_api
 from ai_core.graphs.transition_contracts import (
     GraphTransition,
+    PipelineSection,
     StandardTransitionResult,
     build_delta_section,
-    build_embedding_section,
     build_guardrail_section,
-    build_lifecycle_section,
 )
-from ai_core.infra.observability import emit_event, observe_span, update_observation
+from ai_core.infra.observability import observe_span
 from documents.api import NormalizedDocumentPayload
 from documents.contracts import (
     DocumentMeta,
@@ -32,70 +29,25 @@ from documents.contracts import (
     InlineBlob,
     NormalizedDocument,
 )
-
-
-# Lightweight transition modelling -----------------------------------------
-
-
-def _make_json_safe(value: Any) -> Any:
-    if is_dataclass(value):
-        return {f.name: _make_json_safe(getattr(value, f.name)) for f in fields(value)}
-    if isinstance(value, Mapping):
-        return {
-            (str(k) if not isinstance(k, str) else k): _make_json_safe(v)
-            for k, v in value.items()
-        }
-    if isinstance(value, tuple):
-        return tuple(_make_json_safe(item) for item in value)
-    if isinstance(value, list):
-        return [_make_json_safe(item) for item in value]
-    if isinstance(value, set):
-        return tuple(
-            _make_json_safe(item)
-            for item in sorted(value, key=lambda candidate: repr(candidate))
-        )
-    return value
-
-
-def _json_safe_mapping(mapping: Mapping[str, Any] | None) -> Dict[str, Any]:
-    if not mapping:
-        return {}
-    return {
-        (str(key) if not isinstance(key, str) else key): _make_json_safe(value)
-        for key, value in mapping.items()
-    }
-
-
-def _transition(
-    *,
-    phase: str,
-    decision: str,
-    reason: str,
-    diagnostics: Mapping[str, Any] | None = None,
-    severity: Optional[str] = None,
-    guardrail: Optional[ai_core_api.GuardrailDecision] = None,
-    delta: Optional[ai_core_api.DeltaDecision] = None,
-    lifecycle: Optional[Any] = None,
-    embedding: Optional[Any] = None,
-) -> GraphTransition:
-    payload = dict(diagnostics or {})
-    severity_value = severity or payload.pop("severity", None) or "info"
-    context = _json_safe_mapping(payload)
-    result = StandardTransitionResult(
-        phase=phase,  # type: ignore[arg-type]
-        decision=decision,
-        reason=reason,
-        severity=str(severity_value),
-        guardrail=build_guardrail_section(guardrail) if guardrail else None,
-        delta=build_delta_section(delta) if delta else None,
-        lifecycle=build_lifecycle_section(lifecycle) if lifecycle else None,
-        embedding=build_embedding_section(embedding) if embedding else None,
-        context=context,
-    )
-    return GraphTransition(result)
-
-
-# Feature flag defaults -----------------------------------------------------
+from documents.pipeline import (
+    DocumentPipelineConfig,
+    DocumentProcessingContext,
+    require_document_components,
+)
+from documents.processing_graph import (
+    DocumentProcessingState,
+    build_document_processing_graph,
+)
+from documents.parsers import ParserDispatcher, ParserRegistry
+from documents import (
+    DocxDocumentParser,
+    HtmlDocumentParser,
+    MarkdownDocumentParser,
+    PdfDocumentParser,
+    PptxDocumentParser,
+    TextDocumentParser,
+)
+from documents.cli import SimpleDocumentChunker
 
 
 DEFAULT_MAX_BYTES = 25 * 1024 * 1024
@@ -118,62 +70,81 @@ class UploadIngestionError(RuntimeError):
 class UploadIngestionGraph:
     """High level orchestration for processing uploaded documents."""
 
-    _RUN_ORDER = (
-        "accept_upload",
-        "quarantine_scan",
-        "deduplicate",
-        "parse",
-        "normalize",
-        "delta_and_guardrails",
-        "persist_document",
-        "chunk_and_embed",
-        "lifecycle_hook",
-        "finalize",
-    )
-
-    _RUN_UNTIL_TO_NODE = {
-        "upload_accepted": "accept_upload",
-        "scan_complete": "quarantine_scan",
-        "dedupe_complete": "deduplicate",
-        "parse_complete": "parse",
-        "normalize_complete": "normalize",
-        "guardrail_complete": "delta_and_guardrails",
-        "persist_complete": "persist_document",
-        "chunk_complete": "chunk_and_embed",
-        "vector_complete": "chunk_and_embed",
-        "lifecycle_complete": "lifecycle_hook",
-    }
-
     def __init__(
         self,
         *,
-        quarantine_scanner: (
-            Callable[[bytes, Mapping[str, Any]], GraphTransition] | None
-        ) = None,
+        document_service: Any = None,
+        repository: Any = None,
+        document_persistence: Any = None,
+        persistence_handler: Any = None,  # Legacy parameter for backward compatibility
         guardrail_enforcer: (
             Callable[..., ai_core_api.GuardrailDecision] | None
         ) = ai_core_api.enforce_guardrails,
         delta_decider: (
             Callable[..., ai_core_api.DeltaDecision] | None
         ) = ai_core_api.decide_delta,
-        persistence_handler: (
-            Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
+        quarantine_scanner: (
+            Callable[[bytes, Mapping[str, Any]], GraphTransition] | None
         ) = None,
-        embedding_handler: (
-            Callable[[Mapping[str, Any]], Mapping[str, Any]] | None
-        ) = None,
+        embedding_handler: Callable[..., ai_core_api.EmbeddingResult] | None = None,
         lifecycle_hook: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
     ) -> None:
-        self._quarantine_scanner = quarantine_scanner
+        self._document_service = document_service
+        self._repository = repository
+        # Support legacy persistence_handler parameter
+        self._document_persistence = document_persistence or persistence_handler
         self._guardrail_enforcer = guardrail_enforcer
         self._delta_decider = delta_decider
-        self._persist = persistence_handler
+        self._quarantine_scanner = quarantine_scanner
+        if embedding_handler is None:
+            embedding_handler = ai_core_api.trigger_embedding
         self._embed = embedding_handler
         self._lifecycle_hook = lifecycle_hook
-        self._dedupe_index: dict[tuple[str, str, str], Mapping[str, Any]] = {}
-        self._source_versions: dict[tuple[str, str, str], int] = {}
 
-    # ------------------------------------------------------------------ API
+        # Build dependencies
+        components = require_document_components()
+
+        # Parsers
+        registry = ParserRegistry(
+            [
+                MarkdownDocumentParser(),
+                HtmlDocumentParser(),
+                DocxDocumentParser(),
+                PptxDocumentParser(),
+                PdfDocumentParser(),
+                TextDocumentParser(),
+            ]
+        )
+        parser_dispatcher = ParserDispatcher(registry)
+
+        # Chunker
+        chunker = SimpleDocumentChunker()
+
+        # Storage
+        storage_candidate = components.storage
+        try:
+            storage = storage_candidate()
+        except Exception:
+            storage = storage_candidate
+
+        # Captioner
+        captioner_cls = components.captioner
+        try:
+            captioner = captioner_cls()
+        except TypeError:  # if init args needed or already instance?
+            captioner = captioner_cls
+
+        self._document_graph = build_document_processing_graph(
+            parser=parser_dispatcher,
+            repository=self._repository,
+            storage=storage,
+            captioner=captioner,
+            chunker=chunker,
+            embedder=self._embed,
+            delta_decider=self._delta_decider,
+            guardrail_enforcer=self._guardrail_enforcer,
+            quarantine_scanner=self._quarantine_scanner,
+        )
 
     @observe_span(name="upload.ingestion.run")
     def run(
@@ -181,401 +152,94 @@ class UploadIngestionGraph:
     ) -> Mapping[str, Any]:
         """Execute the upload ingestion graph for *payload*."""
 
-        state = self._initial_state(payload)
-        self._annotate_span(state, phase="run")
-        target_node = self._RUN_UNTIL_TO_NODE.get(run_until or "")
-        telemetry = state["telemetry"]
-        transitions: dict[str, StandardTransitionResult] = {}
+        # 1. Normalize payload to DocumentProcessingState inputs
+        normalized_input = self._prepare_upload_document(payload)
 
-        for node_name in self._RUN_ORDER:
-            transition = self._execute_node(node_name, state)
-            transition = self._with_transition_metadata(transition, state)
-            telemetry.setdefault("nodes", {})[node_name] = {
-                "span": self._span_name(node_name)
-            }
-            transitions[node_name] = transition.result
-            state["doc"]["last_transition"] = transition.result
-            state["doc"]["decision"] = transition.decision
-            state["doc"]["reason"] = transition.reason
+        # Config
+        config = self._build_config(payload)
 
-            self._maybe_emit_transition_event(node_name, transition, state)
+        # Context
+        context = self._build_context(payload, normalized_input)
 
-            if node_name == target_node:
-                break
-
-            if transition.decision.startswith("skip"):
-                break
-
-        telemetry["ended_at"] = datetime.now(timezone.utc).isoformat()
-        telemetry["total_ms"] = self._compute_total_ms(telemetry)
-        state["doc"]["transitions"] = transitions
-
-        result = {
-            "decision": state["doc"].get("decision"),
-            "reason": state["doc"].get("reason"),
-            "document_id": state["doc"].get("document_id"),
-            "version": state["doc"].get("version"),
-            "snippets": state["doc"].get("snippets", []),
-            "warnings": state["doc"].get("warnings", []),
-            "telemetry": telemetry,
-            "prompt_version": state["meta"].get("prompt_version"),
-            "transitions": transitions,
-        }
-        self._annotate_span(
-            state,
-            phase="run",
-            extra={
-                "decision": result.get("decision"),
-                "reason": result.get("reason"),
-                "document_id": state["doc"].get("document_id"),
-            },
+        state = DocumentProcessingState(
+            document=normalized_input.document,
+            config=config,
+            context=context,
+            run_until=run_until,
         )
-        return result
 
-    # -------------------------------------------------------------- Node impl
-
-    def _execute_node(
-        self, name: str, state: MutableMapping[str, Any]
-    ) -> GraphTransition:
+        # 2. Invoke Graph
         try:
-            handler = getattr(self, f"_node_{name}")
-        except AttributeError as exc:  # pragma: no cover - defensive
-            raise UploadIngestionError(f"node_missing:{name}") from exc
-        try:
-            return handler(state)
-        except UploadIngestionError as exc:
-            self._handle_node_error(name, exc, state)
-            raise
+            result_state = self._document_graph.invoke(state)
+            if isinstance(result_state, dict):
+                result_state = DocumentProcessingState(**result_state)
         except Exception as exc:
-            self._handle_node_error(name, exc, state)
-            raise UploadIngestionError(f"node_failed:{name}") from exc
+            raise UploadIngestionError(f"graph_failed:{str(exc)}") from exc
 
-    # Node: accept_upload ----------------------------------------------------
+        # 3. Map results back to legacy dict
+        return self._map_result(result_state)
 
-    @observe_span(name="upload.ingestion.accept_upload", auto_annotate=True)
-    def _node_accept_upload(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        payload = state["input"]
-        tenant_id = self._require_str(payload, "tenant_id")
-        uploader_id = self._normalize_optional_str(payload.get("uploader_id"))
-        trace_id = self._require_str(payload, "trace_id")
-        visibility = self._resolve_visibility(payload.get("visibility"))
-        workflow_id = self._normalize_optional_str(payload.get("workflow_id"))
-        if not workflow_id:
-            workflow_id = DEFAULT_WORKFLOW_PLACEHOLDER
-        case_id = self._normalize_optional_str(payload.get("case_id"))
+    def _prepare_upload_document(
+        self, payload: Mapping[str, Any]
+    ) -> NormalizedDocumentPayload:
+        """Construct NormalizedDocumentPayload from raw upload payload."""
 
+        # Extract inputs
         file_bytes = payload.get("file_bytes")
         file_uri = payload.get("file_uri")
-        if file_bytes and file_uri:
-            return _transition(
-                phase="accept_upload",
-                decision="skip_invalid_input",
-                reason="multiple_sources",
-                diagnostics={"severity": "error"},
-            )
-        if not file_bytes and not file_uri:
-            return _transition(
-                phase="accept_upload",
-                decision="skip_invalid_input",
-                reason="payload_missing",
-                diagnostics={"severity": "error"},
-            )
 
-        if isinstance(file_bytes, str):
-            file_bytes = file_bytes.encode("utf-8")
-        elif not isinstance(file_bytes, (bytes, bytearray)) and file_bytes is not None:
-            return _transition(
-                phase="accept_upload",
-                decision="skip_invalid_input",
-                reason="bytes_required",
-                diagnostics={"severity": "error"},
-            )
+        if file_bytes is None and file_uri is None:
+            raise UploadIngestionError("payload_missing")
 
-        if file_bytes is None:
+        if file_bytes is None and file_uri:
             raise UploadIngestionError("file_uri_not_supported")
 
-        binary = bytes(file_bytes)
-        size_limit = int(getattr(settings, "UPLOAD_MAX_BYTES", DEFAULT_MAX_BYTES))
-        if len(binary) > size_limit:
-            return _transition(
-                phase="accept_upload",
-                decision="skip_oversize",
-                reason="file_too_large",
-                diagnostics={
-                    "max_bytes": size_limit,
-                    "size": len(binary),
-                    "severity": "warn",
-                },
-            )
+        if isinstance(file_bytes, str):
+            binary = file_bytes.encode("utf-8")
+        else:
+            binary = bytes(file_bytes)
 
         declared_mime = self._normalize_mime(payload.get("declared_mime"))
         filename = (payload.get("filename") or "upload").strip()
         if not declared_mime and filename:
             guess, _ = mimetypes.guess_type(filename)
-            declared_mime = self._normalize_mime(guess)
-        if not declared_mime:
-            declared_mime = "application/octet-stream"
+            declared_mime = self._normalize_mime(guess) or "application/octet-stream"
 
-        allowed = getattr(settings, "UPLOAD_ALLOWED_MIME_TYPES", DEFAULT_MIME_ALLOWLIST)
-        allowlist = tuple(str(item).strip().lower() for item in allowed)
-        if allowlist and declared_mime not in allowlist:
-            return _transition(
-                phase="accept_upload",
-                decision="skip_disallowed_mime",
-                reason="mime_not_allowed",
-                diagnostics={"mime": declared_mime, "allowed": allowlist},
-            )
-
-        ingestion_run_id = self._require_str(payload, "ingestion_run_id")
-        collection_id = self._normalize_optional_str(payload.get("collection_id"))
-
-        state["meta"].update(
-            {
-                "tenant_id": tenant_id,
-                "uploader_id": uploader_id,
-                "visibility": visibility,
-                "source": "upload",
-                "tags": tuple(self._normalize_tags(payload.get("tags"))),
-                "source_key": self._normalize_optional_str(payload.get("source_key")),
-                "filename": filename,
-                "workflow_id": workflow_id,
-                "trace_id": trace_id,
-                "ingestion_run_id": ingestion_run_id,
-            }
-        )
-        if case_id:
-            state["meta"]["case_id"] = case_id
-        if collection_id:
-            state["meta"]["collection_id"] = collection_id
-        state["ingest"].update(
-            {
-                "size": len(binary),
-                "declared_mime": declared_mime,
-                "binary": binary,
-            }
-        )
-        return _transition(
-            phase="accept_upload",
-            decision="accepted",
-            reason="input_valid",
-            diagnostics={"size": len(binary), "visibility": visibility},
-        )
-
-    # Node: quarantine_scan --------------------------------------------------
-
-    @observe_span(name="upload.ingestion.quarantine_scan", auto_annotate=True)
-    def _node_quarantine_scan(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        enabled = getattr(settings, "UPLOAD_QUARANTINE_ENABLED", False)
-        if not enabled or self._quarantine_scanner is None:
-            return _transition(
-                phase="quarantine_scan",
-                decision="proceed",
-                reason="quarantine_disabled",
-            )
-
-        binary = state["ingest"].get("binary", b"")
-        context = {
-            "tenant_id": state["meta"].get("tenant_id"),
-            "visibility": state["meta"].get("visibility"),
-            "declared_mime": state["ingest"].get("declared_mime"),
-        }
-        transition = self._quarantine_scanner(binary, context)
-        if not isinstance(transition, GraphTransition):
-            raise UploadIngestionError("quarantine_scanner_invalid")
-        return transition
-
-    # Node: deduplicate ------------------------------------------------------
-
-    @observe_span(name="upload.ingestion.deduplicate", auto_annotate=True)
-    def _node_deduplicate(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        binary: bytes = state["ingest"].get("binary", b"")
-        tenant_id = state["meta"].get("tenant_id")
+        tenant_id = self._require_str(payload, "tenant_id")
         content_hash = hashlib.sha256(binary).hexdigest()
-        state["ingest"]["content_hash"] = content_hash
 
-        source = state["meta"].get("source") or "upload"
-        collection_id = state["meta"].get("collection_id")
-        dedupe_key = (tenant_id, source, content_hash, collection_id)
-        existing = self._dedupe_index.get(dedupe_key)
-        if existing is not None:
-            state["doc"].update(existing)
-            return _transition(
-                phase="deduplicate",
-                decision="skip_duplicate",
-                reason="content_hash_seen",
-                diagnostics={"severity": "info", "content_hash": content_hash},
-            )
-
-        source_key = state["meta"].get("source_key")
-        if source_key:
-            version_key = (tenant_id, source, source_key)
-            version = self._source_versions.get(version_key, 0) + 1
-            self._source_versions[version_key] = version
-            state["doc"]["version"] = str(version)
-
-        state["doc"]["content_hash"] = content_hash
-        return _transition(
-            phase="deduplicate",
-            decision="proceed",
-            reason="dedupe_ok",
-            diagnostics={"content_hash": content_hash},
-        )
-
-    # Node: parse ------------------------------------------------------------
-
-    @observe_span(name="upload.ingestion.parse", auto_annotate=True)
-    def _node_parse(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        binary: bytes = state["ingest"].get("binary", b"")
-        charset = "utf-8"
-        try:
-            text = binary.decode(charset)
-        except UnicodeDecodeError:
-            text = binary.decode("latin-1", errors="ignore")
-
-        state["doc"]["raw_text"] = text
-        snippets = text.splitlines()
-        if snippets:
-            state["doc"]["snippets"] = snippets[:3]
-        return _transition(
-            phase="parse",
-            decision="parse_complete",
-            reason="parse_succeeded",
-            diagnostics={"length": len(text)},
-        )
-
-    # Node: normalize --------------------------------------------------------
-
-    @observe_span(name="upload.ingestion.normalize", auto_annotate=True)
-    def _node_normalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        raw_text = state["doc"].get("raw_text", "")
-        normalized = " ".join(raw_text.split()) if raw_text else ""
-        state["doc"]["normalized_text"] = normalized
-        return _transition(
-            phase="normalize",
-            decision="normalize_complete",
-            reason="normalized",
-            diagnostics={"length": len(normalized)},
-        )
-
-    # Node: delta and guardrails --------------------------------------------
-
-    @observe_span(name="upload.ingestion.delta_and_guardrails", auto_annotate=True)
-    def _node_delta_and_guardrails(
-        self, state: MutableMapping[str, Any]
-    ) -> GraphTransition:
-        normalized = self._build_normalized_document(state)
-        baseline = self._resolve_baseline(state)
-        state["doc"]["normalized_document"] = normalized.to_dict()
-        state["doc"]["baseline"] = baseline
-
-        guardrail_transition_dict: Mapping[str, Any] | None = None
-        guardrail_decision: Optional[ai_core_api.GuardrailDecision] = None
-        if self._guardrail_enforcer is not None:
-            guardrail_decision = self._guardrail_enforcer(
-                normalized_document=normalized,
-            )
-            state["doc"]["guardrail_decision"] = {
-                "decision": guardrail_decision.decision,
-                "reason": guardrail_decision.reason,
-                "attributes": _json_safe_mapping(guardrail_decision.attributes),
-            }
-            guardrail_transition = self._translate_guardrail_decision(
-                guardrail_decision,
-                normalized,
-            )
-            guardrail_transition_dict = guardrail_transition.to_dict()
-            state["doc"]["guardrail_transition"] = guardrail_transition_dict
-            if guardrail_transition.decision.startswith("skip"):
-                return guardrail_transition
-
-        if self._delta_decider is None:
-            diagnostics: Dict[str, Any] = {}
-            if guardrail_transition_dict is not None:
-                diagnostics["guardrail"] = guardrail_transition_dict
-            return _transition(
-                phase="delta_and_guardrails",
-                decision="upsert",
-                reason="delta_skipped",
-                diagnostics=diagnostics,
-                guardrail=guardrail_decision,
-            )
-
-        delta_decision = self._delta_decider(
-            normalized_document=normalized,
-            baseline=baseline,
-        )
-        state["doc"]["delta_decision"] = {
-            "decision": delta_decision.decision,
-            "reason": delta_decision.reason,
-            "attributes": _json_safe_mapping(delta_decision.attributes),
-        }
-        delta_transition = self._translate_delta_decision(
-            delta_decision,
-            normalized,
-            guardrail_transition_dict,
-            guardrail_decision,
-        )
-        state["doc"]["delta"] = delta_transition.to_dict()
-        return delta_transition
-
-    def _build_normalized_document(
-        self, state: MutableMapping[str, Any]
-    ) -> NormalizedDocumentPayload:
-        tenant_id = state["meta"].get("tenant_id")
-        if not tenant_id:
-            raise UploadIngestionError("tenant_missing_for_guardrail")
-        workflow_id = state["meta"].get("workflow_id") or DEFAULT_WORKFLOW_PLACEHOLDER
-        filename = state["meta"].get("filename") or "upload"
-        visibility = state["meta"].get("visibility")
-        tags = list(state["meta"].get("tags") or ())
-        uploader_id = state["meta"].get("uploader_id")
-        source_key = state["meta"].get("source_key")
-        case_id = state["meta"].get("case_id")
-        trace_id = state["meta"].get("trace_id")
-
-        binary: bytes = state["ingest"].get("binary", b"")
-        declared_mime = (
-            state["ingest"].get("declared_mime") or "application/octet-stream"
-        )
-        content_hash = state["doc"].get("content_hash")
-        if not content_hash:
-            raise UploadIngestionError("content_hash_missing_for_guardrail")
-        normalized_text = state["doc"].get("normalized_text") or ""
-        raw_text = state["doc"].get("raw_text") or normalized_text
-
-        document_id_value = state["doc"].get("document_id") or uuid4()
-        version = state["doc"].get("version")
-
-        external_ref: dict[str, str] = {"provider": "upload"}
-        if source_key:
-            external_ref["external_id"] = str(source_key)
-        if uploader_id:
-            external_ref["uploader_id"] = str(uploader_id)
-
+        # Build document object structure
         meta = DocumentMeta(
             tenant_id=tenant_id,
-            workflow_id=workflow_id,
+            workflow_id=payload.get("workflow_id") or DEFAULT_WORKFLOW_PLACEHOLDER,
             title=filename,
-            tags=tags,
-            origin_uri=self._normalize_optional_str(state["input"].get("origin_uri"))
-            or self._normalize_optional_str(state["input"].get("file_uri")),
-            external_ref=external_ref or None,
+            tags=list(self._normalize_tags(payload.get("tags"))),
+            origin_uri=payload.get("origin_uri") or payload.get("file_uri"),
+            # External ref logic from old graph
+            external_ref={
+                "provider": "upload",
+                "uploader_id": self._resolve_str(payload.get("uploader_id")),
+                "external_id": self._resolve_str(payload.get("source_key")),
+            },
         )
 
         blob = InlineBlob(
             type="inline",
-            media_type=declared_mime,
+            media_type=declared_mime or "application/octet-stream",
             base64=base64.b64encode(binary).decode("ascii"),
             sha256=content_hash,
             size=len(binary),
         )
-        normalized_document = NormalizedDocument(
-            ref=DocumentRef(
-                tenant_id=tenant_id,
-                workflow_id=workflow_id,
-                document_id=document_id_value,
-                version=version,
-            ),
+
+        doc_id = uuid4()
+        ref = DocumentRef(
+            tenant_id=tenant_id,
+            workflow_id=meta.workflow_id,
+            document_id=doc_id,
+        )
+
+        normalized = NormalizedDocument(
+            ref=ref,
             meta=meta,
             blob=blob,
             checksum=content_hash,
@@ -583,513 +247,204 @@ class UploadIngestionGraph:
             source="upload",
         )
 
-        metadata_payload = {
+        # Metadata dictionary for legacy compat
+        metadata_map = {
             "tenant_id": tenant_id,
-            "workflow_id": workflow_id,
-            "case_id": case_id,
-            "trace_id": trace_id,
+            "workflow_id": meta.workflow_id,
+            "case_id": payload.get("case_id"),
+            "trace_id": payload.get("trace_id"),
             "source": "upload",
-            "visibility": visibility,
+            "visibility": self._resolve_visibility(payload.get("visibility")),
             "filename": filename,
         }
 
-        metadata = MappingProxyType(
-            {key: value for key, value in metadata_payload.items() if value is not None}
-        )
-
         return NormalizedDocumentPayload(
-            document=normalized_document,
-            primary_text=normalized_text or raw_text,
+            document=normalized,
+            primary_text="",
             payload_bytes=binary,
-            metadata=metadata,
-            content_raw=raw_text,
-            content_normalized=normalized_text or raw_text,
-        )
-
-    def _resolve_baseline(self, state: MutableMapping[str, Any]) -> Mapping[str, Any]:
-        baseline_candidate = state["doc"].get("baseline")
-        if not isinstance(baseline_candidate, Mapping):
-            baseline_candidate = state["input"].get("baseline")
-        if isinstance(baseline_candidate, Mapping):
-            return dict(baseline_candidate)
-        return {}
-
-    def _translate_guardrail_decision(
-        self,
-        decision: ai_core_api.GuardrailDecision,
-        normalized: NormalizedDocumentPayload,
-    ) -> GraphTransition:
-        diagnostics: Dict[str, Any] = _json_safe_mapping(decision.attributes)
-        policy_events = self._normalize_policy_events(
-            diagnostics.get("policy_events")
-        ) or tuple(decision.policy_events)
-        if policy_events:
-            diagnostics["policy_events"] = policy_events
-        severity = diagnostics.get("severity")
-        if not severity:
-            diagnostics["severity"] = "info" if decision.allowed else "error"
-        diagnostics.setdefault("guardrail_decision", decision.decision)
-        diagnostics.setdefault("tenant_id", normalized.tenant_id)
-        diagnostics.setdefault("document_id", normalized.document_id)
-        diagnostics["allowed"] = decision.allowed
-
-        if not decision.allowed:
-            return _transition(
-                phase="delta_and_guardrails",
-                decision="skip_guardrail",
-                reason=decision.reason,
-                diagnostics=diagnostics,
-                guardrail=decision,
-            )
-        return _transition(
-            phase="delta_and_guardrails",
-            decision="guardrail_allow",
-            reason=decision.reason,
-            diagnostics=diagnostics,
-            guardrail=decision,
-        )
-
-    def _translate_delta_decision(
-        self,
-        decision: ai_core_api.DeltaDecision,
-        normalized: NormalizedDocumentPayload,
-        guardrail_transition: Mapping[str, Any] | None,
-        guardrail_decision: Optional[ai_core_api.GuardrailDecision] = None,
-    ) -> GraphTransition:
-        diagnostics: Dict[str, Any] = _json_safe_mapping(decision.attributes)
-        policy_events = self._normalize_policy_events(diagnostics.get("policy_events"))
-        diagnostics["policy_events"] = policy_events
-        diagnostics.setdefault("severity", "info")
-        diagnostics.setdefault("delta_decision", decision.decision)
-        if decision.version is not None:
-            diagnostics.setdefault("version", decision.version)
-        diagnostics.setdefault("tenant_id", normalized.tenant_id)
-        diagnostics.setdefault("document_id", normalized.document_id)
-
-        guardrail_events: tuple[str, ...] = ()
-        if guardrail_transition is not None:
-            diagnostics["guardrail"] = guardrail_transition
-            guardrail_diag = guardrail_transition.get("context", {})
-            guardrail_events = self._normalize_policy_events(
-                guardrail_diag.get("policy_events")
-            )
-            diagnostics["policy_events"] = self._merge_policy_events(
-                guardrail_events, diagnostics.get("policy_events", ())
-            )
-
-        status = decision.decision.strip().lower()
-        reason = decision.reason or f"delta_{status or 'unknown'}"
-        if status in {"unchanged", "near_duplicate"}:
-            if guardrail_events:
-                diagnostics["policy_events"] = self._merge_policy_events(
-                    guardrail_events, diagnostics.get("policy_events", ())
-                )
-            return _transition(
-                phase="delta_and_guardrails",
-                decision="skip_delta",
-                reason=reason,
-                diagnostics=diagnostics,
-                delta=decision,
-                guardrail=guardrail_decision,
-            )
-
-        return _transition(
-            phase="delta_and_guardrails",
-            decision="upsert",
-            reason=reason if reason else "delta_changed",
-            diagnostics=diagnostics,
-            delta=decision,
-            guardrail=guardrail_decision,
-        )
-
-    @staticmethod
-    def _normalize_policy_events(value: Any) -> tuple[str, ...]:
-        if isinstance(value, tuple):
-            return tuple(str(item).strip() for item in value if str(item).strip())
-        if isinstance(value, (list, set)):
-            return tuple(str(item).strip() for item in value if str(item).strip())
-        if value is None:
-            return ()
-        event = str(value).strip()
-        return (event,) if event else ()
-
-    @staticmethod
-    def _merge_policy_events(
-        *sources: Iterable[str],
-    ) -> tuple[str, ...]:
-        seen: Dict[str, None] = {}
-        for source in sources:
-            for event in source:
-                key = str(event).strip()
-                if not key:
-                    continue
-                if key not in seen:
-                    seen[key] = None
-        return tuple(seen.keys())
-
-    # Node: persist_document -------------------------------------------------
-
-    @observe_span(name="upload.ingestion.persist_document", auto_annotate=True)
-    def _node_persist_document(
-        self, state: MutableMapping[str, Any]
-    ) -> GraphTransition:
-        payload = {
-            "tenant_id": state["meta"].get("tenant_id"),
-            "visibility": state["meta"].get("visibility"),
-            "content_hash": state["doc"].get("content_hash"),
-            "normalized_text": state["doc"].get("normalized_text"),
-        }
-        if self._persist is not None:
-            result = self._persist(payload)
-        else:
-            result = {
-                "document_id": str(uuid4()),
-                "version": state["doc"].get("version") or "1",
-            }
-
-        document_id = result.get("document_id")
-        version = result.get("version")
-        if document_id is None:
-            raise UploadIngestionError("persistence_missing_document_id")
-
-        state["doc"].update({"document_id": document_id, "version": version})
-        dedupe_key = (
-            state["meta"].get("tenant_id"),
-            state["meta"].get("source") or "upload",
-            state["doc"].get("content_hash"),
-            state["meta"].get("collection_id"),
-        )
-        self._dedupe_index[dedupe_key] = {
-            "document_id": document_id,
-            "version": version,
-        }
-        return _transition(
-            phase="persist_document",
-            decision="persist_complete",
-            reason="document_persisted",
-            diagnostics={"document_id": document_id, "version": version},
-        )
-
-    # Node: chunk_and_embed --------------------------------------------------
-
-    @observe_span(name="upload.ingestion.chunk_and_embed", auto_annotate=True)
-    def _node_chunk_and_embed(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        normalized_text = state["doc"].get("normalized_text", "")
-        words = normalized_text.split()
-        chunk = " ".join(words[:128]) if words else normalized_text
-        chunks = [chunk] if chunk else []
-        state["doc"]["chunks"] = chunks
-
-        embedding_result: Mapping[str, Any]
-        if self._embed is not None:
-            embedding_result = self._embed(
-                {
-                    "tenant_id": state["meta"].get("tenant_id"),
-                    "document_id": state["doc"].get("document_id"),
-                    "chunks": chunks,
-                }
-            )
-        else:
-            embedding_result = {"status": "vector_complete", "count": len(chunks)}
-
-        state["doc"]["embedding"] = embedding_result
-        return _transition(
-            phase="chunk_and_embed",
-            decision="vector_complete",
-            reason="embedding_triggered",
-            diagnostics={"chunks": len(chunks), "embedding": embedding_result},
-        )
-
-    # Node: lifecycle_hook ---------------------------------------------------
-
-    @observe_span(name="upload.ingestion.lifecycle_hook", auto_annotate=True)
-    def _node_lifecycle_hook(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        if self._lifecycle_hook is None:
-            return _transition(
-                phase="lifecycle_hook",
-                decision="lifecycle_complete",
-                reason="hook_skipped",
-            )
-
-        hook_result = self._lifecycle_hook(
-            {
-                "tenant_id": state["meta"].get("tenant_id"),
-                "document_id": state["doc"].get("document_id"),
-                "embedding": state["doc"].get("embedding"),
-            }
-        )
-        state["doc"]["lifecycle"] = hook_result
-        return _transition(
-            phase="lifecycle_hook",
-            decision="lifecycle_complete",
-            reason="hook_completed",
-            diagnostics=_json_safe_mapping(hook_result),
-        )
-
-    # Node: finalize ---------------------------------------------------------
-
-    @observe_span(name="upload.ingestion.finalize", auto_annotate=True)
-    def _node_finalize(self, state: MutableMapping[str, Any]) -> GraphTransition:
-        decision = state["doc"].get("decision")
-        if decision and decision.startswith("skip"):
-            return _transition(
-                phase="finalize",
-                decision="skipped",
-                reason=state["doc"].get("reason", "skipped"),
-            )
-        return _transition(
-            phase="finalize", decision="completed", reason="ingestion_finished"
-        )
-
-    # ---------------------------------------------------------------- Helper
-
-    def _initial_state(self, payload: Mapping[str, Any]) -> MutableMapping[str, Any]:
-        started = datetime.now(timezone.utc).isoformat()
-        workflow_id = payload.get("workflow_id") or "upload"
-        tenant_id = payload.get("tenant_id")
-        trace_id = payload.get("trace_id")
-        ingestion_run_id = payload.get("ingestion_run_id")
-        return {
-            "input": dict(payload),
-            "meta": {
-                "prompt_version": getattr(settings, "PROMPT_VERSION", "v1"),
-                "tenant_id": tenant_id,
-                "trace_id": trace_id,
-                "ingestion_run_id": ingestion_run_id,
-                "workflow_id": workflow_id,
-            },
-            "ingest": {},
-            "doc": {},
-            "telemetry": {"started_at": started, "nodes": {}},
-            # Surface key identifiers at top-level for observability tests
-            "tenant_id": tenant_id,
-            "trace_id": trace_id,
-            "ingestion_run_id": ingestion_run_id,
-            "workflow_id": workflow_id,
-        }
-
-    @staticmethod
-    def _compute_total_ms(telemetry: Mapping[str, Any]) -> float:
-        total = 0.0
-        for entry in telemetry.get("nodes", {}).values():
-            took = entry.get("took_ms")
-            if took in (None, ""):
-                continue
-            try:
-                total += float(took)
-            except (TypeError, ValueError):
-                continue
-        return total
-
-    @staticmethod
-    def _span_name(phase: str) -> str:
-        return f"upload.ingestion.{phase}"
-
-    def _annotate_span(
-        self,
-        state: MutableMapping[str, Any],
-        *,
-        phase: str,
-        transition: GraphTransition | None = None,
-        extra: Mapping[str, Any] | None = None,
-    ) -> None:
-        metadata: Dict[str, Any] = {
-            "phase": self._span_name(phase),
-        }
-        meta_state = state.get("meta", {})
-        doc_state = state.get("doc", {})
-
-        tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
-        if tenant_id:
-            metadata["tenant_id"] = tenant_id
-        workflow_id = (
-            self._normalize_optional_str(meta_state.get("workflow_id"))
-            or self._normalize_optional_str(state.get("workflow_id"))
-            or "upload"
-        )
-        metadata["workflow_id"] = workflow_id
-        ingestion_run_id = self._normalize_optional_str(
-            meta_state.get("ingestion_run_id")
-        )
-        if ingestion_run_id:
-            metadata["ingestion_run_id"] = ingestion_run_id
-        document_id = doc_state.get("document_id")
-        if document_id:
-            metadata["document_id"] = str(document_id)
-        decision = doc_state.get("decision")
-        if decision:
-            metadata.setdefault("decision", str(decision))
-        if transition is not None:
-            metadata["decision"] = transition.decision
-            metadata["reason"] = transition.reason
-        if extra:
-            for key, value in extra.items():
-                if value is None:
-                    continue
-                metadata[key] = value
-        if metadata:
-            update_observation(metadata=metadata)
-
-    def _with_transition_metadata(
-        self, transition: GraphTransition, state: MutableMapping[str, Any]
-    ) -> GraphTransition:
-        metadata = self._transition_metadata(state)
-        if not metadata:
-            return transition
-        return transition.with_context(metadata)
-
-    def _transition_metadata(self, state: MutableMapping[str, Any]) -> Dict[str, str]:
-        meta_state = state.get("meta", {})
-        doc_state = state.get("doc", {})
-        metadata: Dict[str, str] = {}
-
-        trace_id = self._normalize_optional_str(meta_state.get("trace_id"))
-        if trace_id:
-            metadata["trace_id"] = trace_id
-        workflow_id = (
-            self._normalize_optional_str(meta_state.get("workflow_id"))
-            or self._normalize_optional_str(state.get("workflow_id"))
-            or "upload"
-        )
-        metadata["workflow_id"] = workflow_id
-        ingestion_run_id = self._normalize_optional_str(
-            meta_state.get("ingestion_run_id")
-        )
-        if ingestion_run_id:
-            metadata["ingestion_run_id"] = ingestion_run_id
-        document_id = doc_state.get("document_id")
-        if document_id:
-            metadata["document_id"] = str(document_id)
-        return metadata
-
-    def _maybe_emit_transition_event(
-        self,
-        phase: str,
-        transition: GraphTransition,
-        state: MutableMapping[str, Any],
-    ) -> None:
-        context = transition.context
-        severity = transition.severity
-        decision_text = transition.decision.strip().lower()
-        if severity not in {"error"} and "deny" not in decision_text:
-            return
-
-        payload: Dict[str, Any] = {
-            "event": (
-                "upload.ingestion.denied"
-                if "deny" in decision_text
-                else "upload.ingestion.error"
+            metadata=MappingProxyType(
+                {k: v for k, v in metadata_map.items() if v is not None}
             ),
-            "phase": self._span_name(phase),
-            "decision": transition.decision,
-            "reason": transition.reason,
-        }
-        payload.update(self._collect_observability_metadata(state))
-        if context:
-            payload["context"] = _make_json_safe(context)
-        emit_event(payload)
-
-    def _handle_node_error(
-        self,
-        phase: str,
-        exc: Exception,
-        state: MutableMapping[str, Any],
-    ) -> None:
-        error_payload = {
-            "event": "upload.ingestion.error",
-            "phase": self._span_name(phase),
-            "error": exc.__class__.__name__,
-            "message": str(exc),
-        }
-        error_payload.update(self._collect_observability_metadata(state))
-        emit_event(error_payload)
-        self._annotate_span(
-            state,
-            phase=phase,
-            extra={
-                "error": exc.__class__.__name__,
-                "error_message": str(exc),
-            },
+            content_raw="",
+            content_normalized="",
         )
 
-    def _collect_observability_metadata(
-        self, state: MutableMapping[str, Any]
-    ) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = {}
-        meta_state = state.get("meta", {})
-        doc_state = state.get("doc", {})
-
-        tenant_id = self._normalize_optional_str(meta_state.get("tenant_id"))
-        if tenant_id:
-            metadata["tenant_id"] = tenant_id
-        case_id = self._normalize_optional_str(meta_state.get("case_id"))
-        if case_id:
-            metadata["case_id"] = case_id
-        trace_id = self._normalize_optional_str(meta_state.get("trace_id"))
-        if trace_id:
-            metadata["trace_id"] = trace_id
-        workflow_id = self._normalize_optional_str(meta_state.get("workflow_id"))
-        if workflow_id:
-            metadata["workflow_id"] = workflow_id
-        ingestion_run_id = self._normalize_optional_str(
-            meta_state.get("ingestion_run_id")
+    def _build_config(self, payload: Mapping[str, Any]) -> DocumentPipelineConfig:
+        return DocumentPipelineConfig(
+            enable_upload_validation=True,
+            max_bytes=int(getattr(settings, "UPLOAD_MAX_BYTES", DEFAULT_MAX_BYTES)),
+            mime_allowlist=tuple(
+                getattr(settings, "UPLOAD_ALLOWED_MIME_TYPES", DEFAULT_MIME_ALLOWLIST)
+            ),
+            enable_asset_captions=False,
+            enable_embedding=True,
         )
-        if ingestion_run_id:
-            metadata["ingestion_run_id"] = ingestion_run_id
-        document_id = doc_state.get("document_id")
-        if document_id:
-            metadata["document_id"] = str(document_id)
-        version = doc_state.get("version")
-        if version:
-            metadata["version"] = str(version)
-        decision = doc_state.get("decision")
-        if decision:
-            metadata["decision"] = str(decision)
-        return metadata
 
-    @staticmethod
-    def _require_str(payload: Mapping[str, Any], key: str) -> str:
+    def _build_context(
+        self, payload: Mapping[str, Any], doc: NormalizedDocumentPayload
+    ) -> DocumentProcessingContext:
+        return DocumentProcessingContext.from_document(
+            doc.document,
+            case_id=self._resolve_str(payload.get("case_id")),
+            trace_id=self._resolve_str(payload.get("trace_id")),
+        )
+
+    def _map_result(self, state: DocumentProcessingState) -> Mapping[str, Any]:
+        doc = state.document
+        normalized_doc = getattr(doc, "document", doc)
+        ref = getattr(normalized_doc, "ref", None)
+        document_id = getattr(ref, "document_id", None)
+        version = getattr(ref, "version", None)
+
+        # Transition helpers -------------------------------------------------
+        def _transition(
+            *,
+            phase: str,
+            decision: str,
+            reason: str,
+            severity: str = "info",
+            context: Mapping[str, Any] | None = None,
+            pipeline: PipelineSection | None = None,
+            delta: Any | None = None,
+            guardrail: Any | None = None,
+        ) -> Mapping[str, Any]:
+            ctx = {k: v for k, v in (context or {}).items() if v is not None}
+            result = StandardTransitionResult(
+                phase=phase,  # type: ignore[arg-type]
+                decision=decision,
+                reason=reason,
+                severity=severity,
+                context=ctx,
+                pipeline=pipeline,
+                delta=build_delta_section(delta) if delta is not None else None,
+                guardrail=(
+                    build_guardrail_section(guardrail)
+                    if guardrail is not None
+                    else None
+                ),
+            )
+            return result.model_dump()
+
+        blob = getattr(normalized_doc, "blob", None)
+        accept_context = {
+            "mime": getattr(blob, "media_type", None),
+            "size_bytes": getattr(blob, "size", None),
+            "max_bytes": getattr(state.config, "max_bytes", None),
+        }
+        mime_allowlist = getattr(state.config, "mime_allowlist", None)
+        if mime_allowlist:
+            accept_context["mime_allowlist"] = tuple(mime_allowlist)
+
+        transitions: Dict[str, Mapping[str, Any]] = {}
+        transitions["accept_upload"] = _transition(
+            phase="accept_upload",
+            decision="accepted",
+            reason="upload_validated",
+            context=accept_context,
+        )
+
+        delta = state.delta_decision
+        guardrail = state.guardrail_decision
+
+        if guardrail and not getattr(guardrail, "allowed", False):
+            delta_guardrail_decision = guardrail.decision
+            delta_guardrail_reason = guardrail.reason
+            delta_guardrail_severity = "error"
+        elif delta:
+            delta_guardrail_decision = delta.decision
+            delta_guardrail_reason = delta.reason
+            delta_guardrail_severity = "info"
+        else:
+            delta_guardrail_decision = "unknown"
+            delta_guardrail_reason = "guardrail_delta_missing"
+            delta_guardrail_severity = "info"
+
+        transitions["delta_and_guardrails"] = _transition(
+            phase="delta_and_guardrails",
+            decision=delta_guardrail_decision,
+            reason=delta_guardrail_reason,
+            severity=delta_guardrail_severity,
+            context={"document_id": str(document_id) if document_id else None},
+            delta=delta,
+            guardrail=guardrail,
+        )
+
+        pipeline_section = PipelineSection(
+            phase=state.phase,
+            run_until=state.run_until,
+            error=repr(state.error) if state.error else None,
+        )
+        transitions["document_pipeline"] = _transition(
+            phase="document_pipeline",
+            decision="processed" if state.error is None else "error",
+            reason=(
+                "document_pipeline_completed"
+                if state.error is None
+                else "document_pipeline_failed"
+            ),
+            severity="error" if state.error else "info",
+            context={"phase": state.phase},
+            pipeline=pipeline_section,
+        )
+
+        # Final decision -----------------------------------------------------
+        decision = "completed"
+        reason = "ingestion_finished"
+        severity = "info"
+
+        if guardrail and not getattr(guardrail, "allowed", False):
+            decision = "skip_guardrail"
+            reason = guardrail.reason or "guardrail_denied"
+            severity = "error"
+        elif delta:
+            delta_flag = delta.decision.strip().lower()
+            if delta_flag in {"skip", "unchanged", "duplicate", "near_duplicate"}:
+                decision = "skip_duplicate"
+                reason = delta.reason or "delta_skip"
+        if state.error is not None:
+            decision = "error"
+            reason = "document_pipeline_failed"
+            severity = "error"
+
+        telemetry = {
+            "phase": state.phase,
+            "run_until": state.run_until.value if state.run_until else None,
+            "delta_decision": getattr(delta, "decision", None) if delta else None,
+            "guardrail_decision": (
+                getattr(guardrail, "decision", None) if guardrail else None
+            ),
+        }
+
+        return {
+            "decision": decision,
+            "reason": reason,
+            "severity": severity,
+            "document_id": str(document_id) if document_id else None,
+            "version": version,
+            "telemetry": {k: v for k, v in telemetry.items() if v is not None},
+            "transitions": transitions,
+        }
+
+    # Helpers
+    def _require_str(self, payload: Any, key: str) -> str:
         value = payload.get(key)
-        if not isinstance(value, str) or not value.strip():
-            raise UploadIngestionError(f"input_missing:{key}")
-        return value.strip()
+        if not value:
+            raise UploadIngestionError(f"{key}_missing")
+        return str(value)
 
-    @staticmethod
-    def _normalize_mime(value: object | None) -> str:
-        if value is None:
-            return ""
-        return str(value).strip().lower()
+    def _resolve_str(self, value: Any) -> str | None:
+        return str(value).strip() if value else None
 
-    @staticmethod
-    def _normalize_tags(value: object | None) -> Iterable[str]:
-        if value is None:
+    def _normalize_tags(self, value: Any) -> Iterable[str]:
+        if not value:
             return []
-        if isinstance(value, str):
-            return [value.strip()]
-        if isinstance(value, Iterable):
-            tags: list[str] = []
-            for entry in value:
-                if entry is None:
-                    continue
-                tag = str(entry).strip()
-                if tag:
-                    tags.append(tag)
-            return tags
-        return []
+        return [str(v).strip() for v in value]
 
-    @staticmethod
-    def _normalize_optional_str(value: object | None) -> str | None:
-        if value is None:
-            return None
-        candidate = str(value).strip()
-        return candidate or None
+    def _resolve_visibility(self, value: Any) -> str:
+        return str(value) if value else "private"
 
-    @staticmethod
-    def _resolve_visibility(value: object | None) -> str:
-        if value is None:
-            return "active"
-        candidate = str(value).strip().lower()
-        return candidate or "active"
+    def _normalize_mime(self, value: Any) -> str | None:
+        return str(value).lower() if value else None
 
 
-__all__ = ["UploadIngestionGraph", "UploadIngestionError", "GraphTransition"]
+__all__ = ["UploadIngestionGraph", "UploadIngestionError"]

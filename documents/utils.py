@@ -105,11 +105,15 @@ def extract_filename(doc, document_id: str, content_type: str) -> str:
     Priority:
     1. doc.meta.title (original filename from upload)
     2. doc.meta.external_ref["filename"] (if available)
-    3. document_id + extension from content_type
+    3. URL basename (for crawler documents)
+    4. document_id + extension from content_type
     """
-    # 1. Try title field
+    # 1. Try title field (for uploads)
     if doc.meta.title and doc.meta.title.strip():
-        return doc.meta.title.strip()
+        title = doc.meta.title.strip()
+        # If title looks like a filename (has extension), use it
+        if "." in title and len(title.split(".")[-1]) <= 5:
+            return title
 
     # 2. Try external_ref filename
     if doc.meta.external_ref and "filename" in doc.meta.external_ref:
@@ -117,6 +121,96 @@ def extract_filename(doc, document_id: str, content_type: str) -> str:
         if filename:
             return filename
 
-    # 3. Fallback: document_id + extension from content-type
+    # 3. Try URL basename (for crawler documents)
+    # First try origin_uri, then fall back to external_ref['url']
+    url = None
+    if hasattr(doc.meta, "origin_uri") and doc.meta.origin_uri:
+        url = doc.meta.origin_uri
+    elif doc.meta.external_ref and "url" in doc.meta.external_ref:
+        url = doc.meta.external_ref.get("url", "")
+
+    if url:
+        try:
+            from urllib.parse import urlparse, unquote
+
+            parsed = urlparse(url)
+
+            # Remove query parameters from path
+            path = parsed.path.strip("/")
+            if path:
+                segments = [unquote(s) for s in path.split("/") if s]
+                if segments:
+                    basename = segments[-1]
+
+                    # If last segment is index.html, use parent directory name
+                    if basename.lower() in [
+                        "index.html",
+                        "index.htm",
+                        "default.html",
+                        "default.htm",
+                    ]:
+                        if len(segments) > 1:
+                            # Use parent directory name + .html extension
+                            basename = segments[-2]
+                            # If parent doesn't have extension, add .html
+                            if "." not in basename:
+                                return sanitize_filename(f"{basename}.html")
+                            return sanitize_filename(basename)
+                        else:
+                            # Just use domain-based filename with .html
+                            domain = parsed.netloc.replace("www.", "").split(":")[0]
+                            if domain:
+                                safe_domain = sanitize_filename(
+                                    domain.replace(".", "-")
+                                )
+                                return f"{safe_domain}.html"
+
+                    # Check if basename has a valid file extension
+                    if "." in basename:
+                        parts = basename.rsplit(".", 1)
+                        if (
+                            len(parts) == 2
+                            and len(parts[1]) <= 5
+                            and parts[1].replace("-", "").isalnum()
+                        ):
+                            # Has valid extension - use it directly
+                            return sanitize_filename(basename)
+
+                    # No valid extension in basename - determine best extension
+                    safe_basename = sanitize_filename(basename)
+                    ext = get_extension_from_mime(content_type)
+
+                    # Only default to .html if content_type is truly generic
+                    # AND the URL doesn't suggest a different type
+                    if ext == ".bin" and not any(
+                        safe_basename.lower().endswith(suffix)
+                        for suffix in [
+                            ".pdf",
+                            ".doc",
+                            ".docx",
+                            ".xls",
+                            ".xlsx",
+                            ".ppt",
+                            ".pptx",
+                        ]
+                    ):
+                        # For web URLs without clear type, default to .html
+                        ext = ".html"
+
+                    return f"{safe_basename}{ext}"
+
+            # Fallback: construct from domain
+            domain = parsed.netloc.replace("www.", "").split(":")[0]
+            if domain:
+                safe_domain = sanitize_filename(domain.replace(".", "-"))
+                ext = get_extension_from_mime(content_type)
+                # Only default to .html for truly unknown types
+                if ext == ".bin":
+                    ext = ".html"
+                return f"{safe_domain}{ext}"
+        except Exception:
+            pass
+
+    # 4. Fallback: document_id + extension from content-type
     ext = get_extension_from_mime(content_type)
     return f"{document_id}{ext}"

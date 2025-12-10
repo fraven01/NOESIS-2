@@ -423,14 +423,24 @@ def trigger_embedding(
     case_id: Optional[str] = None,
     vector_client: Optional[PgVectorClient] = None,
     vector_client_factory: Optional[Callable[[], PgVectorClient]] = None,
+    chunks: Optional[Sequence[Mapping[str, Any]]] = None,
+    context: Any = None,
+    config: Any = None,
 ) -> EmbeddingResult:
     """Persist chunk metadata and forward the document to the vector client."""
 
     document = normalized_document.document
     tenant = tenant_id or document.ref.tenant_id
-    case = case_id or normalized_document.metadata.get("case_id") or "default"
+    case = (
+        case_id
+        or normalized_document.metadata.get("case_id")
+        or getattr(getattr(context, "metadata", None), "case_id", None)
+        or "default"
+    )
 
-    profile_key = embedding_profile or "standard"
+    profile_key = (
+        embedding_profile or getattr(config, "embedding_profile", None) or "standard"
+    )
     profile_resolution = resolve_ingestion_profile(profile_key)
 
     chunk_meta = ChunkMeta(
@@ -449,29 +459,86 @@ def trigger_embedding(
         lifecycle_state=document.lifecycle_state,
     )
 
-    normalized_content = (
-        normalized_document.content_normalized or normalized_document.primary_text or ""
-    )
+    base_meta = chunk_meta.model_dump(exclude_none=True)
+    meta_trace = getattr(getattr(context, "metadata", None), "trace_id", None)
+    if meta_trace:
+        base_meta["trace_id"] = meta_trace
 
-    chunk_payload = Chunk(
-        content=normalized_content,
-        meta={
-            "tenant_id": chunk_meta.tenant_id,
-            "case_id": chunk_meta.case_id,
-            "source": chunk_meta.source,
-            "hash": chunk_meta.hash,
-            "external_id": chunk_meta.external_id,
-            "content_hash": chunk_meta.content_hash,
-            "embedding_profile": chunk_meta.embedding_profile,
-            "vector_space_id": chunk_meta.vector_space_id,
-            "workflow_id": chunk_meta.workflow_id,
-            "document_id": chunk_meta.document_id,
-            "lifecycle_state": chunk_meta.lifecycle_state,
-        },
-    )
+    chunk_payloads: list[Chunk] = []
+    if chunks:
+        for chunk in chunks:
+            if not isinstance(chunk, Mapping):
+                continue
+            text_value = chunk.get("text") or chunk.get("content") or ""
+            chunk_content = str(text_value) if text_value is not None else ""
+            if not chunk_content:
+                continue
+
+            meta_payload = dict(base_meta)
+            chunk_id = chunk.get("chunk_id")
+            if chunk_id:
+                meta_payload["chunk_id"] = str(chunk_id)
+
+            parent_ref = chunk.get("parent_ref")
+            if parent_ref:
+                meta_payload["parent_ref"] = parent_ref
+
+            parent_ids = chunk.get("parent_ids")
+            if parent_ids:
+                meta_payload["parent_ids"] = list(parent_ids)
+            elif parent_ref:
+                meta_payload["parent_ids"] = [parent_ref]
+
+            section_path = chunk.get("section_path")
+            if section_path:
+                meta_payload["section_path"] = list(section_path)
+
+            page_index = chunk.get("page_index")
+            if page_index is not None:
+                meta_payload["page_index"] = page_index
+
+            kind_value = chunk.get("kind")
+            if kind_value:
+                meta_payload["kind"] = kind_value
+
+            index_value = chunk.get("index")
+            if index_value is not None:
+                meta_payload["index"] = index_value
+
+            chunk_payloads.append(
+                Chunk(
+                    content=chunk_content,
+                    meta=meta_payload,
+                )
+            )
+    else:
+        normalized_content = (
+            normalized_document.content_normalized
+            or normalized_document.primary_text
+            or ""
+        )
+
+        chunk_payloads.append(
+            Chunk(
+                content=normalized_content,
+                meta={
+                    "tenant_id": chunk_meta.tenant_id,
+                    "case_id": chunk_meta.case_id,
+                    "source": chunk_meta.source,
+                    "hash": chunk_meta.hash,
+                    "external_id": chunk_meta.external_id,
+                    "content_hash": chunk_meta.content_hash,
+                    "embedding_profile": chunk_meta.embedding_profile,
+                    "vector_space_id": chunk_meta.vector_space_id,
+                    "workflow_id": chunk_meta.workflow_id,
+                    "document_id": chunk_meta.document_id,
+                    "lifecycle_state": chunk_meta.lifecycle_state,
+                },
+            )
+        )
 
     client = vector_client or _resolve_vector_client(vector_client_factory)
-    inserted = client.upsert_chunks([chunk_payload])
+    inserted = client.upsert_chunks(chunk_payloads)
 
     return EmbeddingResult(
         status="upserted" if inserted else "skipped",

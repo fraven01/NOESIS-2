@@ -1,5 +1,6 @@
 from __future__ import annotations
 import base64
+from contextlib import nullcontext
 from datetime import datetime
 from typing import List, Optional, Tuple
 from uuid import UUID
@@ -7,6 +8,7 @@ import logging
 
 from django.apps import apps
 from django.db import IntegrityError, models, transaction
+from django_tenants.utils import schema_context
 
 from ai_core.contracts.scope import ScopeContext
 from documents.contracts import (
@@ -53,6 +55,16 @@ class DbDocumentsRepository(DocumentsRepository):
         except Tenant.DoesNotExist:
             raise ValueError(f"tenant_not_found: {tenant_id}")
 
+    def _schema_ctx(
+        self, scope: Optional[ScopeContext], tenant: models.Model
+    ):  # pragma: no cover - trivial helper
+        schema_name = None
+        if scope and getattr(scope, "tenant_schema", None):
+            schema_name = scope.tenant_schema
+        else:
+            schema_name = getattr(tenant, "schema_name", None)
+        return schema_context(schema_name) if schema_name else nullcontext()
+
     def upsert(
         self,
         doc: NormalizedDocument,
@@ -67,13 +79,6 @@ class DbDocumentsRepository(DocumentsRepository):
         if workflow != doc_copy.ref.workflow_id:
             raise ValueError("workflow_mismatch")
 
-        Document = apps.get_model("documents", "Document")
-        DocumentCollection = apps.get_model("documents", "DocumentCollection")
-        DocumentCollectionMembership = apps.get_model(
-            "documents", "DocumentCollectionMembership"
-        )
-
-        metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
         collection_id = (
             doc_copy.ref.collection_id or doc_copy.meta.document_collection_id
         )
@@ -85,79 +90,148 @@ class DbDocumentsRepository(DocumentsRepository):
         # Resolve Tenant ID strictly
         tenant = self._resolve_tenant(doc_copy.ref.tenant_id)
 
-        # Fail fast if collection is specified but missing (Logic Change)
-        coll = None
-        if collection_id:
-            try:
-                coll = DocumentCollection.objects.get(
-                    tenant=tenant, collection_id=collection_id
-                )
-            except DocumentCollection.DoesNotExist:
-                # Specific error as requested
-                raise ValueError(f"Collection not found: {collection_id}")
+        Document = apps.get_model("documents", "Document")
+        DocumentCollection = apps.get_model("documents", "DocumentCollection")
+        DocumentCollectionMembership = apps.get_model(
+            "documents", "DocumentCollectionMembership"
+        )
 
-        document = None
-
-        # Strategy: Try finding existing document by strictly unique business key
-        try:
-            document = Document.objects.get(
-                tenant=tenant, source=doc_copy.source or "", hash=doc_copy.checksum
-            )
-        except Document.DoesNotExist:
-            pass
-
-        if document:
-            # Update existing
-            document = self._update_document_instance(document, doc_copy, metadata)
-        else:
-            # Create new - handle race condition
-            try:
-                with transaction.atomic():
-                    document = Document.objects.create(
-                        id=doc_copy.ref.document_id,  # Honor ID if creating new
-                        tenant=tenant,
-                        hash=doc_copy.checksum,
-                        source=doc_copy.source or "",
-                        metadata=metadata,
-                        lifecycle_state=doc_copy.lifecycle_state,
-                        lifecycle_updated_at=doc_copy.created_at,
-                    )
-            except IntegrityError:
-                # Race condition or ID collision
-                # 1. Try finding by ID (if we forced one)
+        with self._schema_ctx(scope, tenant):
+            # Fail fast if collection is specified but missing (Logic Change)
+            coll = None
+            if collection_id:
                 try:
-                    document = Document.objects.get(
-                        id=doc_copy.ref.document_id, tenant=tenant
+                    coll = DocumentCollection.objects.get(
+                        tenant=tenant, collection_id=collection_id
                     )
-                except Document.DoesNotExist:
-                    # 2. Try finding by business key (source + hash)
+                except DocumentCollection.DoesNotExist:
+                    # Specific error as requested
+                    raise ValueError(f"Collection not found: {collection_id}")
+
+            document = None
+
+            # Strategy: Try finding existing document by strictly unique business key
+            try:
+                document = Document.objects.get(
+                    tenant=tenant, source=doc_copy.source or "", hash=doc_copy.checksum
+                )
+            except Document.DoesNotExist:
+                pass
+
+            # Materialize blob to FileBlob before persistence
+            doc_copy = self._materialize_document_safe(doc_copy)
+
+            if document:
+                # Align ref/document_id to the existing row to avoid mismatches
+                doc_copy = doc_copy.model_copy(
+                    update={
+                        "ref": doc_copy.ref.model_copy(
+                            update={"document_id": document.id}, deep=True
+                        )
+                    },
+                    deep=True,
+                )
+                metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
+                document = self._update_document_instance(document, doc_copy, metadata)
+            else:
+                metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
+                # Create new - handle race condition
+                try:
+                    with transaction.atomic():
+                        document = Document.objects.create(
+                            id=doc_copy.ref.document_id,  # Honor ID if creating new
+                            tenant=tenant,
+                            hash=doc_copy.checksum,
+                            source=doc_copy.source or "",
+                            metadata=metadata,
+                            lifecycle_state=doc_copy.lifecycle_state,
+                            lifecycle_updated_at=doc_copy.created_at,
+                        )
+                except IntegrityError:
+                    # Race condition or ID collision
+                    # 1. Try finding by ID (if we forced one)
                     try:
                         document = Document.objects.get(
-                            tenant=tenant,
-                            source=doc_copy.source or "",
-                            hash=doc_copy.checksum,
+                            id=doc_copy.ref.document_id, tenant=tenant
                         )
                     except Document.DoesNotExist:
-                        # Should not happen if IntegrityError was genuine, unless race led to delete?
-                        raise
-                document = self._update_document_instance(document, doc_copy, metadata)
+                        # 2. Try finding by business key (source + hash)
+                        try:
+                            document = Document.objects.get(
+                                tenant=tenant,
+                                source=doc_copy.source or "",
+                                hash=doc_copy.checksum,
+                            )
+                        except Document.DoesNotExist:
+                            # Should not happen if IntegrityError was genuine, unless race led to delete?
+                            raise
+                    # Align ref/metadata to the persisted row
+                    doc_copy = doc_copy.model_copy(
+                        update={
+                            "ref": doc_copy.ref.model_copy(
+                                update={"document_id": document.id}, deep=True
+                            )
+                        },
+                        deep=True,
+                    )
+                    metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
+                    document = self._update_document_instance(
+                        document, doc_copy, metadata
+                    )
 
-        # 3. Memberships (Side Effects)
-        if coll:
+            # 3. Memberships (Side Effects)
+            if coll:
+                try:
+                    DocumentCollectionMembership.objects.get_or_create(
+                        document=document,
+                        collection=coll,
+                        defaults={"added_by": "system"},
+                    )
+                except Exception:
+                    # Don't fail the main upsert if side effects flake, but log
+                    logger.warning(
+                        "collection_membership_failed",
+                        exc_info=True,
+                        extra={
+                            "document_id": str(document.id),
+                            "collection_id": str(collection_id),
+                        },
+                    )
+
+            # Debug: verify persistence in the active schema
             try:
-                DocumentCollectionMembership.objects.get_or_create(
-                    document=document,
-                    collection=coll,
-                    defaults={"added_by": "system"},
+                persisted_count = Document.objects.filter(
+                    tenant=tenant, id=document.id
+                ).count()
+                logger.info(
+                    (
+                        "db_documents_repository_upsert_persist_check "
+                        "tenant_schema=%s tenant_id=%s document_id=%s persisted_count=%s metadata_keys=%s lifecycle_state=%s"
+                    ),
+                    getattr(tenant, "schema_name", None),
+                    doc_copy.ref.tenant_id,
+                    document.id,
+                    persisted_count,
+                    list((metadata or {}).keys()),
+                    document.lifecycle_state,
+                    extra={
+                        "event": "db_documents_repository_upsert_persist_check",
+                        "tenant_schema": getattr(tenant, "schema_name", None),
+                        "tenant_id": doc_copy.ref.tenant_id,
+                        "document_id": str(document.id),
+                        "persisted_count": persisted_count,
+                        "metadata_keys": list((metadata or {}).keys()),
+                        "lifecycle_state": document.lifecycle_state,
+                    },
                 )
             except Exception:
-                # Don't fail the main upsert if side effects flake, but log
                 logger.warning(
-                    "collection_membership_failed",
+                    "db_documents_repository_upsert_persist_check_failed",
                     exc_info=True,
                     extra={
-                        "document_id": str(document.id),
-                        "collection_id": str(collection_id),
+                        "tenant_schema": getattr(tenant, "schema_name", None),
+                        "tenant_id": doc_copy.ref.tenant_id,
+                        "document_id": str(getattr(document, "id", "")),
                     },
                 )
 
@@ -174,12 +248,18 @@ class DbDocumentsRepository(DocumentsRepository):
 
     def _materialize_document_safe(self, doc: NormalizedDocument) -> NormalizedDocument:
         """Return a new NormalizedDocument with materialized blobs, handling immutability."""
+        print(f"MATERIALIZE_DEBUG: Called with blob type: {type(doc.blob).__name__}")
+
         if not isinstance(doc.blob, InlineBlob):
+            print("MATERIALIZE_DEBUG: Blob is not InlineBlob, returning unchanged")
             return doc  # No change needed
 
         # Prepare new blob
+        print("MATERIALIZE_DEBUG: Converting InlineBlob to FileBlob")
         data = base64.b64decode(doc.blob.base64)
         uri, _, _ = self._storage.put(data)
+        print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
+
         new_blob = FileBlob(
             type="file",
             uri=uri,
@@ -187,8 +267,14 @@ class DbDocumentsRepository(DocumentsRepository):
             size=doc.blob.size,
         )
 
+        print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
+
         # Pydantic v2 copy with update
-        return doc.model_copy(update={"blob": new_blob}, deep=True)
+        result = doc.model_copy(update={"blob": new_blob}, deep=True)
+        print(
+            f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
+        )
+        return result
 
     def _update_document_instance(self, document, doc_copy, metadata):
         document.metadata = metadata
@@ -211,38 +297,94 @@ class DbDocumentsRepository(DocumentsRepository):
         Document = apps.get_model("documents", "Document")
 
         tenant = self._resolve_tenant(tenant_id)
-        document = Document.objects.filter(
-            tenant=tenant,
-            id=document_id,
-        ).first()
-        if document is None:
-            return None
-        lifecycle_state = (document.lifecycle_state or "").strip().lower()
-        # Only filter out terminal states; ingestion expects pending/ingesting documents to be readable.
-        if lifecycle_state in {"deleted", "retired"}:
-            return None
+        with self._schema_ctx(None, tenant):
+            document = Document.objects.filter(
+                tenant=tenant,
+                id=document_id,
+            ).first()
+            if document is None:
+                logger.info(
+                    "db_documents_repository_get_missing reason=not_found document_id=%s tenant=%s",
+                    document_id,
+                    tenant_id,
+                    extra={
+                        "event": "db_documents_repository_get_missing",
+                        "tenant_schema": getattr(tenant, "schema_name", None),
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                        "reason": "not_found",
+                    },
+                )
+                return None
+            lifecycle_state = (document.lifecycle_state or "").strip().lower()
+            # Only filter out terminal states; ingestion expects pending/ingesting documents to be readable.
+            if lifecycle_state in {"deleted", "retired"}:
+                logger.info(
+                    "db_documents_repository_get_missing reason=filtered_state:%s document_id=%s tenant=%s",
+                    lifecycle_state,
+                    document_id,
+                    tenant_id,
+                    extra={
+                        "event": "db_documents_repository_get_missing",
+                        "tenant_schema": getattr(tenant, "schema_name", None),
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                        "reason": f"filtered_state:{lifecycle_state}",
+                    },
+                )
+                return None
 
-        normalized = _build_document_from_metadata(document)
-        if normalized is None:
-            return None
+            normalized = _build_document_from_metadata(document)
+            if normalized is None:
+                logger.info(
+                    "db_documents_repository_get_missing reason=metadata_missing document_id=%s tenant=%s metadata_keys=%s",
+                    document_id,
+                    tenant_id,
+                    list((document.metadata or {}).keys()),
+                    extra={
+                        "event": "db_documents_repository_get_missing",
+                        "tenant_schema": getattr(tenant, "schema_name", None),
+                        "tenant_id": tenant_id,
+                        "document_id": str(document_id),
+                        "reason": "metadata_missing",
+                        "metadata_keys": list((document.metadata or {}).keys()),
+                    },
+                )
+                return None
 
-        # Use the document's lifecycle_state field directly
-        normalized.lifecycle_state = document.lifecycle_state
+            # Use the document's lifecycle_state field directly
+            normalized.lifecycle_state = document.lifecycle_state
 
-        # Attach persisted assets to mirror in-memory behaviour.
-        try:
-            assets = []
-            for asset_row in document.assets.all():
-                asset = self._build_asset_from_model(asset_row)
-                if asset:
-                    assets.append(asset)
-            normalized.assets = assets
-        except Exception:
-            logger.warning(
-                "document_asset_attach_failed",
-                exc_info=True,
-                extra={"document_id": str(document_id), "tenant_id": tenant_id},
+            logger.info(
+                "db_documents_repository_get_hit document_id=%s tenant=%s lifecycle=%s metadata_keys=%s",
+                document_id,
+                tenant_id,
+                document.lifecycle_state,
+                list((document.metadata or {}).keys()),
+                extra={
+                    "event": "db_documents_repository_get_hit",
+                    "tenant_schema": getattr(tenant, "schema_name", None),
+                    "tenant_id": tenant_id,
+                    "document_id": str(document_id),
+                    "lifecycle_state": document.lifecycle_state,
+                    "metadata_keys": list((document.metadata or {}).keys()),
+                },
             )
+
+            # Attach persisted assets to mirror in-memory behaviour.
+            try:
+                assets = []
+                for asset_row in document.assets.all():
+                    asset = self._build_asset_from_model(asset_row)
+                    if asset:
+                        assets.append(asset)
+                normalized.assets = assets
+            except Exception:
+                logger.warning(
+                    "document_asset_attach_failed",
+                    exc_info=True,
+                    extra={"document_id": str(document_id), "tenant_id": tenant_id},
+                )
 
         return normalized
 
@@ -261,41 +403,43 @@ class DbDocumentsRepository(DocumentsRepository):
                 tenant_id, collection_id, limit, cursor, workflow_id=workflow_id
             )
 
-        memberships = self._collection_queryset(tenant_id, collection_id, workflow_id)
-        memberships = _apply_cursor_filter(memberships, cursor)
+        tenant = self._resolve_tenant(tenant_id)
+        with self._schema_ctx(None, tenant):
+            memberships = self._collection_queryset(tenant, collection_id, workflow_id)
+            memberships = _apply_cursor_filter(memberships, cursor)
 
-        entries: list[tuple[tuple, NormalizedDocument]] = []
-        for membership in memberships[: limit + 1]:
-            try:
-                document = membership.document
-                normalized = _build_document_from_metadata(document)
-                if normalized is None:
-                    continue
+            entries: list[tuple[tuple, NormalizedDocument]] = []
+            for membership in memberships[: limit + 1]:
                 try:
-                    assets = []
-                    for asset_row in document.assets.all():
-                        asset = self._build_asset_from_model(asset_row)
-                        if asset:
-                            assets.append(asset)
-                    normalized.assets = assets
+                    document = membership.document
+                    normalized = _build_document_from_metadata(document)
+                    if normalized is None:
+                        continue
+                    try:
+                        assets = []
+                        for asset_row in document.assets.all():
+                            asset = self._build_asset_from_model(asset_row)
+                            if asset:
+                                assets.append(asset)
+                        normalized.assets = assets
+                    except Exception:
+                        logger.warning(
+                            "documents.list_by_collection.asset_attach_failed",
+                            extra={
+                                "membership_id": str(membership.id),
+                                "document_id": str(document.id),
+                                "tenant_id": tenant_id,
+                            },
+                            exc_info=True,
+                        )
+                    entries.append(self._document_entry(normalized))
                 except Exception:
                     logger.warning(
-                        "documents.list_by_collection.asset_attach_failed",
-                        extra={
-                            "membership_id": str(membership.id),
-                            "document_id": str(document.id),
-                            "tenant_id": tenant_id,
-                        },
+                        "documents.list_by_collection.entry_failed",
+                        extra={"membership_id": str(membership.id)},
                         exc_info=True,
                     )
-                entries.append(self._document_entry(normalized))
-            except Exception:
-                logger.warning(
-                    "documents.list_by_collection.entry_failed",
-                    extra={"membership_id": str(membership.id)},
-                    exc_info=True,
-                )
-                continue
+                    continue
 
         entries.sort(key=lambda entry: entry[0])
         refs = [doc.ref.model_copy(deep=True) for _, doc in entries[:limit]]
@@ -311,80 +455,75 @@ class DbDocumentsRepository(DocumentsRepository):
         *,
         workflow_id: Optional[str] = None,
     ) -> Tuple[List[DocumentRef], Optional[str]]:
-        memberships = self._collection_queryset(tenant_id, collection_id, workflow_id)
-        # Fetch more than limit to allow python-side deduplication
-        # We might need a lot more candidates if there are many versions per doc.
-        # This is a naive implementation but safer for consistency.
-        candidate_limit = limit * 5
-        memberships = _apply_cursor_filter(memberships, cursor)
+        tenant = self._resolve_tenant(tenant_id)
+        with self._schema_ctx(None, tenant):
+            memberships = self._collection_queryset(tenant, collection_id, workflow_id)
+            # Fetch more than limit to allow python-side deduplication
+            # We might need a lot more candidates if there are many versions per doc.
+            # This is a naive implementation but safer for consistency.
+            candidate_limit = limit * 5
+            memberships = _apply_cursor_filter(memberships, cursor)
 
-        entries: list[tuple[tuple, NormalizedDocument]] = []
-        seen_docs: dict[UUID, NormalizedDocument] = {}
+            entries: list[tuple[tuple, NormalizedDocument]] = []
+            seen_docs: dict[UUID, NormalizedDocument] = {}
 
-        # Iterate through candidates
-        # Note: memberships are ordered by -added_at (roughly creation time).
-        # We need to find the LATEST version per document_id.
-        logger.info(
-            f"DEBUG: list_latest_by_collection: tenant={tenant_id} collection={collection_id}"
-        )
-        logger.info(f"DEBUG: memberships_count: {memberships.count()}")
-        for membership in memberships[:candidate_limit]:
-            try:
-                document = membership.document
-                # logger.info(f"DEBUG: checking doc {document.id} | tenant={document.tenant_id}")
-                normalized = _build_document_from_metadata(document)
-                if normalized is None:
-                    continue
+            # Iterate through candidates
+            # Note: memberships are ordered by -added_at (roughly creation time).
+            # We need to find the LATEST version per document_id.
+            logger.info(
+                f"DEBUG: list_latest_by_collection: tenant={tenant_id} collection={collection_id}"
+            )
+            logger.info(f"DEBUG: memberships_count: {memberships.count()}")
+            for membership in memberships[:candidate_limit]:
                 try:
-                    assets = []
-                    for asset_row in document.assets.all():
-                        asset = self._build_asset_from_model(asset_row)
-                        if asset:
-                            assets.append(asset)
-                    normalized.assets = assets
+                    document = membership.document
+                    normalized = _build_document_from_metadata(document)
+                    if normalized is None:
+                        continue
+                    try:
+                        assets = []
+                        for asset_row in document.assets.all():
+                            asset = self._build_asset_from_model(asset_row)
+                            if asset:
+                                assets.append(asset)
+                        normalized.assets = assets
+                    except Exception:
+                        logger.warning(
+                            "documents.list_latest_by_collection.asset_attach_failed",
+                            extra={
+                                "membership_id": str(membership.id),
+                                "document_id": str(document.id),
+                                "tenant_id": tenant_id,
+                            },
+                            exc_info=True,
+                        )
+
+                    doc_ref = normalized.ref
+                    if workflow_id and doc_ref.workflow_id != workflow_id:
+                        continue
+
+                    existing = seen_docs.get(doc_ref.document_id)
+                    if existing is None:
+                        seen_docs[doc_ref.document_id] = normalized
+                    else:
+                        if normalized.created_at > existing.created_at:
+                            seen_docs[doc_ref.document_id] = normalized
+                        elif normalized.created_at == existing.created_at:
+                            if (normalized.source or "") > (existing.source or ""):
+                                seen_docs[doc_ref.document_id] = normalized
+
                 except Exception:
                     logger.warning(
-                        "documents.list_latest_by_collection.asset_attach_failed",
-                        extra={
-                            "membership_id": str(membership.id),
-                            "document_id": str(document.id),
-                            "tenant_id": tenant_id,
-                        },
+                        "documents.list_latest_by_collection.entry_failed",
+                        extra={"membership_id": str(membership.id)},
                         exc_info=True,
                     )
-
-                doc_ref = normalized.ref
-                if workflow_id and doc_ref.workflow_id != workflow_id:
                     continue
 
-                # Deduplication logic: Keep the "newest" one.
-                # Since we accept arbitrary versions, we need a way to compare.
-                # Common pattern: created_at timestamp.
-
-                existing = seen_docs.get(doc_ref.document_id)
-                if existing is None:
-                    seen_docs[doc_ref.document_id] = normalized
-                else:
-                    # If current is newer than existing, replace it
-                    if normalized.created_at > existing.created_at:
-                        seen_docs[doc_ref.document_id] = normalized
-                    elif normalized.created_at == existing.created_at:
-                        if (normalized.source or "") > (
-                            existing.source or ""
-                        ):  # Tie-break
-                            seen_docs[doc_ref.document_id] = normalized
-
-            except Exception:
-                logger.warning(
-                    "documents.list_latest_by_collection.entry_failed",
-                    extra={"membership_id": str(membership.id)},
-                    exc_info=True,
-                )
-                continue
-
-        # Convert map back to list
-        for doc in seen_docs.values():
-            entries.append(self._document_entry(doc))
+            # Convert map back to list
+            logger.info(f"DEBUG: seen_docs count: {len(seen_docs)}")
+            for doc in seen_docs.values():
+                entries.append(self._document_entry(doc))
 
         entries.sort(key=lambda entry: entry[0])
         refs = [doc.ref.model_copy(deep=True) for _, doc in entries[:limit]]
@@ -446,33 +585,38 @@ class DbDocumentsRepository(DocumentsRepository):
         # Resolve Tenant
         tenant = self._resolve_tenant(asset_copy.ref.tenant_id)
 
-        # Resolve Parent Document (Latest/Any matching)
-        try:
-            document_row = Document.objects.get(
-                id=asset_copy.ref.document_id, tenant=tenant
+        with self._schema_ctx(None, tenant):
+            # Resolve Parent Document (Latest/Any matching)
+            try:
+                document_row = Document.objects.get(
+                    id=asset_copy.ref.document_id, tenant=tenant
+                )
+            except Document.DoesNotExist:
+                raise ValueError(
+                    f"Parent document not found: {asset_copy.ref.document_id}"
+                )
+
+            blob_meta = {}
+            if hasattr(asset_copy.blob, "uri"):
+                blob_meta = {"uri": asset_copy.blob.uri, "type": "file"}
+
+            # Create
+            DocumentAsset.objects.update_or_create(
+                tenant=tenant,
+                asset_id=asset_copy.ref.asset_id,
+                workflow_id=workflow_id or asset_copy.ref.workflow_id,
+                defaults={
+                    "document": document_row,
+                    "collection_id": asset_copy.ref.collection_id,
+                    "media_type": asset_copy.media_type,
+                    "blob_metadata": blob_meta,
+                    # Store content if meaningful
+                    "content": asset_copy.text_description or asset_copy.ocr_text,
+                    "metadata": asset_copy.model_dump(
+                        mode="json", exclude={"blob", "ref"}
+                    ),
+                },
             )
-        except Document.DoesNotExist:
-            raise ValueError(f"Parent document not found: {asset_copy.ref.document_id}")
-
-        blob_meta = {}
-        if hasattr(asset_copy.blob, "uri"):
-            blob_meta = {"uri": asset_copy.blob.uri, "type": "file"}
-
-        # Create
-        DocumentAsset.objects.update_or_create(
-            tenant=tenant,
-            asset_id=asset_copy.ref.asset_id,
-            workflow_id=workflow_id or asset_copy.ref.workflow_id,
-            defaults={
-                "document": document_row,
-                "collection_id": asset_copy.ref.collection_id,
-                "media_type": asset_copy.media_type,
-                "blob_metadata": blob_meta,
-                # Store content if meaningful
-                "content": asset_copy.text_description or asset_copy.ocr_text,
-                "metadata": asset_copy.model_dump(mode="json", exclude={"blob", "ref"}),
-            },
-        )
         return asset_copy
 
     def get_asset(
@@ -485,15 +629,16 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
 
         tenant = self._resolve_tenant(tenant_id)
-        qs = DocumentAsset.objects.filter(tenant=tenant, asset_id=asset_id)
-        if workflow_id:
-            qs = qs.filter(workflow_id=workflow_id)
+        with self._schema_ctx(None, tenant):
+            qs = DocumentAsset.objects.filter(tenant=tenant, asset_id=asset_id)
+            if workflow_id:
+                qs = qs.filter(workflow_id=workflow_id)
 
-        instance = qs.first()
-        if not instance:
-            return None
+            instance = qs.first()
+            if not instance:
+                return None
 
-        return self._build_asset_from_model(instance)
+            return self._build_asset_from_model(instance)
 
     def list_assets_by_document(
         self,
@@ -507,24 +652,25 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
 
         tenant = self._resolve_tenant(tenant_id)
-        qs = DocumentAsset.objects.filter(tenant=tenant, document__id=document_id)
-        if workflow_id:
-            qs = qs.filter(workflow_id=workflow_id)
+        with self._schema_ctx(None, tenant):
+            qs = DocumentAsset.objects.filter(tenant=tenant, document__id=document_id)
+            if workflow_id:
+                qs = qs.filter(workflow_id=workflow_id)
 
-        qs = qs.order_by("-created_at")
+            qs = qs.order_by("-created_at")
 
-        # Basic cursor support (DB based)
-        entries = []
-        # Fetch Limit + 1
-        for instance in qs[: limit + 1]:
-            asset = self._build_asset_from_model(instance)
-            if asset:
-                entries.append(self._asset_entry(asset))
+            # Basic cursor support (DB based)
+            entries = []
+            # Fetch Limit + 1
+            for instance in qs[: limit + 1]:
+                asset = self._build_asset_from_model(instance)
+                if asset:
+                    entries.append(self._asset_entry(asset))
 
-        entries.sort(key=lambda entry: entry[0])
-        refs = [asset.ref for _, asset in entries[:limit]]
-        next_cursor = self._next_cursor(entries, 0, limit)
-        return refs, next_cursor
+            entries.sort(key=lambda entry: entry[0])
+            refs = [asset.ref for _, asset in entries[:limit]]
+            next_cursor = self._next_cursor(entries, 0, limit)
+            return refs, next_cursor
 
     def delete_asset(
         self,
@@ -536,21 +682,20 @@ class DbDocumentsRepository(DocumentsRepository):
     ) -> bool:
         DocumentAsset = apps.get_model("documents", "DocumentAsset")
         tenant = self._resolve_tenant(tenant_id)
-        qs = DocumentAsset.objects.filter(tenant=tenant, asset_id=asset_id)
-        if workflow_id:
-            qs = qs.filter(workflow_id=workflow_id)
+        with self._schema_ctx(None, tenant):
+            qs = DocumentAsset.objects.filter(tenant=tenant, asset_id=asset_id)
+            if workflow_id:
+                qs = qs.filter(workflow_id=workflow_id)
 
-        count, _ = qs.delete()  # Hard delete as per instructions
-        return count > 0
+            count, _ = qs.delete()  # Hard delete as per instructions
+            return count > 0
 
     def _collection_queryset(
-        self, tenant_id: str, collection_id: UUID, workflow_id: Optional[str]
+        self, tenant: models.Model, collection_id: UUID, workflow_id: Optional[str]
     ):
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
-        tenant = self._resolve_tenant(tenant_id)
-
         # Secure filter: Ensure collection belongs to tenant
         queryset = DocumentCollectionMembership.objects.filter(
             collection__tenant=tenant, collection__collection_id=collection_id
@@ -561,10 +706,8 @@ class DbDocumentsRepository(DocumentsRepository):
                 document__metadata__normalized_document__ref__workflow_id=workflow_id
             )
 
-        # Filter for active documents only
-        return queryset.filter(document__lifecycle_state="active").order_by(
-            "-added_at", "document_id"
-        )
+        # Allow documents in all lifecycle states for Document Explorer visibility
+        return queryset.order_by("-added_at", "document_id")
 
     def delete(
         self,
@@ -577,22 +720,23 @@ class DbDocumentsRepository(DocumentsRepository):
         Document = apps.get_model("documents", "Document")
         tenant = self._resolve_tenant(tenant_id)
 
-        document = Document.objects.filter(tenant=tenant, id=document_id).first()
-        if document is None:
-            return False
+        with self._schema_ctx(None, tenant):
+            document = Document.objects.filter(tenant=tenant, id=document_id).first()
+            if document is None:
+                return False
 
-        if hard:
-            # Cascades will remove memberships/assets automatically
-            document.delete()
+            if hard:
+                # Cascades will remove memberships/assets automatically
+                document.delete()
+                return True
+
+            if document.lifecycle_state == "retired":
+                return False
+
+            document.lifecycle_state = "retired"
+            document.lifecycle_updated_at = datetime.now()
+            document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
             return True
-
-        if document.lifecycle_state == "retired":
-            return False
-
-        document.lifecycle_state = "retired"
-        document.lifecycle_updated_at = datetime.now()
-        document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
-        return True
 
     def _materialize_asset(self, asset: Asset) -> Asset:
         """Ensure asset blobs are stored."""

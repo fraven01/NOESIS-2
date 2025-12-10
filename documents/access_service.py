@@ -119,12 +119,22 @@ class DocumentAccessService:
                 message="Access denied",
             )
 
-        # 3. Physical file resolution
-        blob_path = get_upload_file_path(
-            doc.ref.tenant_id,
-            doc.ref.workflow_id,
-            str(doc.ref.document_id),
-        )
+        # 3. Physical file resolution from blob
+        from documents.contracts import FileBlob
+        from ai_core.infra import object_store
+
+        blob = doc.blob
+
+        if isinstance(blob, FileBlob):
+            # Use blob.uri for FileBlob
+            blob_path = object_store.BASE_PATH / blob.uri
+        else:
+            # Fallback: old upload path logic for backward compatibility
+            blob_path = get_upload_file_path(
+                doc.ref.tenant_id,
+                doc.ref.workflow_id,
+                str(doc.ref.document_id),
+            )
 
         if not blob_path.exists():
             logger.error(
@@ -132,6 +142,7 @@ class DocumentAccessService:
                 tenant_id=tenant_id,
                 document_id=str(document_id),
                 blob_path=str(blob_path),
+                blob_type=type(blob).__name__,
             )
             return None, AccessError(
                 status_code=404,

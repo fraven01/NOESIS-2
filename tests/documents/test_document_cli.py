@@ -202,6 +202,7 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
     assert code == 0
     assert json.loads(out) == {"deleted": True, "workflow_id": WORKFLOW_ID}
 
+    # After delete, document should be marked as retired (not completely gone)
     code, out, err = _run(
         [
             "docs",
@@ -216,8 +217,10 @@ def test_docs_add_get_list_delete_roundtrip(capsys):
         context,
         capsys,
     )
-    assert code == 1
-    assert json.loads(out)["error"] == "document_not_found"
+    assert code == 0  # Document still exists but is retired
+    fetched_after_delete = json.loads(out)
+    assert fetched_after_delete["ref"]["document_id"] == doc_id
+    assert fetched_after_delete["lifecycle_state"] == "retired"
 
 
 def test_docs_get_without_workflow_id(capsys):

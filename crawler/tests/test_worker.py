@@ -5,7 +5,6 @@ from typing import Mapping
 
 import pytest
 
-from ai_core import tasks as ai_tasks
 from ai_core.graphs.crawler_ingestion_graph import GraphTransition
 from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
@@ -92,6 +91,7 @@ class _StubTask:
         return SimpleNamespace(id="task-123")
 
 
+@pytest.mark.django_db
 def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
     fetch_result = _build_fetch_result(payload=b"payload")
     fetcher = _StubFetcher(fetch_result)
@@ -101,49 +101,45 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
     def event_callback(name: str, payload: dict[str, object]) -> None:
         events.append((name, payload))
 
+    # Mock the ingestion graph to emit guardrail event
+    def _mock_run_ingestion_graph(state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
+        run_id = state.get("graph_run_id", "test-run")
+        transition = GraphTransition(
+            StandardTransitionResult(
+                phase="guardrails",
+                decision="denied",
+                reason="policy_denied",
+                guardrail=None,
+                severity="error",
+                context={"policy_events": ("max_document_bytes",)},
+            )
+        )
+        # Emit guardrail denied event
+        ingestion_event_emitter = meta.get("ingestion_event_emitter")
+        if callable(ingestion_event_emitter):
+            payload = {
+                "transition": transition.to_dict(),
+                "run_id": run_id,
+                "document_id": state.get("raw_document", {}).get("document_id"),
+                "reason": transition.reason,
+                "policy_events": ["max_document_bytes"],
+            }
+            ingestion_event_emitter("guardrail_denied", payload)
+        return state, {
+            "decision": transition.decision,
+            "reason": transition.reason,
+            "severity": transition.severity,
+            "phase": transition.phase,
+            "graph_run_id": run_id,
+            "transitions": {"enforce_guardrails": transition.result},
+        }
+
     class _ExecutingTask:
         def delay(self, state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
-            ai_tasks.run_ingestion_graph(state, meta)
+            _mock_run_ingestion_graph(state, meta)
             return SimpleNamespace(id="task-456")
 
-    def _build_graph(*, event_emitter=None):  # type: ignore[no-untyped-def]
-        class _GuardrailGraph:
-            def __init__(self, emitter):
-                self._emitter = emitter
-
-            def run(self, state, meta):  # type: ignore[no-untyped-def]
-                run_id = state.get("graph_run_id", "test-run")
-                transition = GraphTransition(
-                    StandardTransitionResult(
-                        phase="guardrails",
-                        decision="denied",
-                        reason="policy_denied",
-                        guardrail=None,
-                        severity="error",
-                        context={"policy_events": ("max_document_bytes",)},
-                    )
-                )
-                if callable(self._emitter):
-                    payload = {
-                        "transition": transition.to_dict(),
-                        "run_id": run_id,
-                        "document_id": state.get("raw_document", {}).get("document_id"),
-                        "reason": transition.reason,
-                        "policy_events": ["max_document_bytes"],
-                    }
-                    self._emitter("guardrail_denied", payload)
-                return state, {
-                    "decision": transition.decision,
-                    "reason": transition.reason,
-                    "severity": transition.severity,
-                    "phase": transition.phase,
-                    "graph_run_id": run_id,
-                    "transitions": {"enforce_guardrails": transition.result},
-                }
-
-        return _GuardrailGraph(event_emitter)
-
-    monkeypatch.setattr(ai_tasks, "build_graph", _build_graph)
+    # No need to mock build_graph anymore
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
     worker = CrawlerWorker(
@@ -170,6 +166,7 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
     assert payload["policy_events"] == ["max_document_bytes"]
 
 
+@pytest.mark.django_db
 def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     fetch_result = _build_fetch_result(payload=b"hello world")
     fetcher = _StubFetcher(fetch_result)

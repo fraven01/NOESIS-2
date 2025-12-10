@@ -67,9 +67,22 @@ def _resolve_default_repository() -> DocumentsRepository:
         repo = services._get_documents_repository()  # type: ignore[attr-defined]
         if isinstance(repo, DocumentsRepository):
             return repo
-    except Exception:
-        logger.warning("documents_repository_resolution_failed", exc_info=True)
-    return InMemoryDocumentsRepository()
+        # If services returned something but it's not a DocumentsRepository,
+        # that's a configuration error
+        logger.error(
+            "documents_repository_invalid_type",
+            extra={"type": type(repo).__name__},
+        )
+        raise RuntimeError(
+            f"Repository resolution returned invalid type: {type(repo).__name__}"
+        )
+    except Exception as exc:
+        logger.error("documents_repository_resolution_failed", exc_info=True)
+        # Don't silently fall back to InMemory - this causes data loss!
+        raise RuntimeError(
+            "Failed to resolve documents repository. "
+            "Check DOCUMENTS_REPOSITORY_CLASS setting and ensure django is configured."
+        ) from exc
 
 
 class DocumentsApiLifecycleService:

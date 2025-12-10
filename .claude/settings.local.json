@@ -24,7 +24,8 @@
       "Bash(npm run dev:restart:*)",
       "Bash(npm run win:dev:test:*)",
       "Bash(ls:*)",
-      "Bash(grep:*)"
+      "Bash(grep:*)",
+      "Bash(npm run lint:*)"
     ],
     "deny": [],
     "ask": []

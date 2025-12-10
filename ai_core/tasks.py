@@ -33,7 +33,7 @@ except Exception:  # pragma: no cover - optional dependency
     tiktoken = None  # type: ignore
 
 from celery import shared_task
-from ai_core.graphs.crawler_ingestion_graph import build_graph
+
 from ai_core.graphs.transition_contracts import (
     GraphTransition,
     StandardTransitionResult,
@@ -1712,11 +1712,19 @@ def _callable_accepts_kwarg(func: Any, keyword: str) -> bool:
 
 def _build_ingestion_graph(event_emitter: Optional[Any]):
     """Invoke build_graph while remaining compatible with older test stubs."""
+    from ai_core.graphs.crawler_ingestion_graph import build_graph
+
     if event_emitter is None:
         return build_graph()
     if _callable_accepts_kwarg(build_graph, "event_emitter"):
         return build_graph(event_emitter=event_emitter)
     return build_graph()
+
+
+def build_graph(*, event_emitter: Optional[Any] = None):
+    """Legacy shim so older tests can import ai_core.tasks.build_graph."""
+
+    return _build_ingestion_graph(event_emitter)
 
 
 def _coerce_str(value: Any | None) -> Optional[str]:

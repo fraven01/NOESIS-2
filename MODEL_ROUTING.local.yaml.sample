@@ -3,7 +3,7 @@ labels:
   default: gpt-5-nano
   fast: gpt-5-nano
   simple-query: gpt-5-nano
-  synthesize: gpt-5.1
+  synthesize: gpt-5.1-nano
   extract: claude-4-5-sonnet
   classify: gpt-5-nano
   analyze: gpt-5-nano

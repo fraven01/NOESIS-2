@@ -350,8 +350,16 @@ def test_delete_document_soft_and_hard():
 
     repo.upsert(doc)
 
+    # Soft delete marks document as retired
     assert repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is True
-    assert repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id) is None
+    deleted_doc = repo.get("tenant-a", doc_id, workflow_id=doc.ref.workflow_id)
+    assert deleted_doc is not None, "Soft delete should return retired document"
+    assert (
+        deleted_doc.lifecycle_state == "retired"
+    ), "Document should be marked as retired"
+    assert len(deleted_doc.assets) == 0, "Assets should be cleared on soft delete"
+
+    # Asset should also be retired/unavailable
     assert (
         repo.get_asset(
             "tenant-a", asset.ref.asset_id, workflow_id=asset.ref.workflow_id
@@ -359,6 +367,7 @@ def test_delete_document_soft_and_hard():
         is None
     )
 
+    # Hard delete actually removes the document
     assert (
         repo.delete("tenant-a", doc_id, workflow_id=doc.ref.workflow_id, hard=True)
         is True
@@ -653,7 +662,8 @@ def test_workflow_scoped_document_operations():
     assert [ref.workflow_id for ref in filtered_refs] == ["workflow-a"]
 
     repo.delete(tenant_id, doc_id, workflow_id="workflow-a")
-    assert repo.get(tenant_id, doc_id, workflow_id="workflow-a") is None
+    deleted_a = repo.get(tenant_id, doc_id, workflow_id="workflow-a")
+    assert deleted_a is not None and deleted_a.lifecycle_state == "retired"
     assert repo.get(tenant_id, doc_id, workflow_id="workflow-b") is not None
 
 

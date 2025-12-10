@@ -142,7 +142,13 @@ class DocumentPipelineConfig:
     enable_asset_captions: bool = True
     ocr_fallback_confidence: float = 0.5
     use_readability_html_extraction: bool = False
+    enable_embedding: bool = False
     ocr_renderer: Optional[Callable[..., Any]] = field(default=None, repr=False)
+
+    # Upload Validation
+    enable_upload_validation: bool = False
+    max_bytes: Optional[int] = None
+    mime_allowlist: Tuple[str, ...] = ()
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         object.__setattr__(
@@ -187,6 +193,11 @@ class DocumentPipelineConfig:
                 self.use_readability_html_extraction,
                 field_name="use_readability_html_extraction",
             ),
+        )
+        object.__setattr__(
+            self,
+            "enable_embedding",
+            _coerce_bool(self.enable_embedding, field_name="enable_embedding"),
         )
         object.__setattr__(
             self,
@@ -574,7 +585,21 @@ def _update_document_stats(
     current.update(dict(updates))
     meta_copy = meta.model_copy(update={"parse_stats": current}, deep=True)
     document_copy = document.model_copy(update={"meta": meta_copy}, deep=True)
-    return repository.upsert(document_copy, workflow_id=workflow_id)
+    stored = repository.upsert(document_copy, workflow_id=workflow_id)
+
+    # Repositories return the updated NormalizedDocument in production.
+    # Tests often inject mocks that yield MagicMock; fall back to the copy to avoid
+    # breaking downstream normalization.
+    try:
+        from documents.contracts import (
+            NormalizedDocument,
+        )  # local import to avoid cycles
+    except Exception:  # pragma: no cover - defensive guard
+        NormalizedDocument = None  # type: ignore
+
+    if NormalizedDocument is not None and isinstance(stored, NormalizedDocument):
+        return stored
+    return document_copy
 
 
 def _normalise_workflow_label(value: Optional[str]) -> str:
@@ -879,7 +904,36 @@ def persist_parsed_document(
     document_copy = document.model_copy(deep=True)
     meta_copy = document_copy.meta.model_copy(update={"parse_stats": stats}, deep=True)
     document_copy.meta = meta_copy
-    repository.upsert(document_copy, workflow_id=context.metadata.workflow_id)
+
+    # DEBUG: Log repository upsert
+    logger.info(
+        "persist_parsed_document_upserting",
+        extra={
+            "repository_type": type(repository).__name__,
+            "tenant_id": context.metadata.tenant_id,
+            "document_id": str(context.metadata.document_id),
+            "workflow_id": context.metadata.workflow_id,
+        },
+    )
+
+    stored_document = repository.upsert(
+        document_copy, workflow_id=context.metadata.workflow_id
+    )
+
+    logger.info(
+        "persist_parsed_document_upserted",
+        extra={
+            "repository_type": type(repository).__name__,
+            "tenant_id": context.metadata.tenant_id,
+            "document_id": str(
+                getattr(
+                    getattr(stored_document, "ref", None),
+                    "document_id",
+                    context.metadata.document_id,
+                )
+            ),
+        },
+    )
 
     asset_refs: list[object] = []
     for index, asset in enumerate(parsed.assets):
@@ -893,7 +947,23 @@ def persist_parsed_document(
         )
         asset_refs.append(stored.ref)
 
-    parsed_context = context.transition(ProcessingState.PARSED_TEXT)
+    # Use the stored document to refresh context metadata (handles dedup/id reuse)
+    refreshed_document = stored_document or document_copy
+    refreshed_metadata = DocumentProcessingMetadata.from_document(
+        refreshed_document,
+        case_id=context.metadata.case_id,
+        document_collection_id=context.metadata.document_collection_id,
+        trace_id=context.trace_id,
+        span_id=context.span_id,
+    )
+    refreshed_context = DocumentProcessingContext(
+        metadata=refreshed_metadata,
+        state=context.state,
+        trace_id=context.trace_id,
+        span_id=context.span_id,
+    )
+
+    parsed_context = refreshed_context.transition(ProcessingState.PARSED_TEXT)
     asset_context = parsed_context.transition(ProcessingState.ASSETS_EXTRACTED)
 
     return DocumentParseArtifact(

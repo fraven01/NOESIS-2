@@ -369,6 +369,95 @@ class DocumentSpaceService:
                 else []
             ),
         }
+
+        # Enhanced title extraction with improved URL handling
+        # Normalize None and empty string to ""
+        title = (doc.meta.title or "").strip()
+
+        # Try URL-based title extraction from origin_uri OR external_ref['url']
+        # Support both crawler (origin_uri) and other sources (external_ref)
+        url = None
+        if doc.meta.origin_uri:
+            url = doc.meta.origin_uri
+        elif external_ref and external_ref.get("url"):
+            url = external_ref.get("url")
+
+        if not title and url:
+            try:
+                from urllib.parse import urlparse, unquote
+
+                parsed = urlparse(url)
+                domain = parsed.netloc or ""
+                path = parsed.path.strip("/")
+
+                if path:
+                    # Split path into segments and decode URL encoding
+                    segments = [unquote(s) for s in path.split("/") if s]
+
+                    if segments:
+                        # Get last meaningful segment (skip index.html)
+                        candidate = segments[-1]
+
+                        # If last segment is index.html or similar, use parent directory
+                        if candidate.lower() in [
+                            "index.html",
+                            "index.htm",
+                            "default.html",
+                            "default.htm",
+                        ]:
+                            if len(segments) > 1:
+                                candidate = segments[-2]
+                            else:
+                                # Use domain if only index.html
+                                candidate = domain.replace("www.", "").split(".")[0]
+
+                        # Remove file extensions for cleaner titles
+                        if "." in candidate:
+                            name_part = candidate.rsplit(".", 1)[0]
+                            # Only use name part if it's substantial
+                            if len(name_part) > 2:
+                                candidate = name_part
+
+                        # Clean up: replace separators with spaces
+                        title = candidate.replace("_", " ").replace("-", " ")
+
+                        # Smart capitalization: capitalize each word but preserve acronyms
+                        words = title.split()
+                        capitalized = []
+                        for word in words:
+                            # Keep short words (likely acronyms) uppercase if already uppercase
+                            if len(word) <= 3 and word.isupper():
+                                capitalized.append(word)
+                            # Otherwise title case
+                            else:
+                                capitalized.append(word.capitalize())
+                        title = " ".join(capitalized)
+
+                if not title and domain:
+                    # Fallback to domain name
+                    domain_name = domain.replace("www.", "").split(".")[0]
+                    title = domain_name.replace("-", " ").title()
+            except Exception:
+                pass
+
+        if not title:
+            title = "Untitled Document"
+
+        # Enhanced blob description with better media_type
+        blob_info = self._describe_blob(doc.blob)
+
+        # Try to infer media type if missing
+        if not blob_info.get("media_type"):
+            source_url = external_ref.get("url", "")
+            if source_url:
+                if source_url.endswith(".html") or "wiki" in source_url.lower():
+                    blob_info["media_type"] = "text/html"
+                elif source_url.endswith(".pdf"):
+                    blob_info["media_type"] = "application/pdf"
+
+        # Extract URL for display
+        origin_uri = doc.meta.origin_uri or external_ref.get("url", "")
+
         payload = {
             "document_id": str(doc.ref.document_id),
             "workflow_id": doc.ref.workflow_id,
@@ -381,10 +470,10 @@ class DocumentSpaceService:
                 if doc.meta.document_collection_id
                 else ""
             ),
-            "title": doc.meta.title or "",
+            "title": title,  # Enhanced title
             "language": doc.meta.language or "",
             "tags": list(doc.meta.tags or []),
-            "origin_uri": doc.meta.origin_uri or "",
+            "origin_uri": origin_uri,  # Enhanced URL
             "external_ref_items": self._dict_items(external_ref),
             "external_provider": external_ref.get("provider"),
             "external_id": external_ref.get("external_id"),
@@ -392,7 +481,7 @@ class DocumentSpaceService:
             "source": doc.source or "",
             "checksum": doc.checksum,
             "lifecycle_state": doc.lifecycle_state,
-            "blob": self._describe_blob(doc.blob),
+            "blob": blob_info,  # Enhanced blob info
             "download_url": reverse("documents:download", args=[doc.ref.document_id]),
             "ingestion": ingestion_payload,
             "meta": {

@@ -9,3 +9,10 @@ exclude = '''
   | \.pytest_cache
 )/
 '''
+
+[tool.ruff]
+# Exclude debug and script files that need Django setup before imports
+extend-exclude = [
+    "debug_*.py",
+    "scripts/verify_*.py",
+]

@@ -49,13 +49,10 @@ flowchart LR
     USN --> EG --> DP --> ID --> ING --> FIN
 ```
 
-- Die LangGraph-Spans `crawler.ingestion.*` bilden exakt die Reihenfolge
-  `update_status_normalized → enforce_guardrails → document_pipeline →
-  ingest_decision → ingest → finish` ab und verlinken damit Guardrails,
-  Dokument-Repository und Vector-Processing nachvollziehbar.
-- Die Tests in `ai_core/tests/test_crawler_delta.py` und
-  `ai_core/tests/graphs/test_crawler_ingestion_graph.py` validieren die
-  Übergaben für alle Schritte inklusive Guardrails und Entscheidungspunkten.
+- Der `CrawlerIngestionGraph` verhält sich nun als Wrapper um den `DocumentProcessingGraph`.
+- Die Spans folgen dem Muster `crawler.ingestion.run` (Parent) → `document.processing.*` (Children: `parse`, `persist`, `embed` etc.).
+- Die ursprünglichen Node-Namen (`ingest_decision`, `enforce_guardrails`) wurden durch die standardisierten Nodes des `DocumentProcessingGraph` ersetzt, wobei die Entscheidungslogik (Delta, Guardrails) erhalten bleibt.
+- Tests validieren die korrekte Integration und Metadaten-Übergabe.
 
 ## Upload → Ingest-Trigger
 
