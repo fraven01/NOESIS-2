@@ -733,7 +733,7 @@ def process_document(
             # Extract chunk stats
             if result_state.chunk_artifact:
                 chunks_generated = len(result_state.chunk_artifact.chunks)
-            
+
             # Prefer embedding.inserted if available (reflects actual DB insertions)
             if "embedding.inserted" in result_state.statistics:
                 chunks_generated = int(result_state.statistics["embedding.inserted"])

@@ -140,9 +140,20 @@ class CrawlerWorker:
 
         # Observability: Track Celery payload metrics (MVP invariant verification)
         import json
-        celery_payload_bytes = len(json.dumps(payload_state, default=str).encode("utf-8"))
-        blob_uri = payload_state.get("normalized_document_input", {}).get("blob", {}).get("uri", "")
-        blob_size = payload_state.get("normalized_document_input", {}).get("blob", {}).get("size", 0)
+
+        celery_payload_bytes = len(
+            json.dumps(payload_state, default=str).encode("utf-8")
+        )
+        blob_uri = (
+            payload_state.get("normalized_document_input", {})
+            .get("blob", {})
+            .get("uri", "")
+        )
+        blob_size = (
+            payload_state.get("normalized_document_input", {})
+            .get("blob", {})
+            .get("size", 0)
+        )
         uri_scheme = blob_uri.split("://")[0] if "://" in blob_uri else "unknown"
         logger.info(
             "crawler.celery_dispatch",

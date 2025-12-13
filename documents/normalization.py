@@ -5,9 +5,7 @@ from __future__ import annotations
 from typing import Any, Optional
 
 
-def document_payload_bytes(
-    document: Any, storage: Optional[Any] = None
-) -> bytes:
+def document_payload_bytes(document: Any, storage: Optional[Any] = None) -> bytes:
     """Decode payload from any blob type.
 
     Supports InlineBlob (embedded), FileBlob (storage), LocalFileBlob (filesystem),

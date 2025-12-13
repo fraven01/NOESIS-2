@@ -387,7 +387,6 @@ BlobLocator = Annotated[
 ]
 
 
-
 class DocumentMeta(BaseModel):
     """Metadata captured during ingestion of a document."""
 

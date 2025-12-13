@@ -122,7 +122,7 @@ class UploadIngestionGraph:
         self,
         state: Mapping[str, Any],
         meta: Mapping[str, Any] | None = None,
-        run_until: str | None = None
+        run_until: str | None = None,
     ) -> Mapping[str, Any]:
         """Execute the upload ingestion graph.
 
@@ -136,13 +136,13 @@ class UploadIngestionGraph:
         # 1. Validate Input (Contract from Worker)
         normalized_input = state.get("normalized_document_input")
         if not normalized_input:
-             raise UploadIngestionError("input_missing:normalized_document_input")
+            raise UploadIngestionError("input_missing:normalized_document_input")
 
         # 2. Re-hydrate normalized doc
         try:
             doc_obj = NormalizedDocument.model_validate(normalized_input)
         except Exception as exc:
-             raise UploadIngestionError(f"input_invalid:{exc}") from exc
+            raise UploadIngestionError(f"input_invalid:{exc}") from exc
 
         # 3. Build Config and Context
         config = self._build_config(state)
@@ -187,7 +187,7 @@ class UploadIngestionGraph:
         # Resolve trace_id from meta first, then state
         trace_id = meta.get("trace_id") or state.get("trace_id")
         case_id = meta.get("case_id") or state.get("case_id")
-        
+
         return DocumentProcessingContext.from_document(
             doc,
             case_id=str(case_id) if case_id else None,

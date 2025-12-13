@@ -65,7 +65,7 @@ def _sample_document() -> NormalizedDocument:
         workflow_id=workflow_id,
         document_collection_id=document_collection_id,
     )
-    
+
     # Use FileBlob instead of InlineBlob
     blob = FileBlob(
         type="file",
@@ -86,11 +86,11 @@ def _sample_document() -> NormalizedDocument:
 
 def _prepare_repository_document():
     storage = InMemoryStorage()
-    
+
     # Prime storage with the content referenced by _sample_document
     # "hello world" -> b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
     storage._store["memory://sample-doc"] = b"hello world"
-    
+
     repository = InMemoryDocumentsRepository(storage=storage)
     stored = repository.upsert(_sample_document())
     context = DocumentProcessingContext.from_document(stored)

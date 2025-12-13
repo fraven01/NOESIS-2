@@ -211,7 +211,7 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     payload_uri = raw_document["payload_path"]
     assert payload_uri.startswith("objectstore://")
     assert payload_uri.endswith(".bin")
-    
+
     # Strip scheme to get relative path for file system check
     relative_path = payload_uri.replace("objectstore://", "")
     stored_payload = (object_store.BASE_PATH / relative_path).read_bytes()

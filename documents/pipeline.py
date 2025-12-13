@@ -904,7 +904,9 @@ def persist_parsed_document(
     text_blocks = tuple(_serialise_text_block(block) for block in parsed.text_blocks)
 
     # Join text blocks to form normalized content if not already present
-    normalized_text = "\n\n".join(block["text"] for block in text_blocks if block.get("text"))
+    normalized_text = "\n\n".join(
+        block["text"] for block in text_blocks if block.get("text")
+    )
 
     document_copy = document.model_copy(deep=True)
     if normalized_text and not getattr(document_copy, "content_normalized", None):

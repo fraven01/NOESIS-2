@@ -389,7 +389,9 @@ def build_document_processing_graph(
         allowed_mimes = getattr(config, "mime_allowlist", None)
         if allowed_mimes:
             mime = getattr(doc.blob, "media_type", "")
-            print(f"DEBUG: mime='{mime}', allowed='{allowed_mimes}', type(blob)={type(doc.blob)}")
+            print(
+                f"DEBUG: mime='{mime}', allowed='{allowed_mimes}', type(blob)={type(doc.blob)}"
+            )
             if mime:
                 mime = mime.lower()
                 if mime not in allowed_mimes:
@@ -400,6 +402,7 @@ def build_document_processing_graph(
             pipeline_module.log_extra_entry(phase="quarantine")
             # Resolve binary payload
             from documents.normalization import document_payload_bytes
+
             binary = document_payload_bytes(doc, storage=state.storage)
 
             # Context for scanner
@@ -767,13 +770,14 @@ def build_document_processing_graph(
         context = state.context
         metadata = context.metadata
         workflow_id = metadata.workflow_id
-        
+
         parsed_result = state.parsed_result
         if parsed_result is None:
             logger.warning(
                 "chunk_missing_parsed_result",
                 extra={"document_id": str(metadata.document_id)},
             )
+
             def _parse_refresh() -> Any:
                 log_extra_entry(phase="parse")
                 result = parser.parse(state.document, state.config)
@@ -796,6 +800,7 @@ def build_document_processing_graph(
             state.parsed_result = parsed_result
 
         try:
+
             def _chunk_action() -> Any:
                 log_extra_entry(phase="chunk")
                 result = chunker.chunk(
@@ -807,6 +812,7 @@ def build_document_processing_graph(
                 chunks, stats = result
                 log_extra_exit(chunk_count=len(chunks))
                 return result
+
             chunks, chunk_stats = pipeline_module._run_phase(
                 "chunk.generate",
                 "pipeline.chunk",
@@ -931,11 +937,7 @@ def build_document_processing_graph(
                         raise
 
             # Add chunks if supported (in addition to normalized_document)
-            if (
-                supports_chunks
-                and state.chunk_artifact
-                and state.chunk_artifact.chunks
-            ):
+            if supports_chunks and state.chunk_artifact and state.chunk_artifact.chunks:
                 embed_kwargs["chunks"] = state.chunk_artifact.chunks
 
             if _accepts_keyword(embedder, "context"):
@@ -981,7 +983,7 @@ def build_document_processing_graph(
             attributes={"document_id": str(metadata.document_id)},
             action=_embed_action,
         )
-        
+
         # Update statistics with insertion count
         if embed_result:
             count = (
@@ -991,6 +993,7 @@ def build_document_processing_graph(
             )
             # state is frozen, use replace
             from dataclasses import replace
+
             new_stats = dict(state.statistics)
             new_stats["embedding.inserted"] = count
             state = replace(state, statistics=new_stats)

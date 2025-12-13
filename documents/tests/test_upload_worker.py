@@ -40,7 +40,9 @@ def mock_run_graph():
 def mock_domain_service():
     with patch("documents.upload_worker.DocumentDomainService") as mock_cls:
         service = mock_cls.return_value
-        service.ingest_document.return_value.document.id = "00000000-0000-0000-0000-000000000001"
+        service.ingest_document.return_value.document.id = (
+            "00000000-0000-0000-0000-000000000001"
+        )
         service.ingest_document.return_value.collection_ids = ["col-uuid"]
         service.ensure_collection.return_value.collection_id = "col-uuid"
         yield service
@@ -48,8 +50,9 @@ def mock_domain_service():
 
 @pytest.fixture
 def mock_tenants():
-    with patch("customers.tenant_context.TenantContext") as mock_ctx, \
-         patch("django_tenants.utils.tenant_context") as mock_utils:
+    with patch("customers.tenant_context.TenantContext") as mock_ctx, patch(
+        "django_tenants.utils.tenant_context"
+    ) as mock_utils:
         mock_ctx.resolve_identifier.return_value = MagicMock(schema_name="tenant-1")
         mock_utils.return_value.__enter__.return_value = None
         yield mock_ctx
@@ -61,7 +64,7 @@ def test_upload_worker_process_success(
     worker = UploadWorker()
     file_content = b"test content"
     upload = MockUploadedFile("test.txt", file_content, "text/plain")
-    
+
     result = worker.process(
         upload,
         tenant_id="tenant-1",
@@ -82,12 +85,15 @@ def test_upload_worker_process_success(
     assert state["case_id"] == "case-1"
     assert state["trace_id"] == "trace-1"
     assert state["raw_payload_path"] == "s3://bucket/tenant/uploads/blob-id"
-    
+
     # Verify Normalized Input
     norm_input = state["normalized_document_input"]
     assert norm_input["ref"]["tenant_id"] == "tenant-1"
     assert norm_input["blob"]["uri"] == "s3://bucket/tenant/uploads/blob-id"
-    assert norm_input["blob"]["sha256"] == "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    assert (
+        norm_input["blob"]["sha256"]
+        == "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+    )
     assert norm_input["source"] == "upload"
 
     # Verify Meta
@@ -103,20 +109,20 @@ def test_upload_worker_register_document_failure_continues(
 ):
     # Simulate domain service failure
     mock_domain_service.ingest_document.side_effect = Exception("DB Error")
-    
+
     worker = UploadWorker()
     upload = MockUploadedFile("test.txt", b"data", "text/plain")
-    
+
     result = worker.process(
         upload,
         tenant_id="tenant-1",
     )
-    
-    # Needs to handle failure gracefully and still publish if possible, 
-    # OR fail. The implementation currently logs and returns None for ID, 
+
+    # Needs to handle failure gracefully and still publish if possible,
+    # OR fail. The implementation currently logs and returns None for ID,
     # but still proceeds to dispatch graph (which might handle persistence itself or fail later).
     # Since we generate a fallback ID in compose_state, it should succeed.
-    
+
     assert result.status == "published"
-    assert result.document_id is not None # Should be a generated UUID
+    assert result.document_id is not None  # Should be a generated UUID
     assert result.task_id == "task-uuid"

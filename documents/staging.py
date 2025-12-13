@@ -119,9 +119,9 @@ class FileStager:
                 return path.suffix
 
         # Try from media type
-        media_type = getattr(
-            document.blob, "media_type", None
-        ) or (document.meta.pipeline_config or {}).get("media_type")
+        media_type = getattr(document.blob, "media_type", None) or (
+            document.meta.pipeline_config or {}
+        ).get("media_type")
         if media_type == "text/html":
             return ".html"
         if media_type == "application/pdf":

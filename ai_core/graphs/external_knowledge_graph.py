@@ -113,7 +113,10 @@ def search_node(state: ExternalKnowledgeState) -> dict[str, Any]:
         return {"error": str(exc), "search_results": []}
 
     if response.outcome.decision == "error":
-        error_msg = response.outcome.meta.get("error", {}).get("message") or response.outcome.rationale
+        error_msg = (
+            response.outcome.meta.get("error", {}).get("message")
+            or response.outcome.rationale
+        )
         return {"error": error_msg, "search_results": []}
 
     results = [r.model_dump(mode="json") for r in response.results]
