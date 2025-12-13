@@ -29,6 +29,7 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
     META_TRACE_ID_KEY,
     META_WORKFLOW_ID_KEY,
+    X_TRACE_ID_HEADER,
     X_CASE_ID_HEADER,
     X_COLLECTION_ID_HEADER,
     X_KEY_ALIAS_HEADER,
@@ -562,7 +563,11 @@ def _prepare_request(request: Request):
         if candidate:
             collection_id = candidate
 
-    trace_id = uuid4().hex
+    # Fix: Respect passed trace_id or generate new one
+    trace_id_header = request.headers.get(X_TRACE_ID_HEADER)
+    trace_id = (trace_id_header or "").strip()
+    if not trace_id:
+        trace_id = uuid4().hex
     if case_id:
         case_error = assert_case_active(
             request, case_id, tenant_identifier=tenant_schema

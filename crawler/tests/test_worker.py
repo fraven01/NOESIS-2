@@ -208,11 +208,15 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     assert raw_document["metadata"]["external_ref"]["provider"] == "docs"
     assert raw_document["metadata"]["source"] == "integration"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
-    payload_path = raw_document["payload_path"]
-    assert payload_path.endswith(".bin")
-    stored_payload = (object_store.BASE_PATH / payload_path).read_bytes()
+    payload_uri = raw_document["payload_path"]
+    assert payload_uri.startswith("objectstore://")
+    assert payload_uri.endswith(".bin")
+    
+    # Strip scheme to get relative path for file system check
+    relative_path = payload_uri.replace("objectstore://", "")
+    stored_payload = (object_store.BASE_PATH / relative_path).read_bytes()
     assert stored_payload == fetch_result.payload
-    assert state_payload["raw_payload_path"] == payload_path
+    assert state_payload["raw_payload_path"] == payload_uri
     assert state_payload["guardrails"] == overrides["guardrails"]
     assert meta_payload["trace_id"] == "trace-1"
     assert meta_payload["idempotency_key"] == "idemp-1"
@@ -353,5 +357,8 @@ def test_worker_extracts_image_assets(tmp_path, monkeypatch) -> None:
     assert meta.get("caption_candidates") == [("alt_text", "Example image")]
 
     assert asset.get("file_uri") is not None
-    stored_bytes = (tmp_path / asset["file_uri"]).read_bytes()
+    file_uri = asset["file_uri"]
+    assert file_uri.startswith("objectstore://")
+    relative_path = file_uri.replace("objectstore://", "")
+    stored_bytes = (tmp_path / relative_path).read_bytes()
     assert stored_bytes == _SAMPLE_PNG

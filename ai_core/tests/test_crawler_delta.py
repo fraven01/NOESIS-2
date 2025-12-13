@@ -1,26 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+from datetime import datetime, timezone
 from uuid import uuid4
 
 import pytest
 
 from ai_core.rag.delta import DeltaDecision, DeltaStatus, evaluate_delta
 from ai_core.rag.vector_client import DedupSignatures
-from crawler.fetcher import (
-    FetchMetadata,
-    FetchRequest,
-    FetchResult,
-    FetchStatus,
-    FetchTelemetry,
-    PolitenessContext,
-)
-from documents.normalization import normalize_from_parse
-from documents.parsers import (
-    ParseResult,
-    ParseStatus,
-    ParserContent,
-    ParserStats,
-    ParsedTextBlock,
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
 )
 
 
@@ -39,62 +32,48 @@ def _stub_vector_hashing(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
-def _make_fetch_result() -> FetchResult:
-    request = FetchRequest(
-        canonical_source="https://example.com/doc",
-        politeness=PolitenessContext(host="example.com"),
-    )
-    metadata = FetchMetadata(
-        status_code=200,
-        content_type="text/html",
-        etag="abc",
-        last_modified="2023-01-01T00:00:00+00:00",
-        content_length=20,
-    )
-    telemetry = FetchTelemetry(latency=0.1, bytes_downloaded=20)
-    return FetchResult(
-        status=FetchStatus.FETCHED,
-        request=request,
-        payload=b"<html>Body text</html>",
-        metadata=metadata,
-        telemetry=telemetry,
-    )
+def _make_document(text: str = "Body text") -> NormalizedDocument:
+    """Build a minimal NormalizedDocument for delta tests."""
+    doc_id = uuid4()
+    payload = text.encode("utf-8")
+    encoded = base64.b64encode(payload).decode("ascii")
+    checksum = hashlib.sha256(payload).hexdigest()
 
-
-def _make_document(text: str = "Body text"):
-    fetch = _make_fetch_result()
-    content = ParserContent(
-        media_type="text/html",
-        primary_text=text,
-        binary_payload_ref=None,
-        title="Title",
-        content_language="en",
-        structural_elements=(ParsedTextBlock(text=text, kind="paragraph"),),
-    )
-    stats = ParserStats(
-        token_count=10,
-        character_count=len(text),
-        extraction_path="html.body",
-        error_fraction=0.0,
-    )
-    parse = ParseResult(
-        status=ParseStatus.PARSED,
-        fetch=fetch,
-        content=content,
-        stats=stats,
-    )
-    return normalize_from_parse(
-        parse_result=parse,
+    ref = DocumentRef(
         tenant_id="tenant-a",
         workflow_id="wf-1",
-        document_id=str(uuid4()),
-        canonical_source="https://example.com/doc",
-        provider="web",
-        external_id="web::https://example.com/doc",
-        provider_tags={},
-        tags=(),
-        fetch_result=fetch,
-        ingest_source="crawler",
+        document_id=doc_id,
+    )
+
+    meta = DocumentMeta(
+        tenant_id="tenant-a",
+        workflow_id="wf-1",
+        title="Title",
+        language="en",
+        origin_uri="https://example.com/doc",
+        tags=[],
+        external_ref={
+            "provider": "web",
+            "external_id": "web::https://example.com/doc",
+        },
+    )
+
+    blob = InlineBlob(
+        type="inline",
+        media_type="text/html",
+        base64=encoded,
+        sha256=checksum,
+        size=len(payload),
+    )
+
+    return NormalizedDocument(
+        ref=ref,
+        meta=meta,
+        blob=blob,
+        checksum=checksum,
+        created_at=datetime.now(timezone.utc),
+        source="crawler",
+        lifecycle_state="active",
     )
 
 

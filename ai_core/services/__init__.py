@@ -1740,6 +1740,7 @@ def handle_document_upload(
         "tags": metadata_obj.get("tags"),
         "source_key": metadata_obj.get("external_id"),
         "origin_uri": metadata_obj.get("origin_uri"),
+        "normalized_document_input": normalized_document.model_dump(),
     }
 
     graph_context: dict[str, object] = {}
@@ -1777,7 +1778,8 @@ def handle_document_upload(
         return {"document_id": document_identifier, "version": document_ref.version}
 
     try:
-        graph = UploadIngestionGraph(persistence_handler=_persist_via_repository)
+        repository = _get_documents_repository()
+        graph = UploadIngestionGraph(repository=repository)
         graph_result = graph.run(graph_payload, run_until="persist_complete")
     except UploadIngestionError as exc:
         reason = str(exc)
@@ -1834,7 +1836,7 @@ def handle_document_upload(
         )
         return _map_upload_graph_skip(decision, transitions)
 
-    document_id = graph_context.get("document_id")
+    document_id = graph_result.get("document_id")
     if not isinstance(document_id, str) or not document_id:
         logger.error(
             "Upload ingestion graph completed without persisting document",

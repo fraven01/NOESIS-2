@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, Dict, Mapping, MutableMapping, Optional
 
@@ -171,6 +171,7 @@ class DocumentProcessingState:
     run_until: DocumentProcessingPhase = DocumentProcessingPhase.FULL
     phase: str = "initial"
     error: Optional[BaseException] = None
+    statistics: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.run_until = DocumentProcessingPhase.coerce(self.run_until)
@@ -387,21 +388,19 @@ def build_document_processing_graph(
         # Check MIME
         allowed_mimes = getattr(config, "mime_allowlist", None)
         if allowed_mimes:
-            mime = getattr(doc.blob, "media_type", "").lower()
-            if mime not in allowed_mimes:
-                raise ValueError(f"mime_not_allowed:{mime}")
+            mime = getattr(doc.blob, "media_type", "")
+            print(f"DEBUG: mime='{mime}', allowed='{allowed_mimes}', type(blob)={type(doc.blob)}")
+            if mime:
+                mime = mime.lower()
+                if mime not in allowed_mimes:
+                    raise ValueError(f"mime_not_allowed:{mime}")
 
         # Quarantine Scan
         if quarantine_scanner:
             pipeline_module.log_extra_entry(phase="quarantine")
             # Resolve binary payload
-            binary = b""
-            if hasattr(doc.blob, "decoded_payload"):
-                binary = doc.blob.decoded_payload()
-            elif hasattr(doc.blob, "base64"):  # Fallback if contract differs
-                import base64
-
-                binary = base64.b64decode(doc.blob.base64)
+            from documents.normalization import document_payload_bytes
+            binary = document_payload_bytes(doc, storage=state.storage)
 
             # Context for scanner
             scan_context = {
@@ -585,6 +584,9 @@ def build_document_processing_graph(
                 assets=int(stats.get("parse.assets.total", 0)),
                 ocr_triggers=ocr_triggers,
             )
+            # Update state with the persisted document (which may have normalized_content)
+            if getattr(parse_artifact, "document", None):
+                state.document = parse_artifact.document
         else:
             state.parse_artifact = None
 
@@ -606,6 +608,7 @@ def build_document_processing_graph(
         stored = repository.get(
             metadata.tenant_id,
             metadata.document_id,
+            version=metadata.version,
             workflow_id=workflow_id,
         )
 
@@ -764,54 +767,21 @@ def build_document_processing_graph(
         context = state.context
         metadata = context.metadata
         workflow_id = metadata.workflow_id
-
-        # CRITICAL DEBUG
-        try:
-            logger.info(
-                "chunk_node_entered",
-                extra={
-                    "document_id": str(metadata.document_id),
-                    "tenant_id": metadata.tenant_id,
-                    "parsed_result_present": state.parsed_result is not None,
-                },
-            )
-            print(f"\n{'='*80}")
-            print("CHUNK_DEBUG: _chunk_document CALLED")
-            print(f"CHUNK_DEBUG: document_id={metadata.document_id}")
-            print(f"CHUNK_DEBUG: parsed_result={state.parsed_result is not None}")
-            if state.parsed_result:
-                print(
-                    f"CHUNK_DEBUG: text_blocks={len(state.parsed_result.text_blocks)}"
-                )
-            print(f"{'='*80}\n")
-        except Exception as log_err:
-            print(f"CHUNK_DEBUG: ERROR in logging: {log_err}")
-
-        # FORCE CHUNKING - no early exit
-        # TODO: Add proper caching logic later if needed
+        
         parsed_result = state.parsed_result
         if parsed_result is None:
             logger.warning(
                 "chunk_missing_parsed_result",
                 extra={"document_id": str(metadata.document_id)},
             )
-            print("CHUNK_DEBUG: No parsed_result, re-parsing document")
-
             def _parse_refresh() -> Any:
-                try:
-                    log_extra_entry(phase="parse")
-                    result = parser.parse(state.document, state.config)
-                    log_extra_exit(
-                        parsed_blocks=len(result.text_blocks),
-                        parsed_assets=len(result.assets),
-                    )
-                    return result
-                except Exception as parse_err:
-                    print(f"CHUNK_DEBUG: ERROR in re-parse: {parse_err}")
-                    logger.exception(
-                        "chunk_reparse_failed", extra={"error": str(parse_err)}
-                    )
-                    raise
+                log_extra_entry(phase="parse")
+                result = parser.parse(state.document, state.config)
+                log_extra_exit(
+                    parsed_blocks=len(result.text_blocks),
+                    parsed_assets=len(result.assets),
+                )
+                return result
 
             parsed_result = pipeline_module._run_phase(
                 "parse.dispatch",
@@ -824,34 +794,19 @@ def build_document_processing_graph(
                 action=_parse_refresh,
             )
             state.parsed_result = parsed_result
-            print(
-                f"CHUNK_DEBUG: Re-parse completed, text_blocks={len(parsed_result.text_blocks)}"
-            )
 
         try:
-
             def _chunk_action() -> Any:
-                print("CHUNK_DEBUG: _chunk_action EXECUTING")
-                try:
-                    log_extra_entry(phase="chunk")
-                    result = chunker.chunk(
-                        state.document,
-                        parsed_result,
-                        context=context,
-                        config=state.config,
-                    )
-                    chunks, stats = result
-                    print(f"CHUNK_DEBUG: chunker returned {len(chunks)} chunks")
-                    log_extra_exit(chunk_count=len(chunks))
-                    return result
-                except Exception as chunk_err:
-                    print(f"CHUNK_DEBUG: ERROR in chunker.chunk: {chunk_err}")
-                    logger.exception(
-                        "chunk_action_failed", extra={"error": str(chunk_err)}
-                    )
-                    raise
-
-            print("CHUNK_DEBUG: Calling _run_phase for chunking")
+                log_extra_entry(phase="chunk")
+                result = chunker.chunk(
+                    state.document,
+                    parsed_result,
+                    context=context,
+                    config=state.config,
+                )
+                chunks, stats = result
+                log_extra_exit(chunk_count=len(chunks))
+                return result
             chunks, chunk_stats = pipeline_module._run_phase(
                 "chunk.generate",
                 "pipeline.chunk",
@@ -947,113 +902,98 @@ def build_document_processing_graph(
 
         # We need chunk artifact
         if state.chunk_artifact is None:
-            print("EMBED_DEBUG: SKIP - no chunk_artifact")
             # If no chunks, nothing to embed
             return state
 
         def _embed_action() -> Any:
-            print("EMBED_DEBUG: _embed_action EXECUTING")
-            try:
-                pipeline_module.log_extra_entry(phase="embed")
-                supports_chunks = _accepts_keyword(embedder, "chunks")
-                supports_normalized = _accepts_keyword(embedder, "normalized_document")
+            pipeline_module.log_extra_entry(phase="embed")
+            supports_chunks = _accepts_keyword(embedder, "chunks")
+            supports_normalized = _accepts_keyword(embedder, "normalized_document")
 
-                print(
-                    f"EMBED_DEBUG: supports_chunks={supports_chunks}, supports_normalized={supports_normalized}"
-                )
+            embed_kwargs: Dict[str, Any] = {}
 
-                embed_kwargs: Dict[str, Any] = {}
-
-                # Build normalized_document if supported (and likely required by trigger_embedding)
-                normalized_payload = None
-                if supports_normalized:
-                    try:
-                        normalized_payload = _build_normalized_payload(
-                            state.document, state.context, storage=state.storage
-                        )
-                        embed_kwargs["normalized_document"] = normalized_payload
-                        print("EMBED_DEBUG: Added normalized_document to kwargs")
-                    except ValueError as err:
-                        # If normalized_document fails but we have chunks, log warning but continue
-                        print(
-                            f"EMBED_DEBUG: Failed to build normalized_document: {err}"
-                        )
-                        if not (
-                            supports_chunks
-                            and state.chunk_artifact
-                            and state.chunk_artifact.chunks
-                        ):
-                            # If we can't build normalized AND don't have chunks, we must fail
-                            raise
-
-                # Add chunks if supported (in addition to normalized_document)
-                if (
-                    supports_chunks
-                    and state.chunk_artifact
-                    and state.chunk_artifact.chunks
-                ):
-                    embed_kwargs["chunks"] = state.chunk_artifact.chunks
-                    print(
-                        f"EMBED_DEBUG: Added chunks to kwargs, count={len(state.chunk_artifact.chunks)}"
-                    )
-
-                if _accepts_keyword(embedder, "context"):
-                    embed_kwargs["context"] = state.context
-                if _accepts_keyword(embedder, "config"):
-                    embed_kwargs["config"] = state.config
-
-                if _accepts_keyword(embedder, "tenant_id") and metadata.tenant_id:
-                    embed_kwargs["tenant_id"] = metadata.tenant_id
-                case_value = getattr(metadata, "case_id", None)
-                if _accepts_keyword(embedder, "case_id") and case_value:
-                    embed_kwargs["case_id"] = case_value
-
-                profile_value = getattr(state.config, "embedding_profile", None)
-                if _accepts_keyword(embedder, "embedding_profile") and profile_value:
-                    embed_kwargs["embedding_profile"] = profile_value
-
-                if not embed_kwargs:
-                    # Fallback: Try to build normalized_document as last resort
-                    print(
-                        "EMBED_DEBUG: No kwargs, trying fallback to normalized_document"
-                    )
+            # Build normalized_document if supported (and likely required by trigger_embedding)
+            normalized_payload = None
+            if supports_normalized:
+                try:
                     normalized_payload = _build_normalized_payload(
                         state.document, state.context, storage=state.storage
                     )
                     embed_kwargs["normalized_document"] = normalized_payload
+                except ValueError:
+                    # If normalized_document fails but we have chunks, log warning but continue
+                    if not (
+                        supports_chunks
+                        and state.chunk_artifact
+                        and state.chunk_artifact.chunks
+                    ):
+                        # If we can't build normalized AND don't have chunks, we must fail
+                        raise
 
-                print(
-                    f"EMBED_DEBUG: Calling embedder with kwargs keys: {list(embed_kwargs.keys())}"
+            # Add chunks if supported (in addition to normalized_document)
+            if (
+                supports_chunks
+                and state.chunk_artifact
+                and state.chunk_artifact.chunks
+            ):
+                embed_kwargs["chunks"] = state.chunk_artifact.chunks
+
+            if _accepts_keyword(embedder, "context"):
+                embed_kwargs["context"] = state.context
+            if _accepts_keyword(embedder, "config"):
+                embed_kwargs["config"] = state.config
+
+            if _accepts_keyword(embedder, "tenant_id") and metadata.tenant_id:
+                embed_kwargs["tenant_id"] = metadata.tenant_id
+            case_value = getattr(metadata, "case_id", None)
+            if _accepts_keyword(embedder, "case_id") and case_value:
+                embed_kwargs["case_id"] = case_value
+
+            profile_value = getattr(state.config, "embedding_profile", None)
+            if _accepts_keyword(embedder, "embedding_profile") and profile_value:
+                embed_kwargs["embedding_profile"] = profile_value
+
+            if not embed_kwargs:
+                # Fallback: Try to build normalized_document as last resort
+                normalized_payload = _build_normalized_payload(
+                    state.document, state.context, storage=state.storage
                 )
-                result = embedder(**embed_kwargs)
-                print(
-                    f"EMBED_DEBUG: embedder returned result type: {type(result).__name__}"
-                )
-                # Result could be EmbeddingResult or similar
-                count = (
-                    getattr(result, "chunks_inserted", 0)
-                    if hasattr(result, "chunks_inserted")
-                    else 0
-                )
-                print(f"EMBED_DEBUG: chunks_inserted={count}")
-                pipeline_module.log_extra_exit(embed_count=count)
-                return result
-            except Exception as exc:
-                print(
-                    f"EMBED_DEBUG: EXCEPTION in _embed_action: {type(exc).__name__}: {exc}"
-                )
-                logger.exception("embed_action_failed", extra={"error": str(exc)})
-                raise
+                embed_kwargs["normalized_document"] = normalized_payload
+
+            result = embedder(**embed_kwargs)
+            # Result could be EmbeddingResult or similar
+            count = (
+                getattr(result, "chunks_inserted", 0)
+                if hasattr(result, "chunks_inserted")
+                else 0
+            )
+            pipeline_module.log_extra_exit(embed_count=count)
+            return result
 
         # Execute embedding
         # Note: pipeline.embed metric event doesn't exist yet, we reuse generic pattern
-        _ = pipeline_module._run_phase(
+        # Execute embedding
+        # Note: pipeline.embed metric event doesn't exist yet, we reuse generic pattern
+        embed_result = pipeline_module._run_phase(
             "embed.generate",
             "pipeline.embed",
             workflow_id=workflow_id,
             attributes={"document_id": str(metadata.document_id)},
             action=_embed_action,
         )
+        
+        # Update statistics with insertion count
+        if embed_result:
+            count = (
+                getattr(embed_result, "chunks_inserted", 0)
+                if hasattr(embed_result, "chunks_inserted")
+                else 0
+            )
+            # state is frozen, use replace
+            from dataclasses import replace
+            new_stats = dict(state.statistics)
+            new_stats["embedding.inserted"] = count
+            state = replace(state, statistics=new_stats)
 
         return state
 

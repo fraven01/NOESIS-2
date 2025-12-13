@@ -694,7 +694,6 @@ def process_document(
             config = DocumentPipelineConfig(
                 enable_embedding=True,
                 enable_asset_captions=False,  # Default behavior from legacy
-                embedding_profile=embedding_profile,
             )
 
             # Context
@@ -702,7 +701,6 @@ def process_document(
                 normalized_document,
                 case_id=case,
                 trace_id=trace_id,
-                metadata={"tenant_id": tenant, "document_id": document_id},
             )
 
             # Initial State
@@ -716,6 +714,8 @@ def process_document(
             # 5. Invoke Graph
             try:
                 result_state = graph.invoke(doc_state)
+                if isinstance(result_state, dict):
+                    result_state = DocumentProcessingState(**result_state)
             except Exception as exc:
                 # Map exception to legacy error reporting
                 state["last_error"] = {
@@ -733,6 +733,10 @@ def process_document(
             # Extract chunk stats
             if result_state.chunk_artifact:
                 chunks_generated = len(result_state.chunk_artifact.chunks)
+            
+            # Prefer embedding.inserted if available (reflects actual DB insertions)
+            if "embedding.inserted" in result_state.statistics:
+                chunks_generated = int(result_state.statistics["embedding.inserted"])
 
             # Extract embedding/upsert stats
             # The API trigger_embedding calls upsert and result isn't explicitly passed back

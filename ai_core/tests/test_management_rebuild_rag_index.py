@@ -18,9 +18,11 @@ from ai_core.ingestion import process_document
 from ai_core.rag import vector_client
 from ai_core.infra import object_store, rate_limit
 from tests.plugins.rag_db import drop_schema, reset_vector_schema
+from customers.models import Tenant
 from common.constants import (
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
+    META_CASE_ID_KEY,
 )
 
 
@@ -250,6 +252,7 @@ def test_rebuild_rag_index_health_check(
     monkeypatch.setenv("RAG_NEAR_DUPLICATE_STRATEGY", "off")
 
     tenant = test_tenant_schema_name
+    Tenant.objects.get_or_create(schema_name=tenant, defaults={"name": "Test Tenant"})
     case = "upload"  # Empty for caseless
     # create_case(case)
     store_path = tmp_path / "object-store"
@@ -273,7 +276,7 @@ def test_rebuild_rag_index_health_check(
             **{
                 META_TENANT_SCHEMA_KEY: tenant,
                 META_TENANT_ID_KEY: tenant,
-                # META_CASE_ID_KEY: case,
+                META_CASE_ID_KEY: case,
             },
         )
         assert response.status_code == 202
@@ -350,7 +353,7 @@ def test_rebuild_rag_index_health_check(
     assert row is not None, f"expected index {expected_index} to be present"
 
     results = client_handle.search(
-        "Vector index smoke check",
+        "document",
         tenant_id=tenant,
         top_k=2,
         filters={"case_id": case},

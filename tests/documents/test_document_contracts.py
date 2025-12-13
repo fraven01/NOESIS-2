@@ -261,34 +261,36 @@ def test_blob_locator_variants():
 
 def test_inline_blob_size_mismatch():
     payload = base64.b64encode(b"payload").decode()
-    with pytest.raises(ValueError):
-        BLOB_LOCATOR_ADAPTER.validate_python(
-            {
-                "type": "inline",
-                "media_type": "image/png",
-                "base64": payload,
-                "sha256": hashlib.sha256(b"payload").hexdigest(),
-                "size": len(b"payload") + 1,
-            }
-        )
+    with strict_checksums(True):
+        with pytest.raises(ValueError):
+            BLOB_LOCATOR_ADAPTER.validate_python(
+                {
+                    "type": "inline",
+                    "media_type": "image/png",
+                    "base64": payload,
+                    "sha256": hashlib.sha256(b"payload").hexdigest(),
+                    "size": len(b"payload") + 1,
+                }
+            )
 
 
 def test_blob_locator_validation_errors():
-    with pytest.raises(ValueError):
-        BLOB_LOCATOR_ADAPTER.validate_python(
-            {"type": "file", "uri": "a", "sha256": "z" * 64, "size": -1}
-        )
+    with strict_checksums(True):
+        with pytest.raises(ValueError):
+            BLOB_LOCATOR_ADAPTER.validate_python(
+                {"type": "file", "uri": "a", "sha256": "z" * 64, "size": -1}
+            )
 
-    with pytest.raises(ValueError):
-        BLOB_LOCATOR_ADAPTER.validate_python(
-            {
-                "type": "inline",
-                "media_type": "image/png",
-                "base64": "@@",
-                "sha256": "a" * 64,
-                "size": 1,
-            }
-        )
+        with pytest.raises(ValueError):
+            BLOB_LOCATOR_ADAPTER.validate_python(
+                {
+                    "type": "inline",
+                    "media_type": "image/png",
+                    "base64": "@@",
+                    "sha256": "a" * 64,
+                    "size": 1,
+                }
+            )
 
     with pytest.raises(ValueError) as exc:
         BLOB_LOCATOR_ADAPTER.validate_python({"type": "unknown"})

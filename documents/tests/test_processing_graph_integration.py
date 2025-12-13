@@ -31,6 +31,7 @@ def test_delta_skip_decision():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     chunker = MagicMock()
@@ -114,6 +115,7 @@ def test_full_document_processing_pipeline():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     chunker = MagicMock()
@@ -216,6 +218,7 @@ def test_guardrail_deny_oversized_document():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     chunker = MagicMock()
@@ -298,6 +301,7 @@ def test_quarantine_scanner_denies_document():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     captioner.caption.return_value = ([], {})
@@ -389,6 +393,7 @@ def test_early_exit_on_parse_only():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     chunker = MagicMock()
@@ -481,6 +486,7 @@ def test_disable_embedding_config():
     # Mocks
     parser = MagicMock()
     repository = MagicMock(spec=DocumentsRepository)
+    repository.upsert.side_effect = lambda doc, **kwargs: doc
     storage = MagicMock()
     captioner = MagicMock()
     chunker = MagicMock()

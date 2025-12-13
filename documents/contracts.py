@@ -76,6 +76,11 @@ __all__ = [
     "set_asset_media_guard",
     "set_strict_checksums",
     "strict_checksums",
+    "BlobLocator",
+    "ExternalBlob",
+    "FileBlob",
+    "InlineBlob",
+    "LocalFileBlob",
 ]
 
 
@@ -270,66 +275,6 @@ class LocalFileBlob(BaseModel):
         return s
 
 
-class InlineBlob(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    _decoded_payload: Optional[bytes] = PrivateAttr(default=None)
-
-    type: Literal["inline"] = Field(
-        description="Discriminator identifying inline data blobs."
-    )
-    media_type: str = Field(
-        description=(
-            "RFC compliant media type without parameters (type/subtype lowercase)."
-        )
-    )
-    base64: str = Field(description="Base64 encoded payload contents.")
-    sha256: str = Field(description="Hex encoded SHA-256 checksum of the payload.")
-    size: int = Field(description="Payload size in bytes.")
-
-    @field_validator("media_type")
-    @classmethod
-    def _validate_media_type(cls, value: str) -> str:
-        return normalize_media_type(value)
-
-    @field_validator("base64")
-    @classmethod
-    def _validate_base64(cls, value: str) -> str:
-        return value.strip()
-
-    @field_validator("sha256")
-    @classmethod
-    def _validate_sha(cls, value: str) -> str:
-        if not _HEX_64_RE.fullmatch(value):
-            raise ValueError("sha256_invalid")
-        return value
-
-    @field_validator("size")
-    @classmethod
-    def _validate_size(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("size_negative")
-        return value
-
-    @model_validator(mode="after")
-    def _verify_payload(self) -> "InlineBlob":
-        decoded = _decode_base64(self.base64)
-        self._decoded_payload = decoded
-        if len(decoded) != self.size:
-            raise ValueError("inline_size_mismatch")
-        if is_strict_checksums_enabled():
-            digest = hashlib.sha256(decoded).hexdigest()
-            if digest != self.sha256:
-                raise ValueError("inline_checksum_mismatch")
-        return self
-
-    def decoded_payload(self) -> bytes:
-        """Return the cached inline payload, decoding at most once."""
-        if self._decoded_payload is None:
-            self._decoded_payload = _decode_base64(self.base64)
-        return self._decoded_payload
-
-
 class ExternalBlob(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -363,14 +308,84 @@ class ExternalBlob(BaseModel):
         return value
 
 
+class InlineBlob(BaseModel):
+    """Inline blob with base64-encoded payload for small uploads."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["inline"] = Field(
+        description="Discriminator identifying an inline blob."
+    )
+    media_type: str = Field(description="MIME type of the blob payload.")
+    base64: str = Field(description="Base64-encoded blob content.")
+    sha256: str = Field(
+        description="Hex encoded SHA-256 checksum of the decoded blob contents."
+    )
+    size: int = Field(description="Size of the decoded blob in bytes.")
+
+    @field_validator("media_type")
+    @classmethod
+    def _validate_media_type(cls, value: str) -> str:
+        normalized = normalize_media_type(value)
+        if not normalized:
+            raise ValueError("media_type_empty")
+        return normalized
+
+    @field_validator("base64")
+    @classmethod
+    def _validate_base64(cls, value: str) -> str:
+        normalized = normalize_string(value)
+        if not normalized:
+            raise ValueError("base64_empty")
+        return normalized
+
+    @field_validator("sha256")
+    @classmethod
+    def _validate_sha(cls, value: str) -> str:
+        if not _HEX_64_RE.fullmatch(value):
+            raise ValueError("sha256_invalid")
+        return value
+
+    @field_validator("size")
+    @classmethod
+    def _validate_size(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("size_negative")
+        return value
+
+    @model_validator(mode="after")
+    def _validate_integrity(self) -> "InlineBlob":
+        if not is_strict_checksums_enabled():
+            return self
+
+        try:
+            payload = base64.b64decode(self.base64, validate=True)
+        except Exception as exc:
+            raise ValueError("base64_invalid") from exc
+
+        if len(payload) != self.size:
+            raise ValueError("size_mismatch")
+
+        actual_sha = hashlib.sha256(payload).hexdigest()
+        if actual_sha != self.sha256:
+            raise ValueError("checksum_mismatch")
+
+        return self
+
+    def decoded_payload(self) -> bytes:
+        """Decode and return the base64 payload as bytes."""
+        return base64.b64decode(self.base64)
+
+
 BlobLocator = Annotated[
-    Union[FileBlob, InlineBlob, ExternalBlob, LocalFileBlob],
+    Union[FileBlob, ExternalBlob, LocalFileBlob, InlineBlob],
     Field(
         discriminator="type",
         title="Blob Locator",
         description="Discriminated union pointing to stored or external blobs.",
     ),
 ]
+
 
 
 class DocumentMeta(BaseModel):
@@ -1510,6 +1525,14 @@ class NormalizedDocument(BaseModel):
     assets: List[Asset] = Field(
         default_factory=list,
         description="Assets that were extracted from the document.",
+    )
+    content_normalized: Optional[str] = Field(
+        default=None,
+        description="Normalized textual content of the document.",
+    )
+    primary_text: Optional[str] = Field(
+        default=None,
+        description="Legacy primary text field.",
     )
 
     @field_validator("checksum")

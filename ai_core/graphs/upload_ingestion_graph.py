@@ -2,16 +2,7 @@
 
 from __future__ import annotations
 
-import base64
-import hashlib
-import mimetypes
-from datetime import datetime, timezone
-from types import MappingProxyType
-from typing import Any, Callable, Dict, Iterable, Mapping
-from uuid import uuid4
-
-from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
-from django.conf import settings
+from typing import Any, Callable, Mapping, Dict
 
 from ai_core import api as ai_core_api
 from ai_core.graphs.transition_contracts import (
@@ -22,13 +13,7 @@ from ai_core.graphs.transition_contracts import (
     build_guardrail_section,
 )
 from ai_core.infra.observability import observe_span
-from documents.api import NormalizedDocumentPayload
-from documents.contracts import (
-    DocumentMeta,
-    DocumentRef,
-    InlineBlob,
-    NormalizedDocument,
-)
+from documents.contracts import NormalizedDocument
 from documents.pipeline import (
     DocumentPipelineConfig,
     DocumentProcessingContext,
@@ -39,6 +24,7 @@ from documents.processing_graph import (
     build_document_processing_graph,
 )
 from documents.cli import SimpleDocumentChunker
+from django.conf import settings
 
 
 DEFAULT_MAX_BYTES = 25 * 1024 * 1024
@@ -117,10 +103,12 @@ class UploadIngestionGraph:
         except TypeError:  # if init args needed or already instance?
             captioner = captioner_cls
 
+        self._storage = storage
+
         self._document_graph = build_document_processing_graph(
             parser=parser_dispatcher,
             repository=self._repository,
-            storage=storage,
+            storage=self._storage,
             captioner=captioner,
             chunker=chunker,
             embedder=self._embed,
@@ -131,128 +119,55 @@ class UploadIngestionGraph:
 
     @observe_span(name="upload.ingestion.run")
     def run(
-        self, payload: Mapping[str, Any], run_until: str | None = None
+        self,
+        state: Mapping[str, Any],
+        meta: Mapping[str, Any] | None = None,
+        run_until: str | None = None
     ) -> Mapping[str, Any]:
-        """Execute the upload ingestion graph for *payload*."""
+        """Execute the upload ingestion graph.
 
-        # 1. Normalize payload to DocumentProcessingState inputs
-        normalized_input = self._prepare_upload_document(payload)
+        Args:
+            state: The input state dictionary containing `normalized_document_input`.
+            meta: Optional context metadata (trace_id, case_id etc).
+        """
+        if meta is None:
+            meta = {}
 
-        # Config
-        config = self._build_config(payload)
+        # 1. Validate Input (Contract from Worker)
+        normalized_input = state.get("normalized_document_input")
+        if not normalized_input:
+             raise UploadIngestionError("input_missing:normalized_document_input")
 
-        # Context
-        context = self._build_context(payload, normalized_input)
+        # 2. Re-hydrate normalized doc
+        try:
+            doc_obj = NormalizedDocument.model_validate(normalized_input)
+        except Exception as exc:
+             raise UploadIngestionError(f"input_invalid:{exc}") from exc
 
-        state = DocumentProcessingState(
-            document=normalized_input.document,
+        # 3. Build Config and Context
+        config = self._build_config(state)
+        context = self._build_context(state, meta, doc_obj)
+
+        graph_state = DocumentProcessingState(
+            document=doc_obj,
             config=config,
             context=context,
             run_until=run_until,
+            storage=self._storage,
         )
 
-        # 2. Invoke Graph
+        # 4. Invoke Graph
         try:
-            result_state = self._document_graph.invoke(state)
+            result_state = self._document_graph.invoke(graph_state)
             if isinstance(result_state, dict):
                 result_state = DocumentProcessingState(**result_state)
         except Exception as exc:
             raise UploadIngestionError(f"graph_failed:{str(exc)}") from exc
 
-        # 3. Map results back to legacy dict
+        # 5. Map results back
         return self._map_result(result_state)
 
-    def _prepare_upload_document(
-        self, payload: Mapping[str, Any]
-    ) -> NormalizedDocumentPayload:
-        """Construct NormalizedDocumentPayload from raw upload payload."""
-
-        # Extract inputs
-        file_bytes = payload.get("file_bytes")
-        file_uri = payload.get("file_uri")
-
-        if file_bytes is None and file_uri is None:
-            raise UploadIngestionError("payload_missing")
-
-        if file_bytes is None and file_uri:
-            raise UploadIngestionError("file_uri_not_supported")
-
-        if isinstance(file_bytes, str):
-            binary = file_bytes.encode("utf-8")
-        else:
-            binary = bytes(file_bytes)
-
-        declared_mime = self._normalize_mime(payload.get("declared_mime"))
-        filename = (payload.get("filename") or "upload").strip()
-        if not declared_mime and filename:
-            guess, _ = mimetypes.guess_type(filename)
-            declared_mime = self._normalize_mime(guess) or "application/octet-stream"
-
-        tenant_id = self._require_str(payload, "tenant_id")
-        content_hash = hashlib.sha256(binary).hexdigest()
-
-        # Build document object structure
-        meta = DocumentMeta(
-            tenant_id=tenant_id,
-            workflow_id=payload.get("workflow_id") or DEFAULT_WORKFLOW_PLACEHOLDER,
-            title=filename,
-            tags=list(self._normalize_tags(payload.get("tags"))),
-            origin_uri=payload.get("origin_uri") or payload.get("file_uri"),
-            # External ref logic from old graph
-            external_ref={
-                "provider": "upload",
-                "uploader_id": self._resolve_str(payload.get("uploader_id")),
-                "external_id": self._resolve_str(payload.get("source_key")),
-            },
-        )
-
-        blob = InlineBlob(
-            type="inline",
-            media_type=declared_mime or "application/octet-stream",
-            base64=base64.b64encode(binary).decode("ascii"),
-            sha256=content_hash,
-            size=len(binary),
-        )
-
-        doc_id = uuid4()
-        ref = DocumentRef(
-            tenant_id=tenant_id,
-            workflow_id=meta.workflow_id,
-            document_id=doc_id,
-        )
-
-        normalized = NormalizedDocument(
-            ref=ref,
-            meta=meta,
-            blob=blob,
-            checksum=content_hash,
-            created_at=datetime.now(timezone.utc),
-            source="upload",
-        )
-
-        # Metadata dictionary for legacy compat
-        metadata_map = {
-            "tenant_id": tenant_id,
-            "workflow_id": meta.workflow_id,
-            "case_id": payload.get("case_id"),
-            "trace_id": payload.get("trace_id"),
-            "source": "upload",
-            "visibility": self._resolve_visibility(payload.get("visibility")),
-            "filename": filename,
-        }
-
-        return NormalizedDocumentPayload(
-            document=normalized,
-            primary_text="",
-            payload_bytes=binary,
-            metadata=MappingProxyType(
-                {k: v for k, v in metadata_map.items() if v is not None}
-            ),
-            content_raw="",
-            content_normalized="",
-        )
-
-    def _build_config(self, payload: Mapping[str, Any]) -> DocumentPipelineConfig:
+    def _build_config(self, state: Mapping[str, Any]) -> DocumentPipelineConfig:
         return DocumentPipelineConfig(
             enable_upload_validation=True,
             max_bytes=int(getattr(settings, "UPLOAD_MAX_BYTES", DEFAULT_MAX_BYTES)),
@@ -264,12 +179,19 @@ class UploadIngestionGraph:
         )
 
     def _build_context(
-        self, payload: Mapping[str, Any], doc: NormalizedDocumentPayload
+        self,
+        state: Mapping[str, Any],
+        meta: Mapping[str, Any],
+        doc: NormalizedDocument,
     ) -> DocumentProcessingContext:
+        # Resolve trace_id from meta first, then state
+        trace_id = meta.get("trace_id") or state.get("trace_id")
+        case_id = meta.get("case_id") or state.get("case_id")
+        
         return DocumentProcessingContext.from_document(
-            doc.document,
-            case_id=self._resolve_str(payload.get("case_id")),
-            trace_id=self._resolve_str(payload.get("trace_id")),
+            doc,
+            case_id=str(case_id) if case_id else None,
+            trace_id=str(trace_id) if trace_id else None,
         )
 
     def _map_result(self, state: DocumentProcessingState) -> Mapping[str, Any]:
@@ -309,8 +231,10 @@ class UploadIngestionGraph:
             return result.model_dump()
 
         blob = getattr(normalized_doc, "blob", None)
+        mime_type = getattr(blob, "media_type", None)
+        # FileBlob does not carry media_type; rely on allowlist or downstream checks if missing
         accept_context = {
-            "mime": getattr(blob, "media_type", None),
+            "mime": mime_type,
             "size_bytes": getattr(blob, "size", None),
             "max_bytes": getattr(state.config, "max_bytes", None),
         }
@@ -407,27 +331,6 @@ class UploadIngestionGraph:
             "telemetry": {k: v for k, v in telemetry.items() if v is not None},
             "transitions": transitions,
         }
-
-    # Helpers
-    def _require_str(self, payload: Any, key: str) -> str:
-        value = payload.get(key)
-        if not value:
-            raise UploadIngestionError(f"{key}_missing")
-        return str(value)
-
-    def _resolve_str(self, value: Any) -> str | None:
-        return str(value).strip() if value else None
-
-    def _normalize_tags(self, value: Any) -> Iterable[str]:
-        if not value:
-            return []
-        return [str(v).strip() for v in value]
-
-    def _resolve_visibility(self, value: Any) -> str:
-        return str(value) if value else "private"
-
-    def _normalize_mime(self, value: Any) -> str | None:
-        return str(value).lower() if value else None
 
 
 __all__ = ["UploadIngestionGraph", "UploadIngestionError"]

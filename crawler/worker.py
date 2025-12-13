@@ -138,6 +138,22 @@ class CrawlerWorker:
                 "ingestion_event_emitter", self._ingestion_event_emitter
             )
 
+        # Observability: Track Celery payload metrics (MVP invariant verification)
+        import json
+        celery_payload_bytes = len(json.dumps(payload_state, default=str).encode("utf-8"))
+        blob_uri = payload_state.get("normalized_document_input", {}).get("blob", {}).get("uri", "")
+        blob_size = payload_state.get("normalized_document_input", {}).get("blob", {}).get("size", 0)
+        uri_scheme = blob_uri.split("://")[0] if "://" in blob_uri else "unknown"
+        logger.info(
+            "crawler.celery_dispatch",
+            extra={
+                "celery_payload_bytes": celery_payload_bytes,
+                "blob_size_bytes": blob_size,
+                "uri_scheme": uri_scheme,
+                "blob_uri": blob_uri[:100],  # Truncate for logging
+            },
+        )
+
         async_result = self._ingestion_task.delay(payload_state, meta_payload)
         task_id = getattr(async_result, "id", None)
         return WorkerPublishResult(

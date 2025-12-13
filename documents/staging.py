@@ -72,7 +72,7 @@ class FileStager:
                 type="local_file",
                 path=str(temp_path.absolute()),
                 media_type=getattr(document.blob, "media_type", None)
-                or document.meta.pipeline_config.get("media_type"),
+                or (document.meta.pipeline_config or {}).get("media_type"),
             )
 
             # Return updated document
@@ -121,7 +121,7 @@ class FileStager:
         # Try from media type
         media_type = getattr(
             document.blob, "media_type", None
-        ) or document.meta.pipeline_config.get("media_type")
+        ) or (document.meta.pipeline_config or {}).get("media_type")
         if media_type == "text/html":
             return ".html"
         if media_type == "application/pdf":

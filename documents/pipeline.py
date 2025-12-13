@@ -684,6 +684,7 @@ class DocumentParseArtifact:
     text_blocks: Tuple[Mapping[str, Any], ...]
     asset_refs: Tuple[object, ...]
     statistics: Mapping[str, Any]
+    document: Any = field(default=None, hash=False, compare=False)
 
     def __post_init__(self) -> None:  # pragma: no cover - dataclass hook
         serialised_blocks: list[Mapping[str, Any]] = []
@@ -899,9 +900,16 @@ def persist_parsed_document(
     stats = dict(parsed.statistics)
     stats["parse.state"] = ProcessingState.PARSED_TEXT.value
     stats["assets.state"] = ProcessingState.ASSETS_EXTRACTED.value
+    stats["assets.state"] = ProcessingState.ASSETS_EXTRACTED.value
     text_blocks = tuple(_serialise_text_block(block) for block in parsed.text_blocks)
 
+    # Join text blocks to form normalized content if not already present
+    normalized_text = "\n\n".join(block["text"] for block in text_blocks if block.get("text"))
+
     document_copy = document.model_copy(deep=True)
+    if normalized_text and not getattr(document_copy, "content_normalized", None):
+        document_copy.content_normalized = normalized_text
+
     meta_copy = document_copy.meta.model_copy(update={"parse_stats": stats}, deep=True)
     document_copy.meta = meta_copy
 
@@ -972,6 +980,7 @@ def persist_parsed_document(
         text_blocks=text_blocks,
         asset_refs=tuple(asset_refs),
         statistics=stats,
+        document=stored_document,
     )
 
 
@@ -1049,6 +1058,7 @@ class DocumentProcessingOrchestrator:
                 config=self.config,
                 context=context,
                 run_until=run_until,
+                storage=self.storage,
             )
             final_state: DocumentProcessingState = graph_state
             try:

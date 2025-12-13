@@ -35,7 +35,7 @@ class ObjectStoreBlobWriter(BlobIO):
         checksum = sha256_bytes(payload)
         path = self._path(checksum)
         object_store.put_bytes(path, payload)
-        return path, checksum, len(payload)
+        return f"objectstore://{path}", checksum, len(payload)
 
     def get(self, uri: str) -> bytes:
         path = uri
