@@ -26,7 +26,7 @@ from .fetcher import (
 )
 
 
-DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 (compatible; noesis-crawler/1.0)"
+DEFAULT_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
 
 
 def _resolve_default_user_agent() -> str:
@@ -434,7 +434,7 @@ class HttpFetcher:
 
         headers.setdefault(
             "Accept",
-            "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         )
         headers.setdefault("Accept-Language", "en-US,en;q=0.5")
         headers.setdefault("Accept-Encoding", "gzip, deflate, br")
@@ -444,6 +444,8 @@ class HttpFetcher:
         headers.setdefault("Sec-Fetch-User", "?1")
         headers.setdefault("Upgrade-Insecure-Requests", "1")
         headers.setdefault("Connection", "keep-alive")
+        headers.setdefault("Cache-Control", "max-age=0")
+        headers.setdefault("TE", "trailers")
 
         etag = request.metadata.get("etag")
         if isinstance(etag, str) and etag:

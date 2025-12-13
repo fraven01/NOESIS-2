@@ -11,30 +11,34 @@ from documents.access_service import (
     DocumentAccessResult,
     DocumentAccessService,
 )
+from documents.contracts import LocalFileBlob
 
 
-def _build_stub_document(tenant_id: str, workflow_id: str, document_id):
+def _build_stub_document(
+    tenant_id: str, workflow_id: str, document_id, blob_path: str = "/tmp/stub.bin"
+):
     """Return a lightweight document stub with the required identifiers."""
     ref = SimpleNamespace(
         tenant_id=tenant_id,
         workflow_id=workflow_id,
         document_id=document_id,
     )
-    return SimpleNamespace(ref=ref)
+    # Use real LocalFileBlob so isinstance checks pass in access_service
+    blob = LocalFileBlob(type="local_file", path=blob_path)
+    return SimpleNamespace(ref=ref, blob=blob)
 
 
 def test_get_document_for_download_success(tmp_path, monkeypatch):
     """Successful access resolves the file and returns metadata."""
     document_id = uuid4()
-    repo = Mock()
-    repo.get.return_value = _build_stub_document("tenant-a", "upload", document_id)
 
     blob_path = tmp_path / "test.bin"
     blob_path.write_bytes(b"content")
 
-    monkeypatch.setattr(
-        "documents.access_service.get_upload_file_path",
-        lambda *args, **kwargs: blob_path,
+    repo = Mock()
+    # Pass blob_path to stub so access_service can find the file
+    repo.get.return_value = _build_stub_document(
+        "tenant-a", "upload", document_id, blob_path=str(blob_path)
     )
 
     service = DocumentAccessService(repo)
@@ -91,13 +95,11 @@ def test_get_document_for_download_tenant_mismatch(tmp_path, monkeypatch):
 def test_get_document_for_download_blob_missing(tmp_path, monkeypatch):
     """Missing files are reported as BlobNotFound."""
     document_id = uuid4()
-    repo = Mock()
-    repo.get.return_value = _build_stub_document("tenant-a", "upload", document_id)
-
     missing_blob = tmp_path / "does-not-exist.bin"
-    monkeypatch.setattr(
-        "documents.access_service.get_upload_file_path",
-        lambda *args, **kwargs: missing_blob,
+
+    repo = Mock()
+    repo.get.return_value = _build_stub_document(
+        "tenant-a", "upload", document_id, blob_path=str(missing_blob)
     )
 
     service = DocumentAccessService(repo)

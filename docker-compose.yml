@@ -50,7 +50,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q celery,rag_delete
+    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q celery,rag_delete,crawler
     env_file:
       - .env
       - .env.docker

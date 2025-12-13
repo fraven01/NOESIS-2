@@ -204,7 +204,8 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     assert state_payload["frontier"] == {"slot": "default"}
     raw_document = state_payload["raw_document"]
     assert raw_document["document_id"] == "doc-1"
-    assert raw_document["metadata"]["provider"] == "docs"
+    # New external_ref structure
+    assert raw_document["metadata"]["external_ref"]["provider"] == "docs"
     assert raw_document["metadata"]["source"] == "integration"
     assert raw_document["metadata"]["origin_uri"] == request.canonical_source
     payload_path = raw_document["payload_path"]
@@ -284,7 +285,8 @@ def test_worker_sets_default_provider_from_source(tmp_path, monkeypatch) -> None
     assert publish_result.published
     state_payload, _ = task.calls[0]
     metadata = state_payload["raw_document"]["metadata"]
-    assert metadata["provider"] == "web"
+    # New external_ref structure
+    assert metadata["external_ref"]["provider"] == "web"
     assert metadata["source"] == "crawler"
 
 

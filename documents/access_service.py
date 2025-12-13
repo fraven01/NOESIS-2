@@ -120,7 +120,7 @@ class DocumentAccessService:
             )
 
         # 3. Physical file resolution from blob
-        from documents.contracts import FileBlob
+        from documents.contracts import FileBlob, LocalFileBlob
         from ai_core.infra import object_store
 
         blob = doc.blob
@@ -128,6 +128,9 @@ class DocumentAccessService:
         if isinstance(blob, FileBlob):
             # Use blob.uri for FileBlob
             blob_path = object_store.BASE_PATH / blob.uri
+        elif isinstance(blob, LocalFileBlob):
+            # Use local path for LocalFileBlob
+            blob_path = Path(blob.path)
         else:
             # Fallback: old upload path logic for backward compatibility
             blob_path = get_upload_file_path(

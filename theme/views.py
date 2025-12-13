@@ -1,5 +1,5 @@
 import json
-from typing import Mapping
+from typing import Any, Mapping
 from uuid import uuid4
 
 from django.conf import settings
@@ -14,11 +14,9 @@ from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
 from ai_core.graphs.external_knowledge_graph import (
-    CrawlerIngestionAdapter,
-    CrawlerIngestionOutcome,
-    GraphContextPayload,
-    InvalidGraphInput,
-    build_graph as build_external_knowledge_graph,
+    graph as external_knowledge_graph_workflow,
+    ExternalKnowledgeState,
+    # Legacy imports removed
 )
 from ai_core.graphs.collection_search import (
     GraphInput as CollectionSearchGraphInput,
@@ -35,6 +33,8 @@ from ai_core.rag.routing_rules import (
 )
 from ai_core.llm import routing as llm_routing
 from llm_worker.runner import submit_worker_task
+from crawler.manager import CrawlerManager
+from ai_core.schemas import CrawlerRunRequest
 
 from customers.tenant_context import TenantContext, TenantRequiredError
 from documents.services.document_space_service import (
@@ -49,7 +49,7 @@ from ai_core.tools.framework_contracts import FrameworkAnalysisInput
 
 logger = get_logger(__name__)
 DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
-build_graph = build_external_knowledge_graph  # Backwards compatibility for tests
+# build_graph aliasing removed as build_external_knowledge_graph is gone
 crawl_selected = _core_crawl_selected  # Re-export for tests
 
 
@@ -113,6 +113,8 @@ def _resolve_manual_collection(
         if requested_text == manual_id:
             return manual_id, manual_id
         if requested_text.lower() == "manual":
+            return manual_id, manual_id
+        if requested_text.lower() == "dev-workbench":
             return manual_id, manual_id
 
     if requested_text.lower() == MANUAL_COLLECTION_SLUG:
@@ -360,8 +362,10 @@ def _run_rerank_workflow(
     return meta, merged_results
 
 
-class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
-    """Adapter that triggers crawler ingestion by calling crawler_runner view directly."""
+class _ViewCrawlerIngestionAdapter:
+    """Adapter that triggers crawler ingestion by calling crawler_runner view directly.
+    Implementation of IngestionTrigger protocol.
+    """
 
     def trigger(
         self,
@@ -369,7 +373,7 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
         url: str,
         collection_id: str,
         context: Mapping[str, str],
-    ) -> CrawlerIngestionOutcome:
+    ) -> Mapping[str, Any]:
         """Trigger ingestion for the given URL."""
         from ai_core.views import crawler_runner
         from django.http import HttpRequest
@@ -417,19 +421,18 @@ class _ViewCrawlerIngestionAdapter(CrawlerIngestionAdapter):
             response_data = response.data if hasattr(response, "data") else {}
 
             if response.status_code == 200:
-                return CrawlerIngestionOutcome(
-                    decision="ingested",
-                    crawler_decision=response_data.get("decision", "unknown"),
-                    document_id=response_data.get("document_id"),
-                )
-            return CrawlerIngestionOutcome(
-                decision="ingestion_error", crawler_decision="http_error"
-            )
+                return {
+                    "decision": "ingested",
+                    "crawler_decision": response_data.get("decision", "unknown"),
+                    "document_id": response_data.get("document_id"),
+                }
+            return {"decision": "ingestion_error", "crawler_decision": "http_error"}
         except Exception:
             logger.exception("crawler.trigger.failed")
-            return CrawlerIngestionOutcome(
-                decision="ingestion_error", crawler_decision="trigger_exception"
-            )
+            return {
+                "decision": "ingestion_error",
+                "crawler_decision": "trigger_exception",
+            }
 
 
 def rag_tools(request):
@@ -700,17 +703,11 @@ def web_search(request):
 
     logger.info("web_search.query", query=query)
 
-    context = GraphContextPayload(
-        tenant_id=tenant_id,
-        workflow_id="external-knowledge-manual",
-        case_id=case_id,
-        trace_id=trace_id,
-        run_id=run_id,
-    )
-
     manual_collection_id, resolved_collection_id = _resolve_manual_collection(
         tenant_id, data.get("collection_id")
     )
+    # Default to manual collection if no specific collection requested
+    # But preserve what the user typed if it's a valid alias or ID
     collection_id = resolved_collection_id or manual_collection_id or "default"
 
     logger.info(
@@ -748,47 +745,121 @@ def web_search(request):
             logger.info("web_search.collection.invalid_input", error=str(exc))
             return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
 
-        graph = build_collection_search_graph()
-        graph_state = graph_input
+    # Execution logic consolidated below to handle both search types cleanly
+
+    response_data = {}
+
+    if search_type == "collection_search":
+        # ... Collection Search Logic (Existing) ...
+        # Copied from original file context
+        purpose = str(data.get("purpose") or "").strip()
+        if not purpose:
+            return JsonResponse(
+                {"error": "Purpose is required for Collection Search"}, status=400
+            )
+
+        quality_mode = _normalise_quality_mode(data.get("quality_mode"))
+        auto_ingest = str(data.get("auto_ingest") or "").lower() == "on"
+
+        graph_input = {
+            "question": query,
+            "collection_scope": collection_id,
+            "purpose": purpose,
+            "quality_mode": quality_mode,
+            "auto_ingest": auto_ingest,
+        }
+        try:
+            CollectionSearchGraphInput.model_validate(graph_input)
+        except Exception as exc:
+            return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
+
+        # Re-build context manually since we removed GraphContextPayload
+        col_context_payload = {
+            "tenant_id": tenant_id,
+            "workflow_id": "collection-search-manual",
+            "case_id": case_id,
+            "trace_id": trace_id,
+            "run_id": run_id,
+        }
+
+        col_graph = build_collection_search_graph()
+        # CollectionSearchGraph.run returns (state, result)
+        final_state, result = col_graph.run(state=graph_input, meta=col_context_payload)
+
+        search_payload = final_state.get("search", {})
+        results = search_payload.get("results", [])
+        telemetry_payload = result.get("telemetry")
+        if telemetry_payload:
+            telemetry_payload = dict(telemetry_payload)
+            if "responses" in search_payload:
+                telemetry_payload["search_responses"] = search_payload["responses"]
+
+        response_data = {
+            "outcome": result.get("outcome"),
+            "results": results,
+            "search": search_payload,
+            "telemetry": telemetry_payload,
+            "trace_id": trace_id,
+        }
 
     else:
-        # External Knowledge Graph Execution (Default)
-        graph_state = {
+        # External Knowledge Graph (LangGraph)
+        from ai_core.tools.shared_workers import get_web_search_worker
+
+        search_worker = get_web_search_worker()
+        ingestion_adapter = _ViewCrawlerIngestionAdapter()
+
+        # Dependencies now passed via context/state to avoid legacy config issues
+        context_payload = {
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_id,
+            "workflow_id": "external-knowledge-manual",
+            "case_id": case_id,
+            "trace_id": trace_id,
+            "run_id": run_id,
+            "runtime_worker": search_worker,
+            "runtime_trigger": ingestion_adapter,
+            "top_n": 5,
+            "prefer_pdf": True,
+        }
+
+        input_state: ExternalKnowledgeState = {
             "query": query,
             "collection_id": collection_id,
-            "run_until": "after_search",  # Per user request, only run search
+            "enable_hitl": False,
+            "auto_ingest": False,  # Manual search should not auto-ingest
+            "context": context_payload,
+            "search_results": [],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
         }
-        ingestion_adapter = _ViewCrawlerIngestionAdapter()
-        graph = build_graph(ingestion_adapter=ingestion_adapter)
 
-    try:
-        # The graph returns the final state and a result payload
-        final_state, result = graph.run(state=graph_state, meta=context.model_dump())
-    except InvalidGraphInput as exc:
-        logger.info("web_search.invalid_input", error=str(exc))
-        return JsonResponse({"error": "Ungültige Eingabe für den Graphen."}, status=400)
-    except Exception:
-        logger.exception("web_search.failed")
-        return JsonResponse({"error": "Graph execution failed."}, status=500)
+        try:
+            final_state = external_knowledge_graph_workflow.invoke(input_state)
+        except Exception:
+            logger.exception("web_search.failed")
+            return JsonResponse({"error": "Graph execution failed."}, status=500)
 
-    # Extract search results from the final graph state
-    search_payload = final_state.get("search", {})
-    results = search_payload.get("results", [])
+        results = final_state.get("search_results", [])
+        # Construct response similar to old format for UI compatibility
+        response_data = {
+            "outcome": "completed",  # Simple outcome
+            "results": results,
+            "search": {"results": results},  # UI expects search.results
+            "telemetry": {},  # Simplified telemetry for now
+            "trace_id": trace_id,
+        }
 
-    telemetry_payload = result.get("telemetry")
-    if telemetry_payload is not None:
-        telemetry_payload = dict(telemetry_payload)
-        search_responses = search_payload.get("responses")
-        if isinstance(search_responses, list):
-            telemetry_payload["search_responses"] = search_responses
+        if final_state.get("error"):
+            # If error field is set
+            response_data["outcome"] = "error"
+            response_data["error"] = final_state["error"]
 
-    response_data = {
-        "outcome": result.get("outcome"),
-        "results": results,
-        "search": search_payload,
-        "telemetry": telemetry_payload,
-        "trace_id": trace_id,
-    }
+    # Common Logic
+    results = response_data.get("results", [])
+    search_payload = response_data.get("search", {})
+    trace_id = response_data.get("trace_id")
 
     if data.get("rerank"):
         try:
@@ -879,111 +950,59 @@ def web_search_ingest_selected(request):
                 {"error": "Collection ID could not be resolved"}, status=400
             )
 
-        # Build payload for crawl_selected
-        # Pass collection_key (slug) instead of just UUID to avoid duplicate creation
-        crawl_payload = {
-            "urls": urls,
-            "workflow_id": "web-search-ingestion",
-            "collection_id": collection_id,  # Keep for backwards compat
-            "collection_key": "manual-search",  # NEW: Use key for reliable lookup
-            "mode": mode,
-            "ingestion_run_id": str(uuid4()),  # Required for ingestion graphs
+        # Build payload for crawler dispatch
+
+        # We must use proper UUIDs for collection_id as verified by the schema
+        # manual_collection_id is verified stringified UUID from _resolve_manual_collection
+
+        request_model = CrawlerRunRequest(
+            workflow_id="web-search-ingestion",
+            mode=mode,
+            origins=[{"url": url} for url in urls],
+            collection_id=collection_id,
+        )
+
+        # L2 -> L3 Dispatch
+        meta = {
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
+            "case_id": str(data.get("case_id") or "").strip() or None,
+            "trace_id": str(data.get("trace_id") or "").strip() or str(uuid4()),
+            "ingestion_run_id": str(uuid4()),
         }
 
-        # Create a new request with the crawl payload
-        from django.http import HttpRequest
-
-        crawl_request = HttpRequest()
-        crawl_request.method = "POST"
-        crawl_request.META = request.META.copy()
-        crawl_request._body = json.dumps(crawl_payload).encode("utf-8")
-        crawl_request.META.setdefault("CONTENT_TYPE", "application/json")
-        crawl_request.META.setdefault("HTTP_CONTENT_TYPE", "application/json")
-        crawl_request.META.setdefault("CONTENT_LENGTH", str(len(crawl_request._body)))
-
-        # Ensure tenant headers are present for crawler_runner
-        crawl_request.META.setdefault("HTTP_X_TENANT_ID", tenant_id)
-        crawl_request.META.setdefault("HTTP_X_TENANT_SCHEMA", tenant_schema)
-        case_id = str(data.get("case_id") or "").strip() or None
-        if case_id:
-            crawl_request.META.setdefault("HTTP_X_CASE_ID", case_id)
-
-        # Propagate trace_id from parent or generate new one
-        parent_trace_id = str(data.get("trace_id") or "").strip()
-        trace_id = parent_trace_id if parent_trace_id else str(uuid4())
-        crawl_request.META.setdefault("HTTP_X_TRACE_ID", trace_id)
-
-        # Copy tenant context
-        if hasattr(request, "tenant"):
-            crawl_request.tenant = request.tenant
-        if hasattr(request, "tenant_schema"):
-            crawl_request.tenant_schema = request.tenant_schema
-
-        # Call crawl_selected
-        response = crawl_selected(crawl_request)
-
-        # Parse response
+        manager = CrawlerManager()
         try:
-            response_data = json.loads(response.content.decode())
-        except (json.JSONDecodeError, AttributeError):
-            response_data = {}
+            result = manager.dispatch_crawl_request(request_model, meta)
+        except Exception as exc:
+            logger.exception("web_search.crawler_dispatch_failed")
+            return JsonResponse({"error": str(exc)}, status=500)
 
-        if response.status_code in (200, 202):
-            if request.headers.get("HX-Request"):
-                return render(
-                    request,
-                    "theme/partials/_ingestion_status.html",
-                    {
-                        "status": (
-                            "accepted" if response.status_code == 202 else "completed"
-                        ),
-                        "result": response_data,
-                        "task_ids": response_data.get("task_ids"),
-                        "url_count": len(urls),
-                    },
-                )
+        response_data = {
+            "status": "dispatched",
+            "count": result.get("count", 0),
+            "task_ids": result.get("tasks", []),
+        }
 
-            return JsonResponse(
+        if request.headers.get("HX-Request"):
+            return render(
+                request,
+                "theme/partials/_ingestion_status.html",
                 {
-                    "status": (
-                        "accepted" if response.status_code == 202 else "completed"
-                    ),
+                    "status": "completed",
                     "result": response_data,
                     "task_ids": response_data.get("task_ids"),
                     "url_count": len(urls),
                 },
-                status=response.status_code,
             )
-        else:
-            if request.headers.get("HX-Request"):
-                return render(
-                    request,
-                    "theme/partials/_ingestion_status.html",
-                    {
-                        "status": (
-                            "accepted" if response.status_code == 202 else "completed"
-                        ),
-                        "result": response_data,
-                        "task_ids": response_data.get("task_ids"),
-                        "url_count": len(urls),
-                        "error": (
-                            response_data.get("details")
-                            if response.status_code != 200
-                            else None
-                        ),
-                    },
-                )
-            else:
-                return JsonResponse(
-                    {
-                        "error": "Crawler call failed",
-                        "status_code": response.status_code,
-                        "detail": response_data.get(
-                            "details", response_data.get("detail", str(response_data))
-                        ),
-                    },
-                    status=response.status_code,
-                )
+
+        return JsonResponse(
+            {
+                "status": "completed",
+                "result": response_data,
+                "task_ids": response_data.get("task_ids"),
+            }
+        )
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
@@ -1278,7 +1297,7 @@ def ingestion_submit(request):
     Returns a partial HTML response with the ingestion status.
     """
     try:
-        from ai_core.services import handle_document_upload, start_ingestion_run
+        from ai_core.services import handle_document_upload
 
         # 1. Handle File Upload
         if "file" not in request.FILES:
@@ -1321,28 +1340,7 @@ def ingestion_submit(request):
                 },
             )
 
-        document_id = upload_response.data.get("document_id")
-
-        # 2. Start Ingestion Run
-        run_payload = {
-            "document_ids": [document_id],
-            "case_id": case_id,
-            "collection_id": manual_collection_id,  # Explicitly set collection
-            "workflow_id": "document-upload-manual",  # Workflow type for tracing
-        }
-
-        run_response = start_ingestion_run(
-            request_data=run_payload, meta=meta, idempotency_key=None
-        )
-
-        if run_response.status_code >= 400:
-            return render(
-                request,
-                "theme/partials/_ingestion_status.html",
-                {
-                    "error": f"Ingestion start failed: {run_response.data.get('detail', 'Unknown error')}"
-                },
-            )
+        run_id = upload_response.data.get("ingestion_run_id")
 
         # 3. Return Status Partial
         return render(
@@ -1350,7 +1348,7 @@ def ingestion_submit(request):
             "theme/partials/_ingestion_status.html",
             {
                 "status": "queued",
-                "task_ids": [run_response.data.get("ingestion_run_id")],
+                "task_ids": [run_id],
                 "url_count": 1,  # Represents the single file
                 "result": True,
                 "now": timezone.now(),

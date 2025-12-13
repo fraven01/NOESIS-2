@@ -276,6 +276,28 @@ def _get_documents_repository() -> DocumentsRepository:
     return _DOCUMENTS_REPOSITORY
 
 
+class DocumentComponents:
+    """Container for document processing pipeline components."""
+
+    def __init__(self, storage, captioner):
+        self.storage = storage
+        self.captioner = captioner
+
+
+def get_document_components() -> DocumentComponents:
+    """Return default document processing components.
+
+    Provides storage and captioner instances used by the document processing graph.
+    """
+    from documents.storage import ObjectStoreStorage
+    from documents.captioning import DeterministicCaptioner
+
+    return DocumentComponents(
+        storage=ObjectStoreStorage,
+        captioner=DeterministicCaptioner,
+    )
+
+
 def _extract_initial_cost(meta: Mapping[str, Any]) -> float | None:
     cost_block = meta.get("cost")
     if isinstance(cost_block, Mapping):

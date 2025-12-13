@@ -1,44 +1,84 @@
-"""Tests for the ExternalKnowledgeGraph orchestrator."""
+"""Tests for the ExternalKnowledgeGraph LangGraph implementation."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Mapping
+import dataclasses
+from collections.abc import Mapping
+from typing import Any
 
-import pytest
 
-from ai_core.graphs import external_knowledge_graph as ekg
 from ai_core.graphs.external_knowledge_graph import (
-    CrawlerIngestionOutcome,
-    ExternalKnowledgeGraphConfig,
+    ExternalKnowledgeState,
+    graph as external_knowledge_graph,
 )
 from ai_core.tools.web_search import (
     BaseSearchAdapter,
     ProviderSearchResult,
     SearchAdapterResponse,
+    SearchProviderError,
+    SearchProviderTimeout,
     WebSearchWorker,
 )
 
 
+# --------------------------------------------------------------------- Stubs
 class StubSearchAdapter(BaseSearchAdapter):
     """Search adapter returning a pre-seeded list of results."""
 
-    def __init__(self, provider: str, results: list[ProviderSearchResult]) -> None:
-        self.provider_name = provider
-        self._results = results
+    provider_name = "stub"
+
+    provider_name = "stub"
+
+    def __init__(self, items: list[ProviderSearchResult]) -> None:
+        self.provider_name = "stub"
+        self.items = items
 
     def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
-        return SearchAdapterResponse(
-            results=self._results[:max_results], status_code=200
-        )
+        return SearchAdapterResponse(results=self.items[:max_results], status_code=200)
 
 
-@dataclass
-class StubIngestionAdapter:
-    """Track calls to the ingestion adapter for assertions."""
+class RaisingSearchAdapter(BaseSearchAdapter):
+    """Search adapter that raises an error when called."""
 
-    outcome: CrawlerIngestionOutcome
-    last_payload: dict[str, Any] | None = None
+    provider_name = "raising"
+
+    def __init__(self, error: SearchProviderError) -> None:
+        self.provider_name = "raising"
+        self.error = error
+
+    def search(self, query: str, *, max_results: int) -> SearchAdapterResponse:
+        raise self.error
+
+
+@dataclasses.dataclass
+class StubIngestionTrigger:
+    """Track calls to ingestion trigger."""
+
+    outcome: Mapping[str, Any]
+    call_count: int = 0
+    last_call: dict[str, Any] | None = None
+
+    def trigger(
+        self,
+        *,
+        url: str,
+        collection_id: str,
+        context: Mapping[str, str],
+    ) -> Mapping[str, Any]:
+        self.call_count += 1
+        self.last_call = {
+            "url": url,
+            "collection_id": collection_id,
+            "context": context,
+        }
+        return self.outcome
+
+
+@dataclasses.dataclass
+class RaisingIngestionTrigger:
+    """Ingestion trigger that raises an exception."""
+
+    error: Exception
     call_count: int = 0
 
     def trigger(
@@ -47,556 +87,352 @@ class StubIngestionAdapter:
         url: str,
         collection_id: str,
         context: Mapping[str, str],
-    ) -> CrawlerIngestionOutcome:
+    ) -> Mapping[str, Any]:
         self.call_count += 1
-        self.last_payload = {
-            "url": url,
-            "collection_id": collection_id,
-            "context": dict(context),
-        }
-        return self.outcome
+        raise self.error
 
 
-class StubReviewEmitter:
-    """Collect pending review payloads."""
-
-    def __init__(self) -> None:
-        self.emitted: list[Mapping[str, Any]] = []
-
-    def emit(self, payload: Mapping[str, Any]) -> None:
-        self.emitted.append(dict(payload))
-
-
-class FailingReviewEmitter:
-    """Emitter that always raises an exception."""
-
-    def emit(self, payload: Mapping[str, Any]) -> None:  # pragma: no cover - simple
-        raise RuntimeError("emitter offline")
-
-
-@pytest.fixture
-def observation_collector(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
-    captured: list[dict[str, Any]] = []
-
-    def _capture(**fields: Any) -> None:
-        metadata = fields.get("metadata")
-        if isinstance(metadata, Mapping):
-            captured.append(dict(metadata))
-
-    monkeypatch.setattr(ekg, "update_observation", _capture)
-    return captured
-
-
+# --------------------------------------------------------------------- Factories
 def _make_worker(results: list[ProviderSearchResult]) -> WebSearchWorker:
-    adapter = StubSearchAdapter("stub", results)
+    adapter = StubSearchAdapter(results)
     return WebSearchWorker(adapter, max_results=5, oversample_factor=1)
 
 
-def _base_meta() -> dict[str, str]:
+def _base_context() -> dict[str, str]:
     return {
         "tenant_id": "tenant-A",
-        "workflow_id": "workflow-42",
-        "case_id": "case-7",
+        "trace_id": "trace-123",
+        "workflow_id": "test-workflow",
+        "run_id": "test-run-123",
     }
 
 
-def test_external_knowledge_graph_ingests_pdf_without_hitl(
-    observation_collector: list[dict[str, Any]],
-) -> None:
+# --------------------------------------------------------------------- Tests
+def test_external_knowledge_graph_success_flow() -> None:
+    """Test full flow from search to ingestion."""
+    # Setup
     pdf_result = ProviderSearchResult(
         url="https://example.org/report.pdf",
-        title="Climate Report",
-        snippet="Comprehensive report covering emissions and climate change impacts.",
-        source="example",
-        score=0.8,
+        title="Report",
+        snippet="Good pdf content " * 5,
+        source="stub",
+        score=0.9,
         content_type="application/pdf",
     )
-    html_result = ProviderSearchResult(
-        url="https://example.org/blog",
-        title="Blog",
-        snippet="Long-form analysis describing mitigation strategies in depth.",
-        source="example",
-        score=0.9,
-        content_type="text/html",
-    )
-    worker = _make_worker([html_result, pdf_result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-123",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-    )
-    graph._search_worker = worker
+    worker = _make_worker([pdf_result])
+    trigger = StubIngestionTrigger(outcome={"status": "queued", "task_ids": ["task-1"]})
 
-    state, result = graph.run(
-        {"query": "climate report", "collection_id": "collection-1"},
-        meta=_base_meta(),
-    )
-
-    assert result["outcome"] == "ingested"
-    assert result["document_id"] == "doc-123"
-    assert result["selected_url"] == "https://example.org/report.pdf"
-    assert ingestion_adapter.call_count == 1
-    assert ingestion_adapter.last_payload is not None
-    assert (
-        ingestion_adapter.last_payload["context"]["graph_name"] == "external_knowledge"
-    )
-    assert "ingestion_run_id" in ingestion_adapter.last_payload["context"]
-
-    telemetry = result["telemetry"]
-    assert telemetry["ids"]["tenant_id"] == "tenant-A"
-    assert telemetry["nodes"]["k_search"]["provider"] == "stub"
-    assert telemetry["nodes"]["k_search"]["graph_name"] == "external_knowledge"
-    assert state["transitions"][-1]["decision"] == "ingested"
-
-    for metadata in observation_collector:
-        assert metadata["tenant_id"] == "tenant-A"
-        assert metadata["collection_id"] == "collection-1"
-        assert metadata["workflow_id"] == "workflow-42"
-        assert metadata["case_id"] == "case-7"
-        assert metadata["run_id"]
-
-
-def test_external_knowledge_graph_handles_no_suitable_candidate(
-    observation_collector: list[dict[str, Any]],
-) -> None:
-    short_result = ProviderSearchResult(
-        url="https://spam.example.com/page",
-        title="Spam",
-        snippet="Too short.",
-        source="spam",
-        score=0.1,
-        content_type="text/html",
-    )
-    worker = _make_worker([short_result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="skipped",
-            crawler_decision="skipped",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(
-            blocked_domains=frozenset({"spam.example.com"})
-        ),
-    )
-    graph._search_worker = worker
-
-    state, result = graph.run(
-        {"query": "irrelevant", "collection_id": "collection-2"},
-        meta=_base_meta(),
-    )
-
-    assert result["outcome"] == "nothing_suitable"
-    assert result["document_id"] is None
-    assert ingestion_adapter.call_count == 0
-    assert state["transitions"][-1]["decision"] == "nothing_suitable"
-
-    for metadata in observation_collector:
-        assert metadata["tenant_id"] == "tenant-A"
-        assert metadata["collection_id"] == "collection-2"
-
-
-def test_external_knowledge_graph_hitl_rejection_skips_ingestion(
-    observation_collector: list[dict[str, Any]],
-) -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/insight",
-        title="Insight",
-        snippet="Detailed research article covering governance policies at length.",
-        source="example",
-        score=0.7,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-999",
-        )
-    )
-    emitter = StubReviewEmitter()
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-        review_emitter=emitter,
-    )
-    graph._search_worker = worker
-
-    initial_state, pending = graph.run(
+    context = _base_context()
+    context.update(
         {
-            "query": "research",
-            "collection_id": "collection-3",
-            "enable_hitl": True,
-        },
-        meta=_base_meta(),
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+            "top_n": 5,
+            "prefer_pdf": True,
+        }
     )
 
-    assert pending["outcome"] == "error"
-    assert pending["telemetry"]["review"]["status"] == "pending"
-    assert emitter.emitted and emitter.emitted[0]["status"] == "PENDING_REVIEW"
-    assert ingestion_adapter.call_count == 0
-
-    initial_state["review_response"] = {"approved": False}
-    resumed_state, final_result = graph.run(initial_state, meta=_base_meta())
-
-    assert final_result["outcome"] == "rejected"
-    assert final_result["document_id"] is None
-    assert ingestion_adapter.call_count == 0
-    assert final_result["telemetry"]["review"]["status"] == "rejected"
-    assert resumed_state["review"]["status"] == "rejected"
-
-    for metadata in observation_collector:
-        assert metadata["tenant_id"] == "tenant-A"
-        assert metadata["collection_id"] in {"collection-3"}
-
-
-def test_external_knowledge_graph_run_until_after_search() -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/resource",
-        title="Resource",
-        snippet="""Detailed analysis describing technology trends across the industry landscape.""",
-        source="Example",
-        score=0.6,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="skipped",
-            crawler_decision="skipped",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-    )
-    graph._search_worker = worker
-
-    state, payload = graph.run(
-        {
-            "query": "technology trends",
-            "collection_id": "collection-5",
-            "run_until": "after_search",
-        },
-        meta=_base_meta(),
-    )
-
-    assert payload["outcome"] == "stopped_after_search"
-    assert payload["telemetry"]["stop_reason"] == "after_search"
-    assert [entry["node"] for entry in state["transitions"]] == ["k_search"]
-    assert ingestion_adapter.call_count == 0
-
-
-def test_external_knowledge_graph_run_until_after_selection() -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/resource",
-        title="Resource",
-        snippet="""Detailed analysis describing technology trends across the industry landscape.""",
-        source="Example",
-        score=0.6,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-900",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-    )
-    graph._search_worker = worker
-
-    state, payload = graph.run(
-        {
-            "query": "technology trends",
-            "collection_id": "collection-6",
-            "run_until": "after_selection",
-        },
-        meta=_base_meta(),
-    )
-
-    assert payload["outcome"] == "stopped_after_selection"
-    assert payload["telemetry"]["stop_reason"] == "after_selection"
-    nodes = {entry["node"] for entry in state["transitions"]}
-    assert nodes == {"k_search", "k_filter_and_select"}
-    assert ingestion_adapter.call_count == 0
-
-
-def test_external_knowledge_graph_run_until_review_complete() -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/resource",
-        title="Resource",
-        snippet="""Detailed analysis describing technology trends across the industry landscape.""",
-        source="Example",
-        score=0.6,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-901",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-    )
-    graph._search_worker = worker
-
-    state, pending = graph.run(
-        {
-            "query": "technology trends",
-            "collection_id": "collection-7",
-            "enable_hitl": True,
-            "run_until": "review_complete",
-        },
-        meta=_base_meta(),
-    )
-
-    assert pending["telemetry"]["review"]["status"] == "pending"
-    assert ingestion_adapter.call_count == 0
-
-    state["review_response"] = {"approved": True}
-    resumed_state, final_result = graph.run(state, meta=_base_meta())
-
-    assert final_result["outcome"] == "stopped_after_review"
-    assert final_result["telemetry"]["stop_reason"] == "review_complete"
-    assert resumed_state["review"]["status"] == "approved"
-    assert ingestion_adapter.call_count == 0
-
-
-def test_external_knowledge_graph_rejected_count_accounts_for_topn_cut() -> None:
-    long_snippet = (
-        "Extensive discussion of industry developments and analytical observations "
-        "covering multiple quarters and stakeholder perspectives."
-    )
-    results = [
-        ProviderSearchResult(
-            url=f"https://example.org/resource-{idx}",
-            title=f"Resource {idx}",
-            snippet=long_snippet,
-            source="Example",
-            score=1.0 - (idx * 0.1),
-            content_type="text/html",
-        )
-        for idx in range(3)
-    ]
-    results.append(
-        ProviderSearchResult(
-            url="https://example.net/short",
-            title="Short",
-            snippet="tiny",
-            source="Example",
-            score=0.1,
-            content_type="text/html",
-        )
-    )
-    worker = _make_worker(results)
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="skipped",
-            crawler_decision="skipped",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(top_n=1),
-    )
-    graph._search_worker = worker
-
-    state, payload = graph.run(
-        {
-            "query": "market analysis",
-            "collection_id": "collection-topn",
-            "run_until": "after_selection",
-        },
-        meta=_base_meta(),
-    )
-
-    assert payload["outcome"] == "stopped_after_selection"
-    selection_state = state["selection"]
-    transition_meta = selection_state["transition"]["meta"]
-    assert transition_meta["rejected_count"] == 3
-    assert len(selection_state["shortlisted"]) == 1
-
-
-def test_external_knowledge_graph_blocks_blocked_subdomains() -> None:
-    result = ProviderSearchResult(
-        url="https://www.spam.example.com/resource",
-        title="Spam",
-        snippet="""Detailed yet untrusted article with plenty of misleading statements in a long body.""",
-        source="Spam",
-        score=0.2,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="skipped",
-            crawler_decision="skipped",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(blocked_domains=frozenset({"example.com"})),
-    )
-    graph._search_worker = worker
-
-    state, payload = graph.run(
-        {"query": "spam", "collection_id": "collection-blocked"},
-        meta=_base_meta(),
-    )
-
-    assert payload["outcome"] == "nothing_suitable"
-    assert state["selection"]["transition"]["meta"]["rejected_count"] == 1
-    assert ingestion_adapter.call_count == 0
-
-
-def test_external_knowledge_graph_hitl_override_allows_valid_url() -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/report",
-        title="Report",
-        snippet="""Detailed overview covering regulations and compliance frameworks across sectors.""",
-        source="Example",
-        score=0.9,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-override",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-    )
-    graph._search_worker = worker
-
-    state, pending = graph.run(
-        {
-            "query": "regulations",
-            "collection_id": "collection-override",
-            "enable_hitl": True,
-        },
-        meta=_base_meta(),
-    )
-
-    assert pending["telemetry"]["review"]["status"] == "pending"
-
-    override_url = "https://alt.example.net/curated"
-    state["review_response"] = {"approved": True, "override_url": override_url}
-    resumed_state, final_result = graph.run(state, meta=_base_meta())
-
-    assert final_result["outcome"] == "ingested"
-    assert resumed_state["review"]["transition"]["rationale"] == "hitl_approved"
-    assert ingestion_adapter.last_payload is not None
-    assert ingestion_adapter.last_payload["url"] == override_url
-
-
-def test_external_knowledge_graph_hitl_override_blocklist_rejection() -> None:
-    result = ProviderSearchResult(
-        url="https://example.org/report",
-        title="Report",
-        snippet="""Detailed overview covering regulations and compliance frameworks across sectors.""",
-        source="Example",
-        score=0.9,
-        content_type="text/html",
-    )
-    worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-override",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(
-            blocked_domains=frozenset({"blocked.example"})
-        ),
-    )
-    graph._search_worker = worker
-
-    state, pending = graph.run(
-        {
-            "query": "regulations",
-            "collection_id": "collection-override",
-            "enable_hitl": True,
-        },
-        meta=_base_meta(),
-    )
-
-    assert pending["telemetry"]["review"]["status"] == "pending"
-
-    state["review_response"] = {
-        "approved": True,
-        "override_url": "https://sub.blocked.example/resource",
+    input_state: ExternalKnowledgeState = {
+        "query": "test query",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
     }
-    resumed_state, final_result = graph.run(state, meta=_base_meta())
 
-    assert final_result["outcome"] == "rejected"
+    # Execute
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    # Verify
     assert (
-        resumed_state["review"]["transition"]["rationale"]
-        == "override_url_blocked_or_invalid"
+        final_state["error"] is None
+    ), f"Graph execution failed with error: {final_state['error']}"
+    assert (
+        len(final_state["search_results"]) == 1
+    ), f"Expected 1 search result, got {len(final_state['search_results'])}. State: {final_state}"
+    assert final_state["selected_result"] is not None
+    assert final_state["selected_result"]["url"] == "https://example.org/report.pdf"
+
+    assert final_state["ingestion_result"] == {
+        "status": "queued",
+        "task_ids": ["task-1"],
+    }
+
+    assert trigger.call_count == 1
+    assert trigger.last_call["url"] == "https://example.org/report.pdf"
+    assert trigger.last_call["collection_id"] == "col-1"
+    assert trigger.last_call["context"]["tenant_id"] == "tenant-A"
+
+
+def test_external_knowledge_graph_no_results() -> None:
+    """Test flow when search returns nothing."""
+    worker = _make_worker([])
+    trigger = StubIngestionTrigger(outcome={})
+
+    context = _base_context()
+    context.update(
+        {
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+        }
     )
-    assert ingestion_adapter.call_count == 0
+
+    input_state: ExternalKnowledgeState = {
+        "query": "nothing",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    assert final_state["search_results"] == []
+    assert final_state["selected_result"] is None
+    assert trigger.call_count == 0  # Should not trigger ingestion
 
 
-def test_external_knowledge_graph_hitl_emitter_failure_records_error() -> None:
+def test_external_knowledge_graph_selection_filtering() -> None:
+    """Test filtering logic (length, blocked domains)."""
+    short_result = ProviderSearchResult(
+        url="https://short.com", title="Short", snippet="tiny", source="stub", score=0.1
+    )
+    blocked_result = ProviderSearchResult(
+        url="https://blocked.com/bad",
+        title="Bad",
+        snippet="Long enough snippet " * 5,
+        source="stub",
+        score=0.8,
+    )
+    good_result = ProviderSearchResult(
+        url="https://good.com/ok",
+        title="Good",
+        snippet="Long enough snippet " * 5,
+        source="stub",
+        score=0.5,
+    )
+
+    worker = _make_worker([short_result, blocked_result, good_result])
+    trigger = StubIngestionTrigger(outcome={"status": "ok"})
+
+    context = _base_context()
+    context.update(
+        {
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+            "blocked_domains": ["blocked.com"],
+            "min_snippet_length": 20,
+        }
+    )
+
+    input_state: ExternalKnowledgeState = {
+        "query": "filter test",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    assert final_state["error"] is None, f"Graph error: {final_state['error']}"
+    assert (
+        len(final_state["search_results"]) == 3
+    ), f"Expected 3 search results, got {len(final_state['search_results'])}"
+    assert final_state["selected_result"] is not None
+    # Short rejected, Blocked rejected. Good selected.
+    assert final_state["selected_result"]["url"] == "https://good.com/ok"
+
+
+def test_search_worker_error() -> None:
+    """Test that search errors are handled gracefully."""
+    # Setup: Create a worker that raises SearchProviderTimeout
+    error = SearchProviderTimeout(
+        message="Search timed out", retry_in_ms=5000, http_status=504
+    )
+    adapter = RaisingSearchAdapter(error)
+    worker = WebSearchWorker(adapter, max_results=5, oversample_factor=1)
+    trigger = StubIngestionTrigger(outcome={})
+
+    context = _base_context()
+    context.update(
+        {
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+        }
+    )
+
+    input_state: ExternalKnowledgeState = {
+        "query": "timeout query",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    # Execute
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    # Verify: Error should be captured, no ingestion triggered
+    assert final_state["error"] is not None
+    assert (
+        "Search timed out" in final_state["error"]
+        or "SearchProviderTimeout" in final_state["error"]
+    )
+    assert final_state["search_results"] == []
+    assert final_state["selected_result"] is None
+    assert trigger.call_count == 0  # No ingestion should happen
+
+
+def test_ingestion_trigger_exception() -> None:
+    """Test ingestion errors are caught and returned in state."""
+    # Setup: Normal search, but ingestion trigger raises exception
+    pdf_result = ProviderSearchResult(
+        url="https://example.org/doc.pdf",
+        title="Document",
+        snippet="Valid content " * 10,
+        source="stub",
+        score=0.9,
+        content_type="application/pdf",
+    )
+    worker = _make_worker([pdf_result])
+
+    # Trigger that raises exception
+    trigger = RaisingIngestionTrigger(
+        error=RuntimeError("Ingestion service unavailable")
+    )
+
+    context = _base_context()
+    context.update(
+        {
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+            "prefer_pdf": True,
+        }
+    )
+
+    input_state: ExternalKnowledgeState = {
+        "query": "test query",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    # Execute
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    # Verify: Search and selection succeed, but ingestion fails gracefully
+    assert final_state["error"] is None  # Graph completes successfully
+    assert len(final_state["search_results"]) == 1
+    assert final_state["selected_result"] is not None
+    assert final_state["selected_result"]["url"] == "https://example.org/doc.pdf"
+
+    # Ingestion result should contain error
+    assert final_state["ingestion_result"] is not None
+    assert final_state["ingestion_result"]["status"] == "error"
+    assert "Ingestion service unavailable" in final_state["ingestion_result"]["reason"]
+    assert trigger.call_count == 1  # Trigger was attempted
+
+
+def test_auto_ingest_false_skips_ingestion() -> None:
+    """Test that auto_ingest=False stops before ingestion."""
+    # Setup: Normal search with valid result
     result = ProviderSearchResult(
-        url="https://example.org/resource",
-        title="Resource",
-        snippet="""Detailed analysis describing technology trends across the industry landscape.""",
-        source="Example",
-        score=0.6,
-        content_type="text/html",
+        url="https://example.org/article.html",
+        title="Article",
+        snippet="Interesting article content " * 5,
+        source="stub",
+        score=0.8,
     )
     worker = _make_worker([result])
-    ingestion_adapter = StubIngestionAdapter(
-        outcome=CrawlerIngestionOutcome(
-            decision="ingested",
-            crawler_decision="ingested",
-            document_id="doc-111",
-        )
-    )
-    graph = ekg.build_graph(
-        ingestion_adapter=ingestion_adapter,
-        config=ExternalKnowledgeGraphConfig(),
-        review_emitter=FailingReviewEmitter(),
-    )
-    graph._search_worker = worker
+    trigger = StubIngestionTrigger(outcome={"status": "queued"})
 
-    state, payload = graph.run(
+    context = _base_context()
+    context.update(
         {
-            "query": "technology trends",
-            "collection_id": "collection-7",
-            "enable_hitl": True,
-        },
-        meta=_base_meta(),
+            "runtime_worker": worker,
+            "runtime_trigger": trigger,
+        }
     )
 
-    assert payload["outcome"] == "error"
-    transitions = {entry["node"]: entry for entry in state["transitions"]}
-    assert "k_hitl_gate_emit" in transitions
-    emit = transitions["k_hitl_gate_emit"]
-    assert emit["decision"] == "error"
-    assert emit["meta"]["error"]["kind"] == "EmitterError"
-    assert ingestion_adapter.call_count == 0
+    input_state: ExternalKnowledgeState = {
+        "query": "test query",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": False,  # KEY: auto_ingest is False
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    # Execute
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    # Verify: Search and selection succeed, but ingestion is skipped
+    assert final_state["error"] is None
+    assert len(final_state["search_results"]) == 1
+    assert final_state["selected_result"] is not None
+    assert final_state["selected_result"]["url"] == "https://example.org/article.html"
+
+    # Ingestion should NOT be triggered
+    assert trigger.call_count == 0
+    assert final_state["ingestion_result"] is None  # Never reached ingestion node
+
+
+def test_missing_runtime_worker() -> None:
+    """Test error when runtime_worker not in context."""
+    # Setup: Context WITHOUT runtime_worker
+    trigger = StubIngestionTrigger(outcome={})
+
+    context = _base_context()
+    context.update(
+        {
+            # NO runtime_worker!
+            "runtime_trigger": trigger,
+        }
+    )
+
+    input_state: ExternalKnowledgeState = {
+        "query": "test query",
+        "collection_id": "col-1",
+        "enable_hitl": False,
+        "auto_ingest": True,
+        "context": context,
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+    }
+
+    # Execute
+    final_state = external_knowledge_graph.invoke(input_state)
+
+    # Verify: Error is set because worker is missing
+    assert final_state["error"] is not None
+    assert "No search worker" in final_state["error"]
+    assert final_state["search_results"] == []
+    assert final_state["selected_result"] is None
+    assert trigger.call_count == 0

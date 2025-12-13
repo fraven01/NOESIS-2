@@ -21,6 +21,48 @@ auf die maßgeblichen Quellen unter `docs/` sowie ergänzende Hinweise aus der `
 - ID-Semantik, Propagation und Case-Lifecycle sind in den Architektur-Referenzen unter `docs/architecture/` dokumentiert: [`id-semantics`](docs/architecture/id-semantics.md), [`id-propagation`](docs/architecture/id-propagation.md), [`id-sync-checklist`](docs/architecture/id-sync-checklist.md) und zugehörige ADRs (`docs/architecture/adrs/ADR-00x-*.md`).
 - **Für Implementierer**: Der [`id-guide-for-agents.md`](docs/architecture/id-guide-for-agents.md) bietet konkrete Implementierungsregeln und Code-Beispiele für Agenten.
 
+## Firm Architecture (4-Layer Standard)
+
+Diese Hierarchie ist die **Referenzarchitektur** für alle neuen Business-Funktionen in NOESIS 2.
+
+### Layer 1: Frontend & Gateways (UI/API)
+
+- **Verantwortung**: Präsentation, User-Interaktion, Routing, Authentifizierung.
+- **Komponenten**: HTMX-Templates (`theme/`), Django REST Views (API), Serializer.
+- **Regeln**:
+  - Keine Business-Logik.
+  - Delegiert sofort an L2 (Business Adapter).
+  - Erwartet synchrone Antworten oder "Accepted"-Status.
+
+### Layer 2: Business Layer / Adapter
+
+- **Verantwortung**: Fachliche Validierung, Orchestrierung von Technical Managers, Übersetzung von User-Intent in technische Aufträge.
+- **Komponenten**: Adapter-Views, Facades, Business-Services.
+- **Beispiel**: `ai_core.views.crawl_selected` (fungiert als Adapter für Web-Ingestion).
+- **Regeln**:
+  - Kennt die Use-Cases (z.B. "Web Search Ingestion", "Knowledge Upload").
+  - Ruft L3 Technical Managers auf.
+
+### Layer 3: Technical Managers & Graphs
+
+- **Verantwortung**: Technische Ausführung, Koordination von Ressourcen, Graphen-Logik.
+- **Komponenten**:
+  - **Managers**: `CrawlerManager`, `DocumentManager`. Kapseln Dispatch-Logik.
+  - **Graphs**: LangGraph-Flows (`ai_core/graphs/`). Enthalten die eigentliche Verarbeitungslogik.
+- **Regeln**:
+  - Wiederverwendbar für verschiedene L2-Use-Cases.
+  - "Blind" für den Business-Kontext (weiß nicht, *warum* gecrawlt wird, nur *dass*).
+
+### Layer 4: Workers & Infrastructure
+
+- **Verantwortung**: Asynchrone Jobs, I/O-Operationen, Persistenz, externe Calls.
+- **Komponenten**: Celery Tasks, Repositories (`DbDocumentsRepository`), Worker-Klassen.
+- **Beispiel**: `crawl_url_task` (Fetch), `run_ingestion_graph` (Ingest).
+- **Regeln**:
+  - Stateless Execution.
+  - Skalierbar.
+  - Kommuniziert Ergebnisse über DB oder Events (kein direkter Return an UI).
+
 ## Rollen & Funktionsblöcke
 
 - **Web- & Worker-Services** verantworten HTTP-Verarbeitung und Celery-Queues laut [Architekturübersicht](docs/architektur/overview.md).

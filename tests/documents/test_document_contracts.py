@@ -181,9 +181,10 @@ def test_contract_utils_media_type_normalization():
         normalize_media_type("invalid type")
 
 
-def test_contract_utils_media_type_rejects_parameters():
-    with pytest.raises(ValueError):
-        normalize_media_type("text/html; charset=utf-8")
+def test_contract_utils_media_type_strips_parameters():
+    # normalize_media_type strips parameters per docstring:
+    # "Parameterized values such as text/html; charset=utf-8 are stripped to their base type."
+    assert normalize_media_type("text/html; charset=utf-8") == "text/html"
 
 
 def test_contract_utils_bbox_validation():

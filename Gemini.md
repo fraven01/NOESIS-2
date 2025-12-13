@@ -29,6 +29,24 @@ Operativer Leitfaden für den Gemini-Code-Agenten in NOESIS 2. **Alle Contracts,
 - API & SDK: `npm run api:schema`, `make sdk`.
 - RAG-Werkzeuge: `python manage.py rag_routing_rules`, `python manage.py sync_rag_schemas`, `python manage.py check_rag_schemas`.
 
+## Architektur-Heuristiken & Coding-Vibe
+
+Um Reibungsverluste zu vermeiden, befolge strikt diese Design-Patterns:
+
+1. **Layer-Integrität (View vs. Service):**
+   - **Views sind Endpunkte**, keine wiederverwendbaren Bibliotheken.
+   - Rufe **niemals** eine View-Funktion aus einer anderen View auf.
+   - Wenn Logik geteilt werden muss, extrahiere sie in einen **Manager** oder **Service** (z.B. `CrawlerManager`).
+   - *Flow:* `UI -> View (L2) -> Manager/Service (L3) -> Domain`.
+
+2. **Explizite Verträge (HTML vs. JSON):**
+   - Vermeide hybride Views, die mal HTML und mal JSON zurückgeben, basierend auf implizitem Kontext.
+   - Nutze Pydantic-Modelle für den Datenaustausch zwischen Layern, um Typ-Sicherheit zu garantieren.
+
+3. **Verifikation ("Smoke Tests"):**
+   - Wenn Unit-Tests zu stark gemockt sind (z.B. Celery-Calls), erstelle **sofort** ein manuelles Skript in `scripts/debug_{issue}.py`.
+   - Nutze dieses Skript als "Source of Truth" für die Fehlerbehebung, statt dich auf Unit-Test-Mocks zu verlassen.
+
 ## Navigation (Primärquellen)
 
 1. **Master-Referenz**: [`AGENTS.md`](AGENTS.md) – Contracts, Glossar, Schnittstellen, Paketgrenzen.

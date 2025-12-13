@@ -16,10 +16,15 @@ from ai_core.infra import object_store
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
-from ai_core.tasks import ingestion_run as run_ingestion_task
 from common.assets import AssetIngestPayload, BlobWriter
 from common.assets.hashing import perceptual_hash, sha256_bytes
-from documents.contracts import DEFAULT_PROVIDER_BY_SOURCE
+from documents.contracts import (
+    DEFAULT_PROVIDER_BY_SOURCE,
+    NormalizedDocument,
+    DocumentRef,
+    DocumentMeta,
+    FileBlob,
+)
 from documents.domain_service import DocumentDomainService
 from customers.tenant_context import TenantContext
 from ai_core.rag.vector_client import get_default_client
@@ -171,15 +176,25 @@ class CrawlerWorker:
         resolved_source = self._resolve_source(raw_meta, ingestion_overrides)
         raw_meta["source"] = resolved_source
 
+        # Build external_ref structure correctly (aligned with Upload)
+        # Determine provider
         provider_value = str(raw_meta.get("provider", "")).strip()
-        if provider_value:
-            raw_meta["provider"] = provider_value
-        else:
+        if not provider_value:
             default_provider = DEFAULT_PROVIDER_BY_SOURCE.get(
                 raw_meta["source"], raw_meta["source"]
             )
-            if default_provider:
-                raw_meta["provider"] = default_provider
+            provider_value = default_provider or "web"
+
+        # Create structured external_ref dict
+        external_ref = {
+            "provider": provider_value,
+            "external_id": f"{provider_value}::{request.canonical_source}",
+        }
+        raw_meta["external_ref"] = external_ref
+
+        # Remove top-level provider if it exists (prevent drift)
+        raw_meta.pop("provider", None)
+
         if result.metadata.content_type and "content_type" not in raw_meta:
             raw_meta["content_type"] = result.metadata.content_type
         if result.metadata.status_code is not None and "status_code" not in raw_meta:
@@ -195,6 +210,52 @@ class CrawlerWorker:
             raw_meta["content_length"] = result.metadata.content_length
 
         payload_bytes = bytes(result.payload or b"")
+
+        # Extract title from HTML if content_type indicates HTML and title not already set
+        content_type = result.metadata.content_type or ""
+        if "html" in content_type.lower() and not raw_meta.get("title"):
+            try:
+                from lxml import html as lxml_html
+
+                tree = lxml_html.fromstring(payload_bytes)
+                title_elem = tree.find(".//title")
+                if title_elem is not None and title_elem.text:
+                    extracted_title = title_elem.text.strip()
+                    if extracted_title:
+                        raw_meta["title"] = extracted_title[:256]
+            except Exception:
+                pass  # Silent failure - title remains empty
+
+        # Fallback: Use URL-based title if still empty
+        if not raw_meta.get("title"):
+            try:
+                from urllib.parse import urlparse
+
+                parsed = urlparse(request.canonical_source)
+                # Use last path segment or domain
+                if parsed.path and parsed.path != "/":
+                    segments = [
+                        s
+                        for s in parsed.path.split("/")
+                        if s
+                        and s.lower() not in ["index.html", "index.htm", "default.html"]
+                    ]
+                    if segments:
+                        # Use last meaningful segment, remove extension
+                        candidate = segments[-1]
+                        if "." in candidate:
+                            candidate = candidate.rsplit(".", 1)[0]
+                        # Clean up: replace separators with spaces, title case
+                        candidate = candidate.replace("_", " ").replace("-", " ")
+                        raw_meta["title"] = candidate.title()[:256]
+
+                # Fallback to domain if path didn't produce title
+                if not raw_meta.get("title") and parsed.netloc:
+                    domain_name = parsed.netloc.replace("www.", "").split(".")[0]
+                    raw_meta["title"] = domain_name.title()[:256]
+            except Exception:
+                pass  # Silent failure - title remains empty, will show "Untitled Document"
+
         payload_path, payload_checksum, payload_size = self._persist_payload(
             payload_bytes,
             tenant_id=tenant_id,
@@ -206,12 +267,16 @@ class CrawlerWorker:
         raw_meta.setdefault("content_hash", payload_checksum)
         raw_meta.setdefault("content_length", payload_size)
 
+        collection_id = raw_meta.get("collection_id")
+        if not collection_id and ingestion_overrides:
+            collection_id = ingestion_overrides.get("collection_id")
+
         resolved_document_id = self._register_document(
             tenant_id=tenant_id,
             source=request.canonical_source,
             content_hash=payload_checksum,
             metadata=raw_meta,
-            collection_identifier=raw_meta.get("collection_id"),
+            collection_identifier=collection_id,
             embedding_profile=(
                 ingestion_overrides.get("embedding_profile")
                 if isinstance(ingestion_overrides, Mapping)
@@ -228,23 +293,123 @@ class CrawlerWorker:
             "metadata": raw_meta,
             "payload_path": payload_path,
         }
+
+        final_doc_id = None
         if document_id is not None:
-            raw_document["document_id"] = document_id
+            final_doc_id = document_id
         elif "document_id" in raw_meta:
-            raw_document["document_id"] = raw_meta["document_id"]
+            final_doc_id = raw_meta["document_id"]
         elif resolved_document_id is not None:
-            raw_document["document_id"] = resolved_document_id
+            final_doc_id = resolved_document_id
+
+        if final_doc_id:
+            raw_document["document_id"] = final_doc_id
 
         state["raw_document"] = raw_document
         state.setdefault("raw_payload_path", payload_path)
         state.setdefault("fetch", self._summarize_fetch(result))
+
+        # Construct normalized_document_input for ingestion graph
+        # This ensures the graph has the compliant input structure it requires (NormalizedDocument)
+
+        workflow_id = raw_meta.get("workflow_id") or "default"
+        created_at_iso = raw_meta.get("created_at")
+        if not created_at_iso:
+            from datetime import datetime, timezone
+
+            created_at_iso = datetime.now(timezone.utc).isoformat()
+
+        if collection_id:
+            # Ensure valid UUID
+            try:
+                UUID(str(collection_id))
+                clean_collection_id = str(collection_id)
+            except (ValueError, TypeError):
+                clean_collection_id = None
+        else:
+            clean_collection_id = None
+
+        # Build DocumentRef - need valid UUID for document_id
+        doc_uuid: UUID
+        if final_doc_id is not None:
+            try:
+                doc_uuid = UUID(str(final_doc_id))
+            except (ValueError, TypeError):
+                # String ID isn't a valid UUID - generate a new one
+                # Preserve original ID in external_ref if not already set
+                from uuid import uuid4
+
+                doc_uuid = uuid4()
+                if raw_meta.get("external_ref") is None:
+                    raw_meta["external_ref"] = {}
+                if "original_id" not in raw_meta["external_ref"]:
+                    raw_meta["external_ref"]["original_id"] = str(final_doc_id)
+        else:
+            from uuid import uuid4
+
+            doc_uuid = uuid4()
+
+        ref = DocumentRef(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            document_id=doc_uuid,
+            collection_id=clean_collection_id,
+        )
+
+        # Prepare pipeline_config with media_type hint
+        pipeline_cfg = {}
+        c_type = raw_meta.get("content_type") or request.metadata.content_type
+        if not c_type:
+            # Default to text/html for crawler results if undetectable
+            c_type = "text/html"
+
+        if c_type:
+            pipeline_cfg["media_type"] = c_type
+
+        # Build DocumentMeta
+        meta_obj = DocumentMeta(
+            tenant_id=tenant_id,
+            workflow_id=workflow_id,
+            title=raw_meta.get("title"),
+            language=raw_meta.get("language"),
+            origin_uri=request.canonical_source,
+            tags=raw_meta.get("tags") or [],
+            external_ref=raw_meta.get("external_ref"),
+            crawl_timestamp=None,  # Will default or be set if available
+            pipeline_config=pipeline_cfg,
+        )
+
+        # Build BlobLocator (FileBlob)
+        blob_obj = FileBlob(
+            type="file",
+            uri=payload_path,
+            size=payload_size,
+            sha256=payload_checksum,
+        )
+
+        # Create NormalizedDocument
+        normalized_doc = NormalizedDocument(
+            ref=ref,
+            meta=meta_obj,
+            blob=blob_obj,
+            checksum=payload_checksum,
+            # Explicitly set source to "crawler" as this is the crawler worker.
+            # Avoid using raw_meta["source"] which currently holds the origin URL.
+            source="crawler",
+            lifecycle_state="active",
+            created_at=datetime.fromisoformat(created_at_iso),
+        )
+
+        # Serialize to JSON-compatible dict for Celery payload
+        state["normalized_document_input"] = normalized_doc.model_dump(mode="json")
+
         assets = self._extract_assets(
             result,
             payload_bytes,
             tenant_id=tenant_id,
             case_id=case_id,
             crawl_id=crawl_id,
-            document_id=document_id or raw_meta.get("document_id"),
+            document_id=final_doc_id,
         )
         if assets:
             state["assets"] = [self._serialize_asset(asset) for asset in assets]
@@ -605,6 +770,8 @@ class CrawlerWorker:
         embedding_profile: str | None,
         scope: str | None,
     ) -> str | None:
+        from django_tenants.utils import tenant_context
+
         tenant = self._resolve_tenant(tenant_id)
         if tenant is None:
             logger.warning(
@@ -615,31 +782,35 @@ class CrawlerWorker:
 
         service = self._get_domain_service()
 
-        collections: list[DocumentCollection] = []
-        if collection_identifier is not None:
-            ensured = self._ensure_collection_with_warning(
-                service,
-                tenant,
-                collection_identifier,
+        with tenant_context(tenant):
+            collections: list[DocumentCollection] = []
+            if collection_identifier is not None:
+                ensured = self._ensure_collection_with_warning(
+                    service,
+                    tenant,
+                    collection_identifier,
+                    embedding_profile=embedding_profile,
+                    scope=scope,
+                )
+                if ensured is not None:
+                    collections.append(ensured)
+
+            # Define a dummy dispatcher to satisfy the service contract
+            # The actual dispatch is handled by the worker's process method
+            def no_op_dispatcher(*args, **kwargs):
+                pass
+
+            ingest_result = service.ingest_document(
+                tenant=tenant,
+                source=source,
+                content_hash=content_hash,
+                metadata=metadata,
+                collections=collections,
                 embedding_profile=embedding_profile,
                 scope=scope,
+                dispatcher=no_op_dispatcher,
             )
-            if ensured is not None:
-                collections.append(ensured)
 
-        ingest_result = service.ingest_document(
-            tenant=tenant,
-            source=source,
-            content_hash=content_hash,
-            metadata=metadata,
-            collections=collections,
-            embedding_profile=embedding_profile,
-            scope=scope,
-            dispatcher=self._create_ingestion_dispatcher(
-                tenant_id=str(tenant.id),
-                embedding_profile=embedding_profile,
-            ),
-        )
         logger.info(
             "crawler.document_registered",
             extra={
@@ -649,81 +820,6 @@ class CrawlerWorker:
             },
         )
         return str(ingest_result.document.id)
-
-    def _create_ingestion_dispatcher(
-        self, tenant_id: str, embedding_profile: str | None
-    ):
-        """Create a dispatcher function that dispatches ingestion tasks to Celery."""
-        logger.info(
-            "crawler.dispatcher_created",
-            extra={
-                "tenant_id": tenant_id,
-                "embedding_profile": embedding_profile,
-            },
-        )
-
-        def dispatcher(
-            document_id,  # UUID
-            collection_ids,  # tuple of UUIDs
-            embedding_profile_override,  # str | None
-            scope,  # str | None
-        ):
-            # Dispatch ingestion task to process the document
-            # This will create chunks and embeddings
-            logger.info(
-                "crawler.dispatcher_called",
-                extra={
-                    "tenant_id": tenant_id,
-                    "document_id": str(document_id),
-                    "collection_ids": [str(cid) for cid in collection_ids],
-                    "embedding_profile_override": embedding_profile_override,
-                    "scope": scope,
-                },
-            )
-            try:
-                # Use the embedding_profile passed to dispatcher if available,
-                # otherwise use the one from registration
-                profile = embedding_profile_override or embedding_profile or "standard"
-
-                logger.info(
-                    "crawler.ingestion_dispatch_starting",
-                    extra={
-                        "tenant_id": tenant_id,
-                        "document_id": str(document_id),
-                        "profile": profile,
-                    },
-                )
-
-                # Dispatch the ingestion task asynchronously
-                # The task will process the document, create chunks, and embed them
-                run_ingestion_task.delay(
-                    tenant_id,
-                    None,  # case_id (not used in crawler context)
-                    [str(document_id)],  # document_ids
-                    profile,  # embedding_profile
-                    tenant_schema=tenant_id,  # tenant_schema defaults to tenant_id
-                )
-                logger.info(
-                    "crawler.ingestion_dispatched",
-                    extra={
-                        "tenant_id": tenant_id,
-                        "document_id": str(document_id),
-                        "collection_ids": [str(cid) for cid in collection_ids],
-                        "embedding_profile": profile,
-                    },
-                )
-            except Exception:
-                logger.exception(
-                    "crawler.ingestion_dispatch_failed",
-                    extra={
-                        "tenant_id": tenant_id,
-                        "document_id": str(document_id),
-                    },
-                )
-                # Don't raise - allow document registration to complete
-                # The ingestion can be retried manually if needed
-
-        return dispatcher
 
     def _ensure_collection_with_warning(
         self,
@@ -742,9 +838,24 @@ class CrawlerWorker:
             collection_uuid = None
 
         if collection_uuid is not None:
-            exists = DocumentCollection.objects.filter(
+            existing_collection = DocumentCollection.objects.filter(
                 tenant=tenant, collection_id=collection_uuid
-            ).exists()
+            ).first()
+
+            if existing_collection is not None:
+                # Use the existing collection's key to ensure we don't try to create a duplicate
+                # with the same ID but different key
+                return service.ensure_collection(
+                    tenant=tenant,
+                    key=existing_collection.key,
+                    embedding_profile=embedding_profile,
+                    scope=scope,
+                    collection_id=collection_uuid,
+                    allow_collection_id_override=True,
+                )
+
+            # Check if it was supposed to exist but doesn't
+            exists = False  # we just checked
             if not exists:
                 logger.warning(
                     "crawler.collection_missing_created",

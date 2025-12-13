@@ -39,16 +39,15 @@
                         class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm"></textarea>
                 </div>
 
-                <div>
+                <div x-show="searchType === 'collection_search'" x-transition>
                     <label class="block text-sm font-medium text-slate-700 mb-1">
                         Purpose
-                        <span x-show="searchType === 'collection_search'" class="text-red-500">*</span>
+                        <span class="text-red-500">*</span>
                     </label>
                     <input type="text" name="purpose" :required="searchType === 'collection_search'"
                         placeholder="Research, Fact Check..."
                         class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
-                    <p x-show="searchType === 'collection_search'" class="mt-1 text-xs text-slate-500">Required for
-                        strategy generation.</p>
+                    <p class="mt-1 text-xs text-slate-500">Required for strategy generation.</p>
                 </div>
 
                 <div class="grid grid-cols-2 gap-4">
@@ -63,7 +62,8 @@
                     </div>
                     <div>
                         <label class="block text-sm font-medium text-slate-700 mb-1">Collection</label>
-                        <input type="text" name="collection_id" placeholder="Default"
+                        <input type="text" name="collection_id"
+                            value="{{ manual_collection_id|default:'dev-workbench' }}" placeholder="Default"
                             class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
                     </div>
                 </div>

@@ -339,7 +339,9 @@ def build_document_processing_graph(
 
             pipeline_module.log_extra_entry(phase="delta")
             # Wrap document as payload for delta_decider
-            normalized_payload = _build_normalized_payload(state.document, context)
+            normalized_payload = _build_normalized_payload(
+                state.document, context, storage=state.storage
+            )
             decision = delta_decider(
                 normalized_document=normalized_payload,
                 baseline=baseline,
@@ -354,7 +356,9 @@ def build_document_processing_graph(
         if guardrail_enforcer:
             pipeline_module.log_extra_entry(phase="guardrail")
             # Wrap document as payload for guardrail_enforcer
-            normalized_payload = _build_normalized_payload(state.document, context)
+            normalized_payload = _build_normalized_payload(
+                state.document, context, storage=state.storage
+            )
             decision = guardrail_enforcer(normalized_document=normalized_payload)
             state.guardrail_decision = decision
             pipeline_module.log_extra_exit(guardrail_decision=decision.decision)
@@ -421,6 +425,38 @@ def build_document_processing_graph(
 
         return state
 
+    def _stage_document(state: DocumentProcessingState) -> DocumentProcessingState:
+        """Download remote blobs to local temporary file for parsing."""
+        from .staging import FileStager
+
+        try:
+            stager = FileStager()
+            state.document = stager.stage(state.document, storage=state.storage)
+            return state
+        except Exception as exc:
+            logger.exception("staging_failed", extra={"error": str(exc)})
+            state.error = exc
+            if propagate_errors:
+                raise
+            return state
+
+    def _cleanup_after_run(state: DocumentProcessingState) -> DocumentProcessingState:
+        """Cleanup temporary staged files."""
+        # This node runs at the end regardless of success/failure if possible,
+        # but in standard LangGraph it runs as a step.
+        # We rely on it being the final step of the graph.
+        from .staging import FileStager
+        from documents.contracts import LocalFileBlob
+
+        if isinstance(state.document.blob, LocalFileBlob):
+            try:
+                stager = FileStager()
+                stager.cleanup(state.document)
+            except Exception as exc:
+                logger.warning("cleanup_failed", extra={"error": str(exc)})
+
+        return state
+
     def _parse_document(state: DocumentProcessingState) -> DocumentProcessingState:
         """Parse document and store result in state.
 
@@ -429,34 +465,10 @@ def build_document_processing_graph(
         context = state.context
         config = state.config
         metadata = context.metadata
-
-        # CRITICAL DEBUG - Using print instead of logger to ensure visibility
-        try:
-            logger.info(
-                "parse_node_entered",
-                extra={
-                    "document_id": str(metadata.document_id),
-                    "tenant_id": metadata.tenant_id,
-                    "existing_result": state.parsed_result is not None,
-                    "document_type": type(state.document).__name__,
-                },
-            )
-            print(f"\n{'='*80}")
-            print("PARSE_DEBUG: _parse_document CALLED")
-            print(f"PARSE_DEBUG: document_id={metadata.document_id}")
-            print(f"PARSE_DEBUG: existing_result={state.parsed_result is not None}")
-            print(f"PARSE_DEBUG: document_type={type(state.document).__name__}")
-            print(f"{'='*80}\n")
-        except Exception as log_err:
-            print(f"PARSE_DEBUG: ERROR in logging: {log_err}")
-            # Continue even if logging fails
-
         existing_result = state.parsed_result
-        # Always parse if we don't have a result yet
-        # This ensures ALL document types go through the unified parser
-        should_parse = existing_result is None
 
-        print(f"PARSE_DEBUG: should_parse={should_parse}")
+        # Always parse if we don't have a result yet
+        should_parse = existing_result is None
 
         if should_parse:
             try:
@@ -465,26 +477,25 @@ def build_document_processing_graph(
                 from . import pipeline as pipeline_module
 
                 def _parse_action() -> Any:
-                    print("PARSE_DEBUG: _parse_action EXECUTING")
+
                     try:
                         log_extra_entry(phase="parse")
+
+                        # Parsing Logic relying on staged document (LocalFileBlob) or InlineBlob
                         result = parser.parse(state.document, config)
-                        print(
-                            f"PARSE_DEBUG: parser returned {len(result.text_blocks)} text_blocks, {len(result.assets)} assets"
-                        )
+
                         log_extra_exit(
                             parsed_blocks=len(result.text_blocks),
                             parsed_assets=len(result.assets),
                         )
                         return result
                     except Exception as parse_err:
-                        print(f"PARSE_DEBUG: ERROR in parser.parse: {parse_err}")
+                        # Log specific parser error but allow higher level to catch
                         logger.exception(
                             "parse_action_failed", extra={"error": str(parse_err)}
                         )
                         raise
 
-                print("PARSE_DEBUG: Calling _run_phase")
                 parsed_result = pipeline_module._run_phase(
                     "parse.dispatch",
                     "pipeline.parse",
@@ -495,7 +506,7 @@ def build_document_processing_graph(
                     },
                     action=_parse_action,
                 )
-                print("PARSE_DEBUG: Setting state.parsed_result")
+
                 state.parsed_result = parsed_result
                 logger.info(
                     "parse_completed",
@@ -508,9 +519,6 @@ def build_document_processing_graph(
                     },
                 )
             except Exception as exc:
-                print(
-                    f"PARSE_DEBUG: EXCEPTION in parse block: {type(exc).__name__}: {exc}"
-                )
                 logger.exception(
                     "parse_document_failed",
                     extra={
@@ -521,10 +529,9 @@ def build_document_processing_graph(
                 )
                 raise
         elif existing_result is not None:
-            print("PARSE_DEBUG: Using existing_result")
+            # Already have a result, just ensure it's set in state (redundant but safe)
             state.parsed_result = existing_result
         else:
-            print("PARSE_DEBUG: WARNING - No parse, no existing result, setting None")
             state.parsed_result = None
 
         return state
@@ -1108,6 +1115,12 @@ def build_document_processing_graph(
     )
     graph.add_node("embed_chunks", _with_error_capture("embed_complete", _embed_chunks))
 
+    # Adding Staging and Cleanup Nodes
+    graph.add_node(
+        "stage_document", _with_error_capture("staging_complete", _stage_document)
+    )
+    graph.add_node("cleanup", _cleanup_after_run)
+
     # WIRED EDGES
     graph.add_edge(START, "accept_upload")
 
@@ -1115,11 +1128,15 @@ def build_document_processing_graph(
     graph.add_edge("accept_upload", "check_delta_guardrails")
 
     # Router after delta/guardrails
+    # If continue -> go to staging (to download blobs)
     graph.add_conditional_edges(
         "check_delta_guardrails",
         _ingestion_router,
-        {"continue": "parse_document", "end": END},
+        {"continue": "stage_document", "end": "cleanup"},
     )
+
+    # Staging -> Parse
+    graph.add_edge("stage_document", "parse_document")
 
     # Parse -> Persist
     graph.add_edge("parse_document", "persist_document")
@@ -1128,25 +1145,28 @@ def build_document_processing_graph(
     graph.add_conditional_edges(
         "persist_document",
         lambda state: ("end" if state.should_stop("persist_complete") else "continue"),
-        {"continue": "caption_assets", "end": END},
+        {"continue": "caption_assets", "end": "cleanup"},
     )
 
     # Caption -> Chunk (conditional)
     graph.add_conditional_edges(
         "caption_assets",
         lambda state: ("end" if state.should_stop("caption_complete") else "continue"),
-        {"continue": "chunk_document", "end": END},
+        {"continue": "chunk_document", "end": "cleanup"},
     )
 
     # Chunk -> Embed
     graph.add_conditional_edges(
         "chunk_document",
         lambda state: ("end" if state.should_stop("chunk_complete") else "continue"),
-        {"continue": "embed_chunks", "end": END},
+        {"continue": "embed_chunks", "end": "cleanup"},
     )
 
-    # Embed -> End
-    graph.add_edge("embed_chunks", END)
+    # Embed -> Cleanup (ensures staged files are cleaned up on success)
+    graph.add_edge("embed_chunks", "cleanup")
+
+    # Cleanup -> End
+    graph.add_edge("cleanup", END)
 
     return graph.compile()
 

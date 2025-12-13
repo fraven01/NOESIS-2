@@ -26,6 +26,10 @@ from documents.contract_utils import (
     is_image_mediatype,
 )
 
+from common.logging import get_logger
+
+logger = get_logger(__name__)
+
 # Caption source confidence mapping (from pipeline.py)
 _CAPTION_SOURCE_CONFIDENCE: dict[str, float] = {
     "alt_text": 1.0,
@@ -179,49 +183,101 @@ class BlobStorageAdapter:
             perceptual_hash=perceptual_hash_value,
         )
 
-    def store_file_uri(self, file_uri: str, media_type: str) -> BlobDescriptor:
-        """Store reference to existing file URI.
+    def store_file_uri(
+        self, file_uri: str, media_type: str, *, origin_uri: Optional[str] = None
+    ) -> BlobDescriptor:
+        """Store reference to existing file URI, downloading remote content if needed.
 
         Args:
-            file_uri: URI of existing file
+            file_uri: URI of existing file (can be local path, object store path, or HTTP URL)
             media_type: MIME type for perceptual hash detection
+            origin_uri: Origin URL for resolving relative file_uri paths
 
         Returns:
-            BlobDescriptor with checksum (from content or URI hash)
+            BlobDescriptor with checksum and storage metadata
         """
-        payload = None
-        # Try to resolve content if it looks like a local object reference
-        # We don't want to blindly try storage.get() on http/s URLs as that might confusingly
-        # fail if the storage backend is file-based.
-        is_remote = "://" in file_uri and not file_uri.startswith("file://")
+        from urllib.parse import urlparse, urljoin
+        import requests
+        from requests.exceptions import RequestException
+        from django.conf import settings
 
-        if not is_remote:
+        payload = None
+
+        # Resolve relative URLs using origin_uri
+        resolved_uri = file_uri
+        if file_uri.startswith("/") and origin_uri:
+            # Relative path - combine with origin_uri
+            resolved_uri = urljoin(origin_uri, file_uri)
+            logger.debug(
+                "asset_url_resolved",
+                extra={
+                    "file_uri": file_uri,
+                    "origin_uri": origin_uri,
+                    "resolved_uri": resolved_uri,
+                },
+            )
+
+        parsed = urlparse(resolved_uri)
+        scheme = parsed.scheme.lower() if parsed.scheme else ""
+
+        # Check if this is an HTTP/HTTPS URL that we should download
+        is_http = scheme in {"http", "https"}
+
+        if is_http:
+            # Download remote content
+            try:
+                headers = {
+                    "User-Agent": getattr(
+                        settings, "CRAWLER_HTTP_USER_AGENT", "noesis-crawler/1.0"
+                    )
+                }
+                response = requests.get(resolved_uri, headers=headers, timeout=30.0)
+                if response.status_code < 400:
+                    payload = response.content
+                    logger.info(
+                        "asset_downloaded",
+                        extra={"uri": resolved_uri, "size_bytes": len(payload)},
+                    )
+                else:
+                    logger.warning(
+                        "asset_download_failed",
+                        extra={
+                            "uri": resolved_uri,
+                            "status_code": response.status_code,
+                        },
+                    )
+            except RequestException as exc:
+                logger.warning(
+                    "asset_download_error",
+                    extra={"uri": resolved_uri, "error": str(exc)},
+                )
+                payload = None
+        else:
+            # Try to resolve from local storage (object store or file path)
             try:
                 payload = self._storage.get(file_uri)
             except (KeyError, ValueError, FileNotFoundError):
-                # Treating as external/unreachable reference
+                # Not found in storage, treat as external reference
                 payload = None
 
         if payload is not None:
-            # File exists, compute content hash
+            # We have content - store it in object store and return proper FileBlob
             checksum = sha256_bytes(payload)
+            uri, storage_checksum, size = self._storage.put(payload)
+
             perceptual_hash_value = (
                 perceptual_hash(payload) if is_image_mediatype(media_type) else None
             )
             payload_dict = {
                 "type": "file",
-                "uri": file_uri,
-                "sha256": checksum,
-                "size": len(payload),
+                "uri": uri,
+                "sha256": storage_checksum,
+                "size": size,
             }
         else:
-            # External URI, hash the URI itself
+            # External URI that we couldn't download - store reference only
             checksum = sha256_text(file_uri)
             perceptual_hash_value = None
-            from urllib.parse import urlparse
-
-            parsed = urlparse(file_uri)
-            scheme = parsed.scheme.lower()
             kind = scheme if scheme in {"http", "https", "s3", "gcs"} else "http"
 
             payload_dict = {
@@ -229,6 +285,10 @@ class BlobStorageAdapter:
                 "kind": kind,
                 "uri": file_uri,
             }
+            logger.info(
+                "asset_stored_as_external",
+                extra={"uri": file_uri, "kind": kind},
+            )
 
         return BlobDescriptor(
             checksum=checksum,
@@ -325,7 +385,7 @@ class AssetIngestionPipeline:
         caption_result = self._caption_resolver.resolve(asset_meta.raw_metadata)
 
         # 3. Store blob & compute checksums
-        blob_desc = self._store_blob(asset_payload)
+        blob_desc = self._store_blob(asset_payload, origin_uri=asset_meta.origin_uri)
 
         # 4. Generate deterministic asset ID
         asset_id = uuid5(
@@ -435,11 +495,14 @@ class AssetIngestionPipeline:
             raw_metadata=metadata_payload,
         )
 
-    def _store_blob(self, asset_payload: AssetIngestPayload) -> BlobDescriptor:
+    def _store_blob(
+        self, asset_payload: AssetIngestPayload, *, origin_uri: Optional[str] = None
+    ) -> BlobDescriptor:
         """Store blob content or reference.
 
         Args:
             asset_payload: Asset ingest payload
+            origin_uri: Origin URL for resolving relative file_uri paths
 
         Returns:
             BlobDescriptor with checksum and payload metadata
@@ -454,7 +517,7 @@ class AssetIngestionPipeline:
         elif asset_payload.file_uri is not None:
             # File URI reference
             return self._blob_adapter.store_file_uri(
-                asset_payload.file_uri, asset_payload.media_type
+                asset_payload.file_uri, asset_payload.media_type, origin_uri=origin_uri
             )
         else:
             raise ValueError("asset_ingest_location")

@@ -818,7 +818,8 @@ def test_asset_add_ocr_only_warns_without_ocr_text(capsys):
     assert result["warning"] == "ocr_text_missing_for_ocr_only"
 
 
-def test_asset_add_rejects_parameterized_media_type(capsys):
+def test_asset_add_strips_parameterized_media_type(capsys):
+    """Parameterized media types are stripped to base type/subtype."""
     context = _context()
     payload = _encode(b"document")
 
@@ -863,8 +864,10 @@ def test_asset_add_rejects_parameterized_media_type(capsys):
         context,
         capsys,
     )
-    assert code == 1
-    assert "media_type_invalid" in json.loads(out)["error"]
+    # Now succeeds with media type stripped to base type
+    assert code == 0
+    asset = json.loads(out)
+    assert asset["media_type"] == "text/html"
 
 
 def test_schema_print_command(capsys):

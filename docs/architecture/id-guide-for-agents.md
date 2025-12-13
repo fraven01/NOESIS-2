@@ -109,3 +109,32 @@ meta = {
 - **ID Definitions:** `ai_core/contracts/scope.py`
 - **Normalization Logic:** `ai_core/ids/http_scope.py`
 - **Tool Contract:** `ai_core/tool_contracts/base.py`
+
+### 5. Entity IDs & Idempotency (Collection/Document)
+
+When handling database entities like **Document Collections**, we must distinguish between the **UUID** and the **Logical Key**.
+
+- **UUID (`collection_id`):** The technical primary identifier (usually from the client/UI).
+- **Logical Key (`key`):** The human-readable or source-derived identifier (e.g., "fiscal-2024").
+
+#### The "Lookup-Before-Create" Pattern
+
+Workers must be idempotent. A common error is strictly using a provided UUID as the *key* for creation, which fails if the logical entity already exists with a different key.
+
+**Correct Pattern:**
+
+1. Check if the entity exists by **UUID**.
+2. If yes, use its **existing Key** for any `ensure_collection` or update calls.
+3. If no, use the UUID (or provided Key) to create it.
+
+```python
+# Bad: Blindly using UUID as Key
+service.ensure_collection(key=str(uuid), collection_id=uuid, ...)
+
+# Good: Resolve existing Key first
+existing = Collection.objects.filter(collection_id=uuid).first()
+key_to_use = existing.key if existing else str(uuid)
+service.ensure_collection(key=key_to_use, collection_id=uuid, ...)
+```
+
+This prevents `IntegrityError` (UniqueConstraint violations) when retrying tasks or re-crawling.

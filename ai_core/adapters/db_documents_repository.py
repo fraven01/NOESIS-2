@@ -247,34 +247,64 @@ class DbDocumentsRepository(DocumentsRepository):
         )
 
     def _materialize_document_safe(self, doc: NormalizedDocument) -> NormalizedDocument:
-        """Return a new NormalizedDocument with materialized blobs, handling immutability."""
+        """Return a new NormalizedDocument with materialized blobs, handling immutability.
+
+        Converts transient blob types (InlineBlob, LocalFileBlob) to permanent FileBlob
+        stored in object storage.
+        """
+        from pathlib import Path
+        from documents.contracts import LocalFileBlob
+        from common.assets.hashing import sha256_bytes
+
         print(f"MATERIALIZE_DEBUG: Called with blob type: {type(doc.blob).__name__}")
 
-        if not isinstance(doc.blob, InlineBlob):
-            print("MATERIALIZE_DEBUG: Blob is not InlineBlob, returning unchanged")
-            return doc  # No change needed
+        if isinstance(doc.blob, InlineBlob):
+            print("MATERIALIZE_DEBUG: Converting InlineBlob to FileBlob")
+            data = base64.b64decode(doc.blob.base64)
+            uri, _, _ = self._storage.put(data)
+            print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
 
-        # Prepare new blob
-        print("MATERIALIZE_DEBUG: Converting InlineBlob to FileBlob")
-        data = base64.b64decode(doc.blob.base64)
-        uri, _, _ = self._storage.put(data)
-        print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
+            new_blob = FileBlob(
+                type="file",
+                uri=uri,
+                sha256=doc.blob.sha256,
+                size=doc.blob.size,
+            )
+            print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
+            result = doc.model_copy(update={"blob": new_blob}, deep=True)
+            print(
+                f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
+            )
+            return result
 
-        new_blob = FileBlob(
-            type="file",
-            uri=uri,
-            sha256=doc.blob.sha256,
-            size=doc.blob.size,
-        )
+        if isinstance(doc.blob, LocalFileBlob):
+            print("MATERIALIZE_DEBUG: Converting LocalFileBlob to FileBlob")
+            local_path = Path(doc.blob.path)
+            if not local_path.exists():
+                raise ValueError(f"local_blob_missing: {doc.blob.path}")
 
-        print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
+            data = local_path.read_bytes()
+            checksum = sha256_bytes(data)
+            uri, _, _ = self._storage.put(data)
+            print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
 
-        # Pydantic v2 copy with update
-        result = doc.model_copy(update={"blob": new_blob}, deep=True)
+            new_blob = FileBlob(
+                type="file",
+                uri=uri,
+                sha256=checksum,
+                size=len(data),
+            )
+            print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
+            result = doc.model_copy(update={"blob": new_blob}, deep=True)
+            print(
+                f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
+            )
+            return result
+
         print(
-            f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
+            "MATERIALIZE_DEBUG: Blob is not InlineBlob or LocalFileBlob, returning unchanged"
         )
-        return result
+        return doc  # No change needed
 
     def _update_document_instance(self, document, doc_copy, metadata):
         document.metadata = metadata
@@ -372,13 +402,16 @@ class DbDocumentsRepository(DocumentsRepository):
             )
 
             # Attach persisted assets to mirror in-memory behaviour.
+            # Only override if we find assets in the DB; otherwise keep the ones from metadata.
             try:
-                assets = []
+                db_assets = []
                 for asset_row in document.assets.all():
                     asset = self._build_asset_from_model(asset_row)
                     if asset:
-                        assets.append(asset)
-                normalized.assets = assets
+                        db_assets.append(asset)
+                # Only override if DB has assets; metadata may already have them serialized
+                if db_assets:
+                    normalized.assets = db_assets
             except Exception:
                 logger.warning(
                     "document_asset_attach_failed",

@@ -489,9 +489,65 @@ class DocumentSpaceService:
                 "pipeline_config": doc.meta.pipeline_config or {},
                 "parse_stats": doc.meta.parse_stats or {},
             },
+            "assets": self._serialize_assets(doc),
         }
         payload["search_blob"] = self._build_search_blob(payload)
         return payload
+
+    def _serialize_assets(self, doc) -> list[dict[str, object]]:
+        """Serialize document assets for template display."""
+        assets = getattr(doc, "assets", None) or []
+        serialized = []
+        for asset in assets:
+            asset_ref = getattr(asset, "ref", None)
+            if not asset_ref:
+                continue
+
+            asset_id = getattr(asset_ref, "asset_id", None)
+            document_id = getattr(asset_ref, "document_id", None)
+            if not asset_id or not document_id:
+                continue
+
+            blob = getattr(asset, "blob", None)
+            blob_info = {}
+            if blob:
+                if isinstance(blob, dict):
+                    blob_info = {
+                        "type": blob.get("type", ""),
+                        "size": blob.get("size", 0),
+                        "uri": blob.get("uri", ""),
+                    }
+                else:
+                    blob_info = {
+                        "type": getattr(blob, "type", ""),
+                        "size": getattr(blob, "size", 0),
+                        "uri": getattr(blob, "uri", ""),
+                    }
+
+            media_type = getattr(asset, "media_type", "application/octet-stream")
+            is_image = media_type.startswith("image/")
+
+            serialized.append(
+                {
+                    "asset_id": str(asset_id),
+                    "document_id": str(document_id),
+                    "media_type": media_type,
+                    "is_image": is_image,
+                    "blob": blob_info,
+                    "origin_uri": getattr(asset, "origin_uri", ""),
+                    "text_description": getattr(asset, "text_description", ""),
+                    "caption_source": getattr(asset, "caption_source", ""),
+                    "caption_method": getattr(asset, "caption_method", ""),
+                    "context_before": (getattr(asset, "context_before", "") or "")[
+                        :100
+                    ],
+                    "context_after": (getattr(asset, "context_after", "") or "")[:100],
+                    "serve_url": reverse(
+                        "documents:asset_serve", args=[document_id, asset_id]
+                    ),
+                }
+            )
+        return serialized
 
     def _dict_items(self, mapping: Mapping[str, object] | None) -> list[dict[str, str]]:
         if not isinstance(mapping, Mapping):

@@ -64,6 +64,12 @@ def _extract_candidate(obj: Any, key: str) -> Optional[str]:
 def _extract_media_type(document: Any) -> Optional[str]:
     media_type = _extract_candidate(document, "media_type")
     if not media_type:
+        # Check metadata pipeline_config for explicit override
+        if hasattr(document, "meta") and hasattr(document.meta, "pipeline_config"):
+            cfg = document.meta.pipeline_config
+            if cfg and isinstance(cfg, Mapping):
+                media_type = cfg.get("media_type")
+    if not media_type:
         return None
     try:
         return normalize_media_type(media_type)
@@ -534,9 +540,24 @@ class HtmlDocumentParser(DocumentParser):
         return False
 
     def parse(self, document: Any, config: Any) -> ParsedResult:
-        blob = _extract_blob(document)
-        payload = _decode_blob_payload(blob)
-        text = _decode_text(payload).lstrip("\ufeff")
+        from documents.contracts import LocalFileBlob
+
+        text = ""
+        blob = getattr(document, "blob", None)
+
+        # Prefer local file path if available (Download Middleware Pattern)
+        if isinstance(blob, LocalFileBlob):
+            try:
+                with open(blob.path, "r", encoding="utf-8", errors="replace") as f:
+                    text = f.read()
+            except Exception as exc:
+                raise ValueError(f"html_parse_failed_file_read: {exc}") from exc
+        else:
+            # Fallback to blob extraction/decoding
+            blob = _extract_blob(document)
+            payload = _decode_blob_payload(blob)
+            text = _decode_text(payload).lstrip("\ufeff")
+
         try:
             tree = html.fromstring(text)
         except (ParserError, TypeError) as exc:

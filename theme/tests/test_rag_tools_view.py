@@ -1,9 +1,8 @@
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from django.core.cache import cache
-from django.http import JsonResponse
 from django.test import RequestFactory
 from django.urls import reverse
 from django_tenants.utils import get_public_schema_name, schema_context
@@ -85,33 +84,28 @@ def test_rag_tools_rejects_spoofed_headers():
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_graph")
-def test_web_search_uses_external_knowledge_graph(mock_build_graph):
+@patch("theme.views.external_knowledge_graph_workflow")
+def test_web_search_uses_external_knowledge_graph(mock_graph_workflow):
     """Test that web_search view uses ExternalKnowledgeGraph orchestration.
 
-        The view only performs search phase; ingestion is handled separately.
-    x"""
+    The view only performs search phase; ingestion is handled separately.
+    """
     tenant_schema = "test"
 
     # Mock graph
-    mock_graph = MagicMock()
-    mock_graph.run.return_value = (
-        {
-            "search": {
-                "results": [
-                    {
-                        "url": "https://example.com",
-                        "title": "Test",
-                        "snippet": "Test snippet",
-                    }
-                ]
-            },
-            "selection": {"selected": [], "shortlisted": []},
-            "ingestion": {},
-        },
-        {"outcome": "completed", "telemetry": {}},
-    )
-    mock_build_graph.return_value = mock_graph
+    mock_graph_workflow.invoke.return_value = {
+        "search_results": [
+            {
+                "url": "https://example.com",
+                "title": "Test",
+                "snippet": "Test snippet",
+            }
+        ],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+        "auto_ingest": False,
+    }
 
     tenant = TenantFactory(schema_name=tenant_schema)
 
@@ -131,43 +125,35 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     assert "results" in response_data
     assert "trace_id" in response_data
 
-    # Verify that build_graph was called
-    mock_build_graph.assert_called_once()
-
-    # Verify that graph.run was called with correct parameters
-    mock_graph.run.assert_called_once()
-    call_args = mock_graph.run.call_args
-    assert call_args[1]["state"]["query"] == "test query"
-    # Always runs until after_search for manual testing
-    assert call_args[1]["state"]["run_until"] == "after_search"
-    assert call_args[1]["state"]["collection_id"] == "test-collection"
+    # Verify that graph.invoke was called with correct parameters
+    mock_graph_workflow.invoke.assert_called_once()
+    call_args = mock_graph_workflow.invoke.call_args
+    state = call_args[0][0]
+    assert state["query"] == "test query"
+    assert state["collection_id"] == "test-collection"
+    assert state["auto_ingest"] is False
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_graph")
-def test_web_search_htmx_returns_partial(mock_build_graph):
+@patch("theme.views.external_knowledge_graph_workflow")
+def test_web_search_htmx_returns_partial(mock_graph_workflow):
     """Test that web_search returns HTML partial for HTMX requests."""
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph = MagicMock()
-    mock_graph.run.return_value = (
-        {
-            "search": {
-                "results": [
-                    {
-                        "url": "https://example.com",
-                        "title": "HTMX Result",
-                        "snippet": "Snippet",
-                    }
-                ]
-            },
-            "selection": {"selected": [], "shortlisted": []},
-            "ingestion": {},
-        },
-        {"outcome": "completed", "telemetry": {}},
-    )
-    mock_build_graph.return_value = mock_graph
+    mock_graph_workflow.invoke.return_value = {
+        "search_results": [
+            {
+                "url": "https://example.com",
+                "title": "HTMX Result",
+                "snippet": "Snippet",
+            }
+        ],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+        "auto_ingest": False,
+    }
 
     factory = RequestFactory()
     # Simulate HTMX request with form-encoded data (default for hx-post)
@@ -189,18 +175,19 @@ def test_web_search_htmx_returns_partial(mock_build_graph):
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_graph")
-def test_web_search_defaults_to_manual_collection(mock_build_graph):
+@patch("theme.views.external_knowledge_graph_workflow")
+def test_web_search_defaults_to_manual_collection(mock_graph_workflow):
     tenant_schema = "fallback"
     tenant = TenantFactory(schema_name=tenant_schema)
     tenant_id = tenant.schema_name
 
-    mock_graph = MagicMock()
-    mock_graph.run.return_value = (
-        {"search": {"results": []}, "selection": {"selected": [], "shortlisted": []}},
-        {"outcome": "completed", "telemetry": {}},
-    )
-    mock_build_graph.return_value = mock_graph
+    mock_graph_workflow.invoke.return_value = {
+        "search_results": [],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+        "auto_ingest": False,
+    }
 
     factory = RequestFactory()
     request = factory.post(
@@ -213,25 +200,35 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
     response = web_search(request)
 
     assert response.status_code == 200
-    mock_graph.run.assert_called_once()
+    mock_graph_workflow.invoke.assert_called_once()
     manual_id = str(manual_collection_uuid(tenant_id))
-    call_args = mock_graph.run.call_args
-    assert call_args[1]["state"]["collection_id"] == manual_id
+    call_args = mock_graph_workflow.invoke.call_args
+    state = call_args[0][0]
+    # Expect "default" as per view logic which preserves user intent or falls back to default logic
+    # But view says: collection_id = resolved_collection_id or manual_collection_id or "default"
+    # Wait, if I send blank/none, it gets manual_collection_id.
+    # The view code I saw earlier:
+    # manual_collection_id, resolved_collection_id = _resolve_manual_collection(tenant_id, data.get("collection_id"))
+    # collection_id = resolved_collection_id or manual_collection_id or "default"
+    # If data.get("collection_id") is None, resolved is None. manual_collection_id should be returned by _resolve_manual_collection if tenant exists.
+    # So expectation should be manual_id.
+    assert state["collection_id"] == manual_id
 
 
 @pytest.mark.django_db
 @patch("documents.collection_service.CollectionService.ensure_manual_collection")
-@patch("theme.views.crawl_selected")
+@patch("crawler.manager.CrawlerManager.dispatch_crawl_request")
 def test_web_search_ingest_selected_defaults_to_manual_collection(
-    mock_crawl_selected, mock_ensure
+    mock_dispatch, mock_ensure
 ):
     tenant_schema = "auto"
     tenant = TenantFactory(schema_name=tenant_schema)
     tenant_id = tenant.schema_name
 
-    mock_ensure.return_value = "manual-uuid"
-
-    mock_crawl_selected.return_value = JsonResponse({"task_ids": []})
+    # Must be a valid UUID for CrawlerRunRequest validation
+    manual_uuid = "11111111-1111-1111-1111-111111111111"
+    mock_ensure.return_value = manual_uuid
+    mock_dispatch.return_value = {"count": 1, "tasks": []}
 
     factory = RequestFactory()
     request = factory.post(
@@ -244,20 +241,19 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
     response = web_search_ingest_selected(request)
 
     assert response.status_code == 200
-    assert mock_crawl_selected.call_count == 1
-    forward_request = mock_crawl_selected.call_args.args[0]
-    forwarded_payload = json.loads(forward_request.body.decode())
-    assert forwarded_payload["collection_id"] == "manual-uuid"
+    assert mock_dispatch.call_count == 1
+    call_args = mock_dispatch.call_args
+    request_model = call_args.args[0]
+    assert request_model.collection_id == manual_uuid
     mock_ensure.assert_called_once_with(tenant_id)
-    assert forward_request.META["HTTP_X_TENANT_SCHEMA"] == tenant_schema
 
 
 @pytest.mark.django_db
 @patch("theme.views.llm_routing.resolve")
 @patch("theme.views.submit_worker_task")
-@patch("theme.views.build_graph")
+@patch("theme.views.external_knowledge_graph_workflow")
 def test_web_search_rerank_applies_scores(
-    mock_build_graph, mock_submit_task, mock_resolve, settings
+    mock_graph_workflow, mock_submit_task, mock_resolve, settings
 ):
     settings.RERANK_MODEL_PRESET = "meta/llama-3.1-70b-instruct"
 
@@ -272,35 +268,30 @@ def test_web_search_rerank_applies_scores(
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph = MagicMock()
-    mock_graph.run.return_value = (
-        {
-            "search": {
-                "results": [
-                    {
-                        "document_id": "doc-a",
-                        "title": "Alpha",
-                        "snippet": "Snippet A",
-                        "source": "crawler",
-                        "url": "https://a.example",
-                        "score": 0.3,
-                    },
-                    {
-                        "document_id": "doc-b",
-                        "title": "Beta",
-                        "snippet": "Snippet B",
-                        "source": "crawler",
-                        "url": "https://b.example",
-                        "score": 0.2,
-                    },
-                ]
+    mock_graph_workflow.invoke.return_value = {
+        "search_results": [
+            {
+                "document_id": "doc-a",
+                "title": "Alpha",
+                "snippet": "Snippet A",
+                "source": "crawler",
+                "url": "https://a.example",
+                "score": 0.3,
             },
-            "selection": {"selected": [], "shortlisted": []},
-            "ingestion": {},
-        },
-        {"outcome": {"meta": {"review_required": False}}},
-    )
-    mock_build_graph.return_value = mock_graph
+            {
+                "document_id": "doc-b",
+                "title": "Beta",
+                "snippet": "Snippet B",
+                "source": "crawler",
+                "url": "https://b.example",
+                "score": 0.2,
+            },
+        ],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+        "auto_ingest": False,
+    }
     mock_submit_task.return_value = (
         {
             "task_id": "task-1",
@@ -337,31 +328,26 @@ def test_web_search_rerank_applies_scores(
 
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
-@patch("theme.views.build_graph")
-def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
+@patch("theme.views.external_knowledge_graph_workflow")
+def test_web_search_rerank_returns_queue_status(mock_graph_workflow, _mock_submit_task):
     cache.clear()
     tenant_schema = "queued"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph = MagicMock()
-    mock_graph.run.return_value = (
-        {
-            "search": {
-                "results": [
-                    {
-                        "document_id": "doc-a",
-                        "title": "Alpha",
-                        "snippet": "Snippet A",
-                        "url": "https://a.example",
-                    }
-                ]
-            },
-            "selection": {"selected": [], "shortlisted": []},
-            "ingestion": {},
-        },
-        {"outcome": {"meta": {"review_required": False}}},
-    )
-    mock_build_graph.return_value = mock_graph
+    mock_graph_workflow.invoke.return_value = {
+        "search_results": [
+            {
+                "document_id": "doc-a",
+                "title": "Alpha",
+                "snippet": "Snippet A",
+                "url": "https://a.example",
+            }
+        ],
+        "selected_result": None,
+        "ingestion_result": None,
+        "error": None,
+        "auto_ingest": False,
+    }
 
     factory = RequestFactory()
     request = factory.post(
@@ -382,31 +368,31 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
 @pytest.mark.django_db
 @patch(
     "documents.collection_service.CollectionService.ensure_manual_collection",
-    return_value="manual-uuid",
+    return_value="22222222-2222-2222-2222-222222222222",
 )
-@patch("theme.views.crawl_selected")
-def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
-    """Test that web_search_ingest_selected dispatches crawl_selected for each URL."""
+@patch("crawler.manager.CrawlerManager.dispatch_crawl_request")
+def test_web_search_ingest_selected(mock_dispatch, _mock_ensure):
+    """Test that web_search_ingest_selected dispatches via CrawlerManager."""
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_crawl_selected.return_value = JsonResponse(
-        {
-            "status": "accepted",
-            "task_ids": [
-                {"task_id": "task-1", "origin": {"url": "https://example.com"}},
-                {"task_id": "task-2", "origin": {"url": "https://test.com"}},
-            ],
-        }
-    )
+    mock_dispatch.return_value = {
+        "count": 2,
+        "tasks": [
+            {"task_id": "task-1", "origin": {"url": "https://example.com"}},
+            {"task_id": "task-2", "origin": {"url": "https://test.com"}},
+        ],
+    }
 
     factory = RequestFactory()
+    # Use valid UUID for collection_id
+    test_collection_uuid = "33333333-3333-3333-3333-333333333333"
     request = factory.post(
         reverse("web-search-ingest-selected"),
         data=json.dumps(
             {
                 "urls": ["https://example.com", "https://test.com"],
-                "collection_id": "test-collection",
+                "collection_id": test_collection_uuid,
             }
         ),
         content_type="application/json",
@@ -418,35 +404,32 @@ def test_web_search_ingest_selected(mock_crawl_selected, _mock_ensure):
     assert response.status_code == 200
     response_data = json.loads(response.content)
     assert response_data["status"] == "completed"
-    assert response_data["url_count"] == 2
-    assert "result" in response_data
-    assert mock_crawl_selected.call_count == 1
+    assert mock_dispatch.call_count == 1
 
 
 @pytest.mark.django_db
 @patch(
     "documents.collection_service.CollectionService.ensure_manual_collection",
-    return_value="manual-uuid",
+    return_value="44444444-4444-4444-4444-444444444444",
 )
-@patch("theme.views.crawl_selected")
+@patch("crawler.manager.CrawlerManager.dispatch_crawl_request")
 def test_web_search_ingest_selected_passes_correct_params_to_crawler(
-    mock_crawl_selected,
+    mock_dispatch,
     _mock_ensure,
 ):
-    """Ensure crawler view receives the expected payload and headers.
+    """Ensure CrawlerManager receives the expected request model.
 
     This test validates that:
-    1. collection_id from the request payload is passed through to crawler_runner
-    2. tenant_id is correctly propagated via HTTP headers
-    3. workflow_id is set to "web-search-ingestion"
-    4. case_id is passed through via HTTP headers
-    5. The crawler_runner API receives properly formatted payload
+    1. collection_id from the request payload is passed through to CrawlerManager
+    2. workflow_id is set to "web-search-ingestion"
+    3. origins list is properly constructed from URLs
     """
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
-    tenant_id = tenant.schema_name
 
-    mock_crawl_selected.return_value = JsonResponse({"task_ids": []})
+    mock_dispatch.return_value = {"count": 1, "tasks": []}
+
+    test_collection_uuid = "55555555-5555-5555-5555-555555555555"
 
     factory = RequestFactory()
     request = factory.post(
@@ -454,7 +437,7 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
         data=json.dumps(
             {
                 "urls": ["https://example.com"],
-                "collection_id": "test-collection",
+                "collection_id": test_collection_uuid,
                 "case_id": "TEST-CASE",
             }
         ),
@@ -467,23 +450,16 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     assert response.status_code == 200
     response_data = json.loads(response.content)
     assert response_data["status"] == "completed"
-    assert response_data["url_count"] == 1
-    assert mock_crawl_selected.call_count == 1
+    assert mock_dispatch.call_count == 1
 
-    # Verify the payload and headers passed to crawler_runner API
-    call_request = mock_crawl_selected.call_args.args[0]
-    payload = json.loads(call_request.body.decode())
-    assert payload["workflow_id"] == "web-search-ingestion"
-    assert payload["mode"] == "live"
-    assert payload["collection_id"] == "test-collection"
-    assert len(payload["urls"]) == 1
-    assert payload["urls"][0] == "https://example.com"
-
-    headers = call_request.META
-    assert headers["HTTP_X_TENANT_ID"] == tenant_id
-    assert headers["HTTP_X_TENANT_SCHEMA"] == tenant_schema
-    assert headers["HTTP_X_CASE_ID"] == "TEST-CASE"
-    assert "HTTP_X_TRACE_ID" in headers
+    # Verify the request model passed to CrawlerManager
+    call_args = mock_dispatch.call_args
+    request_model = call_args.args[0]
+    assert request_model.workflow_id == "web-search-ingestion"
+    assert request_model.mode == "live"
+    assert request_model.collection_id == test_collection_uuid
+    assert len(request_model.origins) == 1
+    assert request_model.origins[0].url == "https://example.com"
 
 
 @pytest.mark.django_db

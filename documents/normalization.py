@@ -161,13 +161,18 @@ def document_payload_bytes(
         # FileBlob - storage required
         payload = document_payload_bytes(doc_with_file, storage=storage_service)
     """
-    from documents.contracts import InlineBlob, FileBlob, ExternalBlob
+    from documents.contracts import InlineBlob, FileBlob, ExternalBlob, LocalFileBlob
 
     blob = document.blob
 
     # InlineBlob: payload embedded in base64
     if isinstance(blob, InlineBlob):
         return blob.decoded_payload()
+
+    # LocalFileBlob: payload in local filesystem
+    elif isinstance(blob, LocalFileBlob):
+        with open(blob.path, "rb") as f:
+            return f.read()
 
     # FileBlob: payload in object storage
     elif isinstance(blob, FileBlob):
@@ -193,7 +198,7 @@ def document_payload_bytes(
     else:
         raise ValueError(
             f"unsupported_blob_type: {type(blob).__name__} "
-            f"(expected InlineBlob, FileBlob, or ExternalBlob)"
+            f"(expected InlineBlob, LocalFileBlob, FileBlob, or ExternalBlob)"
         )
 
 

@@ -46,12 +46,6 @@ from .logging_utils import (
     log_extra_exit,
 )
 from .parsers import ParsedResult, ParsedTextBlock, ParserDispatcher, ParserRegistry
-from .parsers_docx import DocxDocumentParser
-from .parsers_html import HtmlDocumentParser
-from .parsers_image import ImageDocumentParser
-from .parsers_markdown import MarkdownDocumentParser
-from .parsers_pdf import PdfDocumentParser
-from .parsers_pptx import PptxDocumentParser
 from .pipeline import (
     DocumentChunker,
     DocumentPipelineConfig,
@@ -81,17 +75,16 @@ class CLIContext:
 def _default_context() -> CLIContext:
     storage = ObjectStoreStorage()
     repository = InMemoryDocumentsRepository(storage=storage)
-    registry = ParserRegistry(
-        [
-            MarkdownDocumentParser(),
-            HtmlDocumentParser(),
-            DocxDocumentParser(),
-            PptxDocumentParser(),
-            PdfDocumentParser(),
-            ImageDocumentParser(),
-        ]
+
+    # Use shared factory for parser registry
+    from documents.parsers import (
+        create_default_parser_registry,
+        create_default_parser_dispatcher,
     )
-    dispatcher = ParserDispatcher(registry)
+
+    registry = create_default_parser_registry()
+    dispatcher = create_default_parser_dispatcher()
+
     captioner = DeterministicCaptioner()
     chunker = SimpleDocumentChunker()
     config = DocumentPipelineConfig()

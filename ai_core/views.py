@@ -5,8 +5,6 @@ import json
 import re
 import uuid
 from collections.abc import Mapping
-from dataclasses import asdict, is_dataclass
-from datetime import datetime
 from typing import TYPE_CHECKING
 from pathlib import Path
 from types import ModuleType
@@ -17,10 +15,9 @@ from django.conf import settings
 from django.db import OperationalError, ProgrammingError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
-from django.http import HttpRequest, JsonResponse
+from django.http import HttpRequest
 from .schemas import CrawlerRunRequest, RagHardDeleteAdminRequest
 from django.views.decorators.http import require_POST
-from pydantic import BaseModel
 from ai_core.graph.core import FileCheckpointer
 
 from common.constants import (
@@ -1460,14 +1457,14 @@ def _normalise_rag_response(payload: Mapping[str, object]) -> dict[str, object]:
 
 @require_POST
 def crawl_selected(request):
-    """Handle crawl selected requests from the RAG tools page.
+    """Handle crawl selected requests from the RAG tools page (HTMX).
 
-    Directly invokes the crawler runner service to avoid view dispatch issues.
+    Acts as the L2 Proxy/Adapter to the L3 CrawlerManager.
     """
     try:
-        print("DEBUG: crawl_selected CALLED")
         # Wrap request to use shared preparation logic
         from rest_framework.request import Request as DRFRequest
+        from django.http import HttpResponse
 
         # DRF Request requires parsers/authenticators to be set if we want full functionality,
         # but _prepare_request only uses headers/META/user/auth which proxies to underlying request.
@@ -1475,12 +1472,16 @@ def crawl_selected(request):
 
         meta, error = _prepare_request(drf_request)
         if error:
-            return JsonResponse(error.data, status=error.status_code)
+            # For HTMX, ideally we return a 4xx HTML fragment, but simplistic text is fine for now
+            return HttpResponse(
+                f"Error: {error.data.get('detail', 'Unknown error')}",
+                status=error.status_code,
+            )
 
         try:
             data = json.loads(request.body)
         except json.JSONDecodeError:
-            return JsonResponse({"error": "Invalid JSON"}, status=400)
+            return HttpResponse("Invalid JSON body", status=400)
 
         urls = data.get("urls")
         collection_id = data.get("collection_id", "crawler-demo")
@@ -1488,7 +1489,7 @@ def crawl_selected(request):
         workflow_id = data.get("workflow_id", "crawler-demo")
 
         if not urls:
-            return JsonResponse({"error": "URLs are required"}, status=400)
+            return HttpResponse("No URLs provided", status=400)
 
         crawler_payload = {
             "workflow_id": workflow_id,
@@ -1500,74 +1501,36 @@ def crawl_selected(request):
         try:
             request_model = CrawlerRunRequest.model_validate(crawler_payload)
         except ValidationError as exc:
-            return JsonResponse(
-                {"error": "Invalid request", "details": exc.errors()}, status=400
-            )
+            return HttpResponse(f"Validation Error: {exc}", status=400)
 
-        lifecycle_store = _resolve_lifecycle_store()
+        # L2 -> L3 Dispatch
+        from crawler.manager import CrawlerManager
 
-        graph_builder = None
-        if crawler_ingestion_graph is not _DEFAULT_CRAWLER_GRAPH_MODULE:
-            graph_builder = getattr(crawler_ingestion_graph, "build_graph", None)
+        manager = CrawlerManager()
 
         try:
-            result = run_crawler_runner(
-                meta=meta,
-                request_model=request_model,
-                lifecycle_store=lifecycle_store,
-                graph_factory=graph_builder,
-            )
-        except CrawlerRunError as exc:
-            payload = {"detail": str(exc), "code": exc.code}
-            payload.update(exc.details)
-            return JsonResponse(payload, status=exc.status_code)
-        except ValueError as exc:
-            return JsonResponse({"error": str(exc)}, status=400)
-
-        try:
-
-            def _recursive_serialize(obj):
-                if isinstance(obj, dict):
-                    return {k: _recursive_serialize(v) for k, v in obj.items()}
-                if isinstance(obj, (list, tuple)):
-                    return [_recursive_serialize(v) for v in obj]
-                if hasattr(obj, "__dataclass_fields__"):
-                    return _recursive_serialize(asdict(obj))
-                if is_dataclass(obj) and not isinstance(obj, type):
-                    return _recursive_serialize(asdict(obj))
-                if isinstance(obj, BaseModel):
-                    return _recursive_serialize(obj.model_dump(mode="json"))
-                if isinstance(obj, uuid.UUID):
-                    return str(obj)
-                if isinstance(obj, datetime):
-                    return obj.isoformat()
-
-                if "ParsedResult" in str(type(obj)):
-                    return {
-                        "text_blocks": _recursive_serialize(
-                            getattr(obj, "text_blocks", [])
-                        ),
-                        "assets": _recursive_serialize(getattr(obj, "assets", [])),
-                        "statistics": _recursive_serialize(
-                            getattr(obj, "statistics", {})
-                        ),
-                    }
-
-                return obj
-
-            sanitized_payload = _recursive_serialize(result.payload)
-            return JsonResponse(sanitized_payload, status=result.status_code)
+            result = manager.dispatch_crawl_request(request_model, meta)
         except Exception as exc:
-            # Raise a new exception with the payload details so it appears in the traceback
-            raise ValueError(f"Payload serialization failed: {exc}") from exc
+            logger.exception("crawl_dispatch_failed")
+            return HttpResponse(f"Dispatch Error: {str(exc)}", status=500)
+
+        # Return HTML status for HTMX
+        count = result.get("count", 0)
+
+        # Simple HTML feedback
+        html_response = f"""
+        <div class="p-4 mb-4 text-sm text-green-800 rounded-lg bg-green-50 dark:bg-gray-800 dark:text-green-400" role="alert">
+          <span class="font-medium">Success!</span> Queued {count} URL(s) for ingestion.
+          <ul class="mt-1.5 list-disc list-inside">
+             {"".join(f"<li>{task['url']}</li>" for task in result.get("tasks", []))}
+          </ul>
+        </div>
+        """
+        return HttpResponse(html_response)
 
     except Exception as e:
-        import traceback
-
-        logger.error(f"crawl_selected traceback: {traceback.format_exc()}")
-        logger.error(f"crawl_selected exception: {repr(e)}", exc_info=True)
-        print(f"DEBUG: crawl_selected exception REPR: {repr(e)}")
-        return JsonResponse({"error": str(e)}, status=500)
+        logger.exception("crawl_selected unhandled exception")
+        return HttpResponse(f"Internal Error: {str(e)}", status=500)
 
 
 class RagQueryViewV1(_GraphView):

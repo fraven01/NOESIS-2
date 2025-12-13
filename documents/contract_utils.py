@@ -137,13 +137,16 @@ def is_bcp47_like(value: str) -> bool:
 def normalize_media_type(value: str) -> str:
     """Normalize media types to lowercase ``type/subtype`` strings without parameters.
 
-    Parameterized values such as ``text/html; charset=utf-8`` are rejected.
+    Parameterized values such as ``text/html; charset=utf-8`` are stripped to their base type.
     """
 
     normalized = normalize_string(value)
     if not normalized:
         raise ValueError("media_type_empty")
-    candidate = normalized.lower()
+
+    # Strip parameters (e.g. ; charset=utf-8) to ensure we have a clean type/subtype
+    candidate = normalized.split(";", 1)[0].strip().lower()
+
     if not _MEDIA_TYPE_RE.fullmatch(candidate):
         raise ValueError("media_type_invalid")
     return candidate

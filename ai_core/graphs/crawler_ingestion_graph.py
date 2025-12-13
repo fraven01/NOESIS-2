@@ -44,16 +44,8 @@ from documents.processing_graph import (
     build_document_processing_graph,
 )
 from documents.repository import DocumentsRepository
-from documents.parsers import ParsedResult, ParserDispatcher, ParserRegistry
+from documents.parsers import ParsedResult, ParserDispatcher
 from documents.cli import SimpleDocumentChunker
-from documents import (
-    DocxDocumentParser,
-    HtmlDocumentParser,
-    MarkdownDocumentParser,
-    PdfDocumentParser,
-    PptxDocumentParser,
-    TextDocumentParser,
-)
 from .document_service import (
     DocumentLifecycleService,
     DocumentPersistenceService,
@@ -121,17 +113,9 @@ class CrawlerIngestionGraph:
         components = require_document_components()
 
         if parser_dispatcher is None:
-            registry = ParserRegistry(
-                [
-                    MarkdownDocumentParser(),
-                    HtmlDocumentParser(),
-                    DocxDocumentParser(),
-                    PptxDocumentParser(),
-                    PdfDocumentParser(),
-                    TextDocumentParser(),
-                ]
-            )
-            parser_dispatcher = ParserDispatcher(registry)
+            from documents.parsers import create_default_parser_dispatcher
+
+            parser_dispatcher = create_default_parser_dispatcher()
         self._parser_dispatcher = parser_dispatcher
 
         if storage is None and self._repository is not None:
@@ -548,7 +532,11 @@ class CrawlerIngestionGraph:
                     update={"meta": meta_copy}, deep=True
                 )
 
-        payload_bytes = document_payload_bytes(normalized_input)
+                normalized_input = normalized_input.model_copy(
+                    update={"meta": meta_copy}, deep=True
+                )
+
+        payload_bytes = document_payload_bytes(normalized_input, storage=self._storage)
         raw_text = self._decode_payload_text(payload_bytes)
         primary_text = normalized_primary_text(raw_text)
 

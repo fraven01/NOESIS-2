@@ -700,3 +700,47 @@ class ParserDispatcher:
 
 ParserContent.model_rebuild()
 ParseResult.model_rebuild()
+
+
+def create_default_parser_registry() -> ParserRegistry:
+    """Create a parser registry with all standard document parsers.
+
+    This factory eliminates code duplication across crawler, upload, and CLI modules.
+    All parsers are registered in a consistent order optimized for common document types.
+
+    Returns:
+        ParserRegistry: Pre-configured registry with all standard parsers.
+    """
+    # Import parsers here to avoid circular dependencies
+    from documents import (
+        MarkdownDocumentParser,
+        HtmlDocumentParser,
+        DocxDocumentParser,
+        PptxDocumentParser,
+        PdfDocumentParser,
+        TextDocumentParser,
+        ImageDocumentParser,
+    )
+
+    return ParserRegistry(
+        [
+            MarkdownDocumentParser(),
+            HtmlDocumentParser(),
+            DocxDocumentParser(),
+            PptxDocumentParser(),
+            PdfDocumentParser(),
+            TextDocumentParser(),
+            ImageDocumentParser(),
+        ]
+    )
+
+
+def create_default_parser_dispatcher() -> ParserDispatcher:
+    """Create a parser dispatcher with all standard document parsers.
+
+    This is the recommended entry point for document parsing across the application.
+
+    Returns:
+        ParserDispatcher: Pre-configured dispatcher with all standard parsers.
+    """
+    return ParserDispatcher(create_default_parser_registry())

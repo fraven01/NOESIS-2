@@ -23,6 +23,19 @@ Aufbau der übrigen App-Dokumentationen.
   liefert dafür nur noch Fetch-Daten und IDs. `ScopeContext` (mit `ingestion_run_id`)
   stellt sicher, dass alle Spans korrekt korreliert werden.
 
+## Architecture Mapping (4-Layer Standard)
+
+Die Crawler-Implementierung folgt strikt der [4-Layer Firm Architecture](../AGENTS.md#firm-architecture-4-layer-standard):
+
+| Layer | Komponente | Beschreibung |
+|---|---|---|
+| **L1 (Frontend)** | `theme/templates` | HTMX-UI triggert Runs. |
+| **L2 (Business)** | `ai_core.views.crawl_selected` | Adapter, validiert Requests und ruft L3 auf. |
+| **L3 (Technical)** | `CrawlerManager` | Orchestriert Dispatch an Worker. |
+| **L3 (Technical)** | `CrawlerIngestionGraph` | Definiert die Logik des Ingestion-Flows. |
+| **L4 (Worker)** | `crawl_url_task` | Führt `CrawlerWorker` (Fetch) aus. |
+| **L4 (Worker)** | `run_ingestion_graph` | Führt `CrawlerIngestionGraph` (Ingest) aus. |
+
 ## Ingestion-Graph
 
 ```mermaid

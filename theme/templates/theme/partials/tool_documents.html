@@ -49,9 +49,15 @@
                         class="block w-full rounded-md border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500">
                         <option value="">All Collections</option>
                         {% for collection in collections %}
-                        <option value="{{ collection.selector }}" {% if collection.selector == selected_collection_identifier %}selected{% endif %}>
+                        {% if collection.selector == selected_collection_identifier %}
+                        <option value="{{ collection.selector }}" selected>
                             {{ collection.name }} ({{ collection.key }})
                         </option>
+                        {% else %}
+                        <option value="{{ collection.selector }}">
+                            {{ collection.name }} ({{ collection.key }})
+                        </option>
+                        {% endif %}
                         {% endfor %}
                     </select>
                 </div>
@@ -122,7 +128,8 @@
                     <div class="pt-2 border-t border-slate-100">
                         <p class="text-slate-500 mb-1">Case Context</p>
                         <div class="flex items-center gap-2">
-                            <span class="bg-slate-100 px-1.5 py-0.5 rounded font-mono">{{ selected_collection.case.external_id  }}</span>
+                            <span class="bg-slate-100 px-1.5 py-0.5 rounded font-mono">{{
+                                selected_collection.case.external_id }}</span>
                             <span class="truncate">{{ selected_collection.case.title }}</span>
                         </div>
                     </div>
@@ -141,7 +148,8 @@
                         <dl class="space-y-1">
                             {% for entry in summaries.sources %}
                             <div class="flex justify-between text-xs">
-                                <dt class="text-slate-600 truncate max-w-[80px]" title="{{ entry.label }}">{{ entry.label  }}</dt>
+                                <dt class="text-slate-600 truncate max-w-[80px]" title="{{ entry.label }}">{{
+                                    entry.label }}</dt>
                                 <dd class="font-medium text-slate-900">{{ entry.count }}</dd>
                             </div>
                             {% endfor %}
@@ -152,7 +160,8 @@
                         <dl class="space-y-1">
                             {% for entry in summaries.lifecycle %}
                             <div class="flex justify-between text-xs">
-                                <dt class="text-slate-600 truncate max-w-[80px]" title="{{ entry.label }}">{{ entry.label  }}</dt>
+                                <dt class="text-slate-600 truncate max-w-[80px]" title="{{ entry.label }}">{{
+                                    entry.label }}</dt>
                                 <dd class="font-medium text-slate-900">{{ entry.count }}</dd>
                             </div>
                             {% endfor %}
@@ -244,75 +253,229 @@
                         </a>
                     </div>
 
-                    <!-- Technical Metadata Grid -->
-                    <div class="mt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
-                        <!-- Column 1: File Info -->
-                        <div class="space-y-1.5 bg-slate-50 rounded-lg p-3">
-                            <p class="font-medium text-slate-700 mb-2 flex items-center gap-1">
+                    <!-- Technical Metadata Tabs -->
+                    <div class="mt-4" x-data="{ activeTab: 'content' }">
+                        <!-- Tab Navigation -->
+                        <div class="flex border-b border-slate-200 gap-1 mb-3 overflow-x-auto">
+                            <button @click="activeTab = 'content'"
+                                :class="activeTab === 'content' ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'"
+                                class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap rounded-t-md">
                                 <svg class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
                                     <path fill-rule="evenodd"
                                         d="M4 4a2 2 0 012-2h4.586A2 2 0 0112 2.586L15.414 6A2 2 0 0116 7.414V16a2 2 0 01-2 2H6a2 2 0 01-2-2V4z"
                                         clip-rule="evenodd" />
                                 </svg>
-                                File
-                            </p>
-                            <p><span class="text-slate-500">Source:</span> <span class="font-medium text-slate-900">{{ doc.source|default:"Unknown"  }}</span></p>
-                            <p><span class="text-slate-500">Type:</span> <span class="font-mono text-slate-900">{{ doc.blob.media_type|default:"application/octet-stream"  }}</span>
-                            </p>
-                            <p><span class="text-slate-500">Size:</span> <span class="font-medium text-slate-900">{{ doc.blob.size_display  }}</span></p>
-                            {% if doc.blob.sha256 %}
-                            <p class="truncate" title="{{ doc.blob.sha256 }}"><span
-                                    class="text-slate-500">SHA256:</span> <span class="font-mono text-slate-700">{{ doc.blob.sha256|slice:":16"  }}...</span></p>
-                            {% endif %}
-                        </div>
-
-                        <!-- Column 2: Ingestion Info -->
-                        <div class="space-y-1.5 bg-slate-50 rounded-lg p-3">
-                            <p class="font-medium text-slate-700 mb-2 flex items-center gap-1">
+                                Content
+                            </button>
+                            <button @click="activeTab = 'lifecycle'"
+                                :class="activeTab === 'lifecycle' ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'"
+                                class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap rounded-t-md">
                                 <svg class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
                                     <path fill-rule="evenodd"
                                         d="M10 18a8 8 0 100-16 8 8 0 000 16zm1-12a1 1 0 10-2 0v4a1 1 0 00.293.707l2.828 2.829a1 1 0 101.415-1.415L11 9.586V6z"
                                         clip-rule="evenodd" />
                                 </svg>
-                                Pipeline
-                            </p>
-                            <p><span class="text-slate-500">Created:</span> <span class="font-medium text-slate-900">{{ doc.created_at|date:"Y-m-d H:i"  }}</span></p>
-                            {% if doc.meta.parse_stats.text_blocks_extracted %}
-                            <p><span class="text-slate-500">Blocks:</span> <span class="font-medium text-slate-900">{{ doc.meta.parse_stats.text_blocks_extracted  }}</span>
-                            </p>
+                                Lifecycle
+                            </button>
+                            {% if doc.ingestion.trace_id or doc.ingestion.run_id %}
+                            <button @click="activeTab = 'tracing'"
+                                :class="activeTab === 'tracing' ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'"
+                                class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap rounded-t-md">
+                                <svg class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd"
+                                        d="M3 3a1 1 0 000 2v8a2 2 0 002 2h2.586l-1.293 1.293a1 1 0 101.414 1.414L10 15.414l2.293 2.293a1 1 0 001.414-1.414L12.414 15H15a2 2 0 002-2V5a1 1 0 100-2H3z"
+                                        clip-rule="evenodd" />
+                                </svg>
+                                Tracing
+                            </button>
                             {% endif %}
-                            {% if doc.meta.parse_stats.assets_extracted %}
-                            <p><span class="text-slate-500">Assets:</span> <span class="font-medium text-slate-900">{{ doc.meta.parse_stats.assets_extracted  }}</span>
-                            </p>
+                            {% if doc.meta.parse_stats %}
+                            <button @click="activeTab = 'stats'"
+                                :class="activeTab === 'stats' ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'"
+                                class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap rounded-t-md">
+                                <svg class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path
+                                        d="M2 11a1 1 0 011-1h2a1 1 0 011 1v5a1 1 0 01-1 1H3a1 1 0 01-1-1v-5zM8 7a1 1 0 011-1h2a1 1 0 011 1v9a1 1 0 01-1 1H9a1 1 0 01-1-1V7zM14 4a1 1 0 011-1h2a1 1 0 011 1v12a1 1 0 01-1 1h-2a1 1 0 01-1-1V4z" />
+                                </svg>
+                                Stats
+                            </button>
                             {% endif %}
-                            {% if doc.ingestion.trace_id %}
-                            <p class="truncate" title="{{ doc.ingestion.trace_id }}"><span
-                                    class="text-slate-500">Trace:</span> <span class="font-mono text-slate-700">{{ doc.ingestion.trace_id|slice:":12"  }}...</span>
-                            </p>
-                            {% endif %}
-                        </div>
-
-                        <!-- Column 3: External Refs -->
-                        {% if doc.external_ref_items %}
-                        <div class="space-y-1.5 bg-slate-50 rounded-lg p-3">
-                            <p class="font-medium text-slate-700 mb-2 flex items-center gap-1">
+                            {% if doc.external_ref_items %}
+                            <button @click="activeTab = 'external'"
+                                :class="activeTab === 'external' ? 'border-indigo-500 text-indigo-600 bg-indigo-50' : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'"
+                                class="px-3 py-1.5 text-xs font-medium border-b-2 transition-colors flex items-center gap-1 whitespace-nowrap rounded-t-md">
                                 <svg class="h-3.5 w-3.5" fill="currentColor" viewBox="0 0 20 20">
                                     <path fill-rule="evenodd"
                                         d="M12.586 4.586a2 2 0 112.828 2.828l-3 3a2 2 0 01-2.828 0 1 1 0 00-1.414 1.414 4 4 0 005.656 0l3-3a4 4 0 00-5.656-5.656l-1.5 1.5a1 1 0 101.414 1.414l1.5-1.5zm-5 5a2 2 0 012.828 0 1 1 0 101.414-1.414 4 4 0 00-5.656 0l-3 3a4 4 0 105.656 5.656l1.5-1.5a1 1 0 10-1.414-1.414l-1.5 1.5a2 2 0 11-2.828-2.828l3-3z"
                                         clip-rule="evenodd" />
                                 </svg>
                                 External
-                            </p>
-                            {% for item in doc.external_ref_items %}
-                            <p class="truncate"><span class="text-slate-500">{{ item.key }}:</span> <span
-                                    class="font-mono text-slate-700 text-xs" title="{{ item.value }}">{{ item.value|truncatechars:30  }}</span></p>
-                            {% endfor %}
+                            </button>
+                            {% endif %}
                         </div>
-                        {% else %}
-                        <div class="bg-slate-50 rounded-lg p-3 flex items-center justify-center text-slate-400">
-                            <span class="text-xs">No external refs</span>
+
+                        <!-- Tab Panels -->
+                        <div class="bg-slate-50 rounded-lg p-3 text-xs">
+                            <!-- Content Tab -->
+                            <div x-show="activeTab === 'content'" class="space-y-2">
+                                <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                                    <div>
+                                        <span class="text-slate-500">Source</span>
+                                        <p class="font-medium text-slate-900">{{ doc.source|default:"crawler" }}</p>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500">Media Type</span>
+                                        <p class="font-mono text-slate-900">{{ doc.blob.media_type|default:"text/html"
+                                            }}</p>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500">Size</span>
+                                        <p class="font-medium text-slate-900">{{ doc.blob.size_display|default:"—" }}
+                                        </p>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500">Language</span>
+                                        <p class="font-medium text-slate-900">{{ doc.language|default:"—" }}</p>
+                                    </div>
+                                </div>
+                                {% if doc.blob.sha256 %}
+                                <div class="pt-2 border-t border-slate-200">
+                                    <span class="text-slate-500">SHA256</span>
+                                    <p class="font-mono text-slate-700 text-[10px] break-all select-all"
+                                        title="Click to select">{{ doc.blob.sha256 }}</p>
+                                </div>
+                                {% endif %}
+                                {% if doc.checksum %}
+                                <div>
+                                    <span class="text-slate-500">Checksum</span>
+                                    <p class="font-mono text-slate-700 text-[10px] break-all select-all">{{ doc.checksum
+                                        }}</p>
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <!-- Lifecycle Tab -->
+                            <div x-show="activeTab === 'lifecycle'" class="space-y-2">
+                                <div class="grid grid-cols-2 gap-x-4 gap-y-2">
+                                    <div>
+                                        <span class="text-slate-500">State</span>
+                                        <p class="font-medium"><span
+                                                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs {% if doc.lifecycle_state == 'active' %}bg-green-100 text-green-700{% elif doc.lifecycle_state == 'archived' %}bg-amber-100 text-amber-700{% else %}bg-slate-200 text-slate-600{% endif %}">{{
+                                                doc.lifecycle_state }}</span></p>
+                                    </div>
+                                    <div>
+                                        <span class="text-slate-500">Created</span>
+                                        <p class="font-medium text-slate-900">{{ doc.created_at|date:"Y-m-d H:i" }}</p>
+                                    </div>
+                                    {% if doc.ingestion.changed_at %}
+                                    <div>
+                                        <span class="text-slate-500">Changed</span>
+                                        <p class="font-medium text-slate-900">{{ doc.ingestion.changed_at|date:"Y-m-d
+                                            H:i" }}</p>
+                                    </div>
+                                    {% endif %}
+                                    {% if doc.ingestion.reason %}
+                                    <div>
+                                        <span class="text-slate-500">Reason</span>
+                                        <p class="font-medium text-slate-900">{{ doc.ingestion.reason }}</p>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                                <div class="pt-2 border-t border-slate-200">
+                                    <span class="text-slate-500">Document ID</span>
+                                    <p class="font-mono text-slate-700 text-[10px] select-all">{{ doc.document_id }}</p>
+                                </div>
+                                {% if doc.collection_id %}
+                                <div>
+                                    <span class="text-slate-500">Collection ID</span>
+                                    <p class="font-mono text-slate-700 text-[10px] select-all">{{ doc.collection_id }}
+                                    </p>
+                                </div>
+                                {% endif %}
+                                {% if doc.version %}
+                                <div>
+                                    <span class="text-slate-500">Version</span>
+                                    <p class="font-mono text-slate-700">{{ doc.version }}</p>
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <!-- Tracing Tab -->
+                            <div x-show="activeTab === 'tracing'" class="space-y-2">
+                                {% if doc.ingestion.trace_id %}
+                                <div>
+                                    <span class="text-slate-500">Trace ID</span>
+                                    <p class="font-mono text-slate-700 text-[10px] select-all break-all">{{
+                                        doc.ingestion.trace_id }}</p>
+                                </div>
+                                {% endif %}
+                                {% if doc.ingestion.run_id %}
+                                <div>
+                                    <span class="text-slate-500">Run ID</span>
+                                    <p class="font-mono text-slate-700 text-[10px] select-all break-all">{{
+                                        doc.ingestion.run_id }}</p>
+                                </div>
+                                {% endif %}
+                                {% if doc.ingestion.ingestion_run_id %}
+                                <div>
+                                    <span class="text-slate-500">Ingestion Run ID</span>
+                                    <p class="font-mono text-slate-700 text-[10px] select-all break-all">{{
+                                        doc.ingestion.ingestion_run_id }}</p>
+                                </div>
+                                {% endif %}
+                                <div class="pt-2 border-t border-slate-200">
+                                    <span class="text-slate-500">Workflow</span>
+                                    <p class="font-mono text-slate-700">{{ doc.workflow_id }}</p>
+                                </div>
+                            </div>
+
+                            <!-- Stats Tab -->
+                            <div x-show="activeTab === 'stats'" class="space-y-2">
+                                <div class="grid grid-cols-3 gap-4 text-center">
+                                    {% if doc.meta.parse_stats.text_blocks_extracted %}
+                                    <div class="bg-white rounded-lg p-2 border border-slate-200">
+                                        <p class="text-2xl font-bold text-indigo-600">{{
+                                            doc.meta.parse_stats.text_blocks_extracted }}</p>
+                                        <p class="text-slate-500">Text Blocks</p>
+                                    </div>
+                                    {% endif %}
+                                    {% if doc.meta.parse_stats.assets_extracted %}
+                                    <div class="bg-white rounded-lg p-2 border border-slate-200">
+                                        <p class="text-2xl font-bold text-indigo-600">{{
+                                            doc.meta.parse_stats.assets_extracted }}</p>
+                                        <p class="text-slate-500">Assets</p>
+                                    </div>
+                                    {% endif %}
+                                    {% if doc.assets %}
+                                    <div class="bg-white rounded-lg p-2 border border-slate-200">
+                                        <p class="text-2xl font-bold text-green-600">{{ doc.assets|length }}</p>
+                                        <p class="text-slate-500">Stored</p>
+                                    </div>
+                                    {% endif %}
+                                </div>
+                                {% if doc.meta.parse_stats %}
+                                <div class="pt-2 border-t border-slate-200 grid grid-cols-2 gap-2">
+                                    {% for key, value in doc.meta.parse_stats.items %}
+                                    <div class="flex justify-between">
+                                        <span class="text-slate-500">{{ key }}</span>
+                                        <span class="font-mono text-slate-700">{{ value }}</span>
+                                    </div>
+                                    {% endfor %}
+                                </div>
+                                {% endif %}
+                            </div>
+
+                            <!-- External Tab -->
+                            <div x-show="activeTab === 'external'" class="space-y-2">
+                                {% for item in doc.external_ref_items %}
+                                <div class="flex justify-between items-start gap-2">
+                                    <span class="text-slate-500 shrink-0">{{ item.key }}</span>
+                                    <span class="font-mono text-slate-700 text-right break-all select-all">{{ item.value
+                                        }}</span>
+                                </div>
+                                {% endfor %}
+                            </div>
                         </div>
-                        {% endif %}
                     </div>
 
                     <!-- Tags -->
@@ -324,6 +487,59 @@
                             {{ tag }}
                         </span>
                         {% endfor %}
+                    </div>
+                    {% endif %}
+
+                    <!-- Assets Section -->
+                    {% if doc.assets %}
+                    <div class="mt-4 border-t border-slate-200 pt-4" x-data="{ assetsOpen: false }">
+                        <button @click="assetsOpen = !assetsOpen"
+                            class="flex items-center justify-between w-full text-left">
+                            <span class="text-sm font-medium text-slate-700 flex items-center gap-2">
+                                <svg class="h-4 w-4 text-indigo-600" fill="none" viewBox="0 0 24 24"
+                                    stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                                Assets ({{ doc.assets|length }})
+                            </span>
+                            <svg class="h-4 w-4 text-slate-400 transition-transform"
+                                :class="{ 'rotate-180': assetsOpen }" fill="none" viewBox="0 0 24 24"
+                                stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                    d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                        <div x-show="assetsOpen" x-collapse class="mt-3">
+                            <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                                {% for asset in doc.assets %}
+                                <a href="{{ asset.serve_url }}" target="_blank"
+                                    class="group relative bg-slate-50 rounded-lg border border-slate-200 overflow-hidden hover:border-indigo-300 hover:shadow-sm transition-all">
+                                    {% if asset.is_image %}
+                                    <div
+                                        class="aspect-square bg-slate-100 flex items-center justify-center overflow-hidden">
+                                        <img src="{{ asset.serve_url }}"
+                                            alt="{{ asset.text_description|default:'Asset' }}"
+                                            class="max-h-full max-w-full object-contain" loading="lazy">
+                                    </div>
+                                    {% else %}
+                                    <div class="aspect-square bg-slate-100 flex items-center justify-center">
+                                        <svg class="h-8 w-8 text-slate-400" fill="none" viewBox="0 0 24 24"
+                                            stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                        </svg>
+                                    </div>
+                                    {% endif %}
+                                    <div class="p-2">
+                                        <p class="text-xs text-slate-600 truncate">{{
+                                            asset.text_description|default:asset.media_type }}</p>
+                                        <span class="text-[10px] text-slate-400">{{ asset.blob.type }}</span>
+                                    </div>
+                                </a>
+                                {% endfor %}
+                            </div>
+                        </div>
                     </div>
                     {% endif %}
                 </article>

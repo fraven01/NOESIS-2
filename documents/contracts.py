@@ -248,6 +248,28 @@ class FileBlob(BaseModel):
         return value
 
 
+class LocalFileBlob(BaseModel):
+    """Temporary local file reference for processing."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Literal["local_file"] = Field(
+        description="Discriminator identifying a local file blob."
+    )
+    path: str = Field(description="Absolute path to the local file.")
+    media_type: Optional[str] = Field(
+        default=None, description="Optional media type hint."
+    )
+
+    @field_validator("path")
+    @classmethod
+    def _validate_path(cls, value: str) -> str:
+        s = normalize_string(value)
+        if not s:
+            raise ValueError("path_empty")
+        return s
+
+
 class InlineBlob(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -342,7 +364,7 @@ class ExternalBlob(BaseModel):
 
 
 BlobLocator = Annotated[
-    Union[FileBlob, InlineBlob, ExternalBlob],
+    Union[FileBlob, InlineBlob, ExternalBlob, LocalFileBlob],
     Field(
         discriminator="type",
         title="Blob Locator",

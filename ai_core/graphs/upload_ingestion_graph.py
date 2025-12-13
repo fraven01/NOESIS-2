@@ -38,15 +38,6 @@ from documents.processing_graph import (
     DocumentProcessingState,
     build_document_processing_graph,
 )
-from documents.parsers import ParserDispatcher, ParserRegistry
-from documents import (
-    DocxDocumentParser,
-    HtmlDocumentParser,
-    MarkdownDocumentParser,
-    PdfDocumentParser,
-    PptxDocumentParser,
-    TextDocumentParser,
-)
 from documents.cli import SimpleDocumentChunker
 
 
@@ -105,17 +96,9 @@ class UploadIngestionGraph:
         components = require_document_components()
 
         # Parsers
-        registry = ParserRegistry(
-            [
-                MarkdownDocumentParser(),
-                HtmlDocumentParser(),
-                DocxDocumentParser(),
-                PptxDocumentParser(),
-                PdfDocumentParser(),
-                TextDocumentParser(),
-            ]
-        )
-        parser_dispatcher = ParserDispatcher(registry)
+        from documents.parsers import create_default_parser_dispatcher
+
+        parser_dispatcher = create_default_parser_dispatcher()
 
         # Chunker
         chunker = SimpleDocumentChunker()
