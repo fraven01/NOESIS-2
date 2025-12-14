@@ -8,7 +8,6 @@ from documents.contract_utils import normalize_media_type
 from documents.normalization import document_payload_bytes
 from documents.parsers import (
     DocumentParser,
-    ParsedAsset,
     ParsedResult,
     build_parsed_asset_with_meta,
     build_parsed_result,
@@ -44,23 +43,23 @@ class ImageDocumentParser(DocumentParser):
         if isinstance(media_type, str):
             return _normalise_media_type(media_type)
         if isinstance(document, Mapping):
-             media_type = document.get("media_type")
-             if isinstance(media_type, str):
-                 return _normalise_media_type(media_type)
+            media_type = document.get("media_type")
+            if isinstance(media_type, str):
+                return _normalise_media_type(media_type)
 
         # Check blob media type
         blob = getattr(document, "blob", None)
         if blob is None and isinstance(document, Mapping):
             blob = document.get("blob")
-            
+
         media_type = getattr(blob, "media_type", None)
         if isinstance(media_type, str):
             return _normalise_media_type(media_type)
         if isinstance(blob, Mapping):
             media_type = blob.get("media_type")
             if isinstance(media_type, str):
-                 return _normalise_media_type(media_type)
-                 
+                return _normalise_media_type(media_type)
+
         return None
 
     def can_handle(self, document: Any) -> bool:
@@ -71,15 +70,15 @@ class ImageDocumentParser(DocumentParser):
         try:
             payload = document_payload_bytes(document)
         except ValueError as exc:
-             raise ValueError("image_blob_missing") from exc
-             
+            raise ValueError("image_blob_missing") from exc
+
         if not payload:
-             # If payload is empty but passed can_handle, it might be an issue.
-             # However, image parser expects bytes.
-             raise ValueError("image_blob_missing")
-             
+            # If payload is empty but passed can_handle, it might be an issue.
+            # However, image parser expects bytes.
+            raise ValueError("image_blob_missing")
+
         media_type = self._resolve_media_type(document) or "application/octet-stream"
-        
+
         asset = build_parsed_asset_with_meta(
             media_type=media_type,
             content=payload,

@@ -94,9 +94,6 @@ def _normalise_media_type(value: Optional[str]) -> Optional[str]:
         return None
 
 
-
-
-
 def _looks_like_docx(payload: Optional[bytes]) -> bool:
     if not payload:
         return False
@@ -378,12 +375,18 @@ class DocxDocumentParser(DocumentParser):
 
     def can_handle(self, document: Any) -> bool:
         media_type = getattr(document, "media_type", None)
-        if isinstance(media_type, str) and normalize_media_type(media_type) in _DOCX_MEDIA_TYPES:
+        if (
+            isinstance(media_type, str)
+            and normalize_media_type(media_type) in _DOCX_MEDIA_TYPES
+        ):
             return True
-        
+
         blob = getattr(document, "blob", None)
         blob_media = getattr(blob, "media_type", None)
-        if isinstance(blob_media, str) and normalize_media_type(blob_media) in _DOCX_MEDIA_TYPES:
+        if (
+            isinstance(blob_media, str)
+            and normalize_media_type(blob_media) in _DOCX_MEDIA_TYPES
+        ):
             return True
 
         # Fallback: looks like docx check
@@ -398,7 +401,7 @@ class DocxDocumentParser(DocumentParser):
             payload = document_payload_bytes(document)
         except ValueError as exc:
             raise ValueError("docx_blob_missing") from exc
-            
+
         if not payload:
             raise ValueError("docx_blob_missing")
         try:

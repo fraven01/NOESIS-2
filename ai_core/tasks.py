@@ -1027,9 +1027,7 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 )
 
             parent_ids = [root_id] + [info["id"] for info in parent_infos]
-            unique_parent_ids = list(
-                dict.fromkeys(pid for pid in parent_ids if pid)
-            )
+            unique_parent_ids = list(dict.fromkeys(pid for pid in parent_ids if pid))
             for body in plan.chunk_bodies:
                 body_text = body.strip()
                 if not body_text:

@@ -124,7 +124,9 @@ def _resolve_manual_collection(
     return manual_id, requested_text
 
 
-def _normalize_collection_id(collection_identifier: str | None, tenant_schema: str) -> str | None:
+def _normalize_collection_id(
+    collection_identifier: str | None, tenant_schema: str
+) -> str | None:
     """Return a canonical UUID for collection identifiers provided as keys/aliases."""
 
     value = (collection_identifier or "").strip()
@@ -991,7 +993,7 @@ def web_search_ingest_selected(request):
             workflow_id="web-search-ingestion",
             mode=mode,
             origins=[{"url": url} for url in urls],
-              collection_id=collection_id,
+            collection_id=collection_id,
         )
 
         # L2 -> L3 Dispatch

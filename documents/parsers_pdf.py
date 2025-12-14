@@ -27,7 +27,6 @@ from documents.contract_utils import (
     is_bcp47_like,
     normalize_media_type,
     normalize_string,
-    truncate_text,
 )
 from documents.normalization import document_payload_bytes
 from documents.parsers import (
@@ -73,15 +72,21 @@ class PdfDocumentParser(DocumentParser):
     def can_handle(self, document: Any) -> bool:
         # Check explicit media type (from metadata/staging)
         media_type = getattr(document, "media_type", None)
-        if isinstance(media_type, str) and normalize_media_type(media_type) in _PDF_MEDIA_TYPES:
+        if (
+            isinstance(media_type, str)
+            and normalize_media_type(media_type) in _PDF_MEDIA_TYPES
+        ):
             return True
-        
+
         # Check blob media type
         blob = getattr(document, "blob", None)
         blob_media = getattr(blob, "media_type", None)
-        if isinstance(blob_media, str) and normalize_media_type(blob_media) in _PDF_MEDIA_TYPES:
+        if (
+            isinstance(blob_media, str)
+            and normalize_media_type(blob_media) in _PDF_MEDIA_TYPES
+        ):
             return True
-        
+
         # Fallback: Sniff payload (safe for Inline/Local blobs)
         try:
             payload = document_payload_bytes(document)
@@ -94,9 +99,9 @@ class PdfDocumentParser(DocumentParser):
         try:
             payload = document_payload_bytes(document)
         except ValueError as exc:
-             # Map storage/type errors to standard ValueError for consistency
+            # Map storage/type errors to standard ValueError for consistency
             raise ValueError("pdf_blob_missing") from exc
-            
+
         if not payload:
             raise ValueError("pdf_payload_missing")
 
@@ -224,8 +229,8 @@ class PdfDocumentParser(DocumentParser):
                                     context_after=text_block.text,
                                     metadata={
                                         "asset_kind": "embedded_image",
-                                        "locator": f"document:image:{len(assets)+1}"
-                                    }
+                                        "locator": f"document:image:{len(assets)+1}",
+                                    },
                                 )
                             pending_assets.clear()
                             continue
@@ -283,7 +288,9 @@ class PdfDocumentParser(DocumentParser):
                     statistics["ocr.errors"] = ocr_errors
 
                 return build_parsed_result(
-                    text_blocks=tuple(text_blocks), assets=tuple(assets), statistics=statistics
+                    text_blocks=tuple(text_blocks),
+                    assets=tuple(assets),
+                    statistics=statistics,
                 )
         except fitz.fitz.FileDataError as exc:  # type: ignore[attr-defined]
             message = str(exc).lower()
@@ -414,10 +421,7 @@ def _extract_asset_from_block(
         page_index=page_index,
         bbox=normalized_bbox,
         context_before=context_before,
-        metadata={
-             "asset_kind": "embedded_image",
-             "locator": "page_image"
-        }
+        metadata={"asset_kind": "embedded_image", "locator": "page_image"},
     )
 
 

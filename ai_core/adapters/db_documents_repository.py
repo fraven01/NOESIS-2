@@ -173,7 +173,7 @@ class DbDocumentsRepository(DocumentsRepository):
                                     "source": doc_copy.source or "",
                                     "hash": doc_copy.checksum,
                                     "schema": getattr(tenant, "schema_name", "unknown"),
-                                }
+                                },
                             )
                             raise
 
@@ -186,7 +186,7 @@ class DbDocumentsRepository(DocumentsRepository):
                                 "document_id": str(document.id),
                                 "existing_tenant": str(document.tenant_id),
                                 "target_tenant": str(tenant.id),
-                            }
+                            },
                         )
                         # Start fallback: Create new ID for this document?
                         # Currently we just fail, but this explains WHY.

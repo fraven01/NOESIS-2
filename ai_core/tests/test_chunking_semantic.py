@@ -91,9 +91,7 @@ def test_semantic_chunker_keeps_heading_parents(tmp_path, settings, monkeypatch)
     payload = object_store.read_json(result["path"])
 
     parents = payload["parents"]
-    solo_parent = next(
-        node for node in parents.values() if node.get("title") == "Solo"
-    )
+    solo_parent = next(node for node in parents.values() if node.get("title") == "Solo")
     assert "Solo" in solo_parent.get("content", "")
 
     info_chunk = next(

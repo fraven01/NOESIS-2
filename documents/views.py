@@ -324,7 +324,7 @@ def asset_serve(request, document_id: str, asset_id: str):
         clean_uri = blob_uri
         if clean_uri and clean_uri.startswith("objectstore://"):
             clean_uri = clean_uri.replace("objectstore://", "", 1)
-        
+
         # Ensure relative path for join
         clean_uri = clean_uri.lstrip("/")
 

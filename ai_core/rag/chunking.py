@@ -43,7 +43,9 @@ class SemanticChunker:
         self._sentence_splitter = sentence_splitter
         self._chunkify_fn = chunkify_fn
 
-    def build_plans(self, blocks: Iterable[SemanticTextBlock]) -> List[SectionChunkPlan]:
+    def build_plans(
+        self, blocks: Iterable[SemanticTextBlock]
+    ) -> List[SectionChunkPlan]:
         root = SectionNode(path=(), title="", level=0)
         registry: dict[Tuple[str, ...], SectionNode] = {(): root}
 
@@ -53,7 +55,9 @@ class SemanticChunker:
 
             parent_path = path[:-1]
             parent = _ensure_node(parent_path)
-            node = SectionNode(path=path, title=path[-1] if path else "", level=len(path))
+            node = SectionNode(
+                path=path, title=path[-1] if path else "", level=len(path)
+            )
             registry[path] = node
             parent.children.append(node)
             return node

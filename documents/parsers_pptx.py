@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable
 from typing import Any, List, Optional, Set, Tuple, Dict
 
 from pptx import Presentation
@@ -56,9 +56,6 @@ def _normalise_media_type(value: Optional[str]) -> Optional[str]:
         return normalize_media_type(value)
     except ValueError:
         return None
-
-
-
 
 
 def _validate_archive(archive: zipfile.ZipFile) -> None:
@@ -200,12 +197,18 @@ class PptxDocumentParser(DocumentParser):
 
     def can_handle(self, document: Any) -> bool:
         media_type = getattr(document, "media_type", None)
-        if isinstance(media_type, str) and normalize_media_type(media_type) in _PPTX_MEDIA_TYPES:
+        if (
+            isinstance(media_type, str)
+            and normalize_media_type(media_type) in _PPTX_MEDIA_TYPES
+        ):
             return True
 
         blob = getattr(document, "blob", None)
         blob_media = getattr(blob, "media_type", None)
-        if isinstance(blob_media, str) and normalize_media_type(blob_media) in _PPTX_MEDIA_TYPES:
+        if (
+            isinstance(blob_media, str)
+            and normalize_media_type(blob_media) in _PPTX_MEDIA_TYPES
+        ):
             return True
 
         try:
@@ -219,7 +222,7 @@ class PptxDocumentParser(DocumentParser):
             payload = document_payload_bytes(document)
         except ValueError as exc:
             raise ValueError("pptx_blob_missing") from exc
-        
+
         if not payload:
             raise ValueError("pptx_blob_missing")
 
