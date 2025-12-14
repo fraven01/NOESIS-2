@@ -62,6 +62,7 @@ from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
 from .rag.embedding_config import get_embedding_profile
+from .rag.chunking import SectionChunkPlan, SemanticChunker, SemanticTextBlock
 from .rag.parents import limit_parent_payload
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
@@ -970,46 +971,23 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         return info
 
     chunk_candidates: List[Tuple[str, List[str], str]] = []
+    last_registered_stack: List[Dict[str, object]] = []
 
+    semantic_plans: List[SectionChunkPlan] = []
     if structured_blocks:
-        pending_pieces: List[str] = []
-        pending_parent_ids: Optional[Tuple[str, ...]] = None
-        pending_heading_prefix: str = ""
-
-        def _flush_pending() -> None:
-            nonlocal pending_pieces, pending_parent_ids, pending_heading_prefix
-            if not pending_pieces or pending_parent_ids is None:
-                pending_pieces = []
-                pending_parent_ids = None
-                pending_heading_prefix = ""
-                return
-
-            combined_text = "\n\n".join(part for part in pending_pieces if part.strip())
-            sentences = _split_sentences(combined_text)
-            if not sentences:
-                sentences = [combined_text] if combined_text else []
-
-            if sentences:
-                bodies = _chunkify(
-                    sentences,
-                    target_tokens=target_tokens,
-                    overlap_tokens=overlap_tokens,
-                    hard_limit=hard_limit,
-                )
-                for body in bodies:
-                    chunk_candidates.append(
-                        (body, list(pending_parent_ids), pending_heading_prefix)
-                    )
-
-            pending_pieces = []
-            pending_parent_ids = None
-            pending_heading_prefix = ""
-
-        section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
-
+        semantic_chunker = SemanticChunker(
+            sentence_splitter=_split_sentences,
+            chunkify_fn=lambda sentences: _chunkify(
+                sentences,
+                target_tokens=target_tokens,
+                overlap_tokens=overlap_tokens,
+                hard_limit=hard_limit,
+            ),
+        )
+        semantic_blocks: List[SemanticTextBlock] = []
         for block in structured_blocks:
             text_value = str(block.get("text") or "")
-            kind = str(block.get("kind") or "").lower()
+            kind = str(block.get("kind") or "").lower() or "paragraph"
             section_path_raw = block.get("section_path")
             path_tuple: Tuple[str, ...] = ()
             if isinstance(section_path_raw, (list, tuple)):
@@ -1019,77 +997,47 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                     if isinstance(part, str) and str(part).strip()
                 )
             masked_text = _mask_for_chunk(text_value)
-            if kind == "heading":
-                _flush_pending()
-                level = len(path_tuple) if path_tuple else 1
-                while parent_stack and len(parent_stack[-1].get("path", ())) >= level:
-                    parent_stack.pop()
-                title_candidate = path_tuple[-1] if path_tuple else text_value.strip()
-                section_info = _register_section(
-                    title_candidate or text_value.strip(), level, path_tuple or None
+            semantic_blocks.append(
+                SemanticTextBlock(
+                    text=masked_text,
+                    kind=kind,
+                    section_path=path_tuple,
                 )
-                section_registry[path_tuple] = section_info
-                parent_stack.append(section_info)
-                if masked_text.strip():
-                    _append_parent_text_with_root(
-                        section_info["id"], masked_text.strip(), level
-                    )
-                continue
+            )
+        semantic_plans = semantic_chunker.build_plans(semantic_blocks)
 
-            normalised_text = masked_text.strip()
-            if not normalised_text:
-                continue
-
-            if path_tuple:
-                desired_stack: List[Dict[str, object]] = []
-                for depth in range(1, len(path_tuple) + 1):
-                    prefix_tuple = path_tuple[:depth]
+    if semantic_plans:
+        section_registry: Dict[Tuple[str, ...], Dict[str, object]] = {}
+        for plan in semantic_plans:
+            parent_infos: List[Dict[str, object]] = []
+            if plan.path:
+                for depth in range(1, len(plan.path) + 1):
+                    prefix_tuple = plan.path[:depth]
                     info = section_registry.get(prefix_tuple)
                     if info is None:
                         title_candidate = prefix_tuple[-1] if prefix_tuple else ""
                         info = _register_section(title_candidate, depth, prefix_tuple)
                         section_registry[prefix_tuple] = info
-                    desired_stack.append(info)
-                parent_stack = desired_stack
-            else:
-                parent_stack = []
+                    parent_infos.append(info)
 
-            block_pieces = [normalised_text]
-            if _token_count(normalised_text) > hard_limit:
-                block_pieces = _split_by_limit(normalised_text, hard_limit)
-
-            for piece in block_pieces:
-                piece_text = piece.strip()
-                if not piece_text:
-                    continue
-                if parent_stack:
-                    target_info = parent_stack[-1]
-                    target_level = int(target_info.get("level") or 0)
-                    _append_parent_text_with_root(
-                        target_info["id"], piece_text, target_level
-                    )
-                else:
-                    _append_parent_text(root_id, piece_text, 0)
-                parent_ids = [root_id] + [info["id"] for info in parent_stack]
-                unique_parent_ids = list(
-                    dict.fromkeys(pid for pid in parent_ids if pid)
+            target_parent_id = parent_infos[-1]["id"] if parent_infos else root_id
+            if plan.parent_text:
+                _append_parent_text_with_root(
+                    target_parent_id, plan.parent_text, plan.level
                 )
-                heading_prefix = " / ".join(path_tuple) if path_tuple else ""
 
-                new_parent_ids = tuple(unique_parent_ids)
-                if pending_parent_ids is not None and (
-                    pending_parent_ids != new_parent_ids
-                    or pending_heading_prefix != heading_prefix
-                ):
-                    _flush_pending()
-
-                if pending_parent_ids is None:
-                    pending_parent_ids = new_parent_ids
-                    pending_heading_prefix = heading_prefix
-
-                pending_pieces.append(piece_text)
-
-        _flush_pending()
+            parent_ids = [root_id] + [info["id"] for info in parent_infos]
+            unique_parent_ids = list(
+                dict.fromkeys(pid for pid in parent_ids if pid)
+            )
+            for body in plan.chunk_bodies:
+                body_text = body.strip()
+                if not body_text:
+                    continue
+                chunk_candidates.append(
+                    (body_text, unique_parent_ids, plan.heading_prefix)
+                )
+            last_registered_stack = parent_infos
     else:
         pending_pieces = []
         pending_parent_ids: Optional[Tuple[str, ...]] = None
@@ -1170,6 +1118,9 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 pending_pieces.append(piece_text)
 
         _flush_pending()
+
+    if not parent_stack and last_registered_stack:
+        parent_stack = last_registered_stack
 
     if not chunk_candidates:
         fallback_ids = [root_id] + [info["id"] for info in parent_stack]

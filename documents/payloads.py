@@ -19,6 +19,20 @@ _ZLIB_SECOND_BYTE_CANDIDATES = {0x01, 0x5E, 0x9C, 0xDA}
 def _coerce_inline_payload(blob: Any) -> Optional[bytes]:
     if blob is None:
         return None
+        
+    # Check for LocalFileBlob (deferred import to avoid circularity if possible, 
+    # but strictly checking type name or attributes is safer if we can't import).
+    # However, standard practice is to handle the type.
+    # contracts.py does NOT import payloads.py, so we can import.
+    from documents.contracts import LocalFileBlob
+    
+    if isinstance(blob, LocalFileBlob):
+        try:
+            with open(blob.path, "rb") as f:
+                return f.read()
+        except Exception:
+            return None
+
     if hasattr(blob, "decoded_payload"):
         payload = blob.decoded_payload()
         if isinstance(payload, (bytes, bytearray)):

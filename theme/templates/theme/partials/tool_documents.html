@@ -348,8 +348,8 @@
                                 {% if doc.checksum %}
                                 <div>
                                     <span class="text-slate-500">Checksum</span>
-                                    <p class="font-mono text-slate-700 text-[10px] break-all select-all">{{ doc.checksum
-                                        }}</p>
+                                    <p class="font-mono text-slate-700 text-[10px] break-all select-all"
+                                        title="{{ doc.checksum }}">{{ doc.checksum|slice:":12" }}...</p>
                                 </div>
                                 {% endif %}
                             </div>

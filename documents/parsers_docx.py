@@ -23,6 +23,7 @@ from documents.contract_utils import (
     normalize_string,
     truncate_text,
 )
+from documents.normalization import document_payload_bytes
 from documents.parsers import (
     DocumentParser,
     ParsedAsset,
@@ -93,47 +94,7 @@ def _normalise_media_type(value: Optional[str]) -> Optional[str]:
         return None
 
 
-def _extract_media_type(document: Any) -> Optional[str]:
-    media_type = getattr(document, "media_type", None)
-    if not media_type and isinstance(document, Mapping):
-        media_type = document.get("media_type")
-    return _normalise_media_type(media_type)
 
-
-def _extract_blob(document: Any) -> Any:
-    blob = getattr(document, "blob", None)
-    if blob is None and isinstance(document, Mapping):
-        blob = document.get("blob")
-    return blob
-
-
-def _extract_blob_media_type(blob: Any) -> Optional[str]:
-    media_type = getattr(blob, "media_type", None)
-    if media_type is None and isinstance(blob, Mapping):
-        media_type = blob.get("media_type")
-    return _normalise_media_type(media_type)
-
-
-def _blob_payload(blob: Any) -> Optional[bytes]:
-    if blob is None:
-        return None
-    if hasattr(blob, "decoded_payload"):
-        payload = blob.decoded_payload()
-        if isinstance(payload, bytes):
-            return payload
-    data = getattr(blob, "content", None)
-    if isinstance(data, (bytes, bytearray)):
-        return bytes(data)
-    if isinstance(blob, Mapping):
-        inline = blob.get("content")
-        if isinstance(inline, (bytes, bytearray)):
-            return bytes(inline)
-        base64_value = blob.get("base64")
-        if isinstance(base64_value, (bytes, bytearray)):
-            return bytes(base64_value)
-    if isinstance(blob, (bytes, bytearray)):
-        return bytes(blob)
-    return None
 
 
 def _looks_like_docx(payload: Optional[bytes]) -> bool:
@@ -416,19 +377,28 @@ class DocxDocumentParser(DocumentParser):
     """Parse DOCX payloads into structured text blocks and assets."""
 
     def can_handle(self, document: Any) -> bool:
-        media_type = _extract_media_type(document)
-        if media_type in _DOCX_MEDIA_TYPES:
+        media_type = getattr(document, "media_type", None)
+        if isinstance(media_type, str) and normalize_media_type(media_type) in _DOCX_MEDIA_TYPES:
             return True
-        blob = _extract_blob(document)
-        blob_media_type = _extract_blob_media_type(blob)
-        if blob_media_type in _DOCX_MEDIA_TYPES:
+        
+        blob = getattr(document, "blob", None)
+        blob_media = getattr(blob, "media_type", None)
+        if isinstance(blob_media, str) and normalize_media_type(blob_media) in _DOCX_MEDIA_TYPES:
             return True
-        payload = _blob_payload(blob)
-        return _looks_like_docx(payload)
+
+        # Fallback: looks like docx check
+        try:
+            payload = document_payload_bytes(document)
+            return _looks_like_docx(payload)
+        except (ValueError, AttributeError):
+            return False
 
     def parse(self, document: Any, config: Any) -> ParsedResult:
-        blob = _extract_blob(document)
-        payload = _blob_payload(blob)
+        try:
+            payload = document_payload_bytes(document)
+        except ValueError as exc:
+            raise ValueError("docx_blob_missing") from exc
+            
         if not payload:
             raise ValueError("docx_blob_missing")
         try:

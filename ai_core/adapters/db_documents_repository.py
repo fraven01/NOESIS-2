@@ -163,8 +163,34 @@ class DbDocumentsRepository(DocumentsRepository):
                                 hash=doc_copy.checksum,
                             )
                         except Document.DoesNotExist:
-                            # Should not happen if IntegrityError was genuine, unless race led to delete?
+                            # Cannot find document by ID (globally) OR by Hash.
+                            # Yet create() failed with IntegrityError.
+                            logger.error(
+                                "upsert_integrity_failure_analysis",
+                                extra={
+                                    "document_id": str(doc_copy.ref.document_id),
+                                    "tenant_id": str(tenant.id),
+                                    "source": doc_copy.source or "",
+                                    "hash": doc_copy.checksum,
+                                    "schema": getattr(tenant, "schema_name", "unknown"),
+                                }
+                            )
                             raise
+
+                    # 3. Post-recovery Validation
+                    if document and document.tenant_id != tenant.id:
+                        # Found by ID but tenant mismatch
+                        logger.error(
+                            "upsert_id_collision_cross_tenant",
+                            extra={
+                                "document_id": str(document.id),
+                                "existing_tenant": str(document.tenant_id),
+                                "target_tenant": str(tenant.id),
+                            }
+                        )
+                        # Start fallback: Create new ID for this document?
+                        # Currently we just fail, but this explains WHY.
+                        raise ValueError("Document ID collision across tenants")
                     # Align ref/metadata to the persisted row
                     doc_copy = doc_copy.model_copy(
                         update={

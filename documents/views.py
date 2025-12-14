@@ -320,7 +320,15 @@ def asset_serve(request, document_id: str, asset_id: str):
         from django.conf import settings
 
         base_path = getattr(settings, "OBJECT_STORE_BASE_PATH", ".ai_core_store")
-        blob_path = os.path.join(base_path, blob_uri)
+
+        clean_uri = blob_uri
+        if clean_uri and clean_uri.startswith("objectstore://"):
+            clean_uri = clean_uri.replace("objectstore://", "", 1)
+        
+        # Ensure relative path for join
+        clean_uri = clean_uri.lstrip("/")
+
+        blob_path = os.path.join(base_path, clean_uri)
 
         if not os.path.exists(blob_path):
             logger.warning(

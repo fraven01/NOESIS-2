@@ -27,13 +27,15 @@ from documents.contract_utils import (
     is_bcp47_like,
     normalize_media_type,
     normalize_string,
+    truncate_text,
 )
+from documents.normalization import document_payload_bytes
 from documents.parsers import (
     DocumentParser,
     ParsedAsset,
     ParsedResult,
     ParsedTextBlock,
-    build_parsed_asset,
+    build_parsed_asset_with_meta,
     build_parsed_result,
     build_parsed_text_block,
 )
@@ -69,19 +71,32 @@ class PdfDocumentParser(DocumentParser):
     """Parse PDF payloads using high level libraries with conservative heuristics."""
 
     def can_handle(self, document: Any) -> bool:
-        media_type = _extract_media_type(document)
-        if media_type in _PDF_MEDIA_TYPES:
+        # Check explicit media type (from metadata/staging)
+        media_type = getattr(document, "media_type", None)
+        if isinstance(media_type, str) and normalize_media_type(media_type) in _PDF_MEDIA_TYPES:
             return True
-        blob = _extract_blob(document)
-        blob_media_type = _extract_blob_media_type(blob)
-        if blob_media_type in _PDF_MEDIA_TYPES:
+        
+        # Check blob media type
+        blob = getattr(document, "blob", None)
+        blob_media = getattr(blob, "media_type", None)
+        if isinstance(blob_media, str) and normalize_media_type(blob_media) in _PDF_MEDIA_TYPES:
             return True
-        payload = _blob_payload(blob)
-        return bool(payload and payload.startswith(b"%PDF"))
+        
+        # Fallback: Sniff payload (safe for Inline/Local blobs)
+        try:
+            payload = document_payload_bytes(document)
+            return bool(payload and payload.startswith(b"%PDF"))
+        except (ValueError, AttributeError):
+            # Cannot access payload (e.g. storage missing for FileBlob), assume not PDF
+            return False
 
     def parse(self, document: Any, config: Any) -> ParsedResult:
-        blob = _extract_blob(document)
-        payload = _blob_payload(blob)
+        try:
+            payload = document_payload_bytes(document)
+        except ValueError as exc:
+             # Map storage/type errors to standard ValueError for consistency
+            raise ValueError("pdf_blob_missing") from exc
+            
         if not payload:
             raise ValueError("pdf_payload_missing")
 
@@ -199,7 +214,7 @@ class PdfDocumentParser(DocumentParser):
                             words += len(text_block.text.split())
                             last_text = text_block.text
                             for asset_index in pending_assets:
-                                assets[asset_index] = build_parsed_asset(
+                                assets[asset_index] = build_parsed_asset_with_meta(
                                     media_type=assets[asset_index].media_type,
                                     content=assets[asset_index].content,
                                     file_uri=assets[asset_index].file_uri,
@@ -207,6 +222,10 @@ class PdfDocumentParser(DocumentParser):
                                     bbox=assets[asset_index].bbox,
                                     context_before=assets[asset_index].context_before,
                                     context_after=text_block.text,
+                                    metadata={
+                                        "asset_kind": "embedded_image",
+                                        "locator": f"document:image:{len(assets)+1}"
+                                    }
                                 )
                             pending_assets.clear()
                             continue
@@ -264,7 +283,7 @@ class PdfDocumentParser(DocumentParser):
                     statistics["ocr.errors"] = ocr_errors
 
                 return build_parsed_result(
-                    text_blocks=text_blocks, assets=assets, statistics=statistics
+                    text_blocks=tuple(text_blocks), assets=tuple(assets), statistics=statistics
                 )
         except fitz.fitz.FileDataError as exc:  # type: ignore[attr-defined]
             message = str(exc).lower()
@@ -389,12 +408,16 @@ def _extract_asset_from_block(
 
     bbox = block.get("bbox")
     normalized_bbox = _normalise_bbox(bbox, page.rect)
-    return build_parsed_asset(
+    return build_parsed_asset_with_meta(
         media_type=media_type,
         content=content,
         page_index=page_index,
         bbox=normalized_bbox,
         context_before=context_before,
+        metadata={
+             "asset_kind": "embedded_image",
+             "locator": "page_image"
+        }
     )
 
 
@@ -557,40 +580,6 @@ def _repair_pdf(payload: bytes) -> bytes:
         raise ValueError("pdf_encrypted") from exc
     except pikepdf.PdfError:
         return payload
-
-
-def _extract_media_type(document: Any) -> Optional[str]:
-    media_type = getattr(document, "media_type", None)
-    if isinstance(media_type, str):
-        return normalize_media_type(media_type)
-    return None
-
-
-def _extract_blob(document: Any) -> Any:
-    return getattr(document, "blob", None)
-
-
-def _extract_blob_media_type(blob: Any) -> Optional[str]:
-    if blob is None:
-        return None
-    media_type = getattr(blob, "media_type", None)
-    if isinstance(media_type, str):
-        return normalize_media_type(media_type)
-    return None
-
-
-def _blob_payload(blob: Any) -> Optional[bytes]:
-    if blob is None:
-        return None
-    if hasattr(blob, "decoded_payload"):
-        try:
-            return blob.decoded_payload()
-        except Exception:
-            return None
-    payload = getattr(blob, "payload", None)
-    if isinstance(payload, (bytes, bytearray)):
-        return bytes(payload)
-    return None
 
 
 def _get_config_flag(config: Any, name: str, default: bool) -> bool:

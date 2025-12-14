@@ -1,6 +1,6 @@
 import json
 from typing import Any, Mapping
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from django.conf import settings
 from django.core.cache import cache
@@ -27,6 +27,7 @@ from ai_core.rag.collections import (
     manual_collection_uuid,
 )
 from documents.collection_service import CollectionService
+from documents.models import DocumentCollection
 from ai_core.rag.routing_rules import (
     get_routing_table,
     is_collection_routing_enabled,
@@ -121,6 +122,36 @@ def _resolve_manual_collection(
         return manual_id, manual_id
 
     return manual_id, requested_text
+
+
+def _normalize_collection_id(collection_identifier: str | None, tenant_schema: str) -> str | None:
+    """Return a canonical UUID for collection identifiers provided as keys/aliases."""
+
+    value = (collection_identifier or "").strip()
+    if not value:
+        return None
+
+    try:
+        return str(UUID(value))
+    except (TypeError, ValueError):
+        pass
+
+    tenant = TenantContext.resolve_identifier(tenant_schema, allow_pk=True)
+    if tenant is None:
+        return None
+
+    try:
+        collection = DocumentCollection.objects.get(tenant=tenant, key=value)
+        return str(collection.collection_id)
+    except DocumentCollection.DoesNotExist:
+        logger.info(
+            "collection.lookup.missing",
+            extra={
+                "tenant_schema": tenant_schema,
+                "collection_key": value,
+            },
+        )
+        return None
 
 
 def _parse_limit(value: object, *, default: int = 25) -> int:
@@ -945,6 +976,7 @@ def web_search_ingest_selected(request):
         manual_collection_id, collection_id = _resolve_manual_collection(
             tenant_id, data.get("collection_id"), ensure=True
         )
+        collection_id = _normalize_collection_id(collection_id, tenant_schema)
         if not collection_id:
             return JsonResponse(
                 {"error": "Collection ID could not be resolved"}, status=400
@@ -959,7 +991,7 @@ def web_search_ingest_selected(request):
             workflow_id="web-search-ingestion",
             mode=mode,
             origins=[{"url": url} for url in urls],
-            collection_id=collection_id,
+              collection_id=collection_id,
         )
 
         # L2 -> L3 Dispatch
