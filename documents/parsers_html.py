@@ -161,7 +161,8 @@ class _HtmlState:
         cleaned = cleaned or f"Heading {level}"
         while len(self.section_stack) >= level:
             self.section_stack.pop()
-        self.section_stack.append(cleaned)
+        # Truncate to 128 chars to comply with section_path validation
+        self.section_stack.append(cleaned[:128])
 
     def _update_pending_assets(self, context: Optional[str]) -> None:
         if not context:

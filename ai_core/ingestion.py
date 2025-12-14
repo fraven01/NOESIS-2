@@ -651,12 +651,10 @@ def process_document(
             # 2. Build Components
             components = get_document_components()
 
-            # Storage
-            storage_candidate = components.storage
-            try:
-                storage = storage_candidate()
-            except Exception:
-                storage = storage_candidate
+            # Storage - use concrete ObjectStoreStorage instead of abstract Storage class
+            from documents.storage import ObjectStoreStorage
+
+            storage = ObjectStoreStorage()
 
             # Captioner
             captioner_cls = components.captioner

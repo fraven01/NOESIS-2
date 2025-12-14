@@ -117,6 +117,8 @@ def test_cli_parse_caption_chunk_smoke(capsys, json_output: bool) -> None:
     context = _build_context(parser)
     document = _repository_document(context)
 
+    # Always use --json because we need to parse the output as JSON
+    # The json_output parameter controls the explicit flag, but CLI always outputs JSON
     common_args = ["--json"] if json_output else []
     parse_args = common_args + [
         "parse",
@@ -129,7 +131,14 @@ def test_cli_parse_caption_chunk_smoke(capsys, json_output: bool) -> None:
     ]
     exit_code = main(parse_args, context=context)
     capture = capsys.readouterr()
-    assert exit_code == 0
+
+    # Debug: if no output, check stderr
+    if not capture.out.strip():
+        if capture.err.strip():
+            pytest.fail(f"CLI wrote to stderr instead of stdout: {capture.err}")
+        pytest.fail(f"CLI produced no output. exit_code={exit_code}")
+
+    assert exit_code == 0, f"CLI failed with: {capture.out} {capture.err}"
     payload = json.loads(capture.out)
     assert payload["statistics"]["parse.state"] == ProcessingState.PARSED_TEXT.value
     assert (

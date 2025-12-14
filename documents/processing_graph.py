@@ -679,6 +679,7 @@ def build_document_processing_graph(
         return state
 
     def _caption_assets(state: DocumentProcessingState) -> DocumentProcessingState:
+        print("\\nCAPTION_DEBUG: _caption_assets ENTERED")
         from . import pipeline as pipeline_module
         from .captioning import AssetExtractionPipeline
         from .contract_utils import is_image_mediatype
@@ -688,9 +689,14 @@ def build_document_processing_graph(
         metadata = context.metadata
         workflow_id = metadata.workflow_id
 
+        print(
+            f"CAPTION_DEBUG: enable_asset_captions={getattr(config, 'enable_asset_captions', False)}"
+        )
+
         caption_done = pipeline_module._state_rank(
             context.state
         ) >= pipeline_module._state_rank(pipeline_module.ProcessingState.CAPTIONED)
+        print(f"CAPTION_DEBUG: caption_done={caption_done}")
 
         if config.enable_asset_captions and not caption_done:
 

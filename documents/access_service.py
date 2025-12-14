@@ -126,8 +126,11 @@ class DocumentAccessService:
         blob = doc.blob
 
         if isinstance(blob, FileBlob):
-            # Use blob.uri for FileBlob
-            blob_path = object_store.BASE_PATH / blob.uri
+            # Use blob.uri for FileBlob - strip objectstore:// prefix if present
+            uri = blob.uri
+            if uri.startswith("objectstore://"):
+                uri = uri.replace("objectstore://", "", 1)
+            blob_path = object_store.BASE_PATH / uri
         elif isinstance(blob, LocalFileBlob):
             # Use local path for LocalFileBlob
             blob_path = Path(blob.path)

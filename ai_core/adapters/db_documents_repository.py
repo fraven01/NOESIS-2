@@ -110,13 +110,22 @@ class DbDocumentsRepository(DocumentsRepository):
 
             document = None
 
-            # Strategy: Try finding existing document by strictly unique business key
+            # Strategy 1: Find by business key (tenant, source, hash)
             try:
                 document = Document.objects.get(
                     tenant=tenant, source=doc_copy.source or "", hash=doc_copy.checksum
                 )
             except Document.DoesNotExist:
                 pass
+
+            # Strategy 2: If not found by hash, try finding by document_id (for re-uploads)
+            if document is None and doc_copy.ref.document_id:
+                try:
+                    document = Document.objects.get(
+                        id=doc_copy.ref.document_id, tenant=tenant
+                    )
+                except Document.DoesNotExist:
+                    pass
 
             # Materialize blob to FileBlob before persistence
             doc_copy = self._materialize_document_safe(doc_copy)
@@ -132,18 +141,28 @@ class DbDocumentsRepository(DocumentsRepository):
                     deep=True,
                 )
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
-                document = self._update_document_instance(document, doc_copy, metadata)
+                document = self._update_document_instance(
+                    document, doc_copy, metadata, scope=scope, workflow_id=workflow
+                )
             else:
                 metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                 # Create new - handle race condition
                 try:
                     with transaction.atomic():
+                        # Extract context IDs from scope or doc metadata
+                        ctx_workflow_id = workflow or ""
+                        ctx_trace_id = scope.trace_id if scope else ""
+                        ctx_case_id = scope.case_id if scope else None
+
                         document = Document.objects.create(
                             id=doc_copy.ref.document_id,  # Honor ID if creating new
                             tenant=tenant,
                             hash=doc_copy.checksum,
                             source=doc_copy.source or "",
                             metadata=metadata,
+                            workflow_id=ctx_workflow_id,
+                            trace_id=ctx_trace_id,
+                            case_id=ctx_case_id,
                             lifecycle_state=doc_copy.lifecycle_state,
                             lifecycle_updated_at=doc_copy.created_at,
                         )
@@ -202,7 +221,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     )
                     metadata = {"normalized_document": doc_copy.model_dump(mode="json")}
                     document = self._update_document_instance(
-                        document, doc_copy, metadata
+                        document, doc_copy, metadata, scope=scope, workflow_id=workflow
                     )
 
             # 3. Memberships (Side Effects)
@@ -224,43 +243,6 @@ class DbDocumentsRepository(DocumentsRepository):
                         },
                     )
 
-            # Debug: verify persistence in the active schema
-            try:
-                persisted_count = Document.objects.filter(
-                    tenant=tenant, id=document.id
-                ).count()
-                logger.info(
-                    (
-                        "db_documents_repository_upsert_persist_check "
-                        "tenant_schema=%s tenant_id=%s document_id=%s persisted_count=%s metadata_keys=%s lifecycle_state=%s"
-                    ),
-                    getattr(tenant, "schema_name", None),
-                    doc_copy.ref.tenant_id,
-                    document.id,
-                    persisted_count,
-                    list((metadata or {}).keys()),
-                    document.lifecycle_state,
-                    extra={
-                        "event": "db_documents_repository_upsert_persist_check",
-                        "tenant_schema": getattr(tenant, "schema_name", None),
-                        "tenant_id": doc_copy.ref.tenant_id,
-                        "document_id": str(document.id),
-                        "persisted_count": persisted_count,
-                        "metadata_keys": list((metadata or {}).keys()),
-                        "lifecycle_state": document.lifecycle_state,
-                    },
-                )
-            except Exception:
-                logger.warning(
-                    "db_documents_repository_upsert_persist_check_failed",
-                    exc_info=True,
-                    extra={
-                        "tenant_schema": getattr(tenant, "schema_name", None),
-                        "tenant_id": doc_copy.ref.tenant_id,
-                        "document_id": str(getattr(document, "id", "")),
-                    },
-                )
-
         return (
             self.get(
                 doc_copy.ref.tenant_id,
@@ -273,72 +255,64 @@ class DbDocumentsRepository(DocumentsRepository):
         )
 
     def _materialize_document_safe(self, doc: NormalizedDocument) -> NormalizedDocument:
-        """Return a new NormalizedDocument with materialized blobs, handling immutability.
+        """Materialize transient blobs (InlineBlob, LocalFileBlob) to permanent FileBlob.
 
-        Converts transient blob types (InlineBlob, LocalFileBlob) to permanent FileBlob
-        stored in object storage.
+        Returns a new NormalizedDocument with the blob persisted to object storage.
+        Idempotent: FileBlob and ExternalBlob pass through unchanged.
         """
         from pathlib import Path
         from documents.contracts import LocalFileBlob
         from common.assets.hashing import sha256_bytes
 
-        print(f"MATERIALIZE_DEBUG: Called with blob type: {type(doc.blob).__name__}")
-
         if isinstance(doc.blob, InlineBlob):
-            print("MATERIALIZE_DEBUG: Converting InlineBlob to FileBlob")
             data = base64.b64decode(doc.blob.base64)
             uri, _, _ = self._storage.put(data)
-            print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
-
             new_blob = FileBlob(
                 type="file",
                 uri=uri,
                 sha256=doc.blob.sha256,
                 size=doc.blob.size,
             )
-            print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
-            result = doc.model_copy(update={"blob": new_blob}, deep=True)
-            print(
-                f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
-            )
-            return result
+            return doc.model_copy(update={"blob": new_blob}, deep=True)
 
         if isinstance(doc.blob, LocalFileBlob):
-            print("MATERIALIZE_DEBUG: Converting LocalFileBlob to FileBlob")
             local_path = Path(doc.blob.path)
             if not local_path.exists():
                 raise ValueError(f"local_blob_missing: {doc.blob.path}")
-
             data = local_path.read_bytes()
             checksum = sha256_bytes(data)
             uri, _, _ = self._storage.put(data)
-            print(f"MATERIALIZE_DEBUG: Storage returned uri: {uri}")
-
             new_blob = FileBlob(
                 type="file",
                 uri=uri,
                 sha256=checksum,
                 size=len(data),
             )
-            print(f"MATERIALIZE_DEBUG: Created FileBlob with uri={new_blob.uri}")
-            result = doc.model_copy(update={"blob": new_blob}, deep=True)
-            print(
-                f"MATERIALIZE_DEBUG: Returning doc with blob type: {type(result.blob).__name__}"
-            )
-            return result
+            return doc.model_copy(update={"blob": new_blob}, deep=True)
 
-        print(
-            "MATERIALIZE_DEBUG: Blob is not InlineBlob or LocalFileBlob, returning unchanged"
-        )
-        return doc  # No change needed
+        return doc  # FileBlob, ExternalBlob: no change needed
 
-    def _update_document_instance(self, document, doc_copy, metadata):
+    def _update_document_instance(
+        self, document, doc_copy, metadata, scope=None, workflow_id=None
+    ):
+        """Update document instance with metadata and context fields."""
         document.metadata = metadata
         document.lifecycle_state = doc_copy.lifecycle_state
         document.lifecycle_updated_at = doc_copy.created_at
-        document.save(
-            update_fields=["metadata", "lifecycle_state", "lifecycle_updated_at"]
-        )
+
+        # Update context fields if provided
+        update_fields = ["metadata", "lifecycle_state", "lifecycle_updated_at"]
+        if workflow_id:
+            document.workflow_id = workflow_id
+            update_fields.append("workflow_id")
+        if scope and scope.trace_id:
+            document.trace_id = scope.trace_id
+            update_fields.append("trace_id")
+        if scope and scope.case_id:
+            document.case_id = scope.case_id
+            update_fields.append("case_id")
+
+        document.save(update_fields=update_fields)
         return document
 
     def get(

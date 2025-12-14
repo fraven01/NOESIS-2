@@ -203,7 +203,11 @@ class PptxDocumentParser(DocumentParser):
         ):
             return True
 
-        blob = getattr(document, "blob", None)
+        # Support both dict and object access patterns
+        if isinstance(document, dict):
+            blob = document.get("blob")
+        else:
+            blob = getattr(document, "blob", None)
         blob_media = getattr(blob, "media_type", None)
         if (
             isinstance(blob_media, str)
@@ -257,7 +261,9 @@ class PptxDocumentParser(DocumentParser):
             slide_text, title, slide_language = _collect_slide_content(slide)
             section_segments = ["Slide", str(index + 1)]
             if title:
-                section_segments.append(title)
+                # Truncate title to max 128 chars to comply with section_path validation
+                truncated_title = title[:128] if len(title) > 128 else title
+                section_segments.append(truncated_title)
             section_path = tuple(section_segments)
 
             if slide_text or emit_empty_slides:

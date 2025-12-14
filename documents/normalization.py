@@ -9,10 +9,10 @@ def document_payload_bytes(document: Any, storage: Optional[Any] = None) -> byte
     """Decode payload from any blob type.
 
     Supports InlineBlob (embedded), FileBlob (storage), LocalFileBlob (filesystem),
-    and ExternalBlob (external storage).
+    ExternalBlob (external storage), and duck-typed blobs with decoded_payload().
 
     Args:
-        document: NormalizedDocument containing blob locator
+        document: NormalizedDocument or dict containing blob locator
         storage: Optional storage service for FileBlob/ExternalBlob retrieval.
                  Required for FileBlob and ExternalBlob, ignored for InlineBlob.
 
@@ -24,19 +24,26 @@ def document_payload_bytes(document: Any, storage: Optional[Any] = None) -> byte
     """
     from documents.contracts import InlineBlob, FileBlob, ExternalBlob, LocalFileBlob
 
-    blob = document.blob
+    # Support both dict and object access patterns
+    if isinstance(document, dict):
+        blob = document.get("blob")
+    else:
+        blob = getattr(document, "blob", None)
+
+    if blob is None:
+        raise ValueError("blob_missing: document has no blob field")
 
     # InlineBlob: payload embedded in base64
     if isinstance(blob, InlineBlob):
         return blob.decoded_payload()
 
     # LocalFileBlob: payload in local filesystem
-    elif isinstance(blob, LocalFileBlob):
+    if isinstance(blob, LocalFileBlob):
         with open(blob.path, "rb") as f:
             return f.read()
 
     # FileBlob: payload in object storage
-    elif isinstance(blob, FileBlob):
+    if isinstance(blob, FileBlob):
         if storage is None:
             raise ValueError(
                 f"storage_required_for_file_blob: "
@@ -45,7 +52,7 @@ def document_payload_bytes(document: Any, storage: Optional[Any] = None) -> byte
         return storage.get(blob.uri)
 
     # ExternalBlob: payload in external storage (S3, GCS, HTTP)
-    elif isinstance(blob, ExternalBlob):
+    if isinstance(blob, ExternalBlob):
         if storage is None:
             raise ValueError(
                 f"storage_required_for_external_blob: "
@@ -53,12 +60,15 @@ def document_payload_bytes(document: Any, storage: Optional[Any] = None) -> byte
             )
         return storage.get(blob.uri)
 
+    # Duck-typed fallback: any object with decoded_payload() method (for testing)
+    if callable(getattr(blob, "decoded_payload", None)):
+        return blob.decoded_payload()
+
     # Unknown blob type
-    else:
-        raise ValueError(
-            f"unsupported_blob_type: {type(blob).__name__} "
-            f"(expected InlineBlob, LocalFileBlob, FileBlob, or ExternalBlob)"
-        )
+    raise ValueError(
+        f"unsupported_blob_type: {type(blob).__name__} "
+        f"(expected InlineBlob, LocalFileBlob, FileBlob, ExternalBlob, or duck-typed with decoded_payload())"
+    )
 
 
 def normalized_primary_text(text: Optional[str]) -> str:

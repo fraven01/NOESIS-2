@@ -414,7 +414,7 @@ def test_require_document_components(monkeypatch):
     from documents import captioning, repository, storage
 
     assert components.repository is repository.DocumentsRepository
-    assert components.storage is storage.Storage
+    assert components.storage is storage.ObjectStoreStorage
     assert components.captioner is captioning.MultimodalCaptioner
 
     monkeypatch.setattr(repository, "DocumentsRepository", None)

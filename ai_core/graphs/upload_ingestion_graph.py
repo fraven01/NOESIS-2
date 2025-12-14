@@ -65,6 +65,7 @@ class UploadIngestionGraph:
         ) = None,
         embedding_handler: Callable[..., ai_core_api.EmbeddingResult] | None = None,
         lifecycle_hook: Callable[[Mapping[str, Any]], Mapping[str, Any]] | None = None,
+        storage: Any = None,  # Optional injected storage for testing
     ) -> None:
         self._document_service = document_service
         self._repository = repository
@@ -89,12 +90,19 @@ class UploadIngestionGraph:
         # Chunker
         chunker = SimpleDocumentChunker()
 
-        # Storage
-        storage_candidate = components.storage
-        try:
-            storage = storage_candidate()
-        except Exception:
-            storage = storage_candidate
+        # Storage - use injected storage, components storage, or ObjectStoreStorage as fallback
+        if storage is not None:
+            pass  # Use injected storage
+        else:
+            # Try components.storage first (for mocking support)
+            storage_candidate = components.storage
+            try:
+                storage = storage_candidate()
+            except Exception:
+                # If instantiation fails (e.g., abstract class), use ObjectStoreStorage
+                from documents.storage import ObjectStoreStorage
+
+                storage = ObjectStoreStorage()
 
         # Captioner
         captioner_cls = components.captioner

@@ -202,7 +202,8 @@ class PdfDocumentParser(DocumentParser):
                             else:
                                 kind = _classify_block_kind(normalized, max_font)
                                 if kind == "heading":
-                                    section_path = [normalized]
+                                    # Truncate to 128 chars to comply with section_path validation
+                                    section_path = [normalized[:128]]
                                 text_block = build_parsed_text_block(
                                     text=normalized,
                                     kind=kind,  # type: ignore[arg-type]
@@ -213,7 +214,8 @@ class PdfDocumentParser(DocumentParser):
                                     language=page_language,
                                 )
                                 if kind == "heading":
-                                    section_path = [normalized]
+                                    # Truncate to 128 chars to comply with section_path validation
+                                    section_path = [normalized[:128]]
 
                             text_blocks.append(text_block)
                             words += len(text_block.text.split())

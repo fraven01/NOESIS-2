@@ -770,8 +770,9 @@ def require_document_components() -> DocumentComponents:
         "DocumentsRepository",
         code="contract_missing_documents_repository",
     )
+    # Return concrete ObjectStoreStorage instead of abstract Storage class
     storage = _require_attribute(
-        storage_module, "Storage", code="contract_missing_storage"
+        storage_module, "ObjectStoreStorage", code="contract_missing_storage"
     )
     captioner = _require_attribute(
         captioning_module,

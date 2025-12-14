@@ -69,7 +69,11 @@ class DocumentCollection(models.Model):
 
 
 class Document(models.Model):
-    """Persisted document metadata shared across collections."""
+    """Persisted document metadata shared across collections.
+
+    Context fields (workflow_id, trace_id, case_id) enable traceability
+    and support future tenant-specific workflow configurations.
+    """
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     tenant = models.ForeignKey(
@@ -81,6 +85,31 @@ class Document(models.Model):
     source = models.CharField(max_length=255)
     external_id = models.CharField(max_length=255, blank=True, null=True)
     metadata = models.JSONField(blank=True, default=dict)
+
+    # Context fields for traceability and tenant-specific workflows
+    workflow_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        default="",
+        db_index=True,
+        help_text="Workflow that created/modified this document",
+    )
+    trace_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        default="",
+        help_text="Trace ID for end-to-end correlation",
+    )
+    case_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+        help_text="Business case this document belongs to",
+    )
+
     lifecycle_state = models.CharField(
         max_length=32,
         default="pending",
@@ -106,6 +135,10 @@ class Document(models.Model):
             models.Index(
                 fields=("tenant", "lifecycle_state"),
                 name="doc_tenant_state_idx",
+            ),
+            models.Index(
+                fields=("tenant", "case_id"),
+                name="doc_tenant_case_idx",
             ),
         ]
 

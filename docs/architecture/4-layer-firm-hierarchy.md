@@ -68,24 +68,30 @@ Think of NOESIS-2 as a company with 4 hierarchical layers:
 
 ---
 
-### **Layer 2: Business Managers (TODO - Mostly to be implemented)**
+### **Layer 2: Business Managers (Emerging)**
 
 **What**: Business process orchestration using workflows and cases
 
 **Current State**:
 
-- ⚠️ **Mostly missing!**
-- ✅ Hinted at in `/rag-tools/#framework`
-- ✅ `case_id` and `workflow_id` prepared in architecture
+- ⚠️ Workflow Engine and Case Management not yet implemented
+- ✅ **`FrameworkAnalysisGraph`** - First true Business Layer graph (analyzes Rahmen-BV structure)
+- ✅ `case_id` and `workflow_id` context fields prepared
 
-**Future State**:
+**Layer 2 vs Layer 3 Distinction**:
 
-- ✅ Workflow designer UI
-- ✅ Case management dashboard
-- ✅ Business rule engine
-- ✅ Cross-functional process flows
+| Aspect | L2 (Business) | L3 (Technical) |
+|--------|---------------|----------------|
+| **Purpose** | *What* should happen for the business | *How* to technically do it |
+| **Example** | FrameworkAnalysisGraph: "Analyze this BV structure" | ExternalKnowledgeGraph: "Fetch & store data" |
+| **Domain Knowledge** | Business rules, compliance, policies | APIs, storage, LLM orchestration |
+| **Tenant Variance** | Different workflows per tenant | Same technical implementation |
 
-**Examples** (to be built):
+**Examples**:
+
+- ✅ `FrameworkAnalysisGraph` - Analyzes Rahmen-Betriebsvereinbarungen (business logic)
+- 🔜 Workflow Engine (future)
+- 🔜 Case Management Dashboard (future)
 
 ```
 Business Process: "Legal Document Review Workflow"

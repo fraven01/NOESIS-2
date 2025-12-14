@@ -123,11 +123,10 @@ class CrawlerIngestionGraph:
             if storage is None:
                 storage = getattr(self._repository, "_storage", None)
         if storage is None:
-            storage_candidate = components.storage
-            try:
-                storage = storage_candidate()  # type: ignore[call-arg]
-            except Exception:
-                storage = storage_candidate
+            # Use concrete ObjectStoreStorage instead of abstract Storage class
+            from documents.storage import ObjectStoreStorage
+
+            storage = ObjectStoreStorage()
         self._storage = storage
 
         if captioner is None:

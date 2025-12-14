@@ -568,7 +568,8 @@ class DocxDocumentParser(DocumentParser):
                     if level is not None:
                         while len(section_stack) >= level:
                             section_stack.pop()
-                        section_stack.append(paragraph_text)
+                        # Truncate to 128 chars to comply with section_path validation
+                        section_stack.append(paragraph_text[:128])
                         section_path: Optional[Tuple[str, ...]] = tuple(section_stack)
                         block_obj = build_parsed_text_block(
                             text=paragraph_text,

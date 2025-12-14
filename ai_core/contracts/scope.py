@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -33,11 +34,16 @@ WorkflowId = str
 RunId = str
 IngestionRunId = str
 IdempotencyKey = str
+CollectionId = UUID | None
 Timestamp = datetime
 
 
 class ScopeContext(BaseModel):
-    """Canonical scope context containing mandatory correlation identifiers."""
+    """Canonical scope context containing mandatory correlation identifiers.
+
+    The collection_id field represents the "Aktenschrank" (file cabinet) context,
+    enabling multi-collection search and scoped operations.
+    """
 
     tenant_id: TenantId
     trace_id: TraceId
@@ -48,6 +54,10 @@ class ScopeContext(BaseModel):
     tenant_schema: TenantSchema | None = None
     workflow_id: WorkflowId | None = None
     idempotency_key: IdempotencyKey | None = None
+    collection_id: CollectionId = Field(
+        default=None,
+        description="Collection UUID for scoped operations ('Aktenschrank')",
+    )
     timestamp: Timestamp = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     model_config = ConfigDict(frozen=True)
@@ -76,6 +86,7 @@ class ScopeContext(BaseModel):
 
 __all__ = [
     "CaseId",
+    "CollectionId",
     "IdempotencyKey",
     "IngestionRunId",
     "InvocationId",

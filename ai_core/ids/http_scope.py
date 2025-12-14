@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from typing import Any, Mapping, MutableMapping
+from uuid import UUID
 
 from django.http import HttpRequest
 
@@ -42,6 +43,23 @@ def _normalize_header_value(value: Any) -> str | None:
     return str(value).strip() or None
 
 
+def _normalize_uuid_header(value: Any) -> UUID | None:
+    """Normalize a header value to a UUID or None."""
+    if value is None:
+        return None
+    if isinstance(value, UUID):
+        return value
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return None
+        try:
+            return UUID(stripped)
+        except ValueError:
+            return None
+    return None
+
+
 def normalize_request(request: HttpRequest) -> ScopeContext:
     """
     Normalize a Django HttpRequest into a ScopeContext.
@@ -52,6 +70,7 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
     - Trace ID coercion
     - Tenant context resolution
     - UUID generation for missing invocation_id/run_id
+    - Collection ID extraction for scoped operations
     - Validation via ScopeContext model
     """
     headers: Mapping[str, str] = getattr(request, "headers", {}) or {}
@@ -130,6 +149,11 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
     if not ingestion_run_id and not run_id:
         run_id = uuid.uuid4().hex
 
+    # 9. Collection ID ("Aktenschrank" context for scoped operations)
+    collection_id = _normalize_uuid_header(
+        headers.get("X-Collection-ID") or meta.get("HTTP_X_COLLECTION_ID")
+    )
+
     scope_kwargs = {
         "tenant_id": tenant_id,  # ScopeContext will validate this is not None
         "trace_id": trace_id,
@@ -140,6 +164,7 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
         "workflow_id": workflow_id,
         "idempotency_key": idempotency_key,
         "tenant_schema": tenant_schema,
+        "collection_id": collection_id,
     }
 
     return ScopeContext.model_validate(scope_kwargs)

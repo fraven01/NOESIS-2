@@ -324,7 +324,8 @@ class _MarkdownState:
         while len(self.section_stack) >= level:
             self.section_stack.pop()
         if cleaned:
-            self.section_stack.append(cleaned)
+            # Truncate to 128 chars to comply with section_path validation
+            self.section_stack.append(cleaned[:128])
         else:
             self.section_stack.append(f"Heading {level}")
 

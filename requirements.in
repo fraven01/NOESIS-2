@@ -21,6 +21,8 @@ markdown-it-py<4
 mdit-py-plugins
 python-docx
 python-pptx
+openpyxl
+xlrd
 readability-lxml
 opentelemetry-api
 opentelemetry-sdk

@@ -720,6 +720,7 @@ def create_default_parser_registry() -> ParserRegistry:
         PdfDocumentParser,
         TextDocumentParser,
         ImageDocumentParser,
+        XlsxDocumentParser,
     )
 
     return ParserRegistry(
@@ -728,6 +729,7 @@ def create_default_parser_registry() -> ParserRegistry:
             HtmlDocumentParser(),
             DocxDocumentParser(),
             PptxDocumentParser(),
+            XlsxDocumentParser(),  # Excel spreadsheets
             PdfDocumentParser(),
             TextDocumentParser(),
             ImageDocumentParser(),
