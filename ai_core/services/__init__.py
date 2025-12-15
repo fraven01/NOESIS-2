@@ -1725,24 +1725,6 @@ def handle_document_upload(
 
     ingestion_run_id = uuid4().hex
 
-    graph_payload = {
-        "tenant_id": meta["tenant_id"],
-        "uploader_id": str(meta.get("key_alias") or meta["case_id"]),
-        "case_id": meta["case_id"],
-        "trace_id": meta["trace_id"],
-        "workflow_id": document_meta.workflow_id,
-        "ingestion_run_id": ingestion_run_id,
-        "collection_id": metadata_obj.get("collection_id"),
-        "file_bytes": file_bytes,
-        "filename": original_name,
-        "declared_mime": blob.media_type,
-        "visibility": metadata_obj.get("visibility"),
-        "tags": metadata_obj.get("tags"),
-        "source_key": metadata_obj.get("external_id"),
-        "origin_uri": metadata_obj.get("origin_uri"),
-        "normalized_document_input": normalized_document.model_dump(),
-    }
-
     graph_context: dict[str, object] = {}
 
     def _build_scope() -> ScopeContext:
@@ -1779,21 +1761,23 @@ def handle_document_upload(
 
     try:
         repository = _get_documents_repository()
-        
-        # Prepare state for LangGraph
+
+        # Prepare state for LangGraph (unified context structure)
         state = {
             "normalized_document_input": normalized_document.model_dump(),
-            "trace_id": meta["trace_id"],
-            "case_id": meta["case_id"],
             "run_until": "persist_complete",
             "context": {
+                # Telemetry IDs (unified with ExternalKnowledgeGraph)
+                "tenant_id": meta["tenant_id"],
+                "trace_id": meta["trace_id"],
+                "case_id": meta["case_id"],
+                # Runtime dependencies
                 "runtime_repository": repository,
-                # Other dependencies use defaults (embedded in node) or are optional
-            }
+            },
         }
-        
+
         result_state = upload_graph.invoke(state)
-        
+
         # Map result state to expected dictionary format for downstream logic
         graph_result = {
             "decision": result_state.get("decision", "error"),
@@ -1804,7 +1788,7 @@ def handle_document_upload(
             "telemetry": result_state.get("telemetry", {}),
             "transitions": result_state.get("transitions", {}),
         }
-        
+
         # Check for error in state
         if result_state.get("error"):
             # If we have a specific known error string, we can re-raise or handle it

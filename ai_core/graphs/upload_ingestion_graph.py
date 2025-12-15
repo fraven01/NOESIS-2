@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, Mapping, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol, TypedDict
 
 from django.conf import settings
 from langgraph.graph import END, START, StateGraph
@@ -35,23 +35,29 @@ logger = logging.getLogger(__name__)
 # --------------------------------------------------------------------- Protocols
 class DocumentRepository(Protocol):
     """Protocol for document repository."""
+
     def get(self, tenant_id: str, document_id: str, **kwargs: Any) -> Any: ...
     def upsert(self, document: Any, **kwargs: Any) -> Any: ...
 
 
 class EmbeddingHandler(Protocol):
     """Protocol for embedding handler."""
+
     def __call__(self, *, normalized_document: Any, **kwargs: Any) -> Any: ...
 
 
 class GuardrailEnforcer(Protocol):
     """Protocol for guardrail enforcement."""
+
     def __call__(self, *, normalized_document: Any, **kwargs: Any) -> Any: ...
 
 
 class DeltaDecider(Protocol):
     """Protocol for delta decision."""
-    def __call__(self, *, normalized_document: Any, baseline: Any, **kwargs: Any) -> Any: ...
+
+    def __call__(
+        self, *, normalized_document: Any, baseline: Any, **kwargs: Any
+    ) -> Any: ...
 
 
 # --------------------------------------------------------------------- State
@@ -76,7 +82,9 @@ class UploadIngestionState(TypedDict):
     processing_result: NotRequired[DocumentProcessingState]
 
     # Output
-    decision: NotRequired[str]  # "completed" | "skip_guardrail" | "skip_duplicate" | "error"
+    decision: NotRequired[
+        str
+    ]  # "completed" | "skip_guardrail" | "skip_duplicate" | "error"
     reason: NotRequired[str]
     severity: NotRequired[str]
     document_id: NotRequired[str]
@@ -113,13 +121,21 @@ def build_config_node(state: UploadIngestionState) -> dict[str, Any]:
 
     # Build config (upload-specific settings)
     max_bytes = int(getattr(settings, "UPLOAD_MAX_BYTES", 25 * 1024 * 1024))
-    allowed_mimes = tuple(getattr(settings, "UPLOAD_ALLOWED_MIME_TYPES", (
-        "text/plain", "text/markdown", "text/html",
-        "application/pdf",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )))
+    allowed_mimes = tuple(
+        getattr(
+            settings,
+            "UPLOAD_ALLOWED_MIME_TYPES",
+            (
+                "text/plain",
+                "text/markdown",
+                "text/html",
+                "application/pdf",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+        )
+    )
 
     config = DocumentPipelineConfig(
         enable_upload_validation=True,
@@ -159,11 +175,16 @@ def run_processing_node(state: UploadIngestionState) -> dict[str, Any]:
     # Extract runtime dependencies from context
     repository = runtime_context.get("runtime_repository")
     storage = runtime_context.get("runtime_storage")
-    
+
     # Defaults handled by ai_core_api or defaults if None
     embedder = runtime_context.get("runtime_embedder") or ai_core_api.trigger_embedding
-    delta_decider = runtime_context.get("runtime_delta_decider") or ai_core_api.decide_delta
-    guardrail_enforcer = runtime_context.get("runtime_guardrail_enforcer") or ai_core_api.enforce_guardrails
+    delta_decider = (
+        runtime_context.get("runtime_delta_decider") or ai_core_api.decide_delta
+    )
+    guardrail_enforcer = (
+        runtime_context.get("runtime_guardrail_enforcer")
+        or ai_core_api.enforce_guardrails
+    )
     quarantine_scanner = runtime_context.get("runtime_quarantine_scanner")  # Optional
 
     # Build inner graph components
@@ -187,6 +208,7 @@ def run_processing_node(state: UploadIngestionState) -> dict[str, Any]:
             storage = components.storage()
         except Exception:
             from documents.storage import ObjectStoreStorage
+
             storage = ObjectStoreStorage()
 
     inner_graph = build_document_processing_graph(
@@ -234,8 +256,8 @@ def run_processing_node(state: UploadIngestionState) -> dict[str, Any]:
 def map_results_node(state: UploadIngestionState) -> dict[str, Any]:
     """Map processing results to output transitions."""
     result_state = state.get("processing_result")
-    
-    # If we got here due to an error in previous steps (validation/config), 
+
+    # If we got here due to an error in previous steps (validation/config),
     # processing_result might be missing, but we still need to map the error.
     if not result_state:
         # Check if we have an error from previous steps
@@ -249,7 +271,7 @@ def map_results_node(state: UploadIngestionState) -> dict[str, Any]:
                 "telemetry": {},
                 "error": error,
             }
-        
+
         return {
             "decision": "error",
             "reason": "processing_result_missing",
@@ -269,31 +291,40 @@ def map_results_node(state: UploadIngestionState) -> dict[str, Any]:
     delta = result_state.delta_decision
     guardrail = result_state.guardrail_decision
 
-    # Fetch configuration for accept_upload context from state logic if possible, 
+    # Fetch configuration for accept_upload context from state logic if possible,
     # but here we might prefer to just access what we have.
     # Re-deriving accept context logic similar to legacy:
     blob = getattr(normalized_doc, "blob", None)
     mime_type = getattr(blob, "media_type", None)
-    
+
     config = state.get("config")
     max_bytes = getattr(config, "max_bytes", None) if config else None
-    
+
     transitions: dict[str, Any] = {}
 
-    def _transition(*, phase: str, decision: str, reason: str, severity: str = "info", 
-                    context: dict[str, Any] | None = None,
-                    pipeline: PipelineSection | None = None, 
-                    delta: Any = None, guardrail: Any = None) -> dict[str, Any]:
+    def _transition(
+        *,
+        phase: str,
+        decision: str,
+        reason: str,
+        severity: str = "info",
+        context: dict[str, Any] | None = None,
+        pipeline: PipelineSection | None = None,
+        delta: Any = None,
+        guardrail: Any = None,
+    ) -> dict[str, Any]:
         ctx = {k: v for k, v in (context or {}).items() if v is not None}
         result = StandardTransitionResult(
-            phase=phase, # type: ignore[arg-type]
+            phase=phase,  # type: ignore[arg-type]
             decision=decision,
             reason=reason,
             severity=severity,
             context=ctx,
             pipeline=pipeline,
             delta=build_delta_section(delta) if delta is not None else None,
-            guardrail=build_guardrail_section(guardrail) if guardrail is not None else None,
+            guardrail=(
+                build_guardrail_section(guardrail) if guardrail is not None else None
+            ),
         )
         return result.model_dump()
 
@@ -342,7 +373,11 @@ def map_results_node(state: UploadIngestionState) -> dict[str, Any]:
     transitions["document_pipeline"] = _transition(
         phase="document_pipeline",
         decision="processed" if result_state.error is None else "error",
-        reason="document_pipeline_completed" if result_state.error is None else "document_pipeline_failed",
+        reason=(
+            "document_pipeline_completed"
+            if result_state.error is None
+            else "document_pipeline_failed"
+        ),
         severity="error" if result_state.error else "info",
         context={"phase": result_state.phase},
         pipeline=pipeline_section,
@@ -372,7 +407,9 @@ def map_results_node(state: UploadIngestionState) -> dict[str, Any]:
         "phase": result_state.phase,
         "run_until": state.get("run_until"),
         "delta_decision": getattr(delta, "decision", None) if delta else None,
-        "guardrail_decision": getattr(guardrail, "decision", None) if guardrail else None,
+        "guardrail_decision": (
+            getattr(guardrail, "decision", None) if guardrail else None
+        ),
     }
 
     return {
@@ -399,14 +436,18 @@ workflow.add_node("map_results", map_results_node)
 # Edges
 workflow.add_edge(START, "validate_input")
 
+
 # Conditional: Skip processing if validation failed
-def _check_validation_error(state: UploadIngestionState) -> Literal["continue", "error"]:
+def _check_validation_error(
+    state: UploadIngestionState,
+) -> Literal["continue", "error"]:
     return "error" if state.get("error") else "continue"
+
 
 workflow.add_conditional_edges(
     "validate_input",
     _check_validation_error,
-    {"continue": "build_config", "error": "map_results"}
+    {"continue": "build_config", "error": "map_results"},
 )
 
 workflow.add_edge("build_config", "run_processing")

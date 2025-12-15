@@ -10,23 +10,26 @@ LOGGER = logging.getLogger(__name__)
 
 # Canonical set of context keys relevant for telemetry propagation.
 # Used by all LangGraph nodes when filtering context for downstream calls.
-TELEMETRY_CONTEXT_KEYS: frozenset[str] = frozenset({
-    "tenant_id",
-    "trace_id",
-    "workflow_id",
-    "case_id",
-    "run_id",
-    "worker_call_id",
-})
+TELEMETRY_CONTEXT_KEYS: frozenset[str] = frozenset(
+    {
+        "tenant_id",
+        "trace_id",
+        "workflow_id",
+        "case_id",
+        "run_id",
+        "worker_call_id",
+    }
+)
 
 
 def filter_telemetry_context(context: Mapping[str, Any]) -> dict[str, Any]:
     """Extract only telemetry-relevant keys from a context mapping.
-    
+
     Use this in graph nodes when passing context to downstream services
     to ensure consistent telemetry propagation.
     """
     return {k: v for k, v in context.items() if k in TELEMETRY_CONTEXT_KEYS}
+
 
 def _build_extra(namespace: str | None, fields: Mapping[str, Any]) -> dict[str, Any]:
     prefix = f"{namespace}." if namespace else ""
