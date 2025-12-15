@@ -1842,7 +1842,13 @@ class InMemoryDocumentsRepository(DocumentsRepository):
                 raise ValueError("inline_checksum_mismatch")
             if owner_checksum is not None and owner_checksum != sha256:
                 raise ValueError(checksum_error)
-            return FileBlob(type="file", uri=uri, sha256=sha256, size=size)
+            return FileBlob(
+                type="file",
+                uri=uri,
+                sha256=sha256,
+                size=size,
+                media_type=blob.media_type,  # Preserve media_type
+            )
 
         blob_sha = getattr(blob, "sha256", None)
         if (

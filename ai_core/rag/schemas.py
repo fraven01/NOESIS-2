@@ -12,3 +12,4 @@ class Chunk:
     embedding: Optional[List[float]] = None
     parents: Optional[Dict[str, Dict[str, Any]]] = None
     """Optional mapping of parent node identifiers to their metadata payloads."""
+

@@ -19,6 +19,27 @@ from typing import Any, Callable, Iterable, Optional, TypeVar, cast
 
 LOGGER = logging.getLogger(__name__)
 
+# Suppress noisy OTEL exporter tracebacks on connection errors.
+# These modules log full tracebacks when Langfuse is temporarily unavailable.
+_OTEL_NOISY_LOGGERS = [
+    "opentelemetry.sdk._shared_internal",
+    "opentelemetry.exporter.otlp.proto.http.trace_exporter",
+    "opentelemetry.exporter.otlp.proto.http",
+    "urllib3.connectionpool",
+]
+
+
+def _configure_otel_logging() -> None:
+    """Reduce OTEL exporter log verbosity to avoid traceback spam."""
+    level_str = (os.getenv("OTEL_EXPORTER_LOG_LEVEL") or "WARNING").upper()
+    level = getattr(logging, level_str, logging.WARNING)
+    for logger_name in _OTEL_NOISY_LOGGERS:
+        logging.getLogger(logger_name).setLevel(level)
+
+
+# Apply immediately on import
+_configure_otel_logging()
+
 _OTEL_TRACE_SPEC = importlib.util.find_spec("opentelemetry.trace")
 _OTEL_TRACE = (
     importlib.import_module("opentelemetry.trace")

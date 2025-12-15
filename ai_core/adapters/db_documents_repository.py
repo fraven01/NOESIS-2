@@ -44,6 +44,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 uri=uri,
                 sha256=doc.blob.sha256,
                 size=doc.blob.size,
+                media_type=doc.blob.media_type,  # Preserve media_type
             )
         return doc
 
@@ -272,6 +273,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 uri=uri,
                 sha256=doc.blob.sha256,
                 size=doc.blob.size,
+                media_type=doc.blob.media_type,  # Preserve media_type
             )
             return doc.model_copy(update={"blob": new_blob}, deep=True)
 
@@ -287,6 +289,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 uri=uri,
                 sha256=checksum,
                 size=len(data),
+                media_type=doc.blob.media_type,  # Preserve media_type from LocalFileBlob
             )
             return doc.model_copy(update={"blob": new_blob}, deep=True)
 
@@ -781,6 +784,7 @@ class DbDocumentsRepository(DocumentsRepository):
                 uri=uri,
                 sha256=asset.blob.sha256,
                 size=asset.blob.size,
+                media_type=asset.blob.media_type,  # Preserve media_type
             )
         return asset
 

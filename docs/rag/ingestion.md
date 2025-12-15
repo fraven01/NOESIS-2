@@ -2,11 +2,13 @@
 
 Der Ingestion-Graph speist Inhalte in den RAG-Store ein. Dieses Dokument beschreibt den Ablauf, Parametergrenzen und Fehlertoleranz, damit Junior-Entwickler verlässlich Embeddings erzeugen. Es gibt keinen Legacy-Import; wir starten bewusst from scratch.
 
-*Hinweis: Der Begriff „Pipeline“ ist eine historische Bezeichnung für den heute als „Graph“ (LangGraph) bezeichneten Orchestrierungs-Flow.*
+*Hinweis: Der Begriff „Pipeline" ist eine historische Bezeichnung für die heute als „Graph" (LangGraph) bezeichneten Orchestrierungs-Flow.*
 
 # Wie
 
-## Ingestion-Graph
+## Graph-Architektur
+
+### Konzeptioneller Ablauf
 
 ```mermaid
 flowchart TD
@@ -27,13 +29,118 @@ flowchart TD
 - Splitter normalisiert Formate (Markdown → Plaintext), Chunker erzeugt überlappende Stücke.
 - Embedder ruft LiteLLM über `ai_core.rag.embeddings.EmbeddingClient` auf, nutzt `EMBEDDINGS_MODEL_PRIMARY` (optional `EMBEDDINGS_MODEL_FALLBACK`) sowie `EMBEDDINGS_PROVIDER` und schreibt Ergebnisse in `pgvector`.
 - Upsert nutzt Hashes, um Duplikate zu überspringen und den Lifecycle (`documents.lifecycle` sowie `chunks.metadata->>'lifecycle_state'`) zu respektieren.
-- Der Crawler-Ingestion-Graph speichert normalisierte Dokumente zuerst über
-  `documents.repository.DocumentsRepository.upsert()` und übergibt anschließend
-  strukturierte Chunks an den Standard-Vector-Client
-  (`ai_core.rag.vector_client.get_default_client().upsert_chunks`). Auf diese
-  Weise bleiben Dokumentenspeicher und Vector-Space synchron, bevor optionale
-  Retire-Entscheidungen `update_lifecycle_state` für betroffene Dokumente
-  triggern.
+
+## Upload Ingestion Graph
+
+**Location**: [`ai_core/graphs/upload_ingestion_graph.py`](../../ai_core/graphs/upload_ingestion_graph.py)
+
+Dieser Graph orchestriert die Verarbeitung von Dokumenten, die über die Upload-Schnittstelle eingehen.
+
+### Flow
+
+```mermaid
+flowchart LR
+    START --> validate_input
+    validate_input --> |success| build_config
+    validate_input --> |error| map_results
+    build_config --> run_processing
+    run_processing --> map_results
+    map_results --> END
+```
+
+### Nodes
+
+1. **validate_input**: Validiert und hydratiert `normalized_document_input` zu `NormalizedDocument` (Pydantic)
+2. **build_config**: Erstellt `DocumentPipelineConfig` (Upload-Limits) und `DocumentProcessingContext` (Trace/Case IDs)
+3. **run_processing**: Invoziert den inneren `DocumentProcessingGraph` mit allen Dependencies (Repository, Storage, Embedder, Delta, Guardrails)
+4. **map_results**: Mappt Verarbeitungsergebnisse auf standardisierte Transitions (`accept_upload`, `delta_and_guardrails`, `document_pipeline`)
+
+### State Contract (UploadIngestionState)
+
+| Feld | Typ | Pflicht | Beschreibung |
+|------|-----|---------|--------------|
+| `normalized_document_input` | `dict[str, Any]` | Ja | Rohdaten für NormalizedDocument |
+| `trace_id` | `str` | Nein | Trace-ID für Observability |
+| `case_id` | `str` | Nein | Business Case ID |
+| `run_until` | `str` | Nein | Phase-Limit: `persist_complete`, `full` |
+| `context` | `dict[str, Any]` | Nein | Runtime-Dependencies (Repository, Storage, Embedder, etc.) |
+| `document` | `NormalizedDocument` | Output | Validiertes Dokument |
+| `config` | `DocumentPipelineConfig` | Output | Upload-Konfiguration |
+| `processing_context` | `DocumentProcessingContext` | Output | Verarbeitungskontext |
+| `processing_result` | `DocumentProcessingState` | Output | Ergebnis des inneren Graphen |
+| `decision` | `str` | Output | `completed`, `skip_guardrail`, `skip_duplicate`, `error` |
+| `reason` | `str` | Output | Begründung der Decision |
+| `severity` | `str` | Output | `info`, `error` |
+| `document_id` | `str` | Output | Finale Dokument-ID |
+| `version` | `str` | Output | Dokumentversion |
+| `telemetry` | `dict[str, Any]` | Output | Metriken (Phase, Delta/Guardrail-Decisions) |
+| `transitions` | `dict[str, Any]` | Output | Strukturierte Transitions |
+| `error` | `str` | Output | Fehlerdetails |
+
+### Transitions
+
+Der Graph emittiert drei standardisierte Transitions gemäß [`ai_core/graphs/transition_contracts.py`](../../ai_core/graphs/transition_contracts.py):
+
+#### accept_upload
+
+**Phase**: `accept_upload`
+**Decision**: `accepted` / `rejected`
+**Context**:
+- `mime`: Media-Type des Uploads
+- `size_bytes`: Payload-Größe
+- `max_bytes`: Konfiguriertes Limit
+
+#### delta_and_guardrails
+
+**Phase**: `delta_and_guardrails`
+**Decision**: Kombiniert aus Guardrail + Delta-Decision
+**Sections**:
+- `delta`: Delta-Entscheidung (siehe `build_delta_section`)
+- `guardrail`: Guardrail-Entscheidung (siehe `build_guardrail_section`)
+
+#### document_pipeline
+
+**Phase**: `document_pipeline`
+**Decision**: `processed` / `error`
+**Section**:
+- `pipeline`: Phase-Status aus `DocumentProcessingState` (`phase`, `run_until`, `error`)
+
+### Runtime-Abhängigkeiten (Injected via Context)
+
+| Dependency | Type | Default | Beschreibung |
+|------------|------|---------|--------------|
+| `runtime_repository` | `DocumentRepository` | None | DB-Repository für Dokumente |
+| `runtime_storage` | `ObjectStoreStorage` | Auto-Create | Object-Store für Blobs |
+| `runtime_embedder` | `EmbeddingHandler` | `ai_core_api.trigger_embedding` | Embedding-Generator |
+| `runtime_delta_decider` | `DeltaDecider` | `ai_core_api.decide_delta` | Delta-Entscheidungslogik |
+| `runtime_guardrail_enforcer` | `GuardrailEnforcer` | `ai_core_api.enforce_guardrails` | Guardrail-Checker |
+| `runtime_quarantine_scanner` | Optional | None | Quarantine-Scanner |
+
+### Error Handling
+
+**Validation Errors**:
+- Input fehlt: `input_missing:normalized_document_input`
+- Input ungültig: `input_invalid:<exception>`
+
+**Processing Errors**:
+- Config fehlt: `document_missing`, `missing_required_state`
+- Graph-Fehler: `processing_failed:<exception>`
+
+**Decision Mapping**:
+- Guardrail abgelehnt → `skip_guardrail`
+- Delta Skip (Duplikat) → `skip_duplicate`
+- Processing Error → `error`
+- Sonst → `completed`
+
+## Crawler Ingestion Graph
+
+Der Crawler-Ingestion-Graph speichert normalisierte Dokumente zuerst über
+`documents.repository.DocumentsRepository.upsert()` und übergibt anschließend
+strukturierte Chunks an den Standard-Vector-Client
+(`ai_core.rag.vector_client.get_default_client().upsert_chunks`). Auf diese
+Weise bleiben Dokumentenspeicher und Vector-Space synchron, bevor optionale
+Retire-Entscheidungen `update_lifecycle_state` für betroffene Dokumente
+triggern.
 
 ## Crawler → RAG End-to-End
 
@@ -57,7 +164,7 @@ flowchart LR
 ## Upload → Ingest-Trigger
 
 - **Upload-Phase (`POST /ai/rag/documents/upload/`)**: Der Web-Service nimmt Dateien inklusive Tenant- und Projektkontext an, legt die Metadaten in `documents` ab und gibt eine `document_id` zurück. Dateien landen im Objektspeicher; ihre Verarbeitung endet hier bewusst, damit Upload-Latenzen nicht vom Embedding-Graph abhängen. `handle_document_upload` queued dabei sofort den zugehörigen `run_ingestion_graph` Task, sodass keine manuelle Bestätigung notwendig ist.
-- **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Das Run-Endpoint wird primär für Replays oder geplante Batch-Runs benötigt, weil reguläre Uploads bereits automatisch in der Queue landen. Der Worker liest die zuvor gesicherten Assets, führt Split/Chunk/Embed aus und schreibt Ergebnisse in `pgvector`.
+- **Trigger-Phase (`POST /ai/rag/ingestion/run/`)**: Ein zweiter Request stößt den eigentlichen Ingest via Celery an (`ingestion` Queue). Der Request erwartet einen JSON-Body mit `document_ids` (Array), sodass mehrere Dokumente gebündelt angestoßen werden können. Das Run-Endpoint wird primär für Replays oder geplante Batch-Runs benötigt, weil reguläre Uploads bereits automatisch in der Queue landen. Der Worker invoziert den **Upload Ingestion Graph** (siehe oben), der Split/Chunk/Embed ausführt und Ergebnisse in `pgvector` schreibt.
 - **Skalierung & Zuverlässigkeit**: Die entkoppelte Abfolge erlaubt horizontales Skalieren der Upload- und Ingestion-Services unabhängig voneinander, isoliert Backpressure in der Queue und ermöglicht Retries ohne erneuten Datei-Upload. Asynchrone Verarbeitung verhindert Timeouts großer Dateien, während Dead-Letter-Mechanismen und konfigurierbares Backoff gezielt Fehlerfälle abfedern.
 - **Bild-Uploads**: `ImageDocumentParser` akzeptiert Rasterformate (`image/jpeg`, `image/png`, `image/webp`, `image/gif`, `image/tiff`, `image/bmp`). Der Parser erzeugt einen Haupt-Asset mit den Bildbytes sowie einen Platzhalter-Textblock, damit Downstream-Chains keinen leeren Content erhalten. Die Parser-Statistiken enthalten mindestens `parser.kind=image`, `parser.bytes=<payload_size>` und `parser.assets=1`, sodass Langfuse/OTel die Laufzeitgrößen loggen kann.
 
@@ -93,6 +200,6 @@ flowchart LR
 # Schritte
 
 1. Lade das Dokument via `POST /ai/rag/documents/upload/` hoch, dokumentiere die zurückgegebene `document_id` und prüfe Upload-Fehler (z.B. Tenant-Mismatch, Dateigrößenlimit) sofort im Response.
-2. Prüfe, dass der Upload-Handler den `run_ingestion_graph`-Task erfolgreich in die `ingestion` Queue gelegt hat (Langfuse Trace `crawler.ingestion.ingest` oder Celery-Monitoring). Das Endpoint `POST /ai/rag/ingestion/run/` bleibt für Replays und geplante Batch-Runs verfügbar; dort stößt Payload `{ "document_ids": [<document_id>] }` einen neuen Task an.
-3. Überwache den Worker-Lauf (Langfuse Trace `ingestion.*`, Dead-Letter-Queue, Cloud-SQL-Metriken) und führe bei Backpressure-Peaks ein gestaffeltes Retriggering durch, bevor du in Prod ausrollst. Einstellungen wie `BATCH_SIZE` dokumentieren und Alerts im [Langfuse Guide](../observability/langfuse.md) aktivieren.
+2. Prüfe, dass der Upload-Handler den `run_ingestion_graph`-Task erfolgreich in die `ingestion` Queue gelegt hat (Langfuse Trace `upload.validate_input`, `upload.build_config`, `upload.run_processing` oder Celery-Monitoring). Das Endpoint `POST /ai/rag/ingestion/run/` bleibt für Replays und geplante Batch-Runs verfügbar; dort stößt Payload `{ "document_ids": [<document_id>] }` einen neuen Task an.
+3. Überwache den Worker-Lauf (Langfuse Trace `upload.*`, `document.processing.*`, Dead-Letter-Queue, Cloud-SQL-Metriken) und führe bei Backpressure-Peaks ein gestaffeltes Retriggering durch, bevor du in Prod ausrollst. Einstellungen wie `BATCH_SIZE` dokumentieren und Alerts im [Langfuse Guide](../observability/langfuse.md) aktivieren.
 4. Für Crawler-Quellen zeigt LangGraph die `crawler.ingestion.*`-Spans exakt in der Reihenfolge `update_status_normalized → enforce_guardrails → document_pipeline → ingest_decision → ingest → finish`. Die Guardrails prüfen den Status vor dem Dokumentlauf, `document_pipeline` schreibt normalisierte Inhalte, `ingest_decision` entscheidet über Upserts versus Retire und `ingest` orchestriert Vector-Updates, bevor `finish` die Laufzeitmetriken abschließt.

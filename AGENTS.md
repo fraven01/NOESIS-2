@@ -216,6 +216,22 @@ Wir erzeugen Stubs über die untenstehenden Codex-Prompts. Reihenfolge:
 - Skalierungs- und Kostenlimits sind in [Operations](docs/operations/scaling.md) dokumentiert.
 - QA-Abbruchkriterien und Smoke-Checklisten liegen in [docs/qa/checklists.md](docs/qa/checklists.md).
 
+## Pre-MVP Entwicklung
+
+> **Hinweis**: Das Projekt befindet sich in der Pre-MVP Phase. Folgende Freiheiten gelten:
+
+- **Datenbank-Resets sind akzeptabel**. Es gibt keine Produktionsdaten, die erhalten werden müssen.
+- Bei Contract-Änderungen (z.B. neue Felder in Pydantic-Modellen) kann ein Reset der Datenbank erforderlich sein.
+- Um die Datenbank zurückzusetzen:
+
+  ```bash
+  docker compose down -v
+  docker compose up -d
+  ```
+
+- Schema-Migrationen werden automatisch bei Container-Start ausgeführt.
+- Contract-Divergenz sollte an der Wurzel in den Daten behoben werden, nicht durch Workarounds.
+
 ## Teststrategie
 
 - CI/CD-Stufen für Lint, Unit, Build, E2E und Migrationsprüfungen sind in [CI/CD-Dokumentation](docs/cicd/pipeline.md#pipeline-stufen) beschrieben.
@@ -253,7 +269,7 @@ Beziehungsmatrix: Ein **Tenant** enthält viele **Cases**, jeder **Case** enthä
 
 ## Commands
 
-test: pytest -q
+test: npm run win:dev:test
 lint: ruff check . && black --check . && mypy .
 typecheck: mypy .
 format: black .
@@ -265,6 +281,8 @@ format: black .
 - Bewahre Idempotenz: aktualisiere diese Datei nur bei neuen Links, Begriffsklärungen oder widersprüchlichen Aussagen.
 
 ## Navigationsverzeichnis
+
+> **Vollständiger Index**: [docs/README.md](docs/README.md) (Human-Friendly Navigation)
 
 1. [Architekturübersicht](docs/architektur/overview.md)
 2. [Multi-Tenancy Leitfaden](docs/multi-tenancy.md) & [Tenant-Management](docs/tenant-management.md)

@@ -34,14 +34,72 @@ graph LR
 
 **Location**: [`ai_core/graphs/external_knowledge_graph.py`](../../ai_core/graphs/external_knowledge_graph.py)
 
-This graph handles web search, result filtering, and optional Human-In-The-Loop (HITL) review.
+This graph handles web search, result filtering, selection, and optional automated ingestion of external knowledge sources.
+
+**Flow**:
+
+```mermaid
+flowchart LR
+    START --> search
+    search --> select
+    select --> |auto_ingest=true| ingest
+    select --> |auto_ingest=false| END
+    ingest --> END
+```
 
 **Nodes**:
 
-* `_k_search`: Executes web search using `WebSearchWorker`.
-* `_k_filter_and_select`: Filters results and selects the best candidate.
-* `_k_hitl_gate`: Manages manual review if enabled.
-* `_k_trigger_ingestion`: Triggers ingestion of selected content.
+1. **search** (`search_node`): Executes web search using injected `WebSearchWorker`, filters context to allowed telemetry fields (`tenant_id`, `trace_id`, `workflow_id`, `case_id`, `run_id`, `worker_call_id`). Returns `search_results` or `error`.
+
+2. **select** (`selection_node`): Filters and ranks search results:
+   - Removes snippets below `min_snippet_length` (default: 40 chars)
+   - Blocks domains from `blocked_domains` list
+   - Excludes results with `noindex` + `robot` hints
+   - Limits to `top_n` candidates (default: 5)
+   - Prefers PDF results if `prefer_pdf=true`
+   - Selects highest-ranked candidate as `selected_result`
+
+3. **ingest** (`ingestion_node`): Triggers document ingestion for selected URL via injected `IngestionTrigger` protocol. Only invoked if `auto_ingest=true`.
+
+**State Contract (ExternalKnowledgeState)**:
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `query` | `str` | Yes | Search query |
+| `collection_id` | `str` | Yes | Target collection for ingestion |
+| `enable_hitl` | `bool` | Yes | HITL flag (reserved for future use) |
+| `context` | `dict[str, Any]` | Yes | Tenant ID, Trace ID, runtime dependencies |
+| `search_results` | `list[dict[str, Any]]` | Output | Raw search results from worker |
+| `selected_result` | `dict[str, Any] \| None` | Output | Best candidate selected |
+| `ingestion_result` | `dict[str, Any] \| None` | Output | Ingestion status |
+| `error` | `str \| None` | Output | Error message |
+| `auto_ingest` | `bool` | Input | Whether to auto-trigger ingestion |
+
+**Runtime Dependencies (Injected via Context)**:
+
+| Dependency | Protocol | Required | Description |
+|------------|----------|----------|-------------|
+| `runtime_worker` | `WebSearchWorker` | Yes | Web search provider (e.g., Tavily, SerpAPI) |
+| `runtime_trigger` | `IngestionTrigger` | No | Ingestion trigger (required if `auto_ingest=true`) |
+| `min_snippet_length` | `int` | No | Minimum snippet length (default: 40) |
+| `blocked_domains` | `list[str]` | No | Blocked domain list (default: []) |
+| `top_n` | `int` | No | Max candidates to shortlist (default: 5) |
+| `prefer_pdf` | `bool` | No | Prefer PDF results (default: true) |
+
+**Error Handling**:
+
+- Search failure: `error` set with provider error message, `search_results` empty
+- No search worker: `error="No search worker configured in context"`
+- No ingestion trigger (when auto_ingest=true): `ingestion_result={"status": "error", "reason": "no_trigger_configured"}`
+- Ingestion exception: `ingestion_result={"status": "error", "reason": "<exception>"}`
+
+**HITL Flow (Future)**:
+
+Currently, the graph supports basic HITL signaling via `enable_hitl` flag, but does not pause for human approval. The `_check_hitl` conditional edge determines whether to:
+- **auto_ingest=true**: Proceed to ingestion node
+- **auto_ingest=false**: Skip ingestion, end with selection only
+
+Future HITL implementation will use LangGraph interrupts to pause execution and await human approval before ingestion.
 
 ### 3. Hybrid Search & Score
 

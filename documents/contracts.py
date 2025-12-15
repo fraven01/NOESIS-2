@@ -229,6 +229,10 @@ class FileBlob(BaseModel):
         description="Hex encoded SHA-256 checksum of the blob contents."
     )
     size: int = Field(description="Blob size in bytes.")
+    media_type: Optional[str] = Field(
+        default=None,
+        description="RFC compliant media type of the blob contents (type/subtype lowercase).",
+    )
 
     @field_validator("uri")
     @classmethod

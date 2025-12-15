@@ -87,6 +87,18 @@ class PdfDocumentParser(DocumentParser):
         ):
             return True
 
+        # Check meta.external_ref.media_type fallback
+        # This handles cases where blob.media_type is None but the type is stored in metadata
+        meta = getattr(document, "meta", None)
+        external_ref = getattr(meta, "external_ref", None)
+        if isinstance(external_ref, Mapping):
+            ext_media = external_ref.get("media_type")
+            if (
+                isinstance(ext_media, str)
+                and normalize_media_type(ext_media) in _PDF_MEDIA_TYPES
+            ):
+                return True
+
         # Fallback: Sniff payload (safe for Inline/Local blobs)
         try:
             payload = document_payload_bytes(document)

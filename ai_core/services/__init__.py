@@ -72,7 +72,7 @@ from ai_core.graphs.transition_contracts import (
 )
 from ai_core.graphs.upload_ingestion_graph import (
     UploadIngestionError,
-    UploadIngestionGraph,
+    graph as upload_graph,
 )
 from ai_core.rag.vector_client import get_default_client
 from customers.tenant_context import TenantContext
@@ -1779,8 +1779,36 @@ def handle_document_upload(
 
     try:
         repository = _get_documents_repository()
-        graph = UploadIngestionGraph(repository=repository)
-        graph_result = graph.run(graph_payload, run_until="persist_complete")
+        
+        # Prepare state for LangGraph
+        state = {
+            "normalized_document_input": normalized_document.model_dump(),
+            "trace_id": meta["trace_id"],
+            "case_id": meta["case_id"],
+            "run_until": "persist_complete",
+            "context": {
+                "runtime_repository": repository,
+                # Other dependencies use defaults (embedded in node) or are optional
+            }
+        }
+        
+        result_state = upload_graph.invoke(state)
+        
+        # Map result state to expected dictionary format for downstream logic
+        graph_result = {
+            "decision": result_state.get("decision", "error"),
+            "reason": result_state.get("reason", "unknown"),
+            "severity": result_state.get("severity", "error"),
+            "document_id": result_state.get("document_id"),
+            "version": result_state.get("version"),
+            "telemetry": result_state.get("telemetry", {}),
+            "transitions": result_state.get("transitions", {}),
+        }
+        
+        # Check for error in state
+        if result_state.get("error"):
+            # If we have a specific known error string, we can re-raise or handle it
+            raise UploadIngestionError(str(result_state.get("error")))
     except UploadIngestionError as exc:
         reason = str(exc)
         if reason == "document_persistence_failed":

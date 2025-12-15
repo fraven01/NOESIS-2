@@ -10,6 +10,7 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import HttpUrl
 
 from ai_core.infra.observability import observe_span
+from ai_core.infra.telemetry import filter_telemetry_context
 from ai_core.tools.web_search import (
     SearchProviderError,
     WebSearchResponse,
@@ -91,20 +92,8 @@ def search_node(state: ExternalKnowledgeState) -> dict[str, Any]:
     if not worker:
         return {"error": "No search worker configured in context"}
 
-    # Filter context to strictly allowed fields for WebSearchWorker
-    telemetry_ctx = {
-        k: v
-        for k, v in context.items()
-        if k
-        in {
-            "tenant_id",
-            "trace_id",
-            "workflow_id",
-            "case_id",
-            "run_id",
-            "worker_call_id",
-        }
-    }
+    # Filter context to strictly allowed fields for downstream services
+    telemetry_ctx = filter_telemetry_context(context)
 
     try:
         response: WebSearchResponse = worker.run(query=query, context=telemetry_ctx)
@@ -186,20 +175,8 @@ def ingestion_node(state: ExternalKnowledgeState) -> dict[str, Any]:
     url = selected.get("url")
     collection_id = state.get("collection_id")
 
-    # Filter context (though implementation might not be strict, better safe)
-    telemetry_ctx = {
-        k: v
-        for k, v in context.items()
-        if k
-        in {
-            "tenant_id",
-            "trace_id",
-            "workflow_id",
-            "case_id",
-            "run_id",
-            "worker_call_id",
-        }
-    }
+    # Filter context for telemetry
+    telemetry_ctx = filter_telemetry_context(context)
 
     try:
         result = trigger.trigger(

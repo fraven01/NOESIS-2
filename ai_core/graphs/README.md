@@ -133,17 +133,18 @@ Die sequentielle Ausführung umfasst 7 Knoten:
    `hitl_reasons`.
 
 6. **persist_profile** — Atomare Transaktion:
-   - Prüft ob Profil existiert (Konflikt wenn `force_reanalysis=false`)
-   - Setzt altes Profil `is_current=false`, inkrementiert Version
-   - Erstellt `FrameworkProfile` mit Struktur-JSON + Metadata
-   - Verknüpft `FrameworkDocument` für Hauptdokument
-   - Loggt Persistierung mit `profile_id`, Version, Typ
+   * Prüft ob Profil existiert (Konflikt wenn `force_reanalysis=false`)
+   * Setzt altes Profil `is_current=false`, inkrementiert Version
+   * Erstellt `FrameworkProfile` mit Struktur-JSON + Metadata
+   * Verknüpft `FrameworkDocument` für Hauptdokument
+   * Loggt Persistierung mit `profile_id`, Version, Typ
 
 7. **finish** — Bündelt finales `FrameworkAnalysisOutput` mit Transition-History
 
 ### Datenmodelle
 
 **FrameworkProfile** (Django ORM):
+
 ```python
 id: UUID (PK)
 tenant: FK → customers.Tenant
@@ -159,6 +160,7 @@ analysis_metadata: JSONField
 **Unique Constraint**: `(tenant, gremium_identifier, version)`
 
 **FrameworkDocument** (M2M-Link):
+
 ```python
 profile: FK → FrameworkProfile
 document_collection: FK → DocumentCollection
@@ -188,10 +190,11 @@ Confidenz-Bounds werden validiert, Location-Typen sind typsicher.
 **POST** `/v1/ai/frameworks/analyze/`
 
 Header:
-- `X-Tenant-ID` (required)
-- `X-Trace-ID` (optional, auto-generated)
+* `X-Tenant-ID` (required)
+* `X-Trace-ID` (optional, auto-generated)
 
 Request Body:
+
 ```json
 {
   "document_collection_id": "550e8400-e29b-41d4-a716-446655440000",
@@ -202,6 +205,7 @@ Request Body:
 ```
 
 Response (200):
+
 ```json
 {
   "profile_id": "750e8400-e29b-41d4-a716-446655440002",
@@ -236,27 +240,27 @@ Response (200):
 ```
 
 Error-Codes:
-- **400**: Invalid input (Validierung fehlgeschlagen)
-- **403**: Tenant nicht gefunden
-- **404**: DocumentCollection nicht gefunden
-- **409**: Profil existiert bereits (force_reanalysis=true nötig)
-- **500**: Analyse fehlgeschlagen (LLM-Fehler, DB-Fehler)
+* **400**: Invalid input (Validierung fehlgeschlagen)
+* **403**: Tenant nicht gefunden
+* **404**: DocumentCollection nicht gefunden
+* **409**: Profil existiert bereits (force_reanalysis=true nötig)
+* **500**: Analyse fehlgeschlagen (LLM-Fehler, DB-Fehler)
 
 ### Observability
 
 **Langfuse-Spans** (via `@observe_span`):
-- `framework.detect_type_and_gremium`
-- `framework.extract_toc`
-- `framework.locate_components`
-- `framework.validate_components`
-- `framework.assemble_profile`
-- `framework.persist_profile`
+* `framework.detect_type_and_gremium`
+* `framework.extract_toc`
+* `framework.locate_components`
+* `framework.validate_components`
+* `framework.assemble_profile`
+* `framework.persist_profile`
 
 **Strukturierte Logs**:
-- `framework_graph_starting` (info): Start mit Input-Parametern
-- `framework_hitl_required` (warning): HITL-Trigger mit Gründen
-- `framework_profile_persisted` (info): Erfolgreiche Persistierung
-- `framework_graph_completed` (info): Abschluss mit Metriken
+* `framework_graph_starting` (info): Start mit Input-Parametern
+* `framework_hitl_required` (warning): HITL-Trigger mit Gründen
+* `framework_profile_persisted` (info): Erfolgreiche Persistierung
+* `framework_graph_completed` (info): Abschluss mit Metriken
 
 Alle Logs enthalten `tenant_id`, `trace_id`, `gremium_identifier` für
 korrelierte Auswertung in ELK + Langfuse.
@@ -264,33 +268,34 @@ korrelierte Auswertung in ELK + Langfuse.
 ### Tests
 
 **Unit-Tests** (`ai_core/tests/test_framework_utils.py`):
-- Gremium-Normalisierung (Umlaute, Sonderzeichen, Leerzeichen)
-- ToC-Extraktion aus Parent-Metadaten (Hierarchie, Deduplication, Sorting)
+* Gremium-Normalisierung (Umlaute, Sonderzeichen, Leerzeichen)
+* ToC-Extraktion aus Parent-Metadaten (Hierarchie, Deduplication, Sorting)
 
 **Contract-Tests** (`ai_core/tests/tools/test_framework_contracts.py`):
-- Pydantic-Validierung für alle Input/Output-Modelle
-- Confidenz-Bounds (0.0–1.0)
-- Literal-Constraints für `agreement_type`, `location`
-- Immutability (frozen Models)
+* Pydantic-Validierung für alle Input/Output-Modelle
+* Confidenz-Bounds (0.0–1.0)
+* Literal-Constraints für `agreement_type`, `location`
+* Immutability (frozen Models)
 
 **Integrations-Tests** (`ai_core/tests/graphs/test_framework_analysis_graph.py`):
-- Graph-Builder (Knoten-Reihenfolge, Namen)
-- Assemble-Logik (completeness_score, HITL-Trigger)
-- End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
-- Error-Handling (Retrieve-Fehler, Validierungs-Fehler)
+* Graph-Builder (Knoten-Reihenfolge, Namen)
+* Assemble-Logik (completeness_score, HITL-Trigger)
+* End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
+* Error-Handling (Retrieve-Fehler, Validierungs-Fehler)
 
 ### Deployment-Hinweise
 
 **Django-Migrationen**: Nach Merge müssen Devs im Docker-Container ausführen:
+
 ```bash
 docker compose exec web python manage.py makemigrations documents
 docker compose exec web python manage.py migrate
 ```
 
 **Prompt-Versions-Tracking**: Prompts liegen in `ai_core/prompts/framework/`:
-- `detect_type_gremium.v1.md`
-- `locate_components.v1.md`
-- `validate_component.v1.md`
+* `detect_type_gremium.v1.md`
+* `locate_components.v1.md`
+* `validate_component.v1.md`
 
 Bei Prompt-Updates neue Version anlegen (v2, v3, ...) und `load_prompt()`-Call
 in Graph aktualisieren.
@@ -300,3 +305,29 @@ in Graph aktualisieren.
 
 **HITL-Integration**: UI-Team muss `hitl_required` Flag auswerten und
 Review-Flow bereitstellen. `hitl_reasons` liefert Begründungen für Benutzer.
+
+## Upload-Ingestion-Graph
+
+Der `upload_ingestion_graph` verarbeitet manuell hochgeladene Dokumente und überführt sie in den normalen
+Dokumenten-Ingestion-Prozess. Er dient als Adapter zwischen dem synchronen Upload-Endpoint und der
+asynchronen Verarbeitung.
+
+Der Graph ist vollständig als LangGraph implementiert und nutzt `TypedDict` für den State.
+
+### Knotenfolge
+
+1. **validate_input** — Validiert die Eingabedaten (`NormalizedDocument`), konvertiert das Dictionary zurück in
+   ein Pydantic-Modell und prüft essentielle Felder. Bei Validierungsfehlern erfolgt ein direkter Abbruch
+   mit Fehlerstatus.
+
+2. **build_config** — Erstellt die notwendige Konfiguration und den Kontext für die Weiterverarbeitung.
+   Initialisiert Komponenten wie Parser und Chunker.
+
+3. **run_processing** — Führt den eigentlichen Dokumenten-Verarbeitungs-Graph (`build_document_processing_graph`)
+   aus. Dieser Graph übernimmt Parsing, Chunking und Persistierung.
+
+4. **map_results** — Transformiert das interne Ergebnis des Processing-Graphs in ein standardisiertes
+   Output-Format mit `decision`, `reason` und Telemetriedaten für den Aufrufer.
+
+Die Tests befinden sich in `ai_core/tests/graphs/test_upload_ingestion_graph.py` und decken erfolgreiche
+Durchläufe sowie Fehlerbehandlung bei ungültigen Inputs ab.
