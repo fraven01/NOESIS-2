@@ -23,7 +23,7 @@ from ai_core.contracts.payloads import (
     CompletionPayload,
     FrontierData,
 )
-from ai_core.graphs.transition_contracts import (
+from .transition_contracts import (
     GraphTransition,
 )
 from ai_core.infra import observability as observability_module

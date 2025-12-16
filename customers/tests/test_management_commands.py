@@ -10,6 +10,7 @@ from users.models import User
 from .factories import DomainFactory, TenantFactory
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_command():
     call_command(
@@ -20,6 +21,7 @@ def test_create_tenant_command():
     assert Domain.objects.filter(tenant=tenant, domain="test.example.com").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_creates_schema_when_auto_creation_disabled(monkeypatch):
     monkeypatch.setattr("customers.models.Tenant.auto_create_schema", False)
@@ -35,6 +37,7 @@ def test_create_tenant_creates_schema_when_auto_creation_disabled(monkeypatch):
     assert "customers_domain" in tables
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_disallows_public_schema():
     with pytest.raises(CommandError):
@@ -46,6 +49,7 @@ def test_create_tenant_disallows_public_schema():
         )
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_duplicate_schema():
     TenantFactory(schema_name="dup")
@@ -55,6 +59,7 @@ def test_create_tenant_duplicate_schema():
         )
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_duplicate_domain():
     DomainFactory(domain="dup.example.com")
@@ -64,6 +69,7 @@ def test_create_tenant_duplicate_domain():
         )
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_is_atomic(monkeypatch):
     def _raise(*args, **kwargs):
@@ -77,6 +83,7 @@ def test_create_tenant_is_atomic(monkeypatch):
     assert not Tenant.objects.filter(schema_name="atomic").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_list_tenants_command(capsys):
     tenant = TenantFactory(schema_name="alpha")
@@ -86,6 +93,7 @@ def test_list_tenants_command(capsys):
     assert tenant.name in captured.out
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_missing_tables(monkeypatch):
     tenant = TenantFactory(schema_name="missing")
@@ -131,6 +139,7 @@ def test_create_tenant_superuser_missing_tables(monkeypatch):
     assert recorded_calls == [("migrate_schemas", (), {"schema": tenant.schema_name})]
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_creates_user(monkeypatch):
     tenant = TenantFactory(schema_name="createuser")
@@ -168,6 +177,7 @@ def test_create_tenant_superuser_creates_user(monkeypatch):
         assert user.check_password("super-secret")
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_updates_existing_user(monkeypatch):
     tenant = TenantFactory(schema_name="updateuser")
@@ -210,6 +220,7 @@ def test_create_tenant_superuser_updates_existing_user(monkeypatch):
         assert user.check_password("newpass")
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_requires_password(monkeypatch):
     tenant = TenantFactory(schema_name="requirespass")
@@ -233,6 +244,7 @@ def test_create_tenant_superuser_requires_password(monkeypatch):
         assert not User.objects.filter(username="demo-admin").exists()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_requires_username(monkeypatch):
     tenant = TenantFactory(schema_name="requiresuser")
@@ -253,6 +265,7 @@ def test_create_tenant_superuser_requires_username(monkeypatch):
     assert "Missing username" in str(excinfo.value)
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_missing_tenant():
     with pytest.raises(CommandError) as excinfo:
@@ -266,6 +279,7 @@ def test_create_tenant_superuser_missing_tenant():
     assert "does not exist" in str(excinfo.value)
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_creates_and_sets_primary():
     tenant = TenantFactory(schema_name="tenant-add-domain")
@@ -287,6 +301,7 @@ def test_add_domain_creates_and_sets_primary():
     assert "set as primary" in stdout.getvalue()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_requires_force_for_existing_assignment():
     original = TenantFactory(schema_name="original")
@@ -305,6 +320,7 @@ def test_add_domain_requires_force_for_existing_assignment():
     assert "already assigned" in str(excinfo.value)
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_force_reassigns_and_sets_primary():
     original = TenantFactory(schema_name="orig-force")
@@ -326,6 +342,7 @@ def test_add_domain_force_reassigns_and_sets_primary():
     assert domain.is_primary is True
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_switches_primary_within_tenant():
     tenant = TenantFactory(schema_name="swap-primary")
@@ -347,6 +364,7 @@ def test_add_domain_switches_primary_within_tenant():
     assert new.is_primary is True
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_ensures_existing_domain_and_normalizes_input():
     tenant = TenantFactory(schema_name="tenant-ensure")
@@ -373,6 +391,7 @@ def test_add_domain_ensures_existing_domain_and_normalizes_input():
     assert "ensured" in stdout.getvalue()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_normalises_credentials_and_trailing_dot():
     tenant = TenantFactory(schema_name="tenant-normalize-creds")
@@ -389,6 +408,7 @@ def test_add_domain_normalises_credentials_and_trailing_dot():
     assert domain.tenant_id == tenant.id
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_add_domain_missing_tenant():
     with pytest.raises(CommandError) as excinfo:
@@ -403,11 +423,13 @@ def test_add_domain_missing_tenant():
     assert "does not exist" in str(excinfo.value)
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_collectstatic_command_resolves():
     call_command("collectstatic", "--dry-run", "--noinput", verbosity=0)
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
     tenant = TenantFactory(schema_name="env-superuser")
@@ -466,6 +488,7 @@ def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
     assert "created" in stdout.getvalue()
 
 
+@pytest.mark.slow
 @pytest.mark.django_db
 def test_create_tenant_superuser_warns_when_no_changes_needed(monkeypatch):
     tenant = TenantFactory(schema_name="noop-superuser")

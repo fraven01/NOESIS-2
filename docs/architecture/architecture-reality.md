@@ -46,16 +46,19 @@ Singleton example (candidate to migrate):
 
 ### Graph implementations present in the repo
 
-Located in `ai_core/graphs/`:
+**Layer 2 - Business Graphs** (`ai_core/graphs/business/`):
 
-- `ai_core/graphs/collection_search.py` (includes HITL decision structures; see `@observe_span(name="node.hitl")`)
-- `ai_core/graphs/framework_analysis_graph.py` (business-heavy; see Layer 2 note above)
-- `ai_core/graphs/retrieval_augmented_generation.py`
-- `ai_core/graphs/external_knowledge_graph.py`
-- `ai_core/graphs/crawler_ingestion_graph.py`
-- `ai_core/graphs/upload_ingestion_graph.py`
-- `ai_core/graphs/info_intake.py`
-- `ai_core/graphs/rag_demo.py` (deprecated/demo graph module)
+- `framework_analysis_graph.py` (Domain logic: Agreement structure, versioning, persistence into domain models)
+
+**Layer 3 - Technical Graphs** (`ai_core/graphs/technical/`):
+
+- `collection_search.py` (includes HITL decision structures)
+- `retrieval_augmented_generation.py`
+- `external_knowledge_graph.py`
+- `crawler_ingestion_graph.py`
+- `upload_ingestion_graph.py`
+- `info_intake.py`
+- `rag_demo.py` (deprecated/demo)
 
 ### Document orchestration boundary
 

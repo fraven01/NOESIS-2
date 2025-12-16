@@ -313,7 +313,7 @@ def test_quarantine_scanner_denies_document():
     parser.parse.return_value = ParsedResult(text_blocks=[], assets=[], statistics={})
 
     # Quarantine scanner denies the document
-    from ai_core.graphs.transition_contracts import GraphTransition
+    from ai_core.graphs.technical.transition_contracts import GraphTransition
 
     def quarantine_mock(payload: bytes, metadata: dict):
         return GraphTransition(action="quarantine_deny", reason="malware_detected")

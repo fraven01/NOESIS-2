@@ -3,7 +3,7 @@ from unittest.mock import patch
 
 import pytest
 
-from ai_core.graphs import retrieval_augmented_generation
+from ai_core.graphs.technical import retrieval_augmented_generation
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
 

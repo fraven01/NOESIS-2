@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ai_core.graphs import (
+from ai_core.graphs.technical import (
     collection_search,
     crawler_ingestion_graph,
     info_intake,

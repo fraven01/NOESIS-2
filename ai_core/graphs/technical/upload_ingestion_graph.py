@@ -10,7 +10,7 @@ from langgraph.graph import END, START, StateGraph
 
 from ai_core.infra.observability import observe_span
 from ai_core import api as ai_core_api
-from ai_core.graphs.transition_contracts import (
+from .transition_contracts import (
     StandardTransitionResult,
     PipelineSection,
     build_delta_section,

@@ -3,6 +3,7 @@
 This document uses the “firm hierarchy” (Layer 1–4) as a lens to describe how the repository is structured and how execution flows through UI/API → orchestration → workers. Runtime behavior and contracts remain defined by code.
 
 Current, code-backed inventory: `docs/architecture/architecture-reality.md`.
+For strict layer boundary definitions, see: `docs/architecture/layer-contracts.md`.
 
 ## Layer mapping (code anchors)
 

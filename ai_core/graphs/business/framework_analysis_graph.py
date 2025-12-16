@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 from django.db import transaction
 
-from ai_core.graphs.transition_contracts import GraphTransition
+from ai_core.graphs.technical.transition_contracts import GraphTransition
 from ai_core.infra.observability import observe_span
 from ai_core.infra.prompts import load as load_prompt
 from ai_core.llm import client as llm_client

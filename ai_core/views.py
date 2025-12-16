@@ -9,9 +9,9 @@ from typing import TYPE_CHECKING
 from pathlib import Path
 from types import ModuleType
 from importlib import import_module
+from django.conf import settings
 from uuid import uuid4
 
-from django.conf import settings
 from django.db import OperationalError, ProgrammingError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
@@ -74,7 +74,7 @@ from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 
-from ai_core.graphs import (
+from ai_core.graphs.technical import (
     info_intake,
 )  # noqa: F401
 from ai_core.contracts.crawler_runner import CrawlerRunError
@@ -112,7 +112,7 @@ GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
 # This enables tests to monkeypatch e.g. `views.info_intake` directly and
 # allows _GraphView.get_graph to resolve from globals() without importing.
 try:  # pragma: no cover - exercised indirectly via tests
-    info_intake = import_module("ai_core.graphs.info_intake")
+    info_intake = import_module("ai_core.graphs.technical.info_intake")
 except Exception:  # defensive: don't break module import if graphs change
     # Fallback to lazy import via _GraphView.get_graph when not present.
     pass
@@ -1588,6 +1588,16 @@ class RagUploadView(APIView):
         if error:
             return error
 
+        # Fix for Silent RAG Failure (Finding #22):
+        # In DEV/DEBUG mode, default missing case_id to "dev-case-local"
+        # so that uploads from Workbench are visible to the RAG Chat.
+        if settings.DEBUG and not meta.get("case_id"):
+            logger.info(
+                "view.rag_upload.defaulting_case_id",
+                extra={"assigned_case_id": "dev-case-local"},
+            )
+            meta["case_id"] = "dev-case-local"
+
         content_type = request.headers.get("Content-Type", "")
         if content_type:
             content_type = content_type.split(";")[0].strip().lower()
@@ -1627,6 +1637,10 @@ class RagIngestionRunView(APIView):
         meta, error = _prepare_request(request)
         if error:
             return error
+
+        # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
+        if settings.DEBUG and not meta.get("case_id"):
+            meta["case_id"] = "dev-case-local"
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):

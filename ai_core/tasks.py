@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from celery import shared_task
 
-from ai_core.graphs.transition_contracts import (
+from ai_core.graphs.technical.transition_contracts import (
     GraphTransition,
     StandardTransitionResult,
 )
@@ -1661,13 +1661,15 @@ def _callable_accepts_kwarg(func: Any, keyword: str) -> bool:
 
 def _build_ingestion_graph(event_emitter: Optional[Any]):
     """Invoke build_graph while remaining compatible with older test stubs."""
-    from ai_core.graphs.crawler_ingestion_graph import build_graph
+    from ai_core.graphs.technical.crawler_ingestion_graph import (
+        build_graph as build_crawler_graph,
+    )
 
     if event_emitter is None:
-        return build_graph()
-    if _callable_accepts_kwarg(build_graph, "event_emitter"):
-        return build_graph(event_emitter=event_emitter)
-    return build_graph()
+        return build_crawler_graph()
+    if _callable_accepts_kwarg(build_crawler_graph, "event_emitter"):
+        return build_crawler_graph(event_emitter=event_emitter)
+    return build_crawler_graph()
 
 
 def build_graph(*, event_emitter: Optional[Any] = None):

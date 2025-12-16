@@ -75,12 +75,37 @@ npm run dev:reset    # Komplett-Reset
 
 ### Tests
 
+**Python-Tests (Linux)**:
 ```bash
-npm run test:py        # Python-Tests (Docker)
-npm run test:py:cov    # Mit Coverage
-npm run test           # Frontend (Vitest)
+npm run test:py              # Vollständig (inkl. @pytest.mark.slow)
+npm run test:py:single -- <path>  # Einzelner Test
+npm run test:py:fast         # Schnell (ohne @pytest.mark.slow)
+npm run test:py:unit         # Unit-Tests (ohne DB, super schnell)
+npm run test:py:cov          # Coverage über alles
+npm run test:py:clean        # Clean (pip --no-cache-dir) + vollständig
+```
+
+**Python-Tests (Windows)**:
+```bash
+npm run win:test:py              # Vollständig
+npm run win:test:py:single -- <path>  # Einzelner Test
+npm run win:test:py:fast         # Schnell
+npm run win:test:py:unit         # Unit-Tests
+npm run win:test:py:cov          # Coverage
+npm run win:test:py:clean        # Clean + vollständig
+```
+
+**Frontend-Tests**:
+```bash
+npm run test           # Vitest
 npm run e2e            # Playwright E2E
 ```
+
+**Test-Marker**:
+- `@pytest.mark.slow`: DB-intensive Tests (Tenant-Operationen, Schema-Erstellung)
+- `@pytest.mark.gold`: PII-Tests mit `PII_MODE=gold`
+- `@pytest.mark.chaos`: Fault-Injection-Tests
+- `@pytest.mark.perf_smoke`: High-Concurrency-Tests
 
 Test-DB: `noesis2_test` (isoliert von Dev-Daten)
 
@@ -306,9 +331,13 @@ npm run dev:check           # Health-Checks
 npm run dev:manage <cmd>    # Django-Management
 
 # Tests
-npm run test:py            # Python
-npm run test:py:cov        # Mit Coverage
+npm run test:py            # Vollständig (inkl. slow)
+npm run test:py:fast       # Schnell (ohne slow)
+npm run test:py:unit       # Unit-Tests (ohne DB)
+npm run test:py:cov        # Coverage
+npm run test:py:clean      # Clean + vollständig
 npm run e2e                # E2E
+# Windows: npm run win:test:py, win:test:py:fast, etc.
 
 # Linting
 npm run lint               # Check

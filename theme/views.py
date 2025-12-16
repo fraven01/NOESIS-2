@@ -13,12 +13,11 @@ from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
-from ai_core.graphs.external_knowledge_graph import (
+from ai_core.graphs.technical.external_knowledge_graph import (
     build_external_knowledge_graph,
     ExternalKnowledgeState,
-    # Legacy imports removed
 )
-from ai_core.graphs.collection_search import (
+from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
     build_graph as build_collection_search_graph,
 )
@@ -44,7 +43,9 @@ from documents.services.document_space_service import (
 )
 
 from ai_core.views import crawl_selected as _core_crawl_selected
-from ai_core.graphs.framework_analysis_graph import build_graph as build_framework_graph
+from ai_core.graphs.business.framework_analysis_graph import (
+    build_graph as build_framework_graph,
+)
 from ai_core.tools.framework_contracts import FrameworkAnalysisInput
 
 
@@ -734,6 +735,7 @@ def web_search(request):
     except TenantRequiredError as exc:
         return _tenant_required_response(exc)
     case_id = str(data.get("case_id") or "").strip() or None
+
     trace_id = str(uuid4())
     run_id = str(uuid4())
 
@@ -1514,13 +1516,24 @@ def chat_submit(request):
     Invokes the production RAG graph and returns the assistant's reply.
     """
     message = request.POST.get("message")
-    case_id = request.POST.get("case_id") or request.headers.get("X-Case-ID")
+    case_id = (
+        request.POST.get("case_id")
+        or request.headers.get("X-Case-ID")
+        or "dev-case-local"
+    )
+
+    # Feature: Global Search in RAG Chat (Dev Workbench)
+    # If global_search is checked, ignore case_id to search entire tenant
+    if request.POST.get("global_search") == "on":
+        case_id = None
 
     if not message:
         return HttpResponse('<div class="text-red-500 p-4">Message is required.</div>')
 
     try:
-        from ai_core.graphs.retrieval_augmented_generation import run as run_rag_graph
+        from ai_core.graphs.technical.retrieval_augmented_generation import (
+            run as run_rag_graph,
+        )
 
         tenant_id, tenant_schema = _tenant_context_from_request(request)
 
@@ -1535,19 +1548,29 @@ def chat_submit(request):
             },
         }
 
+        trace_id = uuid4().hex
+        run_id = str(uuid4())
+
+        from ai_core.tool_contracts import ToolContext
+
+        tool_context = ToolContext(
+            tenant_id=tenant_id,
+            tenant_schema=tenant_schema,
+            case_id=case_id,
+            trace_id=trace_id,
+            run_id=run_id,
+            workflow_id="rag-chat-manual",
+        )
+
         meta = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "case_id": case_id,
-            "trace_id": uuid4().hex,
-            "run_id": str(uuid4()),  # Required for ScopeContext validation
+            "trace_id": trace_id,
+            "run_id": run_id,  # Required for ScopeContext validation
             "workflow_id": "rag-chat-manual",  # Workflow type for tracing
             # Ensure we have a valid tool context
-            "tool_context": {
-                "tenant_id": tenant_id,
-                "tenant_schema": tenant_schema,
-                "case_id": case_id,
-            },
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         }
 
         # 2. Run Graph

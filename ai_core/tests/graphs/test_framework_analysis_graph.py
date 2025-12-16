@@ -8,9 +8,9 @@ from uuid import uuid4
 
 import pytest
 
-from ai_core.graphs.framework_analysis_graph import (
-    FrameworkAnalysisGraph,
+from ai_core.graphs.business.framework_analysis_graph import (
     build_graph,
+    FrameworkAnalysisGraph,
 )
 from ai_core.tools.framework_contracts import FrameworkAnalysisInput
 
@@ -295,13 +295,13 @@ class TestAssembleProfileNode:
 class TestGraphEndToEnd:
     """End-to-end tests for the complete graph."""
 
-    @patch("ai_core.graphs.framework_analysis_graph.llm_client")
-    @patch("ai_core.graphs.framework_analysis_graph.retrieve")
-    @patch("ai_core.graphs.framework_analysis_graph.Tenant")
-    @patch("ai_core.graphs.framework_analysis_graph.DocumentCollection")
-    @patch("ai_core.graphs.framework_analysis_graph.FrameworkProfile")
-    @patch("ai_core.graphs.framework_analysis_graph.FrameworkDocument")
-    @patch("ai_core.graphs.framework_analysis_graph.load_prompt")
+    @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
+    @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
+    @patch("ai_core.graphs.business.framework_analysis_graph.Tenant")
+    @patch("ai_core.graphs.business.framework_analysis_graph.DocumentCollection")
+    @patch("ai_core.graphs.business.framework_analysis_graph.FrameworkProfile")
+    @patch("ai_core.graphs.business.framework_analysis_graph.FrameworkDocument")
+    @patch("ai_core.graphs.business.framework_analysis_graph.load_prompt")
     @pytest.mark.django_db
     def test_graph_executes_all_nodes(
         self,
@@ -404,8 +404,8 @@ class TestGraphEndToEnd:
         assert "zugriffsrechte" in output.missing_components
         assert output.version == 1
 
-    @patch("ai_core.graphs.framework_analysis_graph.llm_client")
-    @patch("ai_core.graphs.framework_analysis_graph.retrieve")
+    @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
+    @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
     def test_graph_stops_on_error(
         self, mock_retrieve: MagicMock, mock_llm: MagicMock
     ) -> None:

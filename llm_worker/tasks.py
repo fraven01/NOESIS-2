@@ -6,7 +6,7 @@ from celery import shared_task
 from django.db import connection
 
 from ai_core.graph.registry import get as get_graph_runner
-from ai_core.graphs.cost_tracking import track_ledger_costs
+from ai_core.graphs.technical.cost_tracking import track_ledger_costs
 from ai_core.infra.observability import emit_event
 from cases.integration import emit_case_lifecycle_for_collection_search
 from common.celery import ScopedTask

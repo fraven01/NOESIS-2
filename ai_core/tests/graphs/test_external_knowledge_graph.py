@@ -7,7 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 
-from ai_core.graphs.external_knowledge_graph import (
+from ai_core.graphs.technical.external_knowledge_graph import (
     ExternalKnowledgeState,
     build_external_knowledge_graph,
 )

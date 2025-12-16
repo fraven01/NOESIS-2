@@ -168,8 +168,6 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
 
     case_raw = meta.get("case_id")
     case_id = str(case_raw).strip() if case_raw is not None else None
-    if not case_id:
-        raise ContextError("case_id is required for retrieval graphs", field="case_id")
 
     override_flag = meta.get("visibility_override_allowed")
     trace_raw = meta.get("trace_id")

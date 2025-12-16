@@ -8,7 +8,9 @@ from documents.contracts import (
     DocumentMeta,
     BlobLocator,
 )
-from ai_core.graphs.upload_ingestion_graph import build_upload_graph
+from ai_core.graphs.technical.upload_ingestion_graph import (
+    build_upload_graph,
+)
 
 
 def test_upload_ingestion_uses_file_blob():

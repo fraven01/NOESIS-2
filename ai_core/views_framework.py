@@ -21,7 +21,7 @@ from common.constants import X_TENANT_ID_HEADER, X_TRACE_ID_HEADER
 from common.logging import bind_log_context, get_logger
 from noesis2.api import default_extend_schema
 
-from ai_core.graphs.framework_analysis_graph import build_graph
+from ai_core.graphs.business.framework_analysis_graph import build_graph
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
     FrameworkAnalysisErrorCode,

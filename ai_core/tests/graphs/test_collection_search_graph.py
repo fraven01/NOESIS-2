@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any, Mapping, Sequence
 
-from ai_core.graphs.collection_search import (
-    CollectionSearchAdapter,
-    HitlDecision,
+from ai_core.graphs.technical.collection_search import (
     SearchStrategy,
     SearchStrategyRequest,
+    CollectionSearchAdapter,
+    HitlDecision,
 )
 from ai_core.tools.web_search import (
     SearchProviderError,
