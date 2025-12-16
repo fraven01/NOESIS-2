@@ -108,20 +108,56 @@ if [[ -d "$DOCS_DIR" ]]; then
   done < <(find "$DOCS_DIR" -type f | sort)
 fi
 
-# 2) Append all README.md files from across the repo (including root)
+# 2) Append Django App README.md files
+#    - Explicitly include README.md files from Django apps for better visibility
+echo "--- DJANGO APPS DOCUMENTATION ---" >> "$OUTPUT_FILE"
+while IFS= read -r app_readme; do
+  append_with_header "$app_readme"
+done < <(
+  # Find README.md in Django app directories and their subdirectories (maxdepth 3 for nested modules)
+  find ./ai_core ./cases ./common ./core ./crawler ./customers ./documents \
+       ./llm_worker ./organizations ./profiles ./testsupport ./theme ./users \
+       -maxdepth 3 -type f -iname 'readme.md' 2>/dev/null | sort
+)
+
+# 3) Append all other README.md files from across the repo (including root)
 #    - Case-insensitive match for readme.md
-#    - Exclude docs/ (already included above) and pruned directories
+#    - Exclude docs/ (already included above), Django apps (covered in section 2), and pruned directories
+echo "--- OTHER README FILES ---" >> "$OUTPUT_FILE"
 while IFS= read -r readme; do
-  append_with_header "$readme"
+  # Skip if already included in Django apps section
+  if [[ ! "$readme" =~ (ai_core|cases|common|core|crawler|customers|documents|llm_worker|organizations|profiles|testsupport|theme|users)/ ]]; then
+    append_with_header "$readme"
+  fi
 done < <(
   build_prune_expr; find . "${PRUNE_EXPR[@]}" -path ./docs -prune -o -type f -iname 'readme.md' -print | sort
 )
 
-# 3) Append all AGENTS.md files across the repo
+# 4) Append all AGENTS.md files across the repo
+echo "--- AGENTS DOCUMENTATION ---" >> "$OUTPUT_FILE"
 while IFS= read -r agents; do
   append_with_header "$agents"
 done < <(
   build_prune_expr; find . "${PRUNE_EXPR[@]}" -type f -iname 'agents.md' -print | sort
 )
 
-echo "Documentation consolidated into $OUTPUT_FILE"
+# 5) Add Table of Contents at the beginning
+echo "Adding Table of Contents..."
+TEMP_FILE="${OUTPUT_FILE}.tmp"
+{
+  echo "# NOESIS 2 - Complete Documentation"
+  echo ""
+  echo "**Generated**: $(date '+%Y-%m-%d %H:%M:%S')"
+  echo "**Size**: $(wc -l < "$OUTPUT_FILE") lines"
+  echo ""
+  echo "## Table of Contents"
+  echo ""
+  grep "^--- " "$OUTPUT_FILE" | nl -w3 -s'. '
+  echo ""
+  echo "---"
+  echo ""
+  cat "$OUTPUT_FILE"
+} > "$TEMP_FILE"
+mv "$TEMP_FILE" "$OUTPUT_FILE"
+
+echo "Documentation consolidated into $OUTPUT_FILE (with Table of Contents)"

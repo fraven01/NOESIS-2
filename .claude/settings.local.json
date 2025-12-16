@@ -26,7 +26,9 @@
       "Bash(ls:*)",
       "Bash(grep:*)",
       "Bash(npm run lint:*)",
-      "Bash(dir \"f:\\NOESIS-2\\NOESIS-2\\users\"\")"
+      "Bash(dir \"f:\\NOESIS-2\\NOESIS-2\\users\"\")",
+      "Bash(dos2unix:*)",
+      "Bash(chmod:*)"
     ],
     "deny": [],
     "ask": []
