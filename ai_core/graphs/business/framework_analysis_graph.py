@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Tuple
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-from django.db import transaction
 
 from ai_core.graphs.technical.transition_contracts import GraphTransition
 from ai_core.infra.observability import observe_span
@@ -24,9 +22,7 @@ from ai_core.tools.framework_contracts import (
     FrameworkStructure,
 )
 from common.logging import get_logger
-from customers.models import Tenant
-from documents.framework_models import FrameworkProfile, FrameworkDocument
-from documents.models import DocumentCollection
+from documents.services.framework_service import persist_profile
 
 logger = get_logger(__name__)
 
@@ -587,124 +583,43 @@ class FrameworkAnalysisGraph:
         gremium_identifier = state["gremium_identifier"]
         force_reanalysis = state["force_reanalysis"]
 
-        # Get tenant object
-        try:
-            tenant = Tenant.objects.get(schema_name=tenant_schema)
-        except Tenant.DoesNotExist:
-            raise ValueError(f"Tenant not found: {tenant_schema}")
-
-        # Build analysis metadata
-        analysis_metadata = {
-            "detected_type": state["agreement_type"],
-            "type_confidence": state["type_confidence"],
-            "gremium_name_raw": state["gremium_name_raw"],
-            "gremium_identifier": gremium_identifier,
-            "completeness_score": state["completeness_score"],
-            "missing_components": state["missing_components"],
-            "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
-            "model_version": "framework_analysis_v1",
-        }
-
-        # Check for existing profile
-        with transaction.atomic():
-            existing_profile = FrameworkProfile.objects.filter(
-                tenant=tenant,
-                gremium_identifier=gremium_identifier,
-                is_current=True,
-            ).first()
-
-            if existing_profile and not force_reanalysis:
-                # Profile already exists and not forcing reanalysis
-                raise ValueError(
-                    f"Framework profile already exists for {gremium_identifier}. "
-                    f"Use force_reanalysis=true to create new version."
-                )
-
-            # Determine version
-            if existing_profile:
-                # Set old profile to not current and increment version
-                existing_profile.is_current = False
-                existing_profile.save(update_fields=["is_current", "updated_at"])
-                version = existing_profile.version + 1
-            else:
-                version = 1
-
-            # Get document collection
-            collection_id = state["document_collection_id"]
-            try:
-                doc_collection = DocumentCollection.objects.get(
-                    id=UUID(collection_id),
-                    tenant=tenant,
-                )
-            except DocumentCollection.DoesNotExist:
-                raise ValueError(f"DocumentCollection not found: {collection_id}")
-
-            # Generate name from gremium identifier and type
-            agreement_type = state["agreement_type"]
-            name = f"{agreement_type.upper()} {state['gremium_name_raw']}"
-
-            # Create new profile
-            profile = FrameworkProfile.objects.create(
-                tenant=tenant,
-                name=name,
-                agreement_type=agreement_type,
-                gremium_identifier=gremium_identifier,
-                gremium_name_raw=state["gremium_name_raw"],
-                version=version,
-                is_current=True,
-                external_id=f"{gremium_identifier}_v{version}",
-                source_document_collection=doc_collection,
-                source_document_id=(
-                    UUID(state["document_id"]) if state.get("document_id") else None
-                ),
-                structure=state["assembled_structure"],
-                analysis_metadata=analysis_metadata,
-                metadata={
-                    "trace_id": state["trace_id"],
-                    "confidence_threshold": state["confidence_threshold"],
-                    "hitl_required": state["hitl_required"],
-                    "hitl_reasons": state["hitl_reasons"],
-                },
-            )
-
-            # Create document link for main document
-            if state.get("document_id"):
-                FrameworkDocument.objects.create(
-                    tenant=tenant,
-                    profile=profile,
-                    document_collection=doc_collection,
-                    document_id=UUID(state["document_id"]),
-                    document_type=FrameworkDocument.DocumentType.MAIN,
-                    position=0,
-                    analysis={
-                        "completeness_score": state["completeness_score"],
-                        "missing_components": state["missing_components"],
-                    },
-                )
-
-            logger.info(
-                "framework_profile_persisted",
-                extra={
-                    "tenant_id": state["tenant_id"],
-                    "tenant_schema": tenant_schema,
-                    "trace_id": state["trace_id"],
-                    "profile_id": str(profile.id),
-                    "gremium_identifier": gremium_identifier,
-                    "version": version,
-                    "is_new_version": existing_profile is not None,
-                    "agreement_type": agreement_type,
-                },
-            )
+        profile = persist_profile(
+            tenant_schema=tenant_schema,
+            gremium_identifier=gremium_identifier,
+            gremium_name_raw=state["gremium_name_raw"],
+            agreement_type=state["agreement_type"],
+            structure=state["assembled_structure"],
+            document_collection_id=state["document_collection_id"],
+            document_id=state.get("document_id"),
+            trace_id=state.get("trace_id"),
+            force_reanalysis=force_reanalysis,
+            analysis_metadata={
+                "detected_type": state["agreement_type"],
+                "type_confidence": state["type_confidence"],
+                "gremium_name_raw": state["gremium_name_raw"],
+                "gremium_identifier": gremium_identifier,
+                "completeness_score": state["completeness_score"],
+                "missing_components": state["missing_components"],
+                "model_version": "framework_analysis_v1",
+            },
+            metadata={
+                "confidence_threshold": state["confidence_threshold"],
+                "hitl_required": state["hitl_required"],
+                "hitl_reasons": state["hitl_reasons"],
+            },
+            completeness_score=state["completeness_score"],
+            missing_components=state["missing_components"],
+        )
 
         # Update state with persisted data
         state["profile_id"] = profile.id
-        state["version"] = version
-        state["analysis_metadata"] = analysis_metadata
+        state["version"] = profile.version
+        state["analysis_metadata"] = profile.analysis_metadata
 
         return (
             _transition(
                 decision="profile_persisted",
-                reason=f"Persisted {gremium_identifier} v{version}",
+                reason=f"Persisted {gremium_identifier} v{profile.version}",
             ),
             True,
         )

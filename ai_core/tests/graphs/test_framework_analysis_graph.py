@@ -297,10 +297,10 @@ class TestGraphEndToEnd:
 
     @patch("ai_core.graphs.business.framework_analysis_graph.llm_client")
     @patch("ai_core.graphs.business.framework_analysis_graph.retrieve")
-    @patch("ai_core.graphs.business.framework_analysis_graph.Tenant")
-    @patch("ai_core.graphs.business.framework_analysis_graph.DocumentCollection")
-    @patch("ai_core.graphs.business.framework_analysis_graph.FrameworkProfile")
-    @patch("ai_core.graphs.business.framework_analysis_graph.FrameworkDocument")
+    @patch("documents.services.framework_service.Tenant")
+    @patch("documents.services.framework_service.DocumentCollection")
+    @patch("documents.services.framework_service.FrameworkProfile")
+    @patch("documents.services.framework_service.FrameworkDocument")
     @patch("ai_core.graphs.business.framework_analysis_graph.load_prompt")
     @pytest.mark.django_db
     def test_graph_executes_all_nodes(
@@ -320,6 +320,17 @@ class TestGraphEndToEnd:
         mock_framework_profile.objects.filter.return_value.first.return_value = None
         mock_profile = MagicMock()
         mock_profile.id = uuid4()
+        mock_profile.version = 1
+        mock_profile.analysis_metadata = {
+            "detected_type": "kbv",
+            "type_confidence": 0.95,
+            "gremium_name_raw": "Konzernbetriebsrat",
+            "gremium_identifier": "KBR",
+            "completeness_score": 0.95,
+            "missing_components": [],
+            "analysis_timestamp": "2025-01-01T00:00:00Z",
+            "model_version": "v1",
+        }
         mock_framework_profile.objects.create.return_value = mock_profile
 
         # Mock prompt

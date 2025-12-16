@@ -306,6 +306,16 @@ class CrawlerIngestionGraph:
         media_type = media_type.strip().lower()
         return media_type in {"text/html", "application/xhtml+xml"}
 
+    def invoke(
+        self, input: Dict[str, Any], config: Any | None = None
+    ) -> Dict[str, Any]:
+        """Adapter for TechnicalGraphRunnable protocol."""
+        meta = input.get("context", {})
+        _, result = self.run(input, meta)
+        if not isinstance(result, dict):
+            return {"result": result}
+        return result
+
     def run(
         self,
         state: StateMapping,

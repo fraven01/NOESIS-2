@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal, NotRequired, Protocol, TypedDict
+from typing import Any, Literal, NotRequired, Protocol
 
 from django.conf import settings
 from langgraph.graph import END, START, StateGraph
@@ -27,6 +27,7 @@ from documents.processing_graph import (
     DocumentProcessingPhase,
     build_document_processing_graph,
 )
+from ai_core.graphs.technical.contracts import StandardGraphState
 
 
 logger = logging.getLogger(__name__)
@@ -61,7 +62,7 @@ class DeltaDecider(Protocol):
 
 
 # --------------------------------------------------------------------- State
-class UploadIngestionState(TypedDict):
+class UploadIngestionState(StandardGraphState):
     """State for upload ingestion graph."""
 
     # Input (Required)
@@ -73,7 +74,6 @@ class UploadIngestionState(TypedDict):
     # Runtime Context (IDs + Injected Dependencies)
     # REQUIRED: tenant_id, workflow_id enforced (AGENTS.md Root Law)
     # May include: runtime_repository, runtime_storage, runtime_embedder
-    context: dict[str, Any]
 
     # Intermediate State
     document: NotRequired[Any]  # NormalizedDocument (validated)
@@ -91,9 +91,6 @@ class UploadIngestionState(TypedDict):
     version: NotRequired[str]
     telemetry: NotRequired[dict[str, Any]]
     transitions: NotRequired[dict[str, Any]]
-
-    # Error
-    error: NotRequired[str]
 
 
 # --------------------------------------------------------------------- Nodes
