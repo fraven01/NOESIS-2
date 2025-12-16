@@ -1,11 +1,11 @@
-from __future__ import annotations
-
 """Public tool-contract exports.
 
 Canonical tool envelope models and ``ToolContext`` live in ``ai_core.tool_contracts.base``.
 This package module keeps the historical exception types used by nodes/graphs while
 re-exporting the canonical context model.
 """
+
+from __future__ import annotations
 
 from .base import ToolContext
 
@@ -66,4 +66,3 @@ __all__ = [
     "UpstreamServiceError",
     "InternalToolError",
 ]
-

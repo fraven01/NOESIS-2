@@ -360,7 +360,9 @@ def test_retrieve_includes_parent_context(monkeypatch):
             "hybrid": {"alpha": 0.55, "min_sim": 0.35, "top_k": 1},
         }
     )
-    context = ToolContext(tenant_id=tenant, tenant_schema=None, case_id=case, run_id="run-1")
+    context = ToolContext(
+        tenant_id=tenant, tenant_schema=None, case_id=case, run_id="run-1"
+    )
 
     result = retrieve.run(context, params)
 

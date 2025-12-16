@@ -132,6 +132,14 @@ _PII_KEY_PATTERN = re.compile(
 )
 
 
+def _resolve_mask_text() -> Any:
+    try:
+        from ai_core.infra.pii import mask_text as imported
+    except Exception:
+        return None
+    return imported
+
+
 def get_log_context() -> dict[str, str]:
     """Return a copy of the active logging context."""
 
@@ -446,7 +454,11 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
             )
             json_kwargs = _LOG_JSON_DUMP_KWARGS if structured_limit else None
 
-            masked = mask_text(
+            masker = _resolve_mask_text()
+            if masker is None:
+                continue
+
+            masked = masker(
                 raw_value,
                 policy,
                 deterministic,
@@ -496,8 +508,11 @@ def _jsonish_redaction_processor(
         is_jsonish = "{" in raw_value and '":' in raw_value
         if not is_jsonish:
             continue
+        masker = _resolve_mask_text()
+        if masker is None:
+            return event_dict
         try:
-            masked = mask_text(
+            masked = masker(
                 raw_value,
                 policy,
                 deterministic,
