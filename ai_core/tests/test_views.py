@@ -980,6 +980,7 @@ def test_rag_query_endpoint_applies_top_k_override(
             tenant_schema=request_obj.META.get(META_TENANT_SCHEMA_KEY),
             case_id=request_obj.META.get(META_CASE_ID_KEY, ""),
             trace_id="test-trace",
+            run_id="run-test",
             metadata={"graph_name": "rag.default", "graph_version": "test"},
         )
         params = retrieve.RetrieveInput.from_state(state)

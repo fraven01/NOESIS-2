@@ -1,140 +1,89 @@
-# ID Handling Guide for Coding Agents
+# ID handling (code-backed reference)
 
-This guide provides clear, actionable rules for handling IDs within the NOESIS-2 codebase. Follow these rules to ensure compliance with the architecture and avoid common bugs.
+This document summarizes how IDs are represented and normalized in the current codebase and points to the canonical implementations.
 
-## Core ID Concepts
+## Canonical header names
 
-| ID | Variable Name | Purpose | Mandatory? | Source |
-|---|---|---|---|---|
-| **Tenant ID** | `tenant_id` | Identifies the customer/tenant. | **YES** | Header `X-Tenant-ID`, Token, or `TenantContext`. |
-| **Case ID** | `case_id` | Identifies the business case. | **YES** (for business logic) | Header `X-Case-ID` or Dispatcher. |
-| **Workflow ID** | `workflow_id` | Identifies the type of workflow. | **YES** (in Graphs) | Dispatcher. |
-| **Run ID** | `run_id` | Single execution of a Graph. | **XOR** with `ingestion_run_id` | Generated per run. |
-| **Ingestion Run ID** | `ingestion_run_id` | Single ingestion job. | **XOR** with `run_id` | Entry point (Worker/API). |
-| **Trace ID** | `trace_id` | Distributed tracing. | **YES** | Header `X-Trace-ID` or generated. |
+Header constants are defined in `common/constants.py`:
 
-## Rules for Coding Agents
+- `X-Tenant-ID`, `X-Tenant-Schema`, `X-Case-ID`, `X-Trace-ID`, `X-Workflow-ID`, `X-Collection-ID`, `X-Key-Alias`, `Idempotency-Key`
 
-### 1. Always Use `ScopeContext` or `ToolContext`
+## Canonical runtime context models
 
-Do not pass IDs around as loose arguments if possible. Use the standardized context objects.
+- Scope context (request / task scope): `ai_core/contracts/scope.py:ScopeContext`
+- Tool context (tool call envelope): `ai_core/tool_contracts/base.py:ToolContext`
 
-- **Web/API Layer:** Use `ai_core.ids.normalize_request(request)` to get a `ScopeContext`.
-- **Workers:** Receive `state` and `meta`. If you need to call a tool or graph, construct a `ScopeContext` first.
-- **Tools:** Always accept `ToolContext` as the first argument.
+Both models are immutable (`ConfigDict(frozen=True)`).
 
-### 2. Enforce Mutual Exclusion (XOR)
+### Runtime identifier mutual exclusion
 
-You must provide **exactly one** of `run_id` or `ingestion_run_id`.
+Both `ScopeContext` and the base `ToolContext` validate a mutual exclusion constraint:
 
-- **Standard Graphs:** Use `run_id`.
-- **Ingestion Graphs:** Use `ingestion_run_id`.
+- exactly one of `run_id` or `ingestion_run_id` is present
 
-**Bad:**
+Code locations:
 
-```python
-# ERROR: Missing runtime ID
-context = ToolContext(tenant_id="t1", ...) 
+- `ai_core/contracts/scope.py:ScopeContext.validate_run_scope`
+- `ai_core/tool_contracts/base.py:ToolContext.check_run_ids`
 
-# ERROR: Both IDs provided
-context = ToolContext(tenant_id="t1", run_id="r1", ingestion_run_id="i1", ...)
-```
+## Where IDs come from (normalizers)
 
-**Good:**
+### HTTP request normalization
 
-```python
-# Standard execution
-context = ToolContext(tenant_id="t1", run_id="r1", ...)
+Two normalizers are used in different call paths:
 
-# Ingestion execution
-context = ToolContext(tenant_id="t1", ingestion_run_id="i1", ...)
-```
+- Django `HttpRequest` → `ScopeContext`: `ai_core/ids/http_scope.py:normalize_request`
+- Generic request objects (incl. DRF requests) → `ScopeContext`: `ai_core/graph/schemas.py:_build_scope_context`
 
-### 3. Handling IDs in Tests
+### Trace ID normalization and aliases
 
-Tests are the most common source of ID errors. Use the following patterns to simplify testing.
+Trace ID coercion accepts multiple input keys/aliases and supports the deprecated `request_id` key:
 
-#### A. Use `normalize_request` in View Tests
+- `ai_core/ids/headers.py:coerce_trace_id`
+- `ai_core/ids/contracts.py:normalize_trace_id`
 
-Don't manually construct contexts in view tests. Mock the headers and let `normalize_request` do the work.
+### Case ID format validation
 
-```python
-request = HttpRequest()
-request.META = {
-    "HTTP_X_TENANT_ID": "test-tenant",
-    "HTTP_X_CASE_ID": "case-1",
-}
-scope = normalize_request(request) # Handles generation and validation
-```
+Case IDs are validated by a regex pattern in `ai_core/ids/headers.py` (`_CASE_ID_PATTERN`). The normalizers raise a `ValueError` when the format is invalid.
 
-#### B. Mock `TenantContext`
+## AI Core views and graph meta
 
-If your code relies on `TenantContext.from_request`, you MUST mock it in your test `setUp`.
+AI Core request handling builds a meta dictionary and persists key fields on the request:
 
-```python
-from unittest.mock import patch
+- Header parsing and tenant enforcement: `ai_core/views.py:_prepare_request`
+- Graph meta normalization: `ai_core/graph/schemas.py:normalize_meta`
 
-def setUp(self):
-    self.patcher = patch("customers.tenant_context.TenantContext")
-    self.mock_tenant = self.patcher.start()
-    self.mock_tenant.from_request.return_value.schema_name = "test-tenant"
+`normalize_meta` rejects requests without `case_id`.
 
-def tearDown(self):
-    self.patcher.stop()
-```
+Graph execution uses:
 
-#### C. Use `ScopeContext` for Graph Tests
+- Graph protocol + context: `ai_core/graph/core.py` (`GraphRunner`, `GraphContext`)
+- Graph execution orchestration: `ai_core/services/__init__.py:execute_graph`
 
-When testing graphs, pass a valid `ScopeContext` (or a dict that matches it) in the `meta` field.
+## Case ID vs Case model
 
-```python
-meta = {
-    "tenant_id": "t1",
-    "case_id": "c1",
-    "trace_id": "tr1",
-    "run_id": "r1", # OR ingestion_run_id
-}
-```
+The `cases` app uses `Case.external_id` as the stable identifier surfaced via APIs:
 
-### 4. Common Pitfalls & Fixes
+- Model: `cases/models.py`
+- Resolver: `cases/services.py:resolve_case`
+- API viewset uses `lookup_field = "external_id"`: `cases/api.py`
 
-| Error | Cause | Fix |
-|---|---|---|
-| `ValueError: Exactly one of run_id or ingestion_run_id...` | You provided neither or both in `ToolContext`/`ScopeContext`. | Ensure exactly one is set. If starting a new run, generate a UUID for `run_id`. |
-| `TenantRequiredError` | `tenant_id` missing in headers and `TenantContext` could not resolve it. | Add `X-Tenant-ID` header or mock `TenantContext`. |
-| `AttributeError: 'NoneType' object has no attribute 'schema_name'` | `TenantContext.from_request` returned `None`. | Mock `TenantContext` to return a mock object with `schema_name`. |
+## Collections: UUID vs logical key
 
-## Reference Implementation
+Document collections have both:
 
-- **ID Definitions:** `ai_core/contracts/scope.py`
-- **Normalization Logic:** `ai_core/ids/http_scope.py`
-- **Tool Contract:** `ai_core/tool_contracts/base.py`
+- a UUID (`collection_id`) used as technical identifier, and
+- a logical key/slug used for idempotent lookup/creation.
 
-### 5. Entity IDs & Idempotency (Collection/Document)
+Code locations that encode this distinction:
 
-When handling database entities like **Document Collections**, we must distinguish between the **UUID** and the **Logical Key**.
+- `documents/domain_service.py:CollectionIdConflictError` (conflict when an existing collection key maps to a different UUID)
+- `documents/service_facade.py:ingest_document` (prefers `collection_key` over `collection_id` when deciding what to pass downstream)
 
-- **UUID (`collection_id`):** The technical primary identifier (usually from the client/UI).
-- **Logical Key (`key`):** The human-readable or source-derived identifier (e.g., "fiscal-2024").
+## Test patterns in this repository
 
-#### The "Lookup-Before-Create" Pattern
+Examples of code that exercises these contracts:
 
-Workers must be idempotent. A common error is strictly using a provided UUID as the *key* for creation, which fails if the logical entity already exists with a different key.
-
-**Correct Pattern:**
-
-1. Check if the entity exists by **UUID**.
-2. If yes, use its **existing Key** for any `ensure_collection` or update calls.
-3. If no, use the UUID (or provided Key) to create it.
-
-```python
-# Bad: Blindly using UUID as Key
-service.ensure_collection(key=str(uuid), collection_id=uuid, ...)
-
-# Good: Resolve existing Key first
-existing = Collection.objects.filter(collection_id=uuid).first()
-key_to_use = existing.key if existing else str(uuid)
-service.ensure_collection(key=key_to_use, collection_id=uuid, ...)
-```
-
-This prevents `IntegrityError` (UniqueConstraint violations) when retrying tasks or re-crawling.
+- ToolContext/ScopeContext validation: `ai_core/tests/test_tool_context.py`
+- Header normalization behavior: `ai_core/tests/test_ids_headers.py`
+- AI Core view validation / trace headers: `ai_core/tests/test_views_min.py`, `tests/test_openapi_contract.py`

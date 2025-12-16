@@ -1,41 +1,41 @@
-# Onboarding Guide für neue Graph-Entwickler:innen
+# Graph onboarding (code-backed pointers)
 
-Dieses Handbuch stellt sicher, dass neue Graphen und Worker die ID- und Lifecycle-Regeln einhalten.
+This note collects pointers to the existing graph execution surfaces and the ID/validation utilities used by graphs and workers in this repository.
 
-## 1. Grundlagen verstehen
-- Lies `docs/ids.md` und `docs/architecture/id-semantics.md` für Begriffe & Lebenszyklen.
-- Prüfe bestehende Graphen (`ai_core/graphs/collection_search.py`, `external_knowledge_graph.py`) als Referenz für Kontext-Validierung (`GraphContextPayload`).
-- Tools müssen den Vertrag aus `ai_core/tools/framework_contracts.py` respektieren (`ToolContext`, `ToolError`).
+## Code entry points
 
-## 2. Kontextmodelle definieren
-- Definiere `GraphContextPayload` mit `tenant_id`, `workflow_id`, `case_id` (pflicht), `trace_id`, `run_id`/`ingestion_run_id` (XOR), `extra="forbid"`, `frozen=True`.
-- Lege ein `GraphInput`-Modell mit Validatoren und Beispielen an.
+- Graph runner protocol + checkpointing: `ai_core/graph/core.py`
+- Graph meta normalization (builds `scope_context` + `tool_context`): `ai_core/graph/schemas.py`
+- AI Core graph execution orchestration: `ai_core/services/__init__.py:execute_graph`
+- Ingestion task entrypoint (Celery): `ai_core/tasks.py:run_ingestion_graph`
+- ID normalization helpers: `ai_core/ids/` and `common/constants.py`
 
-## 3. ID-Propagation im Graph
-- Beim Start: generiere `run_id` falls nicht vorhanden, **nicht** `workflow_id`.
-- Reiche Kontext an jeden Node/Tool weiter (`tenant_id`, `trace_id`, `workflow_id`, `case_id`, Laufzeit-ID, `collection_id`/`document_id` falls relevant).
-- Bei Ingestion-Triggern: erzeuge `ingestion_run_id` und protokolliere Übergabe.
+## Graph construction pattern (LangGraph)
 
-## 4. Case-Lifecycle & Events
-- Nutze standardisierte Events (`search.completed`, `document.ingested`, `hitl.pending`).
-- Phasen-Mapping erfolgt per Tenant-Config; Graph kodiert nur neutrale Events.
-- Für HITL: speichere `trace_id`, `run_id`, `workflow_id`, `case_id` im Review-Payload.
+Preferred build pattern for LangGraph-based graphs: expose factory functions that return a fresh graph instance / compiled graph, and avoid module-level singleton instances.
 
-## 5. Validierung & Fehlerbehandlung
-- Verwende `assert_case_active` im HTTP-Einstieg oder entsprechendes Guarding im Scheduler.
-- Tools werfen `InputError` bei fehlenden IDs; Graph bricht vor externen Calls ab.
-- System-Tasks ohne `case_id` kennzeichnen `system_task=true` in Logs/Events.
+Examples of factory functions in the repo:
 
-## 6. Observability
-- Nutze `observe_span`/`record_span` mit Attributen: `tenant_id`, `trace_id`, `workflow_id`, `case_id`, Laufzeit-ID, `collection_id`.
-- Leitfaden: `docs/observability/langfuse.md` und Code in `ai_core.infra.observability`.
+- `ai_core/graphs/upload_ingestion_graph.py:build_upload_graph`
+- `ai_core/graphs/external_knowledge_graph.py:build_external_knowledge_graph`
+- `ai_core/graphs/collection_search.py:build_compiled_graph`
+- `ai_core/graphs/framework_analysis_graph.py:build_graph`
 
-## 7. Übergabe an Worker/Tasks
-- Celery-Tasks deklarieren Kontext-Parameter explizit (`tenant_id`, `case_id`, `trace_id`, `workflow_id`, Laufzeit-ID, `collection_id`).
-- Verwende `ScopedTask`/`with_scope_apply_async`, damit Maskierung/Headers erhalten bleiben.
-- Child-Graph-Aufrufe behalten `trace_id`, setzen neue `run_id`.
+Example of a module-level singleton (candidate to migrate to factory-only):
 
-## 8. Abschluss-Check
-- Prüfe die [ID-Sync-Checklist](./id-sync-checklist.md).
-- Ergänze Beispiele in den Pydantic-Modellen und aktualisiere Dokumentation, wenn neue Events/Phasen eingeführt werden.
+- `ai_core/graphs/retrieval_augmented_generation.py` (defines `GRAPH = RetrievalAugmentedGenerationGraph()`)
 
+## Existing graphs as examples
+
+Graph implementations live in `ai_core/graphs/`. Repository examples include:
+
+- `ai_core/graphs/collection_search.py`
+- `ai_core/graphs/retrieval_augmented_generation.py`
+- `ai_core/graphs/framework_analysis_graph.py`
+
+## Observability hooks used in code
+
+Tracing and spans are emitted via helpers in:
+
+- `ai_core/infra/observability.py`
+- `ai_core/infra/observability` usage patterns throughout `ai_core/services/__init__.py` and ingestion/task code

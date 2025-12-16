@@ -17,8 +17,10 @@ import structlog
 from opentelemetry import trace
 
 from common.redaction import Redactor, hash_email, hash_str, hash_user_id  # noqa: F401
-from ai_core.infra.pii import mask_text
-from ai_core.infra.pii_flags import get_pii_config, get_pii_config_version
+
+# NOTE: Avoid importing `ai_core.*` at module import time.
+# `pytest-django` imports Django settings early, and settings may import logging helpers.
+# Importing `ai_core.infra.*` here can pull in Django settings and create circular imports.
 
 try:  # pragma: no cover - optional instrumentation
     from opentelemetry.instrumentation.logging import LoggingInstrumentor
@@ -256,16 +258,25 @@ def _service_processor(
             hmac_secret = cfg.get("hmac_secret") if deterministic else None
             mode = str(cfg.get("mode", "industrial"))
             policy = str(cfg.get("policy", "balanced"))
-            masked = mask_text(
-                raw_payload,
-                policy,
-                deterministic,
-                hmac_secret,
-                mode=mode,
-                name_detection=False,
-                session_scope=cfg.get("session_scope"),
-                structured_max_length=_MAX_LOG_STRUCTURED_BYTES,
-                json_dump_kwargs=_LOG_JSON_DUMP_KWARGS,
+            try:
+                from ai_core.infra.pii import mask_text  # lazy
+            except Exception:
+                mask_text = None  # type: ignore[assignment]
+
+            masked = (
+                mask_text(  # type: ignore[misc]
+                    raw_payload,
+                    policy,
+                    deterministic,
+                    hmac_secret,
+                    mode=mode,
+                    name_detection=False,
+                    session_scope=cfg.get("session_scope"),
+                    structured_max_length=_MAX_LOG_STRUCTURED_BYTES,
+                    json_dump_kwargs=_LOG_JSON_DUMP_KWARGS,
+                )
+                if mask_text is not None
+                else raw_payload
             )
             if masked != raw_payload:
                 event_dict["payload"] = _collapse_placeholders(raw_payload, masked)
@@ -332,6 +343,11 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
         return None
 
     def _resolve_scoped_pii_config() -> dict[str, object]:
+        from ai_core.infra.pii_flags import (  # lazy (avoid settings import at module import time)
+            get_pii_config,
+            get_pii_config_version,
+        )
+
         cached = _PII_LOG_CONFIG_CACHE.get()
         version = get_pii_config_version()
         if cached is not None and cached[0] == version:
@@ -881,8 +897,11 @@ def get_logger(name: str | None = None) -> structlog.stdlib.BoundLogger:
 
     if not isinstance(logger, _ContextAwareBoundLogger):
         underlying = getattr(logger, "_logger", None)
-        if underlying is None:
-            underlying = structlog.PrintLoggerFactory()(name)
+        if underlying is None or not hasattr(underlying, "disabled"):
+            # Use a stdlib logger as the wrapped logger to stay compatible with
+            # `structlog.stdlib.*` processors (e.g. `filter_by_level`) even if
+            # this module is imported before `configure_logging()` runs.
+            underlying = logging.getLogger(name)
         processors = getattr(logger, "_processors", None)
         context = getattr(logger, "_context", {})
         logger = _ContextAwareBoundLogger(underlying, processors, context)

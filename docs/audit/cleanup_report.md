@@ -1,14 +1,14 @@
 # Documentation Cleanup Report
 
 **Date**: 2025-12-15
-**Objective**: Establish AGENTS.md as Single Source of Truth, eliminate redundancy
+**Objective**: Reduce redundant docs and improve navigation (historical snapshot)
 **Scope**: Root files + docs/ directory
 
 ---
 
 ## Executive Summary
 
-This cleanup removed **23 files** and consolidated documentation to enforce strict adherence to the "Single Source of Truth" principle. AGENTS.md (root) is now the authoritative reference for architecture, IDs, and contracts.
+This cleanup removed **23 files** and consolidated documentation to reduce redundancy. Current repository convention treats code as the source of truth; `AGENTS.md` is used as an LLM entry contract that points to relevant code paths.
 
 ---
 
@@ -155,7 +155,7 @@ No files were moved in this cleanup (structure already logical). Future cleanup 
 ## Consolidated Content
 
 ### IDs & Context
-- **Single Source**: Root `AGENTS.md` (Glossar & Feld-Matrix)
+- **Index/Entry Contract**: Root `AGENTS.md` (code navigation)
 - **Detail Docs** (Retained):
   - `docs/architecture/id-semantics.md` (field definitions)
   - `docs/architecture/id-propagation.md` (end-to-end flows)
@@ -163,7 +163,7 @@ No files were moved in this cleanup (structure already logical). Future cleanup 
   - `docs/architecture/id-sync-checklist.md` (validation)
 
 ### Contracts
-- **Single Source**: Root `AGENTS.md` (Tool-Verträge Layer 2)
+- **Index/Entry Contract**: Root `AGENTS.md` (points to code-backed contracts)
 - **Detail Docs** (Retained):
   - `docs/agents/tool-contracts.md` (AI Core tools)
   - `docs/documents/contracts-reference.md` (Document subsystem)
@@ -178,7 +178,7 @@ No files were moved in this cleanup (structure already logical). Future cleanup 
 ## Remaining Documentation Structure
 
 ### Root Files
-- ✅ `AGENTS.md` - Single Source of Truth (Architecture, IDs, Contracts)
+- ✅ `AGENTS.md` - LLM entry contract (code navigation)
 - ✅ `CLAUDE.md` - Operational guide for Claude Code (pointers to AGENTS.md)
 - ✅ `Gemini.md` - Operational guide for Gemini (pointers to AGENTS.md)
 - ✅ `README.md` - Project README
@@ -324,7 +324,7 @@ docs/
 - **Reduction**: 26% fewer files
 
 ### Clarity Improvement
-- **Single Source of Truth**: Root AGENTS.md (no competing definitions)
+- **Code-backed navigation**: `AGENTS.md` + code (no competing definitions in docs)
 - **Clear Hierarchy**: Architecture (AGENTS.md) → Detail Docs (architecture/, agents/) → Implementation (code)
 - **No Redundancy**: Each concept documented exactly once
 

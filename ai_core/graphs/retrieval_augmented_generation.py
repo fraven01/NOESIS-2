@@ -6,6 +6,7 @@ import logging
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any, Protocol, Tuple
+from uuid import uuid4
 
 from ai_core.nodes import compose, retrieve
 from ai_core.rag.visibility import coerce_bool_flag
@@ -173,12 +174,14 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
     override_flag = meta.get("visibility_override_allowed")
     trace_raw = meta.get("trace_id")
     trace_id = str(trace_raw).strip() if trace_raw is not None else "trace-fallback"
+    run_id = str(meta.get("run_id") or "").strip() or uuid4().hex
 
     return ToolContext(
         tenant_id=tenant_text,
         tenant_schema=tenant_schema,
         case_id=case_id,
         trace_id=trace_id,
+        run_id=run_id,
         visibility_override_allowed=coerce_bool_flag(override_flag),
         metadata=dict(meta),
     )

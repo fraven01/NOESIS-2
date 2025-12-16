@@ -1,48 +1,25 @@
-# ID-Semantik und Lebenszyklen
+# ID semantics (code-backed reference)
 
-Dieses Dokument definiert die verbindliche Bedeutung jeder ID in der Multi-Tenant-Plattform. Es ergänzt `docs/ids.md` um eindeutige Lebensdauerregeln, Abgrenzungen und Generierungsquellen für Graphen, Worker und Tools.
+This document describes how IDs are represented in the current codebase and points to the canonical implementations.
 
-## Kern- und Laufzeit-IDs
+## Canonical definitions in code
 
-| ID | Lebensdauer | Erzeugung | Fachliche Rolle | Technische Rolle |
-| --- | --- | --- | --- | --- |
-| `tenant_id` | dauerhaft je Mandant | Header `X-Tenant-ID`, Token oder Worker-Scope | steuert Mandantenschema und Policies | muss end-to-end propagiert werden; keine Ableitung aus anderen IDs |
-| `case_id` | Wochen/Monate pro fachlichem Vorgang | Request-Header oder Dispatcher; für System-Tasks optional | bündelt alle Workflows und Events eines Vorgangs | Pflicht, sobald fachlicher Kontext vorliegt; nur systemische Tasks dürfen ohne laufen |
-| `workflow_id` | stabil pro fachlichem Workflow innerhalb eines Cases | Call-Site/Dispatcher vergibt; Graph selbst erzeugt **keine** neue ID | beschreibt Prozess-Typ (z. B. `collection_search`, `external_knowledge`) | bleibt über Wiederholungen identisch und wird in Events gespiegelt |
-| `run_id` | eine Ausführung eines Workflows (synchroner Graph-Lauf) | vom Graph-Dispatcher oder Worker generiert | keine fachliche Bedeutung | genau eine Laufzeit-ID pro Tool/Span; nie gemeinsam mit `ingestion_run_id` |
-| `ingestion_run_id` | eine Ingestion-Ausführung (Upload/Crawler) | der Einstiegspunkt, der Ingestion startet, erzeugt sie | markiert Ingestion-Jobs je Case/Collection | mutual exclusion zu `run_id`; wird in Ingestion-Tools weitergereicht |
-| `trace_id` | Request-/Flow-basiert | Web-Layer oder API ruft `X-Trace-ID` ab oder erzeugt sie | Korrelation für Auditing/HITL | muss über HTTP → Django → Celery → LangGraph → Tools unverändert bleiben |
-| `workflow_run_id` | aliasfrei nicht verwenden | — | — | nicht befüllen (historische Bezeichnung) |
+- Header names: `common/constants.py`
+- Scope context model (request/task scope): `ai_core/contracts/scope.py:ScopeContext`
+- HTTP request normalization: `ai_core/ids/http_scope.py:normalize_request` and `ai_core/graph/schemas.py:_build_scope_context`
+- Trace ID normalization (incl. deprecated alias): `ai_core/ids/headers.py:coerce_trace_id`, `ai_core/ids/contracts.py:normalize_trace_id`
+- Case model identifier used by APIs: `cases/models.py:Case.external_id` and `cases/api.py` (`lookup_field = "external_id"`)
 
-### Ableitungen und Redundanz
+## IDs used in this repository
 
-- `tenant_id` darf **nicht** aus anderen IDs abgeleitet werden, um Schema-Vermischung auszuschließen. Sie wird immer explizit übertragen.
-- `case_id` wird nie aus `trace_id`/`run_id` rekonstruiert; fehlende Cases lösen Validierungsfehler aus (siehe Validation-ADR).
-- `workflow_id` wird nicht aus Funktionsnamen generiert: Web-Layer, Scheduler oder Dispatcher setzt sie vor dem Graph-Start.
+| ID | Where it appears | Notes in code |
+| --- | --- | --- |
+| `tenant_id` | scope/meta/tool context | Required field in `ScopeContext` (`ai_core/contracts/scope.py`) |
+| `case_id` | scope/meta/tool context | Validated for format in `ai_core/ids/headers.py`; required for AI Core graph meta (`ai_core/graph/schemas.py:normalize_meta`) |
+| `workflow_id` | scope/meta/tool context | Accepted as optional in `ScopeContext`; some call paths default it (see `ai_core/views.py:_prepare_request` and `ai_core/services/__init__.py:execute_graph`) |
+| `run_id` | scope/tool context; graph execution | Mutually exclusive with `ingestion_run_id` in `ScopeContext` and base `ToolContext` |
+| `ingestion_run_id` | scope/tool context; ingestion tasks | Mutually exclusive with `run_id`; ingestion task entrypoints live in `ai_core/tasks.py` |
+| `trace_id` | scope/meta/tool context | Normalized/coerced by `ai_core/ids/*`; generated when absent |
+| `invocation_id` | scope/tool context | Generated when absent by the normalizers (see `ai_core/ids/http_scope.py` and `ai_core/graph/schemas.py`) |
 
-### Beziehungen
-
-- 1 `tenant_id` → N `case_id`
-- 1 `case_id` → N `workflow_id`
-- 1 `workflow_id` → N `run_id`
-- Ingestion-Flows nutzen `ingestion_run_id` statt `run_id`; Kanten zu Cases/Workflows werden über Kontextfelder gesetzt, nicht impliziert.
-
-## ID-Quellen je Schicht
-
-- **HTTP/Django**: `normalize_request` erstellt `ScopeContext` (Single Source of Truth).
-- **Celery Dispatcher**: Serialisiert `ScopeContext` und übergibt ihn an Worker.
-- **LangGraph Runner**: Deserialisiert `ScopeContext` und validiert ihn erneut.
-- **Tools**: Erhalten `ToolContext` (abgeleitet aus `ScopeContext`).
-- **Observability**: Nutzt `ScopeContext` zur konsistenten Befüllung von Spans.
-
-## ID-Löschung und Archivierung
-
-- `case_id` bleibt über Schließung erhalten; Events nach Abschluss sind erlaubt, aber Write-Workloads werden blockiert (Validation-Policy).
-- `run_id` und `ingestion_run_id` werden nicht wiederverwendet; Persistenz nur in Logs/Events.
-- `trace_id` kann in Langfuse archiviert werden, bleibt aber in Events referenzierbar.
-
-## XOR-Regel für Laufzeit-IDs
-
-- Jeder `ScopeContext` und `ToolContext` führt **genau eine** Laufzeit-ID: `run_id` **oder** `ingestion_run_id`.
-- Diese Regel wird durch Pydantic-Validatoren im `ScopeContext` strikt durchgesetzt.
-- Graphen, die Ingestion triggern, erzeugen einen neuen `ScopeContext` mit `ingestion_run_id` am Trigger-Punkt.
+Related reference: `docs/architecture/id-guide-for-agents.md`.

@@ -1,0 +1,93 @@
+# Architecture reality (code-backed inventory)
+
+This document is a “what exists in code” snapshot. It lists the concrete code paths that currently implement the 4-layer model described in `docs/architecture/4-layer-firm-hierarchy.md`.
+
+## Layer 1 — UI / HTTP boundaries
+
+- UI templates + workbench pages: `theme/` (e.g. `theme/views.py`, `theme/templates/`)
+- Main URL routing: `noesis2/urls.py`
+- AI Core REST endpoints: `ai_core/views.py` and `ai_core/urls.py`, `ai_core/urls_v1.py`
+- Worker polling/submit API: `llm_worker/views.py` and `llm_worker/urls.py`
+
+## Layer 2 — Business context (Cases)
+
+- Case model identifier used by APIs: `cases/models.py:Case.external_id`
+- Case resolver: `cases/services.py:resolve_case`
+- Case API endpoints: `cases/api.py`
+- Case lifecycle events used by agent tasks: `cases/integration.py` (e.g. used from `llm_worker/tasks.py`)
+
+### Business-heavy graph example (domain logic)
+
+The repository currently contains at least one graph that implements domain/business logic (beyond technical orchestration) while still living under `ai_core/graphs/`:
+
+- Framework analysis (agreement structure, versioning, persistence into domain models): `ai_core/graphs/framework_analysis_graph.py` (persists `documents/framework_models.py:FrameworkProfile` / `FrameworkDocument`)
+
+## Layer 3 — Orchestration (Graphs / Domain services)
+
+### Graph protocol + execution
+
+- Graph runner protocol + checkpointer: `ai_core/graph/core.py`
+- Graph meta normalization (`scope_context` + `tool_context`): `ai_core/graph/schemas.py:normalize_meta`
+- Web execution orchestration (sync + worker offload): `ai_core/services/__init__.py:execute_graph`
+
+### Graph construction pattern (LangGraph)
+
+The repository uses “build_*” factory functions for many graph modules. Preferred pattern is to keep graph construction as a factory (new instance / compiled graph per call) instead of module-level singleton graphs, to support per-run configuration and future remote execution.
+
+Factory examples:
+
+- `ai_core/graphs/upload_ingestion_graph.py:build_upload_graph`
+- `ai_core/graphs/external_knowledge_graph.py:build_external_knowledge_graph`
+- `ai_core/graphs/collection_search.py:build_compiled_graph`
+
+Singleton example (candidate to migrate):
+
+- `ai_core/graphs/retrieval_augmented_generation.py` (module-level `GRAPH = ...`)
+
+### Graph implementations present in the repo
+
+Located in `ai_core/graphs/`:
+
+- `ai_core/graphs/collection_search.py` (includes HITL decision structures; see `@observe_span(name="node.hitl")`)
+- `ai_core/graphs/framework_analysis_graph.py` (business-heavy; see Layer 2 note above)
+- `ai_core/graphs/retrieval_augmented_generation.py`
+- `ai_core/graphs/external_knowledge_graph.py`
+- `ai_core/graphs/crawler_ingestion_graph.py`
+- `ai_core/graphs/upload_ingestion_graph.py`
+- `ai_core/graphs/info_intake.py`
+- `ai_core/graphs/rag_demo.py` (deprecated/demo graph module)
+
+### Document orchestration boundary
+
+- Document lifecycle + collection operations: `documents/domain_service.py:DocumentDomainService`
+- Facades used by workers/graphs: `documents/service_facade.py`
+- Lifecycle state machine: `documents/lifecycle.py`
+
+## Layer 4 — Workers (Celery + I/O)
+
+### Queues and tasks (code)
+
+- Agents worker task: `llm_worker/tasks.py:run_graph` (`queue="agents"`)
+- Ingestion graph task: `ai_core/tasks.py:run_ingestion_graph` (`queue="ingestion"`)
+
+### Queue wiring (local compose)
+
+- `docker-compose.yml` and `docker-compose.dev.yml` define workers split by `-Q`:
+  - `agents-worker`: `-Q agents`
+  - `ingestion-worker`: `-Q ingestion`
+  - `worker`: `-Q celery,rag_delete,crawler`
+
+### Context propagation (tasks)
+
+- Task base + scope helpers: `common/celery.py` (`ScopedTask`, `with_scope_apply_async`)
+- Canonical header constants used for propagation: `common/constants.py`
+
+## HITL (Human-in-the-loop) code locations
+
+- HITL node + decision payloads: `ai_core/graphs/collection_search.py`
+- HITL references in graph documentation: `ai_core/graphs/README.md` and `ai_core/graphs/collection_search_README.md`
+- UI references mentioning HITL queue: `theme/views.py` (search for “HITL”)
+
+## Roadmap pointer (non-code planning)
+
+If you maintain a planning document for closing gaps or aligning naming, keep it in `roadmap/` (e.g. `roadmap/architecture-consolidation-2025.md`) and treat it as a plan/hypothesis, not as a runtime contract.
