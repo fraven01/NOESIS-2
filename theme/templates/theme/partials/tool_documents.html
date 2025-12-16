@@ -5,6 +5,7 @@
     workflowFilter: '{{ query_defaults.workflow|default:'' }}',
     limit: '{{ query_defaults.limit|default:'10' }}',
     latestOnly: {{ query_defaults.latest|default:'true' }},
+    showRetired: {{ query_defaults.show_retired|default:'false' }},
     
     updateFilters() {
         const params = new URLSearchParams();
@@ -13,6 +14,7 @@
         if (this.workflowFilter) params.set('workflow', this.workflowFilter);
         params.set('limit', this.limit);
         params.set('latest', this.latestOnly ? '1' : '0');
+        params.set('show_retired', this.showRetired ? '1' : '0');
         
         htmx.ajax('GET', '{% url 'document_explorer' %}?' + params.toString(), {
             target: '#workspace-content',
@@ -86,11 +88,16 @@
                             {% endfor %}
                         </select>
                     </div>
-                    <div class="flex items-end pb-2">
+                    <div class="flex flex-col items-start gap-1 pb-2">
                         <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
                             <input type="checkbox" x-model="latestOnly" @change="updateFilters()"
                                 class="rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
                             <span class="text-xs">Latest Only</span>
+                        </label>
+                        <label class="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                            <input type="checkbox" x-model="showRetired" @change="updateFilters()"
+                                class="rounded border-slate-300 text-amber-600 focus:ring-amber-500">
+                            <span class="text-xs text-amber-700">Show Retired</span>
                         </label>
                     </div>
                 </div>
@@ -242,15 +249,70 @@
                             </div>
                         </div>
 
-                        <!-- Download Button -->
-                        <a href="{{ doc.download_url }}" target="_blank"
-                            class="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
-                            title="Download Original">
-                            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                                    d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                            </svg>
-                        </a>
+                        <!-- Action Buttons -->
+                        <div class="flex items-center gap-1">
+                            <!-- Download Button -->
+                            <a href="{{ doc.download_url }}" target="_blank"
+                                class="p-2 text-slate-400 hover:text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors"
+                                title="Download Original">
+                                <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                                </svg>
+                            </a>
+
+                            <!-- Delete Dropdown -->
+                            <div x-data="{ open: false }" class="relative">
+                                <button @click="open = !open" @click.outside="open = false"
+                                    class="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                    title="Delete Document">
+                                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                            d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                                    </svg>
+                                </button>
+                                <div x-show="open" x-transition
+                                    class="absolute right-0 mt-1 w-44 rounded-lg bg-white shadow-lg ring-1 ring-slate-200 z-10">
+                                    <div class="py-1">
+                                        {% if doc.lifecycle_state == 'retired' or doc.lifecycle_state == 'archived' %}
+                                        <button hx-post="{% url 'document_restore' %}?document_id={{ doc.document_id }}"
+                                            hx-confirm="Dokument wiederherstellen?" hx-target="closest article"
+                                            hx-swap="outerHTML" @click="open = false"
+                                            class="w-full text-left px-4 py-2 text-sm text-green-700 hover:bg-green-50 flex items-center gap-2">
+                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            Restore (Active)
+                                        </button>
+                                        <div class="border-t border-slate-100 my-1"></div>
+                                        {% endif %}
+                                        <button
+                                            hx-delete="{% url 'document_delete' %}?document_id={{ doc.document_id }}&hard=false"
+                                            hx-confirm="Dokument archivieren (Soft Delete)?" hx-target="closest article"
+                                            hx-swap="outerHTML" @click="open = false"
+                                            class="w-full text-left px-4 py-2 text-sm text-amber-700 hover:bg-amber-50 flex items-center gap-2">
+                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M5 8h14M5 8a2 2 0 110-4h14a2 2 0 110 4M5 8v10a2 2 0 002 2h10a2 2 0 002-2V8m-9 4h4" />
+                                            </svg>
+                                            Soft Delete (Retire)
+                                        </button>
+                                        <button
+                                            hx-delete="{% url 'document_delete' %}?document_id={{ doc.document_id }}&hard=true"
+                                            hx-confirm="Dokument PERMANENT löschen? Diese Aktion kann nicht rückgängig gemacht werden!"
+                                            hx-target="closest article" hx-swap="outerHTML" @click="open = false"
+                                            class="w-full text-left px-4 py-2 text-sm text-red-700 hover:bg-red-50 flex items-center gap-2">
+                                            <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                                    d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                            </svg>
+                                            Hard Delete
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Technical Metadata Tabs -->
@@ -325,8 +387,9 @@
                                     </div>
                                     <div>
                                         <span class="text-slate-500">Media Type</span>
-                                        <p class="font-mono text-slate-900">{{ doc.blob.media_type|default:"text/html"
-                                            }}</p>
+                                        <p class="font-mono text-slate-900">
+                                            {{ doc.blob.media_type_display|default:"text/html" }}
+                                        </p>
                                     </div>
                                     <div>
                                         <span class="text-slate-500">Size</span>

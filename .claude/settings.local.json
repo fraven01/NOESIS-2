@@ -25,7 +25,8 @@
       "Bash(npm run win:dev:test:*)",
       "Bash(ls:*)",
       "Bash(grep:*)",
-      "Bash(npm run lint:*)"
+      "Bash(npm run lint:*)",
+      "Bash(dir \"f:\\NOESIS-2\\NOESIS-2\\users\"\")"
     ],
     "deny": [],
     "ask": []

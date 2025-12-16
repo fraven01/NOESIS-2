@@ -4,6 +4,7 @@ from collections import Counter
 from dataclasses import dataclass
 import json
 from typing import Mapping, Sequence
+from urllib.parse import urlparse
 
 from django.urls import reverse
 from django_tenants.utils import schema_context
@@ -11,10 +12,22 @@ from structlog.stdlib import get_logger
 
 from customers.models import Tenant
 from documents.collection_service import CollectionService
+from documents.contract_utils import normalize_media_type
 from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository
 
 logger = get_logger(__name__)
+
+DEFAULT_MEDIA_TYPE = "text/html"
+_MEDIA_TYPE_EXTENSION_MAP = {
+    ".pdf": "application/pdf",
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".html": "text/html",
+    ".htm": "text/html",
+    ".txt": "text/plain",
+    ".json": "application/json",
+}
 
 
 @dataclass(frozen=True)
@@ -25,6 +38,7 @@ class DocumentSpaceRequest:
     cursor: str | None
     workflow_filter: str | None
     search_term: str
+    show_retired: bool = False
 
 
 @dataclass
@@ -126,13 +140,14 @@ class DocumentSpaceService:
                         tenant_id=tenant_schema,
                         document_refs=document_refs,
                         latest_only=params.latest_only,
+                        include_retired=params.show_retired,
                     )
                     for doc in fetched_docs:
                         payload = self._serialize_document_payload(doc)
                         documents_payload.append(payload)
 
         filtered_documents = self._filter_documents(
-            documents_payload, params.search_term
+            documents_payload, params.search_term, params.show_retired
         )
         summaries = self._summaries_for_documents(filtered_documents)
         document_summary = {
@@ -187,8 +202,9 @@ class DocumentSpaceService:
         tenant_id: str,
         document_refs: Sequence,
         latest_only: bool,
+        include_retired: bool = False,
     ) -> list:
-        logger.info(f"DEBUG: _fetch_documents called with {len(document_refs)} refs")
+        logger.info(f"DEBUG: _fetch_documents called with {len(document_refs)} refs, include_retired={include_retired}")
         fetched_docs = []
         for idx, ref in enumerate(document_refs):
             logger.info(
@@ -201,6 +217,7 @@ class DocumentSpaceService:
                     version=ref.version,
                     prefer_latest=latest_only or ref.version is None,
                     workflow_id=ref.workflow_id,
+                    include_retired=include_retired,
                 )
                 if doc is None:
                     logger.warning(
@@ -445,15 +462,7 @@ class DocumentSpaceService:
 
         # Enhanced blob description with better media_type
         blob_info = self._describe_blob(doc.blob)
-
-        # Try to infer media type if missing
-        if not blob_info.get("media_type"):
-            source_url = external_ref.get("url", "")
-            if source_url:
-                if source_url.endswith(".html") or "wiki" in source_url.lower():
-                    blob_info["media_type"] = "text/html"
-                elif source_url.endswith(".pdf"):
-                    blob_info["media_type"] = "application/pdf"
+        self._finalize_blob_media_type(blob_info, doc, external_ref)
 
         # Extract URL for display
         origin_uri = doc.meta.origin_uri or external_ref.get("url", "")
@@ -493,6 +502,87 @@ class DocumentSpaceService:
         }
         payload["search_blob"] = self._build_search_blob(payload)
         return payload
+
+    def _finalize_blob_media_type(
+        self,
+        blob_info: dict[str, object],
+        doc,
+        external_ref: Mapping[str, object] | None,
+    ) -> None:
+        """Ensure the blob has a usable media type for display."""
+        candidate = self._normalize_media_type_value(blob_info.get("media_type"))
+        if not candidate:
+            candidate = self._infer_media_type_from_doc(doc, external_ref)
+        final_media_type = candidate or DEFAULT_MEDIA_TYPE
+        blob_info["media_type"] = final_media_type
+        blob_info["media_type_display"] = final_media_type
+
+    def _infer_media_type_from_doc(
+        self,
+        doc,
+        external_ref: Mapping[str, object] | None,
+    ) -> str | None:
+        candidates = []
+        if external_ref:
+            candidates.append(self._media_type_from_metadata(external_ref))
+            candidates.append(self._media_type_from_url(external_ref.get("url")))
+        metadata = getattr(doc.meta, "metadata", None) or {}
+        candidates.append(self._media_type_from_metadata(metadata))
+        candidates.append(self._media_type_from_url(doc.meta.origin_uri))
+        candidates.append(self._media_type_from_extension(getattr(doc, "title", None)))
+        for candidate in candidates:
+            if candidate:
+                return candidate
+        return None
+
+    @staticmethod
+    def _media_type_from_metadata(
+        metadata: Mapping[str, object] | None,
+    ) -> str | None:
+        if not metadata:
+            return None
+        for key in ("media_type", "content_type", "mime_type"):
+            normalized = DocumentSpaceService._normalize_media_type_value(
+                metadata.get(key)
+            )
+            if normalized:
+                return normalized
+        return None
+
+    @staticmethod
+    def _media_type_from_url(value: object | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        candidate = value.strip()
+        if not candidate:
+            return None
+        path = urlparse(candidate).path.lower()
+        for ext, media_type in _MEDIA_TYPE_EXTENSION_MAP.items():
+            if path.endswith(ext):
+                return media_type
+        return None
+
+    @staticmethod
+    def _media_type_from_extension(value: object | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+        cleaned = value.strip().lower()
+        if "." not in cleaned:
+            return None
+        extension = "." + cleaned.rsplit(".", 1)[1]
+        return _MEDIA_TYPE_EXTENSION_MAP.get(extension)
+
+    @staticmethod
+    def _normalize_media_type_value(value: object | None) -> str | None:
+        if value is None:
+            return None
+        candidate = str(value).split(";", 1)[0].strip()
+        if not candidate:
+            return None
+        try:
+            return normalize_media_type(candidate)
+        except ValueError:
+            return None
 
     def _serialize_assets(self, doc) -> list[dict[str, object]]:
         """Serialize document assets for template display."""
@@ -595,8 +685,15 @@ class DocumentSpaceService:
 
     @staticmethod
     def _filter_documents(
-        documents: list[dict[str, object]], query: str
+        documents: list[dict[str, object]], query: str, show_retired: bool = False
     ) -> list[dict[str, object]]:
+        # First filter by lifecycle state
+        if not show_retired:
+            documents = [
+                doc for doc in documents
+                if doc.get("lifecycle_state") not in ("retired", "archived")
+            ]
+        
         normalized = str(query or "").strip().lower()
         if not normalized:
             return documents

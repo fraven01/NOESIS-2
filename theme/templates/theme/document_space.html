@@ -271,8 +271,8 @@
                   Download
                 </a>
                 <p class="mt-2 text-xs text-slate-500">Blob: {{ doc.blob.type|default:"n/a" }} · {{ doc.blob.size_display|default:"—" }}</p>
-                {% if doc.blob.media_type %}
-                  <p class="text-xs text-slate-500">MIME: {{ doc.blob.media_type }}</p>
+                {% if doc.blob.media_type_display %}
+                  <p class="text-xs text-slate-500">MIME: {{ doc.blob.media_type_display }}</p>
                 {% endif %}
               </div>
             </div>
