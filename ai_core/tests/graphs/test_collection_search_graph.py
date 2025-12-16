@@ -163,9 +163,8 @@ class TestCollectionSearchGraph(GraphTestMixin):
         )
 
     def _build_adapter(self, dependencies: dict[str, Any]) -> CollectionSearchAdapter:
-        from ai_core.graphs.collection_search import build_compiled_graph
-
-        return CollectionSearchAdapter(build_compiled_graph(), dependencies)
+        # CollectionSearchAdapter now builds graph internally (Finding #4 fix)
+        return CollectionSearchAdapter(dependencies)
 
     def test_run_returns_search_results(self) -> None:
         strategy = StubStrategyGenerator()
@@ -186,7 +185,10 @@ class TestCollectionSearchGraph(GraphTestMixin):
 
         graph = self._build_adapter(dependencies)
 
-        state, result = graph.run(self._initial_state(), meta={})
+        # Extract context from state and pass as meta
+        initial_state = self._initial_state()
+        context = initial_state.pop("context", {})
+        state, result = graph.run(initial_state, meta=context)
 
         assert result["outcome"] == "completed"
         # Access search results from result dict
@@ -218,7 +220,9 @@ class TestCollectionSearchGraph(GraphTestMixin):
 
         graph = self._build_adapter(dependencies)
 
-        _, result = graph.run(self._initial_state(), meta={})
+        initial_state = self._initial_state()
+        context = initial_state.pop("context", {})
+        _, result = graph.run(initial_state, meta=context)
 
         # The new graph might complete but with errors in search results
         # search_node returns errors in its output.
@@ -255,7 +259,9 @@ class TestCollectionSearchGraph(GraphTestMixin):
 
         graph = self._build_adapter(dependencies)
 
-        state, result = graph.run(self._initial_state(), meta={})
+        initial_state = self._initial_state()
+        context = initial_state.pop("context", {})
+        state, result = graph.run(initial_state, meta=context)
 
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
@@ -275,7 +281,9 @@ class TestCollectionSearchGraph(GraphTestMixin):
         graph = self._build_adapter(dependencies)
         ingestion_trigger = dependencies["runtime_ingestion_trigger"]
 
-        state, result = graph.run(self._initial_state(), meta={})
+        initial_state = self._initial_state()
+        context = initial_state.pop("context", {})
+        state, result = graph.run(initial_state, meta=context)
 
         # result["ingestion"] should be None or empty or status skipped
         assert (

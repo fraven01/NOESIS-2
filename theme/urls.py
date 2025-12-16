@@ -53,4 +53,14 @@ urlpatterns = [
         views.chat_submit,
         name="chat-submit",
     ),
+    path(
+        "rag-tools/document-delete/",
+        views.document_delete,
+        name="document_delete",
+    ),
+    path(
+        "rag-tools/document-restore/",
+        views.document_restore,
+        name="document_restore",
+    ),
 ]

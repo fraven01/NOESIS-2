@@ -119,6 +119,83 @@ class DocumentDevViewSet(viewsets.ViewSet):
             }
         )
 
+    @action(
+        detail=False,
+        methods=["delete"],
+        url_path="(?P<tenant_id>[^/]+)/(?P<document_id>[^/]+)/delete",
+    )
+    def delete_document(
+        self, request: Request, tenant_id: str, document_id: str
+    ) -> Response:
+        """Soft or hard delete a document.
+
+        Query params:
+            hard: If 'true', permanently delete. Otherwise soft delete (retire).
+        """
+        _require_debug()
+
+        tenant = self._resolve_tenant(tenant_id)
+        hard_delete = request.query_params.get("hard", "").lower() == "true"
+
+        with schema_context(tenant.schema_name):
+            document = get_object_or_404(Document, pk=UUID(str(document_id)))
+
+            if hard_delete:
+                # Hard delete - remove from database
+                doc_id = str(document.id)
+
+                # Also clean up from vector store to prevent orphaned search results
+                try:
+                    from ai_core.rag.vector_client import get_default_client
+
+                    vector_client = get_default_client()
+                    vector_client.hard_delete_documents(
+                        tenant_id=str(tenant.id),
+                        document_ids=[document.id],
+                    )
+                except Exception as exc:
+                    # Log but proceed with DB delete since this is a dev tool
+                    print(f"Vector cleanup failed for {doc_id}: {exc}")
+
+                document.delete()
+                return Response(
+                    {
+                        "status": "deleted",
+                        "document_id": doc_id,
+                        "mode": "hard",
+                    }
+                )
+            else:
+                # Soft delete - mark as retired
+                from django.utils import timezone
+
+                document.lifecycle_state = "retired"
+                document.lifecycle_updated_at = timezone.now()
+                document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
+
+                # Also update vector store to prevent search surfacing retired docs
+                try:
+                    from ai_core.rag.vector_client import get_default_client
+
+                    vector_client = get_default_client()
+                    vector_client.update_lifecycle_state(
+                        tenant_id=str(tenant.id),
+                        document_ids=[document.id],
+                        state="retired",
+                        reason="soft_delete_dev_api",
+                    )
+                except Exception as exc:
+                    print(f"Vector lifecycle update failed for {document.id}: {exc}")
+
+                return Response(
+                    {
+                        "status": "retired",
+                        "document_id": str(document.id),
+                        "mode": "soft",
+                        "lifecycle_state": document.lifecycle_state,
+                    }
+                )
+
 
 class CollectionDevViewSet(viewsets.ViewSet):
     """Development helper to ensure collections exist."""

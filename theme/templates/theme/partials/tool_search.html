@@ -68,6 +68,32 @@
                     </div>
                 </div>
 
+                <!-- External Knowledge Graph Parameters -->
+                <div class="grid grid-cols-2 gap-4" x-show="searchType === 'external_knowledge'" x-transition>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Top-N Results</label>
+                        <select name="top_n"
+                            class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                            <option value="3">3</option>
+                            <option value="5" selected>5</option>
+                            <option value="10">10</option>
+                            <option value="15">15</option>
+                        </select>
+                        <p class="mt-1 text-xs text-slate-500">Max results after filtering</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-slate-700 mb-1">Min Snippet Length</label>
+                        <select name="min_snippet_length"
+                            class="block w-full rounded-lg border-slate-300 focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
+                            <option value="20">20 chars</option>
+                            <option value="40" selected>40 chars</option>
+                            <option value="80">80 chars</option>
+                            <option value="120">120 chars</option>
+                        </select>
+                        <p class="mt-1 text-xs text-slate-500">Filter short snippets</p>
+                    </div>
+                </div>
+
                 <div class="border-t border-slate-100 pt-4 space-y-3">
                     <div class="flex items-center justify-between" x-show="searchType === 'collection_search'"
                         x-transition>

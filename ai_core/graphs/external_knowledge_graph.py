@@ -46,6 +46,7 @@ class ExternalKnowledgeState(TypedDict):
 
     # Output / Intermediate
     search_results: list[dict[str, Any]]
+    filtered_results: list[dict[str, Any]]  # After top_n and min_snippet filtering
     selected_result: dict[str, Any] | None
     ingestion_result: dict[str, Any] | None
     error: str | None
@@ -155,7 +156,8 @@ def selection_node(state: ExternalKnowledgeState) -> dict[str, Any]:
             # or purely first item
             selected = shortlisted[0]
 
-    return {"selected_result": selected}
+    # Return both filtered_results (for UI display) and selected_result (for ingestion)
+    return {"selected_result": selected, "filtered_results": shortlisted}
 
 
 @observe_span(name="node.ingest")
@@ -227,5 +229,27 @@ def _check_hitl(state: ExternalKnowledgeState) -> Literal["ingest", "end"]:
 workflow.add_conditional_edges("select", _check_hitl, {"ingest": "ingest", "end": END})
 workflow.add_edge("ingest", END)
 
-# Compiled Graph
-graph = workflow.compile()
+
+def build_external_knowledge_graph() -> Any:  # CompiledGraph
+    """Build and compile the external knowledge graph.
+
+    Returns a fresh compiled graph instance to prevent state leakage
+    across concurrent workers (Finding #3 fix).
+    """
+    workflow = StateGraph(ExternalKnowledgeState)
+
+    workflow.add_node("search", search_node)
+    workflow.add_node("select", selection_node)
+    workflow.add_node("ingest", ingestion_node)
+
+    workflow.add_edge(START, "search")
+    workflow.add_edge("search", "select")
+    workflow.add_conditional_edges(
+        "select", _check_hitl, {"ingest": "ingest", "end": END}
+    )
+    workflow.add_edge("ingest", END)
+
+    return workflow.compile()
+
+
+__all__ = ["build_external_knowledge_graph", "ExternalKnowledgeState"]

@@ -30,7 +30,8 @@ class GraphTestMixin:
         Automatically handles ScopeContext structure and ID generation.
         Enforces mutual exclusion of run_id and ingestion_run_id (defaults to run_id).
         """
-        meta = make_test_meta(
+        # Build context dict with all IDs for CollectionSearchAdapter compatibility
+        context = make_test_meta(
             tenant_id=tenant_id,
             case_id=case_id,
             workflow_id=workflow_id,
@@ -40,9 +41,11 @@ class GraphTestMixin:
             extra=extra_meta,
         )
 
+        # Return format compatible with CollectionSearchAdapter.run(state, meta)
+        # where state contains input dict and meta is separate
         return {
             "input": dict(input_data),
-            "meta": {"context": meta},
+            "context": context,  # CollectionSearchAdapter expects context at top level
         }
 
     def make_scope_context(self, **overrides: Any) -> ScopeContext:

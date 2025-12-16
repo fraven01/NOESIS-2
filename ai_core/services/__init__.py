@@ -72,7 +72,7 @@ from ai_core.graphs.transition_contracts import (
 )
 from ai_core.graphs.upload_ingestion_graph import (
     UploadIngestionError,
-    graph as upload_graph,
+    build_upload_graph,
 )
 from ai_core.rag.vector_client import get_default_client
 from customers.tenant_context import TenantContext
@@ -1776,6 +1776,8 @@ def handle_document_upload(
             },
         }
 
+        # Invoke upload graph (Factory pattern - Finding #2 fix)
+        upload_graph = build_upload_graph()
         result_state = upload_graph.invoke(state)
 
         # Map result state to expected dictionary format for downstream logic

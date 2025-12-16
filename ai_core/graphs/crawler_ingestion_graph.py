@@ -703,22 +703,16 @@ class CrawlerIngestionGraph:
     # _handle_node_error removed
 
 
-GRAPH = CrawlerIngestionGraph(document_service=DocumentsApiLifecycleService())
-
-
 def build_graph(
     *, event_emitter: Optional[Callable[[str, Mapping[str, Any]], None]] = None
 ) -> CrawlerIngestionGraph:
-    if event_emitter is None:
-        return GRAPH
+    """Build a fresh CrawlerIngestionGraph instance.
+
+    Returns a new instance per call to prevent shared mutable state
+    (_dedupe_index at line 168) across concurrent workers (Finding #5 fix).
+    """
     return CrawlerIngestionGraph(
-        document_service=GRAPH._document_service,  # type: ignore[attr-defined]
-        repository=GRAPH._repository,  # type: ignore[attr-defined]
-        document_persistence=GRAPH._document_persistence,  # type: ignore[attr-defined]
-        guardrail_enforcer=GRAPH._guardrail_enforcer,  # type: ignore[attr-defined]
-        delta_decider=GRAPH._delta_decider,  # type: ignore[attr-defined]
-        embedding_handler=GRAPH._embedding_handler,  # type: ignore[attr-defined]
-        completion_builder=GRAPH._completion_builder,  # type: ignore[attr-defined]
+        document_service=DocumentsApiLifecycleService(),
         event_emitter=event_emitter,
     )
 
@@ -726,7 +720,12 @@ def build_graph(
 def run(
     state: StateMapping, meta: StateMapping | None = None
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    return GRAPH.run(state, meta)
+    """Run crawler ingestion with fresh graph instance.
+
+    Creates a new graph instance per invocation to prevent state leakage.
+    """
+    graph = build_graph()  # Fresh instance per call
+    return graph.run(state, meta)
 
 
-__all__ = ["CrawlerIngestionGraph", "GRAPH", "build_graph", "run", "GraphTransition"]
+__all__ = ["CrawlerIngestionGraph", "build_graph", "run", "GraphTransition"]

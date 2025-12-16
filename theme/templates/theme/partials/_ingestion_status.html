@@ -64,6 +64,43 @@
                     <dd class="font-mono text-slate-900">{{ task_ids|join:", " }}</dd>
                 </div>
                 {% endif %}
+                {% if transition %}
+                <div class="border-t border-slate-100 pt-2 mt-2 space-y-1">
+                    <p class="text-xs font-semibold text-slate-600 mb-1">Processing Decision</p>
+                    {% if transition.decision %}
+                    <div class="flex justify-between">
+                        <dt class="text-slate-500">Decision:</dt>
+                        <dd
+                            class="font-mono {% if transition.decision == 'indexed' %}text-green-600{% elif transition.decision == 'queued' %}text-blue-600{% elif transition.decision == 'skipped' %}text-amber-600{% elif transition.decision == 'rejected' %}text-red-600{% else %}text-slate-900{% endif %}">
+                            {{ transition.decision }}
+                        </dd>
+                    </div>
+                    {% endif %}
+                    {% if transition.reason %}
+                    <div class="flex justify-between">
+                        <dt class="text-slate-500">Reason:</dt>
+                        <dd class="font-mono text-slate-900 truncate max-w-[200px]" title="{{ transition.reason }}">{{
+                            transition.reason }}</dd>
+                    </div>
+                    {% endif %}
+                    {% if transition.severity %}
+                    <div class="flex justify-between">
+                        <dt class="text-slate-500">Severity:</dt>
+                        <dd
+                            class="font-mono {% if transition.severity == 'error' %}text-red-600{% elif transition.severity == 'warning' %}text-amber-600{% else %}text-slate-900{% endif %}">
+                            {{ transition.severity }}
+                        </dd>
+                    </div>
+                    {% endif %}
+                    {% if transition.document_id %}
+                    <div class="flex justify-between">
+                        <dt class="text-slate-500">Doc ID:</dt>
+                        <dd class="font-mono text-slate-900" title="{{ transition.document_id }}">{{
+                            transition.document_id|slice:":8" }}...</dd>
+                    </div>
+                    {% endif %}
+                </div>
+                {% endif %}
             </dl>
             {% if error %}
             <div class="mt-2 text-xs text-red-600 bg-red-50 p-2 rounded">

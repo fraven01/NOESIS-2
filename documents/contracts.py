@@ -231,7 +231,7 @@ class FileBlob(BaseModel):
     size: int = Field(description="Blob size in bytes.")
     media_type: Optional[str] = Field(
         default=None,
-        description="RFC compliant media type of the blob contents (type/subtype lowercase).",
+        description="RFC compliant media type. Expected to be set for all new uploads (type/subtype lowercase).",
     )
 
     @field_validator("uri")
@@ -452,7 +452,8 @@ class DocumentMeta(BaseModel):
         default=None,
         description=(
             "Optional runtime overrides for the document pipeline configuration "
-            "(string keyed, JSON-serialisable values)."
+            "(string keyed, JSON-serialisable values). "
+            "Key 'media_type' here takes precedence over all other sources."
         ),
     )
 

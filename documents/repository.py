@@ -1125,8 +1125,13 @@ class DocumentsRepository:
         *,
         prefer_latest: bool = False,
         workflow_id: Optional[str] = None,
+        include_retired: bool = False,
     ) -> Optional[NormalizedDocument]:
-        """Fetch a document by identifiers, returning ``None`` if missing."""
+        """Fetch a document by identifiers, returning ``None`` if missing.
+
+        Args:
+            include_retired: If True, include documents with lifecycle_state='retired'.
+        """
 
         raise NotImplementedError
 
@@ -1321,6 +1326,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         *,
         prefer_latest: bool = False,
         workflow_id: Optional[str] = None,
+        include_retired: bool = False,  # Ignored - InMemory already returns all states
     ) -> Optional[NormalizedDocument]:
         with log_context(tenant=tenant_id, workflow_id=workflow_id):
             log_extra_entry(

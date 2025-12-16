@@ -425,6 +425,22 @@ def _record_transition(
     state.setdefault("telemetry", {}).setdefault("nodes", {})[node_name] = dict(meta)
 
 
+def _validate_tenant_context(context: Mapping[str, Any]) -> None:
+    """Enforce AGENTS.md Root Law: tenant_id is required for multi-tenant operation.
+
+    Raises:
+        ValueError: If tenant_id is missing or empty.
+    """
+    if "tenant_id" not in context:
+        raise ValueError(
+            "tenant_id required in context (AGENTS.md Root Law). "
+            "Multi-tenant operation cannot proceed without tenant isolation."
+        )
+    tenant_value = context["tenant_id"]
+    if not tenant_value or (isinstance(tenant_value, str) and not tenant_value.strip()):
+        raise ValueError("tenant_id must be non-empty string")
+
+
 def _get_ids(
     state: CollectionSearchState, collection_scope: str
 ) -> dict[str, str | None]:
@@ -887,19 +903,6 @@ def build_compiled_graph():
     return workflow.compile()
 
 
-# Graph compilation is deferred to build_graph() to avoid import-time errors
-# when langgraph is not installed (StateGraph = Any is not callable).
-_compiled_graph_cache: Any = None
-
-
-def _get_compiled_graph():
-    """Lazily compile and cache the StateGraph."""
-    global _compiled_graph_cache
-    if _compiled_graph_cache is None:
-        _compiled_graph_cache = build_compiled_graph()
-    return _compiled_graph_cache
-
-
 # -----------------------------------------------------------------------------
 # Integration Adapters (Backward Compatibility)
 # -----------------------------------------------------------------------------
@@ -908,8 +911,10 @@ def _get_compiled_graph():
 class CollectionSearchAdapter:
     """Adapter to expose the new LangGraph via the legacy .run() API."""
 
-    def __init__(self, runnable, dependencies: dict[str, Any]):
-        self.runnable = runnable
+    def __init__(self, dependencies: dict[str, Any]):
+        # Compile graph once per adapter instance (Finding #4 fix)
+        # No global cache to prevent state leakage across workers
+        self.runnable = build_compiled_graph()
         self.dependencies = dependencies
 
     def run(
@@ -931,9 +936,8 @@ class CollectionSearchAdapter:
         if meta:
             context.update(meta)
 
-        # Ensure ID fields are in context
-        if "tenant_id" not in context:
-            context["tenant_id"] = "dev"  # Fallback
+        # Enforce tenant isolation (Finding #1 fix)
+        _validate_tenant_context(context)
 
         initial_state: CollectionSearchState = {
             "input": input_state,
@@ -1238,4 +1242,4 @@ def build_graph() -> CollectionSearchAdapter:
         "runtime_coverage_verifier": _ProductionCoverageVerifier(),
     }
 
-    return CollectionSearchAdapter(_get_compiled_graph(), dependencies)
+    return CollectionSearchAdapter(dependencies)

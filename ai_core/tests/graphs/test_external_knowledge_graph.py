@@ -9,7 +9,7 @@ from typing import Any
 
 from ai_core.graphs.external_knowledge_graph import (
     ExternalKnowledgeState,
-    graph as external_knowledge_graph,
+    build_external_knowledge_graph,
 )
 from ai_core.tools.web_search import (
     BaseSearchAdapter,
@@ -145,6 +145,7 @@ def test_external_knowledge_graph_success_flow() -> None:
     }
 
     # Execute
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     # Verify
@@ -193,6 +194,7 @@ def test_external_knowledge_graph_no_results() -> None:
         "error": None,
     }
 
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     assert final_state["search_results"] == []
@@ -245,6 +247,7 @@ def test_external_knowledge_graph_selection_filtering() -> None:
         "error": None,
     }
 
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     assert final_state["error"] is None, f"Graph error: {final_state['error']}"
@@ -287,6 +290,7 @@ def test_search_worker_error() -> None:
     }
 
     # Execute
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     # Verify: Error should be captured, no ingestion triggered
@@ -340,6 +344,7 @@ def test_ingestion_trigger_exception() -> None:
     }
 
     # Execute
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     # Verify: Search and selection succeed, but ingestion fails gracefully
@@ -389,6 +394,7 @@ def test_auto_ingest_false_skips_ingestion() -> None:
     }
 
     # Execute
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     # Verify: Search and selection succeed, but ingestion is skipped
@@ -428,6 +434,7 @@ def test_missing_runtime_worker() -> None:
     }
 
     # Execute
+    external_knowledge_graph = build_external_knowledge_graph()
     final_state = external_knowledge_graph.invoke(input_state)
 
     # Verify: Error is set because worker is missing

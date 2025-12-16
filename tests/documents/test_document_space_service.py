@@ -66,6 +66,7 @@ class _RepositoryStub(DocumentsRepository):
         *,
         prefer_latest: bool = False,
         workflow_id: str | None = None,
+        include_retired: bool = False,
     ):
         if document_id == self._doc.ref.document_id:
             return self._doc
@@ -143,3 +144,89 @@ def test_document_space_service_builds_context():
     assert result.selected_collection_identifier == str(collection.id)
     assert not result.collection_warning
     assert result.document_summary["displayed"] == 1
+
+
+def test_inference_prioritizes_pipeline_config():
+    service = DocumentSpaceService()
+
+    # Mock doc with pipeline_config and metadata
+    class MockMeta:
+        pipeline_config = {"media_type": "application/pdf"}  # Expected
+        metadata = {"content_type": "text/html"}  # Trap
+        origin_uri = "http://example.com/file.html"  # Trap
+        # title is missing/ignored in this case
+
+    class MockDoc:
+        meta = MockMeta()
+        title = "file.html"
+
+    # We expect application/pdf because pipeline_config has priority
+    result = service._infer_media_type_from_doc(MockDoc(), None)
+    assert result == "application/pdf"
+
+
+def test_inference_fallbacks():
+    service = DocumentSpaceService()
+
+    # Case 1: External Ref has priority over metadata but after pipeline_config
+    class MockDocEmpty:
+        meta = type(
+            "Meta", (), {"pipeline_config": {}, "metadata": {}, "origin_uri": None}
+        )()
+        title = None
+
+    external_ref = {"media_type": "application/json"}
+    result = service._infer_media_type_from_doc(MockDocEmpty(), external_ref)
+    assert result == "application/json"
+
+    # Case 2: Metadata fallback
+    class MockDocMeta:
+        meta = type(
+            "Meta",
+            (),
+            {
+                "pipeline_config": {},
+                "metadata": {"mime_type": "text/markdown"},
+                "origin_uri": None,
+            },
+        )()
+        title = None
+
+    result = service._infer_media_type_from_doc(MockDocMeta(), None)
+    assert result == "text/markdown"
+
+    # Case 3: URL/Extension fallback
+    class MockDocUrl:
+        meta = type(
+            "Meta",
+            (),
+            {
+                "pipeline_config": {},
+                "metadata": {},
+                "origin_uri": "http://example.com/data.csv",  # unknown extension in map
+            },
+        )()
+        title = "report.pdf"  # .pdf is known
+
+    result = service._infer_media_type_from_doc(MockDocUrl(), None)
+    assert result == "application/pdf"
+
+
+def test_finalize_blob_media_type_uses_default():
+    service = DocumentSpaceService()
+
+    # Blob with no media type
+    blob_info = {"media_type": None}
+
+    # Doc without any hints
+    class MockDocNone:
+        meta = type(
+            "Meta", (), {"pipeline_config": {}, "metadata": {}, "origin_uri": None}
+        )()
+        title = "unknown_file"
+
+    service._finalize_blob_media_type(blob_info, MockDocNone(), None)
+
+    # Should fall back to DEFAULT_MEDIA_TYPE (application/octet-stream)
+    assert blob_info["media_type"] == "application/octet-stream"
+    assert blob_info["media_type_display"] == "application/octet-stream"

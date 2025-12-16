@@ -84,16 +84,19 @@ def test_rag_tools_rejects_spoofed_headers():
 
 
 @pytest.mark.django_db
-@patch("theme.views.external_knowledge_graph_workflow")
-def test_web_search_uses_external_knowledge_graph(mock_graph_workflow):
+@patch("theme.views.build_external_knowledge_graph")
+def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     """Test that web_search view uses ExternalKnowledgeGraph orchestration.
 
     The view only performs search phase; ingestion is handled separately.
     """
     tenant_schema = "test"
 
-    # Mock graph
-    mock_graph_workflow.invoke.return_value = {
+    # Create a mock graph object that the factory returns
+    from unittest.mock import MagicMock
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
         "search_results": [
             {
                 "url": "https://example.com",
@@ -106,6 +109,8 @@ def test_web_search_uses_external_knowledge_graph(mock_graph_workflow):
         "error": None,
         "auto_ingest": False,
     }
+    # Factory function returns the mock graph
+    mock_build_graph.return_value = mock_graph
 
     tenant = TenantFactory(schema_name=tenant_schema)
 
@@ -126,8 +131,8 @@ def test_web_search_uses_external_knowledge_graph(mock_graph_workflow):
     assert "trace_id" in response_data
 
     # Verify that graph.invoke was called with correct parameters
-    mock_graph_workflow.invoke.assert_called_once()
-    call_args = mock_graph_workflow.invoke.call_args
+    mock_graph.invoke.assert_called_once()
+    call_args = mock_graph.invoke.call_args
     state = call_args[0][0]
     assert state["query"] == "test query"
     assert state["collection_id"] == "test-collection"
@@ -135,13 +140,16 @@ def test_web_search_uses_external_knowledge_graph(mock_graph_workflow):
 
 
 @pytest.mark.django_db
-@patch("theme.views.external_knowledge_graph_workflow")
-def test_web_search_htmx_returns_partial(mock_graph_workflow):
+@patch("theme.views.build_external_knowledge_graph")
+def test_web_search_htmx_returns_partial(mock_build_graph):
     """Test that web_search returns HTML partial for HTMX requests."""
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph_workflow.invoke.return_value = {
+    from unittest.mock import MagicMock
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
         "search_results": [
             {
                 "url": "https://example.com",
@@ -154,6 +162,7 @@ def test_web_search_htmx_returns_partial(mock_graph_workflow):
         "error": None,
         "auto_ingest": False,
     }
+    mock_build_graph.return_value = mock_graph
 
     factory = RequestFactory()
     # Simulate HTMX request with form-encoded data (default for hx-post)
@@ -175,19 +184,23 @@ def test_web_search_htmx_returns_partial(mock_graph_workflow):
 
 
 @pytest.mark.django_db
-@patch("theme.views.external_knowledge_graph_workflow")
-def test_web_search_defaults_to_manual_collection(mock_graph_workflow):
+@patch("theme.views.build_external_knowledge_graph")
+def test_web_search_defaults_to_manual_collection(mock_build_graph):
     tenant_schema = "fallback"
     tenant = TenantFactory(schema_name=tenant_schema)
     tenant_id = tenant.schema_name
 
-    mock_graph_workflow.invoke.return_value = {
+    from unittest.mock import MagicMock
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
         "search_results": [],
         "selected_result": None,
         "ingestion_result": None,
         "error": None,
         "auto_ingest": False,
     }
+    mock_build_graph.return_value = mock_graph
 
     factory = RequestFactory()
     request = factory.post(
@@ -200,9 +213,9 @@ def test_web_search_defaults_to_manual_collection(mock_graph_workflow):
     response = web_search(request)
 
     assert response.status_code == 200
-    mock_graph_workflow.invoke.assert_called_once()
+    mock_graph.invoke.assert_called_once()
     manual_id = str(manual_collection_uuid(tenant_id))
-    call_args = mock_graph_workflow.invoke.call_args
+    call_args = mock_graph.invoke.call_args
     state = call_args[0][0]
     # Expect "default" as per view logic which preserves user intent or falls back to default logic
     # But view says: collection_id = resolved_collection_id or manual_collection_id or "default"
@@ -251,9 +264,9 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
 @pytest.mark.django_db
 @patch("theme.views.llm_routing.resolve")
 @patch("theme.views.submit_worker_task")
-@patch("theme.views.external_knowledge_graph_workflow")
+@patch("theme.views.build_external_knowledge_graph")
 def test_web_search_rerank_applies_scores(
-    mock_graph_workflow, mock_submit_task, mock_resolve, settings
+    mock_build_graph, mock_submit_task, mock_resolve, settings
 ):
     settings.RERANK_MODEL_PRESET = "meta/llama-3.1-70b-instruct"
 
@@ -268,7 +281,10 @@ def test_web_search_rerank_applies_scores(
     tenant_schema = "test"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph_workflow.invoke.return_value = {
+    from unittest.mock import MagicMock
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
         "search_results": [
             {
                 "document_id": "doc-a",
@@ -292,6 +308,7 @@ def test_web_search_rerank_applies_scores(
         "error": None,
         "auto_ingest": False,
     }
+    mock_build_graph.return_value = mock_graph
     mock_submit_task.return_value = (
         {
             "task_id": "task-1",
@@ -328,13 +345,16 @@ def test_web_search_rerank_applies_scores(
 
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
-@patch("theme.views.external_knowledge_graph_workflow")
-def test_web_search_rerank_returns_queue_status(mock_graph_workflow, _mock_submit_task):
+@patch("theme.views.build_external_knowledge_graph")
+def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
     cache.clear()
     tenant_schema = "queued"
     tenant = TenantFactory(schema_name=tenant_schema)
 
-    mock_graph_workflow.invoke.return_value = {
+    from unittest.mock import MagicMock
+
+    mock_graph = MagicMock()
+    mock_graph.invoke.return_value = {
         "search_results": [
             {
                 "document_id": "doc-a",
@@ -348,6 +368,7 @@ def test_web_search_rerank_returns_queue_status(mock_graph_workflow, _mock_submi
         "error": None,
         "auto_ingest": False,
     }
+    mock_build_graph.return_value = mock_graph
 
     factory = RequestFactory()
     request = factory.post(

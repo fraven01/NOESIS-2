@@ -18,7 +18,7 @@ from documents.repository import DocumentsRepository
 
 logger = get_logger(__name__)
 
-DEFAULT_MEDIA_TYPE = "text/html"
+DEFAULT_MEDIA_TYPE = "application/octet-stream"
 _MEDIA_TYPE_EXTENSION_MAP = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
@@ -204,7 +204,9 @@ class DocumentSpaceService:
         latest_only: bool,
         include_retired: bool = False,
     ) -> list:
-        logger.info(f"DEBUG: _fetch_documents called with {len(document_refs)} refs, include_retired={include_retired}")
+        logger.info(
+            f"DEBUG: _fetch_documents called with {len(document_refs)} refs, include_retired={include_retired}"
+        )
         fetched_docs = []
         for idx, ref in enumerate(document_refs):
             logger.info(
@@ -523,6 +525,11 @@ class DocumentSpaceService:
         external_ref: Mapping[str, object] | None,
     ) -> str | None:
         candidates = []
+
+        # Check pipeline_config first (Highest Priority)
+        pipeline_config = getattr(doc.meta, "pipeline_config", None) or {}
+        candidates.append(self._media_type_from_metadata(pipeline_config))
+
         if external_ref:
             candidates.append(self._media_type_from_metadata(external_ref))
             candidates.append(self._media_type_from_url(external_ref.get("url")))
@@ -690,10 +697,11 @@ class DocumentSpaceService:
         # First filter by lifecycle state
         if not show_retired:
             documents = [
-                doc for doc in documents
+                doc
+                for doc in documents
                 if doc.get("lifecycle_state") not in ("retired", "archived")
             ]
-        
+
         normalized = str(query or "").strip().lower()
         if not normalized:
             return documents

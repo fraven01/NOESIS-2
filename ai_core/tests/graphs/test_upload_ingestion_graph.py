@@ -8,7 +8,7 @@ from documents.contracts import (
     DocumentMeta,
     BlobLocator,
 )
-from ai_core.graphs.upload_ingestion_graph import graph as upload_graph
+from ai_core.graphs.upload_ingestion_graph import build_upload_graph
 
 
 def test_upload_ingestion_uses_file_blob():
@@ -101,6 +101,7 @@ def test_upload_ingestion_uses_file_blob():
         mock_create_parser.return_value.parse.return_value = mock_result
 
         # 4. Invoke Graph
+        upload_graph = build_upload_graph()
         result = upload_graph.invoke(state)
 
     # 5. Verify
@@ -124,9 +125,13 @@ def test_upload_ingestion_validation_error():
     """Verify handling of invalid input."""
     state = {
         "normalized_document_input": {"invalid": "data"},  # Invalid input
-        "context": {"trace_id": "trace-123"},
+        "context": {
+            "tenant_id": "test_tenant",
+            "trace_id": "trace-123",
+        },  # Added tenant_id
     }
 
+    upload_graph = build_upload_graph()
     result = upload_graph.invoke(state)
 
     assert result.get("decision") == "error"

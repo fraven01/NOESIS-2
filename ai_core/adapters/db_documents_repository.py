@@ -326,6 +326,7 @@ class DbDocumentsRepository(DocumentsRepository):
         *,
         prefer_latest: bool = False,
         workflow_id: Optional[str] = None,
+        include_retired: bool = False,
     ) -> Optional[NormalizedDocument]:
         Document = apps.get_model("documents", "Document")
 
@@ -350,8 +351,9 @@ class DbDocumentsRepository(DocumentsRepository):
                 )
                 return None
             lifecycle_state = (document.lifecycle_state or "").strip().lower()
-            # Only filter out terminal states; ingestion expects pending/ingesting documents to be readable.
-            if lifecycle_state in {"deleted", "retired"}:
+            # Only filter out terminal states when not explicitly requesting retired docs
+            # Ingestion expects pending/ingesting documents to be readable.
+            if not include_retired and lifecycle_state in {"deleted", "retired"}:
                 logger.info(
                     "db_documents_repository_get_missing reason=filtered_state:%s document_id=%s tenant=%s",
                     lifecycle_state,

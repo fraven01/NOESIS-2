@@ -14,7 +14,7 @@ from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
 from ai_core.graphs.external_knowledge_graph import (
-    graph as external_knowledge_graph_workflow,
+    build_external_knowledge_graph,
     ExternalKnowledgeState,
     # Legacy imports removed
 )
@@ -645,6 +645,7 @@ def document_explorer(request):
         if limit not in limit_options:
             limit_options = sorted(set(limit_options + [limit]))
         latest_only = _parse_bool(request.GET.get("latest"), default=True)
+        show_retired = _parse_bool(request.GET.get("show_retired"), default=False)
         search_term = str(request.GET.get("q", "") or "").strip()
         cursor_param = str(request.GET.get("cursor", "") or "").strip()
         workflow_filter = str(request.GET.get("workflow", "") or "").strip()
@@ -657,6 +658,7 @@ def document_explorer(request):
             cursor=cursor_param or None,
             workflow_filter=workflow_filter or None,
             search_term=search_term,
+            show_retired=show_retired,
         )
         result = DOCUMENT_SPACE_SERVICE.build_context(
             tenant_context=tenant_id,
@@ -669,6 +671,7 @@ def document_explorer(request):
             "collection": result.selected_collection_identifier or "",
             "limit": limit,
             "latest": "1" if latest_only else "0",
+            "show_retired": "true" if show_retired else "false",
             "workflow": workflow_filter,
             "q": search_term,
         }
@@ -842,6 +845,21 @@ def web_search(request):
         search_worker = get_web_search_worker()
         ingestion_adapter = _ViewCrawlerIngestionAdapter()
 
+        # Parse configurable parameters from request
+        try:
+            top_n = int(data.get("top_n", 5))
+            if top_n < 1 or top_n > 20:
+                top_n = 5
+        except (ValueError, TypeError):
+            top_n = 5
+
+        try:
+            min_snippet_length = int(data.get("min_snippet_length", 40))
+            if min_snippet_length < 10 or min_snippet_length > 500:
+                min_snippet_length = 40
+        except (ValueError, TypeError):
+            min_snippet_length = 40
+
         # Dependencies now passed via context/state to avoid legacy config issues
         context_payload = {
             "tenant_id": tenant_id,
@@ -852,7 +870,8 @@ def web_search(request):
             "run_id": run_id,
             "runtime_worker": search_worker,
             "runtime_trigger": ingestion_adapter,
-            "top_n": 5,
+            "top_n": top_n,
+            "min_snippet_length": min_snippet_length,
             "prefer_pdf": True,
         }
 
@@ -863,18 +882,26 @@ def web_search(request):
             "auto_ingest": False,  # Manual search should not auto-ingest
             "context": context_payload,
             "search_results": [],
+            "filtered_results": [],
             "selected_result": None,
             "ingestion_result": None,
             "error": None,
         }
 
         try:
+
+            # Invoke external knowledge graph (Factory pattern - Finding #3 fix)
+            external_knowledge_graph_workflow = build_external_knowledge_graph()
             final_state = external_knowledge_graph_workflow.invoke(input_state)
         except Exception:
             logger.exception("web_search.failed")
             return JsonResponse({"error": "Graph execution failed."}, status=500)
 
-        results = final_state.get("search_results", [])
+        # Use filtered_results (after top_n and min_snippet_length filtering)
+        # Fallback to search_results if filtering hasn't run
+        results = final_state.get("filtered_results") or final_state.get(
+            "search_results", []
+        )
         # Construct response similar to old format for UI compatibility
         response_data = {
             "outcome": "completed",  # Simple outcome
@@ -1376,6 +1403,15 @@ def ingestion_submit(request):
 
         run_id = upload_response.data.get("ingestion_run_id")
 
+        # Extract transition data from graph response for UI
+        response_data = upload_response.data
+        transition_info = {
+            "decision": response_data.get("decision"),
+            "reason": response_data.get("reason"),
+            "severity": response_data.get("severity"),
+            "document_id": response_data.get("document_id"),
+        }
+
         # 3. Return Status Partial
         return render(
             request,
@@ -1386,6 +1422,7 @@ def ingestion_submit(request):
                 "url_count": 1,  # Represents the single file
                 "result": True,
                 "now": timezone.now(),
+                "transition": transition_info,
             },
         )
 
@@ -1612,4 +1649,215 @@ def framework_analysis_submit(request):
         )
 
 
-# Force reload
+@csrf_exempt
+def document_delete(request):
+    """Handle document deletion via HTMX.
+
+    Query params:
+        document_id: UUID of the document to delete
+        hard: If 'true', permanently delete. Otherwise soft delete (retire).
+    """
+    if request.method != "DELETE":
+        return HttpResponse(status=405)
+
+    document_id = request.GET.get("document_id")
+    hard_delete = request.GET.get("hard", "").lower() == "true"
+
+    if not document_id:
+        return HttpResponse(
+            '<div class="p-4 text-red-600 text-sm">Document ID required</div>',
+            status=400,
+        )
+
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return HttpResponse(
+            f'<div class="p-4 text-red-600 text-sm">{exc}</div>', status=400
+        )
+
+    try:
+        from django_tenants.utils import schema_context
+        from documents.models import Document
+
+        doc_uuid = UUID(document_id)
+
+        with schema_context(tenant_schema):
+            try:
+                document = Document.objects.get(pk=doc_uuid)
+            except Document.DoesNotExist:
+                return HttpResponse(
+                    '<div class="p-4 text-amber-600 text-sm">Document not found</div>',
+                    status=404,
+                )
+
+            doc_title = (
+                document.metadata.get("title", str(doc_uuid)[:8])
+                if document.metadata
+                else str(doc_uuid)[:8]
+            )
+
+            if hard_delete:
+                try:
+                    from ai_core.rag.vector_client import get_default_client
+
+                    vector_client = get_default_client()
+                    vector_client.hard_delete_documents(
+                        tenant_id=str(tenant_id),
+                        document_ids=[doc_uuid],
+                    )
+                    logger.info(
+                        "document_delete.vector_document_removed",
+                        extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "document_delete.vector_document_remove_failed",
+                        extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                    )
+                    return HttpResponse(
+                        f'<div class="p-4 text-red-600 text-sm">Vector cleanup failed: {exc}</div>',
+                        status=500,
+                    )
+
+                document.delete()
+                return HttpResponse(
+                    f"""<div class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+                        <strong>Deleted:</strong> {doc_title}<br>
+                        <span class="text-xs">Permanently removed from database</span>
+                    </div>"""
+                )
+            else:
+                document.lifecycle_state = "retired"
+                document.lifecycle_updated_at = timezone.now()
+
+                try:
+                    from ai_core.rag.vector_client import get_default_client
+
+                    vector_client = get_default_client()
+                    vector_client.update_lifecycle_state(
+                        tenant_id=str(tenant_id),
+                        document_ids=[doc_uuid],
+                        state="retired",
+                        reason="soft_delete_from_ui",
+                    )
+                    logger.info(
+                        "document_delete.vector_lifecycle_updated",
+                        extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "document_delete.vector_lifecycle_update_failed",
+                        extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                    )
+                    return HttpResponse(
+                        f'<div class="p-4 text-red-600 text-sm">Vector cleanup failed: {exc}</div>',
+                        status=500,
+                    )
+
+                document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
+
+                return HttpResponse(
+                    f"""<div class="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-700">
+                        <strong>Archived:</strong> {doc_title}<br>
+                        <span class="text-xs">Lifecycle state changed to 'retired'</span>
+                    </div>"""
+                )
+    except Exception as e:
+        logger.exception("document_delete.failed")
+        return HttpResponse(
+            f'<div class="p-4 text-red-600 text-sm">Error: {str(e)}</div>', status=500
+        )
+
+
+@csrf_exempt
+def document_restore(request):
+    """Restore a retired document to active state via HTMX.
+
+    Query params:
+        document_id: UUID of the document to restore
+    """
+    if request.method != "POST":
+        return HttpResponse(status=405)
+
+    document_id = request.GET.get("document_id")
+
+    if not document_id:
+        return HttpResponse(
+            '<div class="p-4 text-red-600 text-sm">Document ID required</div>',
+            status=400,
+        )
+
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return HttpResponse(
+            f'<div class="p-4 text-red-600 text-sm">{exc}</div>', status=400
+        )
+
+    try:
+        from django_tenants.utils import schema_context
+        from documents.models import Document
+
+        doc_uuid = UUID(document_id)
+
+        with schema_context(tenant_schema):
+            try:
+                document = Document.objects.get(pk=doc_uuid)
+            except Document.DoesNotExist:
+                return HttpResponse(
+                    '<div class="p-4 text-amber-600 text-sm">Document not found</div>',
+                    status=404,
+                )
+
+            doc_title = (
+                document.metadata.get("title", str(doc_uuid)[:8])
+                if document.metadata
+                else str(doc_uuid)[:8]
+            )
+            previous_state = document.lifecycle_state
+            previous_updated_at = document.lifecycle_updated_at
+
+            document.lifecycle_state = "active"
+            document.lifecycle_updated_at = timezone.now()
+
+            # Also update lifecycle in vector store so RAG search includes restored docs
+            try:
+                from ai_core.rag.vector_client import get_default_client
+
+                vector_client = get_default_client()
+                vector_client.update_lifecycle_state(
+                    tenant_id=str(tenant_id),
+                    document_ids=[doc_uuid],
+                    state="active",
+                    reason="restore_from_ui",
+                )
+                logger.info(
+                    "document_restore.vector_lifecycle_updated",
+                    extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                )
+            except Exception as exc:
+                logger.exception(
+                    "document_restore.vector_lifecycle_update_failed",
+                    extra={"document_id": str(doc_uuid), "tenant": tenant_schema},
+                )
+                document.lifecycle_state = previous_state
+                document.lifecycle_updated_at = previous_updated_at
+                return HttpResponse(
+                    f'<div class="p-4 text-red-600 text-sm">Vector lifecycle update failed: {exc}</div>',
+                    status=500,
+                )
+
+            document.save(update_fields=["lifecycle_state", "lifecycle_updated_at"])
+
+            return HttpResponse(
+                f"""<div class="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700">
+                    <strong>Restored:</strong> {doc_title}<br>
+                    <span class="text-xs">Lifecycle state changed from '{previous_state}' to 'active'</span>
+                </div>"""
+            )
+    except Exception as e:
+        logger.exception("document_restore.failed")
+        return HttpResponse(
+            f'<div class="p-4 text-red-600 text-sm">Error: {str(e)}</div>', status=500
+        )

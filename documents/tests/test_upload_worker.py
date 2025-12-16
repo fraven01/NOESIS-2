@@ -126,3 +126,27 @@ def test_upload_worker_register_document_failure_continues(
     assert result.status == "published"
     assert result.document_id is not None  # Should be a generated UUID
     assert result.task_id == "task-uuid"
+
+
+def test_upload_worker_sets_media_type_on_fileblob(
+    mock_blob_writer, mock_run_graph, mock_domain_service, mock_tenants
+):
+    worker = UploadWorker()
+    file_content = b"pdf content"
+    # Upload with explicit content_type
+    upload = MockUploadedFile("test.pdf", file_content, "application/pdf")
+
+    result = worker.process(
+        upload,
+        tenant_id="tenant-1",
+        document_metadata={},
+    )
+
+    state = result.state
+    norm_input = state["normalized_document_input"]
+
+    # 1. Verify FileBlob has media_type
+    assert norm_input["blob"]["media_type"] == "application/pdf"
+
+    # 2. Verify pipeline_config has media_type (for Fix 1.3)
+    assert norm_input["meta"]["pipeline_config"]["media_type"] == "application/pdf"

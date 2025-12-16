@@ -1879,10 +1879,13 @@ def test_crawler_runner_propagates_idempotency_key(
                 )
             return state, {"graph_run_id": "run", "decision": "upsert"}
 
+    # Fix: Use crawler_ingestion_graph module with build_graph factory
+    from ai_core.graphs import crawler_ingestion_graph
+
     monkeypatch.setattr(
-        views,
-        "crawler_ingestion_graph",
-        SimpleNamespace(build_graph=lambda: _Graph()),
+        crawler_ingestion_graph,
+        "build_graph",
+        lambda event_emitter=None: _Graph(),
     )
 
     payload = {

@@ -71,9 +71,9 @@ class UploadIngestionState(TypedDict):
     run_until: NotRequired[str]  # "persist_complete" | "full" | etc.
 
     # Runtime Context (IDs + Injected Dependencies)
-    # Must include: tenant_id, trace_id, case_id (optional), workflow_id
+    # REQUIRED: tenant_id, workflow_id enforced (AGENTS.md Root Law)
     # May include: runtime_repository, runtime_storage, runtime_embedder
-    context: NotRequired[dict[str, Any]]
+    context: dict[str, Any]
 
     # Intermediate State
     document: NotRequired[Any]  # NormalizedDocument (validated)
@@ -103,6 +103,11 @@ def validate_input_node(state: UploadIngestionState) -> dict[str, Any]:
     normalized_input = state.get("normalized_document_input")
     if not normalized_input:
         return {"error": "input_missing:normalized_document_input"}
+
+    # Enforce tenant context (Finding #7 fix)
+    runtime_context = state.get("context", {})
+    if not runtime_context.get("tenant_id"):
+        return {"error": "tenant_id required in context (AGENTS.md Root Law)"}
 
     try:
         doc = NormalizedDocument.model_validate(normalized_input)
@@ -454,8 +459,31 @@ workflow.add_edge("build_config", "run_processing")
 workflow.add_edge("run_processing", "map_results")
 workflow.add_edge("map_results", END)
 
-# Compiled Graph (module-level)
-graph = workflow.compile()
+
+def build_upload_graph() -> Any:  # CompiledGraph type from langgraph
+    """Build and compile the upload ingestion graph.
+
+    Returns a fresh compiled graph instance to prevent state leakage
+    across concurrent Celery workers (Finding #2 fix).
+    """
+    workflow = StateGraph(UploadIngestionState)
+
+    workflow.add_node("validate_input", validate_input_node)
+    workflow.add_node("build_config", build_config_node)
+    workflow.add_node("run_processing", run_processing_node)
+    workflow.add_node("map_results", map_results_node)
+
+    workflow.add_edge(START, "validate_input")
+    workflow.add_conditional_edges(
+        "validate_input",
+        _check_validation_error,
+        {"continue": "build_config", "error": "map_results"},
+    )
+    workflow.add_edge("build_config", "run_processing")
+    workflow.add_edge("run_processing", "map_results")
+    workflow.add_edge("map_results", END)
+
+    return workflow.compile()
 
 
 class UploadIngestionError(RuntimeError):
@@ -465,7 +493,7 @@ class UploadIngestionError(RuntimeError):
 __all__ = [
     "UploadIngestionState",
     "UploadIngestionError",
-    "graph",  # Compiled graph for direct invocation
+    "build_upload_graph",  # Factory function instead of singleton
     "validate_input_node",
     "build_config_node",
     "run_processing_node",

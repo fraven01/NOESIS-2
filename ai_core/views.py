@@ -73,7 +73,7 @@ from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
-import ai_core.graphs.crawler_ingestion_graph as crawler_ingestion_graph
+
 from ai_core.graphs import (
     info_intake,
 )  # noqa: F401
@@ -121,7 +121,7 @@ except Exception:  # defensive: don't break module import if graphs change
 # Optional hooks for tests to provide lifecycle stores without
 # importing heavy dependencies at module import time.
 DOCUMENTS_LIFECYCLE_STORE: object | None = None
-_DEFAULT_CRAWLER_GRAPH_MODULE = crawler_ingestion_graph
+# Removed _DEFAULT_CRAWLER_GRAPH_MODULE (Finding #5): Now uses lazy import in _build_ingestion_graph
 
 if TYPE_CHECKING:  # pragma: no cover - type checking only
     pass
@@ -1850,15 +1850,14 @@ class CrawlerIngestionRunnerView(APIView):
             )
 
         lifecycle_store = _resolve_lifecycle_store()
-        graph_builder = None
-        if crawler_ingestion_graph is not _DEFAULT_CRAWLER_GRAPH_MODULE:
-            graph_builder = getattr(crawler_ingestion_graph, "build_graph", None)
+        # Note: graph_factory is always None now (Finding #5 fix removed module-level import)
+        # Tests that need custom graphs should patch run_crawler_runner directly
         try:
             result = run_crawler_runner(
                 meta=meta,
                 request_model=request_model,
                 lifecycle_store=lifecycle_store,
-                graph_factory=graph_builder,
+                graph_factory=None,
             )
         except CrawlerRunError as exc:
             payload = {"detail": str(exc), "code": exc.code}

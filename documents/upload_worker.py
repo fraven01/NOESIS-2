@@ -313,6 +313,7 @@ class UploadWorker:
             uri=payload_path,
             size=size,
             sha256=checksum,
+            media_type=raw_meta.get("content_type") or "application/octet-stream",
         )
 
         normalized_doc = NormalizedDocument(
