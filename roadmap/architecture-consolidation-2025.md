@@ -19,9 +19,9 @@ This file is a planning artifact; it is not a runtime contract. Runtime behavior
 
 ### A) Documentation alignment
 
-- [ ] Keep `docs/architecture/architecture-reality.md` as the canonical “what exists in code” inventory (layer -> code paths -> entry points).
-- [ ] Keep `docs/architecture/4-layer-firm-hierarchy.md` as the stable mental model and ensure it links to the inventory snapshot.
-- [ ] Add `docs/architecture/layer-contracts.md` (explanatory) with pointers to concrete boundaries:
+- [x] Keep `docs/architecture/architecture-reality.md` as the canonical “what exists in code” inventory (layer -> code paths -> entry points).
+- [x] Keep `docs/architecture/4-layer-firm-hierarchy.md` as the stable mental model and ensure it links to the inventory snapshot.
+- [x] Add `docs/architecture/layer-contracts.md` (explanatory) with pointers to concrete boundaries:
   - Layer 1 ↔ Layer 2: HTTP/API boundaries (OpenAPI + `ai_core/views.py`, `noesis2/urls.py`)
   - Layer 2 ↔ Layer 3: graph meta + execution (`ai_core/graph/schemas.py`, `ai_core/graph/core.py`, `ai_core/services/__init__.py`)
   - Layer 3 ↔ Layer 4: task boundaries (`llm_worker/tasks.py`, `ai_core/tasks.py`, `common/celery.py`)
@@ -37,19 +37,19 @@ Target idea:
 
 Planned work:
 
-- [ ] Introduce package structure split for graphs (e.g. `ai_core/graphs/technical/` and `ai_core/graphs/business/`) without introducing Django-app overhead.
-- [ ] Define import direction expectations (business -> technical; technical should not depend on business).
+- [x] Introduce package structure split for graphs (e.g. `ai_core/graphs/technical/` and `ai_core/graphs/business/`) without introducing Django-app overhead.
+- [x] Define import direction expectations (business -> technical; technical should not depend on business).
 - [ ] Enforce import direction later via a simple repo test (no new dependencies): fail builds if `ai_core/graphs/technical/**` imports `ai_core/graphs/business/**` (planning only; see also `roadmap/backlog.md`).
-- [ ] Identify current candidates:
+- [x] Identify current candidates:
   - Business-heavy graph: `ai_core/graphs/framework_analysis_graph.py`
   - Technical graphs: ingestion/retrieval/search graphs under `ai_core/graphs/` (see inventory doc)
-- [ ] Workbench exception policy (decision): technical-graph triggering from UI/views is `DEBUG`-only (explicitly guard the workbench endpoints).
+- [x] Workbench exception policy (decision): technical-graph triggering from UI/views is `DEBUG`-only (explicitly guard the workbench endpoints).
 
 ### C) Externalization readiness (scale-out path)
 
 Goal: allow moving worker-heavy execution out of the Django monolith later without rewriting business orchestration.
 
-- [ ] Establish a stable cross-graph interface for technical graphs (versioned Pydantic input/output; avoid implicit state-dict APIs).
+- [x] Establish a stable cross-graph interface for technical graphs (versioned Pydantic input/output; avoid implicit state-dict APIs).
 - [ ] Add a “graph executor” boundary (local/in-process vs Celery vs remote service) so business graphs call an executor API instead of importing execution mechanism directly.
 - [ ] Decide/anchor location for the execution layer: place the executor under `ai_core/graph/execution/` (next to `ai_core/graph/schemas.py`, `ai_core/graph/core.py`), so “graph meta normalization” and “graph execution” stay in the same module family.
 - [ ] Define a minimal API surface (planning sketch): `executor.run(name, input, context) -> output` (sync) plus an optional async/remote submission API (`executor.submit(...) -> handle/task_id`), with `trace_id` propagation preserved.
@@ -61,15 +61,9 @@ Goal: allow moving worker-heavy execution out of the Django monolith later witho
 
 Motivation: `ai_core/graphs/framework_analysis_graph.py` currently mixes domain/business decisions with direct ORM persistence (`FrameworkProfile`, `FrameworkDocument`, `DocumentCollection`) under `django.db.transaction`.
 
-- [ ] Extract persistence/versioning into a dedicated service boundary (e.g. in `documents/`) and call it from `ai_core/graphs/framework_analysis_graph.py` instead of direct ORM writes.
-- [ ] Keep the graph focused on orchestration (LLM calls, retrieval nodes, assembling the analysis output) and delegate side effects (DB writes, version toggling) to the service boundary.
-- [ ] Add/adjust tests to cover the service boundary and the graph integration path.
-
-### E) Operations (supporting)
-
-- [ ] Secrets management abstraction + runbooks.
-- [ ] Dead letter / retry handling for `agents` and `ingestion` queues (align with existing ingestion dead-letter patterns).
-- [ ] Document worker-offload path (`ai_core/services/__init__.py` -> `llm_worker/tasks.py`) and decide which endpoints must offload vs can stay sync.
+- [x] Extract persistence/versioning into a dedicated service boundary (e.g. in `documents/`) and call it from `ai_core/graphs/framework_analysis_graph.py` instead of direct ORM writes.
+- [x] Keep the graph focused on orchestration (LLM calls, retrieval nodes, assembling the analysis output) and delegate side effects (DB writes, version toggling) to the service boundary.
+- [x] Add/adjust tests to cover the service boundary and the graph integration path.
 
 ### F) “Real LangGraph” alignment + capability-first graphs
 

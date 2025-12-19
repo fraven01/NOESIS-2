@@ -193,6 +193,10 @@ def pii_config_env(monkeypatch, settings):
 def ensure_public_schema(django_db_setup, django_db_blocker):
     """Ensure the shared (public) schema migrations run before tenant setup."""
     from django.core.management import call_command
+    from django.conf import settings
+
+    if "django_tenants" not in settings.INSTALLED_APPS:
+        return
 
     with django_db_blocker.unblock():
         call_command("migrate_schemas", shared=True, interactive=False, verbosity=0)
@@ -209,6 +213,11 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
     Use a non-default name ('autotest') to avoid clashes with
     django_tenants' TenantTestCase which uses 'test' by default.
     """
+    from django.conf import settings
+
+    if "django_tenants" not in settings.INSTALLED_APPS:
+        return "public"
+
     from customers.models import Tenant
 
     with django_db_blocker.unblock():
@@ -223,6 +232,12 @@ def test_tenant_schema_name(django_db_setup, django_db_blocker):
 @pytest.fixture(autouse=True)
 def use_test_tenant(request, test_tenant_schema_name):
     """Run each test inside the test tenant schema by default."""
+    from django.conf import settings
+
+    if "django_tenants" not in settings.INSTALLED_APPS:
+        yield
+        return
+
     from django_tenants.utils import schema_context
 
     try:

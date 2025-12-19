@@ -5,7 +5,7 @@ from typing import Mapping
 
 import pytest
 
-from ai_core.graphs.technical.crawler_ingestion_graph import GraphTransition
+
 from ai_core.graphs.technical.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
 from common.assets import perceptual_hash, sha256_bytes
@@ -104,7 +104,20 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
     # Mock the ingestion graph to emit guardrail event
     def _mock_run_ingestion_graph(state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
         run_id = state.get("graph_run_id", "test-run")
-        transition = GraphTransition(
+
+        # Local mock for GraphTransition to avoid import error
+        class MockGraphTransition:
+            def __init__(self, result):
+                self.result = result
+                self.decision = result.decision
+                self.reason = result.reason
+                self.severity = result.severity
+                self.phase = result.phase
+
+            def to_dict(self):
+                return {"decision": self.decision, "reason": self.reason}
+
+        transition = MockGraphTransition(
             StandardTransitionResult(
                 phase="guardrails",
                 decision="denied",

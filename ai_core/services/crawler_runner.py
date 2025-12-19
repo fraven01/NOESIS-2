@@ -13,17 +13,20 @@ from rest_framework import status
 from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 from common.logging import get_logger
 from crawler.http_fetcher import HttpFetcher
-from llm_worker.tasks import run_graph as run_graph_task
+
 
 from ai_core.contracts.crawler_runner import (
     CrawlerRunContext,
     CrawlerStateBundle,
 )
-from ai_core.graph import registry as graph_registry
+
 from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
+
+# NOTE: build_universal_ingestion_graph imported lazily inside run_crawler_runner()
+# to prevent OOM in test environments that mock heavy modules.
 from customers.tenant_context import TenantContext
 from documents.contract_utils import resolve_workflow_id
 from documents.domain_service import (
@@ -80,6 +83,12 @@ def run_crawler_runner(
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
 
+    # Lazy import to prevent OOM in test environments
+    from ai_core.graphs.technical.universal_ingestion_graph import (
+        build_universal_ingestion_graph,
+        UniversalIngestionInput,
+    )
+
     if request_model.collection_id:
         meta["collection_id"] = request_model.collection_id
 
@@ -118,20 +127,6 @@ def run_crawler_runner(
     if not state_builds:
         raise ValueError("No origins resolved for crawler run.")
 
-    # Resolve inline graph runner (manual/debug path)
-    graph_runner = None
-    if graph_factory is not None:
-        try:
-            graph_runner = graph_factory()
-        except Exception:
-            logger.exception("crawler_runner.graph_factory_failed")
-            graph_runner = None
-    if graph_runner is None:
-        try:
-            graph_runner = graph_registry.get("crawler.ingestion")
-        except KeyError:
-            graph_runner = None
-
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
     idempotency_key = meta.get("idempotency_key")
     try:
@@ -162,24 +157,112 @@ def run_crawler_runner(
         seen_cache.add(fingerprint)
 
     completed_runs: list[dict[str, object]] = []
-    graph_name = "crawler.ingestion"
-    scope = {
-        "tenant_id": meta.get("tenant_id"),
-        "case_id": meta.get("case_id"),
-        "trace_id": meta.get("trace_id"),
-    }
+    # Updated to use UniversalIngestionGraph
+    graph_app = build_universal_ingestion_graph()
 
-    # Manual/debug runs are executed inline for observability in tests.
     for build in state_builds:
-        _prime_manual_state(build, graph_name, graph_runner)
-        inline_payload, _ = _run_graph_inline(
-            build=build,
-            meta=meta,
-            graph_name=graph_name,
-            scope=scope,
-            graph_runner=graph_runner,
-        )
-        entry = {"build": build, **inline_payload}
+        # Construct Input for Universal Graph
+        normalized = build.state.get("normalized_document_input")
+        input_payload: UniversalIngestionInput = {
+            "source": "crawler",
+            "mode": "ingest_only",
+            "collection_id": request_model.collection_id,
+            "upload_blob": None,
+            "metadata_obj": None,
+            "normalized_document": normalized,
+        }
+
+        # Determine strict context
+        # Note: Universal Graph expects tenant_id, trace_id, case_id in context
+        run_context = {
+            "tenant_id": meta.get("tenant_id"),
+            "case_id": meta.get("case_id"),
+            "trace_id": meta.get("trace_id"),
+            "workflow_id": str(workflow_resolved),
+            "ingestion_run_id": str(uuid4()),  # Generate one for the graph run
+            "dry_run": request_model.dry_run,  # Pass dry_run in context for future support
+            "idempotency_key": idempotency_key,  # Pass for graph-side tracking
+        }
+
+        try:
+            result = graph_app.invoke({"input": input_payload, "context": run_context})
+            output = result.get("output", {})
+        except Exception as exc:
+            logger.exception(
+                "universal_crawler_ingestion_failed", extra={"origin": build.origin}
+            )
+            output = {
+                "decision": "error",
+                "reason": str(exc),
+                "ingestion_run_id": None,
+                "telemetry": {},
+                "transitions": {},
+                "artifacts": {"errors": [{"message": str(exc)}]},
+            }
+            result = {"output": output}  # Ensure result is dict so we can use it below
+
+        # Map to legacy entry format for response builder
+        # _summarize_origin_entry expects:
+        # - state (with artifacts, transitions, control)
+        # - result (with decision)
+        # - ingestion_run_id (arg)
+
+        # Synthesize state from output
+        # Artifacts are in the root state (result), NOT in output for LangGraph usually
+        # But if invoke returns state, result IS state.
+        synthesized_state = {
+            "artifacts": result.get("artifacts") or output.get("artifacts") or {},
+            "transitions": output.get("transitions") or {},
+            "control": build.state.get("control", {}),  # Preserve control from build
+            # If successful, mark as having ingestion action so summary reflects it?
+            # actually _summarize_origin_entry uses state.get("ingest_action")
+        }
+
+        # Legacy: ingest_action="upsert" meant "we triggered ingestion".
+        # Universal: "ingested" decision means it's done.
+        if output.get("decision") == "ingested":
+            synthesized_state["ingest_action"] = "upsert"
+
+        entry = {
+            "build": build,
+            "result": {
+                "decision": output.get("decision"),
+                "reason": output.get("reason"),
+            },
+            "state": synthesized_state,
+        }
+
+        # If Universal Graph provided an ingestion_run_id, pass it.
+        # But wait, entry structure in _run_graph_inline returned inline_payload.
+        # _summarize_origin_entry takes `ingestion_run_id` as separate arg.
+        # So we attach it to the entry dict to use it later or modify how we call summarize.
+
+        # Actually, let's look at loop in _build_synchronous_payload (lines 394+)
+        # It iterates completed_runs.
+        # It calls _maybe_start_ingestion.
+        # We want to BYPASS _maybe_start_ingestion if Universal already did it.
+
+        # Solution: Store ingestion_run_id in entry['result'] or similar, and update _maybe_start_ingestion
+        # OR update _build_synchronous_payload to check for it.
+
+        # But I can't easily change _build_synchronous_payload without replacing it.
+        # Wait, _maybe_start_ingestion checks `state.get("ingest_action")`.
+        # If I set `ingest_action` to `upsert`, it attempts `start_ingestion_run`.
+        # I DO NOT want that.
+        # So I should SET `ingest_action` to `None` or something else?
+        # But if I set it to None, `_summarize_origin_entry` might not report "ingest_action".
+
+        # Let's look at _summarize_origin_entry (line 537): "ingest_action": state.get("ingest_action").
+
+        # If I want to REPORT "upsert" but NOT TRIGGER `start_ingestion_run`:
+        # I can change `_maybe_start_ingestion` to check for existing `ingestion_run_id`?
+        # OR I can spoof `_maybe_start_ingestion` behavior.
+
+        # Better: Populate `entry["ingestion_run_id"]` locally,
+        # and modify `_build_synchronous_payload` loop to use it.
+
+        entry["ingestion_run_id"] = output.get("ingestion_run_id")
+
         completed_runs.append(entry)
 
     guardrail_error = _detect_guardrail_error(completed_runs)
@@ -304,63 +387,6 @@ def _resolve_tenant(identifier: object):
     return resolved
 
 
-def _run_graph_inline(
-    *,
-    build: CrawlerStateBundle,
-    meta: Mapping[str, Any],
-    graph_name: str,
-    scope: Mapping[str, object],
-    graph_runner: object | None,
-) -> tuple[dict[str, Any], bool]:
-    meta_payload = {"graph_name": graph_name}
-    if graph_runner is not None and hasattr(graph_runner, "run"):
-        new_state, result_payload = graph_runner.run(build.state, meta_payload)
-        inline_result = {
-            "state": new_state,
-            "result": result_payload,
-            "cost_summary": None,
-        }
-    else:
-        inline_result = run_graph_task.run(
-            graph_name=graph_name,
-            state=build.state,
-            meta=meta_payload,
-            ledger_identifier=None,
-            initial_cost_total=None,
-            tenant_id=scope.get("tenant_id"),
-            case_id=scope.get("case_id"),
-            trace_id=scope.get("trace_id"),
-        )
-    response_payload = dict(inline_result)
-    response_payload["task_id"] = f"inline-{uuid4().hex}"
-    return response_payload, True
-
-
-def _prime_manual_state(
-    build: CrawlerStateBundle,
-    graph_name: str,
-    inline_graph: object | None,
-) -> None:
-    runner = inline_graph
-    if runner is None:
-        try:
-            runner = graph_registry.get(graph_name)
-        except KeyError:
-            return
-    if not hasattr(runner, "start_crawl"):
-        return
-    try:
-        prepared_state = runner.start_crawl(build.state)
-    except Exception:
-        logger.exception(
-            "crawler_runner.start_crawl_failed",
-            extra={"graph_name": graph_name, "origin": build.origin},
-        )
-        return
-    if isinstance(prepared_state, Mapping):
-        build.state = dict(prepared_state)
-
-
 def _detect_guardrail_error(
     completed_runs: list[dict[str, object]],
 ) -> dict[str, object] | None:
@@ -411,7 +437,12 @@ def _build_synchronous_payload(
             }
         )
         errors_payload.extend(_extract_origin_errors(build, state_data))
-        ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
+
+        # Use existing ingestion_run_id if present (from Universal Graph)
+        ingestion_run_id = entry.get("ingestion_run_id")
+        if not ingestion_run_id:
+            ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
+
         origins_payload.append(
             _summarize_origin_entry(build, state_data, result_payload, ingestion_run_id)
         )

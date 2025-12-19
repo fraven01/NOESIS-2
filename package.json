@@ -44,7 +44,7 @@
     "test:py:unit": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q -m 'not django_db'\"",
     "test:py:cov": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q --cov=ai_core --cov=common --cov=customers --cov=documents --cov=organizations --cov=profiles --cov=projects --cov=users --cov=theme --cov=noesis2 --cov-report=term-missing\"",
     "test:py:clean": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install --no-cache-dir -r requirements.txt -r requirements-dev.txt && python -m pytest -q\"",
-    "win:test:py": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q\"",
+    "win:test:py": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q -n 1 --reuse-db\"",
     "win:test:py:single": "npm run win:test:py --",
     "win:test:py:fast": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q -m 'not slow'\"",
     "win:test:py:unit": "docker compose -f docker-compose.dev.yml run --rm web sh -c \"pip install -r requirements.txt -r requirements-dev.txt && python -m pytest -q -m 'not django_db'\"",

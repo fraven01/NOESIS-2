@@ -1660,16 +1660,12 @@ def _callable_accepts_kwarg(func: Any, keyword: str) -> bool:
 
 
 def _build_ingestion_graph(event_emitter: Optional[Any]):
-    """Invoke build_graph while remaining compatible with older test stubs."""
-    from ai_core.graphs.technical.crawler_ingestion_graph import (
-        build_graph as build_crawler_graph,
+    """Invoke build_universal_ingestion_graph."""
+    from ai_core.graphs.technical.universal_ingestion_graph import (
+        build_universal_ingestion_graph,
     )
 
-    if event_emitter is None:
-        return build_crawler_graph()
-    if _callable_accepts_kwarg(build_crawler_graph, "event_emitter"):
-        return build_crawler_graph(event_emitter=event_emitter)
-    return build_crawler_graph()
+    return build_universal_ingestion_graph()
 
 
 def build_graph(*, event_emitter: Optional[Any] = None):
@@ -1968,6 +1964,8 @@ def run_ingestion_graph(
     )
 
     # 3. Normalize document input if needed
+    # Note: Upload worker provides this, Crawler might not if legacy.
+    # But for Universal Graph, we prefer normalized input.
     working_state = _prepare_working_state(
         state=state,
         ingestion_ctx=ingestion_ctx,
@@ -1986,14 +1984,64 @@ def run_ingestion_graph(
     obs_wrapper.start_trace(obs_ctx)
 
     try:
-        # 5. Execute graph (the actual work!)
-        working_state, result = graph.run(working_state, meta or {})
-        _ensure_ingestion_phase_spans(working_state, result, trace_context)
+        # 5. Execute Universal Graph
+        # Map legacy/worker state to UniversalIngestionInput
+
+        # Determine source
+        source = ingestion_ctx.source or "upload"  # Default to upload for worker safety
+
+        # Extract normalized document (it might be a dict or NormalizedDocument object)
+        normalized_doc = working_state.get("normalized_document_input")
+        if hasattr(normalized_doc, "model_dump"):
+            normalized_doc = normalized_doc.model_dump(mode="json")
+
+        # Extract collection_id
+        collection_id = None
+        if isinstance(normalized_doc, dict):
+            ref = normalized_doc.get("ref", {})
+            collection_id = ref.get("collection_id")
+
+        if not collection_id:
+            collection_id = ingestion_ctx.collection_id
+
+        input_payload = {
+            "source": source,
+            "mode": "ingest_only",
+            "collection_id": collection_id,
+            "upload_blob": None,  # Provided via normalized_document for upload worker
+            "metadata_obj": None,
+            "normalized_document": normalized_doc,  # Key for Pre-normalized input
+        }
+
+        # Build Context
+        run_context = {
+            "tenant_id": ingestion_ctx.tenant_id,
+            "case_id": ingestion_ctx.case_id,
+            "trace_id": ingestion_ctx.trace_id,
+            "workflow_id": ingestion_ctx.workflow_id,
+            "invocation_id": getattr(ingestion_ctx, "invocation_id", None)
+            or trace_context.get("invocation_id")
+            or meta.get("invocation_id")
+            or ingestion_ctx.trace_id,
+            "ingestion_run_id": trace_context.get("ingestion_run_id")
+            or str(uuid.uuid4()),
+            "dry_run": False,
+        }
+
+        result = graph.invoke({"input": input_payload, "context": run_context})
+
+        # Output is in result["output"] usually, or result IS output?
+        # Universal Graph returns UniversalIngestionOutput in 'output' key?
+        # Wait, build_universal_ingestion_graph uses StateGraph.
+        # invoke returns the final state.
+        # UniversalIngestionState has 'output' key.
+        final_output = result.get("output", {})
 
         # 6. Serialize result for Celery
-        serialized_result = _jsonify_for_task(result)
+        serialized_result = _jsonify_for_task(final_output)
         if not isinstance(serialized_result, dict):
-            raise TypeError("ingestion_result_serialization_error")
+            # Fallback if output structure is unexpected
+            serialized_result = _jsonify_for_task(result)
 
         return serialized_result
 
