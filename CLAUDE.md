@@ -78,21 +78,45 @@ npm run dev:reset    # Komplett-Reset
 **Python-Tests (Linux)**:
 ```bash
 npm run test:py              # Vollständig (inkl. @pytest.mark.slow)
-npm run test:py:single -- <path>  # Einzelner Test
+npm run test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
 npm run test:py:fast         # Schnell (ohne @pytest.mark.slow)
 npm run test:py:unit         # Unit-Tests (ohne DB, super schnell)
 npm run test:py:cov          # Coverage über alles
 npm run test:py:clean        # Clean (pip --no-cache-dir) + vollständig
 ```
 
+**Beispiele für einzelne Tests (Linux)**:
+```bash
+# Einzelne Datei
+npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
+
+# Spezifische Testfunktion
+npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::test_function_name
+
+# Testklasse und -methode
+npm run test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
+```
+
 **Python-Tests (Windows)**:
 ```bash
 npm run win:test:py              # Vollständig
-npm run win:test:py:single -- <path>  # Einzelner Test
+npm run win:test:py:single -- <path>  # Einzelner Test oder spezifische Funktion
 npm run win:test:py:fast         # Schnell
 npm run win:test:py:unit         # Unit-Tests
 npm run win:test:py:cov          # Coverage
 npm run win:test:py:clean        # Clean + vollständig
+```
+
+**Beispiele für einzelne Tests (Windows)**:
+```bash
+# Einzelne Datei
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
+
+# Spezifische Testfunktion
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::test_function_name
+
+# Testklasse und -methode
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
 ```
 
 **Frontend-Tests**:
@@ -332,12 +356,13 @@ npm run dev:manage <cmd>    # Django-Management
 
 # Tests
 npm run test:py            # Vollständig (inkl. slow)
+npm run test:py:single -- path/to/test.py  # Einzelner Test
 npm run test:py:fast       # Schnell (ohne slow)
 npm run test:py:unit       # Unit-Tests (ohne DB)
 npm run test:py:cov        # Coverage
 npm run test:py:clean      # Clean + vollständig
 npm run e2e                # E2E
-# Windows: npm run win:test:py, win:test:py:fast, etc.
+# Windows: npm run win:test:py, win:test:py:single -- path/to/test.py, etc.
 
 # Linting
 npm run lint               # Check

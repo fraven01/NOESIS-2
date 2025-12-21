@@ -17,13 +17,9 @@ _LAZY_MODULES: dict[str, str] = {
     "collection_search": "ai_core.graphs.technical.collection_search",
     "cost_tracking": "ai_core.graphs.technical.cost_tracking",
     "document_service": "ai_core.graphs.technical.document_service",
-    "external_knowledge_graph": "ai_core.graphs.technical.external_knowledge_graph",
     "framework_analysis_graph": "ai_core.graphs.business.framework_analysis_graph",
-    "info_intake": "ai_core.graphs.technical.info_intake",
-    "rag_demo": "ai_core.graphs.technical.rag_demo",
-    "retrieval_augmented_generation": (
-        "ai_core.graphs.technical.retrieval_augmented_generation"
-    ),
+    "info_intake": "ai_core.graphs.info_intake",
+    "retrieval_augmented_generation": "ai_core.graphs.technical.retrieval_augmented_generation",
     "transition_contracts": "ai_core.graphs.transition_contracts",
     "universal_ingestion_graph": "ai_core.graphs.technical.universal_ingestion_graph",
 }
@@ -51,9 +47,7 @@ if TYPE_CHECKING:
         collection_search,  # noqa: F401
         cost_tracking,  # noqa: F401
         document_service,  # noqa: F401
-        external_knowledge_graph,  # noqa: F401
         info_intake,  # noqa: F401
-        rag_demo,  # noqa: F401
         retrieval_augmented_generation,  # noqa: F401
         universal_ingestion_graph,  # noqa: F401
     )

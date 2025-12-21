@@ -31,7 +31,9 @@ def utg_module():
 def mock_processing_graph(utg_module):
     # We patch the object in the imported module returned by our fixture
     # But since _get_cached_processing_graph uses local import, we must patch the source
-    with patch("documents.processing_graph.build_document_processing_graph") as mock:
+    # We must patch the reference HELD by the imported module, because utg_module
+    # performs the import before this fixture runs.
+    with patch.object(utg_module, "build_document_processing_graph") as mock:
         mock_graph = MagicMock()
         mock_graph.invoke.return_value = {"status": "processed"}
         mock.return_value = mock_graph
@@ -141,10 +143,6 @@ def test_universal_ingestion_graph_success_crawler(
     result = graph.invoke(state)
     output = result["output"]
 
-    if output["decision"] == "error":
-        print(f"DEBUG FAILURE REASON: {output['reason']}")
-
-    assert output["decision"] == "ingested"
     assert output["decision"] == "ingested"
     assert output["document_id"] == "00000000-0000-0000-0000-000000000123"
 
@@ -238,8 +236,7 @@ def test_universal_ingestion_graph_success_upload(
     result = graph.invoke(state)
     output = result["output"]
 
-    assert output["decision"] == "ingested"
-    assert output["decision"] == "ingested"
+    assert output["decision"] == "ingested", f"FAILED REASON: {output.get('reason')}"
     assert output["document_id"] is not None  # Generated in _build_normalized_document
 
     # Roadmap compliance checks

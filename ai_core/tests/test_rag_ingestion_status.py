@@ -17,7 +17,7 @@ def test_rag_ingestion_status_returns_latest_run(
     client, monkeypatch, test_tenant_schema_name
 ):
     tenant = test_tenant_schema_name
-    case = ""  # Empty for caseless
+    case = "general"  # Matching DEFAULT_CASE_ID for missing header
     # create_case(case)
     monkeypatch.setattr(rate_limit, "check", lambda *_args, **_kwargs: True)
 

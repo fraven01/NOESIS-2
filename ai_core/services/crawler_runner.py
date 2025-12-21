@@ -129,32 +129,99 @@ def run_crawler_runner(
 
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
     idempotency_key = meta.get("idempotency_key")
+    idempotent_flag = False
+    fingerprint = None
+
+    # Require tenant_id for fingerprinting to prevent collisions
+    tenant_id_for_fp = meta.get("tenant_id")
+    if not tenant_id_for_fp:
+        # Will be caught by ID validation later, but guard here too
+        raise ValueError("tenant_id is required for idempotency fingerprinting")
+
     try:
         import json
         import hashlib
 
         fingerprint_payload = {
-            "tenant_id": meta.get("tenant_id"),
-            "case_id": meta.get("case_id"),
+            "tenant_id": str(tenant_id_for_fp),  # Guaranteed non-null
+            "case_id": meta.get("case_id"),  # Optional in fingerprint
             "workflow_id": str(workflow_resolved),
             "collection_id": request_model.collection_id,
             "mode": request_model.mode,
-            "origins": [
-                origin.model_dump(mode="json") for origin in request_model.origins or []
-            ],
+            "origins": sorted(  # Sort for stable fingerprint
+                [
+                    origin.model_dump(mode="json")
+                    for origin in request_model.origins or []
+                ],
+                key=lambda o: o.get("uri", ""),
+            ),
         }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
     except Exception:
         fingerprint = None
-    idempotent_flag = False
+
+    # Check idempotency using Redis/Django cache (cross-process)
+    from django.core.cache import cache
+
+    CACHE_PREFIX = "crawler_idempotency:"
+    CACHE_TTL = 3600  # 1 hour
+
     if idempotency_key:
-        idempotent_flag = True
+        cache_key = f"{CACHE_PREFIX}key:{idempotency_key}"
+        if cache.get(cache_key):
+            idempotent_flag = True
+        else:
+            cache.set(cache_key, True, timeout=CACHE_TTL)
     elif fingerprint:
-        seen_cache = _CRAWLER_IDEMPOTENCY_CACHE
-        idempotent_flag = fingerprint in seen_cache
-        seen_cache.add(fingerprint)
+        cache_key = f"{CACHE_PREFIX}fp:{fingerprint}"
+        if cache.get(cache_key):
+            idempotent_flag = True
+        else:
+            cache.set(cache_key, True, timeout=CACHE_TTL)
+
+    # Early return for idempotent requests
+    if idempotent_flag:
+        logger.info(
+            "crawler_request_idempotent_skipped",
+            extra={
+                "fingerprint": fingerprint,
+                "idempotency_key": idempotency_key,
+                "tenant_id": str(tenant_id_for_fp),
+                "cache_key": cache_key,
+            },
+        )
+        return CrawlerRunnerCoordinatorResult(
+            payload={
+                "idempotent": True,
+                "skipped": True,
+                "origins": [],
+                "message": "Request already processed (idempotent)",
+            },
+            status_code=status.HTTP_200_OK,
+            idempotency_key=idempotency_key,
+        )
+
+    # Validate mandatory IDs before graph invocation
+    tenant_id = meta.get("tenant_id")
+    if not tenant_id:
+        raise ValueError("tenant_id is mandatory for crawler ingestion")
+
+    case_id = meta.get("case_id")
+    if not case_id:
+        raise ValueError("case_id is mandatory for AI Core graph runs")
+
+    trace_id = meta.get("trace_id")
+    if not trace_id:
+        trace_id = str(uuid4())
+        logger.warning(
+            "trace_id_missing_generated",
+            extra={
+                "generated_trace_id": trace_id,
+                "tenant_id": str(tenant_id),
+            },
+        )
 
     completed_runs: list[dict[str, object]] = []
     # Updated to use UniversalIngestionGraph
@@ -172,24 +239,52 @@ def run_crawler_runner(
             "normalized_document": normalized,
         }
 
+        # Generate canonical ingestion_run_id for this build
+        canonical_ingestion_run_id = str(uuid4())
+
         # Determine strict context
         # Note: Universal Graph expects tenant_id, trace_id, case_id in context
         run_context = {
-            "tenant_id": meta.get("tenant_id"),
-            "case_id": meta.get("case_id"),
-            "trace_id": meta.get("trace_id"),
+            "tenant_id": str(tenant_id),
+            "case_id": str(case_id),
+            "trace_id": str(trace_id),
             "workflow_id": str(workflow_resolved),
-            "ingestion_run_id": str(uuid4()),  # Generate one for the graph run
-            "dry_run": request_model.dry_run,  # Pass dry_run in context for future support
-            "idempotency_key": idempotency_key,  # Pass for graph-side tracking
+            "ingestion_run_id": canonical_ingestion_run_id,
+            "dry_run": request_model.dry_run,
+            "idempotency_key": idempotency_key,
         }
 
         try:
             result = graph_app.invoke({"input": input_payload, "context": run_context})
             output = result.get("output", {})
+
+            # Log successful graph invocation with full context
+            logger.info(
+                "universal_graph_invoked",
+                extra={
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                    "case_id": run_context["case_id"],
+                    "workflow_id": run_context["workflow_id"],
+                    "ingestion_run_id": canonical_ingestion_run_id,
+                    "decision": output.get("decision"),
+                    "reason": output.get("reason"),
+                    "document_id": output.get("document_id"),
+                    "transitions_count": len(output.get("transitions", [])),
+                },
+            )
         except Exception as exc:
             logger.exception(
-                "universal_crawler_ingestion_failed", extra={"origin": build.origin}
+                "universal_crawler_ingestion_failed",
+                extra={
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                    "case_id": run_context["case_id"],
+                    "workflow_id": run_context["workflow_id"],
+                    "ingestion_run_id": canonical_ingestion_run_id,
+                },
             )
             output = {
                 "decision": "error",
@@ -202,26 +297,16 @@ def run_crawler_runner(
             result = {"output": output}  # Ensure result is dict so we can use it below
 
         # Map to legacy entry format for response builder
-        # _summarize_origin_entry expects:
-        # - state (with artifacts, transitions, control)
-        # - result (with decision)
-        # - ingestion_run_id (arg)
-
         # Synthesize state from output
-        # Artifacts are in the root state (result), NOT in output for LangGraph usually
-        # But if invoke returns state, result IS state.
+        # Per contract: artifacts in root state, transitions in output
         synthesized_state = {
-            "artifacts": result.get("artifacts") or output.get("artifacts") or {},
-            "transitions": output.get("transitions") or {},
-            "control": build.state.get("control", {}),  # Preserve control from build
-            # If successful, mark as having ingestion action so summary reflects it?
-            # actually _summarize_origin_entry uses state.get("ingest_action")
+            "artifacts": result.get("artifacts", {}),
+            "transitions": output.get("transitions", []),
+            "control": build.state.get("control", {}),
         }
 
-        # Legacy: ingest_action="upsert" meant "we triggered ingestion".
-        # Universal: "ingested" decision means it's done.
-        if output.get("decision") == "ingested":
-            synthesized_state["ingest_action"] = "upsert"
+        # DO NOT set ingest_action - Universal Graph handles ingestion internally
+        # No legacy start_ingestion_run should be triggered
 
         entry = {
             "build": build,
@@ -232,36 +317,22 @@ def run_crawler_runner(
             "state": synthesized_state,
         }
 
-        # If Universal Graph provided an ingestion_run_id, pass it.
-        # But wait, entry structure in _run_graph_inline returned inline_payload.
-        # _summarize_origin_entry takes `ingestion_run_id` as separate arg.
-        # So we attach it to the entry dict to use it later or modify how we call summarize.
+        # Validate and use canonical ingestion_run_id
+        output_run_id = output.get("ingestion_run_id")
+        if output_run_id and output_run_id != canonical_ingestion_run_id:
+            logger.warning(
+                "ingestion_run_id_mismatch",
+                extra={
+                    "context_id": canonical_ingestion_run_id,
+                    "output_id": output_run_id,
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                },
+            )
 
-        # Actually, let's look at loop in _build_synchronous_payload (lines 394+)
-        # It iterates completed_runs.
-        # It calls _maybe_start_ingestion.
-        # We want to BYPASS _maybe_start_ingestion if Universal already did it.
-
-        # Solution: Store ingestion_run_id in entry['result'] or similar, and update _maybe_start_ingestion
-        # OR update _build_synchronous_payload to check for it.
-
-        # But I can't easily change _build_synchronous_payload without replacing it.
-        # Wait, _maybe_start_ingestion checks `state.get("ingest_action")`.
-        # If I set `ingest_action` to `upsert`, it attempts `start_ingestion_run`.
-        # I DO NOT want that.
-        # So I should SET `ingest_action` to `None` or something else?
-        # But if I set it to None, `_summarize_origin_entry` might not report "ingest_action".
-
-        # Let's look at _summarize_origin_entry (line 537): "ingest_action": state.get("ingest_action").
-
-        # If I want to REPORT "upsert" but NOT TRIGGER `start_ingestion_run`:
-        # I can change `_maybe_start_ingestion` to check for existing `ingestion_run_id`?
-        # OR I can spoof `_maybe_start_ingestion` behavior.
-
-        # Better: Populate `entry["ingestion_run_id"]` locally,
-        # and modify `_build_synchronous_payload` loop to use it.
-
-        entry["ingestion_run_id"] = output.get("ingestion_run_id")
+        # Always use canonical ID (coordinator is source of truth)
+        entry["ingestion_run_id"] = canonical_ingestion_run_id
 
         completed_runs.append(entry)
 
@@ -286,10 +357,6 @@ def run_crawler_runner(
         status_code=status.HTTP_200_OK,
         idempotency_key=idempotency_key,
     )
-
-
-# Simple in-memory cache to flag repeat manual crawler requests during a process.
-_CRAWLER_IDEMPOTENCY_CACHE: set[str] = set()
 
 
 def _build_ingest_specs(
@@ -429,11 +496,8 @@ def _build_synchronous_payload(
         transitions_payload.append(
             {
                 "origin": build.origin,
-                "transitions": _make_json_safe(
-                    state_data.get("transitions")
-                    or result_payload.get("transitions")
-                    or {}
-                ),
+                # Single source: state.transitions (populated from output.transitions)
+                "transitions": _make_json_safe(state_data.get("transitions", [])),
             }
         )
         errors_payload.extend(_extract_origin_errors(build, state_data))

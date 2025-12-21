@@ -7,10 +7,8 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 ### LangGraph-Definitionen
 
 - `ai_core/graphs/collection_search.py` – Graph für Collection- und Websuche; erwartet `GraphContextPayload` mit `tenant_id`, `workflow_id`, `case_id` sowie optional `trace_id`, `run_id`, `ingestion_run_id`. Validiert Input strikt (`extra=forbid`). Tools: Websuche (`WebSearchWorker`), Hybrid-Scoring (`HybridScoreExecutor`), Ingestion-Trigger.
-- `ai_core/graphs/external_knowledge_graph.py` – Websuche mit optionalem HITL und Crawler-Weiterleitung; derselbe Kontext wie oben, erzwingt `tenant_id`, `workflow_id`, `case_id`.
-- `ai_core/graphs/crawler_ingestion_graph.py` – LangGraph-Orchestrierung der Crawling/Ingestion-Kette; nutzt `run_ingestion_graph` Task als Worker-Einstieg.
-- `ai_core/graphs/upload_ingestion_graph.py` – steuert Upload-Ingestion-Pfade mit denselben Kontextfeldern.
-- `ai_core/graphs/retrieval_augmented_generation.py`, `framework_analysis_graph.py`, `info_intake.py`, `rag_demo.py`, `document_service.py`, `cost_tracking.py`, `transition_contracts.py` – weitere Graphen; alle konsumieren vorbereitete Kontext-Metas aus dem Dispatcher und propagieren `tenant_id`, `trace_id`, `workflow_id`, `case_id` plus Laufzeit-ID.
+- `ai_core/graphs/technical/universal_ingestion_graph.py` – Orchestriert Ingestion für `source=search`, `upload` und `crawler`. Validiert kontextsensitiv `tenant_id`, `workflow_id` und `case_id`. Unterstützt `acquire_only` für reine Recherche.
+- `ai_core/graphs/retrieval_augmented_generation.py`, `framework_analysis_graph.py`, `info_intake.py`, `document_service.py`, `cost_tracking.py` – weitere Graphen; alle konsumieren vorbereitete Kontext-Metas aus dem Dispatcher und propagieren `tenant_id`, `trace_id`, `workflow_id`, `case_id` plus Laufzeit-ID.
 - `llm_worker/graphs/hybrid_search_and_score.py` & `score_results.py` – Worker-seitige Graphen für Hybrid-Scoring; erhalten `tenant_id`, `case_id`, `trace_id` und Laufzeit-IDs über Task-Meta.
 
 ### Celery-Tasks

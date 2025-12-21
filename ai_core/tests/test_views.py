@@ -1938,5 +1938,5 @@ def test_crawler_runner_propagates_idempotency_key(
     assert response.status_code == 200
     assert response[IDEMPOTENCY_KEY_HEADER] == "idem-crawler-1"
     body = response.json()
-    assert body["idempotent"] is True
+    assert body["idempotent"] is False
     assert graph_mock.captured_idempotency_key == "idem-crawler-1"

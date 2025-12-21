@@ -150,3 +150,25 @@ def disable_async_graphs(monkeypatch):
 
     monkeypatch.setattr(services, "_should_enqueue_graph", lambda graph_name: False)
     yield
+
+
+@pytest.fixture
+def tenant_client(client, monkeypatch):
+    """Django test client with tenant middleware mocked for easy testing.
+
+    This fixture bypasses the django-tenants middleware hostname lookup
+    and directly sets the tenant on the request, allowing tests to work
+    without needing to configure proper domain names.
+    """
+    from django_tenants.middleware import TenantMainMiddleware
+    from customers.models import Tenant
+
+    def _mock_process_request(self, request):
+        """Mock middleware to set tenant directly without hostname lookup."""
+        # Use hardcoded 'autotest' schema created by test_tenant_schema_name fixture
+        request.tenant = Tenant.objects.get(schema_name="autotest")
+        return None
+
+    monkeypatch.setattr(TenantMainMiddleware, "process_request", _mock_process_request)
+
+    return client

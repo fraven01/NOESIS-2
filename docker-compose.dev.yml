@@ -249,6 +249,7 @@ services:
       sh -lc "opentelemetry-instrument /usr/local/bin/python manage.py bootstrap_public_tenant --domain=localhost &&
       opentelemetry-instrument /usr/local/bin/python manage.py create_tenant --schema=${DEV_TENANT_SCHEMA:-dev} --name='${DEV_TENANT_NAME:-Dev Tenant}' --domain=${DEV_DOMAIN:-dev.localhost} || true &&
       opentelemetry-instrument /usr/local/bin/python manage.py migrate_schemas --tenant --schema=${DEV_TENANT_SCHEMA:-dev} &&
+      opentelemetry-instrument /usr/local/bin/python manage.py bootstrap_default_cases --include-dev-case --dev-tenant=${DEV_TENANT_SCHEMA:-dev} &&
       DJANGO_SUPERUSER_PASSWORD=${DEV_SUPERUSER_PASSWORD:-admin123} opentelemetry-instrument /usr/local/bin/python manage.py create_tenant_superuser --schema=${DEV_TENANT_SCHEMA:-dev} --username=${DEV_SUPERUSER_USERNAME:-admin} --email=${DEV_DEV_SUPERUSER_EMAIL:-admin@example.com} --noinput"
     volumes:
       - .:/app

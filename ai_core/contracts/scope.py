@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -34,7 +33,7 @@ WorkflowId = str
 RunId = str
 IngestionRunId = str
 IdempotencyKey = str
-CollectionId = UUID | None
+CollectionId = str | None
 Timestamp = datetime
 
 
@@ -43,20 +42,23 @@ class ScopeContext(BaseModel):
 
     The collection_id field represents the "Aktenschrank" (file cabinet) context,
     enabling multi-collection search and scoped operations.
+
+    BREAKING CHANGE: case_id is now mandatory (previously optional).
+    BREAKING CHANGE: collection_id is now str (UUID-string, previously UUID).
     """
 
     tenant_id: TenantId
     trace_id: TraceId
     invocation_id: InvocationId
+    case_id: CaseId
     run_id: RunId | None = None
     ingestion_run_id: IngestionRunId | None = None
-    case_id: CaseId | None = None
     tenant_schema: TenantSchema | None = None
     workflow_id: WorkflowId | None = None
     idempotency_key: IdempotencyKey | None = None
     collection_id: CollectionId = Field(
         default=None,
-        description="Collection UUID for scoped operations ('Aktenschrank')",
+        description="Collection ID (UUID-string) for scoped operations ('Aktenschrank')",
     )
     timestamp: Timestamp = Field(default_factory=lambda: datetime.now(timezone.utc))
 

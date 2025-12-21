@@ -199,9 +199,9 @@ Abbruchkriterium:
 
 Maßnahmen:
 
-* Quick Search als source=search
-* mode=acquire_only oder acquire_and_ingest
-* Persistenz als staged
+* [x] Quick Search als source=search
+* [x] mode=acquire_only oder acquire_and_ingest
+* [x] Persistenz als staged
 
 Ergebnis:
 
@@ -220,9 +220,9 @@ Abbruchkriterium:
 
 Maßnahmen:
 
-* Collection Search ruft Universalgraph explizit auf
-* Keine direkte Ingestion mehr
-* Klare Trennung Planung vs Ausführung
+* [x] Collection Search ruft Universalgraph explizit auf
+* [x] Keine direkte Ingestion mehr
+* [x] Klare Trennung Planung vs Ausführung
 
 Ergebnis:
 
@@ -616,12 +616,12 @@ External Knowledge wird als eigener Graph entfernt. Der Universal Technical Grap
 
 ### In Scope
 
-1. Erweiterung des Universalgraph Inputs um source=search
-2. Implementierung der Pfade acquire_only und acquire_and_ingest
-3. Persistenz von Search Session und Kandidaten als staged Artefakte
-4. Generierung einer vollständigen review_payload für HITL
-5. Entfernung oder Migration des bisherigen external_knowledge_graph
-6. Anpassung der UI Endpoints für web_search und ingest_selected
+1. [x] Erweiterung des Universalgraph Inputs um source=search
+2. [x] Implementierung der Pfade acquire_only und acquire_and_ingest
+3. [x] Persistenz von Search Session (als staged Artifact in UniversalState)
+4. [x] Generierung einer vollständigen review_payload für HITL
+5. [x] Entfernung oder Migration des bisherigen external_knowledge_graph
+6. [x] Anpassung der UI Endpoints für web_search und ingest_selected
 
 ### Out of Scope
 

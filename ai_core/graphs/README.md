@@ -300,16 +300,18 @@ Einheitlicher technischer Zugangspunkt für die Dokumentenverarbeitung unabhäng
 
 **Input**: `UniversalIngestionInput` (TypedDict)
 
-* `source`: `upload` | `crawler`
-* `mode`: `ingest_only`
+* `source`: `upload` | `crawler` | `search`
+* `mode`: `ingest_only` | `acquire_only` | `acquire_and_ingest`
 * `collection_id`: UUID (Pflicht)
 * `upload_blob`: Dictionary (für Source `upload`, enthält URI, Mimetype, Checksum)
 * `normalized_document`: Dictionary (für Source `crawler`, pre-normalized)
+* `search_query`: String (für Source `search`)
+* `search_config`: Dict (für Source `search`, z.B. `top_n`, `min_snippet_length`)
 * `metadata_obj`: Optionales Metadaten-Dict
 
 **Output**: `UniversalIngestionOutput` (TypedDict)
 
-* `decision`: `ingested` | `skipped` | `error`
+* `decision`: `ingested` | `skipped` | `error` | `acquired`
 * `reason`: Mensch-lesbarer Grund
 * `document_id`: UUID des persistierten Dokuments
 * `ingestion_run_id`: Verknüpfung zum Run

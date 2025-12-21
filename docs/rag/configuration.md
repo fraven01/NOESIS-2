@@ -25,6 +25,7 @@ Das für die Erstellung von Vektor-Embeddings verwendete Modell sowie dessen Dim
 
 **Beispiel:**
 Um ein anderes Modell zu verwenden, kann die folgende Zeile in die `.env`-Datei eingetragen werden:
+
 ```
 EMBEDDINGS_MODEL_PRIMARY=another-model-name
 EMBEDDINGS_DIM=1024
@@ -54,7 +55,7 @@ RAG_VECTOR_STORES = {
     },
     "demo": {
         "backend": "pgvector",  # <-- Statisch konfiguriert
-        "schema": "rag_demo",
+        "schema": "rag_demo",   # Legacy / Demo
         "dimension": DEMO_EMBEDDING_DIMENSION,
     },
 }

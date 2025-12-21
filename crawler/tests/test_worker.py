@@ -6,7 +6,7 @@ from typing import Mapping
 import pytest
 
 
-from ai_core.graphs.technical.transition_contracts import StandardTransitionResult
+from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
 from common.assets import perceptual_hash, sha256_bytes
 from crawler.errors import CrawlerError, ErrorClass

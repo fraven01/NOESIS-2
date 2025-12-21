@@ -30,76 +30,42 @@ graph LR
     ComposeNode --> Output
 ```
 
-### 2. External Knowledge Graph
+### 2. Universal Ingestion Graph (Unified Technical Graph)
 
-**Location**: [`ai_core/graphs/external_knowledge_graph.py`](../../ai_core/graphs/external_knowledge_graph.py)
+**Location**: [`ai_core/graphs/technical/universal_ingestion_graph.py`](../../ai_core/graphs/technical/universal_ingestion_graph.py)
 
-This graph handles web search, result filtering, selection, and optional automated ingestion of external knowledge sources.
+This graph consolidates technical ingestion for **Upload**, **Crawler**, and **Web Search**. It is the single entry point for acquiring and processing documents.
 
 **Flow**:
 
 ```mermaid
 flowchart LR
-    START --> search
+    START --> validate_input
+    validate_input --> search
     search --> select
-    select --> |auto_ingest=true| ingest
-    select --> |auto_ingest=false| END
-    ingest --> END
+    validate_input --> normalize
+    select --> |acquire_only| finalize
+    select --> |acquire_and_ingest| normalize
+    normalize --> persist
+    persist --> process
+    process --> finalize
+    finalize --> END
 ```
 
-**Nodes**:
+**Capabilities**:
 
-1. **search** (`search_node`): Executes web search using injected `WebSearchWorker`, filters context to allowed telemetry fields (`tenant_id`, `trace_id`, `workflow_id`, `case_id`, `run_id`, `worker_call_id`). Returns `search_results` or `error`.
+* **Source**: `upload`, `crawler`, `search`
+* **Modes**: `ingest_only`, `acquire_only`, `acquire_and_ingest`
+* **Search Integration**: Replaces the legacy `ExternalKnowledgeGraph`. Supports quick search (`acquire_only`) and staged ingestion.
 
-2. **select** (`selection_node`): Filters and ranks search results:
-   - Removes snippets below `min_snippet_length` (default: 40 chars)
-   - Blocks domains from `blocked_domains` list
-   - Excludes results with `noindex` + `robot` hints
-   - Limits to `top_n` candidates (default: 5)
-   - Prefers PDF results if `prefer_pdf=true`
-   - Selects highest-ranked candidate as `selected_result`
+**Output Contract**:
 
-3. **ingest** (`ingestion_node`): Triggers document ingestion for selected URL via injected `IngestionTrigger` protocol. Only invoked if `auto_ingest=true`.
+The graph returns a `UniversalIngestionOutput` containing:
 
-**State Contract (ExternalKnowledgeState)**:
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `query` | `str` | Yes | Search query |
-| `collection_id` | `str` | Yes | Target collection for ingestion |
-| `enable_hitl` | `bool` | Yes | HITL flag (reserved for future use) |
-| `context` | `dict[str, Any]` | Yes | Tenant ID, Trace ID, runtime dependencies |
-| `search_results` | `list[dict[str, Any]]` | Output | Raw search results from worker |
-| `selected_result` | `dict[str, Any] \| None` | Output | Best candidate selected |
-| `ingestion_result` | `dict[str, Any] \| None` | Output | Ingestion status |
-| `error` | `str \| None` | Output | Error message |
-| `auto_ingest` | `bool` | Input | Whether to auto-trigger ingestion |
-
-**Runtime Dependencies (Injected via Context)**:
-
-| Dependency | Protocol | Required | Description |
-|------------|----------|----------|-------------|
-| `runtime_worker` | `WebSearchWorker` | Yes | Web search provider (e.g., Tavily, SerpAPI) |
-| `runtime_trigger` | `IngestionTrigger` | No | Ingestion trigger (required if `auto_ingest=true`) |
-| `min_snippet_length` | `int` | No | Minimum snippet length (default: 40) |
-| `blocked_domains` | `list[str]` | No | Blocked domain list (default: []) |
-| `top_n` | `int` | No | Max candidates to shortlist (default: 5) |
-| `prefer_pdf` | `bool` | No | Prefer PDF results (default: true) |
-
-**Error Handling**:
-
-- Search failure: `error` set with provider error message, `search_results` empty
-- No search worker: `error="No search worker configured in context"`
-- No ingestion trigger (when auto_ingest=true): `ingestion_result={"status": "error", "reason": "no_trigger_configured"}`
-- Ingestion exception: `ingestion_result={"status": "error", "reason": "<exception>"}`
-
-**HITL Flow (Future)**:
-
-Currently, the graph supports basic HITL signaling via `enable_hitl` flag, but does not pause for human approval. The `_check_hitl` conditional edge determines whether to:
-- **auto_ingest=true**: Proceed to ingestion node
-- **auto_ingest=false**: Skip ingestion, end with selection only
-
-Future HITL implementation will use LangGraph interrupts to pause execution and await human approval before ingestion.
+* `decision`: `ingested`, `acquired`, `skipped`, or `error`
+* `document_id`: UUID (if persisted)
+* `transitions`: List of executed nodes (dynamic based on path)
+* `telemetry`: Standardized context
 
 ### 3. Hybrid Search & Score
 
@@ -117,10 +83,10 @@ This graph (running in `llm_worker`) performs advanced reranking of search resul
 
 Agents and tools run inside a strict context contract defined by `ScopeContext`/`ToolContext` and shared across APIs, graphs and services:
 
-- **tenant_id**: Mandatory in every request; selects schema, permissions and data room for the organizational tenant.
-- **case_id**: Stable identifier for a business case within a tenant; bundles workflows, documents, context and decisions for the entire lifetime and must be present on every case-related graph execution.
-- **workflow_id**: Labels the logical workflow inside a case (e.g., intake, assessment, document generation); remains constant across multiple executions and should be provided by the caller or dispatcher, not by the graph itself.
-- **run_id**: Technical runtime identifier for a single LangGraph execution; each run creates a new, non-semantic ID that belongs to exactly one `workflow_id` and `case_id` and is regenerated per execution.
+* **tenant_id**: Mandatory in every request; selects schema, permissions and data room for the organizational tenant.
+* **case_id**: Stable identifier for a business case within a tenant; bundles workflows, documents, context and decisions for the entire lifetime and must be present on every case-related graph execution.
+* **workflow_id**: Labels the logical workflow inside a case (e.g., intake, assessment, document generation); remains constant across multiple executions and should be provided by the caller or dispatcher, not by the graph itself.
+* **run_id**: Technical runtime identifier for a single LangGraph execution; each run creates a new, non-semantic ID that belongs to exactly one `workflow_id` and `case_id` and is regenerated per execution.
 
 Relationship: Tenant → many Cases → many Workflows → many Runs. Tool calls always include `tenant_id`, `trace_id`, `invocation_id` plus exactly one runtime ID (`run_id` or `ingestion_run_id`). Graphs set `case_id` and `workflow_id` as soon as the business context is known, while `run_id` stays purely technical and is issued per execution.
 

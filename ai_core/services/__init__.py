@@ -65,7 +65,7 @@ from ai_core.tool_contracts import UpstreamServiceError as ToolUpstreamServiceEr
 from ai_core.tool_contracts import ContextError as ToolContextError
 from ai_core.tools import InputError
 
-from ai_core.graphs.technical.transition_contracts import (
+from ai_core.graphs.transition_contracts import (
     GraphTransition,
     StandardTransitionResult,
 )
@@ -1748,6 +1748,7 @@ def handle_document_upload(
                 "tenant_id": meta["tenant_id"],
                 "trace_id": meta["trace_id"],
                 "case_id": meta["case_id"],
+                "ingestion_run_id": ingestion_run_id,
                 # Runtime dependencies passed in context for now (Phase 2/3 style)
                 "runtime_repository": repository,  # Though persist_node currently instantiates its own service, we should align this later context usage
             },

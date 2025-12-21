@@ -84,7 +84,7 @@ def test_rag_tools_rejects_spoofed_headers():
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_external_knowledge_graph")
+@patch("theme.views.build_universal_ingestion_graph")
 def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     """Test that web_search view uses ExternalKnowledgeGraph orchestration.
 
@@ -134,13 +134,14 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     mock_graph.invoke.assert_called_once()
     call_args = mock_graph.invoke.call_args
     state = call_args[0][0]
-    assert state["query"] == "test query"
-    assert state["collection_id"] == "test-collection"
-    assert state["auto_ingest"] is False
+    # Universal Ingestion Graph Input Structure
+    assert state["input"]["search_query"] == "test query"
+    assert state["input"]["collection_id"] == "test-collection"
+    assert state["input"]["mode"] == "acquire_only"
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_external_knowledge_graph")
+@patch("theme.views.build_universal_ingestion_graph")
 def test_web_search_htmx_returns_partial(mock_build_graph):
     """Test that web_search returns HTML partial for HTMX requests."""
     tenant_schema = "test"
@@ -184,7 +185,7 @@ def test_web_search_htmx_returns_partial(mock_build_graph):
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_external_knowledge_graph")
+@patch("theme.views.build_universal_ingestion_graph")
 def test_web_search_defaults_to_manual_collection(mock_build_graph):
     tenant_schema = "fallback"
     tenant = TenantFactory(schema_name=tenant_schema)
@@ -225,7 +226,8 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
     # collection_id = resolved_collection_id or manual_collection_id or "default"
     # If data.get("collection_id") is None, resolved is None. manual_collection_id should be returned by _resolve_manual_collection if tenant exists.
     # So expectation should be manual_id.
-    assert state["collection_id"] == manual_id
+    # So expectation should be manual_id.
+    assert state["input"]["collection_id"] == manual_id
 
 
 @pytest.mark.django_db
@@ -264,7 +266,7 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
 @pytest.mark.django_db
 @patch("theme.views.llm_routing.resolve")
 @patch("theme.views.submit_worker_task")
-@patch("theme.views.build_external_knowledge_graph")
+@patch("theme.views.build_universal_ingestion_graph")
 def test_web_search_rerank_applies_scores(
     mock_build_graph, mock_submit_task, mock_resolve, settings
 ):
@@ -345,7 +347,7 @@ def test_web_search_rerank_applies_scores(
 
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
-@patch("theme.views.build_external_knowledge_graph")
+@patch("theme.views.build_universal_ingestion_graph")
 def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
     cache.clear()
     tenant_schema = "queued"

@@ -31,7 +31,7 @@ from ai_core.contracts.payloads import (
     GuardrailPayload as GuardrailStatePayload,
     GuardrailSignalsData,
 )
-from ai_core.graphs.technical.transition_contracts import (
+from ai_core.graphs.transition_contracts import (
     DeltaSection,
     EmbeddingSection,
     GraphTransition,

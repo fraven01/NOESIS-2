@@ -34,7 +34,7 @@ except Exception:  # pragma: no cover - optional dependency
 
 from celery import shared_task
 
-from ai_core.graphs.technical.transition_contracts import (
+from ai_core.graphs.transition_contracts import (
     GraphTransition,
     StandardTransitionResult,
 )

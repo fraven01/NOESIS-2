@@ -28,7 +28,8 @@
       "Bash(npm run lint:*)",
       "Bash(dir \"f:\\NOESIS-2\\NOESIS-2\\users\"\")",
       "Bash(dos2unix:*)",
-      "Bash(chmod:*)"
+      "Bash(chmod:*)",
+      "Bash(npm run win:test:py:single:*)"
     ],
     "deny": [],
     "ask": []

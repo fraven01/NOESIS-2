@@ -20,6 +20,10 @@ from documents.pipeline import DocumentProcessingContext, DocumentPipelineConfig
 from documents.processing_graph import build_document_processing_graph
 from ai_core.services import _get_documents_repository
 from ai_core.contracts.scope import ScopeContext
+from ai_core.tools.web_search import (
+    SearchProviderError,
+    WebSearchResponse,
+)
 
 
 class UniversalIngestionError(Exception):
@@ -35,8 +39,8 @@ logger = logging.getLogger(__name__)
 class UniversalIngestionInput(TypedDict):
     """Input payload for the universal ingestion graph."""
 
-    source: Literal["upload", "crawler"]
-    mode: Literal["ingest_only"]
+    source: Literal["upload", "crawler", "search"]
+    mode: Literal["ingest_only", "acquire_only", "acquire_and_ingest"]
     collection_id: str
 
     # Payload for 'upload' source
@@ -49,11 +53,17 @@ class UniversalIngestionInput(TypedDict):
     # if the caller has already normalized (e.g. crawler builder)
     normalized_document: dict[str, Any] | None
 
+    # Payload for 'search' source
+    search_query: str | None
+    search_config: dict[str, Any] | None
+    # Phase 5: Support direct ingestion of specific search results (bypass search worker)
+    preselected_results: list[dict[str, Any]] | None
+
 
 class UniversalIngestionOutput(TypedDict):
     """Output contract for the universal ingestion graph."""
 
-    decision: Literal["ingested", "skipped", "error"]
+    decision: Literal["ingested", "skipped", "error", "acquired"]
     reason: str | None
     telemetry: dict[str, Any]
     ingestion_run_id: str | None
@@ -76,6 +86,10 @@ class UniversalIngestionState(TypedDict):
 
     # Pipeline Artifacts
     normalized_document: NormalizedDocument | None
+
+    # Search Artifacts
+    search_results: list[dict[str, Any]] | None
+    selected_result: dict[str, Any] | None
 
     # Outcomes
     processing_result: dict[str, Any] | None
@@ -180,17 +194,20 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     context = state.get("context", {})
 
     # 1. Validate Context IDs (Strict per existing contracts)
-    required_ids = ["tenant_id", "trace_id", "case_id"]
+    # Phase 5 Fix: case_id is optional for manual search
+    required_ids = ["tenant_id", "trace_id"]
     for rid in required_ids:
         if not context.get(rid):
-            error_msg = f"Missing required context context: {rid}"
+            error_msg = f"Missing required context: {rid}"
             logger.error(error_msg)
             return {"error": error_msg}
 
     # 2. Validate Mode
     mode = inp.get("mode")
-    if mode != "ingest_only":
-        error_msg = f"Unsupported mode for Phase 2: {mode}"
+    # Phase 4 Update: mode can be acquire_only or acquire_and_ingest for search
+    allowed_modi = ("ingest_only", "acquire_only", "acquire_and_ingest")
+    if mode not in allowed_modi:
+        error_msg = f"Unsupported mode: {mode}"
         logger.error(error_msg)
         return {"error": error_msg}
 
@@ -208,8 +225,127 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     elif source == "crawler":
         if not inp.get("normalized_document"):
             return {"error": "Missing normalized_document for source=crawler"}
+
+    elif source == "search":
+        # Phase 5: Allowed if query OR preselected results provided
+        if not inp.get("search_query") and not inp.get("preselected_results"):
+            return {
+                "error": "Missing search_query or preselected_results for source=search"
+            }
+
     else:
         return {"error": f"Unsupported source: {source}"}
+
+    return {"error": None}
+
+
+@observe_span(name="node.search")
+def search_node(state: UniversalIngestionState) -> dict[str, Any]:
+    """Execute web search using the configured worker."""
+    inp = state.get("input", {})
+    query = inp.get("search_query")
+    preselected = inp.get("preselected_results")
+
+    # Phase 5: Optimization - if results passed in, use them directly
+    if preselected:
+        return {"search_results": preselected}
+
+    context = state.get("context", {})
+
+    # In Phase 4, worker is expected in context or config
+    worker = context.get("runtime_worker")
+    if not worker:
+        # Fallback to simple error if no worker injected
+        return {"error": "No search worker configured in context"}
+
+    # Filter context to strictly allowed fields
+    from ai_core.infra.telemetry import filter_telemetry_context
+
+    telemetry_ctx = filter_telemetry_context(context)
+
+    try:
+        response: WebSearchResponse = worker.run(query=query, context=telemetry_ctx)
+    except SearchProviderError as exc:
+        logger.warning(f"Search failed: {exc}")
+        return {"error": str(exc), "search_results": []}
+
+    if response.outcome.decision == "error":
+        error_msg = (
+            response.outcome.meta.get("error", {}).get("message")
+            or response.outcome.rationale
+        )
+        return {"error": error_msg, "search_results": []}
+
+    results = [r.model_dump(mode="json") for r in response.results]
+    return {"search_results": results}
+
+
+def _blocked_domain(url: str, blocked_domains: list[str]) -> bool:
+    from urllib.parse import urlsplit
+
+    parsed = urlsplit(url)
+    hostname = (parsed.hostname or "").lower()
+    if not hostname or not blocked_domains:
+        return False
+    for domain in blocked_domains:
+        blocked = domain.lower()
+        if hostname == blocked or hostname.endswith(f".{blocked}"):
+            return True
+    return False
+
+
+@observe_span(name="node.select")
+def selection_node(state: UniversalIngestionState) -> dict[str, Any]:
+    """Filter and select the best candidate from search results."""
+    results = state.get("search_results", [])
+    inp = state.get("input", {})
+    config = inp.get("search_config") or {}
+
+    min_len = config.get("min_snippet_length", 40)
+    blocked = config.get("blocked_domains", [])
+    top_n = config.get("top_n", 5)
+    prefer_pdf = config.get("prefer_pdf", True)
+
+    # Phase 5 Fix: Allow preselected results (bare URLs) to bypass snippet check
+    preselected_urls = {
+        item["url"] for item in inp.get("preselected_results", []) if item.get("url")
+    }
+
+    validated = []
+    for raw in results:
+        url = raw.get("url")
+        snippet = raw.get("snippet", "")
+
+        # Bypass length check if preselected
+        if not url:
+            continue
+
+        if url not in preselected_urls and len(snippet) < min_len:
+            continue
+
+        if _blocked_domain(url, blocked):
+            continue
+
+        lowered = snippet.lower()
+        if "noindex" in lowered and "robot" in lowered:
+            continue
+
+        validated.append(raw)
+
+    shortlisted = validated[:top_n]
+    selected = None
+
+    if shortlisted:
+        if prefer_pdf:
+            for cand in shortlisted:
+                if cand.get("is_pdf"):
+                    selected = cand
+                    break
+
+        if not selected:
+            selected = shortlisted[0]
+
+    return {"selected_result": selected, "search_results": shortlisted}
 
     return {"error": None}
 
@@ -234,6 +370,62 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
         # Fallback to upload_blob for uploads if no normalized doc provided
         if not norm_doc and source == "upload":
             norm_doc = _build_normalized_document(inp, context)
+
+        # Build normalized doc from selected search result
+        if not norm_doc and source == "search":
+            selected = state.get("selected_result")
+            if selected:
+                collection_id = inp.get("collection_id")
+                if not collection_id:
+                    raise ValueError("Missing collection_id for search ingestion")
+
+                tenant_id = context.get("tenant_id")
+                workflow_id = (
+                    context.get("workflow_id")
+                    or context.get("case_id")
+                    or "universal_ingestion"
+                )
+
+                if not tenant_id:
+                    raise ValueError("tenant_id_missing_in_context")
+
+                # Generate ID
+                document_id = uuid4()
+
+                ref = DocumentRef(
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    document_id=document_id,
+                    collection_id=collection_id,
+                )
+
+                # Use provided snippet as title/desc if title missing, or use result title
+                meta = DocumentMeta(
+                    tenant_id=tenant_id,
+                    workflow_id=workflow_id,
+                    title=selected.get("title") or "Search Result",
+                    origin_uri=selected.get("url"),
+                    external_ref={
+                        "provider": "web_search",
+                        "external_id": selected.get("url", "")[:128],
+                    },
+                )
+
+                # Use ExternalBlob for the URL
+                blob = {
+                    "type": "external",
+                    "kind": "https",
+                    "uri": selected.get("url"),
+                }
+
+                norm_doc = NormalizedDocument(
+                    ref=ref,
+                    meta=meta,
+                    blob=blob,
+                    checksum="0" * 64,
+                    source="other",
+                    created_at=datetime.now(timezone.utc),
+                )
 
         if not norm_doc:
             return {"error": "Could not verify normalized document"}
@@ -381,15 +573,44 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
     doc_id = str(norm_doc.ref.document_id) if norm_doc else None
 
     # Construct transitions (simplified for Phase 2)
-    # Ideally we'd extract this from processing_result history if available
-    transitions = ["validate_input", "normalize", "persist", "process", "finalize"]
+    # Construct transitions dynamically based on execution path
+    inp_source = state.get("input", {}).get("source")
+
+    if inp_source == "search":
+        if doc_id:
+            # acquire_and_ingest
+            transitions = [
+                "validate_input",
+                "search",
+                "select",
+                "normalize",
+                "persist",
+                "process",
+                "finalize",
+            ]
+        else:
+            # acquire_only
+            transitions = ["validate_input", "search", "select", "finalize"]
+    else:
+        # standard ingestion (upload/crawler)
+        transitions = ["validate_input", "normalize", "persist", "process", "finalize"]
 
     # Construct review_payload for HITL signaling
     review_payload = norm_doc.model_dump() if norm_doc else None
 
+    # Determine decision with strict invariants
+    if doc_id:
+        decision = "ingested"
+    elif state.get("selected_result"):
+        # If we didn't persist but had a selection (and no error), it's an acquisition
+        decision = "acquired"
+    else:
+        # Fallback if neither persisted nor acquired (e.g. skipped or empty)
+        decision = "skipped"
+
     return {
         "output": {
-            "decision": "ingested",
+            "decision": decision,
             "reason": "Success",
             "telemetry": telemetry,
             "ingestion_run_id": context.get("ingestion_run_id"),
@@ -465,6 +686,8 @@ def build_universal_ingestion_graph() -> Any:
     workflow = StateGraph(UniversalIngestionState)
 
     workflow.add_node("validate_input", validate_input_node)
+    workflow.add_node("search", search_node)
+    workflow.add_node("select", selection_node)
     workflow.add_node("normalize", normalize_document_node)
     workflow.add_node("persist", persist_node)
 
@@ -478,12 +701,38 @@ def build_universal_ingestion_graph() -> Any:
 
     def check_validation(
         state: UniversalIngestionState,
-    ) -> Literal["normalize", "finalize"]:
+    ) -> Literal["search", "normalize", "finalize"]:
         if state.get("error"):
             return "finalize"
+
+        inp = state.get("input", {})
+        if inp.get("source") == "search":
+            return "search"
+
         return "normalize"
 
     workflow.add_conditional_edges("validate_input", check_validation)
+
+    # Search flow
+    workflow.add_edge("search", "select")
+
+    def check_selection(
+        state: UniversalIngestionState,
+    ) -> Literal["normalize", "finalize"]:
+        if state.get("error"):
+            return "finalize"
+
+        inp = state.get("input", {})
+        mode = inp.get("mode")
+
+        # If acquire_only, we stop after selection (staged results returned)
+        if mode == "acquire_only":
+            return "finalize"
+
+        # For acquire_and_ingest, we proceed to normalize
+        return "normalize"
+
+    workflow.add_conditional_edges("select", check_selection)
 
     def check_normalization(
         state: UniversalIngestionState,

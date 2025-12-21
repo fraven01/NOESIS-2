@@ -13,9 +13,10 @@ from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
-from ai_core.graphs.technical.external_knowledge_graph import (
-    build_external_knowledge_graph,
-    ExternalKnowledgeState,
+from ai_core.services.crawler_runner import run_crawler_runner
+from ai_core.graphs.technical.universal_ingestion_graph import (
+    build_universal_ingestion_graph,
+    UniversalIngestionState,
 )
 from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
@@ -47,12 +48,15 @@ from ai_core.graphs.business.framework_analysis_graph import (
     build_graph as build_framework_graph,
 )
 from ai_core.tools.framework_contracts import FrameworkAnalysisInput
+from cases.services import ensure_case
+from pydantic import ValidationError
 
 
 logger = get_logger(__name__)
 DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
 # build_graph aliasing removed as build_external_knowledge_graph is gone
 crawl_selected = _core_crawl_selected  # Re-export for tests
+DEV_DEFAULT_CASE_ID = "dev-case-local"
 
 
 def home(request):
@@ -397,9 +401,7 @@ def _run_rerank_workflow(
 
 
 class _ViewCrawlerIngestionAdapter:
-    """Adapter that triggers crawler ingestion by calling crawler_runner view directly.
-    Implementation of IngestionTrigger protocol.
-    """
+    """Adapter that triggers crawler ingestion by calling run_crawler_runner."""
 
     def trigger(
         self,
@@ -409,11 +411,6 @@ class _ViewCrawlerIngestionAdapter:
         context: Mapping[str, str],
     ) -> Mapping[str, Any]:
         """Trigger ingestion for the given URL."""
-        from ai_core.views import crawler_runner
-        from django.http import HttpRequest
-
-        from customers.tenant_context import TenantContext
-
         tenant_id = context.get("tenant_id", "dev")
         trace_id = context.get("trace_id", "")
         case_id = context.get("case_id")
@@ -426,41 +423,32 @@ class _ViewCrawlerIngestionAdapter:
             "origins": [{"url": url}],
             "collection_id": collection_id,
         }
-        body = json.dumps(payload).encode("utf-8")
-
         try:
-            # Create a mock Django request
-            django_request = HttpRequest()
-            django_request.method = "POST"
-            django_request.META = {
-                "CONTENT_TYPE": "application/json",
-                "HTTP_CONTENT_TYPE": "application/json",
-                "CONTENT_LENGTH": str(len(body)),
-                "HTTP_X_TENANT_ID": str(tenant_id),
-                "HTTP_X_TENANT_SCHEMA": str(tenant_schema),
-                "HTTP_X_CASE_ID": str(case_id) if case_id else None,
-                "HTTP_X_TRACE_ID": str(trace_id),
+            request_model = CrawlerRunRequest.model_validate(payload)
+            meta = {
+                "tenant_id": str(tenant_id),
+                "tenant_schema": str(tenant_schema),
+                "case_id": str(case_id) if case_id else None,
+                "trace_id": str(trace_id),
             }
-            django_request._body = body
+            result = run_crawler_runner(
+                meta=meta,
+                request_model=request_model,
+                lifecycle_store=_resolve_lifecycle_store(),
+                graph_factory=None,
+            )
+            response_data = result.payload
 
-            # Attach tenant if available
-            tenant = TenantContext.resolve_identifier(tenant_id)
-            if tenant:
-                django_request.tenant = tenant
-            else:
-                logger.warning("crawler.adapter.tenant_not_found", tenant_id=tenant_id)
-
-            # Call crawler_runner directly with the constructed HttpRequest
-            response = crawler_runner(django_request)
-            response_data = response.data if hasattr(response, "data") else {}
-
-            if response.status_code == 200:
+            if result.status_code in (200, 202):
                 return {
                     "decision": "ingested",
                     "crawler_decision": response_data.get("decision", "unknown"),
                     "document_id": response_data.get("document_id"),
                 }
-            return {"decision": "ingestion_error", "crawler_decision": "http_error"}
+            return {
+                "decision": "ingestion_error",
+                "crawler_decision": response_data.get("code", "http_error"),
+            }
         except Exception:
             logger.exception("crawler.trigger.failed")
             return {
@@ -513,13 +501,25 @@ def rag_tools(request):
     manual_collection_id, _ = _resolve_manual_collection(tenant_id, None)
 
     # Manage Dev Session Case ID
-    case_id = request.session.get("dev_case_id")
-    if not case_id:
-        import time
-        from uuid import uuid4
-
-        case_id = f"dev-case-{int(time.time())}-{uuid4().hex[:6]}"
+    case_id = DEV_DEFAULT_CASE_ID
+    try:
         request.session["dev_case_id"] = case_id
+    except Exception:
+        pass
+    try:
+        tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+        if tenant_obj is not None:
+            ensure_case(
+                tenant_obj,
+                case_id,
+                title="Dev Local",
+                reopen_closed=True,
+            )
+    except Exception:
+        logger.exception(
+            "rag_tools.default_case_bootstrap_failed",
+            extra={"tenant_id": tenant_id, "case_id": case_id},
+        )
 
     return render(
         request,
@@ -709,6 +709,15 @@ def document_explorer(request):
         )
 
 
+def _resolve_lifecycle_store() -> object | None:
+    """Return the document lifecycle store used for crawler baseline lookups."""
+    try:
+        from documents import api as documents_api  # local import to avoid cycles
+    except Exception:  # pragma: no cover - defensive import guard
+        return None
+    return getattr(documents_api, "DEFAULT_LIFECYCLE_STORE", None)
+
+
 @require_POST
 def web_search(request):
     """Execute the external knowledge graph for manual RAG searches."""
@@ -877,33 +886,51 @@ def web_search(request):
             "prefer_pdf": True,
         }
 
-        input_state: ExternalKnowledgeState = {
-            "query": query,
+        # Prepare Search Config
+        search_config = {
+            "top_n": top_n,
+            "min_snippet_length": min_snippet_length,
+            "prefer_pdf": True,
+        }
+
+        input_payload = {
+            "source": "search",
+            "mode": "acquire_only",  # Manual search implies viewing results first
             "collection_id": collection_id,
-            "enable_hitl": False,
-            "auto_ingest": False,  # Manual search should not auto-ingest
+            "search_query": query,
+            "search_config": search_config,
+            # Required fields for TypedDict but None for search
+            "upload_blob": None,
+            "metadata_obj": None,
+            "normalized_document": None,
+        }
+
+        # Universal Ingestion State
+        input_state: UniversalIngestionState = {
+            "input": input_payload,
             "context": context_payload,
+            "normalized_document": None,
             "search_results": [],
-            "filtered_results": [],
             "selected_result": None,
+            "processing_result": None,
             "ingestion_result": None,
+            "output": None,
             "error": None,
         }
 
         try:
 
-            # Invoke external knowledge graph (Factory pattern - Finding #3 fix)
-            external_knowledge_graph_workflow = build_external_knowledge_graph()
-            final_state = external_knowledge_graph_workflow.invoke(input_state)
+            # Phase 4 Migration: Use Universal Ingestion Graph
+            universal_graph = build_universal_ingestion_graph()
+            final_state = universal_graph.invoke(input_state)
         except Exception:
             logger.exception("web_search.failed")
             return JsonResponse({"error": "Graph execution failed."}, status=500)
 
         # Use filtered_results (after top_n and min_snippet_length filtering)
         # Fallback to search_results if filtering hasn't run
-        results = final_state.get("filtered_results") or final_state.get(
-            "search_results", []
-        )
+        # Use search_results from Universal Graph
+        results = final_state.get("search_results", [])
         # Construct response similar to old format for UI compatibility
         response_data = {
             "outcome": "completed",  # Simple outcome
@@ -964,11 +991,7 @@ def web_search(request):
 @require_POST
 @csrf_exempt
 def web_search_ingest_selected(request):
-    """Ingest user-selected URLs from web search results via crawler_runner.
-
-    Calls crawler_runner view directly to avoid HTTP overhead and tenant routing issues.
-    Returns a summary of started ingestion tasks.
-    """
+    """Ingest user-selected URLs from web search results via crawler service."""
     try:
         if request.headers.get("HX-Request"):
             if request.content_type == "application/json":
@@ -1300,41 +1323,39 @@ def crawler_submit(request):
 
                 payload["origins"] = unique_origins
 
-        # Call crawler_runner
-        from ai_core.views import crawler_runner
-        from django.test import RequestFactory
-
-        body = json.dumps(payload).encode("utf-8")
-
-        # Create a mock Django request using RequestFactory
-        factory = RequestFactory()
-        django_request = factory.post(
-            "/ai/ingest/crawler/run/", data=body, content_type="application/json"
-        )
-
-        # Ensure tenant headers
         tenant_id, tenant_schema = _tenant_context_from_request(request)
-        django_request.META["HTTP_X_TENANT_ID"] = tenant_id
-        django_request.META["HTTP_X_TENANT_SCHEMA"] = tenant_schema
+        case_id = str(data.get("case_id") or "").strip() or None
+        trace_id = str(uuid4())
+        meta = {
+            "tenant_id": tenant_id,
+            "tenant_schema": tenant_schema,
+            "case_id": case_id,
+            "trace_id": trace_id,
+            "ingestion_run_id": payload.get("ingestion_run_id"),
+        }
 
-        # Propagate case_id if present
-        case_id = data.get("case_id")
-        if case_id:
-            django_request.META["HTTP_X_CASE_ID"] = str(case_id).strip()
+        try:
+            request_model = CrawlerRunRequest.model_validate(payload)
+        except ValidationError as exc:
+            response_data = {"detail": str(exc), "code": "invalid_request"}
+            return render(
+                request,
+                "theme/partials/_crawler_status.html",
+                {"result": response_data, "error": response_data["detail"]},
+            )
 
-        # Copy tenant context
-        if hasattr(request, "tenant"):
-            django_request.tenant = request.tenant
-
-        response = crawler_runner(django_request)
-
-        if hasattr(response, "data"):
-            response_data = response.data
-        else:
-            try:
-                response_data = json.loads(response.content.decode())
-            except (json.JSONDecodeError, AttributeError):
-                response_data = {}
+        try:
+            result = run_crawler_runner(
+                meta=meta,
+                request_model=request_model,
+                lifecycle_store=_resolve_lifecycle_store(),
+                graph_factory=None,
+            )
+            response_data = result.payload
+            status_code = result.status_code
+        except Exception as exc:
+            response_data = {"detail": str(exc), "code": "crawler_error"}
+            status_code = 500
 
         return render(
             request,
@@ -1342,9 +1363,7 @@ def crawler_submit(request):
             {
                 "result": response_data,
                 "task_ids": response_data.get("task_ids"),
-                "error": (
-                    response_data.get("detail") if response.status_code >= 400 else None
-                ),
+                "error": (response_data.get("detail") if status_code >= 400 else None),
             },
         )
 

@@ -58,7 +58,6 @@ Singleton example (candidate to migrate):
 - `crawler_ingestion_graph.py`
 - `upload_ingestion_graph.py`
 - `info_intake.py`
-- `rag_demo.py` (deprecated/demo)
 
 ### Document orchestration boundary
 

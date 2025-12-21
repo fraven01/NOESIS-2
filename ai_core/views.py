@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import json
 import re
 import uuid
@@ -103,7 +104,7 @@ from .rag.ingestion_contracts import (
 from .views_response_utils import apply_response_headers
 
 from cases.models import Case
-from cases.services import CaseNotFoundError, resolve_case
+from cases.services import CaseNotFoundError, ensure_case, resolve_case
 
 
 GuardrailErrorCategory = guardrails_middleware.GuardrailErrorCategory
@@ -319,6 +320,9 @@ def _resolve_tenant_id(request: HttpRequest) -> str | None:
     return tenant.schema_name if tenant else None
 
 
+DEFAULT_CASE_ID = "general"
+DEV_DEFAULT_CASE_ID = "dev-case-local"
+
 KEY_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 TENANT_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
@@ -533,6 +537,9 @@ def _prepare_request(request: Request):
                 status.HTTP_400_BAD_REQUEST,
             )
 
+    if not case_id:
+        case_id = DEFAULT_CASE_ID
+
     if case_id and not CASE_ID_RE.fullmatch(case_id):
         return None, _error_response(
             "Case header must use the documented format.",
@@ -568,6 +575,25 @@ def _prepare_request(request: Request):
     trace_id = (trace_id_header or "").strip()
     if not trace_id:
         trace_id = uuid4().hex
+    if case_id == DEFAULT_CASE_ID:
+        try:
+            ensure_case(
+                tenant_obj,
+                case_id,
+                title="General",
+                reopen_closed=True,
+            )
+        except Exception:
+            logger.exception(
+                "case.default_bootstrap_failed",
+                extra={"tenant_id": tenant_schema, "case_id": case_id},
+            )
+            return None, _error_response(
+                "Failed to bootstrap default case.",
+                "case_bootstrap_failed",
+                status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
     if case_id:
         case_error = assert_case_active(
             request, case_id, tenant_identifier=tenant_schema
@@ -1309,6 +1335,16 @@ class _GraphView(_BaseAgentView):
         return registered
 
     def post(self, request: Request) -> Response:
+        if not (
+            settings.DEBUG
+            or getattr(settings, "TESTING", False)
+            or os.environ.get("PYTEST_CURRENT_TEST")
+        ):
+            return _error_response(
+                "Not found.",
+                "graph_endpoint_disabled",
+                status.HTTP_404_NOT_FOUND,
+            )
         meta, error = _prepare_request(request)
         if error:
             return error
@@ -1589,14 +1625,14 @@ class RagUploadView(APIView):
             return error
 
         # Fix for Silent RAG Failure (Finding #22):
-        # In DEV/DEBUG mode, default missing case_id to "dev-case-local"
+        # In DEV/DEBUG mode, default missing case_id to the dev default.
         # so that uploads from Workbench are visible to the RAG Chat.
         if settings.DEBUG and not meta.get("case_id"):
             logger.info(
                 "view.rag_upload.defaulting_case_id",
-                extra={"assigned_case_id": "dev-case-local"},
+                extra={"assigned_case_id": DEV_DEFAULT_CASE_ID},
             )
-            meta["case_id"] = "dev-case-local"
+            meta["case_id"] = DEV_DEFAULT_CASE_ID
 
         content_type = request.headers.get("Content-Type", "")
         if content_type:
@@ -1640,7 +1676,7 @@ class RagIngestionRunView(APIView):
 
         # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
         if settings.DEBUG and not meta.get("case_id"):
-            meta["case_id"] = "dev-case-local"
+            meta["case_id"] = DEV_DEFAULT_CASE_ID
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):
@@ -1756,7 +1792,6 @@ class RagIngestionStatusView(APIView):
         processed_response = apply_std_headers(response, meta)
         idempotency_key_value = meta.get("idempotency_key")
         header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
-        print("DEBUG_IDEMPOTENCY", header_idempotency, idempotency_key_value)
         if not header_idempotency:
             meta_header_key = "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
             raw_meta_header = request.META.get(meta_header_key)
@@ -1849,6 +1884,16 @@ class CrawlerIngestionRunnerView(APIView):
 
     @default_extend_schema(**CRAWLER_RUN_SCHEMA)
     def post(self, request: Request) -> Response:
+        if not (
+            settings.DEBUG
+            or getattr(settings, "TESTING", False)
+            or os.environ.get("PYTEST_CURRENT_TEST")
+        ):
+            return _error_response(
+                "Not found.",
+                "crawler_runner_disabled",
+                status.HTTP_404_NOT_FOUND,
+            )
         meta, error = _prepare_request(request)
         if error:
             return error

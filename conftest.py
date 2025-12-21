@@ -55,6 +55,22 @@ pytest_plugins = [
 ]
 
 
+@pytest.fixture(scope="session")
+def django_db_modify_db_settings():
+    """Ensure the test connection defaults to the public schema."""
+    from django.conf import settings
+
+    if settings.DATABASES["default"]["ENGINE"] != "django_tenants.postgresql_backend":
+        return
+
+    public_schema = getattr(settings, "PUBLIC_SCHEMA_NAME", "public")
+    options = settings.DATABASES["default"].setdefault("OPTIONS", {})
+    existing = str(options.get("options", "")).strip()
+    search_path_opt = f"-c search_path={public_schema}"
+    if search_path_opt not in existing:
+        options["options"] = f"{existing} {search_path_opt}".strip()
+
+
 @pytest.fixture(autouse=True)
 def default_lifecycle_store(monkeypatch):
     """Use in-memory lifecycle store in tests to avoid tenant FK churn."""
@@ -194,11 +210,17 @@ def ensure_public_schema(django_db_setup, django_db_blocker):
     """Ensure the shared (public) schema migrations run before tenant setup."""
     from django.core.management import call_command
     from django.conf import settings
+    from django.db import connection
+    from django_tenants.utils import get_public_schema_name
 
     if "django_tenants" not in settings.INSTALLED_APPS:
         return
 
     with django_db_blocker.unblock():
+        if hasattr(connection, "set_schema_to_public"):
+            connection.set_schema_to_public()
+        elif hasattr(connection, "set_schema"):
+            connection.set_schema(get_public_schema_name())
         call_command("migrate_schemas", shared=True, interactive=False, verbosity=0)
         try:
             call_command("init_public", verbosity=0)

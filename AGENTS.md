@@ -130,6 +130,28 @@ Deterministic error type identifiers are defined in `ai_core/tools/errors.py:Too
 
 ## Tests (Docker)
 
-- All Python tests (Docker): `npm run dev:test` (Windows PowerShell: `npm run win:dev:test`)
-- Single test / selection (pytest args): `npm run win:dev:test -- "path/to/test.py::TestClass::test_name"` or `npm run win:dev:test -- -k "pattern"`
-- Convenience alias (pass-through): `npm run win:dev:test:single -- "<pytest args...>"` (same for `dev:test:single`)
+**All Python tests**:
+- Linux: `npm run test:py` (vollständig inkl. `@pytest.mark.slow`)
+- Windows: `npm run win:test:py`
+
+**Einzelne Tests**:
+- Linux: `npm run test:py:single -- path/to/test.py`
+- Windows: `npm run win:test:py:single -- path/to/test.py`
+
+**Beispiele**:
+```bash
+# Einzelne Testdatei
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
+
+# Spezifische Testfunktion
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::test_function_name
+
+# Testklasse und -methode
+npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py::TestClass::test_method
+```
+
+**Weitere Test-Varianten**:
+- Fast (ohne `@pytest.mark.slow`): `npm run test:py:fast` / `npm run win:test:py:fast`
+- Unit (ohne DB): `npm run test:py:unit` / `npm run win:test:py:unit`
+- Coverage: `npm run test:py:cov` / `npm run win:test:py:cov`
+- Clean install: `npm run test:py:clean` / `npm run win:test:py:clean`
