@@ -102,15 +102,19 @@ class ContextTask(Task):
 
         context: dict[str, str] = {}
 
-        trace_id = meta.get("trace_id")
+        scope_context = meta.get("scope_context")
+        if not isinstance(scope_context, Mapping):
+            return {}
+
+        trace_id = scope_context.get("trace_id")
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        case = meta.get("case_id")
+        case = scope_context.get("case_id")
         if case:
             context["case_id"] = self._normalize(case)
 
-        tenant = meta.get("tenant_id")
+        tenant = scope_context.get("tenant_id")
         if tenant:
             context["tenant_id"] = self._normalize(tenant)
 

@@ -100,7 +100,12 @@ def test_middleware_binds_headers_and_sets_response_metadata():
 
 def test_middleware_generates_trace_ids_when_headers_missing():
     factory = RequestFactory()
-    request = _build_request(factory, "post", "/ai/intake/")
+    request = _build_request(
+        factory,
+        "post",
+        "/ai/intake/",
+        HTTP_X_CASE_ID="case-auto",  # case_id is mandatory (Pre-MVP ID Contract)
+    )
     request.tenant = Tenant(schema_name="trace-tenant", name="Trace Tenant")
 
     captured: dict[str, str] = {}
@@ -121,7 +126,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert re.fullmatch(r"[0-9a-f]{32}", trace_id)
     assert response["X-Tenant-Id"] == "trace-tenant"
     assert "traceparent" not in response
-    assert "X-Case-Id" not in response
+    assert response["X-Case-Id"] == "case-auto"
     assert "X-Key-Alias" not in response
 
     assert captured["trace.id"] == trace_id
@@ -130,7 +135,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert captured["http.method"] == "POST"
     assert captured["http.route"] == "/ai/intake/"
     assert captured["client.ip"] == "127.0.0.1"
-    assert "case.id" not in captured
+    assert captured["case.id"] == "case-auto"
     assert "key.alias" not in captured
 
     assert isinstance(scope, ScopeContext)
@@ -139,7 +144,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert scope.run_id != scope.trace_id
     assert scope.invocation_id
     assert scope.ingestion_run_id is None
-    assert scope.case_id is None
+    assert scope.case_id == "case-auto"
     assert scope.idempotency_key is None
 
     assert get_contextvars() == {}
@@ -216,6 +221,7 @@ def test_middleware_uses_resolved_tenant_over_header():
         "get",
         "/ai/ping/",
         HTTP_X_TENANT_ID="spoofed-tenant",
+        HTTP_X_CASE_ID="case-tenant",  # case_id is mandatory (Pre-MVP ID Contract)
     )
     request.tenant = Tenant(schema_name="canonical-tenant", name="Canonical")
 
@@ -267,34 +273,37 @@ def test_middleware_builds_scope_context_from_ingestion_headers():
     assert captured_scope.tenant_id == "tenant-scope"
 
 
-def test_middleware_rejects_conflicting_run_scope():
+def test_middleware_accepts_both_run_ids():
+    """Both run_id and ingestion_run_id can co-exist (Pre-MVP ID Contract)."""
     factory = RequestFactory()
     request = _build_request(
         factory,
         "get",
         "/ai/ping/",
-        HTTP_X_TENANT_ID="tenant-conflict",
-        HTTP_X_TRACE_ID="trace-conflict",
+        HTTP_X_TENANT_ID="tenant-both",
+        HTTP_X_TRACE_ID="trace-both",
+        HTTP_X_CASE_ID="case-both",  # case_id is mandatory
         HTTP_X_RUN_ID="graph-1",
         HTTP_X_INGESTION_RUN_ID="ingest-1",
     )
-    request.tenant = Tenant(schema_name="tenant-conflict", name="Tenant Conflict")
+    request.tenant = Tenant(schema_name="tenant-both", name="Tenant Both")
 
-    called = False
+    captured_scope: ScopeContext | None = None
 
     def _view(inner_request):
-        nonlocal called
-        called = True
+        nonlocal captured_scope
+        captured_scope = getattr(inner_request, "scope_context", None)
         return HttpResponse("ok")
 
     middleware = RequestContextMiddleware(_view)
     response = middleware(request)
 
-    assert response.status_code == 400
-    data = json.loads(response.content.decode())
-    assert data["code"] == "invalid_request"
-    assert "Exactly one of run_id or ingestion_run_id" in data["detail"]
-    assert called is False
+    # Both run_id and ingestion_run_id are now allowed
+    assert response.status_code == 200
+    assert isinstance(captured_scope, ScopeContext)
+    assert captured_scope.run_id == "graph-1"
+    assert captured_scope.ingestion_run_id == "ingest-1"
+    assert captured_scope.case_id == "case-both"
 
 
 def test_middleware_allows_value_error_from_view_to_propagate():
@@ -304,6 +313,7 @@ def test_middleware_allows_value_error_from_view_to_propagate():
         "get",
         "/ai/ping/",
         HTTP_X_TENANT_ID="tenant-error",
+        HTTP_X_CASE_ID="case-error",  # case_id is mandatory (Pre-MVP ID Contract)
     )
     request.tenant = Tenant(schema_name="tenant-error", name="Tenant Error")
 

@@ -25,7 +25,7 @@ def apply_response_headers(
     helper merges the behaviours and centralises the pattern for reuse.
     """
 
-    resolved_key = idempotency_key or meta.get("idempotency_key")
+    resolved_key = idempotency_key or meta["scope_context"].get("idempotency_key")
     response = apply_std_headers(response, meta)
     if resolved_key:
         response[IDEMPOTENCY_KEY_HEADER] = resolved_key

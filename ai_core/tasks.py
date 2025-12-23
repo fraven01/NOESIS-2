@@ -38,6 +38,7 @@ from ai_core.graphs.transition_contracts import (
     GraphTransition,
     StandardTransitionResult,
 )
+from ai_core.ids.http_scope import normalize_task_context
 from documents.api import normalize_from_raw
 from documents.contracts import NormalizedDocument, NormalizedDocumentInputV1
 from ai_core.infra import observability as observability_helpers
@@ -114,8 +115,10 @@ logger = get_logger(__name__)
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
-    tenant = object_store.sanitize_identifier(meta["tenant_id"])
-    case = object_store.sanitize_identifier(meta.get("case_id") or "upload")
+    tenant = object_store.sanitize_identifier(meta["scope_context"]["tenant_id"])
+    case = object_store.sanitize_identifier(
+        meta["scope_context"].get("case_id") or "upload"
+    )
     return "/".join([tenant, case, *parts])
 
 
@@ -586,7 +589,7 @@ def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
     ratio = 0.15
     doc_type = str(
         meta.get("doc_class")
-        or meta.get("collection_id")
+        or meta["scope_context"].get("collection_id")
         or meta.get("document_type")
         or meta.get("type")
         or ""
@@ -804,8 +807,8 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             logger.warning(
                 "ingestion.chunk.blocks_read_failed",
                 extra={
-                    "tenant_id": meta.get("tenant_id"),
-                    "case_id": meta.get("case_id"),
+                    "tenant_id": meta["scope_context"].get("tenant_id"),
+                    "case_id": meta["scope_context"].get("case_id"),
                     "path": blocks_path_value,
                 },
             )
@@ -1176,9 +1179,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             normalised = normalise_text(chunk_text)
             chunk_hash_input = f"{content_hash}:{chunk_index}".encode("utf-8")
             chunk_hash = hashlib.sha256(chunk_hash_input).hexdigest()
+            scope_context = meta["scope_context"]
             chunk_meta = {
-                "tenant_id": meta["tenant_id"],
-                "case_id": meta.get("case_id"),
+                "tenant_id": scope_context["tenant_id"],
+                "case_id": scope_context.get("case_id"),
                 "source": text_path,
                 "hash": chunk_hash,
                 "external_id": external_id,
@@ -1191,10 +1195,10 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
             if meta.get("vector_space_id"):
                 chunk_meta["vector_space_id"] = meta["vector_space_id"]
-            if meta.get("collection_id"):
-                chunk_meta["collection_id"] = meta["collection_id"]
-            if meta.get("workflow_id"):
-                chunk_meta["workflow_id"] = meta["workflow_id"]
+            if scope_context.get("collection_id"):
+                chunk_meta["collection_id"] = scope_context["collection_id"]
+            if scope_context.get("workflow_id"):
+                chunk_meta["workflow_id"] = scope_context["workflow_id"]
 
             if document_id:
                 # Ensure canonical dashed UUID format for document_id in chunk meta
@@ -1269,12 +1273,20 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
         try:
             update_observation(
                 tags=["ingestion", "embed"],
-                user_id=str(meta.get("tenant_id")) if meta.get("tenant_id") else None,
-                session_id=str(meta.get("case_id")) if meta.get("case_id") else None,
+                user_id=(
+                    str(meta["scope_context"].get("tenant_id"))
+                    if meta["scope_context"].get("tenant_id")
+                    else None
+                ),
+                session_id=(
+                    str(meta["scope_context"].get("case_id"))
+                    if meta["scope_context"].get("case_id")
+                    else None
+                ),
                 metadata={
                     "embedding_profile": meta.get("embedding_profile"),
                     "vector_space_id": meta.get("vector_space_id"),
-                    "collection_id": meta.get("collection_id"),
+                    "collection_id": meta["scope_context"].get("collection_id"),
                 },
             )
         except Exception:
@@ -1402,8 +1414,8 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                 "ingestion.embed.parents",
                 extra={
                     "event": "DEBUG.TASKS.EMBED.PARENTS",
-                    "tenant_id": meta.get("tenant_id"),
-                    "case_id": meta.get("case_id"),
+                    "tenant_id": meta["scope_context"].get("tenant_id"),
+                    "case_id": meta["scope_context"].get("case_id"),
                     "parents_count": (
                         len(parents) if isinstance(parents, dict) else None
                     ),
@@ -1467,8 +1479,8 @@ def upsert(
             "ingestion.upsert.parents_loaded",
             extra={
                 "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
-                "tenant_id": meta.get("tenant_id") if meta else None,
-                "case_id": meta.get("case_id") if meta else None,
+                "tenant_id": meta["scope_context"].get("tenant_id") if meta else None,
+                "case_id": meta["scope_context"].get("case_id") if meta else None,
                 "parents_present": bool(parents),
                 "parents_count": (len(parents) if isinstance(parents, dict) else None),
             },
@@ -1490,8 +1502,10 @@ def upsert(
             logger.error(
                 "ingestion.chunk.meta.invalid",
                 extra={
-                    "tenant_id": meta.get("tenant_id") if meta else None,
-                    "case_id": meta.get("case_id") if meta else None,
+                    "tenant_id": (
+                        meta["scope_context"].get("tenant_id") if meta else None
+                    ),
+                    "case_id": meta["scope_context"].get("case_id") if meta else None,
                     "chunk_index": index,
                     "keys": (
                         sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None
@@ -1549,7 +1563,7 @@ def upsert(
             )
         )
 
-    tenant_id: Optional[str] = meta.get("tenant_id") if meta else None
+    tenant_id: Optional[str] = meta["scope_context"].get("tenant_id") if meta else None
     if not tenant_id:
         tenant_id = next(
             (
@@ -1580,7 +1594,7 @@ def upsert(
         expected_dimension,
         tenant_id=tenant_id,
         process=meta.get("process") if meta else None,
-        workflow_id=meta.get("workflow_id") if meta else None,
+        workflow_id=meta["scope_context"].get("workflow_id") if meta else None,
         embedding_profile=meta.get("embedding_profile") if meta else None,
         vector_space_id=meta.get("vector_space_id") if meta else None,
     )
@@ -1729,24 +1743,25 @@ def _resolve_trace_context(
     """Collect identifiers required for tracing metadata."""
 
     state_meta = state.get("meta") if isinstance(state, MappingABC) else None
+    scope_meta = _extract_from_mapping(meta, "scope_context")
 
     tenant_id = _coerce_str(
-        _extract_from_mapping(meta, "tenant_id")
+        _extract_from_mapping(scope_meta, "tenant_id")
         or _extract_from_mapping(state_meta, "tenant_id")
         or _extract_from_mapping(state, "tenant_id")
     )
     case_id = _coerce_str(
-        _extract_from_mapping(meta, "case_id")
+        _extract_from_mapping(scope_meta, "case_id")
         or _extract_from_mapping(state_meta, "case_id")
         or _extract_from_mapping(state, "case_id")
     )
     trace_id = _coerce_str(
-        _extract_from_mapping(meta, "trace_id")
+        _extract_from_mapping(scope_meta, "trace_id")
         or _extract_from_mapping(state_meta, "trace_id")
         or _extract_from_mapping(state, "trace_id")
     )
     workflow_id = _coerce_str(
-        _extract_from_mapping(meta, "workflow_id")
+        _extract_from_mapping(scope_meta, "workflow_id")
         or _extract_from_mapping(state_meta, "workflow_id")
         or _extract_from_mapping(state, "workflow_id")
     )
@@ -1988,7 +2003,11 @@ def run_ingestion_graph(
         # Map legacy/worker state to UniversalIngestionInput
 
         # Determine source
-        source = ingestion_ctx.source or "upload"  # Default to upload for worker safety
+        raw_source = ingestion_ctx.source or "upload"
+        if raw_source.startswith("http://") or raw_source.startswith("https://"):
+            source = "crawler"
+        else:
+            source = raw_source
 
         # Extract normalized document (it might be a dict or NormalizedDocument object)
         normalized_doc = working_state.get("normalized_document_input")
@@ -2013,18 +2032,31 @@ def run_ingestion_graph(
             "normalized_document": normalized_doc,  # Key for Pre-normalized input
         }
 
-        # Build Context
-        run_context = {
-            "tenant_id": ingestion_ctx.tenant_id,
-            "case_id": ingestion_ctx.case_id,
-            "trace_id": ingestion_ctx.trace_id,
-            "workflow_id": ingestion_ctx.workflow_id,
-            "invocation_id": getattr(ingestion_ctx, "invocation_id", None)
+        # Build Context via normalize_task_context (Pre-MVP ID Contract)
+        # S2S Hop: service_id REQUIRED, user_id ABSENT
+        scope = normalize_task_context(
+            tenant_id=ingestion_ctx.tenant_id,
+            case_id=ingestion_ctx.case_id or "general",
+            service_id="celery-ingestion-worker",
+            trace_id=ingestion_ctx.trace_id,
+            invocation_id=getattr(ingestion_ctx, "invocation_id", None)
             or trace_context.get("invocation_id")
-            or meta.get("invocation_id")
-            or ingestion_ctx.trace_id,
-            "ingestion_run_id": trace_context.get("ingestion_run_id")
-            or str(uuid.uuid4()),
+            or (meta.get("invocation_id") if meta else None),
+            workflow_id=ingestion_ctx.workflow_id,
+            run_id=ingestion_ctx.run_id,
+            ingestion_run_id=ingestion_ctx.ingestion_run_id,
+            collection_id=collection_id,
+        )
+
+        run_context = {
+            "tenant_id": scope.tenant_id,
+            "case_id": scope.case_id,
+            "trace_id": scope.trace_id,
+            "workflow_id": scope.workflow_id,
+            "invocation_id": scope.invocation_id,
+            "run_id": scope.run_id,
+            "ingestion_run_id": scope.ingestion_run_id,
+            "service_id": scope.service_id,
             "dry_run": False,
         }
 

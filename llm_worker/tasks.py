@@ -7,6 +7,7 @@ from django.db import connection
 
 from ai_core.graph.registry import get as get_graph_runner
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
+from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
 from cases.integration import emit_case_lifecycle_for_collection_search
 from common.celery import ScopedTask
@@ -64,11 +65,33 @@ def run_graph(  # type: ignore[no-untyped-def]
 
     # Scope parameters (tenant_id, case_id, trace_id, session_salt) are accepted
     # so ScopedTask/with_scope_apply_async can attach masking context without
-    # causing unexpected kwargs errors. They are currently unused because the
-    # runner receives fully prepared meta/state.
+    # causing unexpected kwargs errors.
 
     runner_state = dict(state or {})
     runner_meta = dict(meta or {})
+
+    scope_context = runner_meta.get("scope_context")
+    if not isinstance(scope_context, Mapping):
+        scope_context = {}
+
+    # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
+    # S2S Hop: service_id REQUIRED, user_id ABSENT
+    if tenant_id and case_id:
+        scope = normalize_task_context(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            service_id="celery-agents-worker",
+            trace_id=trace_id or scope_context.get("trace_id"),
+            invocation_id=scope_context.get("invocation_id"),
+            workflow_id=scope_context.get("workflow_id"),
+            run_id=scope_context.get("run_id"),
+            ingestion_run_id=scope_context.get("ingestion_run_id"),
+            idempotency_key=scope_context.get("idempotency_key"),
+            tenant_schema=scope_context.get("tenant_schema"),
+            collection_id=scope_context.get("collection_id"),
+        )
+        # Inject scope context into meta for graph execution
+        runner_meta["scope_context"] = scope.model_dump(mode="json")
     task_type = runner_meta.get("task_type", "rag_query")
 
     with track_ledger_costs(initial_cost_total) as tracker:

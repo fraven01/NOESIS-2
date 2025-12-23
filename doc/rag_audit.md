@@ -76,8 +76,8 @@
           text, meta, target_tokens=target_tokens, hard_limit=hard_limit,
       )
       chunk_meta = {
-          "tenant_id": meta["tenant_id"],
-          "case_id": meta.get("case_id"),
+          "tenant_id": meta["scope_context"]["tenant_id"],
+          "case_id": meta["scope_context"].get("case_id"),
           "source": text_path,
           "hash": content_hash,
           "external_id": external_id,
@@ -228,8 +228,8 @@
 - ai_core/tasks.py: `_build_path` —
   ```python
   def _build_path(meta: Dict[str, str], *parts: str) -> str:
-      tenant = object_store.sanitize_identifier(meta["tenant_id"])
-      case = object_store.sanitize_identifier(meta["case_id"])
+      tenant = object_store.sanitize_identifier(meta["scope_context"]["tenant_id"])
+      case = object_store.sanitize_identifier(meta["scope_context"].get("case_id") or "upload")
       return "/".join([tenant, case, *parts])
   ```
 - ai_core/tasks.py: chunk output packaging —

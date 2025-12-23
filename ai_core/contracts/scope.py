@@ -9,9 +9,14 @@ Context identifiers are aligned across APIs, graphs and tools:
   exactly one ``workflow_id`` and ``case_id``.
 
 Relationships: one tenant has many cases → each case can contain many workflows → each workflow can have many runs. Tools require
-``tenant_id``, ``trace_id``, ``invocation_id`` and exactly one runtime identifier (``run_id`` or ``ingestion_run_id``). Graphs set
+``tenant_id``, ``trace_id``, ``invocation_id`` and at least one runtime identifier (``run_id`` and/or ``ingestion_run_id``). Graphs set
 ``case_id`` and ``workflow_id`` as soon as the business context is known, while ``run_id`` stays purely technical and is generated
 per execution.
+
+Identity rules (strict):
+- User Request Hop: ``user_id`` REQUIRED (when auth present), ``service_id`` ABSENT.
+- S2S Hop (Celery/Graph): ``service_id`` REQUIRED, ``user_id`` ABSENT.
+- ``initiated_by_user_id`` is for audit_meta only (causal tracking), never a principal in ScopeContext.
 """
 
 from __future__ import annotations
@@ -36,6 +41,10 @@ IdempotencyKey = str
 CollectionId = str | None
 Timestamp = datetime
 
+# Identity IDs (Pre-MVP ID Contract)
+UserId = str | None  # UUIDv7 string, required for User Request Hops
+ServiceId = str | None  # Required for S2S Hops (e.g., "celery-ingestion-worker")
+
 
 class ScopeContext(BaseModel):
     """Canonical scope context containing mandatory correlation identifiers.
@@ -43,16 +52,43 @@ class ScopeContext(BaseModel):
     The collection_id field represents the "Aktenschrank" (file cabinet) context,
     enabling multi-collection search and scoped operations.
 
-    BREAKING CHANGE: case_id is now mandatory (previously optional).
+    Identity rules (Pre-MVP ID Contract):
+    - User Request Hop: user_id REQUIRED (when auth present), service_id ABSENT.
+    - S2S Hop (Celery/Graph): service_id REQUIRED, user_id ABSENT.
+    - Both user_id and service_id being set is invalid.
+    - Both being absent is only valid for public/unauthenticated endpoints.
+
     BREAKING CHANGE: collection_id is now str (UUID-string, previously UUID).
+    BREAKING CHANGE: run_id and ingestion_run_id may co-exist (previously XOR).
+
+    Note: case_id is optional at the ScopeContext level (for HTTP requests).
+    It becomes mandatory when graphs/tools set business context. The ToolContext
+    enforces case_id requirements for AI operations.
     """
 
+    # Mandatory correlation IDs
     tenant_id: TenantId
     trace_id: TraceId
     invocation_id: InvocationId
-    case_id: CaseId
+
+    # Business context (optional at request level, required for tool invocations)
+    case_id: CaseId | None = None
+
+    # Identity IDs (mutually exclusive per hop type)
+    user_id: UserId = Field(
+        default=None,
+        description="User identity for User Request Hops. Must be absent for S2S.",
+    )
+    service_id: ServiceId = Field(
+        default=None,
+        description="Service identity for S2S Hops (e.g., 'celery-ingestion-worker'). Must be absent for User Requests.",
+    )
+
+    # Runtime IDs (may co-exist when workflow triggers ingestion)
     run_id: RunId | None = None
     ingestion_run_id: IngestionRunId | None = None
+
+    # Optional context
     tenant_schema: TenantSchema | None = None
     workflow_id: WorkflowId | None = None
     idempotency_key: IdempotencyKey | None = None
@@ -66,14 +102,31 @@ class ScopeContext(BaseModel):
 
     @model_validator(mode="after")
     def validate_run_scope(self) -> "ScopeContext":
-        """Ensure exactly one runtime identifier is provided."""
-
+        """Ensure at least one runtime identifier is provided."""
         has_run_id = bool(self.run_id)
         has_ingestion_run_id = bool(self.ingestion_run_id)
 
-        if has_run_id == has_ingestion_run_id:
+        if not has_run_id and not has_ingestion_run_id:
             raise ValueError(
-                "Exactly one of run_id or ingestion_run_id must be provided"
+                "At least one of run_id or ingestion_run_id must be provided"
+            )
+
+        return self
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> "ScopeContext":
+        """Ensure user_id and service_id are mutually exclusive.
+
+        Identity rules:
+        - User Request Hop: user_id set, service_id absent
+        - S2S Hop: service_id set, user_id absent
+        - Both set: Invalid (ambiguous principal)
+        - Both absent: Valid only for public endpoints (caller must enforce)
+        """
+        if self.user_id and self.service_id:
+            raise ValueError(
+                "user_id and service_id are mutually exclusive. "
+                "User Request Hops have user_id, S2S Hops have service_id."
             )
 
         return self
@@ -94,9 +147,11 @@ __all__ = [
     "InvocationId",
     "RunId",
     "ScopeContext",
+    "ServiceId",
     "TenantId",
     "TenantSchema",
     "Timestamp",
     "TraceId",
+    "UserId",
     "WorkflowId",
 ]

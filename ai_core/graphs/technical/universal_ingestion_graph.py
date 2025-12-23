@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import threading
 from datetime import datetime, timezone
+from queue import Empty, Queue
 from typing import Any, Literal, TypedDict
 from uuid import uuid4
 
@@ -193,8 +196,10 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     inp = state.get("input", {})
     context = state.get("context", {})
 
-    # 1. Validate Context IDs (Strict per existing contracts)
-    # Phase 5 Fix: case_id is optional for manual search
+    # 1. Validate Context IDs (Per ID Contract in AGENTS.md)
+    # - tenant_id: mandatory everywhere
+    # - trace_id: mandatory for correlation
+    # - case_id: optional at HTTP level, required for tool invocations (validated in ToolContext)
     required_ids = ["tenant_id", "trace_id"]
     for rid in required_ids:
         if not context.get(rid):
@@ -239,6 +244,64 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     return {"error": None}
 
 
+def _run_search_with_timeout(worker, query: str, context: dict, timeout: int):
+    """Run search worker with timeout protection using threading."""
+    result_queue: Queue = Queue()
+
+    def worker_thread():
+        try:
+            response = worker.run(query=query, context=context)
+            result_queue.put(("success", response))
+        except Exception as e:
+            result_queue.put(("error", e))
+
+    thread = threading.Thread(target=worker_thread, daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+    if thread.is_alive():
+        raise TimeoutError(f"Search worker exceeded {timeout}s timeout")
+
+    try:
+        status, result = result_queue.get_nowait()
+        if status == "error":
+            raise result
+        return result
+    except Empty:
+        raise TimeoutError("Search worker produced no result")
+
+
+def _check_search_rate_limit(tenant_id: str, query: str) -> bool:
+    """Check if tenant has exceeded search rate limit.
+
+    Uses Django cache to track search requests per tenant per hour.
+    Returns True if request is allowed, False if rate limit exceeded.
+    """
+    from django.conf import settings
+    from django.core.cache import cache
+
+    cache_key = f"search_rate_limit:{tenant_id}"
+    count = cache.get(cache_key, 0)
+
+    max_searches_per_hour = getattr(settings, "MAX_SEARCHES_PER_TENANT_PER_HOUR", 100)
+
+    if count >= max_searches_per_hour:
+        logger.warning(
+            "Search rate limit exceeded",
+            extra={
+                "tenant_id": tenant_id,
+                "query": query[:100],  # Log first 100 chars only
+                "count": count,
+                "limit": max_searches_per_hour,
+            },
+        )
+        return False
+
+    # Increment counter with 1 hour expiry
+    cache.set(cache_key, count + 1, timeout=3600)
+    return True
+
+
 @observe_span(name="node.search")
 def search_node(state: UniversalIngestionState) -> dict[str, Any]:
     """Execute web search using the configured worker."""
@@ -252,6 +315,15 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     context = state.get("context", {})
 
+    # Check rate limit for tenant
+    tenant_id = context.get("tenant_id")
+    if tenant_id and query:
+        if not _check_search_rate_limit(str(tenant_id), query):
+            return {
+                "error": "Search rate limit exceeded. Please try again later.",
+                "search_results": [],
+            }
+
     # In Phase 4, worker is expected in context or config
     worker = context.get("runtime_worker")
     if not worker:
@@ -260,11 +332,20 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     # Filter context to strictly allowed fields
     from ai_core.infra.telemetry import filter_telemetry_context
+    from django.conf import settings
 
     telemetry_ctx = filter_telemetry_context(context)
 
+    # Get timeout from settings with fallback to 30 seconds
+    search_timeout = getattr(settings, "SEARCH_WORKER_TIMEOUT_SECONDS", 30)
+
     try:
-        response: WebSearchResponse = worker.run(query=query, context=telemetry_ctx)
+        response: WebSearchResponse = _run_search_with_timeout(
+            worker, query, telemetry_ctx, timeout=search_timeout
+        )
+    except TimeoutError as e:
+        logger.warning(str(e), extra={"query": query, "timeout": search_timeout})
+        return {"error": str(e), "search_results": []}
     except SearchProviderError as exc:
         logger.warning(f"Search failed: {exc}")
         return {"error": str(exc), "search_results": []}
@@ -308,7 +389,9 @@ def selection_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     # Phase 5 Fix: Allow preselected results (bare URLs) to bypass snippet check
     preselected_urls = {
-        item["url"] for item in inp.get("preselected_results", []) if item.get("url")
+        item["url"]
+        for item in (inp.get("preselected_results") or [])
+        if item.get("url")
     }
 
     validated = []
@@ -350,6 +433,97 @@ def selection_node(state: UniversalIngestionState) -> dict[str, Any]:
     return {"error": None}
 
 
+def _normalize_from_crawler(
+    input_data: dict[str, Any],
+) -> NormalizedDocument:
+    """Build NormalizedDocument from crawler source (already normalized)."""
+    raw_doc = input_data.get("normalized_document")
+    if isinstance(raw_doc, dict):
+        return NormalizedDocument.model_validate(raw_doc)
+    return raw_doc
+
+
+def _normalize_from_search(
+    selected_result: dict[str, Any],
+    collection_id: str,
+    context: dict[str, Any],
+) -> NormalizedDocument:
+    """Build NormalizedDocument from search result."""
+    tenant_id = context.get("tenant_id")
+    workflow_id = (
+        context.get("workflow_id") or context.get("case_id") or "universal_ingestion"
+    )
+
+    if not tenant_id:
+        raise ValueError("tenant_id_missing_in_context")
+
+    # Generate ID
+    document_id = uuid4()
+
+    ref = DocumentRef(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        document_id=document_id,
+        collection_id=collection_id,
+    )
+
+    # Use provided snippet as title/desc if title missing, or use result title
+    meta = DocumentMeta(
+        tenant_id=tenant_id,
+        workflow_id=workflow_id,
+        title=selected_result.get("title") or "Search Result",
+        origin_uri=selected_result.get("url"),
+        external_ref={
+            "provider": "web_search",
+            "external_id": selected_result.get("url", "")[:128],
+        },
+    )
+
+    # Use ExternalBlob for the URL
+    blob = {
+        "type": "external",
+        "kind": "https",
+        "uri": selected_result.get("url"),
+    }
+
+    # Calculate deterministic checksum from URL
+    url = selected_result.get("url", "")
+    url_checksum = hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+    norm_doc = NormalizedDocument(
+        ref=ref,
+        meta=meta,
+        blob=blob,
+        checksum=url_checksum,
+        source="other",
+        created_at=datetime.now(timezone.utc),
+    )
+
+    return norm_doc
+
+
+def _ensure_embedding_enabled(
+    norm_doc: NormalizedDocument,
+    source: str,
+) -> NormalizedDocument:
+    """Force enable_embedding=True for search/crawler/upload sources."""
+    if source in ("search", "crawler", "upload") or source == "other":
+        raw_app_config = norm_doc.meta.pipeline_config or {}
+        # Check if explicitly disabled, otherwise enable
+        if raw_app_config.get("enable_embedding") is not False:
+            # We need to update the immutable Pydantic model
+            new_config = dict(raw_app_config)
+            new_config["enable_embedding"] = True
+
+            # Careful update of nested Pydantic model
+            updated_meta = norm_doc.meta.model_copy(
+                update={"pipeline_config": new_config}
+            )
+            norm_doc = norm_doc.model_copy(update={"meta": updated_meta})
+
+    return norm_doc
+
+
 @observe_span(name="node.normalize")
 def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
     """Normalize input into a NormalizedDocument object."""
@@ -358,77 +532,25 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
     context = state.get("context", {})
 
     try:
-        norm_doc = None
-        # Check explicit normalized input first (preferred for all sources)
+        # Check explicit normalized input first
         raw_doc = inp.get("normalized_document")
         if raw_doc:
-            if isinstance(raw_doc, dict):
-                norm_doc = NormalizedDocument.model_validate(raw_doc)
-            else:
-                norm_doc = raw_doc
-
-        # Fallback to upload_blob for uploads if no normalized doc provided
-        if not norm_doc and source == "upload":
+            norm_doc = _normalize_from_crawler(inp)
+        elif source == "upload":
             norm_doc = _build_normalized_document(inp, context)
-
-        # Build normalized doc from selected search result
-        if not norm_doc and source == "search":
+        elif source == "search":
             selected = state.get("selected_result")
-            if selected:
-                collection_id = inp.get("collection_id")
-                if not collection_id:
-                    raise ValueError("Missing collection_id for search ingestion")
-
-                tenant_id = context.get("tenant_id")
-                workflow_id = (
-                    context.get("workflow_id")
-                    or context.get("case_id")
-                    or "universal_ingestion"
-                )
-
-                if not tenant_id:
-                    raise ValueError("tenant_id_missing_in_context")
-
-                # Generate ID
-                document_id = uuid4()
-
-                ref = DocumentRef(
-                    tenant_id=tenant_id,
-                    workflow_id=workflow_id,
-                    document_id=document_id,
-                    collection_id=collection_id,
-                )
-
-                # Use provided snippet as title/desc if title missing, or use result title
-                meta = DocumentMeta(
-                    tenant_id=tenant_id,
-                    workflow_id=workflow_id,
-                    title=selected.get("title") or "Search Result",
-                    origin_uri=selected.get("url"),
-                    external_ref={
-                        "provider": "web_search",
-                        "external_id": selected.get("url", "")[:128],
-                    },
-                )
-
-                # Use ExternalBlob for the URL
-                blob = {
-                    "type": "external",
-                    "kind": "https",
-                    "uri": selected.get("url"),
-                }
-
-                norm_doc = NormalizedDocument(
-                    ref=ref,
-                    meta=meta,
-                    blob=blob,
-                    checksum="0" * 64,
-                    source="other",
-                    created_at=datetime.now(timezone.utc),
-                )
-
-        if not norm_doc:
+            if not selected:
+                raise ValueError("Missing selected_result for search source")
+            collection_id = inp.get("collection_id")
+            if not collection_id:
+                raise ValueError("Missing collection_id for search ingestion")
+            norm_doc = _normalize_from_search(selected, collection_id, context)
+        else:
             return {"error": "Could not verify normalized document"}
+
+        # Ensure embedding enabled for all sources
+        norm_doc = _ensure_embedding_enabled(norm_doc, source)
 
         return {"normalized_document": norm_doc}
 
@@ -451,17 +573,20 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
     service = _get_documents_repository()
 
     try:
-        # Build ScopeContext for traceability
-        # Ensure we have required fields (invocation_id might be missing in some paths)
+        # Build ScopeContext for traceability (Pre-MVP ID Contract)
+        # All required fields must be present in context (validated upstream)
         scope = ScopeContext(
             tenant_id=context["tenant_id"],
             trace_id=context["trace_id"],
-            # Fallback to trace_id if invocation_id not explicit
-            invocation_id=context.get("invocation_id") or context["trace_id"],
+            invocation_id=context["invocation_id"],  # Mandatory - no fallback
             case_id=context.get("case_id"),
             workflow_id=context.get("workflow_id"),
+            run_id=context.get("run_id"),
             ingestion_run_id=context.get("ingestion_run_id"),
             collection_id=state.get("input", {}).get("collection_id"),
+            # Identity IDs (Pre-MVP ID Contract)
+            user_id=context.get("user_id"),  # User Request Hop (if from HTTP)
+            service_id=context.get("service_id"),  # S2S Hop (from Celery task)
         )
 
         # Upsert with scope to preserve lineage
@@ -505,7 +630,11 @@ def process_node(state: UniversalIngestionState) -> dict[str, Any]:
     # DocumentProcessingState requires document, config, and context
     # config must be DocumentPipelineConfig object, not dict
     raw_config = norm_doc.meta.pipeline_config or {}
-    pipeline_config = DocumentPipelineConfig(**raw_config)
+
+    # Filter config to only valid fields for DocumentPipelineConfig
+    valid_config_fields = set(DocumentPipelineConfig.__dataclass_fields__.keys())
+    filtered_config = {k: v for k, v in raw_config.items() if k in valid_config_fields}
+    pipeline_config = DocumentPipelineConfig(**filtered_config)
 
     # Get storage component for the state
     from ai_core.services import get_document_components
@@ -549,6 +678,9 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
         "trace_id": context.get("trace_id"),
         "tenant_id": context.get("tenant_id"),
         "timestamp": datetime.now(timezone.utc).isoformat(),
+        # Pre-MVP ID Contract: identity tracking
+        "service_id": context.get("service_id"),
+        "invocation_id": context.get("invocation_id"),
     }
 
     if error:
@@ -679,6 +811,19 @@ def _get_cached_processing_graph() -> Any:
 
     logger.info("Universal ingestion: Document processing graph compiled and cached.")
     return _CACHED_PROCESSING_GRAPH
+
+
+def _clear_cached_processing_graph():
+    """Clear the cached processing graph (for testing/cleanup).
+
+    This function is useful for:
+    - Test isolation (prevent cache pollution between tests)
+    - Memory management (force garbage collection of large graph)
+    - Development (reload graph after code changes)
+    """
+    global _CACHED_PROCESSING_GRAPH
+    _CACHED_PROCESSING_GRAPH = None
+    logger.info("Processing graph cache cleared")
 
 
 def build_universal_ingestion_graph() -> Any:

@@ -82,6 +82,23 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
     return str(tenant_id), str(tenant_schema)
 
 
+def _extract_user_id(request) -> str | None:
+    """Extract user_id from authenticated request (Pre-MVP ID Contract).
+
+    User Request Hop: user_id is required when auth is present.
+    Returns None for unauthenticated requests.
+    """
+    user = getattr(request, "user", None)
+    if user is None:
+        return None
+    if not getattr(user, "is_authenticated", False):
+        return None
+    user_pk = getattr(user, "pk", None)
+    if user_pk is None:
+        return None
+    return str(user_pk)
+
+
 def _tenant_required_response(exc: TenantRequiredError) -> JsonResponse:
     return JsonResponse({"detail": str(exc)}, status=403)
 
@@ -333,6 +350,7 @@ def _run_rerank_workflow(
     tenant_id: str,
     case_id: str | None,
     trace_id: str,
+    user_id: str | None = None,
 ) -> tuple[dict[str, object], list[dict[str, object]] | None]:
     """Trigger the rerank worker graph and return ``(meta, updated_results)``."""
 
@@ -354,7 +372,6 @@ def _run_rerank_workflow(
     model_preset = _resolve_rerank_model_preset()
     task_payload = {
         "state": state,
-        "workflow_id": "web-search-rerank",
         "control": {
             "model_preset": model_preset,
         },
@@ -363,6 +380,9 @@ def _run_rerank_workflow(
         "tenant_id": tenant_id,
         "case_id": case_id,
         "trace_id": trace_id,
+        "workflow_id": "web-search-rerank",
+        # Identity ID (Pre-MVP ID Contract)
+        "user_id": user_id,
     }
     rerank_response, completed = submit_worker_task(
         task_payload=task_payload,
@@ -425,12 +445,16 @@ class _ViewCrawlerIngestionAdapter:
         }
         try:
             request_model = CrawlerRunRequest.model_validate(payload)
-            meta = {
+            scope_context = {
                 "tenant_id": str(tenant_id),
                 "tenant_schema": str(tenant_schema),
                 "case_id": str(case_id) if case_id else None,
-                "trace_id": str(trace_id),
+                "trace_id": str(trace_id) if trace_id else str(uuid4()),
+                "invocation_id": str(uuid4()),
+                "run_id": str(uuid4()),
+                "user_id": context.get("user_id"),
             }
+            meta = {"scope_context": scope_context}
             result = run_crawler_runner(
                 meta=meta,
                 request_model=request_model,
@@ -744,6 +768,8 @@ def web_search(request):
     except TenantRequiredError as exc:
         return _tenant_required_response(exc)
     case_id = str(data.get("case_id") or "").strip() or None
+    # Identity ID (Pre-MVP ID Contract)
+    user_id = _extract_user_id(request)
 
     trace_id = str(uuid4())
     run_id = str(uuid4())
@@ -960,6 +986,7 @@ def web_search(request):
                 tenant_id=tenant_id,
                 case_id=case_id,
                 trace_id=trace_id,
+                user_id=user_id,
             )
         except Exception:  # pragma: no cover - defensive
             logger.exception("web_search.rerank_failed")
@@ -1049,13 +1076,14 @@ def web_search_ingest_selected(request):
         )
 
         # L2 -> L3 Dispatch
-        meta = {
+        scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "case_id": str(data.get("case_id") or "").strip() or None,
             "trace_id": str(data.get("trace_id") or "").strip() or str(uuid4()),
             "ingestion_run_id": str(uuid4()),
         }
+        meta = {"scope_context": scope_context}
 
         manager = CrawlerManager()
         try:
@@ -1144,6 +1172,8 @@ def start_rerank_workflow(request):
             tenant_id, tenant_schema = _tenant_context_from_request(request)
         except TenantRequiredError as exc:
             return _tenant_required_response(exc)
+        # Identity ID (Pre-MVP ID Contract)
+        user_id = _extract_user_id(request)
         trace_id = str(uuid4())
         run_id = str(uuid4())
 
@@ -1161,25 +1191,19 @@ def start_rerank_workflow(request):
             "purpose": purpose,
         }
 
-        # Build metadata for the graph execution
-        graph_meta = {
-            "tenant_id": tenant_id,
-            "trace_id": trace_id,
-            "workflow_id": "rerank-workflow-manual",
-            "case_id": str(data.get("case_id") or "").strip() or None,
-            "run_id": run_id,
-        }
-
         # Submit graph task to worker queue without waiting (timeout_s=0)
         task_payload = {
             "state": graph_state,
-            **graph_meta,
         }
 
         scope = {
             "tenant_id": tenant_id,
-            "case_id": graph_meta["case_id"],
+            "case_id": str(data.get("case_id") or "").strip() or None,
             "trace_id": trace_id,
+            "workflow_id": "rerank-workflow-manual",
+            "run_id": run_id,
+            # Identity ID (Pre-MVP ID Contract)
+            "user_id": user_id,
         }
 
         # Execute task synchronously with extended timeout for pipeline visualization
@@ -1326,13 +1350,17 @@ def crawler_submit(request):
         tenant_id, tenant_schema = _tenant_context_from_request(request)
         case_id = str(data.get("case_id") or "").strip() or None
         trace_id = str(uuid4())
-        meta = {
+        scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "case_id": case_id,
             "trace_id": trace_id,
+            "invocation_id": str(uuid4()),
+            "run_id": str(uuid4()),
             "ingestion_run_id": payload.get("ingestion_run_id"),
+            "user_id": _extract_user_id(request),
         }
+        meta = {"scope_context": scope_context}
 
         try:
             request_model = CrawlerRunRequest.model_validate(payload)
@@ -1399,7 +1427,7 @@ def ingestion_submit(request):
         )
 
         # Prepare metadata for upload
-        meta = {
+        scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "case_id": case_id,
@@ -1407,6 +1435,7 @@ def ingestion_submit(request):
             "collection_id": manual_collection_id,  # Explicitly set collection
             "workflow_id": "document-upload-manual",  # Workflow type for tracing
         }
+        meta = {"scope_context": scope_context}
 
         # Upload document
         upload_response = handle_document_upload(
@@ -1448,11 +1477,20 @@ def ingestion_submit(request):
         )
 
     except Exception as e:
-        logger.exception("ingestion_submit.failed")
+        import traceback
+
+        with open("debug_traceback_2.txt", "w") as f:
+            f.write(traceback.format_exc())
+        tenant_context = {"tenant_id": tenant_id}  # Define tenant_context for logger
+        logger.error(
+            "ingestion_submit.failed",
+            extra={"tenant_id": tenant_context.get("tenant_id")},
+            exc_info=True,
+        )
         return render(
             request,
-            "theme/partials/_ingestion_status.html",
-            {"error": str(e)},
+            "theme/partials/ingestion_submit_error.html",
+            {"error_message": str(e)},
         )
 
 

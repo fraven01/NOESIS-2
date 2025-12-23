@@ -157,6 +157,7 @@ def test_search_acquire_and_ingest(
         "context": {
             "tenant_id": "00000000-0000-0000-0000-000000000001",
             "trace_id": "00000000-0000-0000-0000-000000000002",
+            "invocation_id": "inv-search-test",
             "case_id": "00000000-0000-0000-0000-000000000003",
             "ingestion_run_id": "00000000-0000-0000-0000-000000000004",
             "workflow_id": "workflow-123",  # Added for robustness

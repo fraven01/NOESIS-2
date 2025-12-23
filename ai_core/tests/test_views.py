@@ -1414,7 +1414,15 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
             ],
         }
     )
-    meta = {"tenant_id": "tenant-guard", "case_id": "case-guard"}
+    meta = {
+        "scope_context": {
+            "tenant_id": "tenant-guard",
+            "case_id": "case-guard",
+            "trace_id": "trace-guard",
+            "invocation_id": "inv-guard",
+            "run_id": "run-guard",
+        }
+    }
     context = CrawlerRunContext(
         meta=meta,
         request=request,
@@ -1492,7 +1500,15 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
             ],
         }
     )
-    meta = {"tenant_id": "tenant-fetch", "case_id": "case-fetch"}
+    meta = {
+        "scope_context": {
+            "tenant_id": "tenant-fetch",
+            "case_id": "case-fetch",
+            "trace_id": "trace-fetch",
+            "invocation_id": "inv-fetch",
+            "run_id": "run-fetch",
+        }
+    }
     context = CrawlerRunContext(
         meta=meta,
         request=request,
@@ -1575,7 +1591,15 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
             ],
         }
     )
-    meta = {"tenant_id": "tenant-binary", "case_id": "case-binary"}
+    meta = {
+        "scope_context": {
+            "tenant_id": "tenant-binary",
+            "case_id": "case-binary",
+            "trace_id": "trace-binary",
+            "invocation_id": "inv-binary",
+            "run_id": "run-binary",
+        }
+    }
     context = CrawlerRunContext(
         meta=meta,
         request=request,

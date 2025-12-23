@@ -16,6 +16,7 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 - [x] Semantics vNext: keep `case_id` required; standardize defaults (`general` for API views, `dev-case-local` for `/rag-tools`) and ensure that case exists per tenant (`ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py`, `theme/views.py`, `cases/*`)
 - [ ] ID propagation clarity: document and/or enforce the "runtime context injection" pattern for graphs (pointers: `docs/audit/contract_divergence_report.md#id-propagation-compliance`, `ai_core/graphs/upload_ingestion_graph.py`, `ai_core/graph/schemas.py`, `ai_core/contracts/scope.py`; acceptance: one canonical pattern, documented in code/doc pointers, so tenant/trace/run IDs are not "implicit knowledge")
+- [x] Breaking meta contract: enforce `scope_context` as the only ID source in graph/tool meta (pointers: `ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py:_prepare_request`, `llm_worker/runner.py:submit_worker_task`, `common/celery.py:ContextTask._from_meta`; acceptance: no top-level ID reads, all callers use `meta["scope_context"]`, tests updated and passing)
 
 ## Layering / boundaries
 

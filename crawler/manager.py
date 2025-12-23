@@ -28,7 +28,8 @@ class CrawlerManager:
         Returns:
             Summary of dispatched tasks.
         """
-        tenant_id = meta.get("tenant_id")
+        scope_context = meta.get("scope_context", {})
+        tenant_id = scope_context.get("tenant_id")
         if not tenant_id:
             raise ValueError("Tenant ID is required for crawl dispatch.")
 

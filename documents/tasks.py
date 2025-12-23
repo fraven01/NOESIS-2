@@ -40,12 +40,13 @@ def upload_document_task(
     upload = MockUploadedFile(file_bytes, filename, content_type)
 
     worker = UploadWorker()
+    scope_context = meta["scope_context"]
     result = worker.process(
         upload,
-        tenant_id=meta["tenant_id"],
-        case_id=meta.get("case_id"),
-        trace_id=meta.get("trace_id"),
-        invocation_id=meta.get("invocation_id"),
+        tenant_id=scope_context["tenant_id"],
+        case_id=scope_context.get("case_id"),
+        trace_id=scope_context.get("trace_id"),
+        invocation_id=scope_context.get("invocation_id"),
         document_metadata=metadata,
         ingestion_overrides=metadata.get("ingestion_overrides"),
     )

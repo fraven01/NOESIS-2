@@ -394,7 +394,7 @@ metadata={
 ```python
 fingerprint_payload = {
     "tenant_id": str(tenant_id_for_fp),  # Pflicht!
-    "case_id": meta.get("case_id"),  # Optional
+    "case_id": meta["scope_context"].get("case_id"),  # Optional
     "workflow_id": str(workflow_resolved),
     "collection_id": request_model.collection_id,
     "mode": request_model.mode,
@@ -433,7 +433,7 @@ return CrawlerRunnerCoordinatorResult(
 **Einstieg**: `ai_core/services/__init__.py:handle_document_upload()`
 
 **ID-Propagation**:
-1. `meta` enthält: `tenant_id, trace_id, case_id, collection_id, tenant_schema` (via normalize_meta)
+1. `meta` enthält: `scope_context` (tenant/case/trace/etc.), plus `tenant_schema` (via normalize_meta)
 2. `ingestion_run_id = uuid4().hex` generiert (Zeile 1725)
 3. **NormalizedDocument** erstellt mit `DocumentRef`:
    - `tenant_id: str` (Zeile 1696)

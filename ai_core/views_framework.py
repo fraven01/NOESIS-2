@@ -21,6 +21,7 @@ from common.constants import X_TENANT_ID_HEADER, X_TRACE_ID_HEADER
 from common.logging import bind_log_context, get_logger
 from noesis2.api import default_extend_schema
 
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.business.framework_analysis_graph import build_graph
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
@@ -100,10 +101,27 @@ def _prepare_framework_request(request: Request) -> tuple[dict, Response | None]
             status.HTTP_400_BAD_REQUEST,
         )
 
+    user_id = None
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        user_pk = getattr(user, "pk", None)
+        if user_pk is not None:
+            user_id = str(user_pk)
+
+    scope_context = ScopeContext.model_validate(
+        {
+            "tenant_id": tenant_id,
+            "trace_id": trace_id,
+            "invocation_id": str(uuid4()),
+            "run_id": str(uuid4()),
+            "user_id": user_id,
+            "tenant_schema": tenant_schema,
+        }
+    )
+
     meta = {
-        "tenant_id": tenant_id,
+        "scope_context": scope_context.model_dump(mode="json"),
         "tenant_schema": tenant_schema,
-        "trace_id": trace_id,
     }
 
     # Bind logging context
@@ -336,9 +354,10 @@ class FrameworkAnalysisView(APIView):
         if error:
             return error
 
-        tenant_id = meta["tenant_id"]
+        scope_context = meta["scope_context"]
+        tenant_id = scope_context["tenant_id"]
         tenant_schema = meta["tenant_schema"]
-        trace_id = meta["trace_id"]
+        trace_id = scope_context["trace_id"]
 
         # Parse request body
         try:

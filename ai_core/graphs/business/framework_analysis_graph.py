@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Tuple
+from typing import Any, Callable, Dict, Optional, Tuple
 from uuid import uuid4
 
 
+from ai_core.contracts.audit_meta import audit_meta_from_scope
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.transition_contracts import GraphTransition
 from ai_core.infra.observability import observe_span
 from ai_core.infra.prompts import load as load_prompt
@@ -139,8 +141,18 @@ class FrameworkAnalysisGraph:
         tenant_id: str,
         tenant_schema: str,
         trace_id: str,
+        scope_context: Optional[ScopeContext] = None,
     ) -> FrameworkAnalysisOutput:
-        """Execute the framework analysis graph."""
+        """Execute the framework analysis graph.
+
+        Args:
+            input_params: Analysis input parameters.
+            tenant_id: Tenant identifier.
+            tenant_schema: Tenant database schema.
+            trace_id: Trace ID for correlation.
+            scope_context: Optional ScopeContext for identity tracking.
+                If provided, used to build audit_meta for entity persistence.
+        """
         logger.info(
             "framework_graph_starting",
             extra={
@@ -152,6 +164,7 @@ class FrameworkAnalysisGraph:
                     str(input_params.document_id) if input_params.document_id else None
                 ),
                 "force_reanalysis": input_params.force_reanalysis,
+                "service_id": scope_context.service_id if scope_context else None,
             },
         )
 
@@ -161,6 +174,7 @@ class FrameworkAnalysisGraph:
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "trace_id": trace_id,
+            "scope_context": scope_context,  # Pre-MVP ID Contract: for audit_meta
             "document_collection_id": str(input_params.document_collection_id),
             "document_id": (
                 str(input_params.document_id) if input_params.document_id else None
@@ -583,6 +597,16 @@ class FrameworkAnalysisGraph:
         gremium_identifier = state["gremium_identifier"]
         force_reanalysis = state["force_reanalysis"]
 
+        # Build audit_meta from scope (Pre-MVP ID Contract)
+        scope_context: Optional[ScopeContext] = state.get("scope_context")
+        audit_meta_dict: Optional[Dict[str, Any]] = None
+        if scope_context:
+            audit_meta = audit_meta_from_scope(
+                scope_context,
+                created_by_user_id=scope_context.user_id,
+            )
+            audit_meta_dict = audit_meta.model_dump(mode="json")
+
         profile = persist_profile(
             tenant_schema=tenant_schema,
             gremium_identifier=gremium_identifier,
@@ -593,6 +617,7 @@ class FrameworkAnalysisGraph:
             document_id=state.get("document_id"),
             trace_id=state.get("trace_id"),
             force_reanalysis=force_reanalysis,
+            audit_meta=audit_meta_dict,  # Pre-MVP ID Contract: traceability
             analysis_metadata={
                 "detected_type": state["agreement_type"],
                 "type_confidence": state["type_confidence"],

@@ -29,7 +29,10 @@
       "Bash(dir \"f:\\NOESIS-2\\NOESIS-2\\users\"\")",
       "Bash(dos2unix:*)",
       "Bash(chmod:*)",
-      "Bash(npm run win:test:py:single:*)"
+      "Bash(npm run win:test:py:single:*)",
+      "Bash(npm run win:test:py:unit:*)",
+      "Bash(del ai_coreteststest_inspect_services.py)",
+      "Bash(npm run test:py:single:*)"
     ],
     "deny": [],
     "ask": []

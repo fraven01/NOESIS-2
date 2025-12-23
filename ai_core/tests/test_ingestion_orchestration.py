@@ -71,8 +71,12 @@ def test_observability_wrapper_honors_task_and_metadata():
         tenant_id="tenant-x",
         case_id="case-x",
         workflow_id=None,
+        trace_id=None,
+        collection_id=None,
         source=None,
         document_id="doc-x",
+        run_id=None,
+        ingestion_run_id=None,
         raw_payload_path=None,
     )
     trace_context = {"trace_id": "trace-123"}

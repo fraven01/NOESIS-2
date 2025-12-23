@@ -19,6 +19,7 @@ import json
 import logging
 import mimetypes
 import time
+from inspect import signature
 from collections.abc import Iterable, Mapping
 from importlib import import_module
 from typing import Any
@@ -86,7 +87,6 @@ from documents.models import DocumentCollection
 from documents.repository import DocumentsRepository, InMemoryDocumentsRepository
 from ai_core.adapters.db_documents_repository import DbDocumentsRepository
 from cases.models import Case
-from customers.models import Tenant
 from ai_core.rag.collections import (
     MANUAL_COLLECTION_LABEL,
     MANUAL_COLLECTION_SLUG,
@@ -201,6 +201,31 @@ def _get_run_ingestion_task():  # type: ignore[no-untyped-def]
     except Exception:
         pass
     return RUN_INGESTION
+
+
+def _task_accepts_state(task: object) -> bool:
+    run_fn = getattr(task, "run", None)
+    if run_fn is None:
+        return False
+    try:
+        params = signature(run_fn).parameters
+    except (TypeError, ValueError):
+        return False
+    return "state" in params
+
+
+def _enqueue_ingestion_task(
+    task: object,
+    *,
+    state: Mapping[str, object],
+    meta: Mapping[str, object],
+    legacy_args: tuple[object, ...],
+    legacy_kwargs: Mapping[str, object],
+) -> None:
+    if _task_accepts_state(task):
+        task.delay(state, meta)
+        return
+    task.delay(*legacy_args, **legacy_kwargs)
 
 
 def _get_partition_document_ids():  # type: ignore[no-untyped-def]
@@ -443,20 +468,6 @@ def _persist_collection_scope(
             metadata = {}
         metadata["collection_id"] = collection_id
         object_store.write_json(path, metadata)
-
-
-def _resolve_tenant_for_documents(meta: Mapping[str, object]):
-    identifier = meta.get("tenant_schema") or meta.get("tenant_id")
-    if not identifier:
-        return None
-    try:
-        return TenantContext.resolve_identifier(identifier, allow_pk=True)
-    except Exception:
-        logger.exception(
-            "documents.resolve_tenant_failed",
-            extra={"tenant_identifier": identifier},
-        )
-        return None
 
 
 def _ensure_collection_with_warning(
@@ -790,13 +801,14 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         if hasattr(request, "_request") and request._request is not request:
             setattr(request._request, "tool_context", tool_context)
 
+    scope_context = normalized_meta["scope_context"]
     run_id = uuid4().hex
-    workflow_id = normalized_meta.get("workflow_id") or normalized_meta.get("case_id")
+    workflow_id = scope_context.get("workflow_id") or scope_context.get("case_id")
 
     context = GraphContext(
-        tenant_id=normalized_meta["tenant_id"],
-        case_id=normalized_meta["case_id"],
-        trace_id=normalized_meta["trace_id"],
+        tenant_id=scope_context["tenant_id"],
+        case_id=scope_context["case_id"],
+        trace_id=scope_context["trace_id"],
         workflow_id=workflow_id,
         run_id=run_id,
         graph_name=normalized_meta["graph_name"],
@@ -1230,15 +1242,18 @@ def start_ingestion_run(
             str(exc), "validation_error", status.HTTP_400_BAD_REQUEST
         )
 
+    scope_context = meta["scope_context"]
+    tenant_schema = scope_context.get("tenant_schema") or meta.get("tenant_schema")
+
     collection_scope = getattr(validated_data, "collection_id", None)
-    if collection_scope:
-        meta["collection_id"] = collection_scope
+    if collection_scope and isinstance(scope_context, dict):
+        scope_context["collection_id"] = collection_scope
 
     if collection_scope:
         _ensure_document_collection(
             collection_id=collection_scope,
-            tenant_identifier=meta.get("tenant_schema") or meta.get("tenant_id"),
-            case_identifier=meta.get("case_id"),
+            tenant_identifier=tenant_schema or scope_context.get("tenant_id"),
+            case_identifier=scope_context.get("case_id"),
             metadata=request_data if isinstance(request_data, Mapping) else None,
         )
 
@@ -1261,7 +1276,9 @@ def start_ingestion_run(
     queued_at = timezone.now().isoformat()
 
     valid_document_ids, invalid_document_ids = _get_partition_document_ids()(
-        meta["tenant_id"], meta["case_id"], validated_data.document_ids
+        scope_context["tenant_id"],
+        scope_context["case_id"],
+        validated_data.document_ids,
     )
 
     to_dispatch = (
@@ -1269,32 +1286,55 @@ def start_ingestion_run(
     )
     if collection_scope:
         _persist_collection_scope(
-            meta["tenant_id"], meta["case_id"], to_dispatch, collection_scope
+            scope_context["tenant_id"],
+            scope_context["case_id"],
+            to_dispatch,
+            collection_scope,
         )
-    _get_run_ingestion_task().delay(
-        meta["tenant_id"],
-        meta["case_id"],
-        to_dispatch,
-        resolved_profile_id,
-        tenant_schema=meta["tenant_schema"],
-        run_id=ingestion_run_id,
-        trace_id=meta["trace_id"],
-        idempotency_key=idempotency_key,
+    if isinstance(scope_context, dict):
+        scope_context.setdefault("ingestion_run_id", ingestion_run_id)
+    state_payload: dict[str, object] = {
+        "tenant_id": scope_context["tenant_id"],
+        "case_id": scope_context["case_id"],
+        "document_ids": to_dispatch,
+        "embedding_profile": resolved_profile_id,
+        "tenant_schema": tenant_schema,
+        "run_id": ingestion_run_id,
+        "trace_id": scope_context["trace_id"],
+    }
+    if collection_scope:
+        state_payload["collection_id"] = collection_scope
+    _enqueue_ingestion_task(
+        _get_run_ingestion_task(),
+        state=state_payload,
+        meta=dict(meta),
+        legacy_args=(
+            scope_context["tenant_id"],
+            scope_context["case_id"],
+            to_dispatch,
+            resolved_profile_id,
+        ),
+        legacy_kwargs={
+            "tenant_schema": tenant_schema,
+            "run_id": ingestion_run_id,
+            "trace_id": scope_context["trace_id"],
+            "idempotency_key": idempotency_key,
+        },
     )
 
     record_ingestion_run_queued(
-        tenant_id=meta["tenant_id"],
-        case=meta["case_id"],
+        tenant_id=scope_context["tenant_id"],
+        case=scope_context["case_id"],
         run_id=ingestion_run_id,
         document_ids=to_dispatch,
         queued_at=queued_at,
-        trace_id=meta["trace_id"],
+        trace_id=scope_context["trace_id"],
         embedding_profile=validated_data.embedding_profile,
         source=validated_data.source,
     )
     emit_ingestion_case_event(
-        meta["tenant_id"],
-        meta["case_id"],
+        scope_context["tenant_id"],
+        scope_context["case_id"],
         run_id=ingestion_run_id,
         context="queued",
     )
@@ -1304,7 +1344,7 @@ def start_ingestion_run(
         "status": "queued",
         "queued_at": queued_at,
         "ingestion_run_id": ingestion_run_id,
-        "trace_id": meta["trace_id"],
+        "trace_id": scope_context["trace_id"],
         "idempotent": idempotent,
     }
 
@@ -1317,7 +1357,7 @@ def start_ingestion_run(
 
 
 def _derive_workflow_id(
-    meta: Mapping[str, object], metadata: Mapping[str, object]
+    scope_context: Mapping[str, object], metadata: Mapping[str, object]
 ) -> str:
     candidate = metadata.get("workflow_id")
     if isinstance(candidate, str):
@@ -1325,7 +1365,7 @@ def _derive_workflow_id(
         if candidate:
             return candidate.replace(":", "_")
 
-    case_id = str(meta.get("case_id") or "").strip()
+    case_id = str(scope_context.get("case_id") or "").strip()
     if not case_id:
         return "upload"
     return case_id.replace(":", "_")
@@ -1341,15 +1381,15 @@ def _infer_media_type(upload: UploadedFile) -> str:
 
 
 def _build_document_meta(
-    meta: Mapping[str, object],
+    scope_context: Mapping[str, object],
     metadata_obj: Mapping[str, object],
     external_id: str,
     *,
     media_type: str | None = None,
 ) -> DocumentMeta:
-    workflow_id = _derive_workflow_id(meta, metadata_obj)
+    workflow_id = _derive_workflow_id(scope_context, metadata_obj)
     payload: dict[str, object] = {
-        "tenant_id": str(meta["tenant_id"]),
+        "tenant_id": str(scope_context["tenant_id"]),
         "workflow_id": workflow_id,
     }
 
@@ -1380,13 +1420,11 @@ def _build_document_meta(
 
 def _ensure_document_collection_record(
     *,
-    tenant: object,
-    tenant_identifier: str,
-    collection_id: object,
-    case_id: str | None,
-    source: str = "upload",
-    key: str = MANUAL_COLLECTION_SLUG,
-    label: str = MANUAL_COLLECTION_LABEL,
+    scope_context: dict,
+    collection_id: UUID | str,
+    source: str | None = None,
+    key: str | None = None,
+    label: str | None = None,
 ) -> None:
     """Create or update a DocumentCollection row for manual developer uploads."""
 
@@ -1401,13 +1439,23 @@ def _ensure_document_collection_record(
     except (TypeError, ValueError, AttributeError):
         logger.warning(
             "document_collection.ensure.invalid_id",
-            extra={"tenant_id": tenant_identifier, "collection_id": collection_id},
+            extra={"scope_context": scope_context, "collection_id": collection_id},
         )
         return
 
-    tenant_obj = _resolve_tenant_for_documents({"tenant_id": tenant_identifier})
-    if tenant_obj is None and isinstance(tenant, Tenant):
-        tenant_obj = tenant
+    tenant_identifier = scope_context.get("tenant_id")
+    tenant_obj = None
+    if tenant_identifier:
+        try:
+            tenant_obj = TenantContext.resolve_identifier(
+                tenant_identifier, allow_pk=True
+            )
+        except Exception:
+            logger.exception(
+                "document_collection.ensure_tenant_resolution_failed",
+                extra={"tenant_id": tenant_identifier},
+            )
+            return
 
     if tenant_obj is None:
         logger.warning(
@@ -1417,6 +1465,7 @@ def _ensure_document_collection_record(
         return
 
     case_obj = None
+    case_id = scope_context.get("case_id")
     if case_id:
         case_obj = Case.objects.filter(
             tenant=tenant_obj,
@@ -1539,7 +1588,8 @@ def handle_document_upload(
     if metadata_obj is None:
         metadata_obj = {}
 
-    header_collection = meta.get("collection_id")
+    scope_context = meta["scope_context"]
+    header_collection = scope_context.get("collection_id")
     if header_collection and not metadata_obj.get("collection_id"):
         metadata_obj["collection_id"] = header_collection
 
@@ -1552,7 +1602,16 @@ def handle_document_upload(
 
     metadata_obj = metadata_model.model_dump()
 
-    tenant_obj = _resolve_tenant_for_documents(meta)
+    tenant_identifier = scope_context.get("tenant_id")
+    tenant_obj = None
+    if tenant_identifier:
+        try:
+            tenant_obj = TenantContext.resolve_identifier(
+                tenant_identifier, allow_pk=True
+            )
+        except Exception:
+            pass
+
     if tenant_obj is None:
         return _error_response(
             "Tenant could not be resolved for upload.",
@@ -1560,7 +1619,6 @@ def handle_document_upload(
             status.HTTP_400_BAD_REQUEST,
         )
 
-    canonical_tenant_identifier = tenant_obj.schema_name
     manual_collection_scope = str(manual_collection_uuid(tenant_obj))
 
     manual_scope_assigned = False
@@ -1579,16 +1637,17 @@ def handle_document_upload(
         except Exception:  # pragma: no cover - defensive guard
             logger.warning(
                 "upload.ensure_manual_collection_failed",
-                extra={"tenant_id": meta["tenant_id"], "case_id": meta["case_id"]},
+                extra={
+                    "tenant_id": scope_context.get("tenant_id"),
+                    "case_id": scope_context.get("case_id"),
+                },
                 exc_info=True,
             )
         metadata_obj["collection_id"] = manual_collection_scope
 
     if manual_scope_assigned and metadata_obj.get("collection_id"):
         _ensure_document_collection_record(
-            tenant=tenant_obj,
-            tenant_identifier=str(meta.get("tenant_id") or canonical_tenant_identifier),
-            case_id=meta.get("case_id"),
+            scope_context=scope_context,
             collection_id=metadata_obj["collection_id"],
             source="upload",
             key=MANUAL_COLLECTION_SLUG,
@@ -1685,9 +1744,10 @@ def handle_document_upload(
         metadata_obj["title"] = original_name
 
     document_meta = _build_document_meta(
-        meta, metadata_obj, external_id, media_type=detected_mime
+        scope_context, metadata_obj, external_id, media_type=detected_mime
     )
-    meta.setdefault("workflow_id", document_meta.workflow_id)
+    if isinstance(scope_context, dict):
+        scope_context.setdefault("workflow_id", document_meta.workflow_id)
 
     print(
         f"DEBUG: collection_ids={collection_ids!r} metadata_obj_collection_id={metadata_obj.get('collection_id')!r}"
@@ -1745,9 +1805,9 @@ def handle_document_upload(
         graph_state = {
             "input": graph_input,
             "context": {
-                "tenant_id": meta["tenant_id"],
-                "trace_id": meta["trace_id"],
-                "case_id": meta["case_id"],
+                "tenant_id": scope_context["tenant_id"],
+                "trace_id": scope_context["trace_id"],
+                "case_id": scope_context["case_id"],
                 "ingestion_run_id": ingestion_run_id,
                 # Runtime dependencies passed in context for now (Phase 2/3 style)
                 "runtime_repository": repository,  # Though persist_node currently instantiates its own service, we should align this later context usage
@@ -1784,7 +1844,10 @@ def handle_document_upload(
             if is_user_error:
                 logger.warning(
                     "Upload ingestion validation failed",
-                    extra={"reason": reason, "tenant_id": meta.get("tenant_id")},
+                    extra={
+                        "reason": reason,
+                        "tenant_id": scope_context.get("tenant_id"),
+                    },
                 )
                 return _error_response(
                     reason,
@@ -1817,8 +1880,8 @@ def handle_document_upload(
         logger.exception(
             "Upload ingestion graph failed",
             extra={
-                "tenant_id": meta.get("tenant_id"),
-                "case_id": meta.get("case_id"),
+                "tenant_id": scope_context.get("tenant_id"),
+                "case_id": scope_context.get("case_id"),
                 "reason": reason,
             },
         )
@@ -1831,8 +1894,8 @@ def handle_document_upload(
         logger.exception(
             "Unexpected error while running upload ingestion graph",
             extra={
-                "tenant_id": meta.get("tenant_id"),
-                "case_id": meta.get("case_id"),
+                "tenant_id": scope_context.get("tenant_id"),
+                "case_id": scope_context.get("case_id"),
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
             },
@@ -1862,8 +1925,8 @@ def handle_document_upload(
         logger.error(
             "Upload ingestion graph completed without persisting document",
             extra={
-                "tenant_id": meta.get("tenant_id"),
-                "case_id": meta.get("case_id"),
+                "tenant_id": scope_context.get("tenant_id"),
+                "case_id": scope_context.get("case_id"),
                 "graph_decision": decision,
             },
         )
@@ -1881,16 +1944,16 @@ def handle_document_upload(
     logger.info(
         "Upload ingestion completed synchronously",
         extra={
-            "tenant_id": meta["tenant_id"],
-            "case_id": meta["case_id"],
+            "tenant_id": scope_context.get("tenant_id"),
+            "case_id": scope_context.get("case_id"),
             "document_id": document_id,
             "run_id": ingestion_run_id,
         },
     )
 
     response_payload: dict[str, object] = {
-        "trace_id": meta["trace_id"],
-        "workflow_id": meta["workflow_id"],
+        "trace_id": scope_context.get("trace_id"),
+        "workflow_id": scope_context.get("workflow_id"),
     }
     if document_id:
         response_payload["document_id"] = document_id

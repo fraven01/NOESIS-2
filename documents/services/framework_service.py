@@ -27,6 +27,7 @@ def persist_profile(
     document_id: Optional[str] = None,
     trace_id: Optional[str] = None,
     force_reanalysis: bool = False,
+    audit_meta: Dict[str, Any] | None = None,
     analysis_metadata: Dict[str, Any] | None = None,
     metadata: Dict[str, Any] | None = None,
     completeness_score: float | None = None,
@@ -38,6 +39,11 @@ def persist_profile(
     Handles versioning: checks for existing current profile for the gremium.
     If exists and force_reanalysis=False, raises ValueError.
     If exists and force_reanalysis=True, sets old to not current and creates new version.
+
+    Args:
+        audit_meta: Pre-MVP ID Contract audit metadata for traceability.
+            Contains trace_id, invocation_id, created_by_user_id, last_hop_service_id.
+            Stored in metadata["audit_meta"] for entity tracking.
     """
     if analysis_metadata is None:
         analysis_metadata = {}
@@ -99,6 +105,10 @@ def persist_profile(
         if trace_id:
             final_metadata["trace_id"] = trace_id
 
+        # Store audit_meta for traceability (Pre-MVP ID Contract)
+        if audit_meta:
+            final_metadata["audit_meta"] = audit_meta
+
         # Create new profile
         profile = FrameworkProfile.objects.create(
             tenant=tenant,
@@ -141,6 +151,13 @@ def persist_profile(
                 "is_new_version": existing_profile is not None,
                 "agreement_type": agreement_type,
                 "trace_id": trace_id,
+                # Pre-MVP ID Contract: service identity tracking
+                "service_id": (
+                    audit_meta.get("last_hop_service_id") if audit_meta else None
+                ),
+                "invocation_id": (
+                    audit_meta.get("invocation_id") if audit_meta else None
+                ),
             },
         )
 

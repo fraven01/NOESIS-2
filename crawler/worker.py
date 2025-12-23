@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from lxml import html
 
 from ai_core.infra import object_store
+from ai_core.ids.http_scope import normalize_task_context
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
@@ -539,17 +540,53 @@ class CrawlerWorker:
         frontier_state: Optional[Mapping[str, Any]],
         meta_overrides: Optional[Mapping[str, Any]],
     ) -> dict[str, Any]:
+        scope_source = {}
+        if isinstance(meta_overrides, Mapping):
+            candidate = meta_overrides.get("scope_context")
+            if isinstance(candidate, Mapping):
+                scope_source = dict(candidate)
+
+        resolved_case_id = case_id or scope_source.get("case_id")
+        # case_id is now optional per contract (e.g. for global ingestion)
+
+        scope = normalize_task_context(
+            tenant_id=tenant_id,
+            case_id=str(resolved_case_id) if resolved_case_id else None,
+            service_id="crawler-worker",
+            trace_id=trace_id or scope_source.get("trace_id"),
+            invocation_id=scope_source.get("invocation_id"),
+            run_id=scope_source.get("run_id"),
+            ingestion_run_id=scope_source.get("ingestion_run_id"),
+            workflow_id=scope_source.get("workflow_id"),
+            idempotency_key=idempotency_key or scope_source.get("idempotency_key"),
+            tenant_schema=scope_source.get("tenant_schema"),
+            collection_id=scope_source.get("collection_id"),
+        )
+
         payload: dict[str, Any] = {
-            "tenant_id": tenant_id,
-            "case_id": case_id,
+            "scope_context": scope.model_dump(mode="json"),
             "crawl_id": crawl_id,
-            "idempotency_key": idempotency_key,
-            "trace_id": trace_id,
         }
         if frontier_state:
             payload.setdefault("frontier", dict(frontier_state))
         if meta_overrides:
-            payload.update(dict(meta_overrides))
+            filtered_overrides = dict(meta_overrides)
+            filtered_overrides.pop("scope_context", None)
+            for key in (
+                "tenant_id",
+                "case_id",
+                "trace_id",
+                "workflow_id",
+                "collection_id",
+                "idempotency_key",
+                "run_id",
+                "ingestion_run_id",
+                "invocation_id",
+                "user_id",
+                "service_id",
+            ):
+                filtered_overrides.pop(key, None)
+            payload.update(filtered_overrides)
         return {key: value for key, value in payload.items() if value is not None}
 
     @staticmethod

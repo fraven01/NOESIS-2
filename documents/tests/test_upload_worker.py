@@ -100,8 +100,9 @@ def test_upload_worker_process_success(
     # We can't easily check the meta passed to delay() without capturing it from the mock call args
     call_args = mock_run_graph.delay.call_args
     meta_arg = call_args[0][1]
-    assert meta_arg["tenant_id"] == "tenant-1"
-    assert meta_arg["invocation_id"] == "inv-1"
+    scope_context = meta_arg["scope_context"]
+    assert scope_context["tenant_id"] == "tenant-1"
+    assert scope_context["invocation_id"] == "inv-1"
 
 
 def test_upload_worker_register_document_failure_continues(
@@ -116,6 +117,7 @@ def test_upload_worker_register_document_failure_continues(
     result = worker.process(
         upload,
         tenant_id="tenant-1",
+        case_id="case-1",
     )
 
     # Needs to handle failure gracefully and still publish if possible,
@@ -139,6 +141,7 @@ def test_upload_worker_sets_media_type_on_fileblob(
     result = worker.process(
         upload,
         tenant_id="tenant-1",
+        case_id="case-1",
         document_metadata={},
     )
 

@@ -1,11 +1,24 @@
 from typing import Any, MutableMapping
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 
 from ai_core.graphs.technical import retrieval_augmented_generation
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
+
+
+def _scope_meta(tenant_id: str, case_id: str) -> dict[str, Any]:
+    return {
+        "scope_context": {
+            "tenant_id": tenant_id,
+            "case_id": case_id,
+            "trace_id": "trace-1",
+            "invocation_id": uuid4().hex,
+            "run_id": uuid4().hex,
+        }
+    }
 
 
 def _dummy_output() -> retrieve.RetrieveOutput:
@@ -57,7 +70,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
         state: MutableMapping[str, Any], meta: MutableMapping[str, Any]
     ):
         calls.append("compose")
-        assert meta["tenant_id"] == "tenant-42"
+        assert meta["scope_context"]["tenant_id"] == "tenant-42"
         return _fake_compose(state, meta)
 
     graph = retrieval_augmented_generation.RetrievalAugmentedGenerationGraph(
@@ -65,7 +78,7 @@ def test_graph_runs_retrieve_then_compose() -> None:
         compose_node=_recording_compose,
     )
 
-    state, result = graph.run({}, {"tenant_id": "tenant-42", "case_id": "case-1"})
+    state, result = graph.run({}, _scope_meta("tenant-42", "case-1"))
 
     assert calls == ["retrieve", "compose"]
     assert state["answer"] == "answer"
@@ -112,10 +125,10 @@ def test_graph_normalises_tenant_alias() -> None:
         compose_node=_fake_compose,
     )
 
-    meta = {"tenant_id": "tenant-alias", "case_id": "case-1"}
+    meta = _scope_meta("tenant-alias", "case-1")
     state, result = graph.run({}, meta)
 
-    assert meta["tenant_id"] == "tenant-alias"
+    assert meta["scope_context"]["tenant_id"] == "tenant-alias"
     assert captured["tenant_id"] == "tenant-alias"
     assert state["answer"] == "answer"
     assert result["answer"] == "answer"
@@ -155,7 +168,7 @@ def test_graph_fills_missing_snippet_fields() -> None:
         compose_node=_compose_with_sparse_snippets,
     )
 
-    state, result = graph.run({}, {"tenant_id": "tenant", "case_id": "case"})
+    state, result = graph.run({}, _scope_meta("tenant", "case"))
 
     snippet = result["snippets"][0]
     assert snippet["text"] == "snippet"

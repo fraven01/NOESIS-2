@@ -484,6 +484,11 @@ def test_web_search_ingest_selected_passes_correct_params_to_crawler(
     assert len(request_model.origins) == 1
     assert request_model.origins[0].url == "https://example.com"
 
+    # Verify the meta payload complies with UniversalIngestionGraph contract
+    meta = call_args.args[1]
+    assert "scope_context" in meta, "CrawlerManager expects 'scope_context' in meta"
+    assert meta["scope_context"]["tenant_id"] == tenant.schema_name
+
 
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task")

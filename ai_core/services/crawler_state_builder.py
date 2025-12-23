@@ -76,6 +76,7 @@ def build_crawler_state(
     workflow_id = context.workflow_id
     repository = context.repository
     meta = context.meta
+    scope_meta = meta["scope_context"]
 
     builds: list[CrawlerStateBundle] = []
     for origin in request_data.origins or []:
@@ -268,7 +269,7 @@ def build_crawler_state(
             max_document_bytes=limits.max_document_bytes,
         )
         guardrail_signals = GuardrailSignalsData(
-            tenant_id=str(meta.get("tenant_id")),
+            tenant_id=str(scope_meta.get("tenant_id")),
             provider=source.provider,
             canonical_source=source.canonical_source,
             host=descriptor.host,
@@ -291,9 +292,8 @@ def build_crawler_state(
             document_uuid = uuid4()
         document_id = str(document_uuid)
 
-        collection_uuid = _resolve_document_uuid(
-            request_data.collection_id if request_data.collection_id else None
-        )
+        # collection_id should remain as string per ScopeContext contract
+        collection_id_str = request_data.collection_id
 
         encoded_payload = base64.b64encode(body_bytes).decode("ascii")
         blob = InlineBlob(
@@ -316,13 +316,13 @@ def build_crawler_state(
 
         normalized_document_input = NormalizedDocument(
             ref={
-                "tenant_id": str(meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.get("tenant_id")),
                 "workflow_id": str(workflow_id),
                 "document_id": document_uuid,
-                "collection_id": collection_uuid,
+                "collection_id": collection_id_str,
             },
             meta={
-                "tenant_id": str(meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.get("tenant_id")),
                 "workflow_id": str(workflow_id),
                 "title": origin.title or request_data.title,
                 "language": origin.language or request_data.language,
@@ -338,8 +338,8 @@ def build_crawler_state(
         )
 
         if snapshot_requested and body_bytes:
-            tenant_id = str(meta.get("tenant_id"))
-            case_id = str(meta.get("case_id"))
+            tenant_id = str(scope_meta.get("tenant_id"))
+            case_id = str(scope_meta.get("case_id"))
             snapshot_path, snapshot_sha256 = _write_snapshot(
                 object_store,
                 tenant=tenant_id,
@@ -351,8 +351,8 @@ def build_crawler_state(
             snapshot_sha256 = None
 
         state: dict[str, object] = {
-            "tenant_id": meta.get("tenant_id"),
-            "case_id": meta.get("case_id"),
+            "tenant_id": scope_meta.get("tenant_id"),
+            "case_id": scope_meta.get("case_id"),
             "workflow_id": workflow_id,
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
@@ -385,7 +385,7 @@ def build_crawler_state(
         state["control"] = control
 
         baseline_data, previous_status = _load_baseline_context(
-            meta.get("tenant_id"),
+            scope_meta.get("tenant_id"),
             workflow_id,
             document_id,
             repository,

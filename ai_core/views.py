@@ -25,6 +25,7 @@ from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     META_CASE_ID_KEY,
     META_COLLECTION_ID_KEY,
+    META_IDEMPOTENCY_KEY,
     META_KEY_ALIAS_KEY,
     META_TENANT_ID_KEY,
     META_TENANT_SCHEMA_KEY,
@@ -71,6 +72,7 @@ from rest_framework.views import APIView
 
 
 from ai_core.authz.visibility import allow_extended_visibility
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
@@ -453,6 +455,22 @@ def _resolve_hard_delete_actor(
 
 
 def _prepare_request(request: Request):
+    """
+    Prepare a request by extracting, validating, and enriching context.
+
+    This function provides request preparation for AI Core views including:
+    - Header validation (tenant, case, key_alias formats)
+    - Rate limiting enforcement
+    - Default case bootstrap ("general")
+    - Case active status check
+    - ScopeContext building via normalize_request() (Pre-MVP ID Contract)
+    - Request.META enrichment for downstream consumers
+    - Log context binding
+
+    Returns:
+        tuple: (meta dict, error response or None)
+            meta includes 'scope_context' with serialized ScopeContext
+    """
     from customers.tenant_context import TenantContext, TenantRequiredError
 
     tenant_header = request.headers.get(X_TENANT_ID_HEADER)
@@ -600,20 +618,6 @@ def _prepare_request(request: Request):
         )
         if case_error is not None:
             return None, case_error
-    meta = {
-        "tenant_id": tenant_id,
-        "tenant_schema": tenant_schema,
-        "case_id": case_id,
-        "trace_id": trace_id,
-    }
-    if workflow_id:
-        meta["workflow_id"] = workflow_id
-    if key_alias:
-        meta["key_alias"] = key_alias
-    if collection_id:
-        meta["collection_id"] = collection_id
-    if idempotency_key:
-        meta["idempotency_key"] = idempotency_key
 
     request.META[META_TRACE_ID_KEY] = trace_id
     request.META[META_CASE_ID_KEY] = case_id
@@ -631,15 +635,59 @@ def _prepare_request(request: Request):
         request.META[META_COLLECTION_ID_KEY] = collection_id
     else:
         request.META.pop(META_COLLECTION_ID_KEY, None)
+    if idempotency_key:
+        request.META[META_IDEMPOTENCY_KEY] = idempotency_key
+    else:
+        request.META.pop(META_IDEMPOTENCY_KEY, None)
+
+    # Build ScopeContext via normalize_request (Pre-MVP ID Contract)
+    # This provides a standardized scope object for downstream consumers
+    from ai_core.ids.http_scope import normalize_request
+
+    scope_context = normalize_request(request)
+    scope_payload = scope_context.model_dump(mode="json")
+    scope_trace_id = scope_payload["trace_id"]
+    scope_case_id = scope_payload.get("case_id")
+    scope_tenant_id = scope_payload["tenant_id"]
+    scope_workflow_id = scope_payload.get("workflow_id")
+    scope_collection_id = scope_payload.get("collection_id")
+    scope_tenant_schema = scope_payload.get("tenant_schema") or tenant_schema
+
+    request.META[META_TRACE_ID_KEY] = scope_trace_id
+    if scope_case_id:
+        request.META[META_CASE_ID_KEY] = scope_case_id
+    if scope_tenant_id:
+        request.META[META_TENANT_ID_KEY] = scope_tenant_id
+    if scope_tenant_schema:
+        request.META[META_TENANT_SCHEMA_KEY] = scope_tenant_schema
+    if scope_workflow_id:
+        request.META[META_WORKFLOW_ID_KEY] = scope_workflow_id
+    else:
+        request.META.pop(META_WORKFLOW_ID_KEY, None)
+    if scope_collection_id:
+        request.META[META_COLLECTION_ID_KEY] = scope_collection_id
+    else:
+        request.META.pop(META_COLLECTION_ID_KEY, None)
+
+    # Build meta dict from validated scope and additional view-specific fields
+    meta = {
+        "scope_context": scope_payload,
+        "tenant_schema": scope_tenant_schema,
+    }
+    if key_alias:
+        meta["key_alias"] = key_alias
 
     log_context = {
-        "trace_id": trace_id,
-        "case_id": case_id,
-        "workflow_id": workflow_id,
-        "tenant_id": tenant_id,
-        "tenant": tenant_id,
+        "trace_id": scope_trace_id,
+        "case_id": scope_case_id,
+        "workflow_id": scope_workflow_id,
+        "tenant_id": scope_tenant_id,
+        "tenant": scope_tenant_id,
         "key_alias": key_alias,
-        "collection_id": collection_id,
+        "collection_id": scope_collection_id,
+        # Pre-MVP ID Contract: identity tracking
+        "user_id": scope_context.user_id,
+        "invocation_id": scope_context.invocation_id,
     }
     request.log_context = log_context
     bind_log_context(**log_context)
@@ -1624,15 +1672,17 @@ class RagUploadView(APIView):
         if error:
             return error
 
+        scope_context = meta["scope_context"]
+
         # Fix for Silent RAG Failure (Finding #22):
         # In DEV/DEBUG mode, default missing case_id to the dev default.
         # so that uploads from Workbench are visible to the RAG Chat.
-        if settings.DEBUG and not meta.get("case_id"):
+        if settings.DEBUG and not scope_context.get("case_id"):
             logger.info(
                 "view.rag_upload.defaulting_case_id",
                 extra={"assigned_case_id": DEV_DEFAULT_CASE_ID},
             )
-            meta["case_id"] = DEV_DEFAULT_CASE_ID
+            scope_context["case_id"] = DEV_DEFAULT_CASE_ID
 
         content_type = request.headers.get("Content-Type", "")
         if content_type:
@@ -1674,9 +1724,11 @@ class RagIngestionRunView(APIView):
         if error:
             return error
 
+        scope_context = meta["scope_context"]
+
         # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
-        if settings.DEBUG and not meta.get("case_id"):
-            meta["case_id"] = DEV_DEFAULT_CASE_ID
+        if settings.DEBUG and not scope_context.get("case_id"):
+            scope_context["case_id"] = DEV_DEFAULT_CASE_ID
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):
@@ -1685,11 +1737,11 @@ class RagIngestionRunView(APIView):
             payload = dict(getattr(request, "data", {}) or {})
 
         if (
-            meta.get("collection_id")
+            scope_context.get("collection_id")
             and not payload.get("collection_id")
             and payload.get("collection_ids") in (None, "")
         ):
-            payload["collection_id"] = meta["collection_id"]
+            payload["collection_id"] = scope_context["collection_id"]
 
         response = services.start_ingestion_run(payload, meta, idempotency_key)
 
@@ -1705,7 +1757,10 @@ class RagIngestionStatusView(APIView):
         if error:
             return error
 
-        latest = get_latest_ingestion_run(meta["tenant_id"], meta["case_id"])
+        scope_context = meta["scope_context"]
+        latest = get_latest_ingestion_run(
+            scope_context["tenant_id"], scope_context["case_id"]
+        )
         if not latest:
             response = _error_response(
                 "No ingestion runs recorded for the current tenant/case.",
@@ -1756,10 +1811,10 @@ class RagIngestionStatusView(APIView):
 
         from customers.tenant_context import TenantContext
 
-        tenant_obj = TenantContext.resolve_identifier(meta["tenant_id"])
+        tenant_obj = TenantContext.resolve_identifier(scope_context["tenant_id"])
         if tenant_obj is not None:
             case_obj = Case.objects.filter(
-                tenant=tenant_obj, external_id=meta["case_id"]
+                tenant=tenant_obj, external_id=scope_context["case_id"]
             ).first()
             if case_obj is not None:
                 response_payload["case_status"] = case_obj.status
@@ -1790,7 +1845,7 @@ class RagIngestionStatusView(APIView):
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         processed_response = apply_std_headers(response, meta)
-        idempotency_key_value = meta.get("idempotency_key")
+        idempotency_key_value = scope_context.get("idempotency_key")
         header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not header_idempotency:
             meta_header_key = "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
@@ -1808,7 +1863,7 @@ class RagIngestionStatusView(APIView):
                 resolved_idempotency,
             )
             if not idempotency_key_value:
-                meta["idempotency_key"] = resolved_idempotency
+                scope_context["idempotency_key"] = resolved_idempotency
         return processed_response
 
 
@@ -1874,7 +1929,17 @@ class RagHardDeleteAdminView(APIView):
             "idempotent": idempotent,
         }
 
-        meta = {"trace_id": trace_id, "tenant_id": tenant_id}
+        scope_context = ScopeContext.model_validate(
+            {
+                "tenant_id": tenant_id,
+                "trace_id": trace_id,
+                "invocation_id": uuid4().hex,
+                "run_id": uuid4().hex,
+                "tenant_schema": tenant_schema,
+                "idempotency_key": request.headers.get(IDEMPOTENCY_KEY_HEADER),
+            }
+        )
+        meta = {"scope_context": scope_context.model_dump(mode="json")}
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 

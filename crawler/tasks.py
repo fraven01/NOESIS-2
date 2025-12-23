@@ -25,7 +25,8 @@ def crawl_url_task(
         meta: Context metadata (tenant_id, case_id, etc.).
         ingestion_overrides: Optional overrides for the ingestion process.
     """
-    tenant_id = meta.get("tenant_id")
+    scope_context = meta.get("scope_context", {})
+    tenant_id = scope_context.get("tenant_id")
     if not tenant_id:
         logger.error("crawl_url_task.missing_tenant_id", extra={"url": url})
         return {"status": "error", "reason": "missing_tenant_id"}
@@ -62,15 +63,18 @@ def crawl_url_task(
 
         # 3. Process
         # worker.process handles fetching, asset extraction, and dispatching ingestion
-        doc_meta = dict(meta)
-        doc_meta["source"] = url
+        doc_meta = {"source": url}
+        if scope_context.get("workflow_id"):
+            doc_meta["workflow_id"] = scope_context.get("workflow_id")
+        if scope_context.get("collection_id"):
+            doc_meta["collection_id"] = scope_context.get("collection_id")
 
         result = worker.process(
             request,
             tenant_id=tenant_id,
-            case_id=meta.get("case_id"),
+            case_id=scope_context.get("case_id"),
             crawl_id=meta.get("crawl_id"),
-            trace_id=meta.get("trace_id"),
+            trace_id=scope_context.get("trace_id"),
             document_metadata=doc_meta,
             ingestion_overrides=ingestion_overrides,
             meta_overrides=meta,

@@ -56,15 +56,44 @@ The canonical scope model is `ai_core/contracts/scope.py:ScopeContext`.
 
 ScopeContext is built from requests in:
 
-- Django `HttpRequest`: `ai_core/ids/http_scope.py:normalize_request`
+- Django `HttpRequest` (User Request Hop): `ai_core/ids/http_scope.py:normalize_request`
+- Celery Tasks (S2S Hop): `ai_core/ids/http_scope.py:normalize_task_context`
 - Generic objects (incl. DRF request): `ai_core/graph/schemas.py:_build_scope_context`
 
 As implemented in `ScopeContext` + normalizers:
 
 - `tenant_id` exists for every scope.
 - `trace_id` is normalized/coerced; when missing it is generated.
-- Exactly one runtime identifier exists in scope: `run_id` XOR `ingestion_run_id` (`ai_core/contracts/scope.py:ScopeContext.validate_run_scope`).
-- `case_id` is validated for format when present (pattern in `ai_core/ids/headers.py`).
+- At least one runtime identifier required: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion).
+- `case_id` is optional at HTTP request level, validated for format when present (pattern in `ai_core/ids/headers.py`). Required for tool invocations (enforced in `ToolContext`).
+
+#### Identity IDs (Pre-MVP ID Contract)
+
+Identity is tracked via `user_id` and `service_id` which are **mutually exclusive**:
+
+| Hop Type | `user_id` | `service_id` | Example |
+|----------|-----------|--------------|---------|
+| User Request Hop | REQUIRED (when auth) | ABSENT | HTTP API call with JWT |
+| S2S Hop | ABSENT | REQUIRED | Celery task, internal graph call |
+| Public Endpoint | ABSENT | ABSENT | Health check, public docs |
+
+- `normalize_request()` extracts `user_id` from Django auth and sets `service_id=None`.
+- `normalize_task_context()` requires `service_id` and sets `user_id=None`.
+- `initiated_by_user_id` (who triggered the flow) is for `audit_meta` only, not `ScopeContext`.
+
+#### Audit Meta (Entity Persistence)
+
+For entity persistence, use `ai_core/contracts/audit_meta.py:audit_meta_from_scope`:
+
+```python
+audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+```
+
+Keys in `audit_meta`:
+- `trace_id`, `invocation_id`: Correlation
+- `created_by_user_id`: Entity owner (set once, immutable)
+- `initiated_by_user_id`: Who triggered the flow (causal tracking)
+- `last_hop_service_id`: Last service that wrote (from `scope.service_id`)
 
 ### Graph request meta (`meta`) for AI Core graphs
 
@@ -80,8 +109,10 @@ As implemented in `ScopeContext` + normalizers:
 Canonical tool envelope models live in `ai_core/tool_contracts/base.py`.
 
 - `ToolContext` is immutable (`ConfigDict(frozen=True)`).
-- Base `ToolContext` enforces runtime-ID XOR (`ai_core/tool_contracts/base.py:ToolContext.check_run_ids`).
-- `ai_core/tool_contracts/__init__.py` re-exports the canonical `ToolContext` from `ai_core/tool_contracts/base.py` (no duplicated context model).
+- At least one runtime ID required: `run_id` and/or `ingestion_run_id` (`ai_core/tool_contracts/base.py:ToolContext.check_run_ids`).
+- Identity validation: `user_id` and `service_id` are mutually exclusive (`ai_core/tool_contracts/base.py:ToolContext.check_identity`).
+- `ai_core/tool_contracts/__init__.py` re-exports the canonical `ToolContext` from `ai_core/tool_contracts/base.py`.
+- Build from scope: `scope.to_tool_context()` or `tool_context_from_scope(scope)`.
 
 ### Deprecated identifier key
 

@@ -172,3 +172,24 @@ def tenant_client(client, monkeypatch):
     monkeypatch.setattr(TenantMainMiddleware, "process_request", _mock_process_request)
 
     return client
+
+
+@pytest.fixture(autouse=True)
+def cleanup_graph_cache():
+    """Clear graph cache after each test to prevent memory leaks.
+
+    This ensures:
+    - Test isolation (no cache pollution between tests)
+    - Memory management (graph is garbage collected)
+    - Fresh graph state for each test
+    """
+    yield
+    try:
+        from ai_core.graphs.technical.universal_ingestion_graph import (
+            _clear_cached_processing_graph,
+        )
+
+        _clear_cached_processing_graph()
+    except ImportError:
+        # Module not loaded, nothing to clear
+        pass

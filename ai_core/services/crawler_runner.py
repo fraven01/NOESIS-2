@@ -41,30 +41,6 @@ from .crawler_state_builder import build_crawler_state
 logger = get_logger(__name__)
 
 
-def debug_check_json_serializable(obj, path=""):
-    import json
-    import inspect
-
-    class DebugEncoder(json.JSONEncoder):
-        def default(self, o):
-            if (
-                inspect.ismethod(o)
-                or inspect.isfunction(o)
-                or inspect.isbuiltin(o)
-                or type(o).__name__ == "method"
-            ):
-                raise Exception(f"DEBUG FOUND METHOD: {o} type={type(o)}")
-            try:
-                return super().default(o)
-            except TypeError:
-                raise Exception(f"DEBUG FOUND NON-SERIALIZABLE: {o} type={type(o)}")
-
-    try:
-        json.dumps(obj, cls=DebugEncoder)
-    except Exception as exc:
-        raise Exception(f"DEBUG CHECK FAILED at {path}: {exc}") from exc
-
-
 @dataclass(slots=True)
 class CrawlerRunnerCoordinatorResult:
     """Return value for crawler ingestion coordination."""
@@ -83,6 +59,9 @@ def run_crawler_runner(
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
 
+    scope_context = meta["scope_context"]
+    scope_meta = scope_context
+
     # Lazy import to prevent OOM in test environments
     from ai_core.graphs.technical.universal_ingestion_graph import (
         build_universal_ingestion_graph,
@@ -90,7 +69,7 @@ def run_crawler_runner(
     )
 
     if request_model.collection_id:
-        meta["collection_id"] = request_model.collection_id
+        scope_context["collection_id"] = request_model.collection_id
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_resolved = resolve_workflow_id(
@@ -128,14 +107,16 @@ def run_crawler_runner(
         raise ValueError("No origins resolved for crawler run.")
 
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
-    idempotency_key = meta.get("idempotency_key")
+    # NOTE: This must run BEFORE ID validation to allow early return for idempotent requests
+    idempotency_key = scope_meta.get("idempotency_key")
     idempotent_flag = False
     fingerprint = None
 
-    # Require tenant_id for fingerprinting to prevent collisions
-    tenant_id_for_fp = meta.get("tenant_id")
+    # Pre-validate required IDs for fingerprinting (full validation happens later)
+    tenant_id_for_fp = scope_meta.get("tenant_id")
+    case_id_for_fp = scope_meta.get("case_id")  # Optional - may be None
+
     if not tenant_id_for_fp:
-        # Will be caught by ID validation later, but guard here too
         raise ValueError("tenant_id is required for idempotency fingerprinting")
 
     try:
@@ -143,8 +124,10 @@ def run_crawler_runner(
         import hashlib
 
         fingerprint_payload = {
-            "tenant_id": str(tenant_id_for_fp),  # Guaranteed non-null
-            "case_id": meta.get("case_id"),  # Optional in fingerprint
+            "tenant_id": str(tenant_id_for_fp),  # Required (Pre-MVP ID Contract)
+            "case_id": (
+                str(case_id_for_fp) if case_id_for_fp else None
+            ),  # Optional - include in fingerprint if present
             "workflow_id": str(workflow_resolved),
             "collection_id": request_model.collection_id,
             "mode": request_model.mode,
@@ -165,8 +148,10 @@ def run_crawler_runner(
     # Check idempotency using Redis/Django cache (cross-process)
     from django.core.cache import cache
 
-    CACHE_PREFIX = "crawler_idempotency:"
-    CACHE_TTL = 3600  # 1 hour
+    CACHE_PREFIX = getattr(
+        settings, "CRAWLER_IDEMPOTENCY_CACHE_PREFIX", "crawler_idempotency:"
+    )
+    CACHE_TTL = getattr(settings, "CRAWLER_IDEMPOTENCY_CACHE_TTL_SECONDS", 3600)
 
     if idempotency_key:
         cache_key = f"{CACHE_PREFIX}key:{idempotency_key}"
@@ -203,25 +188,29 @@ def run_crawler_runner(
             idempotency_key=idempotency_key,
         )
 
-    # Validate mandatory IDs before graph invocation
-    tenant_id = meta.get("tenant_id")
-    if not tenant_id:
-        raise ValueError("tenant_id is mandatory for crawler ingestion")
+    # Validate mandatory IDs before graph invocation (Pre-MVP ID Contract)
+    # NOTE: case_id is optional at HTTP level, becomes mandatory for graph execution
+    required_ids = {
+        "tenant_id": "tenant_id is mandatory for crawler ingestion",
+        "trace_id": "trace_id is mandatory for correlation",
+        "invocation_id": "invocation_id is mandatory per ID contract",
+    }
 
-    case_id = meta.get("case_id")
-    if not case_id:
-        raise ValueError("case_id is mandatory for AI Core graph runs")
+    for field, error_msg in required_ids.items():
+        if not scope_meta.get(field):
+            raise ValueError(error_msg)
 
-    trace_id = meta.get("trace_id")
-    if not trace_id:
-        trace_id = str(uuid4())
-        logger.warning(
-            "trace_id_missing_generated",
-            extra={
-                "generated_trace_id": trace_id,
-                "tenant_id": str(tenant_id),
-            },
-        )
+    # Extract validated IDs
+    tenant_id = scope_meta["tenant_id"]
+    case_id = scope_meta.get("case_id")  # Optional at HTTP level
+    trace_id = scope_meta["trace_id"]
+
+    # Identity IDs (Pre-MVP ID Contract)
+    # HTTP requests have user_id (if authenticated), service_id is None
+    # S2S hops (Celery tasks) have service_id, user_id may be present for audit trail
+    # Crawler runner accepts both patterns since it can be called from HTTP or Celery
+    _service_id = scope_meta.get("service_id")
+    _user_id = scope_meta.get("user_id")
 
     completed_runs: list[dict[str, object]] = []
     # Updated to use UniversalIngestionGraph
@@ -521,7 +510,6 @@ def _build_synchronous_payload(
         "errors": errors_payload,
         "idempotent": idempotent_flag,
     }
-    debug_check_json_serializable(payload, "sync_payload_internal")
     return payload
 
 
@@ -539,9 +527,11 @@ def _maybe_start_ingestion(
     if build.collection_id:
         payload["collection_id"] = build.collection_id
 
+    scope_context = meta["scope_context"]
+    scope_meta = scope_context
     try:
         response = services_module.start_ingestion_run(
-            payload, dict(meta), meta.get("idempotency_key")
+            payload, dict(meta), scope_meta.get("idempotency_key")
         )
     except Exception:
         logger.exception(

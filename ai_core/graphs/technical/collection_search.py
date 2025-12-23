@@ -145,6 +145,9 @@ class GraphContextPayload(BaseModel):
     trace_id: str | None = None
     run_id: str | None = None
     ingestion_run_id: str | None = None
+    # Identity IDs (Pre-MVP ID Contract)
+    user_id: str | None = None  # User Request Hop (mutually exclusive with service_id)
+    service_id: str | None = None  # S2S Hop (mutually exclusive with user_id)
 
     @field_validator("tenant_id", "workflow_id", mode="before")
     @classmethod
@@ -156,7 +159,15 @@ class GraphContextPayload(BaseModel):
             raise ValueError("value must not be empty")
         return candidate
 
-    @field_validator("case_id", "trace_id", "run_id", "ingestion_run_id", mode="before")
+    @field_validator(
+        "case_id",
+        "trace_id",
+        "run_id",
+        "ingestion_run_id",
+        "user_id",
+        "service_id",
+        mode="before",
+    )
     @classmethod
     def _normalise_optional(cls, value: Any) -> str | None:
         if value in (None, ""):
@@ -477,6 +488,9 @@ def _get_ids(
         "run_id": context.get("run_id"),
         "ingestion_run_id": context.get("ingestion_run_id"),
         "collection_scope": collection_scope,
+        # Identity IDs (Pre-MVP ID Contract)
+        "user_id": context.get("user_id"),
+        "service_id": context.get("service_id"),
     }
 
 
@@ -982,7 +996,7 @@ def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
     }
 
     context = state["context"]
-    # Filter context for UG
+    # Filter context for UG (Pre-MVP ID Contract: propagate identity)
     ug_context = {
         "tenant_id": context["tenant_id"],
         "trace_id": context.get("trace_id"),
@@ -990,6 +1004,9 @@ def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
         "workflow_id": context.get("workflow_id"),
         "ingestion_run_id": context.get("ingestion_run_id")
         or str(uuid4()),  # Ensure valid scope
+        # Identity IDs (Pre-MVP ID Contract)
+        "user_id": context.get("user_id"),  # User Request Hop
+        "service_id": context.get("service_id"),  # S2S Hop
     }
 
     try:

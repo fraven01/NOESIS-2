@@ -7,6 +7,26 @@ Transitions enthalten `decision`, `reason` und ein `attributes`-Mapping und
 ermöglichen damit konsistente Auswertung in Tests, Telemetrie und im
 Observability-Layer.
 
+## Context & Identity (Pre-MVP ID Contract)
+
+Graphs receive context via `scope_context` in the graph meta. The `ScopeContext` includes:
+
+- **Correlation IDs**: `tenant_id`, `trace_id`, `invocation_id`, `case_id`, `workflow_id`
+- **Runtime IDs**: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion)
+- **Identity IDs**: `user_id` (User Request Hop) or `service_id` (S2S Hop) - mutually exclusive
+
+For entity persistence within graphs, use `audit_meta_from_scope()`:
+
+```python
+from ai_core.contracts.audit_meta import audit_meta_from_scope
+
+# In a graph node that creates entities:
+audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+entity.audit_meta = audit_meta.model_dump()
+```
+
+This ensures all persisted entities include traceability fields (`trace_id`, `invocation_id`, `created_by_user_id`, `last_hop_service_id`).
+
 ## DSL
 
 ```python

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 from typing import Any, Mapping
+from uuid import uuid4
 
 from celery import current_app, exceptions as celery_exceptions
 from django.conf import settings
 
+from ai_core.contracts.scope import ScopeContext
 from common.celery import with_scope_apply_async
 
 
@@ -23,18 +25,51 @@ def submit_worker_task(
     Returns a tuple ``(payload, completed)`` where ``completed`` indicates
     whether the worker finished within the timeout window. When ``False``
     the payload only contains ``task_id`` so the caller can poll later.
+
+    The scope dict should contain context IDs for traceability (Pre-MVP ID Contract):
+    - tenant_id, case_id, trace_id (required)
+    - user_id (optional, for User Request Hops)
+    - workflow_id, run_id, ingestion_run_id (optional)
     """
 
     meta = dict(task_payload)
+    # Extract scope fields including identity IDs (Pre-MVP ID Contract)
     scope_payload = {
         "tenant_id": scope.get("tenant_id"),
         "case_id": scope.get("case_id"),
         "trace_id": scope.get("trace_id"),
+        "invocation_id": scope.get("invocation_id") or uuid4().hex,
+        "run_id": scope.get("run_id"),
+        "ingestion_run_id": scope.get("ingestion_run_id"),
+        "workflow_id": scope.get("workflow_id"),
+        "idempotency_key": scope.get("idempotency_key"),
+        "collection_id": scope.get("collection_id"),
+        "tenant_schema": scope.get("tenant_schema"),
+        # Identity IDs (Pre-MVP ID Contract)
+        "user_id": scope.get("user_id"),  # User Request Hop
+        "service_id": scope.get("service_id"),  # S2S Hop
     }
-    for key, value in scope_payload.items():
-        if value and key not in meta:
-            meta[key] = value
-    scope_context = {key: value for key, value in scope_payload.items() if value}
+    if not scope_payload.get("run_id") and not scope_payload.get("ingestion_run_id"):
+        scope_payload["run_id"] = uuid4().hex
+
+    scope_context = ScopeContext.model_validate(scope_payload).model_dump(mode="json")
+    meta["scope_context"] = scope_context
+
+    for key in (
+        "tenant_id",
+        "case_id",
+        "trace_id",
+        "invocation_id",
+        "run_id",
+        "ingestion_run_id",
+        "workflow_id",
+        "idempotency_key",
+        "collection_id",
+        "tenant_schema",
+        "user_id",
+        "service_id",
+    ):
+        meta.pop(key, None)
 
     task_state = meta.pop("state", {})
 
