@@ -15,7 +15,9 @@ import logging
 import os
 import base64
 from contextvars import ContextVar
-from typing import Any, Callable, Iterable, Optional, TypeVar, cast
+from typing import Any, Callable, Iterable, Optional, TypeVar, cast, TYPE_CHECKING
+if TYPE_CHECKING:
+    from .usage import Usage
 
 LOGGER = logging.getLogger(__name__)
 
@@ -357,6 +359,25 @@ def update_observation(**fields: Any) -> None:
     attributes = _normalise_attributes(attributes)
     _apply_attributes(span, attributes)
 
+
+
+def report_generation_usage(usage: "Usage", model: str | None = None) -> None:
+    """Attach generation-related usage metrics to the active span."""
+    span = _get_current_span()
+    if span is None:
+        return
+
+    attributes = {
+        "gen_ai.usage.input_tokens": usage.input_tokens,
+        "gen_ai.usage.output_tokens": usage.output_tokens,
+        "gen_ai.usage.total_tokens": usage.total_tokens,
+    }
+    if usage.cost_usd is not None:
+        attributes["gen_ai.usage.cost"] = usage.cost_usd
+    if model:
+        attributes["gen_ai.request.model"] = model
+
+    _apply_attributes(span, attributes)
 
 def start_trace(
     *,

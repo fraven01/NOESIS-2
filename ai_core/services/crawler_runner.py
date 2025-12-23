@@ -37,6 +37,7 @@ from documents.domain_service import (
 import ai_core.services as services_module
 from . import _get_documents_repository, _make_json_safe
 from .crawler_state_builder import build_crawler_state
+from documents.normalization import normalize_url
 
 logger = get_logger(__name__)
 
@@ -136,7 +137,7 @@ def run_crawler_runner(
                     origin.model_dump(mode="json")
                     for origin in request_model.origins or []
                 ],
-                key=lambda o: o.get("uri", ""),
+                key=lambda o: normalize_url(o.get("uri")) or o.get("uri", ""),
             ),
         }
         fingerprint = hashlib.sha256(

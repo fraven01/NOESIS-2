@@ -35,6 +35,7 @@ from documents.contract_utils import (
     normalize_media_type as normalize_document_media_type,
 )
 from documents.contracts import InlineBlob, NormalizedDocument
+from documents.normalization import canonical_hash, normalize_url
 
 from ai_core.contracts.crawler_runner import (
     CrawlerRunContext,
@@ -82,7 +83,8 @@ def build_crawler_state(
     for origin in request_data.origins or []:
         provider = origin.provider or request_data.provider
         try:
-            source = normalize_source(provider, origin.url, None)
+            normalized_u = normalize_url(origin.url)
+            source = normalize_source(provider, normalized_u or origin.url, None)
         except Exception as exc:  # pragma: no cover - defensive
             raise ValueError(str(exc)) from exc
 
@@ -300,7 +302,7 @@ def build_crawler_state(
             type="inline",
             media_type=effective_content_type,
             base64=encoded_payload,
-            sha256=hashlib.sha256(body_bytes).hexdigest(),
+            sha256=canonical_hash(body_bytes),
             size=len(body_bytes),
         )
 

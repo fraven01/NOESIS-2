@@ -11,7 +11,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Tuple, Dict
-from uuid import UUID, uuid4
+from uuid import UUID
+
 
 
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
@@ -26,6 +27,7 @@ from documents.contracts import (
 )
 from documents.domain_service import DocumentDomainService
 from documents.models import DocumentCollection
+from common.celery import with_scope_apply_async
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -144,7 +146,10 @@ class UploadWorker:
         )
 
         # 8. Dispatch
-        async_result = run_ingestion_graph.delay(state, meta)
+        signature = run_ingestion_graph.s(state, meta)
+        scope_context = meta.get("scope_context")
+        scope = dict(scope_context) if isinstance(scope_context, Mapping) else {}
+        async_result = with_scope_apply_async(signature, scope)
 
         return WorkerPublishResult(
             status="published",

@@ -58,6 +58,27 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 2. Aufrufer gibt `tenant_id`, `case_id`, `workflow_id` (des Kind-Graphs) und **denselben** `trace_id` weiter.
 3. `run_id` wird pro Ausführung neu generiert; Kind-Graph darf `ingestion_run_id` nur setzen, wenn er Ingestion startet.
 
+### 1.2 OpenTelemetry & W3C Trace Context
+
+To support distributed tracing across process boundaries (e.g. Django -> Celery), we adopt the **W3C Trace Context** standard.
+
+- **`traceparent` Header**: Carries the `version-trace_id-parent_id-flags`.
+- **Alignment**: The `trace_id` in our `ScopeContext` MUST match the `trace_id` in the W3C header.
+- **Propagation**:
+  - **HTTP**: `headers` (standard).
+  - **Celery**: `task.request.headers` (standard) or `task_kwargs["headers"]`.
+  - **Langfuse**: Mapped from OTel span context automatically.
+
+### 1.3 Context Priority
+
+When resolving IDs, the priority is:
+
+1. **ScopeContext** (Business logic source of truth)
+2. **OpenTelemetry Span** (Infrastructure source of truth)
+3. **HTTP Headers / Task Metadata** (Transport)
+
+For `trace_id`, if an active OTel span exists, it takes precedence for generation/alignment.
+
 ## Validierung und Fehlerpfade
 
 - **Pflicht**: `tenant_id` immer; `case_id` Pflicht für fachliche Workloads; `trace_id` Pflicht für Observability; genau eine Laufzeit-ID.

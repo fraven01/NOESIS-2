@@ -26,6 +26,8 @@ from .pipeline import DocumentPipelineConfig
 from .policies import DocumentPolicy, PolicyProvider, get_policy
 from .repository import DocumentsRepository
 from .storage import Storage
+from ai_core.infra.observability import report_generation_usage
+from ai_core.infra.usage import Usage
 
 
 logger = get_logger(__name__)
@@ -326,6 +328,16 @@ class AssetExtractionPipeline:
                 extra["caption_confidence"] = float(confidence)
             if extra:
                 log_extra_exit(**extra)
+            
+            # Telemetry: Report usage
+            tokens = result.get("tokens")
+            if isinstance(tokens, (int, float)):
+                # Heuristic mapping for stub/generic captioners
+                # Real VLMs should return structured usage if possible
+                # TODO: Enhance VLM usage tracking
+                usage = Usage(total_tokens=int(tokens))
+                report_generation_usage(usage, model=model)
+                
             return result
 
 

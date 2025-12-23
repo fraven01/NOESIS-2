@@ -13,6 +13,10 @@ from importlib import import_module
 from django.conf import settings
 from uuid import uuid4
 
+from uuid import uuid4
+
+from opentelemetry import trace
+from opentelemetry.trace import format_trace_id
 from django.db import OperationalError, ProgrammingError
 from django.contrib.auth import get_user_model
 from django.core.exceptions import PermissionDenied
@@ -591,6 +595,14 @@ def _prepare_request(request: Request):
     # Fix: Respect passed trace_id or generate new one
     trace_id_header = request.headers.get(X_TRACE_ID_HEADER)
     trace_id = (trace_id_header or "").strip()
+    
+    # [Telemetry Fix] Check OTel context first for valid trace
+    if not trace_id:
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx.is_valid:
+            trace_id = format_trace_id(ctx.trace_id)
+
     if not trace_id:
         trace_id = uuid4().hex
     if case_id == DEFAULT_CASE_ID:

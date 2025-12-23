@@ -2,6 +2,9 @@ import json
 from typing import Any, Mapping
 from uuid import UUID, uuid4
 
+from opentelemetry import trace
+from opentelemetry.trace import format_trace_id
+
 from django.conf import settings
 from django.core.cache import cache
 from django.http import JsonResponse, HttpResponse
@@ -433,6 +436,13 @@ class _ViewCrawlerIngestionAdapter:
         """Trigger ingestion for the given URL."""
         tenant_id = context.get("tenant_id", "dev")
         trace_id = context.get("trace_id", "")
+        
+        if not trace_id:
+            span = trace.get_current_span()
+            ctx = span.get_span_context()
+            if ctx.is_valid:
+                trace_id = format_trace_id(ctx.trace_id)
+
         case_id = context.get("case_id")
         mode = context.get("mode", "live")
         tenant_schema = context.get("tenant_schema") or tenant_id
@@ -772,6 +782,12 @@ def web_search(request):
     user_id = _extract_user_id(request)
 
     trace_id = str(uuid4())
+    # Try to use active OTel trace
+    span = trace.get_current_span()
+    ctx = span.get_span_context()
+    if ctx.is_valid:
+        trace_id = format_trace_id(ctx.trace_id)
+
     run_id = str(uuid4())
 
     logger.info("web_search.query", query=query)

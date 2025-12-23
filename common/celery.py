@@ -15,9 +15,20 @@ from ai_core.infra.pii_flags import (
 )
 from ai_core.infra.policy import (
     clear_session_scope,
-    get_session_scope,
     set_session_scope,
+    get_session_scope,
 )
+
+
+try:
+    from opentelemetry import context as otel_context
+    from opentelemetry.trace.propagation.trace_context import (
+        TraceContextTextMapPropagator,
+    )
+
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
 
 
 class ContextTask(Task):
@@ -53,9 +64,21 @@ class ContextTask(Task):
         if context:
             bind_log_context(**context)
 
+        token = None
+        if _OTEL_AVAILABLE:
+            # Extract W3C trace context from headers and activate it
+            request_headers = getattr(self.request, "headers", None) or {}
+            # Ensure headers are a dict
+            if not isinstance(request_headers, dict):
+                request_headers = {}
+            ctx = TraceContextTextMapPropagator().extract(carrier=request_headers)
+            token = otel_context.attach(ctx)
+
         try:
             return super().__call__(*args, **kwargs)
         finally:
+            if _OTEL_AVAILABLE and token is not None:
+                otel_context.detach(token)
             clear_log_context()
 
     def _gather_context(
@@ -315,15 +338,30 @@ def _derive_session_salt(scope: TypingMapping[str, Any]) -> str | None:
     return None
 
 
-def _clone_with_scope(signature: Signature, scope_kwargs: dict[str, Any]) -> Signature:
+def _clone_with_scope(
+    signature: Signature,
+    scope_kwargs: dict[str, Any],
+    headers: dict[str, str] | None = None,
+) -> Signature:
     cloned = signature.clone()
+    
+    # Inject headers if provided
+    if headers:
+        existing_options = dict(getattr(cloned, "options", {}) or {})
+        existing_headers = dict(existing_options.get("headers") or {})
+        existing_headers.update(headers)
+        existing_options["headers"] = existing_headers
+        cloned.options = existing_options
+
     if hasattr(cloned, "tasks"):
         tasks = getattr(cloned, "tasks")
-        scoped_tasks = [_clone_with_scope(sub_sig, scope_kwargs) for sub_sig in tasks]
+        scoped_tasks = [
+            _clone_with_scope(sub_sig, scope_kwargs, headers) for sub_sig in tasks
+        ]
         cloned.tasks = type(tasks)(scoped_tasks)
         body = getattr(cloned, "body", None)
         if body is not None:
-            cloned.body = _clone_with_scope(body, scope_kwargs)
+            cloned.body = _clone_with_scope(body, scope_kwargs, headers)
         return cloned
 
     merged_kwargs = dict(getattr(cloned, "kwargs", {}) or {})
@@ -365,8 +403,12 @@ def with_scope_apply_async(
     if derived_salt:
         scope_kwargs.setdefault("session_salt", derived_salt)
 
-    if not scope_kwargs:
+    otel_headers: dict[str, str] = {}
+    if _OTEL_AVAILABLE:
+        TraceContextTextMapPropagator().inject(otel_headers)
+
+    if not scope_kwargs and not otel_headers:
         return signature.apply_async(*args, **kwargs)
 
-    scoped_signature = _clone_with_scope(signature, scope_kwargs)
+    scoped_signature = _clone_with_scope(signature, scope_kwargs, otel_headers)
     return scoped_signature.apply_async(*args, **kwargs)

@@ -223,7 +223,11 @@ def _enqueue_ingestion_task(
     legacy_kwargs: Mapping[str, object],
 ) -> None:
     if _task_accepts_state(task):
-        task.delay(state, meta)
+        # task.delay(state, meta)
+        signature = task.s(state, meta)
+        scope = meta.get("scope_context")
+        scope_dict = dict(scope) if isinstance(scope, Mapping) else {}
+        with_scope_apply_async(signature, scope_dict)
         return
     task.delay(*legacy_args, **legacy_kwargs)
 
