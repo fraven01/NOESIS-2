@@ -93,25 +93,25 @@ def normalize_url(url: str | None) -> str | None:
         scheme = parsed.scheme.lower()
         if scheme not in ("http", "https"):
             return clean_url
-            
+
         netloc = parsed.netloc.lower()
         # Remove default ports
         if scheme == "http" and netloc.endswith(":80"):
             netloc = netloc[:-3]
         elif scheme == "https" and netloc.endswith(":443"):
             netloc = netloc[:-4]
-            
+
         path = parsed.path
         if not path:
             path = "/"
-            
+
         # Sort query params
         query = parsed.query
         if query:
             params = parse_qsl(query, keep_blank_values=True)
             params.sort()
             query = urlencode(params)
-            
+
         # Reassemble, dropping fragment
         return urlunparse((scheme, netloc, path, parsed.params, query, ""))
     except (ValueError, TypeError, AttributeError):

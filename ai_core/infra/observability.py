@@ -16,6 +16,7 @@ import os
 import base64
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional, TypeVar, cast, TYPE_CHECKING
+
 if TYPE_CHECKING:
     from .usage import Usage
 
@@ -360,7 +361,6 @@ def update_observation(**fields: Any) -> None:
     _apply_attributes(span, attributes)
 
 
-
 def report_generation_usage(usage: "Usage", model: str | None = None) -> None:
     """Attach generation-related usage metrics to the active span."""
     span = _get_current_span()
@@ -378,6 +378,7 @@ def report_generation_usage(usage: "Usage", model: str | None = None) -> None:
         attributes["gen_ai.request.model"] = model
 
     _apply_attributes(span, attributes)
+
 
 def start_trace(
     *,

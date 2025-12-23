@@ -344,7 +344,7 @@ def _clone_with_scope(
     headers: dict[str, str] | None = None,
 ) -> Signature:
     cloned = signature.clone()
-    
+
     # Inject headers if provided
     if headers:
         existing_options = dict(getattr(cloned, "options", {}) or {})

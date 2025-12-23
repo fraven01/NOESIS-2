@@ -436,7 +436,7 @@ class _ViewCrawlerIngestionAdapter:
         """Trigger ingestion for the given URL."""
         tenant_id = context.get("tenant_id", "dev")
         trace_id = context.get("trace_id", "")
-        
+
         if not trace_id:
             span = trace.get_current_span()
             ctx = span.get_span_context()

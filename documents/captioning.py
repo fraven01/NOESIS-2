@@ -328,7 +328,7 @@ class AssetExtractionPipeline:
                 extra["caption_confidence"] = float(confidence)
             if extra:
                 log_extra_exit(**extra)
-            
+
             # Telemetry: Report usage
             tokens = result.get("tokens")
             if isinstance(tokens, (int, float)):
@@ -337,7 +337,7 @@ class AssetExtractionPipeline:
                 # TODO: Enhance VLM usage tracking
                 usage = Usage(total_tokens=int(tokens))
                 report_generation_usage(usage, model=model)
-                
+
             return result
 
 

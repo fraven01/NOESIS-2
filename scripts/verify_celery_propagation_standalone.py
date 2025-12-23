@@ -32,21 +32,24 @@ sys.modules["opentelemetry.trace.propagation.trace_context"] = MagicMock()
 # Better to import the actual file, but with mocks in place.
 # We need to make sure the import sees our mocks.
 import os
+
 sys.path.append(os.getcwd())
 
 from common.celery import ContextTask, with_scope_apply_async
+
 
 class TestContextPropagationStandalone(unittest.TestCase):
     def setUp(self):
         # We need to ensure _OTEL_AVAILABLE is True for the test
         # It's a global in common.celery
         import common.celery
+
         common.celery._OTEL_AVAILABLE = True
-        
+
         # Setup Propagator mock
         self.mock_propagator_cls = common.celery.TraceContextTextMapPropagator
         self.mock_propagator_cls.return_value = MagicMock()
-        
+
         # Setup otel_context
         self.mock_otel_context = common.celery.otel_context
 
@@ -57,15 +60,19 @@ class TestContextPropagationStandalone(unittest.TestCase):
         mock_sig.options = {}
         mock_sig.tasks = []
         mock_sig.body = None
-        
+
         # Setup Inject
         def inject(carrier):
             carrier["traceparent"] = "test-header"
+
         self.mock_propagator_cls.return_value.inject.side_effect = inject
-        
+
         with_scope_apply_async(mock_sig, {"tenant_id": "t1"})
-        
-        if "headers" in mock_sig.options and mock_sig.options["headers"].get("traceparent") == "test-header":
+
+        if (
+            "headers" in mock_sig.options
+            and mock_sig.options["headers"].get("traceparent") == "test-header"
+        ):
             print("PASS: Producer Injection")
         else:
             print(f"FAIL: Producer Injection. Options: {mock_sig.options}")
@@ -73,23 +80,29 @@ class TestContextPropagationStandalone(unittest.TestCase):
 
     def test_consumer_extraction(self):
         print("Testing Consumer Extraction...")
+
         class TestTask(ContextTask):
             name = "test"
-            def run(self): return "ok"
-            
+
+            def run(self):
+                return "ok"
+
         task = TestTask()
         task.request = MagicMock()
         task.request.headers = {"traceparent": "incoming"}
-        
+
         self.mock_propagator_cls.return_value.extract.return_value = "extracted_ctx"
         self.mock_otel_context.attach.return_value = "token"
-        
+
         task()
-        
-        self.mock_propagator_cls.return_value.extract.assert_called_with(carrier=task.request.headers)
+
+        self.mock_propagator_cls.return_value.extract.assert_called_with(
+            carrier=task.request.headers
+        )
         self.mock_otel_context.attach.assert_called_with("extracted_ctx")
         self.mock_otel_context.detach.assert_called_with("token")
         print("PASS: Consumer Extraction")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -133,10 +133,10 @@ class EmbeddingClient:
         for attempt, model in enumerate(model_candidates, start=1):
             try:
                 vectors, usage = self._invoke_provider(model, inputs, cfg, timeout_s)
-                
+
                 # Instrument: Report usage to current span
                 report_generation_usage(usage, model=model)
-                
+
             except Exception as exc:  # pragma: no cover - requires network failure
                 last_error = exc
                 should_retry = attempt < len(
@@ -262,7 +262,7 @@ class EmbeddingClient:
             for vector in vectors[1:]:
                 if len(vector) != expected_len:
                     raise EmbeddingClientError("Embedding dimensions mismatch in batch")
-        
+
         try:
             usage = Usage.from_provider_response(response)
         except Exception:

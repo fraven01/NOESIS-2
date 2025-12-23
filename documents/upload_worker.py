@@ -11,8 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Mapping, Optional, Tuple, Dict
-from uuid import UUID
-
+from uuid import UUID, uuid4
 
 
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter

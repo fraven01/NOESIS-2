@@ -1,4 +1,5 @@
 """Standardized model usage reporting."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -21,12 +22,12 @@ class Usage:
         # OpenAI style
         usage = getattr(response, "usage", None)
         if hasattr(usage, "prompt_tokens"):
-             return cls(
-                 input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
-                 output_tokens=getattr(usage, "completion_tokens", 0) or 0,
-                 total_tokens=getattr(usage, "total_tokens", 0) or 0,
-             )
-        
+            return cls(
+                input_tokens=getattr(usage, "prompt_tokens", 0) or 0,
+                output_tokens=getattr(usage, "completion_tokens", 0) or 0,
+                total_tokens=getattr(usage, "total_tokens", 0) or 0,
+            )
+
         if isinstance(usage, Mapping):
             return cls(
                 input_tokens=usage.get("prompt_tokens", 0) or 0,
@@ -41,14 +42,13 @@ class Usage:
                 total_tokens=response.get("total_tokens", 0) or 0,
             )
 
-
         return cls()
 
     def __add__(self, other: Any) -> Usage:
         """Accumulate usage."""
         if not isinstance(other, Usage):
             return NotImplemented
-        
+
         return Usage(
             input_tokens=self.input_tokens + other.input_tokens,
             output_tokens=self.output_tokens + other.output_tokens,
