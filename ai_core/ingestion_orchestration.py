@@ -18,8 +18,12 @@ class IngestionContext:
     tenant_id: Optional[str]
     case_id: Optional[str]
     workflow_id: Optional[str]
+    trace_id: Optional[str]
+    collection_id: Optional[str]
     source: Optional[str]
     document_id: Optional[str]
+    run_id: Optional[str]
+    ingestion_run_id: Optional[str]
     raw_payload_path: Optional[str]
 
 
@@ -85,6 +89,7 @@ class IngestionContextBuilder:
         - Raw payload path: Special extraction from state
         """
         state_meta = self._extract_from_mapping(state, "meta")
+        scope_meta = self._extract_from_mapping(meta, "scope_context")
         raw_reference = self._extract_from_mapping(state, "raw_document")
         raw_metadata = None
         if isinstance(raw_reference, MappingABC):
@@ -106,11 +111,22 @@ class IngestionContextBuilder:
         # Extract workflow_id (longest fallback chain)
         workflow_id = self._coerce_str(
             trace_context.get("workflow_id")
-            or self._extract_from_mapping(meta, "workflow_id")
+            or self._extract_from_mapping(scope_meta, "workflow_id")
             or self._extract_from_mapping(state_meta, "workflow_id")
             or self._extract_from_mapping(state, "workflow_id")
             or self._extract_from_mapping(raw_reference, "workflow_id")
             or self._extract_from_mapping(raw_metadata, "workflow_id")
+        )
+
+        # Extract trace_id
+        trace_id = self._coerce_str(trace_context.get("trace_id"))
+
+        # Extract collection_id
+        collection_id = self._coerce_str(
+            trace_context.get("collection_id")
+            or self._extract_from_mapping(scope_meta, "collection_id")
+            or self._extract_from_mapping(state, "collection_id")
+            or self._extract_from_mapping(raw_metadata, "collection_id")
         )
 
         # Extract source
@@ -124,6 +140,20 @@ class IngestionContextBuilder:
 
         # Extract document_id
         document_id = self._coerce_str(trace_context.get("document_id"))
+
+        # Extract run_id
+        run_id = self._coerce_str(
+            trace_context.get("run_id")
+            or self._extract_from_mapping(scope_meta, "run_id")
+            or self._extract_from_mapping(state_meta, "run_id")
+        )
+
+        # Extract ingestion_run_id
+        ingestion_run_id = self._coerce_str(
+            trace_context.get("ingestion_run_id")
+            or self._extract_from_mapping(scope_meta, "ingestion_run_id")
+            or self._extract_from_mapping(state_meta, "ingestion_run_id")
+        )
 
         # Extract raw_payload_path (special logic)
         raw_payload_path = None
@@ -141,8 +171,12 @@ class IngestionContextBuilder:
             tenant_id=tenant_id,
             case_id=case_id,
             workflow_id=workflow_id,
+            trace_id=trace_id,
+            collection_id=collection_id,
             source=source,
             document_id=document_id,
+            run_id=run_id,
+            ingestion_run_id=ingestion_run_id,
             raw_payload_path=raw_payload_path,
         )
 
@@ -212,6 +246,10 @@ class ObservabilityWrapper:
             metadata["case_id"] = ingestion_ctx.case_id
         if ingestion_ctx.document_id:
             metadata["document_id"] = ingestion_ctx.document_id
+        if ingestion_ctx.run_id:
+            metadata["run_id"] = ingestion_ctx.run_id
+        if ingestion_ctx.ingestion_run_id:
+            metadata["ingestion_run_id"] = ingestion_ctx.ingestion_run_id
 
         if task_identifier:
             metadata["celery.task_id"] = task_identifier

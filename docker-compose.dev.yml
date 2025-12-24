@@ -126,40 +126,26 @@ services:
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
       OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
 
+  # Unified worker for all queues (WSL-optimized)
+  # Queue order: agents → crawler → celery → ingestion → rag_delete
+  # Prioritizes latency-sensitive tasks (agents, crawler) over batch jobs
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q celery,rag_delete,crawler
-    volumes:
-      - .:/app
-      - ${APP_LOG_PATH:-./logs/app}:/app/logs
-    env_file:
-      - .env
-      - .env.docker
-    depends_on:
-      redis:
-        condition: service_started
-      toxiproxy:
-        condition: service_started
-      litellm:
-        condition: service_started
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
-      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      APP_LOG_DIR: /app/logs
-      LOGGING_OTEL_INSTRUMENT: "true"
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
-      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
-
-  agents-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: noesis2_agents_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q agents
+    command: >-
+      opentelemetry-instrument celery -A noesis2 worker
+      -Q agents,crawler,celery,ingestion,rag_delete
+      --concurrency=2
+      --prefetch-multiplier=1
+      --max-tasks-per-child=300
+      --max-memory-per-child=900000
+      --time-limit=600
+      --soft-time-limit=540
+      -l info
+    mem_limit: 2g
+    cpus: 2.0
     volumes:
       - .:/app
       - ${APP_LOG_PATH:-./logs/app}:/app/logs
@@ -201,34 +187,6 @@ services:
     environment:
       DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
       REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      LOGGING_OTEL_INSTRUMENT: "true"
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
-      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
-
-  ingestion-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: noesis2_ingestion_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q ingestion
-    volumes:
-      - .:/app
-      - ${APP_LOG_PATH:-./logs/app}:/app/logs
-    env_file:
-      - .env
-      - .env.docker
-    depends_on:
-      redis:
-        condition: service_started
-      toxiproxy:
-        condition: service_started
-      litellm:
-        condition: service_started
-    restart: unless-stopped
-    environment:
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
-      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      APP_LOG_DIR: /app/logs
       LOGGING_OTEL_INSTRUMENT: "true"
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
       OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
@@ -291,6 +249,7 @@ services:
       sh -lc "opentelemetry-instrument /usr/local/bin/python manage.py bootstrap_public_tenant --domain=localhost &&
       opentelemetry-instrument /usr/local/bin/python manage.py create_tenant --schema=${DEV_TENANT_SCHEMA:-dev} --name='${DEV_TENANT_NAME:-Dev Tenant}' --domain=${DEV_DOMAIN:-dev.localhost} || true &&
       opentelemetry-instrument /usr/local/bin/python manage.py migrate_schemas --tenant --schema=${DEV_TENANT_SCHEMA:-dev} &&
+      opentelemetry-instrument /usr/local/bin/python manage.py bootstrap_default_cases --include-dev-case --dev-tenant=${DEV_TENANT_SCHEMA:-dev} &&
       DJANGO_SUPERUSER_PASSWORD=${DEV_SUPERUSER_PASSWORD:-admin123} opentelemetry-instrument /usr/local/bin/python manage.py create_tenant_superuser --schema=${DEV_TENANT_SCHEMA:-dev} --username=${DEV_SUPERUSER_USERNAME:-admin} --email=${DEV_DEV_SUPERUSER_EMAIL:-admin@example.com} --noinput"
     volumes:
       - .:/app

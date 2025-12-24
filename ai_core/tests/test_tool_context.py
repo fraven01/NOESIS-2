@@ -18,9 +18,13 @@ def base_payload() -> dict:
     }
 
 
-def test_tool_context_both_run_ids_fails(base_payload: dict) -> None:
-    with pytest.raises(ValueError):
-        ToolContext(**base_payload, run_id="run-1", ingestion_run_id="ingestion-run-1")
+def test_tool_context_both_run_ids_allowed(base_payload: dict) -> None:
+    """Both run_id and ingestion_run_id can co-exist (Pre-MVP ID Contract)."""
+    context = ToolContext(
+        **base_payload, run_id="run-1", ingestion_run_id="ingestion-run-1"
+    )
+    assert context.run_id == "run-1"
+    assert context.ingestion_run_id == "ingestion-run-1"
 
 
 def test_tool_context_no_run_ids_fails(base_payload: dict) -> None:

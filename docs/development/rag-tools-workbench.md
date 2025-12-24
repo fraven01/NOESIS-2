@@ -33,11 +33,13 @@ These headers are automatically attached to all HTMX requests via `hx-headers` a
 #### Search Types
 
 **External Knowledge**:
-- Uses [`ExternalKnowledgeGraph`](../agents/overview.md#2-external-knowledge-graph)
+
+- Uses [`UniversalIngestionGraph`](../agents/overview.md#2-universal-ingestion-graph-unified-technical-graph) (source=`search`)
 - Searches public web sources
 - Optional auto-ingestion of selected results
 
 **Collection Search**:
+
 - Searches within existing RAG collections
 - Requires `purpose` field (e.g., "Research", "Fact Check")
 - Quality modes:
@@ -61,6 +63,7 @@ These headers are automatically attached to all HTMX requests via `hx-headers` a
 #### Results Panel
 
 Displays search results in `#web-search-results` div with HTMX swap. Results are formatted by the backend view and can include:
+
 - Result title, URL, snippet
 - Relevance score
 - "Ingest Selected" action button (target: `#ingestion-status-panel`)
@@ -91,6 +94,7 @@ Manually triggers crawler for one or more URLs.
 #### Status Panel
 
 Results appear in `#crawler-status-area` div, showing:
+
 - Queued URLs
 - Crawl status (fetching, parsing, ingested)
 - Error messages
@@ -114,11 +118,13 @@ Manually triggers the [`UploadIngestionGraph`](../rag/ingestion.md#upload-ingest
 #### Input Format Examples
 
 **JSON Array**:
+
 ```json
 ["550e8400-e29b-41d4-a716-446655440000", "650e8400-e29b-41d4-a716-446655440001"]
 ```
 
 **Comma-Separated**:
+
 ```
 550e8400-e29b-41d4-a716-446655440000, 650e8400-e29b-41d4-a716-446655440001
 ```
@@ -126,6 +132,7 @@ Manually triggers the [`UploadIngestionGraph`](../rag/ingestion.md#upload-ingest
 #### Response Panel
 
 Results appear in `#ingestion-response` div, showing:
+
 - Ingestion status per document
 - Phase progress (validate, parse, embed, upsert)
 - Decision outcomes (completed, skip_guardrail, skip_duplicate, error)
@@ -152,6 +159,7 @@ tabs.forEach(tab => {
 ```
 
 **Tab Targets**:
+
 - `#tab-search` → Web Search
 - `#tab-crawler` → Crawler
 - `#tab-ingestion` → Ingestion
@@ -179,6 +187,7 @@ function toggleSearchFields() {
 ```
 
 **Collection-Only Fields**:
+
 - `quality_mode` (dropdown)
 - `auto_ingest` (checkbox)
 - `purpose` (required text input)
@@ -190,6 +199,7 @@ function toggleSearchFields() {
 All forms use `hx-post` for AJAX submission with `hx-target` and `hx-swap`:
 
 **Example**:
+
 ```html
 <form hx-post="{% url 'web-search' %}"
       hx-target="#web-search-results"
@@ -213,6 +223,7 @@ The following view endpoints are referenced but not defined in the template:
 | `ingestion-submit` | `/ingestion-submit/` | POST | Trigger ingestion graph, return status HTML |
 
 **Note**: These views must:
+
 - Accept `X-Tenant-ID`, `X-Tenant-Schema`, `X-Case-ID` headers
 - Return HTMX-compatible HTML fragments (not full pages)
 - Handle CSRF tokens (forms include `{% csrf_token %}`)
@@ -268,12 +279,14 @@ Uses Tailwind CSS with Indigo color scheme:
 **⚠️ WARNING**: This is a **development tool only**. It should NOT be exposed in production environments.
 
 **Required Safeguards**:
+
 - Behind authentication (e.g., Django staff user check)
 - Rate-limited endpoints to prevent abuse
 - Debug mode check (`DEBUG=True` or feature flag)
 - CSRF protection enabled (already present via `{% csrf_token %}`)
 
 **Recommended Deployment**:
+
 ```python
 # In URLs config
 if settings.DEBUG:
@@ -298,6 +311,6 @@ if settings.DEBUG:
 ## Related Documentation
 
 - [Upload Ingestion Graph](../rag/ingestion.md#upload-ingestion-graph)
-- [External Knowledge Graph](../agents/overview.md#2-external-knowledge-graph)
+- [Universal Ingestion Graph (Search)](../agents/overview.md#2-universal-ingestion-graph-unified-technical-graph)
 - [Retrieval Contracts](../rag/retrieval-contracts.md)
 - [Web Search Tool](../agents/web-search-tool.md)

@@ -7,6 +7,26 @@ Transitions enthalten `decision`, `reason` und ein `attributes`-Mapping und
 ermöglichen damit konsistente Auswertung in Tests, Telemetrie und im
 Observability-Layer.
 
+## Context & Identity (Pre-MVP ID Contract)
+
+Graphs receive context via `scope_context` in the graph meta. The `ScopeContext` includes:
+
+- **Correlation IDs**: `tenant_id`, `trace_id`, `invocation_id`, `case_id`, `workflow_id`
+- **Runtime IDs**: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion)
+- **Identity IDs**: `user_id` (User Request Hop) or `service_id` (S2S Hop) - mutually exclusive
+
+For entity persistence within graphs, use `audit_meta_from_scope()`:
+
+```python
+from ai_core.contracts.audit_meta import audit_meta_from_scope
+
+# In a graph node that creates entities:
+audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
+entity.audit_meta = audit_meta.model_dump()
+```
+
+This ensures all persisted entities include traceability fields (`trace_id`, `invocation_id`, `created_by_user_id`, `last_hop_service_id`).
+
 ## DSL
 
 ```python
@@ -24,31 +44,6 @@ class GraphNode:
 Ein `GraphTransition` validiert seine Felder beim Erzeugen und erzwingt
 mindestens die Severity `info`. Dadurch können nachgelagerte Komponenten die
 Transitions ohne zusätzliche Guards interpretieren.
-
-## Crawler-Ingestion-Graph
-
-Der `crawler_ingestion_graph` orchestriert den Crawler-Workflow in der
-deterministischen Sequenz
-`update_status_normalized → enforce_guardrails → document_pipeline → ingest_decision → ingest → finish`.
-
-* **update_status_normalized** sorgt für initiale Status-Updates des Dokuments.
-* **enforce_guardrails** prüft mithilfe von `ai_core.api.enforce_guardrails`,
-  ob Inhalte verarbeitet werden dürfen.
-* **document_pipeline** führt Normalisierung und Chunking durch; sie nutzt
-  `ai_core.api.decide_delta`, um Delta-Entscheidungen zu treffen.
-* **ingest_decision** entscheidet über UPSERT- oder RETIRE-Pfade basierend auf
-  den Guardrail- und Delta-Ergebnissen.
-* **ingest** persistiert Daten und löst `ai_core.api.trigger_embedding` aus, um
-  Embeddings für gültige Dokumente zu erzeugen.
-* **finish** bündelt den Abschlussstatus und Telemetrie-Metadaten.
-
-   Die Tests in `ai_core/tests/graphs/test_crawler_ingestion_graph.py` decken
-   Guardrail-, Lifecycle- und Embedding-Entscheidungen ab, während
-   `ai_core/tests/test_crawler_delta.py` die Delta-Heuristiken prüft.
-
-Jeder Schritt emittiert eine Transition mit deterministischer Struktur. Diese
-Transitions landen im aggregierten Ergebnis des Graph-Laufs und bilden die
-Grundlage für Unit-Tests sowie Langfuse-Spans.
 
 ## Collection-Search-Graph
 
@@ -190,6 +185,7 @@ Confidenz-Bounds werden validiert, Location-Typen sind typsicher.
 **POST** `/v1/ai/frameworks/analyze/`
 
 Header:
+
 * `X-Tenant-ID` (required)
 * `X-Trace-ID` (optional, auto-generated)
 
@@ -240,6 +236,7 @@ Response (200):
 ```
 
 Error-Codes:
+
 * **400**: Invalid input (Validierung fehlgeschlagen)
 * **403**: Tenant nicht gefunden
 * **404**: DocumentCollection nicht gefunden
@@ -249,6 +246,7 @@ Error-Codes:
 ### Observability
 
 **Langfuse-Spans** (via `@observe_span`):
+
 * `framework.detect_type_and_gremium`
 * `framework.extract_toc`
 * `framework.locate_components`
@@ -257,6 +255,7 @@ Error-Codes:
 * `framework.persist_profile`
 
 **Strukturierte Logs**:
+
 * `framework_graph_starting` (info): Start mit Input-Parametern
 * `framework_hitl_required` (warning): HITL-Trigger mit Gründen
 * `framework_profile_persisted` (info): Erfolgreiche Persistierung
@@ -268,16 +267,19 @@ korrelierte Auswertung in ELK + Langfuse.
 ### Tests
 
 **Unit-Tests** (`ai_core/tests/test_framework_utils.py`):
+
 * Gremium-Normalisierung (Umlaute, Sonderzeichen, Leerzeichen)
 * ToC-Extraktion aus Parent-Metadaten (Hierarchie, Deduplication, Sorting)
 
 **Contract-Tests** (`ai_core/tests/tools/test_framework_contracts.py`):
+
 * Pydantic-Validierung für alle Input/Output-Modelle
 * Confidenz-Bounds (0.0–1.0)
 * Literal-Constraints für `agreement_type`, `location`
 * Immutability (frozen Models)
 
 **Integrations-Tests** (`ai_core/tests/graphs/test_framework_analysis_graph.py`):
+
 * Graph-Builder (Knoten-Reihenfolge, Namen)
 * Assemble-Logik (completeness_score, HITL-Trigger)
 * End-to-End mit LLM-Mocks (retrieve.run, llm_client.call)
@@ -293,6 +295,7 @@ docker compose exec web python manage.py migrate
 ```
 
 **Prompt-Versions-Tracking**: Prompts liegen in `ai_core/prompts/framework/`:
+
 * `detect_type_gremium.v1.md`
 * `locate_components.v1.md`
 * `validate_component.v1.md`
@@ -306,28 +309,61 @@ in Graph aktualisieren.
 **HITL-Integration**: UI-Team muss `hitl_required` Flag auswerten und
 Review-Flow bereitstellen. `hitl_reasons` liefert Begründungen für Benutzer.
 
-## Upload-Ingestion-Graph
+### Universal Technical Graph (Pre-MVP)
 
-Der `upload_ingestion_graph` verarbeitet manuell hochgeladene Dokumente und überführt sie in den normalen
-Dokumenten-Ingestion-Prozess. Er dient als Adapter zwischen dem synchronen Upload-Endpoint und der
-asynchronen Verarbeitung.
+Der `UniversalIngestionGraph` (`universal_ingestion_graph.py`) implementiert die konsolidierte Ingestion-Logik für `upload` und `crawler` Quellen. Er ersetzt die bisherigen Upload- und Crawler-Graphen.
 
-Der Graph ist vollständig als LangGraph implementiert und nutzt `TypedDict` für den State.
+**Zweck**:
+Einheitlicher technischer Zugangspunkt für die Dokumentenverarbeitung unabhängig von der Quelle. In Phase 2/3 unterstützt er `ingest_only` für manuelle Uploads und Crawler-Runs.
+
+### Contract
+
+**Input**: `UniversalIngestionInput` (TypedDict)
+
+* `source`: `upload` | `crawler` | `search`
+* `mode`: `ingest_only` | `acquire_only` | `acquire_and_ingest`
+* `collection_id`: UUID (Pflicht)
+* `upload_blob`: Dictionary (für Source `upload`, enthält URI, Mimetype, Checksum)
+* `normalized_document`: Dictionary (für Source `crawler`, pre-normalized)
+* `search_query`: String (für Source `search`)
+* `search_config`: Dict (für Source `search`, z.B. `top_n`, `min_snippet_length`)
+* `metadata_obj`: Optionales Metadaten-Dict
+
+**Output**: `UniversalIngestionOutput` (TypedDict)
+
+* `decision`: `ingested` | `skipped` | `error` | `acquired`
+* `reason`: Mensch-lesbarer Grund
+* `document_id`: UUID des persistierten Dokuments
+* `ingestion_run_id`: Verknüpfung zum Run
+* `telemetry`: Trace- und Tenant-Kontext
+* `transitions`: Liste durchlaufener Phasen
+* `review_payload`: Daten für HITL (signaling only)
+* `hitl_required`: Boolean
+* `hitl_reasons`: Liste von Gründen
 
 ### Knotenfolge
 
-1. **validate_input** — Validiert die Eingabedaten (`NormalizedDocument`), konvertiert das Dictionary zurück in
-   ein Pydantic-Modell und prüft essentielle Felder. Bei Validierungsfehlern erfolgt ein direkter Abbruch
-   mit Fehlerstatus.
+1. **validate_input**
+   Prüft, ob alle Pflichtfelder für die gewählte `source` und den `mode` vorhanden sind. Validiert Context-IDs (Tenant, Trace, Case).
 
-2. **build_config** — Erstellt die notwendige Konfiguration und den Kontext für die Weiterverarbeitung.
-   Initialisiert Komponenten wie Parser und Chunker.
+2. **normalize_document**
+   Erzeugt ein standardisiertes `NormalizedDocument`-Objekt.
+   * Bei **Upload**: Baut Dokument aus `upload_blob` und Metadaten.
+   * Bei **Crawler**: Validiert und übernimmt das vor-normalisierte Payload.
 
-3. **run_processing** — Führt den eigentlichen Dokumenten-Verarbeitungs-Graph (`build_document_processing_graph`)
-   aus. Dieser Graph übernimmt Parsing, Chunking und Persistierung.
+3. **persist**
+   Speichert das normalisierte Dokument initial im `DocumentRepository` (Upsert). Dies sichert die Daten vor der Verarbeitung.
 
-4. **map_results** — Transformiert das interne Ergebnis des Processing-Graphs in ein standardisiertes
-   Output-Format mit `decision`, `reason` und Telemetriedaten für den Aufrufer.
+4. **process**
+   Delegiert die inhaltliche Verarbeitung (Parsing, Chunking, Embedding) an den shared `document_processing_graph`.
+   * Injiziert `DocumentProcessingContext` und `DocumentPipelineConfig`.
+   * Injiziert `Storage`-Service für Blob-Zugriffe.
 
-Die Tests befinden sich in `ai_core/tests/graphs/test_upload_ingestion_graph.py` und decken erfolgreiche
-Durchläufe sowie Fehlerbehandlung bei ungültigen Inputs ab.
+5. **finalize**
+   Mappt das Ergebnis auf den `UniversalIngestionOutput`.
+   * Setzt `hitl_`-Flags (aktuell immer False/Empty in Phase 2).
+   * Sammelt Telemetrie.
+
+### Migration Status
+
+In Phase 3 sind alle Call-Sites (Upload UI, Crawler Services) auf diesen Graphen migriert. Die Legacy-Graphen (`upload_ingestion_graph`, `crawler_ingestion_graph`) wurden entfernt.

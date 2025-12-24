@@ -57,7 +57,17 @@ class ToolContext(BaseModel):
     visibility_override_allowed: bool = False
     metadata: dict[str, Any] = Field(default_factory=dict)
 
-    # New fields
+    # Identity IDs (Pre-MVP ID Contract: mutually exclusive)
+    user_id: Optional[str] = Field(
+        default=None,
+        description="User identity for User Request Hops. Must be absent for S2S.",
+    )
+    service_id: Optional[str] = Field(
+        default=None,
+        description="Service identity for S2S Hops. Must be absent for User Requests.",
+    )
+
+    # Runtime IDs (may co-exist when workflow triggers ingestion)
     run_id: Optional[str] = None
     ingestion_run_id: Optional[str] = None
     workflow_id: Optional[str] = None
@@ -79,10 +89,21 @@ class ToolContext(BaseModel):
 
     @model_validator(mode="after")
     def check_run_ids(self) -> "ToolContext":
+        """Ensure at least one runtime identifier is provided."""
         if self.run_id is None and self.ingestion_run_id is None:
-            raise ValueError("Either run_id or ingestion_run_id must be provided.")
-        if self.run_id is not None and self.ingestion_run_id is not None:
-            raise ValueError("Only one of run_id or ingestion_run_id can be provided.")
+            raise ValueError(
+                "At least one of run_id or ingestion_run_id must be provided."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def check_identity(self) -> "ToolContext":
+        """Ensure user_id and service_id are mutually exclusive."""
+        if self.user_id is not None and self.service_id is not None:
+            raise ValueError(
+                "user_id and service_id are mutually exclusive. "
+                "User Request Hops have user_id, S2S Hops have service_id."
+            )
         return self
 
 
@@ -103,9 +124,12 @@ def tool_context_from_scope(
         "tenant_id": scope.tenant_id,
         "trace_id": scope.trace_id,
         "invocation_id": scope.invocation_id,
+        "user_id": scope.user_id,
+        "service_id": scope.service_id,
         "run_id": scope.run_id,
         "ingestion_run_id": scope.ingestion_run_id,
         "workflow_id": scope.workflow_id,
+        "collection_id": scope.collection_id,
         "case_id": scope.case_id,
         "tenant_schema": scope.tenant_schema,
         "idempotency_key": scope.idempotency_key,

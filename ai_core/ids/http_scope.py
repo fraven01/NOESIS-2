@@ -60,7 +60,9 @@ def _normalize_uuid_header(value: Any) -> UUID | None:
     return None
 
 
-def normalize_request(request: HttpRequest) -> ScopeContext:
+def normalize_request(
+    request: HttpRequest, *, require_auth: bool = False
+) -> ScopeContext:
     """
     Normalize a Django HttpRequest into a ScopeContext.
 
@@ -69,9 +71,19 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
     - Header extraction and normalization
     - Trace ID coercion
     - Tenant context resolution
+    - User ID extraction from Django auth (for User Request Hops)
     - UUID generation for missing invocation_id/run_id
     - Collection ID extraction for scoped operations
     - Validation via ScopeContext model
+
+    Identity rules (Pre-MVP ID Contract):
+    - User Request Hop: user_id REQUIRED (when auth present), service_id ABSENT.
+    - This function sets user_id from request.user if authenticated.
+    - service_id is always None for HTTP requests (S2S Hops set it separately).
+
+    Args:
+        request: Django HttpRequest object.
+        require_auth: If True, raise error if user is not authenticated.
     """
     headers: Mapping[str, str] = getattr(request, "headers", {}) or {}
     meta: MutableMapping[str, Any] = getattr(request, "META", {}) or {}
@@ -142,22 +154,117 @@ def normalize_request(request: HttpRequest) -> ScopeContext:
         headers.get("X-Ingestion-Run-ID") or meta.get("HTTP_X_INGESTION_RUN_ID")
     )
 
-    # Logic for run_id/ingestion_run_id:
-    # If ingestion_run_id is present, we use it.
-    # If NOT present, we MUST have a run_id. If run_id is also missing, generate one.
-    # ScopeContext validation will ensure XOR.
+    # Logic for run_id/ingestion_run_id (Pre-MVP ID Contract):
+    # Both may co-exist (workflow triggers ingestion).
+    # At least one runtime ID required. If neither present, generate run_id.
     if not ingestion_run_id and not run_id:
         run_id = uuid.uuid4().hex
 
     # 9. Collection ID ("Aktenschrank" context for scoped operations)
-    collection_id = _normalize_uuid_header(
+    # Note: collection_id is stored as string (UUID-string) per ScopeContext contract
+    _collection_uuid = _normalize_uuid_header(
         headers.get("X-Collection-ID") or meta.get("HTTP_X_COLLECTION_ID")
     )
+    collection_id: str | None = str(_collection_uuid) if _collection_uuid else None
+
+    # 10. User ID (Pre-MVP ID Contract: User Request Hops)
+    # Extract from Django auth if user is authenticated
+    user_id: str | None = None
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        # User is authenticated - extract user_id
+        user_pk = getattr(user, "pk", None)
+        if user_pk is not None:
+            user_id = str(user_pk)
+
+    if require_auth and not user_id:
+        from django.core.exceptions import PermissionDenied
+
+        raise PermissionDenied("Authentication required but user is not authenticated")
+
+    # 11. Service ID (Pre-MVP ID Contract: S2S Hops)
+    # For HTTP requests, service_id is always None (User Request Hop pattern)
+    # S2S Hops (Celery tasks, internal calls) set service_id separately
+    service_id: str | None = None
 
     scope_kwargs = {
         "tenant_id": tenant_id,  # ScopeContext will validate this is not None
         "trace_id": trace_id,
         "invocation_id": invocation_id,
+        "user_id": user_id,
+        "service_id": service_id,
+        "run_id": run_id,
+        "ingestion_run_id": ingestion_run_id,
+        "case_id": case_id,
+        "workflow_id": workflow_id,
+        "idempotency_key": idempotency_key,
+        "tenant_schema": tenant_schema,
+        "collection_id": collection_id,
+    }
+
+    return ScopeContext.model_validate(scope_kwargs)
+
+
+def normalize_task_context(
+    *,
+    tenant_id: str,
+    service_id: str,
+    case_id: str | None = None,
+    trace_id: str | None = None,
+    invocation_id: str | None = None,
+    run_id: str | None = None,
+    ingestion_run_id: str | None = None,
+    workflow_id: str | None = None,
+    idempotency_key: str | None = None,
+    tenant_schema: str | None = None,
+    collection_id: str | None = None,
+    initiated_by_user_id: str | None = None,
+) -> ScopeContext:
+    """
+    Build a ScopeContext for Celery task execution (S2S Hop).
+
+    This function is the canonical entry point for creating scope in Celery tasks.
+    It enforces the S2S identity pattern: service_id REQUIRED, user_id ABSENT.
+
+    Identity rules (Pre-MVP ID Contract):
+    - S2S Hop: service_id REQUIRED, user_id ABSENT.
+    - initiated_by_user_id is NOT part of ScopeContext (it goes in audit_meta).
+
+    Args:
+        tenant_id: Mandatory tenant identifier.
+        case_id: Mandatory case identifier.
+        service_id: REQUIRED for S2S. E.g., "celery-ingestion-worker".
+        trace_id: Inherited from parent hop, or generated if None.
+        invocation_id: New for this hop, or generated if None.
+        run_id: Runtime execution ID (may co-exist with ingestion_run_id).
+        ingestion_run_id: Ingestion execution ID (may co-exist with run_id).
+        workflow_id: Optional workflow identifier.
+        idempotency_key: Optional request-level determinism key.
+        tenant_schema: Optional tenant schema (derived from tenant_id if None).
+        collection_id: Optional collection scope.
+        initiated_by_user_id: NOT used in ScopeContext - for audit_meta only.
+            Pass this to audit_meta_from_scope() when persisting entities.
+
+    Returns:
+        ScopeContext with service_id set (S2S Hop pattern).
+    """
+    if not service_id:
+        raise ValueError("service_id is required for S2S Hops (Celery tasks)")
+
+    # Generate IDs if not provided
+    final_trace_id = trace_id or uuid.uuid4().hex
+    final_invocation_id = invocation_id or uuid.uuid4().hex
+
+    # At least one runtime ID required
+    if not run_id and not ingestion_run_id:
+        run_id = uuid.uuid4().hex
+
+    scope_kwargs = {
+        "tenant_id": tenant_id,
+        "trace_id": final_trace_id,
+        "invocation_id": final_invocation_id,
+        "user_id": None,  # S2S Hops have no user_id
+        "service_id": service_id,  # S2S Hops REQUIRE service_id
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
         "case_id": case_id,

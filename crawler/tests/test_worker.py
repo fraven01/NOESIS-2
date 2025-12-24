@@ -5,8 +5,8 @@ from typing import Mapping
 
 import pytest
 
-from ai_core.graphs.technical.crawler_ingestion_graph import GraphTransition
-from ai_core.graphs.technical.transition_contracts import StandardTransitionResult
+
+from ai_core.graphs.transition_contracts import StandardTransitionResult
 from ai_core.infra import object_store
 from common.assets import perceptual_hash, sha256_bytes
 from crawler.errors import CrawlerError, ErrorClass
@@ -104,7 +104,20 @@ def test_worker_triggers_guardrail_event(tmp_path, monkeypatch) -> None:
     # Mock the ingestion graph to emit guardrail event
     def _mock_run_ingestion_graph(state: dict[str, object], meta: dict[str, object]):  # type: ignore[no-untyped-def]
         run_id = state.get("graph_run_id", "test-run")
-        transition = GraphTransition(
+
+        # Local mock for GraphTransition to avoid import error
+        class MockGraphTransition:
+            def __init__(self, result):
+                self.result = result
+                self.decision = result.decision
+                self.reason = result.reason
+                self.severity = result.severity
+                self.phase = result.phase
+
+            def to_dict(self):
+                return {"decision": self.decision, "reason": self.reason}
+
+        transition = MockGraphTransition(
             StandardTransitionResult(
                 phase="guardrails",
                 decision="denied",
@@ -218,8 +231,9 @@ def test_worker_publishes_ingestion_task(tmp_path, monkeypatch) -> None:
     assert stored_payload == fetch_result.payload
     assert state_payload["raw_payload_path"] == payload_uri
     assert state_payload["guardrails"] == overrides["guardrails"]
-    assert meta_payload["trace_id"] == "trace-1"
-    assert meta_payload["idempotency_key"] == "idemp-1"
+    scope_context = meta_payload["scope_context"]
+    assert scope_context["trace_id"] == "trace-1"
+    assert scope_context["idempotency_key"] == "idemp-1"
     assert meta_payload["crawl_id"] == "crawl-1"
 
 
@@ -238,15 +252,17 @@ def test_worker_propagates_trace_id_from_request_metadata(
     publish_result = worker.process(
         fetch_result.request,
         tenant_id="tenant-a",
+        case_id="case-b",
         document_metadata={"source": "crawler"},
     )
 
     assert publish_result.published
     assert len(task.calls) == 1
     _, meta_payload = task.calls[0]
-    assert meta_payload["tenant_id"] == "tenant-a"
-    assert meta_payload["trace_id"] == "trace-from-request"
-    assert "request_id" not in meta_payload
+    scope_context = meta_payload["scope_context"]
+    assert scope_context["tenant_id"] == "tenant-a"
+    assert scope_context["trace_id"] == "trace-from-request"
+    assert "request_id" not in scope_context
 
 
 def test_worker_returns_failure_without_publishing() -> None:
@@ -283,6 +299,7 @@ def test_worker_sets_default_provider_from_source(tmp_path, monkeypatch) -> None
     publish_result = worker.process(
         fetch_result.request,
         tenant_id="tenant-a",
+        case_id="case-b",
         document_metadata={"source": "crawler"},
     )
 
@@ -306,6 +323,7 @@ def test_worker_raises_without_source_metadata(tmp_path, monkeypatch) -> None:
         worker.process(
             fetch_result.request,
             tenant_id="tenant-a",
+            case_id="case-b",
         )
 
     assert str(excinfo.value) == "document_metadata.source_required"

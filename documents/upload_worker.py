@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.infra import object_store
+from ai_core.ids.http_scope import normalize_task_context
 from ai_core.tasks import run_ingestion_graph
 from documents.contracts import (
     DocumentMeta,
@@ -25,6 +26,7 @@ from documents.contracts import (
 )
 from documents.domain_service import DocumentDomainService
 from documents.models import DocumentCollection
+from common.celery import with_scope_apply_async
 from common.logging import get_logger
 
 logger = get_logger(__name__)
@@ -143,7 +145,10 @@ class UploadWorker:
         )
 
         # 8. Dispatch
-        async_result = run_ingestion_graph.delay(state, meta)
+        signature = run_ingestion_graph.s(state, meta)
+        scope_context = meta.get("scope_context")
+        scope = dict(scope_context) if isinstance(scope_context, Mapping) else {}
+        async_result = with_scope_apply_async(signature, scope)
 
         return WorkerPublishResult(
             status="published",
@@ -337,16 +342,15 @@ class UploadWorker:
         invocation_id: Optional[str],
     ) -> Dict[str, Any]:
         """Compose metadata for the graph execution context."""
-        return {
-            k: v
-            for k, v in {
-                "tenant_id": tenant_id,
-                "case_id": case_id,
-                "trace_id": trace_id,
-                "invocation_id": invocation_id,
-            }.items()
-            if v is not None
-        }
+        """Compose metadata for the graph execution context."""
+        scope = normalize_task_context(
+            tenant_id=tenant_id,
+            case_id=case_id,
+            service_id="upload-worker",
+            trace_id=trace_id,
+            invocation_id=invocation_id,
+        )
+        return {"scope_context": scope.model_dump(mode="json")}
 
     def _get_domain_service(self) -> DocumentDomainService:
         if self._domain_service is None:

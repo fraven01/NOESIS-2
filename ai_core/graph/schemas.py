@@ -107,6 +107,7 @@ def _build_scope_context(request: Any) -> ScopeContext:
     workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
     idempotency_key = _coalesce(request, IDEMPOTENCY_KEY_HEADER, META_IDEMPOTENCY_KEY)
     tenant_schema = _resolve_tenant_schema(request)
+    collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
 
     headers: Mapping[str, str] = getattr(request, "headers", {}) or {}
     meta: MutableMapping[str, Any] = getattr(request, "META", {}) or {}
@@ -150,6 +151,7 @@ def _build_scope_context(request: Any) -> ScopeContext:
         "workflow_id": workflow_id,
         "idempotency_key": idempotency_key,
         "tenant_schema": tenant_schema,
+        "collection_id": collection_id,
         "timestamp": datetime.now(timezone.utc),
     }
 
@@ -166,15 +168,11 @@ def normalize_meta(request: Any) -> dict:
 
     graph_name = _resolve_graph_name(request)
     graph_version = getattr(request, "graph_version", "v0")
-    collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
     key_alias = _coalesce(request, X_KEY_ALIAS_HEADER, META_KEY_ALIAS_KEY)
 
     requested_at = scope.timestamp.isoformat()
 
     meta = {
-        "tenant_id": scope.tenant_id,
-        "case_id": scope.case_id,
-        "trace_id": scope.trace_id,
         "graph_name": graph_name,
         "graph_version": graph_version,
         "requested_at": requested_at,
@@ -184,25 +182,14 @@ def normalize_meta(request: Any) -> dict:
 
     if scope.tenant_schema:
         meta["tenant_schema"] = scope.tenant_schema
-    if scope.idempotency_key:
-        meta["idempotency_key"] = scope.idempotency_key
-    if scope.run_id:
-        meta["run_id"] = scope.run_id
-    if scope.ingestion_run_id:
-        meta["ingestion_run_id"] = scope.ingestion_run_id
-
     if key_alias:
         meta["key_alias"] = key_alias
-    if collection_id:
-        meta["collection_id"] = collection_id
 
     context_metadata = {
         "graph_name": graph_name,
         "graph_version": graph_version,
         "requested_at": requested_at,
     }
-    if collection_id:
-        context_metadata["collection_id"] = collection_id
 
     meta["context_metadata"] = context_metadata
 

@@ -7,10 +7,8 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 ### LangGraph-Definitionen
 
 - `ai_core/graphs/collection_search.py` – Graph für Collection- und Websuche; erwartet `GraphContextPayload` mit `tenant_id`, `workflow_id`, `case_id` sowie optional `trace_id`, `run_id`, `ingestion_run_id`. Validiert Input strikt (`extra=forbid`). Tools: Websuche (`WebSearchWorker`), Hybrid-Scoring (`HybridScoreExecutor`), Ingestion-Trigger.
-- `ai_core/graphs/external_knowledge_graph.py` – Websuche mit optionalem HITL und Crawler-Weiterleitung; derselbe Kontext wie oben, erzwingt `tenant_id`, `workflow_id`, `case_id`.
-- `ai_core/graphs/crawler_ingestion_graph.py` – LangGraph-Orchestrierung der Crawling/Ingestion-Kette; nutzt `run_ingestion_graph` Task als Worker-Einstieg.
-- `ai_core/graphs/upload_ingestion_graph.py` – steuert Upload-Ingestion-Pfade mit denselben Kontextfeldern.
-- `ai_core/graphs/retrieval_augmented_generation.py`, `framework_analysis_graph.py`, `info_intake.py`, `rag_demo.py`, `document_service.py`, `cost_tracking.py`, `transition_contracts.py` – weitere Graphen; alle konsumieren vorbereitete Kontext-Metas aus dem Dispatcher und propagieren `tenant_id`, `trace_id`, `workflow_id`, `case_id` plus Laufzeit-ID.
+- `ai_core/graphs/technical/universal_ingestion_graph.py` – Orchestriert Ingestion für `source=search`, `upload` und `crawler`. Validiert kontextsensitiv `tenant_id`, `workflow_id` und `case_id`. Unterstützt `acquire_only` für reine Recherche.
+- `ai_core/graphs/retrieval_augmented_generation.py`, `framework_analysis_graph.py`, `info_intake.py`, `document_service.py`, `cost_tracking.py` – weitere Graphen; alle konsumieren vorbereitete Kontext-Metas aus dem Dispatcher und propagieren `tenant_id`, `trace_id`, `workflow_id`, `case_id` plus Laufzeit-ID.
 - `llm_worker/graphs/hybrid_search_and_score.py` & `score_results.py` – Worker-seitige Graphen für Hybrid-Scoring; erhalten `tenant_id`, `case_id`, `trace_id` und Laufzeit-IDs über Task-Meta.
 
 ### Celery-Tasks
@@ -59,6 +57,27 @@ Diese Referenz beschreibt, wie Kontext-IDs von HTTP über Django und Celery bis 
 1. Ein Graph ruft einen nachgelagerten Graph (z. B. `collection_search` → `hybrid_search_and_score`).
 2. Aufrufer gibt `tenant_id`, `case_id`, `workflow_id` (des Kind-Graphs) und **denselben** `trace_id` weiter.
 3. `run_id` wird pro Ausführung neu generiert; Kind-Graph darf `ingestion_run_id` nur setzen, wenn er Ingestion startet.
+
+### 1.2 OpenTelemetry & W3C Trace Context
+
+To support distributed tracing across process boundaries (e.g. Django -> Celery), we adopt the **W3C Trace Context** standard.
+
+- **`traceparent` Header**: Carries the `version-trace_id-parent_id-flags`.
+- **Alignment**: The `trace_id` in our `ScopeContext` MUST match the `trace_id` in the W3C header.
+- **Propagation**:
+  - **HTTP**: `headers` (standard).
+  - **Celery**: `task.request.headers` (standard) or `task_kwargs["headers"]`.
+  - **Langfuse**: Mapped from OTel span context automatically.
+
+### 1.3 Context Priority
+
+When resolving IDs, the priority is:
+
+1. **ScopeContext** (Business logic source of truth)
+2. **OpenTelemetry Span** (Infrastructure source of truth)
+3. **HTTP Headers / Task Metadata** (Transport)
+
+For `trace_id`, if an active OTel span exists, it takes precedence for generation/alignment.
 
 ## Validierung und Fehlerpfade
 

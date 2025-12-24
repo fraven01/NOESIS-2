@@ -35,6 +35,7 @@ from documents.contract_utils import (
     normalize_media_type as normalize_document_media_type,
 )
 from documents.contracts import InlineBlob, NormalizedDocument
+from documents.normalization import canonical_hash, normalize_url
 
 from ai_core.contracts.crawler_runner import (
     CrawlerRunContext,
@@ -76,12 +77,14 @@ def build_crawler_state(
     workflow_id = context.workflow_id
     repository = context.repository
     meta = context.meta
+    scope_meta = meta["scope_context"]
 
     builds: list[CrawlerStateBundle] = []
     for origin in request_data.origins or []:
         provider = origin.provider or request_data.provider
         try:
-            source = normalize_source(provider, origin.url, None)
+            normalized_u = normalize_url(origin.url)
+            source = normalize_source(provider, normalized_u or origin.url, None)
         except Exception as exc:  # pragma: no cover - defensive
             raise ValueError(str(exc)) from exc
 
@@ -268,7 +271,7 @@ def build_crawler_state(
             max_document_bytes=limits.max_document_bytes,
         )
         guardrail_signals = GuardrailSignalsData(
-            tenant_id=str(meta.get("tenant_id")),
+            tenant_id=str(scope_meta.get("tenant_id")),
             provider=source.provider,
             canonical_source=source.canonical_source,
             host=descriptor.host,
@@ -291,16 +294,15 @@ def build_crawler_state(
             document_uuid = uuid4()
         document_id = str(document_uuid)
 
-        collection_uuid = _resolve_document_uuid(
-            request_data.collection_id if request_data.collection_id else None
-        )
+        # collection_id should remain as string per ScopeContext contract
+        collection_id_str = request_data.collection_id
 
         encoded_payload = base64.b64encode(body_bytes).decode("ascii")
         blob = InlineBlob(
             type="inline",
             media_type=effective_content_type,
             base64=encoded_payload,
-            sha256=hashlib.sha256(body_bytes).hexdigest(),
+            sha256=canonical_hash(body_bytes),
             size=len(body_bytes),
         )
 
@@ -316,13 +318,13 @@ def build_crawler_state(
 
         normalized_document_input = NormalizedDocument(
             ref={
-                "tenant_id": str(meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.get("tenant_id")),
                 "workflow_id": str(workflow_id),
                 "document_id": document_uuid,
-                "collection_id": collection_uuid,
+                "collection_id": collection_id_str,
             },
             meta={
-                "tenant_id": str(meta.get("tenant_id")),
+                "tenant_id": str(scope_meta.get("tenant_id")),
                 "workflow_id": str(workflow_id),
                 "title": origin.title or request_data.title,
                 "language": origin.language or request_data.language,
@@ -338,8 +340,8 @@ def build_crawler_state(
         )
 
         if snapshot_requested and body_bytes:
-            tenant_id = str(meta.get("tenant_id"))
-            case_id = str(meta.get("case_id"))
+            tenant_id = str(scope_meta.get("tenant_id"))
+            case_id = str(scope_meta.get("case_id"))
             snapshot_path, snapshot_sha256 = _write_snapshot(
                 object_store,
                 tenant=tenant_id,
@@ -351,8 +353,8 @@ def build_crawler_state(
             snapshot_sha256 = None
 
         state: dict[str, object] = {
-            "tenant_id": meta.get("tenant_id"),
-            "case_id": meta.get("case_id"),
+            "tenant_id": scope_meta.get("tenant_id"),
+            "case_id": scope_meta.get("case_id"),
             "workflow_id": workflow_id,
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
@@ -385,7 +387,7 @@ def build_crawler_state(
         state["control"] = control
 
         baseline_data, previous_status = _load_baseline_context(
-            meta.get("tenant_id"),
+            scope_meta.get("tenant_id"),
             workflow_id,
             document_id,
             repository,

@@ -1,197 +1,223 @@
 from __future__ import annotations
 
+import sys
+import pytest
+from unittest.mock import MagicMock, patch
 from typing import Any, Mapping, Sequence
 
-from ai_core.graphs.technical.collection_search import (
-    SearchStrategy,
-    SearchStrategyRequest,
-    CollectionSearchAdapter,
-    HitlDecision,
-)
-from ai_core.tools.web_search import (
-    SearchProviderError,
-    SearchResult,
-    ToolOutcome,
-    WebSearchResponse,
-)
-from ai_core.tests.utils import GraphTestMixin
+# -----------------------------------------------------------------------------
+# Fixture Overrides (Blocking global conftest side-effects)
+# -----------------------------------------------------------------------------
 
 
-class StubStrategyGenerator:
-    def __init__(self) -> None:
-        self.requests: list[SearchStrategyRequest] = []
-
-    def __call__(self, request: SearchStrategyRequest) -> SearchStrategy:
-        self.requests.append(request)
-        return SearchStrategy(
-            queries=[
-                f"{request.query} admin guide",
-                f"{request.query} telemetry",
-                f"{request.query} reporting",
-            ],
-            policies_applied=("tenant-default",),
-            preferred_sources=("docs.acme.test",),
-            disallowed_sources=("forum.acme.test",),
-        )
+@pytest.fixture
+def documents_repository_stub():
+    """Override to prevent importing ai_core.services."""
+    return MagicMock()
 
 
-class StubWebSearchWorker:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, Mapping[str, Any]]] = []
-
-    def run(self, *, query: str, context: Mapping[str, Any]) -> WebSearchResponse:
-        self.calls.append((query, context))
-        results = [
-            SearchResult(
-                url="https://docs.acme.test/admin",
-                title="Admin Guide",
-                snippet="How to administer the platform",
-                source="acme",
-                score=0.9,
-                is_pdf=False,
-            ),
-            SearchResult(
-                url="https://docs.acme.test/telemetry",
-                title="Telemetry",
-                snippet="Telemetry configuration",
-                source="acme",
-                score=0.8,
-                is_pdf=False,
-            ),
-        ]
-        outcome = ToolOutcome(
-            decision="ok",
-            rationale="search_completed",
-            meta={"provider": "stub", "latency_ms": 120},
-        )
-        return WebSearchResponse(results=results, outcome=outcome)
+@pytest.fixture(autouse=True)
+def _auto_documents_repository(documents_repository_stub):
+    """Override to prevent importing ai_core.services."""
+    yield
 
 
-class StubHybridExecutor:
-    def __init__(self) -> None:
-        self.calls: list[tuple[Any, Sequence[Any], Mapping[str, Any]]] = []
-
-    def run(
-        self,
-        *,
-        scoring_context,
-        candidates,
-        tenant_context,
-    ) -> Any:
-        self.calls.append((scoring_context, candidates, tenant_context))
-        # Return a mock HybridResult compatible object
-        from llm_worker.schemas import HybridResult
-
-        # We need to return real objects because the node validates them
-        return HybridResult(
-            ranked=[],
-            top_k=[],
-            recommended_ingest=[],
-            coverage_delta={"TECHNICAL": 0.0},
-        )
+@pytest.fixture(autouse=True)
+def ingestion_status_store():
+    """Override to prevent importing ai_core.services/ingestion_status."""
+    return MagicMock()
 
 
-class StubHitlGateway:
-    def __init__(self, decision: HitlDecision | None) -> None:
-        self.decision = decision
-        self.payloads: list[Mapping[str, Any]] = []
-
-    def present(self, payload: Mapping[str, Any]) -> HitlDecision | None:
-        self.payloads.append(payload)
-        return self.decision
+@pytest.fixture(autouse=True)
+def disable_async_graphs():
+    """Override to prevent importing ai_core.services."""
+    yield
 
 
-class StubIngestionTrigger:
-    def __init__(self) -> None:
-        self.calls: list[tuple[list[str], Mapping[str, Any]]] = []
-
-    def trigger(
-        self,
-        *,
-        approved_urls: Sequence[str],
-        context: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        urls = list(approved_urls)
-        self.calls.append((urls, dict(context)))
-        return {"status": "queued", "count": len(urls)}
+@pytest.fixture(autouse=True)
+def _prevent_db_access():
+    """Ensure no DB access during these tests."""
+    with patch(
+        "django.db.backends.base.base.BaseDatabaseWrapper.connect",
+        side_effect=RuntimeError("DB_ACCESS_FORBIDDEN"),
+    ):
+        yield
 
 
-class StubCoverageVerifier:
-    def __init__(self) -> None:
-        self.calls: list[Mapping[str, Any]] = []
-
-    def verify(
-        self,
-        *,
-        tenant_id: str,
-        collection_scope: str,
-        candidate_urls: Sequence[str],
-        timeout_s: int,
-        interval_s: int,
-    ) -> Mapping[str, Any]:
-        payload = {
-            "tenant_id": tenant_id,
-            "collection_scope": collection_scope,
-            "candidate_urls": list(candidate_urls),
-            "timeout_s": timeout_s,
-            "interval_s": interval_s,
-            "status": "complete",
-            "coverage_delta": {"TECHNICAL": 0.2},
-            "results": [
-                {"url": url, "status": "success" if index == 0 else "pending"}
-                for index, url in enumerate(candidate_urls)
-            ],
-        }
-        self.calls.append(payload)
-        return payload
+# -----------------------------------------------------------------------------
+# Test Logic (Same as before)
+# -----------------------------------------------------------------------------
 
 
-class TestCollectionSearchGraph(GraphTestMixin):
+@pytest.fixture
+def cs_module():
+    """Import collection_search module with isolation."""
+    mock_modules = {
+        "ai_core.graphs.technical.universal_ingestion_graph": MagicMock(),
+        "ai_core.rag.embeddings": MagicMock(),
+        "ai_core.llm.client": MagicMock(),
+        "django.urls": MagicMock(),
+        "django.conf": MagicMock(),
+        # Also mock services to be safe if anything leaks
+        "ai_core.services": MagicMock(),
+    }
+
+    with patch(
+        "ai_core.infra.observability.observe_span",
+        side_effect=lambda name=None, **kwargs: lambda func: func,
+    ), patch.dict(sys.modules, mock_modules):
+
+        module_name = "ai_core.graphs.technical.collection_search"
+        if module_name in sys.modules:
+            del sys.modules[module_name]
+
+        try:
+            import ai_core.graphs.technical.collection_search as m
+
+            yield m
+        finally:
+            if module_name in sys.modules:
+                del sys.modules[module_name]
+
+
+class TestCollectionSearchGraph:
+    """Tests for CollectionSearch using isolated module."""
+
     def _initial_state(self) -> dict[str, Any]:
-        return self.make_graph_state(
-            input_data={
+        context = {
+            "tenant_id": "tenant-1",
+            "workflow_id": "wf-1",
+            "case_id": "case-1",
+            "trace_id": "trace-1",
+            "run_id": "run-1",
+        }
+        return {
+            "input": {
                 "question": "How do I configure telemetry?",
                 "collection_scope": "software_docs",
                 "quality_mode": "software_docs_strict",
                 "purpose": "docs-gap-analysis",
             },
-            tenant_id="tenant-1",
-            workflow_id="wf-1",
-            case_id="case-1",
-            trace_id="trace-1",
-            run_id="run-1",
+            "context": context,
+        }
+
+    def test_run_returns_search_results(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            SearchResult,
+            ToolOutcome,
         )
 
-    def _build_adapter(self, dependencies: dict[str, Any]) -> CollectionSearchAdapter:
-        # CollectionSearchAdapter now builds graph internally (Finding #4 fix)
-        return CollectionSearchAdapter(dependencies)
+        class LocalStubStrategyGenerator:
+            def __init__(self) -> None:
+                self.requests: list[Any] = []
 
-    def test_run_returns_search_results(self) -> None:
-        strategy = StubStrategyGenerator()
-        search_worker = StubWebSearchWorker()
-        hybrid_executor = StubHybridExecutor()
-        hitl_gateway = StubHitlGateway(decision=None)
-        ingestion_trigger = StubIngestionTrigger()
-        coverage_verifier = StubCoverageVerifier()
+            def __call__(self, request: Any) -> Any:
+                self.requests.append(request)
+                return cs_module.SearchStrategy(
+                    queries=[
+                        f"{request.query} admin guide",
+                        f"{request.query} telemetry",
+                        f"{request.query} reporting",
+                    ],
+                    policies_applied=("tenant-default",),
+                    preferred_sources=("docs.acme.test",),
+                    disallowed_sources=("forum.acme.test",),
+                )
+
+        class LocalStubWebSearchWorker:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, Mapping[str, Any]]] = []
+
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
+                self.calls.append((query, context))
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/admin",
+                        title="Admin Guide",
+                        snippet="How to administer the platform",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                    SearchResult(
+                        url="https://docs.acme.test/telemetry",
+                        title="Telemetry",
+                        snippet="Telemetry configuration",
+                        source="acme",
+                        score=0.8,
+                        is_pdf=False,
+                    ),
+                ]
+                outcome = ToolOutcome(
+                    decision="ok",
+                    rationale="search_completed",
+                    meta={"provider": "stub", "latency_ms": 120},
+                )
+                return WebSearchResponse(results=results, outcome=outcome)
+
+        class LocalStubHybridExecutor:
+            def __init__(self) -> None:
+                self.calls: list[tuple[Any, Sequence[Any], Mapping[str, Any]]] = []
+
+            def run(self, *, scoring_context, candidates, tenant_context) -> Any:
+                self.calls.append((scoring_context, candidates, tenant_context))
+                result = MagicMock()
+                # Mock result structure that translates to expected dict
+                result.candidates = {}
+                result.result = MagicMock()
+                result.result.ranked = []
+
+                # Mock model_dump behavior expected by hybrid_score_node
+                result.model_dump.return_value = {
+                    "ranked": [],
+                    "candidates": {},
+                    "coverage_delta": {"TECHNICAL": 0.0},
+                }
+                return result
+
+        class LocalStubHitlGateway:
+            def __init__(self, decision: Any | None) -> None:
+                self.decision = decision
+                self.payloads: list[Mapping[str, Any]] = []
+
+            def present(self, payload: Mapping[str, Any]) -> Any | None:
+                self.payloads.append(payload)
+                return self.decision
+
+        class LocalStubCoverageVerifier:
+            def __init__(self) -> None:
+                self.calls: list[Mapping[str, Any]] = []
+
+            def verify(self, **kwargs) -> Mapping[str, Any]:
+                self.calls.append(kwargs)
+                return {"status": "complete", "coverage_delta": {"TECHNICAL": 0.2}}
+
+        strategy = LocalStubStrategyGenerator()
+        search_worker = LocalStubWebSearchWorker()
+        hybrid_executor = LocalStubHybridExecutor()
+        hitl_gateway = LocalStubHitlGateway(decision=None)
+        coverage_verifier = LocalStubCoverageVerifier()
 
         dependencies = {
             "runtime_strategy_generator": strategy,
             "runtime_search_worker": search_worker,
             "runtime_hybrid_executor": hybrid_executor,
             "runtime_hitl_gateway": hitl_gateway,
-            "runtime_ingestion_trigger": ingestion_trigger,
             "runtime_coverage_verifier": coverage_verifier,
         }
 
-        graph = self._build_adapter(dependencies)
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
 
-        # Extract context from state and pass as meta
         initial_state = self._initial_state()
         context = initial_state.pop("context", {})
+
         state, result = graph.run(initial_state, meta=context)
 
         assert result["outcome"] == "completed"
-        # Access search results from result dict
         assert result["search"] is not None
         assert "results" in result["search"]
         assert len(result["search"]["results"]) == 6
@@ -200,44 +226,91 @@ class TestCollectionSearchGraph(GraphTestMixin):
         request = strategy.requests[0]
         assert request.purpose == "docs-gap-analysis"
 
-    def test_search_failure_aborts_flow(self) -> None:
-        strategy = StubStrategyGenerator()
+        assert result.get("plan") is not None
+        assert result["plan"]["hitl_required"] is True
+        assert result.get("ingestion", {}).get("status") == "planned_only"
 
-        class FailingSearchWorker(StubWebSearchWorker):
-            def run(self, *, query: str, context: Mapping[str, Any]) -> WebSearchResponse:  # type: ignore[override]
+    def test_search_failure_aborts_flow(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            SearchProviderError,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                return cs_module.SearchStrategy(
+                    queries=[request.query],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class FailingSearchWorker:
+            def __init__(self):
+                self.calls = []
+
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
                 raise SearchProviderError("boom")
 
-        search_worker = FailingSearchWorker()
+        class MockObj:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                return MagicMock()
+
+            def verify(self, **k):
+                return {}
 
         dependencies = {
-            "runtime_strategy_generator": strategy,
-            "runtime_search_worker": search_worker,
-            "runtime_hybrid_executor": StubHybridExecutor(),
-            "runtime_hitl_gateway": StubHitlGateway(decision=None),
-            "runtime_ingestion_trigger": StubIngestionTrigger(),
-            "runtime_coverage_verifier": StubCoverageVerifier(),
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": FailingSearchWorker(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
         }
 
-        graph = self._build_adapter(dependencies)
-
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
         initial_state = self._initial_state()
         context = initial_state.pop("context", {})
-        _, result = graph.run(initial_state, meta=context)
 
-        # The new graph might complete but with errors in search results
-        # search_node returns errors in its output.
-        # The graph continues to Rank/Hybrid, but if results are empty it might skip.
-        # Check logic in collection_search.py:
-        # if not results: return {"embedding_rank": {"scored_count": 0}}
+        _, result = graph.run(initial_state, meta=context)
 
         assert result["search"]["errors"]
         assert len(result["search"]["results"]) == 0
 
-    def test_search_without_results_returns_no_candidates(self) -> None:
-        strategy = StubStrategyGenerator()
+    def test_search_without_results_returns_no_candidates(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+        )
 
-        class EmptySearchWorker(StubWebSearchWorker):
-            def run(self, *, query: str, context: Mapping[str, Any]) -> WebSearchResponse:  # type: ignore[override]
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                return cs_module.SearchStrategy(
+                    queries=[
+                        f"{request.query} 1",
+                        f"{request.query} 2",
+                        f"{request.query} 3",
+                    ],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class EmptySearchWorker:
+            def __init__(self):
+                self.calls = []
+
+            def run(
+                self, *, query: str, context: Mapping[str, Any]
+            ) -> WebSearchResponse:
                 self.calls.append((query, context))
                 outcome = ToolOutcome(
                     decision="ok",
@@ -246,18 +319,32 @@ class TestCollectionSearchGraph(GraphTestMixin):
                 )
                 return WebSearchResponse(results=[], outcome=outcome)
 
+        class MockObj:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                return MagicMock()
+
+            def verify(self, **k):
+                return {}
+
+        strategy = LocalStubStrategyGenerator()
         search_worker = EmptySearchWorker()
 
         dependencies = {
             "runtime_strategy_generator": strategy,
             "runtime_search_worker": search_worker,
-            "runtime_hybrid_executor": StubHybridExecutor(),
-            "runtime_hitl_gateway": StubHitlGateway(decision=None),
-            "runtime_ingestion_trigger": StubIngestionTrigger(),
-            "runtime_coverage_verifier": StubCoverageVerifier(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
         }
 
-        graph = self._build_adapter(dependencies)
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
 
         initial_state = self._initial_state()
         context = initial_state.pop("context", {})
@@ -266,28 +353,154 @@ class TestCollectionSearchGraph(GraphTestMixin):
         assert result["search"]["results"] == []
         assert len(search_worker.calls) == 3
 
-    def test_auto_ingest_disabled_by_default(self) -> None:
-        """Test that auto_ingest=False (default) does not trigger ingestion."""
+    def test_auto_ingest_disabled_by_default(self, cs_module) -> None:
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+        )
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request: Any) -> Any:
+                return cs_module.SearchStrategy(
+                    queries=[request.query],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context) -> WebSearchResponse:
+                return WebSearchResponse(
+                    results=[],
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class MockObj:
+            def __init__(self, **kwargs):
+                self.__dict__.update(kwargs)
+
+            def present(self, p):
+                return None
+
+            def run(self, **k):
+                m = MagicMock()
+                m.model_dump.return_value = {}
+                return m
+
+            def verify(self, **k):
+                return {}
 
         dependencies = {
-            "runtime_strategy_generator": StubStrategyGenerator(),
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
             "runtime_search_worker": StubWebSearchWorker(),
-            "runtime_hybrid_executor": StubHybridExecutor(),
-            "runtime_hitl_gateway": StubHitlGateway(decision=None),
-            "runtime_ingestion_trigger": StubIngestionTrigger(),
-            "runtime_coverage_verifier": StubCoverageVerifier(),
+            "runtime_hybrid_executor": MockObj(),
+            "runtime_hitl_gateway": MockObj(),
+            "runtime_coverage_verifier": MockObj(),
         }
 
-        graph = self._build_adapter(dependencies)
-        ingestion_trigger = dependencies["runtime_ingestion_trigger"]
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph = CollectionSearchAdapter(dependencies)
 
         initial_state = self._initial_state()
         context = initial_state.pop("context", {})
         state, result = graph.run(initial_state, meta=context)
 
-        # result["ingestion"] should be None or empty or status skipped
-        assert (
-            not result.get("ingestion")
-            or result["ingestion"].get("status") == "skipped"
+        assert result.get("ingestion", {}).get("status") == "planned_only"
+
+    def test_delegation_flow(self, cs_module) -> None:
+        """Test that approved plan delegates to Universal Ingestion Graph."""
+        from ai_core.tools.web_search import (
+            WebSearchResponse,
+            ToolOutcome,
+            SearchResult,
         )
-        assert ingestion_trigger.calls == []
+
+        decision = cs_module.HitlDecision(
+            status="approved",
+            approved_candidate_ids=("q0-0",),
+            added_urls=("https://added.com",),
+            rationale="LGTM",
+        )
+
+        class LocalStubHitlGateway:
+            def present(self, payload):
+                return decision
+
+        class LocalStubStrategyGenerator:
+            def __call__(self, request):
+                return cs_module.SearchStrategy(
+                    queries=["q"],
+                    policies_applied=(),
+                    preferred_sources=(),
+                    disallowed_sources=(),
+                )
+
+        class StubWebSearchWorker:
+            def run(self, *, query, context) -> WebSearchResponse:
+                results = [
+                    SearchResult(
+                        url="https://docs.acme.test/admin",
+                        title="Admin Guide",
+                        snippet="How to administer the platform",
+                        source="acme",
+                        score=0.9,
+                        is_pdf=False,
+                    ),
+                ]
+                return WebSearchResponse(
+                    results=results,
+                    outcome=ToolOutcome(decision="ok", rationale="none", meta={}),
+                )
+
+        class ValidCandidatesHybridExecutor:
+            def run(self, *, scoring_context, candidates, tenant_context) -> Any:
+                result = MagicMock()
+                c1 = {
+                    "url": "https://docs.acme.test/admin",
+                    "title": "Admin",
+                    "score": 0.9,
+                }
+                # result.candidates is accessed by build_plan_node as model or dict?
+                # candidates = hybrid.get("candidates", {}).values() in code.
+                # hybrid_score_node: returns {"hybrid": result.model_dump()}
+                # So we need result.model_dump() to return the dictionary properly.
+
+                def model_dump(**kwargs):
+                    return {"candidates": {"cand1": c1}, "result": {"ranked": []}}
+
+                result.model_dump = model_dump
+                return result
+
+        mock_ug = MagicMock()
+        mock_ug.invoke.return_value = {"output": {"decision": "ingested"}}
+
+        # Inject factory to bypass import
+        dependencies = {
+            "runtime_strategy_generator": LocalStubStrategyGenerator(),
+            "runtime_search_worker": StubWebSearchWorker(),
+            "runtime_hybrid_executor": ValidCandidatesHybridExecutor(),
+            "runtime_hitl_gateway": LocalStubHitlGateway(),
+            "runtime_coverage_verifier": MagicMock(),
+            "runtime_universal_ingestion_factory": lambda: mock_ug,
+        }
+
+        CollectionSearchAdapter = cs_module.CollectionSearchAdapter
+        graph_adapter = CollectionSearchAdapter(dependencies)
+
+        initial_state = self._initial_state()
+        initial_state["input"]["execute_plan"] = True
+
+        context = initial_state.pop("context", {})
+        state, result = graph_adapter.run(initial_state, meta=context)
+
+        assert result.get("outcome") == "completed", f"Graph failed: {result}"
+        assert result.get("hitl") is not None, "HITL state missing"
+        assert (
+            result["hitl"].get("decision") is not None
+        ), f"HITL decision missing: {result['hitl']}"
+        assert result["plan"] is not None
+        assert result["plan"]["hitl_required"] is False
+        assert "https://added.com" in result["plan"]["selected_urls"]
+        assert "https://docs.acme.test/admin" in result["plan"]["selected_urls"]
+
+        assert result["ingestion"]["status"] == "ingested"

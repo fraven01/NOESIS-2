@@ -50,7 +50,7 @@ class UploadManager:
         return {
             "status": "accepted",
             "task_id": task_result.id,
-            "trace_id": meta.get("trace_id"),
+            "trace_id": meta["scope_context"].get("trace_id"),
             "document_id": metadata.get(
                 "document_id"
             ),  # Might be None if not pre-provided

@@ -10,6 +10,8 @@ from django.conf import settings
 
 from ai_core.infra.config import get_config
 from common.logging import get_log_context, get_logger
+from ai_core.infra.observability import observe_span, report_generation_usage
+from ai_core.infra.usage import Usage
 
 try:  # pragma: no cover - optional dependency for tests
     from litellm import embedding as litellm_embedding  # type: ignore
@@ -48,6 +50,7 @@ class EmbeddingBatchResult:
     attempts: int
     timeout_s: float | None
     retry_delays: Tuple[float, ...] | None = None
+    usage: Usage | None = None
 
 
 class EmbeddingClient:
@@ -100,6 +103,7 @@ class EmbeddingClient:
             self._record_dimension(result.model, len(result.vectors[0]))
         return self._dim
 
+    @observe_span("embeddings.generate")
     def embed(self, texts: Sequence[str]) -> EmbeddingBatchResult:
         if not isinstance(texts, Sequence):
             raise TypeError("texts must be a sequence")
@@ -113,6 +117,7 @@ class EmbeddingClient:
                 model_used="primary",
                 attempts=1,
                 timeout_s=None,
+                usage=Usage(),
             )
 
         last_error: Exception | None = None
@@ -127,7 +132,11 @@ class EmbeddingClient:
 
         for attempt, model in enumerate(model_candidates, start=1):
             try:
-                vectors = self._invoke_provider(model, inputs, cfg, timeout_s)
+                vectors, usage = self._invoke_provider(model, inputs, cfg, timeout_s)
+
+                # Instrument: Report usage to current span
+                report_generation_usage(usage, model=model)
+
             except Exception as exc:  # pragma: no cover - requires network failure
                 last_error = exc
                 should_retry = attempt < len(
@@ -157,6 +166,7 @@ class EmbeddingClient:
                 model_used=model_used,
                 attempts=attempt,
                 timeout_s=timeout_s,
+                usage=usage,
             )
 
         message = "Embedding request failed"
@@ -201,7 +211,7 @@ class EmbeddingClient:
         inputs: Sequence[str],
         cfg,
         timeout_s: float | None,
-    ) -> List[List[float]]:
+    ) -> Tuple[List[List[float]], Usage]:
         # Use OpenAI SDK to communicate with LiteLLM proxy
         # This is the recommended approach for LiteLLM proxy usage
         if OpenAI is None:
@@ -227,23 +237,23 @@ class EmbeddingClient:
         response = self._execute_with_timeout(_call, timeout_s)
 
         if not response.data:
-            return []
+            return [], Usage()
 
         vectors: List[List[float]] = []
         for item in response.data:
             embedding_values = item.embedding
             if embedding_values is None:
-                return []
+                return [], Usage()
             try:
                 vector = [float(value) for value in embedding_values]
             except (TypeError, ValueError) as exc:
                 raise EmbeddingClientError("Invalid embedding value") from exc
             if not vector:
-                return []
+                return [], Usage()
             vectors.append(vector)
 
         if not vectors:
-            return []
+            return [], Usage()
 
         if len(vectors) != len(inputs):
             raise EmbeddingClientError("Embedding count mismatch")
@@ -252,7 +262,13 @@ class EmbeddingClient:
             for vector in vectors[1:]:
                 if len(vector) != expected_len:
                     raise EmbeddingClientError("Embedding dimensions mismatch in batch")
-        return vectors
+
+        try:
+            usage = Usage.from_provider_response(response)
+        except Exception:
+            usage = Usage()
+
+        return vectors, usage
 
     def _execute_with_timeout(self, fn: Callable[[], T], timeout_s: float | None) -> T:
         if timeout_s is None or timeout_s <= 0:

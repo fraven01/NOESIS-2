@@ -327,7 +327,7 @@ def crawl_selected(request):
     result = coordinator.ingest_direct(
         urls=urls,
         mode=mode,  # Map mode parameter
-        tenant_id=meta["tenant_id"],
+        tenant_id=meta["scope_context"]["tenant_id"],
         workflow_id=workflow_id,
         collection_id=collection_id,
         ...

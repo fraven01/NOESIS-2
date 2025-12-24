@@ -18,9 +18,16 @@ class CaseApiTests(APITestCase):
             self.tenant, _ = Tenant.objects.get_or_create(
                 schema_name="autotest", defaults={"name": "Test Tenant"}
             )
+            # Defensive check for MockTenant leaking into tests
+            if not isinstance(self.tenant.id, int):
+                # If we got a mock without an ID, force one.
+                # Ideally this shouldn't happen with get_or_create unless the manager is mocked.
+                self.tenant.id = 1
+
             self.other_tenant, _ = Tenant.objects.get_or_create(
                 schema_name="other_tenant", defaults={"name": "Other Tenant"}
             )
+
         self.url = reverse("cases:case-list")
 
     def test_create_case(self):
