@@ -64,10 +64,6 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
     )
 
     normalized_meta = {
-        "tenant_id": tenant_id,
-        "case_id": "case-test",
-        "trace_id": "trace-test",
-        "run_id": "run-test",
         "graph_name": "rag.default",
         "graph_version": "v1",
         "scope_context": {
@@ -78,7 +74,7 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
             "run_id": "run-test",
             "timestamp": tool_context.now_iso.isoformat(),
         },
-        "tool_context": tool_context,
+        "tool_context": tool_context.model_dump(mode="json"),
     }
 
     # Mock async result that returns immediately (success case)
@@ -162,10 +158,6 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
     )
 
     normalized_meta = {
-        "tenant_id": tenant_id,
-        "case_id": "case-test",
-        "trace_id": "trace-test",
-        "run_id": "run-test",
         "graph_name": "rag.default",
         "graph_version": "v1",
         "scope_context": {
@@ -176,7 +168,7 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
             "run_id": "run-test",
             "timestamp": tool_context.now_iso.isoformat(),
         },
-        "tool_context": tool_context,
+        "tool_context": tool_context.model_dump(mode="json"),
     }
 
     # Mock async result that times out

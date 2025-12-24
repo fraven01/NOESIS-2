@@ -13,17 +13,20 @@ from rest_framework import status
 from common.constants import DEFAULT_WORKFLOW_PLACEHOLDER
 from common.logging import get_logger
 from crawler.http_fetcher import HttpFetcher
-from llm_worker.tasks import run_graph as run_graph_task
+
 
 from ai_core.contracts.crawler_runner import (
     CrawlerRunContext,
     CrawlerStateBundle,
 )
-from ai_core.graph import registry as graph_registry
+
 from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
+
+# NOTE: build_universal_ingestion_graph imported lazily inside run_crawler_runner()
+# to prevent OOM in test environments that mock heavy modules.
 from customers.tenant_context import TenantContext
 from documents.contract_utils import resolve_workflow_id
 from documents.domain_service import (
@@ -34,32 +37,9 @@ from documents.domain_service import (
 import ai_core.services as services_module
 from . import _get_documents_repository, _make_json_safe
 from .crawler_state_builder import build_crawler_state
+from documents.normalization import normalize_url
 
 logger = get_logger(__name__)
-
-
-def debug_check_json_serializable(obj, path=""):
-    import json
-    import inspect
-
-    class DebugEncoder(json.JSONEncoder):
-        def default(self, o):
-            if (
-                inspect.ismethod(o)
-                or inspect.isfunction(o)
-                or inspect.isbuiltin(o)
-                or type(o).__name__ == "method"
-            ):
-                raise Exception(f"DEBUG FOUND METHOD: {o} type={type(o)}")
-            try:
-                return super().default(o)
-            except TypeError:
-                raise Exception(f"DEBUG FOUND NON-SERIALIZABLE: {o} type={type(o)}")
-
-    try:
-        json.dumps(obj, cls=DebugEncoder)
-    except Exception as exc:
-        raise Exception(f"DEBUG CHECK FAILED at {path}: {exc}") from exc
 
 
 @dataclass(slots=True)
@@ -80,8 +60,17 @@ def run_crawler_runner(
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
 
+    scope_context = meta["scope_context"]
+    scope_meta = scope_context
+
+    # Lazy import to prevent OOM in test environments
+    from ai_core.graphs.technical.universal_ingestion_graph import (
+        build_universal_ingestion_graph,
+        UniversalIngestionInput,
+    )
+
     if request_model.collection_id:
-        meta["collection_id"] = request_model.collection_id
+        scope_context["collection_id"] = request_model.collection_id
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_resolved = resolve_workflow_id(
@@ -118,68 +107,223 @@ def run_crawler_runner(
     if not state_builds:
         raise ValueError("No origins resolved for crawler run.")
 
-    # Resolve inline graph runner (manual/debug path)
-    graph_runner = None
-    if graph_factory is not None:
-        try:
-            graph_runner = graph_factory()
-        except Exception:
-            logger.exception("crawler_runner.graph_factory_failed")
-            graph_runner = None
-    if graph_runner is None:
-        try:
-            graph_runner = graph_registry.get("crawler.ingestion")
-        except KeyError:
-            graph_runner = None
-
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
-    idempotency_key = meta.get("idempotency_key")
+    # NOTE: This must run BEFORE ID validation to allow early return for idempotent requests
+    idempotency_key = scope_meta.get("idempotency_key")
+    idempotent_flag = False
+    fingerprint = None
+
+    # Pre-validate required IDs for fingerprinting (full validation happens later)
+    tenant_id_for_fp = scope_meta.get("tenant_id")
+    case_id_for_fp = scope_meta.get("case_id")  # Optional - may be None
+
+    if not tenant_id_for_fp:
+        raise ValueError("tenant_id is required for idempotency fingerprinting")
+
     try:
         import json
         import hashlib
 
         fingerprint_payload = {
-            "tenant_id": meta.get("tenant_id"),
-            "case_id": meta.get("case_id"),
+            "tenant_id": str(tenant_id_for_fp),  # Required (Pre-MVP ID Contract)
+            "case_id": (
+                str(case_id_for_fp) if case_id_for_fp else None
+            ),  # Optional - include in fingerprint if present
             "workflow_id": str(workflow_resolved),
             "collection_id": request_model.collection_id,
             "mode": request_model.mode,
-            "origins": [
-                origin.model_dump(mode="json") for origin in request_model.origins or []
-            ],
+            "origins": sorted(  # Sort for stable fingerprint
+                [
+                    origin.model_dump(mode="json")
+                    for origin in request_model.origins or []
+                ],
+                key=lambda o: normalize_url(o.get("uri")) or o.get("uri", ""),
+            ),
         }
         fingerprint = hashlib.sha256(
             json.dumps(fingerprint_payload, sort_keys=True).encode("utf-8")
         ).hexdigest()
     except Exception:
         fingerprint = None
-    idempotent_flag = False
-    if idempotency_key:
-        idempotent_flag = True
-    elif fingerprint:
-        seen_cache = _CRAWLER_IDEMPOTENCY_CACHE
-        idempotent_flag = fingerprint in seen_cache
-        seen_cache.add(fingerprint)
 
-    completed_runs: list[dict[str, object]] = []
-    graph_name = "crawler.ingestion"
-    scope = {
-        "tenant_id": meta.get("tenant_id"),
-        "case_id": meta.get("case_id"),
-        "trace_id": meta.get("trace_id"),
+    # Check idempotency using Redis/Django cache (cross-process)
+    from django.core.cache import cache
+
+    CACHE_PREFIX = getattr(
+        settings, "CRAWLER_IDEMPOTENCY_CACHE_PREFIX", "crawler_idempotency:"
+    )
+    CACHE_TTL = getattr(settings, "CRAWLER_IDEMPOTENCY_CACHE_TTL_SECONDS", 3600)
+
+    if idempotency_key:
+        cache_key = f"{CACHE_PREFIX}key:{idempotency_key}"
+        if cache.get(cache_key):
+            idempotent_flag = True
+        else:
+            cache.set(cache_key, True, timeout=CACHE_TTL)
+    elif fingerprint:
+        cache_key = f"{CACHE_PREFIX}fp:{fingerprint}"
+        if cache.get(cache_key):
+            idempotent_flag = True
+        else:
+            cache.set(cache_key, True, timeout=CACHE_TTL)
+
+    # Early return for idempotent requests
+    if idempotent_flag:
+        logger.info(
+            "crawler_request_idempotent_skipped",
+            extra={
+                "fingerprint": fingerprint,
+                "idempotency_key": idempotency_key,
+                "tenant_id": str(tenant_id_for_fp),
+                "cache_key": cache_key,
+            },
+        )
+        return CrawlerRunnerCoordinatorResult(
+            payload={
+                "idempotent": True,
+                "skipped": True,
+                "origins": [],
+                "message": "Request already processed (idempotent)",
+            },
+            status_code=status.HTTP_200_OK,
+            idempotency_key=idempotency_key,
+        )
+
+    # Validate mandatory IDs before graph invocation (Pre-MVP ID Contract)
+    # NOTE: case_id is optional at HTTP level, becomes mandatory for graph execution
+    required_ids = {
+        "tenant_id": "tenant_id is mandatory for crawler ingestion",
+        "trace_id": "trace_id is mandatory for correlation",
+        "invocation_id": "invocation_id is mandatory per ID contract",
     }
 
-    # Manual/debug runs are executed inline for observability in tests.
+    for field, error_msg in required_ids.items():
+        if not scope_meta.get(field):
+            raise ValueError(error_msg)
+
+    # Extract validated IDs
+    tenant_id = scope_meta["tenant_id"]
+    case_id = scope_meta.get("case_id")  # Optional at HTTP level
+    trace_id = scope_meta["trace_id"]
+
+    # Identity IDs (Pre-MVP ID Contract)
+    # HTTP requests have user_id (if authenticated), service_id is None
+    # S2S hops (Celery tasks) have service_id, user_id may be present for audit trail
+    # Crawler runner accepts both patterns since it can be called from HTTP or Celery
+    _service_id = scope_meta.get("service_id")
+    _user_id = scope_meta.get("user_id")
+
+    completed_runs: list[dict[str, object]] = []
+    # Updated to use UniversalIngestionGraph
+    graph_app = build_universal_ingestion_graph()
+
     for build in state_builds:
-        _prime_manual_state(build, graph_name, graph_runner)
-        inline_payload, _ = _run_graph_inline(
-            build=build,
-            meta=meta,
-            graph_name=graph_name,
-            scope=scope,
-            graph_runner=graph_runner,
-        )
-        entry = {"build": build, **inline_payload}
+        # Construct Input for Universal Graph
+        normalized = build.state.get("normalized_document_input")
+        input_payload: UniversalIngestionInput = {
+            "source": "crawler",
+            "mode": "ingest_only",
+            "collection_id": request_model.collection_id,
+            "upload_blob": None,
+            "metadata_obj": None,
+            "normalized_document": normalized,
+        }
+
+        # Generate canonical ingestion_run_id for this build
+        canonical_ingestion_run_id = str(uuid4())
+
+        # Determine strict context
+        # Note: Universal Graph expects tenant_id, trace_id, case_id in context
+        run_context = {
+            "tenant_id": str(tenant_id),
+            "case_id": str(case_id),
+            "trace_id": str(trace_id),
+            "workflow_id": str(workflow_resolved),
+            "ingestion_run_id": canonical_ingestion_run_id,
+            "dry_run": request_model.dry_run,
+            "idempotency_key": idempotency_key,
+        }
+
+        try:
+            result = graph_app.invoke({"input": input_payload, "context": run_context})
+            output = result.get("output", {})
+
+            # Log successful graph invocation with full context
+            logger.info(
+                "universal_graph_invoked",
+                extra={
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                    "case_id": run_context["case_id"],
+                    "workflow_id": run_context["workflow_id"],
+                    "ingestion_run_id": canonical_ingestion_run_id,
+                    "decision": output.get("decision"),
+                    "reason": output.get("reason"),
+                    "document_id": output.get("document_id"),
+                    "transitions_count": len(output.get("transitions", [])),
+                },
+            )
+        except Exception as exc:
+            logger.exception(
+                "universal_crawler_ingestion_failed",
+                extra={
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                    "case_id": run_context["case_id"],
+                    "workflow_id": run_context["workflow_id"],
+                    "ingestion_run_id": canonical_ingestion_run_id,
+                },
+            )
+            output = {
+                "decision": "error",
+                "reason": str(exc),
+                "ingestion_run_id": None,
+                "telemetry": {},
+                "transitions": {},
+                "artifacts": {"errors": [{"message": str(exc)}]},
+            }
+            result = {"output": output}  # Ensure result is dict so we can use it below
+
+        # Map to legacy entry format for response builder
+        # Synthesize state from output
+        # Per contract: artifacts in root state, transitions in output
+        synthesized_state = {
+            "artifacts": result.get("artifacts", {}),
+            "transitions": output.get("transitions", []),
+            "control": build.state.get("control", {}),
+        }
+
+        # DO NOT set ingest_action - Universal Graph handles ingestion internally
+        # No legacy start_ingestion_run should be triggered
+
+        entry = {
+            "build": build,
+            "result": {
+                "decision": output.get("decision"),
+                "reason": output.get("reason"),
+            },
+            "state": synthesized_state,
+        }
+
+        # Validate and use canonical ingestion_run_id
+        output_run_id = output.get("ingestion_run_id")
+        if output_run_id and output_run_id != canonical_ingestion_run_id:
+            logger.warning(
+                "ingestion_run_id_mismatch",
+                extra={
+                    "context_id": canonical_ingestion_run_id,
+                    "output_id": output_run_id,
+                    "origin": build.origin,
+                    "tenant_id": run_context["tenant_id"],
+                    "trace_id": run_context["trace_id"],
+                },
+            )
+
+        # Always use canonical ID (coordinator is source of truth)
+        entry["ingestion_run_id"] = canonical_ingestion_run_id
+
         completed_runs.append(entry)
 
     guardrail_error = _detect_guardrail_error(completed_runs)
@@ -203,10 +347,6 @@ def run_crawler_runner(
         status_code=status.HTTP_200_OK,
         idempotency_key=idempotency_key,
     )
-
-
-# Simple in-memory cache to flag repeat manual crawler requests during a process.
-_CRAWLER_IDEMPOTENCY_CACHE: set[str] = set()
 
 
 def _build_ingest_specs(
@@ -304,63 +444,6 @@ def _resolve_tenant(identifier: object):
     return resolved
 
 
-def _run_graph_inline(
-    *,
-    build: CrawlerStateBundle,
-    meta: Mapping[str, Any],
-    graph_name: str,
-    scope: Mapping[str, object],
-    graph_runner: object | None,
-) -> tuple[dict[str, Any], bool]:
-    meta_payload = {"graph_name": graph_name}
-    if graph_runner is not None and hasattr(graph_runner, "run"):
-        new_state, result_payload = graph_runner.run(build.state, meta_payload)
-        inline_result = {
-            "state": new_state,
-            "result": result_payload,
-            "cost_summary": None,
-        }
-    else:
-        inline_result = run_graph_task.run(
-            graph_name=graph_name,
-            state=build.state,
-            meta=meta_payload,
-            ledger_identifier=None,
-            initial_cost_total=None,
-            tenant_id=scope.get("tenant_id"),
-            case_id=scope.get("case_id"),
-            trace_id=scope.get("trace_id"),
-        )
-    response_payload = dict(inline_result)
-    response_payload["task_id"] = f"inline-{uuid4().hex}"
-    return response_payload, True
-
-
-def _prime_manual_state(
-    build: CrawlerStateBundle,
-    graph_name: str,
-    inline_graph: object | None,
-) -> None:
-    runner = inline_graph
-    if runner is None:
-        try:
-            runner = graph_registry.get(graph_name)
-        except KeyError:
-            return
-    if not hasattr(runner, "start_crawl"):
-        return
-    try:
-        prepared_state = runner.start_crawl(build.state)
-    except Exception:
-        logger.exception(
-            "crawler_runner.start_crawl_failed",
-            extra={"graph_name": graph_name, "origin": build.origin},
-        )
-        return
-    if isinstance(prepared_state, Mapping):
-        build.state = dict(prepared_state)
-
-
 def _detect_guardrail_error(
     completed_runs: list[dict[str, object]],
 ) -> dict[str, object] | None:
@@ -403,15 +486,17 @@ def _build_synchronous_payload(
         transitions_payload.append(
             {
                 "origin": build.origin,
-                "transitions": _make_json_safe(
-                    state_data.get("transitions")
-                    or result_payload.get("transitions")
-                    or {}
-                ),
+                # Single source: state.transitions (populated from output.transitions)
+                "transitions": _make_json_safe(state_data.get("transitions", [])),
             }
         )
         errors_payload.extend(_extract_origin_errors(build, state_data))
-        ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
+
+        # Use existing ingestion_run_id if present (from Universal Graph)
+        ingestion_run_id = entry.get("ingestion_run_id")
+        if not ingestion_run_id:
+            ingestion_run_id = _maybe_start_ingestion(build, state_data, meta)
+
         origins_payload.append(
             _summarize_origin_entry(build, state_data, result_payload, ingestion_run_id)
         )
@@ -426,7 +511,6 @@ def _build_synchronous_payload(
         "errors": errors_payload,
         "idempotent": idempotent_flag,
     }
-    debug_check_json_serializable(payload, "sync_payload_internal")
     return payload
 
 
@@ -444,9 +528,11 @@ def _maybe_start_ingestion(
     if build.collection_id:
         payload["collection_id"] = build.collection_id
 
+    scope_context = meta["scope_context"]
+    scope_meta = scope_context
     try:
         response = services_module.start_ingestion_run(
-            payload, dict(meta), meta.get("idempotency_key")
+            payload, dict(meta), scope_meta.get("idempotency_key")
         )
     except Exception:
         logger.exception(

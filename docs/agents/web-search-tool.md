@@ -44,11 +44,12 @@ Laufzeit-Metadaten für jeden Web-Search-Aufruf (Pydantic-Model).
 | `worker_call_id` | `str \| None` | optional | Worker-Aufruf-ID (wird generiert, falls fehlt) |
 
 **Beispiel**:
+
 ```python
 context = WebSearchContext(
     tenant_id="acme",
     trace_id="trace-a1b2c3",
-    workflow_id="external_knowledge",
+    workflow_id="universal_ingestion",
     case_id="crm-7421",
     run_id="run_def456",
 )
@@ -63,12 +64,14 @@ Validiertes Eingabe-Modell mit Query-Normalisierung.
 | `query` | `str` | ja | Suchanfrage (min. 1 Zeichen, wird normalisiert) |
 
 **Validierung**:
+
 - Entfernt Zero-Width-Zeichen (Unicode Category `Cf`)
 - Trimmt Whitespace
 - Normalisiert mehrfache Spaces zu einem
 - Blockiert Operator-Only-Queries (z. B. `site:` ohne Wert)
 
 **Beispiel**:
+
 ```python
 search_input = WebSearchInput(query="aktuelle Entwicklungen KI-Regulierung")
 ```
@@ -102,6 +105,7 @@ Envelope-Modell für Suchergebnisse mit Outcome-Metadaten.
 | `meta` | `dict[str, object]` | Metadaten (Latenz, HTTP-Status, Quota, Error-Details) |
 
 **Outcome Meta-Felder**:
+
 - `tenant_id`, `trace_id`, `workflow_id`, `case_id`, `run_id`, `worker_call_id`
 - `provider`: Provider-Name (z. B. `google`)
 - `latency_ms`: Dauer in Millisekunden
@@ -111,6 +115,7 @@ Envelope-Modell für Suchergebnisse mit Outcome-Metadaten.
 - `error`: Strukturierte Fehler-Details (bei `decision: "error"`)
 
 **Beispiel (Erfolg)**:
+
 ```json
 {
   "results": [
@@ -141,6 +146,7 @@ Envelope-Modell für Suchergebnisse mit Outcome-Metadaten.
 ```
 
 **Beispiel (Fehler)**:
+
 ```json
 {
   "results": [],
@@ -185,6 +191,7 @@ WebSearchWorker(
 ```
 
 **Parameter**:
+
 - `adapter`: Provider-Adapter (z. B. `GoogleSearchAdapter`)
 - `max_results`: Maximale Anzahl zurückgegebener Ergebnisse (nach Deduplizierung)
 - `max_attempts`: Anzahl Wiederholungsversuche bei transienten Fehlern
@@ -195,13 +202,16 @@ WebSearchWorker(
 ### Retry-Strategie
 
 **Wiederholbare Fehler**:
+
 - `SearchProviderQuotaExceeded` (Rate-Limit)
 - `SearchProviderTimeout`
 
 **Nicht wiederholbare Fehler**:
+
 - `SearchProviderBadResponse` (Parsing-Fehler, ungültige Antwort)
 
 **Backoff-Formel**:
+
 ```
 delay = min(backoff_factor * (2 ** (attempt - 1)), 10.0)
 ```
@@ -209,6 +219,7 @@ delay = min(backoff_factor * (2 ** (attempt - 1)), 10.0)
 Wenn der Provider ein `retry_in_ms` zurückgibt, wird dieser Wert bevorzugt.
 
 **Beispiel**:
+
 - Attempt 1: 0.6s
 - Attempt 2: 1.2s
 - Attempt 3: 2.4s
@@ -218,16 +229,19 @@ Wenn der Provider ein `retry_in_ms` zurückgibt, wird dieser Wert bevorzugt.
 Der Worker entfernt automatisch Tracking-Parameter und normalisiert URLs für Deduplication.
 
 **Entfernte Parameter**:
+
 - Präfix `utm_*` (Google Analytics)
 - `gclid`, `fbclid`, `igshid`, `msclkid`, `mc_eid`, `vero_conv`, `vero_id`, `yclid`
 
 **Normalisierung**:
+
 - Scheme auf Lowercase (`HTTPS` → `https`)
 - Host auf Lowercase (`Example.COM` → `example.com`)
 - Query-Parameter sortiert
 - Fragment entfernt
 
 **Beispiel**:
+
 ```
 Input:  https://Example.COM/page?utm_source=fb&b=2&a=1#section
 Output: https://example.com/page?a=1&b=2
@@ -236,6 +250,7 @@ Output: https://example.com/page?a=1&b=2
 ## PDF-Erkennung
 
 PDFs werden automatisch erkannt via:
+
 1. URL-Extension: `.pdf` (case-insensitive)
 2. Content-Type: `application/pdf` oder `*pdf*`
 
@@ -304,7 +319,7 @@ worker = WebSearchWorker(
 context = WebSearchContext(
     tenant_id="acme",
     trace_id="trace-123",
-    workflow_id="external_knowledge",
+    workflow_id="universal_ingestion",
     case_id="crm-7421",
     run_id="run_abc",
 )
@@ -324,9 +339,10 @@ else:
 
 ### In LangGraph
 
-Der Worker wird in LangGraph-Nodes verwendet (z. B. `external_knowledge_graph`).
+Der Worker wird in LangGraph-Nodes verwendet (z. B. `universal_ingestion_graph`).
 
 **Beispiel-Node**:
+
 ```python
 from ai_core.tools.web_search import WebSearchWorker
 
@@ -353,6 +369,7 @@ def web_search_node(state: GraphState) -> dict:
 Jeder Aufruf emittiert einen `tool.web_search`-Span mit:
 
 **Span Attributes**:
+
 - `tenant_id`, `trace_id`, `workflow_id`, `case_id`, `run_id`, `worker_call_id`
 - `provider`: Provider-Name
 - `query`: Suchanfrage
@@ -419,12 +436,14 @@ adapter = GoogleSearchAdapter(
 ```
 
 **Umgebungsvariablen**:
+
 - `GOOGLE_API_KEY`: Google Cloud API Key
 - `GOOGLE_SEARCH_ENGINE_ID`: Custom Search Engine ID
 
 ### Rate Limits
 
 Google Custom Search API:
+
 - **Free Tier**: 100 Queries/Tag
 - **Paid Tier**: 10.000 Queries/Tag (erweiterbarer)
 
@@ -457,6 +476,7 @@ Google JSON → `ProviderSearchResult`:
 **Standort**: [`ai_core/tests/test_web_search_worker.py`](../../ai_core/tests/test_web_search_worker.py)
 
 **Coverage**:
+
 - Query-Validierung (Normalisierung, Operator-Only-Queries)
 - Retry-Logik (Exponential Backoff, max_attempts)
 - URL-Deduplication & Tracking-Parameter-Entfernung
@@ -650,7 +670,7 @@ Der Worker erkennt dies automatisch via `getattr(adapter, "provider", None)`.
 ## Verwandte Dokumentation
 
 - [Tool Contracts](./tool-contracts.md) - Generische Tool-Schnittstellen
-- [External Knowledge Graph](../ai_core/graphs/README.md) - LangGraph-Integration
+- [Universal Ingestion Graph](../ai_core/graphs/README.md) - LangGraph-Integration
 - [Google Custom Search API](https://developers.google.com/custom-search/v1/overview) - Provider-Doku
 - [Observability: Langfuse](../observability/langfuse.md) - Tracing-Instrumentation
 
@@ -659,3 +679,21 @@ Der Worker erkennt dies automatisch via `getattr(adapter, "provider", None)`.
 | Datum | Version | Änderung |
 |-------|---------|----------|
 | 2025-11-07 | 1.0 | Initiale Dokumentation |
+| 2025-12-19 | 1.1 | Integration in Universal Ingestion & Collection Search |
+
+## Integration
+
+### Universal Technical Graph (`source="search"`)
+
+Der Tool-Worker ist direkt in den `UniversalIngestionGraph` integriert.
+
+- **Mode `acquire_only`**: Führt Suche aus, dedupliziert und speichert Ergebnisse als "staged" Artefakte (Session & Candidates).
+- **Mode `acquire_and_ingest`**: Führt Suche aus, selektiert (automatisch oder preselected) und triggert Ingestion für die Gewinner.
+
+### Collection Search Delegation
+
+Der `CollectionSearch` Graph nutzt den Worker indirekt über Delegation:
+
+1. **Planung**: Collection Search führt komplexe Recherche/Scoring durch (Hybrid Search).
+2. **Delegation**: Selektierte URLs werden als `preselected_results` an den `UniversalIngestionGraph` übergeben.
+3. **Bypass**: Für diese expliziten URLs wird die Snippet-Längen-Prävention im Universal Graph umgangen.

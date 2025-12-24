@@ -8,7 +8,7 @@ import math
 import time
 from collections.abc import Mapping, MutableMapping, Sequence
 from datetime import datetime, timezone
-from typing import Any, Protocol, TypedDict, cast, Optional
+from typing import Any, Protocol, TypedDict, cast, Optional, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
@@ -145,6 +145,9 @@ class GraphContextPayload(BaseModel):
     trace_id: str | None = None
     run_id: str | None = None
     ingestion_run_id: str | None = None
+    # Identity IDs (Pre-MVP ID Contract)
+    user_id: str | None = None  # User Request Hop (mutually exclusive with service_id)
+    service_id: str | None = None  # S2S Hop (mutually exclusive with user_id)
 
     @field_validator("tenant_id", "workflow_id", mode="before")
     @classmethod
@@ -156,7 +159,15 @@ class GraphContextPayload(BaseModel):
             raise ValueError("value must not be empty")
         return candidate
 
-    @field_validator("case_id", "trace_id", "run_id", "ingestion_run_id", mode="before")
+    @field_validator(
+        "case_id",
+        "trace_id",
+        "run_id",
+        "ingestion_run_id",
+        "user_id",
+        "service_id",
+        mode="before",
+    )
     @classmethod
     def _normalise_optional(cls, value: Any) -> str | None:
         if value in (None, ""):
@@ -174,6 +185,7 @@ class GraphInput(BaseModel):
     quality_mode: str = Field(default="standard")
     max_candidates: int = Field(default=20, ge=5, le=40)
     purpose: str = Field(min_length=1)
+    execute_plan: bool = Field(default=False)
     auto_ingest: bool = Field(default=False)
     auto_ingest_top_k: int = Field(default=10, ge=1, le=20)
     auto_ingest_min_score: float = Field(default=60.0, ge=0.0, le=100.0)
@@ -235,6 +247,37 @@ class HitlDecision(BaseModel):
         return candidate or None
 
 
+class CollectionSearchPlan(BaseModel):
+    """Output contract for collection search (Planning Stage)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    plan_id: str
+    tenant_id: str
+    collection_id: str
+    created_at: str  # ISO format
+
+    # Strategy
+    strategy: SearchStrategy
+
+    # Results
+    candidates: list[dict[str, Any]]
+    scored_candidates: list[dict[str, Any]]
+
+    # Selection
+    selected_urls: list[str]
+    selection_reason: str | None
+
+    # HITL
+    hitl_required: bool
+    hitl_reasons: list[str]
+    review_payload: dict[str, Any] | None
+
+    # Execution Hints
+    execution_mode: Literal["acquire_only", "acquire_and_ingest"]
+    ingest_policy: dict[str, Any] | None = None
+
+
 # -----------------------------------------------------------------------------
 # Protocols
 # -----------------------------------------------------------------------------
@@ -265,18 +308,6 @@ class HitlGateway(Protocol):
 
     def present(self, payload: Mapping[str, Any]) -> HitlDecision | None:
         """Persist or publish the review payload and optionally return a decision."""
-
-
-class IngestionTrigger(Protocol):
-    """Protocol for handing approved URLs to the ingestion subsystem."""
-
-    def trigger(
-        self,
-        *,
-        approved_urls: Sequence[str],
-        context: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        """Trigger ingestion and return metadata about the request."""
 
 
 class CoverageVerifier(Protocol):
@@ -317,6 +348,9 @@ class CollectionSearchState(TypedDict):
     meta: MutableMapping[str, Any]
     telemetry: MutableMapping[str, Any]
     transitions: list[Mapping[str, Any]]
+
+    # Phase 5: Plan Output
+    plan: Optional[Mapping[str, Any]]  # Serialized CollectionSearchPlan
 
 
 _FRESHNESS_MAP: dict[str, FreshnessMode] = {
@@ -454,6 +488,9 @@ def _get_ids(
         "run_id": context.get("run_id"),
         "ingestion_run_id": context.get("ingestion_run_id"),
         "collection_scope": collection_scope,
+        # Identity IDs (Pre-MVP ID Contract)
+        "user_id": context.get("user_id"),
+        "service_id": context.get("service_id"),
     }
 
 
@@ -825,54 +862,164 @@ def auto_ingest_node(state: CollectionSearchState) -> dict[str, Any]:
     return {"ingestion": {"status": "processed"}}
 
 
-@observe_span(name="node.ingest")
-def ingestion_node(state: CollectionSearchState) -> dict[str, Any]:
-    """Trigger ingestion for approved URLs."""
+@observe_span(name="node.build_plan")
+def build_plan_node(state: CollectionSearchState) -> dict[str, Any]:
+    """Construct and persist the CollectionSearchPlan."""
+    raw_input = state["input"]
+    graph_input = GraphInput.model_validate(raw_input)
+
+    ids = _get_ids(state, graph_input.collection_scope)
+    strategy = state.get("strategy", {}).get("plan")
+    hybrid = state.get("hybrid", {})
     hitl = state.get("hitl", {})
     decision_data = hitl.get("decision")
 
-    # Also check auto-ingest results?
-    # For now, sticking to HITL decision trigger logic
-    if not decision_data:
-        return {}
-
-    try:
+    # Determine selection
+    selected_urls = []
+    reason = None
+    if decision_data:
+        # User selection via HITL
         decision = HitlDecision.model_validate(decision_data)
-    except ValidationError:
+        if decision.status in ("approved", "partial"):
+            candidates = hybrid.get("candidates", {})
+            for cid in decision.approved_candidate_ids:
+                c = candidates.get(cid)
+                if c and c.get("url"):
+                    selected_urls.append(c["url"])
+            selected_urls.extend(decision.added_urls)
+            reason = decision.rationale
+    elif graph_input.auto_ingest:
+        # Auto-ingest logic (simplified)
+        results = hybrid.get("result", {}).get("ranked", [])
+        for item in results:
+            if len(selected_urls) >= graph_input.auto_ingest_top_k:
+                break
+
+            if item.get("score", 0.0) < graph_input.auto_ingest_min_score:
+                continue
+
+            if item.get("url"):
+                selected_urls.append(item["url"])
+        reason = "auto_ingest"
+
+    # Plan ID
+    plan_id = str(uuid4())
+
+    # Construct Plan
+    try:
+        plan = CollectionSearchPlan(
+            plan_id=plan_id,
+            tenant_id=cast(str, ids["tenant_id"]),
+            collection_id=graph_input.collection_scope,
+            created_at=datetime.now(timezone.utc).isoformat(),
+            strategy=(
+                SearchStrategy.model_validate(strategy)
+                if strategy
+                else _fallback_strategy(
+                    SearchStrategyRequest(
+                        tenant_id=ids["tenant_id"],
+                        query=graph_input.question,
+                        quality_mode="standard",
+                        purpose="fallback",
+                    )
+                )
+            ),
+            candidates=[c for c in hybrid.get("candidates", {}).values()],
+            scored_candidates=hybrid.get("result", {}).get("ranked", []),
+            selected_urls=selected_urls,
+            selection_reason=reason,
+            hitl_required=bool(
+                decision_data is None and not graph_input.auto_ingest
+            ),  # simplified logic
+            hitl_reasons=state.get("hitl", {}).get("reasons", []),
+            review_payload=hitl.get("review_payload"),
+            execution_mode="acquire_and_ingest",  # Default
+            ingest_policy=None,
+        )
+    except ValidationError as ve:
+        LOGGER.error(f"Plan validation failed: {ve}")
+        return {"ingestion": {"error": str(ve)}}
+
+    return {"plan": plan.model_dump(mode="json")}
+
+
+@observe_span(name="node.delegate")
+def optionally_delegate_node(state: CollectionSearchState) -> dict[str, Any]:
+    """Execute plan via Universal Ingestion Graph if requested."""
+    plan_data = state.get("plan")
+    if not plan_data:
         return {}
 
-    if decision.status not in ("approved", "partial"):
-        return {}
+    # Check execution flag from input (Phase 5 requirement)
+    # GraphInput doesn't have explicit execute flag, but we use auto_ingest or implicit
+    # UTP says: execute standardmäßig false, UI entscheidet.
+    # We'll check input "execute_plan", auto_ingest, OR if HITL explicitly approved it.
+    raw_input = state["input"]
+    hitl_state = state.get("hitl", {})
+    decision = hitl_state.get("decision")
+    decision_status = decision.get("status") if decision else None
 
-    approved_ids = decision.approved_candidate_ids
-    hybrid = state.get("hybrid", {})
-    candidates = hybrid.get("candidates", {})
+    should_execute = (
+        raw_input.get("execute_plan")
+        or raw_input.get("auto_ingest", False)
+        or decision_status in ("approved", "partial")
+    )
 
-    urls = []
-    for cid in approved_ids:
-        c = candidates.get(cid)
-        if c and c.get("url"):
-            urls.append(c["url"])
+    if not should_execute:
+        return {"ingestion": {"status": "planned_only"}}
 
-    urls.extend(decision.added_urls)
+    selected_urls = plan_data.get("selected_urls", [])
+    if not selected_urls:
+        return {"ingestion": {"status": "skipped_no_selection"}}
 
-    if not urls:
-        return {}
+    # Invoke Universal Graph
+    ug_factory = state["context"].get("runtime_universal_ingestion_factory")
 
-    context = state["context"]
-    trigger: IngestionTrigger | None = context.get("runtime_ingestion_trigger")
-    if not trigger:
-        return {"ingestion": {"error": "No ingestion trigger configured"}}
+    if ug_factory:
+        ug = ug_factory()
+    else:
+        # Fallback to default implementation
+        from ai_core.graphs.technical.universal_ingestion_graph import (
+            build_universal_ingestion_graph,
+        )
 
-    ids = _get_ids(state, state["input"]["collection_scope"])
-    trigger_ctx = {
-        "tenant_id": ids["tenant_id"],
-        "trace_id": ids["trace_id"],
-        "collection_scope": ids["collection_scope"],
+        ug = build_universal_ingestion_graph()
+
+    # Prepare Input
+    # We use acquire_and_ingest mode because we want to ingest what we selected
+    ug_input = {
+        "source": "search",
+        "mode": "acquire_and_ingest",
+        "collection_id": plan_data["collection_id"],
+        "preselected_results": [{"url": u} for u in selected_urls],
+        # We don't query again
     }
 
-    result = trigger.trigger(approved_urls=urls, context=trigger_ctx)
-    return {"ingestion": {"meta": result}}
+    context = state["context"]
+    # Filter context for UG (Pre-MVP ID Contract: propagate identity)
+    ug_context = {
+        "tenant_id": context["tenant_id"],
+        "trace_id": context.get("trace_id"),
+        "case_id": context.get("case_id"),
+        "workflow_id": context.get("workflow_id"),
+        "ingestion_run_id": context.get("ingestion_run_id")
+        or str(uuid4()),  # Ensure valid scope
+        # Identity IDs (Pre-MVP ID Contract)
+        "user_id": context.get("user_id"),  # User Request Hop
+        "service_id": context.get("service_id"),  # S2S Hop
+    }
+
+    try:
+        ug_result = ug.invoke({"input": ug_input, "context": ug_context})
+
+        # Determine status from UG output
+        ug_out = ug_result.get("output", {})
+        decision = ug_out.get("decision", "error")
+        return {"ingestion": {"status": decision, "universal_output": ug_out}}
+
+    except Exception as exc:
+        LOGGER.exception("Delegation failed")
+        return {"ingestion": {"error": str(exc)}}
 
 
 # -----------------------------------------------------------------------------
@@ -889,7 +1036,8 @@ def build_compiled_graph():
     workflow.add_node("embedding_rank", embedding_rank_node)
     workflow.add_node("hybrid_score", hybrid_score_node)
     workflow.add_node("hitl", hitl_node)
-    workflow.add_node("ingestion", ingestion_node)
+    workflow.add_node("build_plan", build_plan_node)
+    workflow.add_node("delegate", optionally_delegate_node)
     # workflow.add_node("verification", verification_node)
 
     workflow.set_entry_point("strategy")
@@ -897,8 +1045,9 @@ def build_compiled_graph():
     workflow.add_edge("search", "embedding_rank")
     workflow.add_edge("embedding_rank", "hybrid_score")
     workflow.add_edge("hybrid_score", "hitl")
-    workflow.add_edge("hitl", "ingestion")
-    workflow.add_edge("ingestion", END)
+    workflow.add_edge("hitl", "build_plan")
+    workflow.add_edge("build_plan", "delegate")
+    workflow.add_edge("delegate", END)
 
     return workflow.compile()
 
@@ -973,6 +1122,8 @@ class CollectionSearchAdapter:
             "search": search_res,
             "telemetry": final_state.get("telemetry"),
             "ingestion": final_state.get("ingestion"),
+            "plan": final_state.get("plan"),
+            "hitl": final_state.get("hitl"),
         }
 
         # Merge back to raw state just in case caller expects it
@@ -1169,50 +1320,6 @@ class _ProductionHitlGateway:
         return None  # No-op
 
 
-class _ProductionIngestionTrigger:
-    """Production ingestion trigger using crawler_runner API."""
-
-    def trigger(
-        self,
-        *,
-        approved_urls: Sequence[str],
-        context: Mapping[str, Any],
-    ) -> Mapping[str, Any]:
-        """Trigger ingestion via internal crawler API."""
-        import httpx
-        from django.urls import reverse
-
-        tenant_id = context.get("tenant_id", "dev")
-        collection_scope = context.get("collection_scope", "")
-        trace_id = context.get("trace_id", "")
-        case_id = context.get("case_id")
-
-        headers = {
-            "Content-Type": "application/json",
-            "X-Tenant-ID": str(tenant_id),
-            "X-Trace-ID": str(trace_id),
-        }
-        if case_id:
-            headers["X-Case-ID"] = str(case_id)
-
-        payload = {
-            "workflow_id": "software-docs-ingestion",
-            "mode": "live",
-            "origins": [{"url": url} for url in approved_urls],
-            "collection_id": collection_scope,
-        }
-
-        try:
-            crawler_url = "http://localhost:8000" + reverse("ai_core:rag_crawler_run")
-            with httpx.Client(timeout=10.0) as client:
-                response = client.post(crawler_url, json=payload, headers=headers)
-            if response.status_code in (200, 202):
-                return response.json()
-            return {"error": "crawler_failed", "status_code": response.status_code}
-        except Exception as exc:
-            return {"error": "trigger_failed", "message": str(exc)}
-
-
 class _ProductionCoverageVerifier:
     def verify(self, **kwargs):
         return {"verified": True}
@@ -1238,7 +1345,7 @@ def build_graph() -> CollectionSearchAdapter:
         "runtime_search_worker": search_worker,
         "runtime_hybrid_executor": _HybridExecutorAdapter(),
         "runtime_hitl_gateway": _ProductionHitlGateway(),
-        "runtime_ingestion_trigger": _ProductionIngestionTrigger(),
+        # "runtime_ingestion_trigger": REMOVED Phase 5
         "runtime_coverage_verifier": _ProductionCoverageVerifier(),
     }
 

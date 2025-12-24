@@ -16,8 +16,7 @@ Preferred build pattern for LangGraph-based graphs: expose factory functions tha
 
 Examples of factory functions in the repo:
 
-- `ai_core/graphs/upload_ingestion_graph.py:build_upload_graph`
-- `ai_core/graphs/external_knowledge_graph.py:build_external_knowledge_graph`
+- `ai_core/graphs/technical/universal_ingestion_graph.py:build_universal_ingestion_graph`
 - `ai_core/graphs/collection_search.py:build_compiled_graph`
 - `ai_core/graphs/framework_analysis_graph.py:build_graph`
 

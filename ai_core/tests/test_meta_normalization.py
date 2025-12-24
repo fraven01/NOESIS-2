@@ -48,9 +48,10 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
 
     meta = normalize_meta(request)
 
-    assert meta["tenant_id"] == tenant_id
-    assert meta["case_id"] == "case-42"
-    assert meta["trace_id"] == "trace-123"
+    scope_context = meta["scope_context"]
+    assert scope_context["tenant_id"] == tenant_id
+    assert scope_context["case_id"] == "case-42"
+    assert scope_context["trace_id"] == "trace-123"
     assert meta["graph_name"] == "info_intake"
     assert meta["graph_version"] == "v9"
     assert meta["tenant_schema"] == "tenant_schema"
@@ -60,7 +61,6 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     # Ensure the timestamp is ISO 8601 parseable.
     datetime.fromisoformat(meta["requested_at"])
 
-    scope_context = meta["scope_context"]
     assert scope_context["run_id"] == run_id
     assert scope_context["invocation_id"] == str(invocation_id)
 
@@ -122,7 +122,7 @@ def test_normalize_meta_defaults_graph_version(monkeypatch):
     context = ToolContext.model_validate(tool_context)
     assert context.idempotency_key == "idem-1"
     assert context.metadata["graph_version"] == "v0"
-    assert meta["idempotency_key"] == "idem-1"
+    assert meta["scope_context"]["idempotency_key"] == "idem-1"
 
 
 @pytest.mark.django_db
@@ -153,7 +153,7 @@ def test_normalize_meta_includes_tool_context(monkeypatch):
     assert context.metadata["graph_name"] == "info_intake"
     assert context.metadata["graph_version"] == "v0"
     assert context.metadata["requested_at"] == meta["requested_at"]
-    assert meta["idempotency_key"] == "idem-b"
+    assert meta["scope_context"]["idempotency_key"] == "idem-b"
 
 
 @pytest.mark.django_db
@@ -172,10 +172,10 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
 
     meta = normalize_meta(request)
 
-    assert meta["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    assert (
+        meta["scope_context"]["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+    )
     from ai_core.tool_contracts import ToolContext
 
     context = ToolContext.model_validate(meta["tool_context"])
-    assert (
-        context.metadata.get("collection_id") == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
-    )
+    assert context.collection_id == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"

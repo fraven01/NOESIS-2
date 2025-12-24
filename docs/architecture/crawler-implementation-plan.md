@@ -374,9 +374,9 @@ def crawl_selected(request):
         result = coordinator.ingest_direct(
             urls=urls,
             mode=new_mode,
-            tenant_id=meta["tenant_id"],
-            trace_id=meta["trace_id"],
-            case_id=meta.get("case_id"),
+            tenant_id=meta["scope_context"]["tenant_id"],
+            trace_id=meta["scope_context"]["trace_id"],
+            case_id=meta["scope_context"].get("case_id"),
             workflow_id=workflow_id,
             collection_id=collection_id,
             embedding_profile=data.get("embedding_profile"),

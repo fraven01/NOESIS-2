@@ -65,7 +65,9 @@ class TestNormalizeRequest(TestCase):
     def test_tenant_context_fallback(self):
         """Test fallback to TenantContext if header is missing."""
         request = HttpRequest()
-        request.META = {}
+        request.META = {
+            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
+        }
 
         # Setup mock to return a tenant
         mock_tenant = Mock()
@@ -76,11 +78,12 @@ class TestNormalizeRequest(TestCase):
 
         assert scope.tenant_id == "fallback-tenant"
 
-    def test_xor_run_id_ingestion_run_id(self):
-        """Test XOR validation for run_id and ingestion_run_id."""
+    def test_both_run_ids_allowed(self):
+        """Test that both run_id and ingestion_run_id can co-exist (Pre-MVP ID Contract)."""
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
+            "HTTP_X_CASE_ID": "case-123",
             "HTTP_X_RUN_ID": "run-1",
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
@@ -89,16 +92,18 @@ class TestNormalizeRequest(TestCase):
         mock_tenant.schema_name = "t1"
         self.mock_tenant_context.from_request.return_value = mock_tenant
 
-        with self.assertRaisesRegex(
-            ValueError, "Exactly one of run_id or ingestion_run_id"
-        ):
-            normalize_request(request)
+        # Should NOT raise - both IDs are now allowed
+        scope = normalize_request(request)
+
+        assert scope.run_id == "run-1"
+        assert scope.ingestion_run_id == "ing-1"
 
     def test_auto_generate_ids(self):
         """Test that IDs are auto-generated if missing."""
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
+            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
         }
 
         mock_tenant = Mock()
@@ -118,6 +123,7 @@ class TestNormalizeRequest(TestCase):
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
+            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
 

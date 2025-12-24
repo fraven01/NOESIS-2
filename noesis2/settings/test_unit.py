@@ -7,13 +7,15 @@ DATABASES = {
     }
 }
 
-# Remove django_tenants from INSTALLED_APPS and MIDDLEWARE
+# Remove django_tenants and customers from INSTALLED_APPS
 INSTALLED_APPS = [
-    app for app in INSTALLED_APPS if app != "django_tenants"  # noqa: F405
+    app
+    for app in INSTALLED_APPS  # noqa: F405
+    if app not in ("django_tenants", "customers")  # noqa: F405
 ]
 MIDDLEWARE = [mw for mw in MIDDLEWARE if "django_tenants" not in mw]  # noqa: F405
 DATABASE_ROUTERS = []
 
-# Disable TenantModel
-TENANT_MODEL = None
-TENANT_DOMAIN_MODEL = None
+# Disable TenantModel with a dummy valid model to satisfy imports
+TENANT_MODEL = "auth.User"
+TENANT_DOMAIN_MODEL = "auth.User"

@@ -1,7 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import pytest
 
 from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts.base import tool_context_from_scope
@@ -38,6 +37,7 @@ def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
         tenant_id=str(uuid4()),
         trace_id="trace-456",
         invocation_id=str(uuid4()),
+        case_id="case-456",  # case_id is mandatory
         ingestion_run_id="ingest-123",
         tenant_schema="tenant-schema-2",
     )
@@ -53,12 +53,18 @@ def test_tool_context_from_scope_supports_ingestion_runs_and_overrides_now():
     assert tool_context.now_iso == override_now
 
 
-def test_tool_context_from_scope_respects_xor_validation():
-    with pytest.raises(ValueError):
-        ScopeContext(
-            tenant_id=str(uuid4()),
-            trace_id="trace-789",
-            invocation_id=str(uuid4()),
-            run_id="run-1",
-            ingestion_run_id="ingest-1",
-        )
+def test_tool_context_from_scope_allows_both_run_ids():
+    """Both run_id and ingestion_run_id can co-exist (Pre-MVP ID Contract)."""
+    scope = ScopeContext(
+        tenant_id=str(uuid4()),
+        trace_id="trace-789",
+        invocation_id=str(uuid4()),
+        case_id="case-789",  # case_id is mandatory
+        run_id="run-1",
+        ingestion_run_id="ingest-1",
+    )
+
+    tool_context = scope.to_tool_context()
+
+    assert tool_context.run_id == "run-1"
+    assert tool_context.ingestion_run_id == "ingest-1"

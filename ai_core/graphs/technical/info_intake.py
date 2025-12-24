@@ -11,7 +11,7 @@ def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
     state:
         Mutable workflow state.
     meta:
-        Context containing ``tenant_id``, ``case_id`` and ``trace_id``.
+        Context containing ``scope_context``.
 
     Returns
     -------
@@ -21,9 +21,10 @@ def run(state: Dict, meta: Dict) -> Tuple[Dict, Dict]:
 
     new_state = dict(state)
     new_state.setdefault("meta", meta)
+    scope_context = meta.get("scope_context", {})
     result = {
         "received": True,
-        "tenant_id": meta.get("tenant_id"),
-        "case_id": meta.get("case_id"),
+        "tenant_id": scope_context.get("tenant_id"),
+        "case_id": scope_context.get("case_id"),
     }
     return new_state, result

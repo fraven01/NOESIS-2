@@ -32,7 +32,15 @@ def _wrap_observed_span(monkeypatch, calls: List[str]) -> None:
 
 
 def test_embed_emits_span_metadata(monkeypatch):
-    meta = {"tenant_id": "tenant", "case_id": "case"}
+    meta = {
+        "scope_context": {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "trace_id": "trace-1",
+            "invocation_id": "inv-1",
+            "run_id": "run-1",
+        }
+    }
     raw_chunks: Dict[str, Any] = {
         "chunks": [
             {"content": "one two", "meta": {"hash": "chunk-1"}},
@@ -143,7 +151,15 @@ def test_embed_emits_span_metadata(monkeypatch):
 
 
 def test_embed_error_updates_observation(monkeypatch):
-    meta = {"tenant_id": "tenant", "case_id": "case"}
+    meta = {
+        "scope_context": {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "trace_id": "trace-2",
+            "invocation_id": "inv-2",
+            "run_id": "run-2",
+        }
+    }
     chunks = {
         "chunks": [
             {"content": f"chunk {idx}", "meta": {"hash": f"chunk-{idx}"}}

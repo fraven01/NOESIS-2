@@ -42,5 +42,5 @@ def test_chat_submit_global_search_does_not_require_case_id():
 
     meta = captured["meta"]
     assert isinstance(meta, dict)
-    assert meta.get("case_id") is None
+    assert meta.get("scope_context", {}).get("case_id") is None
     assert isinstance(meta.get("tool_context"), dict)

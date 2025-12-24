@@ -6,10 +6,7 @@ import logging
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from typing import Any, Protocol, Tuple
-from uuid import uuid4
-
 from ai_core.nodes import compose, retrieve
-from ai_core.rag.visibility import coerce_bool_flag
 from ai_core.tool_contracts import ContextError, ToolContext
 
 
@@ -151,37 +148,9 @@ def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
         if isinstance(scope_data, ScopeContext):
             return tool_context_from_scope(scope_data, metadata=dict(meta))
 
-    # 3. Legacy fallback (manual construction)
-    tenant_raw = meta.get("tenant_id")
-    tenant_text = str(tenant_raw or "").strip()
-    if not tenant_text:
-        raise ContextError(
-            "tenant_id is required for retrieval graphs", field="tenant_id"
-        )
-
-    meta["tenant_id"] = tenant_text
-
-    tenant_schema_raw = meta.get("tenant_schema")
-    tenant_schema = (
-        str(tenant_schema_raw).strip() if tenant_schema_raw is not None else None
-    )
-
-    case_raw = meta.get("case_id")
-    case_id = str(case_raw).strip() if case_raw is not None else None
-
-    override_flag = meta.get("visibility_override_allowed")
-    trace_raw = meta.get("trace_id")
-    trace_id = str(trace_raw).strip() if trace_raw is not None else "trace-fallback"
-    run_id = str(meta.get("run_id") or "").strip() or uuid4().hex
-
-    return ToolContext(
-        tenant_id=tenant_text,
-        tenant_schema=tenant_schema,
-        case_id=case_id,
-        trace_id=trace_id,
-        run_id=run_id,
-        visibility_override_allowed=coerce_bool_flag(override_flag),
-        metadata=dict(meta),
+    raise ContextError(
+        "scope_context or tool_context is required for retrieval graphs",
+        field="scope_context",
     )
 
 

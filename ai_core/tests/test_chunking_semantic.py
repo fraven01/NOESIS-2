@@ -16,8 +16,13 @@ def test_semantic_chunker_respects_section_boundaries(tmp_path, settings, monkey
     settings.RAG_CHUNK_OVERLAP_TOKENS = 0
 
     meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
+        "scope_context": {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "trace_id": "trace-1",
+            "invocation_id": "invocation-1",
+            "run_id": "run-1",
+        },
         "external_id": "ext",
         "title": "Doc",
     }
@@ -70,8 +75,13 @@ def test_semantic_chunker_keeps_heading_parents(tmp_path, settings, monkeypatch)
     settings.RAG_CHUNK_OVERLAP_TOKENS = 0
 
     meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
+        "scope_context": {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "trace_id": "trace-2",
+            "invocation_id": "invocation-2",
+            "run_id": "run-2",
+        },
         "external_id": "ext-2",
         "title": "Doc Two",
     }

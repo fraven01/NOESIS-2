@@ -1,0 +1,11 @@
+﻿node.exe : npm warn Unknown cli config "--ai_core/tests/test_ingestion_repro_view.py". This will stop working in the next major version of npm.
+In C:\Program Files\nodejs\npm.ps1:29 Zeichen:3
++   & $NODE_EXE $NPM_CLI_JS $args
++   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (npm warn Unknow...version of npm.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+> noesis-2@1.0.0 win:test:py:single
+> powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\win-test-single.ps1
+

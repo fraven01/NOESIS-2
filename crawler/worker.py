@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from lxml import html
 
 from ai_core.infra import object_store
+from ai_core.ids.http_scope import normalize_task_context
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.tasks import run_ingestion_graph
@@ -25,10 +26,6 @@ from documents.contracts import (
     DocumentMeta,
     FileBlob,
 )
-from documents.domain_service import DocumentDomainService
-from customers.tenant_context import TenantContext
-from ai_core.rag.vector_client import get_default_client
-from documents.models import DocumentCollection
 
 from .errors import CrawlerError
 from .fetcher import FetchRequest, FetchResult, FetchStatus
@@ -75,7 +72,6 @@ class CrawlerWorker:
         self._fetcher = fetcher
         self._ingestion_task = ingestion_task
         self._ingestion_event_emitter = ingestion_event_emitter
-        self._domain_service: DocumentDomainService | None = None
         if blob_writer is not None:
             self._blob_writer_factory = blob_writer_factory or (
                 lambda *_args, **_kwargs: blob_writer
@@ -298,24 +294,6 @@ class CrawlerWorker:
         if not collection_id and ingestion_overrides:
             collection_id = ingestion_overrides.get("collection_id")
 
-        resolved_document_id = self._register_document(
-            tenant_id=tenant_id,
-            source=request.canonical_source,
-            content_hash=payload_checksum,
-            metadata=raw_meta,
-            collection_identifier=collection_id,
-            embedding_profile=(
-                ingestion_overrides.get("embedding_profile")
-                if isinstance(ingestion_overrides, Mapping)
-                else None
-            ),
-            scope=(
-                ingestion_overrides.get("scope")
-                if isinstance(ingestion_overrides, Mapping)
-                else None
-            ),
-        )
-
         raw_document: dict[str, Any] = {
             "metadata": raw_meta,
             "payload_path": payload_path,
@@ -326,11 +304,6 @@ class CrawlerWorker:
             final_doc_id = document_id
         elif "document_id" in raw_meta:
             final_doc_id = raw_meta["document_id"]
-        elif resolved_document_id is not None:
-            final_doc_id = resolved_document_id
-
-        if final_doc_id:
-            raw_document["document_id"] = final_doc_id
 
         state["raw_document"] = raw_document
         state.setdefault("raw_payload_path", payload_path)
@@ -375,6 +348,12 @@ class CrawlerWorker:
             from uuid import uuid4
 
             doc_uuid = uuid4()
+
+        if not final_doc_id:
+            final_doc_id = str(doc_uuid)
+
+        if final_doc_id:
+            raw_document["document_id"] = final_doc_id
 
         ref = DocumentRef(
             tenant_id=tenant_id,
@@ -561,17 +540,53 @@ class CrawlerWorker:
         frontier_state: Optional[Mapping[str, Any]],
         meta_overrides: Optional[Mapping[str, Any]],
     ) -> dict[str, Any]:
+        scope_source = {}
+        if isinstance(meta_overrides, Mapping):
+            candidate = meta_overrides.get("scope_context")
+            if isinstance(candidate, Mapping):
+                scope_source = dict(candidate)
+
+        resolved_case_id = case_id or scope_source.get("case_id")
+        # case_id is now optional per contract (e.g. for global ingestion)
+
+        scope = normalize_task_context(
+            tenant_id=tenant_id,
+            case_id=str(resolved_case_id) if resolved_case_id else None,
+            service_id="crawler-worker",
+            trace_id=trace_id or scope_source.get("trace_id"),
+            invocation_id=scope_source.get("invocation_id"),
+            run_id=scope_source.get("run_id"),
+            ingestion_run_id=scope_source.get("ingestion_run_id"),
+            workflow_id=scope_source.get("workflow_id"),
+            idempotency_key=idempotency_key or scope_source.get("idempotency_key"),
+            tenant_schema=scope_source.get("tenant_schema"),
+            collection_id=scope_source.get("collection_id"),
+        )
+
         payload: dict[str, Any] = {
-            "tenant_id": tenant_id,
-            "case_id": case_id,
+            "scope_context": scope.model_dump(mode="json"),
             "crawl_id": crawl_id,
-            "idempotency_key": idempotency_key,
-            "trace_id": trace_id,
         }
         if frontier_state:
             payload.setdefault("frontier", dict(frontier_state))
         if meta_overrides:
-            payload.update(dict(meta_overrides))
+            filtered_overrides = dict(meta_overrides)
+            filtered_overrides.pop("scope_context", None)
+            for key in (
+                "tenant_id",
+                "case_id",
+                "trace_id",
+                "workflow_id",
+                "collection_id",
+                "idempotency_key",
+                "run_id",
+                "ingestion_run_id",
+                "invocation_id",
+                "user_id",
+                "service_id",
+            ):
+                filtered_overrides.pop(key, None)
+            payload.update(filtered_overrides)
         return {key: value for key, value in payload.items() if value is not None}
 
     @staticmethod
@@ -785,143 +800,6 @@ class CrawlerWorker:
         )
         uri, *_rest = writer.put(payload)
         return uri
-
-    def _register_document(
-        self,
-        *,
-        tenant_id: str,
-        source: str,
-        content_hash: str,
-        metadata: Mapping[str, Any],
-        collection_identifier: object | None,
-        embedding_profile: str | None,
-        scope: str | None,
-    ) -> str | None:
-        from django_tenants.utils import tenant_context
-
-        tenant = self._resolve_tenant(tenant_id)
-        if tenant is None:
-            logger.warning(
-                "crawler.document_registration_skipped",
-                extra={"tenant_id": tenant_id, "reason": "tenant_not_found"},
-            )
-            return None
-
-        service = self._get_domain_service()
-
-        with tenant_context(tenant):
-            collections: list[DocumentCollection] = []
-            if collection_identifier is not None:
-                ensured = self._ensure_collection_with_warning(
-                    service,
-                    tenant,
-                    collection_identifier,
-                    embedding_profile=embedding_profile,
-                    scope=scope,
-                )
-                if ensured is not None:
-                    collections.append(ensured)
-
-            # Define a dummy dispatcher to satisfy the service contract
-            # The actual dispatch is handled by the worker's process method
-            def no_op_dispatcher(*args, **kwargs):
-                pass
-
-            ingest_result = service.ingest_document(
-                tenant=tenant,
-                source=source,
-                content_hash=content_hash,
-                metadata=metadata,
-                collections=collections,
-                embedding_profile=embedding_profile,
-                scope=scope,
-                dispatcher=no_op_dispatcher,
-            )
-
-        logger.info(
-            "crawler.document_registered",
-            extra={
-                "tenant_id": str(tenant.id),
-                "document_id": str(ingest_result.document.id),
-                "collection_ids": [str(cid) for cid in ingest_result.collection_ids],
-            },
-        )
-        return str(ingest_result.document.id)
-
-    def _ensure_collection_with_warning(
-        self,
-        service: DocumentDomainService,
-        tenant,
-        identifier: object,
-        *,
-        embedding_profile: str | None,
-        scope: str | None,
-    ) -> DocumentCollection | None:
-        """Ensure a collection exists; create missing IDs with a warning (review later)."""
-
-        try:
-            collection_uuid = UUID(str(identifier))
-        except Exception:
-            collection_uuid = None
-
-        if collection_uuid is not None:
-            existing_collection = DocumentCollection.objects.filter(
-                tenant=tenant, collection_id=collection_uuid
-            ).first()
-
-            if existing_collection is not None:
-                # Use the existing collection's key to ensure we don't try to create a duplicate
-                # with the same ID but different key
-                return service.ensure_collection(
-                    tenant=tenant,
-                    key=existing_collection.key,
-                    embedding_profile=embedding_profile,
-                    scope=scope,
-                    collection_id=collection_uuid,
-                    allow_collection_id_override=True,
-                )
-
-            # Check if it was supposed to exist but doesn't
-            exists = False  # we just checked
-            if not exists:
-                logger.warning(
-                    "crawler.collection_missing_created",
-                    extra={
-                        "tenant_id": str(tenant.id),
-                        "collection_id": str(collection_uuid),
-                        "reason": "missing_reference",
-                    },
-                )
-
-        # Allow override since crawler collection IDs are typically derived from
-        # external sources (URLs, references). If a mismatch occurs, it likely
-        # indicates a re-crawl with a different ID source.
-        # TODO: Consider stricter validation - check if collection with key exists
-        # and has different ID before allowing override.
-        return service.ensure_collection(
-            tenant=tenant,
-            key=str(identifier),
-            embedding_profile=embedding_profile,
-            scope=scope,
-            collection_id=collection_uuid,
-            allow_collection_id_override=True,
-        )
-
-    def _resolve_tenant(self, tenant_identifier: str):
-        try:
-            return TenantContext.resolve_identifier(tenant_identifier, allow_pk=True)
-        except Exception:
-            logger.exception(
-                "crawler.resolve_tenant_failed", extra={"tenant_id": tenant_identifier}
-            )
-            return None
-
-    def _get_domain_service(self) -> DocumentDomainService:
-        if self._domain_service is None:
-            self._domain_service = DocumentDomainService(
-                vector_store=get_default_client()
-            )
-        return self._domain_service
 
 
 __all__ = ["CrawlerWorker", "WorkerPublishResult"]

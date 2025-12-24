@@ -45,32 +45,24 @@ services:
       - redis
     restart: unless-stopped
 
+  # Unified worker for all queues (WSL-optimized)
   worker:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: noesis2_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q celery,rag_delete,crawler
-    env_file:
-      - .env
-      - .env.docker
-    environment:
-      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
-      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      LOGGING_OTEL_INSTRUMENT: "true"
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
-      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
-    depends_on:
-      - redis
-    restart: unless-stopped
-
-  agents-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: noesis2_agents_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q agents
+    command: >-
+      opentelemetry-instrument celery -A noesis2 worker
+      -Q agents,crawler,celery,ingestion,rag_delete
+      --concurrency=2
+      --prefetch-multiplier=1
+      --max-tasks-per-child=300
+      --max-memory-per-child=900000
+      --time-limit=600
+      --soft-time-limit=540
+      -l info
+    mem_limit: 2g
+    cpus: 2.0
     env_file:
       - .env
       - .env.docker
@@ -106,26 +98,6 @@ services:
       LOGGING_OTEL_INSTRUMENT: "true"
       OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
       OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
-
-  ingestion-worker:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: noesis2_ingestion_worker
-    command: opentelemetry-instrument celery -A noesis2 worker -l info -Q ingestion
-    env_file:
-      - .env
-      - .env.docker
-    environment:
-      DJANGO_SETTINGS_MODULE: ${DJANGO_SETTINGS_MODULE:-noesis2.settings.development}
-      DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql://noesis2:noesis2@db:5432/noesis2}
-      REDIS_URL: ${COMPOSE_REDIS_URL:-redis://redis:6379/0}
-      LOGGING_OTEL_INSTRUMENT: "true"
-      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: "${LANGFUSE_HOST:-http://langfuse:3000}/api/public/otel/v1/traces"
-      OTEL_EXPORTER_OTLP_HEADERS: "X-Langfuse-Public-Key=${LANGFUSE_PUBLIC_KEY},X-Langfuse-Secret-Key=${LANGFUSE_SECRET_KEY}"
-    depends_on:
-      - redis
-    restart: unless-stopped
 
 volumes:
   postgres_data:

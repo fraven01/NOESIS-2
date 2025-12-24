@@ -521,7 +521,10 @@ class HybridSearchAndScoreGraph:
         working_state = _ensure_mutable(state)
         working_meta = _ensure_mutable(meta)
         scoring_context = _load_scoring_context(working_meta)
-        tenant_id = str(working_meta.get("tenant_id") or "").strip() or None
+        scope_context = working_meta.get("scope_context")
+        if not isinstance(scope_context, Mapping):
+            scope_context = {}
+        tenant_id = str(scope_context.get("tenant_id") or "").strip() or None
         domain_policy = _build_domain_policy(scoring_context, tenant_id=tenant_id)
         debug_info: dict[str, Any] = {}
         rrf_k_override = working_meta.get("rrf_k")
@@ -696,9 +699,12 @@ class HybridSearchAndScoreGraph:
         meta: MutableMapping[str, Any],
         scoring_context: ScoringContext | None,
     ) -> tuple[list[RAGCoverageSummary], dict[str, bool]]:
-        tenant_id = str(meta.get("tenant_id") or "").strip()
-        case_id = str(meta.get("case_id") or "").strip()
-        trace_id = str(meta.get("trace_id") or "").strip()
+        scope_context = meta.get("scope_context")
+        if not isinstance(scope_context, Mapping):
+            scope_context = {}
+        tenant_id = str(scope_context.get("tenant_id") or "").strip()
+        case_id = str(scope_context.get("case_id") or "").strip()
+        trace_id = str(scope_context.get("trace_id") or "").strip()
         if not tenant_id or not case_id:
             return [], {"rag_unavailable": True}
 
@@ -738,8 +744,8 @@ class HybridSearchAndScoreGraph:
             }
             retrieve_params = retrieve.RetrieveInput.from_state(retrieve_state)
             # Extract runtime IDs
-            run_id = meta.get("run_id")
-            ingestion_run_id = meta.get("ingestion_run_id")
+            run_id = scope_context.get("run_id")
+            ingestion_run_id = scope_context.get("ingestion_run_id")
 
             # Enforce XOR rule: if neither is present, generate a run_id
             if not run_id and not ingestion_run_id:
@@ -751,7 +757,7 @@ class HybridSearchAndScoreGraph:
                 trace_id=trace_id or None,
                 run_id=str(run_id) if run_id else None,
                 ingestion_run_id=str(ingestion_run_id) if ingestion_run_id else None,
-                tenant_schema=meta.get("tenant_schema"),
+                tenant_schema=scope_context.get("tenant_schema"),
                 visibility_override_allowed=bool(
                     meta.get("visibility_override_allowed", False)
                 ),
@@ -1005,7 +1011,10 @@ class HybridSearchAndScoreGraph:
 
         query_hash = _hash_values(query)
         url_hash = _hash_values(*(candidate.id for candidate in search_candidates))
-        tenant_id = str(meta.get("tenant_id") or "").strip()
+        scope_context = meta.get("scope_context")
+        if not isinstance(scope_context, Mapping):
+            scope_context = {}
+        tenant_id = str(scope_context.get("tenant_id") or "").strip()
         context_chunks: list[str] = []
         if tenant_id:
             context_chunks.append(tenant_id)

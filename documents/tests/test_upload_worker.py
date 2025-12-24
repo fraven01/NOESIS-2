@@ -32,7 +32,15 @@ def mock_blob_writer():
 @pytest.fixture
 def mock_run_graph():
     with patch("documents.upload_worker.run_ingestion_graph") as mock:
-        mock.delay.return_value.id = "task-uuid"
+        # Mock the signature creation
+        mock.s.return_value = MagicMock()
+        yield mock
+
+
+@pytest.fixture
+def mock_async_runner():
+    with patch("documents.upload_worker.with_scope_apply_async") as mock:
+        mock.return_value.id = "task-uuid"
         yield mock
 
 
@@ -59,7 +67,11 @@ def mock_tenants():
 
 
 def test_upload_worker_process_success(
-    mock_blob_writer, mock_run_graph, mock_domain_service, mock_tenants
+    mock_blob_writer,
+    mock_run_graph,
+    mock_async_runner,
+    mock_domain_service,
+    mock_tenants,
 ):
     worker = UploadWorker()
     file_content = b"test content"
@@ -97,15 +109,18 @@ def test_upload_worker_process_success(
     assert norm_input["source"] == "upload"
 
     # Verify Meta
-    # We can't easily check the meta passed to delay() without capturing it from the mock call args
-    call_args = mock_run_graph.delay.call_args
+    # Determine which method was called (likely .s())
+    call_args = mock_run_graph.s.call_args
+    assert call_args is not None, "run_ingestion_graph.s() was not called"
+
     meta_arg = call_args[0][1]
-    assert meta_arg["tenant_id"] == "tenant-1"
-    assert meta_arg["invocation_id"] == "inv-1"
+    scope_context = meta_arg["scope_context"]
+    assert scope_context["tenant_id"] == "tenant-1"
+    assert scope_context["invocation_id"] == "inv-1"
 
 
 def test_upload_worker_register_document_failure_continues(
-    mock_blob_writer, mock_run_graph, mock_domain_service
+    mock_blob_writer, mock_run_graph, mock_async_runner, mock_domain_service
 ):
     # Simulate domain service failure
     mock_domain_service.ingest_document.side_effect = Exception("DB Error")
@@ -116,6 +131,7 @@ def test_upload_worker_register_document_failure_continues(
     result = worker.process(
         upload,
         tenant_id="tenant-1",
+        case_id="case-1",
     )
 
     # Needs to handle failure gracefully and still publish if possible,
@@ -129,7 +145,11 @@ def test_upload_worker_register_document_failure_continues(
 
 
 def test_upload_worker_sets_media_type_on_fileblob(
-    mock_blob_writer, mock_run_graph, mock_domain_service, mock_tenants
+    mock_blob_writer,
+    mock_run_graph,
+    mock_async_runner,
+    mock_domain_service,
+    mock_tenants,
 ):
     worker = UploadWorker()
     file_content = b"pdf content"
@@ -139,6 +159,7 @@ def test_upload_worker_sets_media_type_on_fileblob(
     result = worker.process(
         upload,
         tenant_id="tenant-1",
+        case_id="case-1",
         document_metadata={},
     )
 

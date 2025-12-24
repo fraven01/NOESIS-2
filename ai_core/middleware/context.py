@@ -116,21 +116,13 @@ class RequestContextMiddleware:
         if client_ip:
             log_context["client.ip"] = client_ip
 
-        response_meta: dict[str, str] = {
-            "trace_id": trace_id,
+        response_meta: dict[str, Any] = {
+            "scope_context": scope_context.model_dump(mode="json"),
+            "key_alias": key_alias,
+            "traceparent": traceparent,
         }
         if span_id:
             response_meta["span_id"] = span_id
-        if tenant_id:
-            response_meta["tenant_id"] = tenant_id
-        if case_id:
-            response_meta["case_id"] = case_id
-        if key_alias:
-            response_meta["key_alias"] = key_alias
-        if idempotency_key:
-            response_meta["idempotency_key"] = idempotency_key
-        if traceparent:
-            response_meta["traceparent"] = traceparent
 
         return {"log_context": log_context, "response_meta": response_meta}
 

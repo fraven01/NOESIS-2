@@ -16,14 +16,28 @@ def configured_store(tmp_path, monkeypatch):
     return base_path
 
 
-def _run_chunk(meta: dict[str, str], markdown: str) -> dict[str, str]:
+def _build_scope_meta(doc_id: str, external_id: str) -> dict[str, str]:
+    return {
+        "scope_context": {
+            "tenant_id": "tenant",
+            "case_id": "case",
+            "trace_id": str(uuid.uuid4()),
+            "invocation_id": str(uuid.uuid4()),
+            "run_id": str(uuid.uuid4()),
+        },
+        "external_id": external_id,
+        "document_id": doc_id,
+    }
+
+
+def _run_chunk(meta: dict[str, object], markdown: str) -> dict[str, str]:
     raw = tasks.ingest_raw(meta, "doc.md", markdown.encode("utf-8"))
     text = tasks.extract_text(meta, raw["path"])
     return tasks.chunk(meta, text["path"])
 
 
 def _run_chunk_with_blocks(
-    meta: dict[str, str], markdown: str, blocks: list[dict[str, object]]
+    meta: dict[str, object], markdown: str, blocks: list[dict[str, object]]
 ) -> dict[str, str]:
     raw = tasks.ingest_raw(meta, "doc.md", markdown.encode("utf-8"))
     text = tasks.extract_text(meta, raw["path"])
@@ -47,12 +61,7 @@ def test_chunk_parent_contents_are_direct(settings, configured_store):
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
 
     doc_id = str(uuid.uuid4())
-    meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
-        "external_id": "doc-direct",
-        "document_id": doc_id,
-    }
+    meta = _build_scope_meta(doc_id, "doc-direct")
     markdown = textwrap.dedent(
         """
         Document introduction outside sections.
@@ -131,12 +140,7 @@ def test_chunk_parent_capture_respects_limits(settings, configured_store):
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 2
 
     doc_id = str(uuid.uuid4())
-    meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
-        "external_id": "doc-limits",
-        "document_id": doc_id,
-    }
+    meta = _build_scope_meta(doc_id, "doc-limits")
     level_one_body = " ".join(["Level one text"] * 40)
     level_two_body = " ".join(["Level two text"] * 40)
     level_three_body = " ".join(["Level three text"] * 40)
@@ -202,12 +206,7 @@ def test_structured_chunk_flushes_when_heading_changes(settings, configured_stor
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
 
     doc_id = str(uuid.uuid4())
-    meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
-        "external_id": "doc-structured-heading",
-        "document_id": doc_id,
-    }
+    meta = _build_scope_meta(doc_id, "doc-structured-heading")
     markdown = textwrap.dedent(
         """
         # Section One
@@ -283,12 +282,7 @@ def test_structured_chunk_flushes_when_section_path_changes(settings, configured
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
 
     doc_id = str(uuid.uuid4())
-    meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
-        "external_id": "doc-section-path",
-        "document_id": doc_id,
-    }
+    meta = _build_scope_meta(doc_id, "doc-section-path")
     markdown = textwrap.dedent(
         """
         # Section Alpha
@@ -350,12 +344,7 @@ def test_fallback_flushes_pending_text_at_document_end(settings, configured_stor
     settings.RAG_PARENT_CAPTURE_MAX_DEPTH = 0
 
     doc_id = str(uuid.uuid4())
-    meta = {
-        "tenant_id": "tenant",
-        "case_id": "case",
-        "external_id": "doc-fallback-flush",
-        "document_id": doc_id,
-    }
+    meta = _build_scope_meta(doc_id, "doc-fallback-flush")
     markdown = textwrap.dedent(
         """
         Paragraph one without headings.

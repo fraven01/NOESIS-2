@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Mapping
 
 from common.logging import get_logger
 from customers.models import Tenant
@@ -68,6 +68,43 @@ def resolve_case(tenant: Tenant, case_id: str | None) -> models.Case | None:
         raise CaseNotFoundError(
             f"Case {normalized_case_id} not found for tenant {getattr(tenant, 'schema_name', tenant.pk)}"
         )
+
+
+def ensure_case(
+    tenant: Tenant,
+    case_id: str,
+    *,
+    title: str | None = None,
+    metadata: Mapping[str, object] | None = None,
+    reopen_closed: bool = False,
+) -> models.Case:
+    """Ensure a case exists for the tenant, creating it if missing."""
+    normalized_case_id = _normalise_case_id(case_id)
+    defaults: dict[str, object] = {"status": _CASE_STATUS_OPEN}
+    if title is not None:
+        defaults["title"] = title
+    if metadata is not None:
+        defaults["metadata"] = dict(metadata)
+
+    case, created = models.Case.objects.get_or_create(
+        tenant=tenant,
+        external_id=normalized_case_id,
+        defaults=defaults,
+    )
+
+    if not created and reopen_closed and case.status != _CASE_STATUS_OPEN:
+        case.status = _CASE_STATUS_OPEN
+        case.closed_at = None
+        case.save(update_fields=["status", "closed_at", "updated_at"])
+        log.info(
+            "case.reopened",
+            extra={
+                "tenant": getattr(tenant, "schema_name", tenant.pk),
+                "case": case.external_id,
+            },
+        )
+
+    return case
 
 
 def _build_ingestion_payload(
