@@ -4,14 +4,26 @@ from django.db import models
 
 class UserProfile(models.Model):
     class Roles(models.TextChoices):
-        ADMIN = "ADMIN", "Admin"
+        TENANT_ADMIN = "TENANT_ADMIN", "Tenant Admin"
         LEGAL = "LEGAL", "Legal"
-        BR = "BR", "BR"
-        MANAGER = "MANAGER", "Manager"
-        GUEST = "GUEST", "Guest"
+        WORKS_COUNCIL = "WORKS_COUNCIL", "Works Council"
+        MANAGEMENT = "MANAGEMENT", "Management"
+        STAKEHOLDER = "STAKEHOLDER", "Stakeholder"
+
+    class AccountType(models.TextChoices):
+        INTERNAL = "INTERNAL", "Internal"
+        EXTERNAL = "EXTERNAL", "External"
 
     user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
-    role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.GUEST)
+    role = models.CharField(
+        max_length=20, choices=Roles.choices, default=Roles.STAKEHOLDER
+    )
+    account_type = models.CharField(
+        max_length=20,
+        choices=AccountType.choices,
+        default=AccountType.INTERNAL,
+    )
+    expires_at = models.DateTimeField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 

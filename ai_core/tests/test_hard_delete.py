@@ -136,7 +136,7 @@ def test_hard_delete_allows_admin_user(monkeypatch, settings):
     user = User.objects.create_user(username="admin", email="admin@example.com")
     UserProfile.objects.update_or_create(
         user=user,
-        defaults={"role": UserProfile.Roles.ADMIN, "is_active": True},
+        defaults={"role": UserProfile.Roles.TENANT_ADMIN, "is_active": True},
     )
 
     result = hard_delete(

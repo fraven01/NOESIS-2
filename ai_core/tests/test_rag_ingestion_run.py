@@ -14,11 +14,20 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
     META_CASE_ID_KEY,
 )
+from users.tests.factories import UserFactory
+
+
+@pytest.fixture
+def authenticated_client(client):
+    """Authenticated test client."""
+    user = UserFactory()
+    client.force_login(user)
+    return client
 
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_queues_task(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     # create_case("case-123")  # Removed for caseless test
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
@@ -58,7 +67,7 @@ def test_rag_ingestion_run_queues_task(
     fixed_now = datetime(2024, 1, 1, 12, 0, tzinfo=dt_timezone.utc)
     monkeypatch.setattr(timezone, "now", lambda: fixed_now)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data={
             "document_ids": [str(document_id)],
@@ -95,7 +104,7 @@ def test_rag_ingestion_run_queues_task(
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_persists_collection_header_scope(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     # create_case("case-collection-run")
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
@@ -137,7 +146,7 @@ def test_rag_ingestion_run_persists_collection_header_scope(
         SimpleNamespace(delay=_assert_scope_persisted),
     )
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data={
             "document_ids": [document_id],
@@ -160,12 +169,12 @@ def test_rag_ingestion_run_persists_collection_header_scope(
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_with_empty_document_ids_returns_400(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     # create_case("case-123")
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data={"document_ids": [], "embedding_profile": "standard"},
         content_type="application/json",
@@ -184,14 +193,14 @@ def test_rag_ingestion_run_with_empty_document_ids_returns_400(
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_without_profile_returns_400(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     # create_case("case-123")
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
     document_id = str(uuid.uuid4())
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data={"document_ids": [document_id]},
         content_type="application/json",
@@ -210,14 +219,14 @@ def test_rag_ingestion_run_without_profile_returns_400(
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_with_invalid_priority_returns_400(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     # create_case("case-123")
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
     document_id = str(uuid.uuid4())
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data={
             "document_ids": [document_id],
@@ -240,12 +249,12 @@ def test_rag_ingestion_run_with_invalid_priority_returns_400(
 
 @pytest.mark.django_db
 def test_rag_ingestion_run_with_invalid_document_id_returns_400(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     # create_case("case-uuid-check")
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data=json.dumps(
             {

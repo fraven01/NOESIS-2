@@ -9,6 +9,10 @@ from django_tenants.utils import tenant_context
 
 @pytest.mark.django_db
 def test_ping_ok(client, monkeypatch, test_tenant_schema_name):
+    from users.tests.factories import UserFactory
+
+    client.force_login(UserFactory())
+
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
 
@@ -27,6 +31,10 @@ def test_ping_ok(client, monkeypatch, test_tenant_schema_name):
 
 @pytest.mark.django_db
 def test_ping_missing_case(client, monkeypatch, test_tenant_schema_name):
+    from users.tests.factories import UserFactory
+
+    client.force_login(UserFactory())
+
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
     # Use the existing test tenant
@@ -42,6 +50,10 @@ def test_ping_missing_case(client, monkeypatch, test_tenant_schema_name):
 
 @pytest.mark.django_db
 def test_rag_query_missing_headers(client):
+    from users.tests.factories import UserFactory
+
+    client.force_login(UserFactory())
+
     resp = client.post(
         "/v1/ai/rag/query/",
         data=json.dumps({"question": "Ping?"}),
@@ -54,6 +66,10 @@ def test_rag_query_missing_headers(client):
 def test_ingestion_status_includes_case_details(
     client, monkeypatch, test_tenant_schema_name
 ):
+    from users.tests.factories import UserFactory
+
+    client.force_login(UserFactory())
+
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     with tenant_context(tenant):

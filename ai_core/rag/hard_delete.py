@@ -85,7 +85,7 @@ def _resolve_actor(actor: Mapping[str, object] | None) -> tuple[str, str]:
 
     label = str(actor.get("label") or actor.get("name") or user.get_username())
 
-    if profile.role == UserProfile.Roles.ADMIN:
+    if profile.role == UserProfile.Roles.TENANT_ADMIN:
         return label, "user_admin"
 
     if OrgMembership.objects.filter(user=user, role=OrgMembership.Role.ADMIN).exists():

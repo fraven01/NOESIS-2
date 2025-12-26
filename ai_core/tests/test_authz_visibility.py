@@ -45,7 +45,7 @@ def test_allow_extended_visibility_denies_inactive_profile(
 ) -> None:
     user = UserFactory()
     profile = user.userprofile
-    profile.role = UserProfile.Roles.ADMIN
+    profile.role = UserProfile.Roles.TENANT_ADMIN
     profile.is_active = False
     profile.save(update_fields=["role", "is_active"])
     request = _build_request(request_factory, user)
@@ -58,7 +58,7 @@ def test_allow_extended_visibility_accepts_admin_membership(
 ) -> None:
     user = UserFactory()
     profile = user.userprofile
-    profile.role = UserProfile.Roles.GUEST
+    profile.role = UserProfile.Roles.STAKEHOLDER
     profile.is_active = True
     profile.save(update_fields=["role", "is_active"])
     organization = OrganizationFactory()
@@ -80,7 +80,7 @@ def test_allow_extended_visibility_accepts_service_key(
 ) -> None:
     user = UserFactory()
     profile = user.userprofile
-    profile.role = UserProfile.Roles.GUEST
+    profile.role = UserProfile.Roles.STAKEHOLDER
     profile.is_active = True
     profile.save(update_fields=["role", "is_active"])
     request = _build_request(request_factory, user)
@@ -113,10 +113,10 @@ def test_resolve_effective_visibility_preserves_when_allowed(
 ) -> None:
     user = UserFactory()
     profile = user.userprofile
-    profile.role = UserProfile.Roles.ADMIN
+    profile.role = UserProfile.Roles.TENANT_ADMIN
     profile.is_active = True
     profile.save(update_fields=["role", "is_active"])
-    assert profile.role == UserProfile.Roles.ADMIN
+    assert profile.role == UserProfile.Roles.TENANT_ADMIN
     request = _build_request(request_factory, user)
     assert allow_extended_visibility(request) is True
     visibility = resolve_effective_visibility(request, "all")
@@ -151,7 +151,7 @@ def test_require_extended_visibility_decorator_allows_when_permitted(
 ) -> None:
     user = UserFactory()
     profile = user.userprofile
-    profile.role = UserProfile.Roles.ADMIN
+    profile.role = UserProfile.Roles.TENANT_ADMIN
     profile.is_active = True
     profile.save(update_fields=["role", "is_active"])
 
@@ -160,6 +160,6 @@ def test_require_extended_visibility_decorator_allows_when_permitted(
         return "ok"
 
     request = _build_request(request_factory, user)
-    assert user.userprofile.role == UserProfile.Roles.ADMIN
+    assert user.userprofile.role == UserProfile.Roles.TENANT_ADMIN
     assert allow_extended_visibility(request) is True
     assert _view(request, visibility="all") == "ok"

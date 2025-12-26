@@ -14,6 +14,8 @@ from common.constants import (
     META_CASE_ID_KEY,
     X_TRACE_ID_HEADER,
 )
+from users.tests.factories import UserFactory
+
 
 pytestmark = pytest.mark.django_db
 
@@ -25,11 +27,22 @@ def _clear_crawler_idempotency_cache():
     cache.clear()
 
 
+@pytest.fixture
+def authenticated_client(client):
+    """Authenticated test client."""
+    user = UserFactory()
+    client.force_login(user)
+    return client
+
+
 # Test Block A: Double Ingestion Prevention
 
 
 def test_crawler_runner_does_not_trigger_legacy_ingestion_when_graph_ran(
-    client, monkeypatch, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify start_ingestion_run is NOT called when Universal Graph provides ingestion_run_id."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -91,7 +104,7 @@ def test_crawler_runner_does_not_trigger_legacy_ingestion_when_graph_ran(
         ],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -103,7 +116,10 @@ def test_crawler_runner_does_not_trigger_legacy_ingestion_when_graph_ran(
 
 
 def test_crawler_runner_response_contains_canonical_ingestion_run_id(
-    client, monkeypatch, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify response includes canonical ingestion_run_id from coordinator."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -144,7 +160,7 @@ def test_crawler_runner_response_contains_canonical_ingestion_run_id(
         "origins": [{"url": "https://example.com", "fetch": False, "content": "test"}],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -163,7 +179,9 @@ def test_crawler_runner_response_contains_canonical_ingestion_run_id(
 # Test Block B: Mandatory ID Validation
 
 
-def test_crawler_runner_raises_error_when_tenant_id_missing(client, monkeypatch):
+def test_crawler_runner_raises_error_when_tenant_id_missing(
+    authenticated_client, monkeypatch
+):
     """Verify ValueError raised when tenant_id is missing."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
@@ -176,7 +194,7 @@ def test_crawler_runner_raises_error_when_tenant_id_missing(client, monkeypatch)
         "origins": [{"url": "https://example.com", "fetch": False, "content": "test"}],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -189,7 +207,7 @@ def test_crawler_runner_raises_error_when_tenant_id_missing(client, monkeypatch)
 
 
 def test_crawler_runner_raises_error_when_case_id_missing(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     """Verify default case_id is applied when missing."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -203,7 +221,7 @@ def test_crawler_runner_raises_error_when_case_id_missing(
         "origins": [{"url": "https://example.com", "fetch": False, "content": "test"}],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -215,7 +233,11 @@ def test_crawler_runner_raises_error_when_case_id_missing(
 
 
 def test_crawler_runner_generates_trace_id_when_missing(
-    client, monkeypatch, caplog, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    caplog,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify trace_id is auto-generated when missing."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -250,7 +272,7 @@ def test_crawler_runner_generates_trace_id_when_missing(
         "origins": [{"url": "https://example.com", "fetch": False, "content": "test"}],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -266,7 +288,10 @@ def test_crawler_runner_generates_trace_id_when_missing(
 
 @pytest.mark.django_db
 def test_crawler_runner_idempotency_skips_duplicate_fingerprint(
-    client, monkeypatch, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify second request with same fingerprint is skipped (Redis cache)."""
     from django.core.cache import cache
@@ -305,7 +330,7 @@ def test_crawler_runner_idempotency_skips_duplicate_fingerprint(
     }
 
     # First call
-    first = client.post(
+    first = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -316,7 +341,7 @@ def test_crawler_runner_idempotency_skips_duplicate_fingerprint(
     assert first_data["idempotent"] is False
 
     # Second call (same payload)
-    second = client.post(
+    second = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -333,7 +358,10 @@ def test_crawler_runner_idempotency_skips_duplicate_fingerprint(
 
 
 def test_crawler_runner_extracts_transitions_from_output(
-    client, monkeypatch, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify transitions are read from output.transitions, not state."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -374,7 +402,7 @@ def test_crawler_runner_extracts_transitions_from_output(
         "origins": [{"url": "https://example.com", "fetch": False, "content": "test"}],
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -391,7 +419,11 @@ def test_crawler_runner_extracts_transitions_from_output(
 
 
 def test_crawler_runner_logs_exception_with_full_context(
-    client, monkeypatch, caplog, documents_repository_stub, test_tenant_schema_name
+    authenticated_client,
+    monkeypatch,
+    caplog,
+    documents_repository_stub,
+    test_tenant_schema_name,
 ):
     """Verify exception logs contain tenant_id, trace_id, etc."""
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -416,7 +448,7 @@ def test_crawler_runner_logs_exception_with_full_context(
     }
 
     with caplog.at_level("ERROR"):
-        response = client.post(
+        response = authenticated_client.post(
             "/ai/rag/crawler/run/",
             data=json.dumps(payload),
             content_type="application/json",

@@ -254,6 +254,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "profiles.middleware.ExternalAccountExpiryMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -402,7 +403,17 @@ LOGGING = {
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Policy-enforcing authentication classes that check:
+        # - Account expiry (EXTERNAL accounts)
+        # - Active status (user.is_active, profile.is_active)
+        # - (Future) Concurrent sessions, IP restrictions, etc.
+        "profiles.authentication.PolicyEnforcingSessionAuthentication",
+        "profiles.authentication.PolicyEnforcingBasicAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
 }
 
 TENANT_HEADER_COMPONENTS = api_schema.tenant_header_components()

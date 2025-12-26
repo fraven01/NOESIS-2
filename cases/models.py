@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 
+from django.conf import settings
 from django.db import models
 
 
@@ -95,3 +96,47 @@ class CaseEvent(models.Model):
                 name="case_event_tenant_created_idx",
             ),
         ]
+
+
+class CaseMembership(models.Model):
+    """Many-to-many relationship between cases and users."""
+
+    case = models.ForeignKey(
+        Case,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+        related_name="case_memberships",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    granted_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="+",  # No reverse relation
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("case", "user"),
+                name="case_membership_unique",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("user", "case"),
+                name="case_membership_user_case",
+            ),
+            models.Index(
+                fields=("case", "user"),
+                name="case_membership_case_user",
+            ),
+        ]
+
+    def __str__(self):
+        return f"{self.user.username} → {self.case.external_id}"

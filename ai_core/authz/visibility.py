@@ -48,7 +48,7 @@ def allow_extended_visibility(request: HttpRequest) -> bool:
     if not profile.is_active:
         return False
 
-    if profile.role == UserProfile.Roles.ADMIN:
+    if profile.role == UserProfile.Roles.TENANT_ADMIN:
         return True
 
     organization = current_organization(request)

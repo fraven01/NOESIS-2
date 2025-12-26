@@ -33,7 +33,11 @@
       "Bash(npm run win:test:py:unit:*)",
       "Bash(del ai_coreteststest_inspect_services.py)",
       "Bash(npm run test:py:single:*)",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(python manage.py makemigrations:*)",
+      "Bash(git diff:*)",
+      "Bash(test:*)",
+      "Bash(npm run win:test:py:fast:*)"
     ],
     "deny": [],
     "ask": []

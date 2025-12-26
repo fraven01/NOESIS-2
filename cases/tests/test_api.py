@@ -6,6 +6,8 @@ from rest_framework.test import APITestCase
 
 from cases.models import Case
 from customers.models import Tenant
+from profiles.models import UserProfile
+from users.tests.factories import UserFactory
 
 
 class CaseApiTests(APITestCase):
@@ -27,6 +29,10 @@ class CaseApiTests(APITestCase):
             self.other_tenant, _ = Tenant.objects.get_or_create(
                 schema_name="other_tenant", defaults={"name": "Other Tenant"}
             )
+
+        # Create a TENANT_ADMIN user to ensure access to created cases
+        self.user = UserFactory(role=UserProfile.Roles.TENANT_ADMIN)
+        self.client.force_login(self.user)
 
         self.url = reverse("cases:case-list")
 

@@ -1,4 +1,6 @@
 from io import StringIO
+from unittest.mock import MagicMock
+from types import SimpleNamespace
 
 import pytest
 from django.core.management import call_command, CommandError
@@ -6,6 +8,7 @@ from django.db import connection, OperationalError
 from django_tenants.utils import get_public_schema_name, schema_context
 
 from customers.models import Domain, Tenant
+from profiles.models import UserProfile
 from users.models import User
 from .factories import DomainFactory, TenantFactory
 
@@ -465,15 +468,33 @@ def test_create_tenant_superuser_uses_environment_defaults(monkeypatch):
         objects = DummyManager()
 
         def __init__(self, username, email):
+            self.id = 1
+            self.pk = 1
             self.username = username
             self.email = email
             self.is_staff = True
             self.is_superuser = True
+            self._state = SimpleNamespace(db="default")  # Helper for Django
+
+        def save(self, *args, **kwargs):
+            pass
 
     monkeypatch.setenv("DJANGO_SUPERUSER_USERNAME", "env-admin")
     monkeypatch.setenv("DJANGO_SUPERUSER_PASSWORD", "env-pass")
     monkeypatch.setenv("DJANGO_SUPERUSER_EMAIL", "env@example.com")
 
+    # Mock ensure_user_profile to avoid ORM errors with DummyUser
+    mock_profile = MagicMock()
+    mock_profile.role = UserProfile.Roles.STAKEHOLDER
+    mock_profile.account_type = UserProfile.AccountType.EXTERNAL
+    mock_profile.is_active = False
+
+    monkeypatch.setattr(
+        "customers.management.commands.create_tenant_superuser.ensure_user_profile",
+        lambda u: mock_profile,
+    )
+    # Also patch the source to be safe
+    monkeypatch.setattr("profiles.services.ensure_user_profile", lambda u: mock_profile)
     monkeypatch.setattr(
         "customers.management.commands.create_tenant_superuser.get_user_model",
         lambda: DummyUser,
@@ -499,11 +520,19 @@ def test_create_tenant_superuser_warns_when_no_changes_needed(monkeypatch):
     )
 
     with schema_context(tenant.schema_name):
-        User.objects.create_superuser(
+        u = User.objects.create_superuser(
             username="demo-admin",
             email="existing@example.com",
             password="existing-pass",
         )
+        # Ensure profile matches defaults so no update occurs
+        from profiles.models import UserProfile
+
+        p, _ = UserProfile.objects.get_or_create(user=u)
+        p.role = UserProfile.Roles.TENANT_ADMIN
+        p.account_type = UserProfile.AccountType.INTERNAL
+        p.is_active = True
+        p.save()
 
     stdout = StringIO()
     call_command(

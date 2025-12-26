@@ -1323,8 +1323,9 @@ RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
 
 
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
+    # Authentication and permissions are inherited from REST_FRAMEWORK defaults
+    # (SessionAuthentication + IsAuthenticated)
+    pass
 
 
 class _PingBase(_BaseAgentView):

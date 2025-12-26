@@ -7,6 +7,8 @@ from django.db import OperationalError
 from django_tenants.utils import schema_context
 
 from customers.models import Tenant
+from profiles.models import UserProfile
+from profiles.services import ensure_user_profile
 
 
 class Command(BaseCommand):
@@ -56,11 +58,28 @@ class Command(BaseCommand):
                     if not user.is_superuser:
                         user.is_superuser = True
                         updated = True
-                    if password:
+                    if password and not user.check_password(password):
                         user.set_password(password)
                         updated = True
                     if updated:
                         user.save()
+
+                    # Ensure UserProfile with TENANT_ADMIN role
+                    profile = ensure_user_profile(user)
+                    profile_updated = False
+                    if profile.role != UserProfile.Roles.TENANT_ADMIN:
+                        profile.role = UserProfile.Roles.TENANT_ADMIN
+                        profile_updated = True
+                    if profile.account_type != UserProfile.AccountType.INTERNAL:
+                        profile.account_type = UserProfile.AccountType.INTERNAL
+                        profile_updated = True
+                    if not profile.is_active:
+                        profile.is_active = True
+                        profile_updated = True
+                    if profile_updated:
+                        profile.save()
+
+                    if updated or profile_updated:
                         self.stdout.write(
                             self.style.SUCCESS(
                                 f"Superuser '{username}' ensured (updated) in schema '{schema}'."
@@ -80,9 +99,17 @@ class Command(BaseCommand):
                         "Missing password. Provide --password or DJANGO_SUPERUSER_PASSWORD."
                     )
 
-                User.objects.create_superuser(
+                user = User.objects.create_superuser(
                     username=username, email=email, password=password
                 )
+
+                # Ensure UserProfile with TENANT_ADMIN role
+                profile = ensure_user_profile(user)
+                profile.role = UserProfile.Roles.TENANT_ADMIN
+                profile.account_type = UserProfile.AccountType.INTERNAL
+                profile.is_active = True
+                profile.save()
+
                 self.stdout.write(
                     self.style.SUCCESS(
                         f"Superuser '{username}' created in schema '{schema}'."

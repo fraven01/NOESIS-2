@@ -79,7 +79,7 @@ def test_rag_hard_delete_admin_rejects_non_admin_user(client):
     user_model = get_user_model()
     user = user_model.objects.create_user("guest", "guest@example.com", "pass")
     UserProfile.objects.update_or_create(
-        user=user, defaults={"role": UserProfile.Roles.GUEST}
+        user=user, defaults={"role": UserProfile.Roles.STAKEHOLDER}
     )
     client.force_login(user)
     client.cookies["csrftoken"] = "test-token"
@@ -105,7 +105,7 @@ def test_resolve_hard_delete_actor_allows_admin_user(monkeypatch):
     user = user_model.objects.create_user("admin", "admin@example.com", "pass")
     UserProfile.objects.update_or_create(
         user=user,
-        defaults={"role": UserProfile.Roles.ADMIN, "is_active": True},
+        defaults={"role": UserProfile.Roles.TENANT_ADMIN, "is_active": True},
     )
 
     request = SimpleNamespace(headers={}, META={}, user=user, session={})

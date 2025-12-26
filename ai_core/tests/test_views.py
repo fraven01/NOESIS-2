@@ -24,6 +24,7 @@ from ai_core.rag.vector_client import HybridSearchResult
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.tool_contracts import InconsistentMetadataError, NotFoundError
 from common import logging as common_logging
+from users.tests.factories import UserFactory
 from common.constants import (
     COLLECTION_ID_HEADER_CANDIDATES,
     IDEMPOTENCY_KEY_HEADER,
@@ -40,6 +41,15 @@ from crawler.errors import CrawlerError, ErrorClass
 from crawler.fetcher import FetchMetadata, FetchResult, FetchStatus, FetchTelemetry
 from crawler.frontier import FrontierAction
 from rest_framework import status
+
+
+@pytest.fixture
+def authenticated_client(client, request):
+    """Authenticated test client."""
+    if "django_db" in request.keywords:
+        user = UserFactory()
+        client.force_login(user)
+    return client
 
 
 @pytest.fixture(autouse=True)
@@ -72,13 +82,15 @@ class DummyRedis:
 
 
 @pytest.mark.django_db
-def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_name):
+def test_ping_view_applies_rate_limit(
+    authenticated_client, monkeypatch, test_tenant_schema_name
+):
     tenant_schema = test_tenant_schema_name
     monkeypatch.setattr(rate_limit, "get_quota", lambda: 1)
     rate_limit._get_redis.cache_clear()
     monkeypatch.setattr(rate_limit, "_get_redis", lambda: DummyRedis())
 
-    resp1 = client.get(
+    resp1 = authenticated_client.get(
         "/ai/ping/",
         **{META_TENANT_ID_KEY: tenant_schema},
     )
@@ -87,7 +99,7 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
     assert resp1[X_TRACE_ID_HEADER]
     assert resp1[X_TENANT_ID_HEADER] == tenant_schema
     assert X_KEY_ALIAS_HEADER not in resp1
-    resp2 = client.get(
+    resp2 = authenticated_client.get(
         "/ai/ping/",
         **{META_TENANT_ID_KEY: tenant_schema},
     )
@@ -99,8 +111,10 @@ def test_ping_view_applies_rate_limit(client, monkeypatch, test_tenant_schema_na
 
 
 @pytest.mark.django_db
-def test_v1_ping_does_not_require_authorization(client, test_tenant_schema_name):
-    response = client.get(
+def test_v1_ping_does_not_require_authorization(
+    authenticated_client, test_tenant_schema_name
+):
+    response = authenticated_client.get(
         "/v1/ai/ping/",
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
@@ -110,8 +124,8 @@ def test_v1_ping_does_not_require_authorization(client, test_tenant_schema_name)
 
 
 @pytest.mark.django_db
-def test_missing_case_header_returns_400(client, test_tenant_schema_name):
-    resp = client.post(
+def test_missing_case_header_returns_400(authenticated_client, test_tenant_schema_name):
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -127,8 +141,8 @@ def test_missing_case_header_returns_400(client, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
-def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
-    resp = client.post(
+def test_invalid_case_header_returns_400(authenticated_client, test_tenant_schema_name):
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -147,8 +161,10 @@ def test_invalid_case_header_returns_400(client, test_tenant_schema_name):
 
 
 @pytest.mark.django_db
-def test_tenant_schema_header_mismatch_returns_400(client, test_tenant_schema_name):
-    resp = client.post(
+def test_tenant_schema_header_mismatch_returns_400(
+    authenticated_client, test_tenant_schema_name
+):
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -168,7 +184,7 @@ def test_tenant_schema_header_mismatch_returns_400(client, test_tenant_schema_na
 
 @pytest.mark.django_db
 def test_tenant_schema_header_match_allows_request(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     seen = {}
 
@@ -179,7 +195,7 @@ def test_tenant_schema_header_match_allows_request(
     monkeypatch.setattr(rate_limit, "check", _check)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
-    resp = client.post(
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -226,10 +242,10 @@ def test_assert_case_active_rejects_mismatched_token_tenant(test_tenant_schema_n
 
 
 @pytest.mark.django_db
-def test_missing_tenant_resolution_returns_400(client, monkeypatch):
+def test_missing_tenant_resolution_returns_400(authenticated_client, monkeypatch):
     monkeypatch.setattr("ai_core.views._resolve_tenant_id", lambda request: None)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
-    resp = client.post(
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -244,9 +260,11 @@ def test_missing_tenant_resolution_returns_400(client, monkeypatch):
 
 
 @pytest.mark.django_db
-def test_non_json_payload_returns_415(client, monkeypatch, test_tenant_schema_name):
+def test_non_json_payload_returns_415(
+    authenticated_client, monkeypatch, test_tenant_schema_name
+):
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
-    resp = client.post(
+    resp = authenticated_client.post(
         "/ai/intake/",
         data="raw body",
         content_type="text/plain",
@@ -263,7 +281,7 @@ def test_non_json_payload_returns_415(client, monkeypatch, test_tenant_schema_na
     )
     assert error_body["code"] == "unsupported_media_type"
 
-    v1_response = client.post(
+    v1_response = authenticated_client.post(
         "/v1/ai/intake/",
         data="raw body",
         content_type="text/plain",
@@ -281,11 +299,11 @@ def test_non_json_payload_returns_415(client, monkeypatch, test_tenant_schema_na
 
 @pytest.mark.django_db
 def test_intake_rejects_invalid_metadata_type(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/intake/",
         data=json.dumps({"metadata": ["not", "an", "object"]}),
         content_type="application/json",
@@ -303,14 +321,14 @@ def test_intake_rejects_invalid_metadata_type(
 
 @pytest.mark.django_db
 def test_intake_persists_state_and_headers(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     tenant_header = test_tenant_schema_name
-    resp = client.post(
+    resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
@@ -445,7 +463,7 @@ def test_collection_header_bridge_uses_meta_fallback():
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -534,7 +552,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={**payload, "collection_id": str(uuid.uuid4())},
         content_type="application/json",
@@ -608,7 +626,7 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_rejects_invalid_graph_payload(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -628,7 +646,7 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": "Was gilt?",
@@ -653,7 +671,7 @@ def test_rag_query_endpoint_rejects_invalid_graph_payload(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_allows_blank_answer(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     """Ensure an empty composed answer is accepted by the contract validator."""
 
@@ -707,7 +725,7 @@ def test_rag_query_endpoint_allows_blank_answer(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": "Was gilt?",
@@ -732,7 +750,7 @@ def test_rag_query_endpoint_allows_blank_answer(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_rejects_missing_prompt_version(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -787,7 +805,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": "Was gilt?",
@@ -810,7 +828,7 @@ def test_rag_query_endpoint_rejects_missing_prompt_version(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_normalises_numeric_types(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -866,7 +884,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": "Was gilt?",
@@ -910,7 +928,7 @@ def test_rag_query_endpoint_normalises_numeric_types(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_applies_top_k_override(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *_args, **_kwargs: None)
@@ -1007,7 +1025,7 @@ def test_rag_query_endpoint_applies_top_k_override(
         "collection_id": str(uuid.uuid4()),
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data=payload,
         content_type="application/json",
@@ -1027,7 +1045,7 @@ def test_rag_query_endpoint_applies_top_k_override(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_surfaces_diagnostics(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -1089,7 +1107,7 @@ def test_rag_query_endpoint_surfaces_diagnostics(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": "Was gilt?",
@@ -1188,7 +1206,7 @@ def test_normalise_rag_response_stringifies_uuid_values():
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_populates_query_from_question(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -1256,7 +1274,7 @@ def test_rag_query_endpoint_populates_query_from_question(
 
     question_text = "Was ist RAG?"
     hybrid_config = {"alpha": 0.5}
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "question": question_text,
@@ -1303,7 +1321,7 @@ def test_rag_query_endpoint_populates_query_from_question(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_returns_not_found_when_no_matches(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -1324,7 +1342,7 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "query": "no hits",
@@ -1348,7 +1366,7 @@ def test_rag_query_endpoint_returns_not_found_when_no_matches(
 
 @pytest.mark.django_db
 def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -1371,7 +1389,7 @@ def test_rag_query_endpoint_returns_422_on_inconsistent_metadata(
     graph_runner = SimpleNamespace(run=_run)
     monkeypatch.setattr(views, "get_graph_runner", lambda name: graph_runner)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/v1/ai/rag/query/",
         data={
             "query": "bad meta",
@@ -1629,7 +1647,7 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
 
 @pytest.mark.django_db
 def test_crawler_runner_guardrail_denial_returns_413(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     class _GuardrailDenyGraph:
         def __init__(self) -> None:
@@ -1731,7 +1749,7 @@ def test_crawler_runner_guardrail_denial_returns_413(
 
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -1750,7 +1768,7 @@ def test_crawler_runner_guardrail_denial_returns_413(
 
 @pytest.mark.django_db
 def test_crawler_runner_manual_multi_origin(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
@@ -1859,7 +1877,7 @@ def test_crawler_runner_manual_multi_origin(
         ],
     }
 
-    first = client.post(
+    first = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -1881,7 +1899,7 @@ def test_crawler_runner_manual_multi_origin(
         "https://example.com/docs/policies",
     }
 
-    second = client.post(
+    second = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",
@@ -1894,7 +1912,7 @@ def test_crawler_runner_manual_multi_origin(
 
 @pytest.mark.django_db
 def test_crawler_runner_propagates_idempotency_key(
-    client, monkeypatch, tmp_path, test_tenant_schema_name
+    authenticated_client, monkeypatch, tmp_path, test_tenant_schema_name
 ):
     monkeypatch.setattr(object_store, "BASE_PATH", tmp_path)
 
@@ -1952,7 +1970,7 @@ def test_crawler_runner_propagates_idempotency_key(
         IDEMPOTENCY_KEY_HEADER: "idem-crawler-1",
     }
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/crawler/run/",
         data=json.dumps(payload),
         content_type="application/json",

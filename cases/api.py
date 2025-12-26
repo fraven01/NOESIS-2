@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+from django.db import transaction
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import serializers, status, viewsets
@@ -110,13 +111,15 @@ class CaseViewSet(viewsets.ModelViewSet):
         return super().create(request, *args, **kwargs)
 
     def get_queryset(self):
-        """Return cases for the current tenant only."""
+        """Return cases accessible to the current user."""
         try:
             tenant = TenantContext.from_request(self.request, require=True)
         except TenantRequiredError:
             return Case.objects.none()
 
-        queryset = Case.objects.filter(tenant=tenant)
+        from cases.authz import get_accessible_cases_queryset
+
+        queryset = get_accessible_cases_queryset(self.request.user, tenant)
 
         status_param = self.request.query_params.get("status")
         if status_param:
@@ -124,6 +127,7 @@ class CaseViewSet(viewsets.ModelViewSet):
 
         return queryset.order_by("-created_at")
 
+    @transaction.atomic
     def perform_create(self, serializer):
         """Create case associated with current tenant."""
         try:
@@ -138,7 +142,17 @@ class CaseViewSet(viewsets.ModelViewSet):
                 {"external_id": f"Case with ID '{external_id}' already exists."}
             )
 
-        serializer.save(tenant=tenant)
+        case = serializer.save(tenant=tenant)
+
+        # Auto-grant creator membership (ALWAYS, no exceptions)
+        from cases.models import CaseMembership
+
+        # get_or_create is atomic and handles race conditions internally
+        CaseMembership.objects.get_or_create(
+            case=case,
+            user=self.request.user,
+            defaults={"granted_by": self.request.user},
+        )
 
     @extend_schema(summary="Close Case", request=None)
     @action(detail=True, methods=["post"])
