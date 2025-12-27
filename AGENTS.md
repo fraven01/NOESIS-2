@@ -10,7 +10,7 @@
 
 If a change would introduce new runtime semantics (new identifiers, new contracts, or boundary breaks), STOP and ask for confirmation (and/or add a backlog item in `roadmap/backlog.md` with code pointers).
 
-- New or changed IDs / meta keys / headers: anything affecting `ScopeContext` (`ai_core/contracts/scope.py`), `ToolContext` (`ai_core/tool_contracts/base.py`), graph meta (`ai_core/graph/schemas.py:normalize_meta`), or header constants (`common/constants.py`).
+- New or changed IDs / meta keys / headers: anything affecting `ScopeContext` (`ai_core/contracts/scope.py`), `BusinessContext` (`ai_core/contracts/business.py`), `ToolContext` (`ai_core/tool_contracts/base.py`), graph meta (`ai_core/graph/schemas.py:normalize_meta`), or header constants (`common/constants.py`).
 - Contract changes: Pydantic input/output models or JSON schema shape for tools/graphs (e.g. `ai_core/tool_contracts/base.py`, `ai_core/graph/schemas.py`, `ai_core/nodes/`, `ai_core/tools/`).
 - Architecture boundary deviations: examples include UI/views triggering technical graphs outside a dev/workbench exception, business-heavy graphs writing via ORM instead of a service boundary, or violating intended import direction (business -> technical allowed; reverse forbidden per roadmap).
 
@@ -48,7 +48,14 @@ Proceed without asking only when the change stays within existing enforced contr
 
 Canonical header constants live in `common/constants.py`:
 
-- `X-Tenant-ID`, `X-Tenant-Schema`, `X-Case-ID`, `X-Trace-ID`, `X-Workflow-ID`, `X-Collection-ID`, `X-Key-Alias`, `Idempotency-Key`
+**Infrastructure Headers (ScopeContext)**:
+- `X-Tenant-ID`, `X-Tenant-Schema`, `X-Trace-ID`, `X-Invocation-ID`, `Idempotency-Key`
+
+**Business Domain Headers (BusinessContext)**:
+- `X-Case-ID`, `X-Collection-ID`, `X-Workflow-ID`, `X-Document-ID`, `X-Document-Version-ID`
+
+**Other Headers**:
+- `X-Key-Alias`, `X-Retry-Attempt`
 
 ### Request -> scope context
 
@@ -65,7 +72,8 @@ As implemented in `ScopeContext` + normalizers:
 - `tenant_id` exists for every scope.
 - `trace_id` is normalized/coerced; when missing it is generated.
 - At least one runtime identifier required: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion).
-- `case_id` is optional at HTTP request level, validated for format when present (pattern in `ai_core/ids/headers.py`). Required for graph executions (enforced in `normalize_meta`, see below). `ToolContext` itself does not enforce `case_id` - individual tools may require it based on their business logic.
+
+**BREAKING CHANGE (Option A)**: `case_id` is NO LONGER in `ScopeContext`. It was moved to `BusinessContext` (see section below).
 
 #### Identity IDs (Pre-MVP ID Contract)
 
@@ -95,25 +103,198 @@ Keys in `audit_meta`:
 - `initiated_by_user_id`: Who triggered the flow (causal tracking)
 - `last_hop_service_id`: Last service that wrote (from `scope.service_id`)
 
+### Business Context (Domain Identifiers)
+
+**BREAKING CHANGE (Option A - Strict Separation)**: Business domain IDs were moved from `ScopeContext` to a separate `BusinessContext` model in Phase 1 of the Option A migration.
+
+The canonical business context model is `ai_core/contracts/business.py:BusinessContext`.
+
+#### Golden Rule (Strict Separation)
+
+**Infrastructure (WHO/WHEN)** → `ScopeContext`
+**Business Domain (WHAT)** → `BusinessContext`
+
+```
+ScopeContext: tenant_id, trace_id, invocation_id, user_id, service_id,
+              run_id, ingestion_run_id, tenant_schema, idempotency_key, timestamp
+
+BusinessContext: case_id, collection_id, workflow_id, document_id, document_version_id
+```
+
+#### BusinessContext Fields (All Optional)
+
+All business domain IDs are **optional** in `BusinessContext`. Individual graphs validate their required fields.
+
+| Field | Type | HTTP Header | Django META Key | Description |
+|-------|------|-------------|-----------------|-------------|
+| `case_id` | `str \| None` | `X-Case-ID` | `HTTP_X_CASE_ID` | Legal case identifier |
+| `collection_id` | `str \| None` | `X-Collection-ID` | `HTTP_X_COLLECTION_ID` | Document collection ID |
+| `workflow_id` | `str \| None` | `X-Workflow-ID` | `HTTP_X_WORKFLOW_ID` | Workflow identifier |
+| `document_id` | `str \| None` | `X-Document-ID` | `HTTP_X_DOCUMENT_ID` | Document ID |
+| `document_version_id` | `str \| None` | `X-Document-Version-ID` | `HTTP_X_DOCUMENT_VERSION_ID` | Document version ID |
+
+#### HTTP Header → BusinessContext Flow
+
+BusinessContext is extracted from HTTP headers in `ai_core/graph/schemas.py:normalize_meta`:
+
+```python
+# Extract business context IDs from request headers (all optional)
+case_id = _coalesce(request, X_CASE_ID_HEADER, META_CASE_ID_KEY)
+workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
+collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
+document_id = _coalesce(request, X_DOCUMENT_ID_HEADER, META_DOCUMENT_ID_KEY)
+document_version_id = _coalesce(request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY)
+
+# Build BusinessContext (all fields optional per Option A)
+business = BusinessContext(
+    case_id=case_id,
+    workflow_id=workflow_id,
+    collection_id=collection_id,
+    document_id=document_id,
+    document_version_id=document_version_id,
+)
+
+# Attach to ToolContext
+tool_context = scope.to_tool_context(business=business, metadata=context_metadata)
+```
+
+#### Accessing BusinessContext in Tools
+
+Tools receive `ToolContext` which contains both `scope` and `business`:
+
+```python
+from ai_core.tool_contracts import ToolContext, ToolOutput
+from ai_core.contracts import BusinessContext, ScopeContext
+
+def run(context: ToolContext, input: MyToolInput) -> ToolOutput[MyToolInput, MyToolOutput]:
+    # Infrastructure IDs from ScopeContext
+    tenant_id = context.scope.tenant_id
+    trace_id = context.scope.trace_id
+
+    # Business IDs from BusinessContext
+    case_id = context.business.case_id
+    collection_id = context.business.collection_id
+    document_id = context.business.document_id
+
+    # Backward compatibility (deprecated)
+    case_id_deprecated = context.case_id  # delegates to context.business.case_id
+```
+
+#### Graph-Specific Validation
+
+**BREAKING CHANGE (Option A)**: `normalize_meta` does NOT enforce `case_id` globally. Individual graphs validate their required fields.
+
+Example from Framework Analysis Graph:
+
+```python
+# In ai_core/graphs/framework_analysis_graph.py
+def validate_business_context(context: ToolContext) -> None:
+    """Validate Framework Analysis requires case_id and document_id."""
+    if not context.business.case_id:
+        raise InputError(
+            message="Framework Analysis requires case_id",
+            error_code="FRAMEWORK_MISSING_CASE_ID"
+        )
+    if not context.business.document_id:
+        raise InputError(
+            message="Framework Analysis requires document_id",
+            error_code="FRAMEWORK_MISSING_DOCUMENT_ID"
+        )
+```
+
+#### Migration from Old Code (Pre-Option A)
+
+**Old code (before Option A)**:
+```python
+# ❌ BROKEN: case_id no longer in ScopeContext
+case_id = scope.case_id
+
+# ❌ BROKEN: Tool inputs no longer have business IDs
+class RetrieveInput(BaseModel):
+    query: str
+    collection_id: str  # ❌ Removed
+```
+
+**New code (after Option A)**:
+```python
+# ✅ CORRECT: case_id in BusinessContext
+case_id = context.business.case_id
+
+# ✅ CORRECT: Tool inputs have only functional params
+class RetrieveInput(BaseModel):
+    query: str
+    # collection_id read from context.business.collection_id
+```
+
+#### Complete Example: New Tool with BusinessContext
+
+```python
+from pydantic import BaseModel, Field
+from ai_core.tool_contracts import ToolContext, ToolOutput
+from ai_core.tools.errors import InputError
+
+# Input: Functional parameters only (no IDs)
+class MyToolInput(BaseModel):
+    query: str = Field(..., description="Search query")
+    limit: int = Field(default=10, ge=1, le=100)
+
+# Output: Business results
+class MyToolOutput(BaseModel):
+    results: list[str]
+    count: int
+
+def run(context: ToolContext, input: MyToolInput) -> ToolOutput[MyToolInput, MyToolOutput]:
+    """Example tool following Golden Rule."""
+
+    # Validate required business context
+    if not context.business.case_id:
+        raise InputError(
+            message="MyTool requires case_id",
+            error_code="MYTOOL_MISSING_CASE_ID"
+        )
+
+    # Read IDs from context (not input!)
+    case_id = context.business.case_id
+    collection_id = context.business.collection_id  # optional
+    tenant_id = context.scope.tenant_id
+
+    # Business logic using context IDs
+    results = perform_search(
+        query=input.query,
+        case_id=case_id,
+        collection_id=collection_id,
+        tenant_id=tenant_id,
+        limit=input.limit
+    )
+
+    return ToolOutput(
+        input=input,
+        output=MyToolOutput(results=results, count=len(results))
+    )
+```
+
 ### Graph request meta (`meta`) for AI Core graphs
 
 `ai_core/graph/schemas.py:normalize_meta` produces the canonical graph meta dictionary and attaches:
 
 - `scope_context`: serialized `ScopeContext`
-- `tool_context`: serialized `ToolContext` built from scope
+- `business_context`: serialized `BusinessContext` (all fields optional)
+- `tool_context`: serialized `ToolContext` built from scope + business
 
-`normalize_meta` rejects requests without `case_id` (`ai_core/graph/schemas.py:normalize_meta`).
+**BREAKING CHANGE (Option A)**: `normalize_meta` does NOT enforce `case_id` globally. All BusinessContext fields are optional. Individual graphs validate their required business IDs.
 
 ### Tool context contract
 
 Canonical tool envelope models live in `ai_core/tool_contracts/base.py`.
 
 - `ToolContext` is immutable (`ConfigDict(frozen=True)`).
+- **Compositional structure (Option A)**: `ToolContext` contains `scope: ScopeContext` + `business: BusinessContext` + runtime metadata.
 - At least one runtime ID required: `run_id` and/or `ingestion_run_id` (`ai_core/tool_contracts/base.py:ToolContext.check_run_ids`).
 - Identity validation: `user_id` and `service_id` are mutually exclusive (`ai_core/tool_contracts/base.py:ToolContext.check_identity`).
-- `case_id` is optional in `ToolContext` (no validation enforced at the ToolContext level).
+- **Business IDs**: All business domain IDs (`case_id`, `collection_id`, etc.) are in `context.business`, not `context.scope`.
+- **Backward compatibility**: Deprecated `@property` accessors delegate to `scope.X` or `business.X` for compatibility.
 - `ai_core/tool_contracts/__init__.py` re-exports the canonical `ToolContext` from `ai_core/tool_contracts/base.py`.
-- Build from scope: `scope.to_tool_context()` or `tool_context_from_scope(scope)`.
+- Build from scope + business: `scope.to_tool_context(business=business_context)` or `tool_context_from_scope(scope, business=business_context)`.
 
 ### Deprecated identifier key
 
