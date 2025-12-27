@@ -15,6 +15,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
+from ai_core.contracts import ScopeContext, BusinessContext
 from ai_core.services import _get_documents_repository
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -862,13 +863,36 @@ def web_search(request):
         except Exception as exc:
             return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
 
-        # Re-build context manually since we removed GraphContextPayload
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Build ScopeContext and BusinessContext for Collection Search
+        col_scope = ScopeContext(
+            tenant_id=tenant_id,
+            tenant_schema=tenant_id,
+            trace_id=trace_id,
+            invocation_id=str(uuid4()),
+            run_id=run_id,
+            user_id=user_id,  # Pre-MVP ID Contract
+        )
+
+        col_business = BusinessContext(
+            workflow_id="collection-search-manual",
+            case_id=case_id,
+            collection_id=collection_id,
+        )
+
+        # Build context_payload as nested + flattened dict (hybrid for compatibility)
         col_context_payload = {
+            # ToolContext structure (for model_validate)
+            "scope": col_scope.model_dump(mode="json"),
+            "business": col_business.model_dump(mode="json"),
+            "metadata": {},
+            # Flattened fields for backward compatibility
             "tenant_id": tenant_id,
             "workflow_id": "collection-search-manual",
             "case_id": case_id,
             "trace_id": trace_id,
             "run_id": run_id,
+            "user_id": user_id,
         }
 
         col_graph = build_collection_search_graph()
@@ -913,14 +937,61 @@ def web_search(request):
         except (ValueError, TypeError):
             min_snippet_length = 40
 
-        # Dependencies now passed via context/state to avoid legacy config issues
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Build ScopeContext (infrastructure IDs) and BusinessContext (domain IDs)
+        # instead of flat dict to match ToolContext structure
+
+        scope = ScopeContext(
+            tenant_id=tenant_id,
+            tenant_schema=tenant_id,
+            trace_id=trace_id,
+            invocation_id=str(uuid4()),
+            run_id=run_id,
+            user_id=user_id,  # Pre-MVP ID Contract
+        )
+
+        business = BusinessContext(
+            workflow_id="external-knowledge-manual",
+            case_id=case_id,
+            collection_id=collection_id,
+        )
+
+        # Build ToolContext using compositional structure
+        # This will be used by WebSearchWorker for proper context validation
+        tool_context = scope.to_tool_context(
+            business=business,
+            metadata={
+                "runtime_worker": search_worker,
+                "runtime_trigger": ingestion_adapter,
+                "top_n": top_n,
+                "min_snippet_length": min_snippet_length,
+                "prefer_pdf": True,
+            }
+        )
+
+        # Build context_payload as nested dict that matches ToolContext structure
+        # This allows ToolContext.model_validate() to work correctly
+        # AND preserves backward compatibility with graph accessing context.get("runtime_worker")
         context_payload = {
+            # ToolContext fields (for model_validate)
+            "scope": scope.model_dump(mode="json"),
+            "business": business.model_dump(mode="json"),
+            "metadata": {
+                "runtime_worker": search_worker,
+                "runtime_trigger": ingestion_adapter,
+                "top_n": top_n,
+                "min_snippet_length": min_snippet_length,
+                "prefer_pdf": True,
+            },
+            # Flattened fields for backward compatibility with graph code
+            # that uses context.get("tenant_id"), context.get("workflow_id"), etc.
             "tenant_id": tenant_id,
             "tenant_schema": tenant_id,
             "workflow_id": "external-knowledge-manual",
             "case_id": case_id,
             "trace_id": trace_id,
             "run_id": run_id,
+            "user_id": user_id,
             "runtime_worker": search_worker,
             "runtime_trigger": ingestion_adapter,
             "top_n": top_n,
