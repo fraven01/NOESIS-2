@@ -65,7 +65,7 @@ As implemented in `ScopeContext` + normalizers:
 - `tenant_id` exists for every scope.
 - `trace_id` is normalized/coerced; when missing it is generated.
 - At least one runtime identifier required: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion).
-- `case_id` is optional at HTTP request level, validated for format when present (pattern in `ai_core/ids/headers.py`). Required for tool invocations (enforced in `ToolContext`).
+- `case_id` is optional at HTTP request level, validated for format when present (pattern in `ai_core/ids/headers.py`). Required for graph executions (enforced in `normalize_meta`, see below). `ToolContext` itself does not enforce `case_id` - individual tools may require it based on their business logic.
 
 #### Identity IDs (Pre-MVP ID Contract)
 
@@ -111,6 +111,7 @@ Canonical tool envelope models live in `ai_core/tool_contracts/base.py`.
 - `ToolContext` is immutable (`ConfigDict(frozen=True)`).
 - At least one runtime ID required: `run_id` and/or `ingestion_run_id` (`ai_core/tool_contracts/base.py:ToolContext.check_run_ids`).
 - Identity validation: `user_id` and `service_id` are mutually exclusive (`ai_core/tool_contracts/base.py:ToolContext.check_identity`).
+- `case_id` is optional in `ToolContext` (no validation enforced at the ToolContext level).
 - `ai_core/tool_contracts/__init__.py` re-exports the canonical `ToolContext` from `ai_core/tool_contracts/base.py`.
 - Build from scope: `scope.to_tool_context()` or `tool_context_from_scope(scope)`.
 
