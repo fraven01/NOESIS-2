@@ -979,22 +979,14 @@ def web_search(request):
             }
         )
 
-        # Build context_payload as nested dict that matches ToolContext structure
-        # This allows ToolContext.model_validate() to work correctly
-        # AND preserves backward compatibility with graph accessing context.get("runtime_worker")
-        context_payload = {
-            # ToolContext fields (for model_validate)
-            "scope": scope.model_dump(mode="json"),
-            "business": business.model_dump(mode="json"),
-            "metadata": {
-                "runtime_worker": search_worker,
-                "runtime_trigger": ingestion_adapter,
-                "top_n": top_n,
-                "min_snippet_length": min_snippet_length,
-                "prefer_pdf": True,
-            },
-            # Flattened fields for backward compatibility with graph code
-            # that uses context.get("tenant_id"), context.get("workflow_id"), etc.
+        # Build context_payload from ToolContext
+        # Start with the proper ToolContext structure
+        context_payload = tool_context.model_dump(mode="json")
+
+        # Add flattened fields for backward compatibility with graph code
+        # that still uses context.get("tenant_id"), context.get("workflow_id"), etc.
+        # (Other nodes in universal_ingestion_graph haven't been migrated to ToolContext yet)
+        context_payload.update({
             "tenant_id": tenant_id,
             "tenant_schema": tenant_id,
             "workflow_id": "external-knowledge-manual",
@@ -1007,7 +999,7 @@ def web_search(request):
             "top_n": top_n,
             "min_snippet_length": min_snippet_length,
             "prefer_pdf": True,
-        }
+        })
 
         # Prepare Search Config
         search_config = {
