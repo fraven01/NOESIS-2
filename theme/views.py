@@ -16,6 +16,7 @@ from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
 from ai_core.contracts import ScopeContext, BusinessContext
+from common.logging import bind_log_context
 from ai_core.services import _get_documents_repository
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -790,6 +791,15 @@ def web_search(request):
         trace_id = format_trace_id(ctx.trace_id)
 
     run_id = str(uuid4())
+
+    # Bind log context so all subsequent logger.info() calls include these IDs
+    bind_log_context(
+        trace_id=trace_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        run_id=run_id,
+        user_id=user_id,
+    )
 
     logger.info("web_search.query", query=query)
 
