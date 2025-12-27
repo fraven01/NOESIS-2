@@ -966,27 +966,25 @@ def web_search(request):
             collection_id=collection_id,
         )
 
-        # Build ToolContext using compositional structure
-        # This will be used by WebSearchWorker for proper context validation
-        tool_context = scope.to_tool_context(
-            business=business,
-            metadata={
+        # Build context_payload with nested ToolContext structure
+        # We build this manually instead of using tool_context.model_dump()
+        # because metadata contains non-serializable objects (WebSearchWorker, adapter)
+        context_payload = {
+            # ToolContext structure (for ToolContext.model_validate in search_node)
+            "scope": scope.model_dump(mode="json"),
+            "business": business.model_dump(mode="json"),
+            "metadata": {
+                # Non-serializable objects - kept as Python objects for graph access
                 "runtime_worker": search_worker,
                 "runtime_trigger": ingestion_adapter,
+                # Serializable config
                 "top_n": top_n,
                 "min_snippet_length": min_snippet_length,
                 "prefer_pdf": True,
-            }
-        )
-
-        # Build context_payload from ToolContext
-        # Start with the proper ToolContext structure
-        context_payload = tool_context.model_dump(mode="json")
-
-        # Add flattened fields for backward compatibility with graph code
-        # that still uses context.get("tenant_id"), context.get("workflow_id"), etc.
-        # (Other nodes in universal_ingestion_graph haven't been migrated to ToolContext yet)
-        context_payload.update({
+            },
+            # Flattened fields for backward compatibility with graph code
+            # that still uses context.get("tenant_id"), context.get("workflow_id"), etc.
+            # (Other nodes in universal_ingestion_graph haven't been migrated to ToolContext yet)
             "tenant_id": tenant_id,
             "tenant_schema": tenant_id,
             "workflow_id": "external-knowledge-manual",
@@ -999,7 +997,7 @@ def web_search(request):
             "top_n": top_n,
             "min_snippet_length": min_snippet_length,
             "prefer_pdf": True,
-        })
+        }
 
         # Prepare Search Config
         search_config = {
