@@ -1812,6 +1812,7 @@ def handle_document_upload(
                 "tenant_id": scope_context["tenant_id"],
                 "trace_id": scope_context["trace_id"],
                 "case_id": scope_context["case_id"],
+                "invocation_id": scope_context.get("invocation_id") or uuid4().hex,
                 "ingestion_run_id": ingestion_run_id,
                 # Runtime dependencies passed in context for now (Phase 2/3 style)
                 "runtime_repository": repository,  # Though persist_node currently instantiates its own service, we should align this later context usage

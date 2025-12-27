@@ -37,7 +37,9 @@
       "Bash(python manage.py makemigrations:*)",
       "Bash(git diff:*)",
       "Bash(test:*)",
-      "Bash(npm run win:test:py:fast:*)"
+      "Bash(npm run win:test:py:fast:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nrefactor\\(tools\\): apply golden rule - remove context IDs from tool inputs\n\nBREAKING CHANGE: Tool-Input models no longer contain business context IDs.\nAll identifiers now come exclusively from ToolContext \\(scope + business\\).\n\nChanges:\n- RetrieveInput: Removed collection_id, workflow_id, visibility_override_allowed\n- FrameworkAnalysisInput: Removed document_collection_id, document_id\n- WebSearchContext: DELETED, replaced with ToolContext\n- retrieve.py:run\\(\\): Reads from context.business instead of params\n- FrameworkAnalysisGraph: Signature changed to accept ToolContext\n- WebSearchWorker: Uses ToolContext, worker_call_id in metadata\n\nGolden Rule Enforced:\n- Tool-Inputs contain only functional parameters\n- Context contains Scope, Business, and Runtime Permissions\n- Tool-Run functions read identifiers exclusively from context, not params\n- Fallback logic \\(params.X or context.X\\) eliminated\n\nRelated: OPTION_A_IMPLEMENTATION_PLAN.md Phase 2, OPTION_A_SOURCE_CODE_ANALYSIS.md\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
     ],
     "deny": [],
     "ask": []

@@ -1450,6 +1450,7 @@ def ingestion_submit(request):
             "trace_id": uuid4().hex,
             "collection_id": manual_collection_id,  # Explicitly set collection
             "workflow_id": "document-upload-manual",  # Workflow type for tracing
+            "invocation_id": uuid4().hex,
         }
         meta = {"scope_context": scope_context}
 

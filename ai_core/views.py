@@ -658,27 +658,23 @@ def _prepare_request(request: Request):
     scope_context = normalize_request(request)
     scope_payload = scope_context.model_dump(mode="json")
     scope_trace_id = scope_payload["trace_id"]
-    scope_case_id = scope_payload.get("case_id")
     scope_tenant_id = scope_payload["tenant_id"]
-    scope_workflow_id = scope_payload.get("workflow_id")
-    scope_collection_id = scope_payload.get("collection_id")
     scope_tenant_schema = scope_payload.get("tenant_schema") or tenant_schema
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (case_id, workflow_id, collection_id) are NO LONGER in ScopeContext
+    # They were already extracted from headers and set in META at lines 633-652
+    # DO NOT overwrite them here - they remain in META for normalize_meta() to read
+
+    # Update META with infrastructure IDs from ScopeContext
     request.META[META_TRACE_ID_KEY] = scope_trace_id
-    if scope_case_id:
-        request.META[META_CASE_ID_KEY] = scope_case_id
     if scope_tenant_id:
         request.META[META_TENANT_ID_KEY] = scope_tenant_id
     if scope_tenant_schema:
         request.META[META_TENANT_SCHEMA_KEY] = scope_tenant_schema
-    if scope_workflow_id:
-        request.META[META_WORKFLOW_ID_KEY] = scope_workflow_id
-    else:
-        request.META.pop(META_WORKFLOW_ID_KEY, None)
-    if scope_collection_id:
-        request.META[META_COLLECTION_ID_KEY] = scope_collection_id
-    else:
-        request.META.pop(META_COLLECTION_ID_KEY, None)
+
+    # Business IDs (case_id, workflow_id, collection_id) remain in META from header extraction
+    # normalize_meta() will build BusinessContext from these META values
 
     # Build meta dict from validated scope and additional view-specific fields
     meta = {
@@ -690,12 +686,12 @@ def _prepare_request(request: Request):
 
     log_context = {
         "trace_id": scope_trace_id,
-        "case_id": scope_case_id,
-        "workflow_id": scope_workflow_id,
+        "case_id": case_id,  # From header extraction (line 480)
+        "workflow_id": workflow_id,  # From header extraction (line 481)
         "tenant_id": scope_tenant_id,
         "tenant": scope_tenant_id,
         "key_alias": key_alias,
-        "collection_id": scope_collection_id,
+        "collection_id": collection_id,  # From header extraction (line 588-592)
         # Pre-MVP ID Contract: identity tracking
         "user_id": scope_context.user_id,
         "invocation_id": scope_context.invocation_id,
