@@ -330,22 +330,7 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     context_dict = state.get("context", {})
 
-    # Check rate limit for tenant
-    tenant_id = context_dict.get("tenant_id")
-    if tenant_id and query:
-        if not _check_search_rate_limit(str(tenant_id), query):
-            return {
-                "error": "Search rate limit exceeded. Please try again later.",
-                "search_results": [],
-            }
-
-    # In Phase 4, worker is expected in context or config
-    worker = context_dict.get("runtime_worker")
-    if not worker:
-        # Fallback to simple error if no worker injected
-        return {"error": "No search worker configured in context"}
-
-    # BREAKING CHANGE (Option A): Build ToolContext from dict
+    # BREAKING CHANGE (Option A): Build ToolContext from dict first
     # The context dict should have nested structure: {"scope": {...}, "business": {...}, "metadata": {...}}
     # OR it can have both nested and flattened for backward compatibility
     try:
@@ -353,6 +338,21 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
     except ValidationError as exc:
         logger.error("Failed to build ToolContext", extra={"errors": exc.errors()})
         return {"error": "Invalid context structure", "search_results": []}
+
+    # Check rate limit for tenant
+    tenant_id = tool_context.scope.tenant_id
+    if tenant_id and query:
+        if not _check_search_rate_limit(str(tenant_id), query):
+            return {
+                "error": "Search rate limit exceeded. Please try again later.",
+                "search_results": [],
+            }
+
+    # Worker is expected in metadata (Phase 4 requirement)
+    worker = tool_context.metadata.get("runtime_worker")
+    if not worker:
+        # Fallback to simple error if no worker injected
+        return {"error": "No search worker configured in context"}
 
     # Get timeout from settings with fallback to 30 seconds
     from django.conf import settings
