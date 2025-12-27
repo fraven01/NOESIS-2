@@ -244,13 +244,20 @@ class WebSearchWorker:
         self._adapter_limit_kwarg = self._determine_limit_keyword(adapter)
 
     def run(
-        self, *, query: str, context: ToolContext | dict[str, object]
+        self, *, query: str, context: ToolContext
     ) -> WebSearchResponse:
         """Run the web search with validation, deduplication, and telemetry.
 
         BREAKING CHANGE (Option A - Strict Separation):
         WebSearchContext has been removed. Use ToolContext instead.
         worker_call_id is now in context.metadata["worker_call_id"].
+
+        Args:
+            query: Search query string
+            context: ToolContext with scope, business, and metadata
+
+        Returns:
+            WebSearchResponse with results and outcome
         """
 
         try:
@@ -342,30 +349,24 @@ class WebSearchWorker:
         return WebSearchResponse(results=results, outcome=outcome)
 
     def _validate_context(
-        self, context: ToolContext | dict[str, object]
+        self, context: ToolContext
     ) -> ToolContext:
-        """Validate and normalize ToolContext, ensuring worker_call_id is set."""
-        try:
-            ctx = (
-                context
-                if isinstance(context, ToolContext)
-                else ToolContext.model_validate(context)
-            )
-        except ValidationError as exc:
-            raise InputError(
-                "invalid_context",
-                "Invalid tool context",
-                context={"errors": exc.errors()},
-            ) from exc
+        """Validate ToolContext and ensure worker_call_id is set.
 
+        Args:
+            context: ToolContext instance
+
+        Returns:
+            ToolContext with worker_call_id in metadata
+        """
         # Ensure worker_call_id is set in metadata (for WebSearch-specific tracking)
-        worker_call_id = (ctx.metadata.get("worker_call_id") or "").strip()
+        worker_call_id = (context.metadata.get("worker_call_id") or "").strip()
         if not worker_call_id:
             worker_call_id = str(uuid4())
             # ToolContext is frozen, so we need to rebuild with updated metadata
-            updated_metadata = {**ctx.metadata, "worker_call_id": worker_call_id}
-            ctx = ctx.model_copy(update={"metadata": updated_metadata})
-        return ctx
+            updated_metadata = {**context.metadata, "worker_call_id": worker_call_id}
+            context = context.model_copy(update={"metadata": updated_metadata})
+        return context
 
     def _execute_with_retries(self, query: str) -> SearchAdapterResponse:
         attempts = 0

@@ -244,8 +244,15 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
     return {"error": None}
 
 
-def _run_search_with_timeout(worker, query: str, context: dict, timeout: int):
-    """Run search worker with timeout protection using threading."""
+def _run_search_with_timeout(worker, query: str, context, timeout: int):
+    """Run search worker with timeout protection using threading.
+
+    Args:
+        worker: WebSearchWorker instance
+        query: Search query string
+        context: ToolContext instance
+        timeout: Timeout in seconds
+    """
     result_queue: Queue = Queue()
 
     def worker_thread():
@@ -304,7 +311,15 @@ def _check_search_rate_limit(tenant_id: str, query: str) -> bool:
 
 @observe_span(name="node.search")
 def search_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Execute web search using the configured worker."""
+    """Execute web search using the configured worker.
+
+    BREAKING CHANGE (Option A):
+    WebSearchWorker.run() now requires ToolContext instead of dict.
+    We build ToolContext from the state context dict.
+    """
+    from ai_core.tool_contracts import ToolContext
+    from pydantic import ValidationError
+
     inp = state.get("input", {})
     query = inp.get("search_query")
     preselected = inp.get("preselected_results")
@@ -313,10 +328,10 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
     if preselected:
         return {"search_results": preselected}
 
-    context = state.get("context", {})
+    context_dict = state.get("context", {})
 
     # Check rate limit for tenant
-    tenant_id = context.get("tenant_id")
+    tenant_id = context_dict.get("tenant_id")
     if tenant_id and query:
         if not _check_search_rate_limit(str(tenant_id), query):
             return {
@@ -325,23 +340,27 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
             }
 
     # In Phase 4, worker is expected in context or config
-    worker = context.get("runtime_worker")
+    worker = context_dict.get("runtime_worker")
     if not worker:
         # Fallback to simple error if no worker injected
         return {"error": "No search worker configured in context"}
 
-    # Filter context to strictly allowed fields
-    from ai_core.infra.telemetry import filter_telemetry_context
-    from django.conf import settings
-
-    telemetry_ctx = filter_telemetry_context(context)
+    # BREAKING CHANGE (Option A): Build ToolContext from dict
+    # The context dict should have nested structure: {"scope": {...}, "business": {...}, "metadata": {...}}
+    # OR it can have both nested and flattened for backward compatibility
+    try:
+        tool_context = ToolContext.model_validate(context_dict)
+    except ValidationError as exc:
+        logger.error("Failed to build ToolContext", extra={"errors": exc.errors()})
+        return {"error": "Invalid context structure", "search_results": []}
 
     # Get timeout from settings with fallback to 30 seconds
+    from django.conf import settings
     search_timeout = getattr(settings, "SEARCH_WORKER_TIMEOUT_SECONDS", 30)
 
     try:
         response: WebSearchResponse = _run_search_with_timeout(
-            worker, query, telemetry_ctx, timeout=search_timeout
+            worker, query, tool_context, timeout=search_timeout
         )
     except TimeoutError as e:
         logger.warning(str(e), extra={"query": query, "timeout": search_timeout})
