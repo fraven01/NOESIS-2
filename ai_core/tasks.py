@@ -2032,27 +2032,35 @@ def run_ingestion_graph(
             "normalized_document": normalized_doc,  # Key for Pre-normalized input
         }
 
+        # BREAKING CHANGE (Option A): Business IDs extracted separately
+        # They are NO LONGER part of ScopeContext after Phase 3 completion
+        case_id = ingestion_ctx.case_id or "general"
+        workflow_id = ingestion_ctx.workflow_id
+
         # Build Context via normalize_task_context (Pre-MVP ID Contract)
         # S2S Hop: service_id REQUIRED, user_id ABSENT
+        # Note: case_id, workflow_id, collection_id parameters are DEPRECATED
+        # but kept for backward compatibility
         scope = normalize_task_context(
             tenant_id=ingestion_ctx.tenant_id,
-            case_id=ingestion_ctx.case_id or "general",
+            case_id=case_id,  # DEPRECATED parameter (not in ScopeContext)
             service_id="celery-ingestion-worker",
             trace_id=ingestion_ctx.trace_id,
             invocation_id=getattr(ingestion_ctx, "invocation_id", None)
             or trace_context.get("invocation_id")
             or (meta.get("invocation_id") if meta else None),
-            workflow_id=ingestion_ctx.workflow_id,
+            workflow_id=workflow_id,  # DEPRECATED parameter (not in ScopeContext)
             run_id=ingestion_ctx.run_id,
             ingestion_run_id=ingestion_ctx.ingestion_run_id,
-            collection_id=collection_id,
+            collection_id=collection_id,  # DEPRECATED parameter (not in ScopeContext)
         )
 
         run_context = {
             "tenant_id": scope.tenant_id,
-            "case_id": scope.case_id,
+            # BREAKING CHANGE (Option A): Use local variables, not scope
+            "case_id": case_id,  # Was: scope.case_id
             "trace_id": scope.trace_id,
-            "workflow_id": scope.workflow_id,
+            "workflow_id": workflow_id,  # Was: scope.workflow_id
             "invocation_id": scope.invocation_id,
             "run_id": scope.run_id,
             "ingestion_run_id": scope.ingestion_run_id,
