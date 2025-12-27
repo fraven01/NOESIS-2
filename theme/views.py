@@ -966,37 +966,21 @@ def web_search(request):
             collection_id=collection_id,
         )
 
-        # Build context_payload with nested ToolContext structure
-        # We build this manually instead of using tool_context.model_dump()
-        # because metadata contains non-serializable objects (WebSearchWorker, adapter)
+        # Build context_payload with pure ToolContext structure
+        # BREAKING CHANGE (Option A - Full Migration):
+        # All nodes now use ToolContext, no flattened fields needed anymore!
         context_payload = {
-            # ToolContext structure (for ToolContext.model_validate in search_node)
             "scope": scope.model_dump(mode="json"),
             "business": business.model_dump(mode="json"),
             "metadata": {
-                # Non-serializable objects - kept as Python objects for graph access
+                # Non-serializable objects - graph nodes access via ToolContext.metadata
                 "runtime_worker": search_worker,
                 "runtime_trigger": ingestion_adapter,
-                # Serializable config
+                # Config
                 "top_n": top_n,
                 "min_snippet_length": min_snippet_length,
                 "prefer_pdf": True,
             },
-            # Flattened fields for backward compatibility with graph code
-            # that still uses context.get("tenant_id"), context.get("workflow_id"), etc.
-            # (Other nodes in universal_ingestion_graph haven't been migrated to ToolContext yet)
-            "tenant_id": tenant_id,
-            "tenant_schema": tenant_id,
-            "workflow_id": "external-knowledge-manual",
-            "case_id": case_id,
-            "trace_id": trace_id,
-            "run_id": run_id,
-            "user_id": user_id,
-            "runtime_worker": search_worker,
-            "runtime_trigger": ingestion_adapter,
-            "top_n": top_n,
-            "min_snippet_length": min_snippet_length,
-            "prefer_pdf": True,
         }
 
         # Prepare Search Config

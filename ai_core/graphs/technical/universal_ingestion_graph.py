@@ -22,7 +22,6 @@ from documents.contracts import (
 from documents.pipeline import DocumentProcessingContext, DocumentPipelineConfig
 from documents.processing_graph import build_document_processing_graph
 from ai_core.services import _get_documents_repository
-from ai_core.contracts.scope import ScopeContext
 from ai_core.tools.web_search import (
     SearchProviderError,
     WebSearchResponse,
@@ -81,11 +80,16 @@ class UniversalIngestionOutput(TypedDict):
 
 
 class UniversalIngestionState(TypedDict):
-    """Runtime state for the universal ingestion graph."""
+    """Runtime state for the universal ingestion graph.
+
+    BREAKING CHANGE (Option A - Full ToolContext Migration):
+    context is now a ToolContext-compatible dict with nested structure:
+    {"scope": {...}, "business": {...}, "metadata": {...}}
+    """
 
     # Input (Immutable during run ideally)
     input: UniversalIngestionInput
-    context: dict[str, Any]  # IDs: tenant_id, trace_id, case_id
+    context: dict[str, Any]  # ToolContext-compatible dict (scope/business/metadata)
 
     # Pipeline Artifacts
     normalized_document: NormalizedDocument | None
@@ -108,18 +112,21 @@ class UniversalIngestionState(TypedDict):
 
 def _build_normalized_document(
     input_data: UniversalIngestionInput,
-    context: dict[str, Any],
+    context,  # ToolContext
 ) -> NormalizedDocument:
-    """Build a NormalizedDocument from upload input."""
+    """Build a NormalizedDocument from upload input.
 
+    BREAKING CHANGE (Option A):
+    context is now ToolContext, access via context.scope.X and context.business.X
+    """
     collection_id = input_data.get("collection_id")
     if not collection_id:
         raise ValueError("collection_id_missing")
 
-    # 1. Resolve IDs
-    tenant_id = context.get("tenant_id")
+    # 1. Resolve IDs from ToolContext
+    tenant_id = context.scope.tenant_id
     workflow_id = (
-        context.get("workflow_id") or context.get("case_id") or "universal_ingestion"
+        context.business.workflow_id or context.business.case_id or "universal_ingestion"
     )
 
     if not tenant_id:
@@ -192,20 +199,27 @@ def _build_normalized_document(
 
 @observe_span(name="node.validate_input")
 def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Validate input source, mode, and context presence."""
-    inp = state.get("input", {})
-    context = state.get("context", {})
+    """Validate input source, mode, and context presence.
 
-    # 1. Validate Context IDs (Per ID Contract in AGENTS.md)
-    # - tenant_id: mandatory everywhere
-    # - trace_id: mandatory for correlation
-    # - case_id: optional at HTTP level, required for tool invocations (validated in ToolContext)
-    required_ids = ["tenant_id", "trace_id"]
-    for rid in required_ids:
-        if not context.get(rid):
-            error_msg = f"Missing required context: {rid}"
-            logger.error(error_msg)
-            return {"error": error_msg}
+    BREAKING CHANGE (Option A):
+    context is now ToolContext-compatible dict, validated here.
+    """
+    from ai_core.tool_contracts import ToolContext
+    from pydantic import ValidationError
+
+    inp = state.get("input", {})
+    context_dict = state.get("context", {})
+
+    # 1. Validate ToolContext structure
+    try:
+        tool_context = ToolContext.model_validate(context_dict)
+    except ValidationError as exc:
+        error_msg = f"Invalid context structure: {exc.errors()}"
+        logger.error(error_msg)
+        return {"error": error_msg}
+
+    # 2. Validate required IDs are present (Pydantic already validates non-None tenant_id, trace_id)
+    # Additional checks if needed could go here
 
     # 2. Validate Mode
     mode = inp.get("mode")
@@ -465,12 +479,16 @@ def _normalize_from_crawler(
 def _normalize_from_search(
     selected_result: dict[str, Any],
     collection_id: str,
-    context: dict[str, Any],
+    context,  # ToolContext
 ) -> NormalizedDocument:
-    """Build NormalizedDocument from search result."""
-    tenant_id = context.get("tenant_id")
+    """Build NormalizedDocument from search result.
+
+    BREAKING CHANGE (Option A):
+    context is now ToolContext, access via context.scope.X and context.business.X
+    """
+    tenant_id = context.scope.tenant_id
     workflow_id = (
-        context.get("workflow_id") or context.get("case_id") or "universal_ingestion"
+        context.business.workflow_id or context.business.case_id or "universal_ingestion"
     )
 
     if not tenant_id:
@@ -545,10 +563,19 @@ def _ensure_embedding_enabled(
 
 @observe_span(name="node.normalize")
 def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Normalize input into a NormalizedDocument object."""
+    """Normalize input into a NormalizedDocument object.
+
+    BREAKING CHANGE (Option A):
+    Builds ToolContext from context dict to pass to helper functions.
+    """
+    from ai_core.tool_contracts import ToolContext
+
     inp = state.get("input", {})
     source = inp.get("source")
-    context = state.get("context", {})
+    context_dict = state.get("context", {})
+
+    # Build ToolContext for helper functions
+    tool_context = ToolContext.model_validate(context_dict)
 
     try:
         # Check explicit normalized input first
@@ -556,7 +583,7 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
         if raw_doc:
             norm_doc = _normalize_from_crawler(inp)
         elif source == "upload":
-            norm_doc = _build_normalized_document(inp, context)
+            norm_doc = _build_normalized_document(inp, tool_context)
         elif source == "search":
             selected = state.get("selected_result")
             if not selected:
@@ -564,7 +591,7 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
             collection_id = inp.get("collection_id")
             if not collection_id:
                 raise ValueError("Missing collection_id for search ingestion")
-            norm_doc = _normalize_from_search(selected, collection_id, context)
+            norm_doc = _normalize_from_search(selected, collection_id, tool_context)
         else:
             return {"error": "Could not verify normalized document"}
 
@@ -583,30 +610,27 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 @observe_span(name="node.persist")
 def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Persist the normalized document (upsert)."""
+    """Persist the normalized document (upsert).
+
+    BREAKING CHANGE (Option A):
+    Extracts ScopeContext from ToolContext (no more business IDs in ScopeContext).
+    """
+    from ai_core.tool_contracts import ToolContext
+
     norm_doc = state.get("normalized_document")
     if not norm_doc:
         return {"error": "No normalized document to persist"}
 
-    context = state.get("context", {})
+    context_dict = state.get("context", {})
     service = _get_documents_repository()
 
     try:
-        # Build ScopeContext for traceability (Pre-MVP ID Contract)
-        # All required fields must be present in context (validated upstream)
-        scope = ScopeContext(
-            tenant_id=context["tenant_id"],
-            trace_id=context["trace_id"],
-            invocation_id=context["invocation_id"],  # Mandatory - no fallback
-            case_id=context.get("case_id"),
-            workflow_id=context.get("workflow_id"),
-            run_id=context.get("run_id"),
-            ingestion_run_id=context.get("ingestion_run_id"),
-            collection_id=state.get("input", {}).get("collection_id"),
-            # Identity IDs (Pre-MVP ID Contract)
-            user_id=context.get("user_id"),  # User Request Hop (if from HTTP)
-            service_id=context.get("service_id"),  # S2S Hop (from Celery task)
-        )
+        # Build ToolContext first
+        tool_context = ToolContext.model_validate(context_dict)
+
+        # Extract ScopeContext (already built, no business IDs)
+        # BREAKING CHANGE: ScopeContext no longer has case_id, workflow_id, collection_id
+        scope = tool_context.scope
 
         # Upsert with scope to preserve lineage
         saved_doc = service.upsert(norm_doc, scope=scope)
@@ -627,23 +651,28 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 @observe_span(name="node.process")
 def process_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Run document processing (embedding, etc)."""
+    """Run document processing (embedding, etc).
+
+    BREAKING CHANGE (Option A):
+    Extracts IDs from ToolContext instead of dict.
+    """
+    from ai_core.tool_contracts import ToolContext
+
     norm_doc = state.get("normalized_document")
-    context_data = state.get("context", {})
+    context_dict = state.get("context", {})
 
     if not norm_doc:
         return {"error": "No normalized document to process"}
 
-    # We reuse the existing document processing graph
-    # This graph usually takes { "document": ... } or similar state
+    # Build ToolContext
+    tool_context = ToolContext.model_validate(context_dict)
 
-    # We need to adapt the state for the sub-graph
     # Create DocumentProcessingContext from the document and environment
     processing_context = DocumentProcessingContext.from_document(
         norm_doc,
-        case_id=context_data.get("case_id"),
-        trace_id=context_data.get("trace_id"),
-        span_id=context_data.get("span_id"),
+        case_id=tool_context.business.case_id,
+        trace_id=tool_context.scope.trace_id,
+        span_id=tool_context.metadata.get("span_id"),
     )
 
     # DocumentProcessingState requires document, config, and context
@@ -689,17 +718,26 @@ def process_node(state: UniversalIngestionState) -> dict[str, Any]:
 
 @observe_span(name="node.finalize")
 def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
-    """Map results to final output."""
+    """Map results to final output.
+
+    BREAKING CHANGE (Option A):
+    Extracts IDs from ToolContext instead of dict.
+    """
+    from ai_core.tool_contracts import ToolContext
+
     error = state.get("error")
-    context = state.get("context", {})
+    context_dict = state.get("context", {})
+
+    # Build ToolContext
+    tool_context = ToolContext.model_validate(context_dict)
 
     telemetry = {
-        "trace_id": context.get("trace_id"),
-        "tenant_id": context.get("tenant_id"),
+        "trace_id": tool_context.scope.trace_id,
+        "tenant_id": tool_context.scope.tenant_id,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         # Pre-MVP ID Contract: identity tracking
-        "service_id": context.get("service_id"),
-        "invocation_id": context.get("invocation_id"),
+        "service_id": tool_context.scope.service_id,
+        "invocation_id": tool_context.scope.invocation_id,
     }
 
     if error:
@@ -764,7 +802,7 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
             "decision": decision,
             "reason": "Success",
             "telemetry": telemetry,
-            "ingestion_run_id": context.get("ingestion_run_id"),
+            "ingestion_run_id": tool_context.scope.ingestion_run_id,
             "document_id": doc_id,
             "hitl_required": False,
             "hitl_reasons": [],
