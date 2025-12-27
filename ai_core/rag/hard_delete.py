@@ -120,15 +120,16 @@ def _build_scope(
     trace_id: str | None,
     ingestion_run_id: str | None,
     tenant_schema: str | None,
-    case_id: str | None,
+    case_id: str | None,  # Kept for backward compatibility but not used in ScopeContext
 ) -> ScopeContext:
+    # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+    # case_id is now a business domain ID, not infrastructure ID
     return ScopeContext(
         tenant_id=str(tenant_id),
         trace_id=trace_id or str(uuid.uuid4()),
         invocation_id=str(uuid.uuid4()),
         ingestion_run_id=ingestion_run_id or str(uuid.uuid4()),
         tenant_schema=tenant_schema,
-        case_id=case_id,
     )
 
 
@@ -198,7 +199,8 @@ def hard_delete(  # type: ignore[override]
             "invocation_id": scope.invocation_id,
             "ingestion_run_id": scope.ingestion_run_id,
             "queued_at": timezone.now().isoformat(),
-            "case_id": scope.case_id,
+            # BREAKING CHANGE (Option A): case_id from function parameter, not scope
+            "case_id": case_id,  # Was: scope.case_id
             "tenant_schema": scope.tenant_schema,
             "reason": reason,
             "ticket_ref": ticket_ref,

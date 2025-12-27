@@ -153,7 +153,9 @@ class DbDocumentsRepository(DocumentsRepository):
                         # Extract context IDs from scope or doc metadata
                         ctx_workflow_id = workflow or ""
                         ctx_trace_id = scope.trace_id if scope else ""
-                        ctx_case_id = scope.case_id if scope else None
+                        # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+                        # TODO: Accept BusinessContext parameter to extract case_id
+                        ctx_case_id = None  # Was: scope.case_id if scope else None
 
                         document = Document.objects.create(
                             id=doc_copy.ref.document_id,  # Honor ID if creating new
@@ -311,9 +313,9 @@ class DbDocumentsRepository(DocumentsRepository):
         if scope and scope.trace_id:
             document.trace_id = scope.trace_id
             update_fields.append("trace_id")
-        if scope and scope.case_id:
-            document.case_id = scope.case_id
-            update_fields.append("case_id")
+        # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+        # TODO: Accept BusinessContext parameter to extract case_id
+        # Removed: if scope and scope.case_id: document.case_id = scope.case_id
 
         document.save(update_fields=update_fields)
         return document
