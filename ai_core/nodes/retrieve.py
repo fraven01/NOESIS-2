@@ -27,16 +27,24 @@ from pydantic import BaseModel, ConfigDict
 
 
 class RetrieveInput(BaseModel):
-    """Structured input parameters for the retrieval tool."""
+    """Structured input parameters for the retrieval tool.
+
+    BREAKING CHANGE (Option A - Strict Separation):
+    Business domain IDs (collection_id, workflow_id) have been REMOVED.
+    These are now read from ToolContext.business.
+
+    Permission flags (visibility_override_allowed) have been REMOVED.
+    These are now read from ToolContext.visibility_override_allowed.
+
+    Golden Rule: Tool-Inputs contain only functional parameters.
+    Context contains Scope, Business, and Runtime Permissions.
+    """
 
     query: str = ""
     filters: Mapping[str, Any] | None = None
     process: str | None = None
     doc_class: str | None = None
-    collection_id: str | None = None
-    workflow_id: str | None = None
     visibility: str | None = None
-    visibility_override_allowed: bool | None = None
     hybrid: Mapping[str, Any] | None = None
     top_k: int | None = None
 
@@ -46,17 +54,18 @@ class RetrieveInput(BaseModel):
     def from_state(
         cls, state: Mapping[str, Any], *, top_k: int | None = None
     ) -> "RetrieveInput":
-        """Build a :class:`RetrieveInput` instance from a legacy state mapping."""
+        """Build a :class:`RetrieveInput` instance from a legacy state mapping.
+
+        BREAKING CHANGE: collection_id, workflow_id, and visibility_override_allowed
+        are no longer extracted from state. These must be provided via ToolContext.
+        """
 
         data: Dict[str, Any] = {
             "query": state.get("query", ""),
             "filters": state.get("filters"),
             "process": state.get("process"),
             "doc_class": state.get("doc_class"),
-            "collection_id": state.get("collection_id"),
-            "workflow_id": state.get("workflow_id"),
             "visibility": state.get("visibility"),
-            "visibility_override_allowed": state.get("visibility_override_allowed"),
             "hybrid": state.get("hybrid"),
         }
         state_top_k: Any | None = None
@@ -585,8 +594,8 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     filters = _ensure_mapping(params.filters, field="filters")
     process = params.process
     doc_class = params.doc_class
-    collection_id = params.collection_id
-    workflow_id = params.workflow_id
+    collection_id = context.business.collection_id
+    workflow_id = context.business.workflow_id
     requested_visibility = params.visibility
 
     hybrid_mapping = _ensure_mapping(params.hybrid, field="hybrid")
@@ -601,10 +610,7 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
     except ValueError as exc:  # pragma: no cover - defensive guard
         raise InputError(str(exc), field="hybrid") from exc
 
-    override_flag = params.visibility_override_allowed
-    if override_flag is None:
-        override_flag = context.visibility_override_allowed
-    visibility_override_allowed = coerce_bool_flag(override_flag)
+    visibility_override_allowed = coerce_bool_flag(context.visibility_override_allowed)
 
     router = _get_router()
     adaptor = _get_router_adaptor(router)

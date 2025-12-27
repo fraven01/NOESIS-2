@@ -137,48 +137,52 @@ class FrameworkAnalysisGraph:
 
     def run(
         self,
+        context: ToolContext,
         input_params: FrameworkAnalysisInput,
-        tenant_id: str,
-        tenant_schema: str,
-        trace_id: str,
-        scope_context: Optional[ScopeContext] = None,
     ) -> FrameworkAnalysisOutput:
         """Execute the framework analysis graph.
 
+        BREAKING CHANGE (Option A - Strict Separation):
+        Signature changed to accept ToolContext instead of individual fields.
+        Business domain IDs (document_collection_id, document_id) are read from
+        context.business instead of input_params.
+
         Args:
-            input_params: Analysis input parameters.
-            tenant_id: Tenant identifier.
-            tenant_schema: Tenant database schema.
-            trace_id: Trace ID for correlation.
-            scope_context: Optional ScopeContext for identity tracking.
-                If provided, used to build audit_meta for entity persistence.
+            context: Tool invocation context (scope + business + runtime).
+            input_params: Analysis functional parameters (force_reanalysis, confidence_threshold).
+
+        Raises:
+            ValueError: If required business context (collection_id, document_id) is missing.
         """
+        # Validate required business context
+        if not context.business.collection_id:
+            raise ValueError("Framework analysis requires business.collection_id in ToolContext")
+        if not context.business.document_id:
+            raise ValueError("Framework analysis requires business.document_id in ToolContext")
+
         logger.info(
             "framework_graph_starting",
             extra={
-                "tenant_id": tenant_id,
-                "tenant_schema": tenant_schema,
-                "trace_id": trace_id,
-                "document_collection_id": str(input_params.document_collection_id),
-                "document_id": (
-                    str(input_params.document_id) if input_params.document_id else None
-                ),
+                "tenant_id": context.scope.tenant_id,
+                "tenant_schema": context.scope.tenant_schema,
+                "trace_id": context.scope.trace_id,
+                "document_collection_id": context.business.collection_id,
+                "document_id": context.business.document_id,
                 "force_reanalysis": input_params.force_reanalysis,
-                "service_id": scope_context.service_id if scope_context else None,
+                "service_id": context.scope.service_id,
             },
         )
 
         # Initialize state
         state: StateMapping = {
             "input": input_params.model_dump(),
-            "tenant_id": tenant_id,
-            "tenant_schema": tenant_schema,
-            "trace_id": trace_id,
-            "scope_context": scope_context,  # Pre-MVP ID Contract: for audit_meta
-            "document_collection_id": str(input_params.document_collection_id),
-            "document_id": (
-                str(input_params.document_id) if input_params.document_id else None
-            ),
+            "context": context,  # Store full context for tool calls
+            "tenant_id": context.scope.tenant_id,
+            "tenant_schema": context.scope.tenant_schema,
+            "trace_id": context.scope.trace_id,
+            "scope_context": context.scope,  # Pre-MVP ID Contract: for audit_meta
+            "document_collection_id": context.business.collection_id,
+            "document_id": context.business.document_id,
             "force_reanalysis": input_params.force_reanalysis,
             "confidence_threshold": input_params.confidence_threshold,
             "transitions": [],
@@ -229,13 +233,8 @@ class FrameworkAnalysisGraph:
     ) -> Tuple[GraphTransition, bool]:
         """Detect framework type (KBV/GBV/BV) and extract gremium."""
         try:
-            context = ToolContext(
-                tenant_id=state["tenant_id"],
-                trace_id=state["trace_id"],
-                case_id="framework-analysis",
-                invocation_id=uuid4(),
-                run_id=str(uuid4()),
-            )
+            # Use context from state (already has all required scope + business)
+            context = state["context"]
 
             # Fetch first chunks
             retrieve_params = retrieve.RetrieveInput(
@@ -243,7 +242,6 @@ class FrameworkAnalysisGraph:
                 filters=(
                     {"id": state["document_id"]} if state.get("document_id") else {}
                 ),
-                collection_id=state.get("document_collection_id"),
                 hybrid={"alpha": 0.0, "top_k": 3},
             )
 
@@ -316,20 +314,14 @@ class FrameworkAnalysisGraph:
     def _extract_toc(self, state: StateMapping) -> Tuple[GraphTransition, bool]:
         """Extract table of contents from parent nodes."""
         try:
-            context = ToolContext(
-                tenant_id=state["tenant_id"],
-                trace_id=state["trace_id"],
-                case_id="framework-analysis",
-                invocation_id=uuid4(),
-                run_id=str(uuid4()),
-            )
+            # Use context from state (already has all required scope + business)
+            context = state["context"]
 
             retrieve_params = retrieve.RetrieveInput(
                 query="",
                 filters=(
                     {"id": state["document_id"]} if state.get("document_id") else {}
                 ),
-                collection_id=state.get("document_collection_id"),
                 hybrid={"alpha": 0.0, "top_k": 100},
             )
 
@@ -363,13 +355,8 @@ class FrameworkAnalysisGraph:
     def _locate_components(self, state: StateMapping) -> Tuple[GraphTransition, bool]:
         """Locate the four components using hybrid search."""
         try:
-            context = ToolContext(
-                tenant_id=state["tenant_id"],
-                trace_id=state["trace_id"],
-                case_id="framework-analysis",
-                invocation_id=uuid4(),
-                run_id=str(uuid4()),
-            )
+            # Use context from state (already has all required scope + business)
+            context = state["context"]
 
             # Semantic search per component
             component_queries = {
@@ -386,7 +373,6 @@ class FrameworkAnalysisGraph:
                     filters=(
                         {"id": state["document_id"]} if state.get("document_id") else {}
                     ),
-                    collection_id=state.get("document_collection_id"),
                     hybrid={"alpha": 0.7, "top_k": 10},
                 )
                 retrieve_output = retrieve.run(context, retrieve_params)
