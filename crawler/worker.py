@@ -540,38 +540,63 @@ class CrawlerWorker:
         frontier_state: Optional[Mapping[str, Any]],
         meta_overrides: Optional[Mapping[str, Any]],
     ) -> dict[str, Any]:
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Extract infrastructure and business IDs from different sources
         scope_source = {}
+        business_source = {}
         if isinstance(meta_overrides, Mapping):
-            candidate = meta_overrides.get("scope_context")
-            if isinstance(candidate, Mapping):
-                scope_source = dict(candidate)
+            candidate_scope = meta_overrides.get("scope_context")
+            if isinstance(candidate_scope, Mapping):
+                scope_source = dict(candidate_scope)
+            candidate_business = meta_overrides.get("business_context")
+            if isinstance(candidate_business, Mapping):
+                business_source = dict(candidate_business)
 
-        resolved_case_id = case_id or scope_source.get("case_id")
-        # case_id is now optional per contract (e.g. for global ingestion)
+        # Extract business IDs (BREAKING CHANGE: from business_context or parameters)
+        resolved_case_id = case_id or business_source.get("case_id")
+        resolved_workflow_id = business_source.get("workflow_id")
+        resolved_collection_id = business_source.get("collection_id")
 
+        # Build ScopeContext (infrastructure only)
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=str(resolved_case_id) if resolved_case_id else None,
+            case_id=(
+                str(resolved_case_id) if resolved_case_id else None
+            ),  # DEPRECATED param
             service_id="crawler-worker",
             trace_id=trace_id or scope_source.get("trace_id"),
             invocation_id=scope_source.get("invocation_id"),
             run_id=scope_source.get("run_id"),
             ingestion_run_id=scope_source.get("ingestion_run_id"),
-            workflow_id=scope_source.get("workflow_id"),
+            workflow_id=resolved_workflow_id,  # DEPRECATED param
             idempotency_key=idempotency_key or scope_source.get("idempotency_key"),
             tenant_schema=scope_source.get("tenant_schema"),
-            collection_id=scope_source.get("collection_id"),
+            collection_id=resolved_collection_id,  # DEPRECATED param
+        )
+
+        # Build BusinessContext (BREAKING CHANGE: business domain IDs)
+        from ai_core.contracts.business import BusinessContext
+
+        business = BusinessContext(
+            case_id=str(resolved_case_id) if resolved_case_id else None,
+            workflow_id=str(resolved_workflow_id) if resolved_workflow_id else None,
+            collection_id=(
+                str(resolved_collection_id) if resolved_collection_id else None
+            ),
         )
 
         payload: dict[str, Any] = {
             "scope_context": scope.model_dump(mode="json"),
+            "business_context": business.model_dump(mode="json", exclude_none=True),
             "crawl_id": crawl_id,
         }
         if frontier_state:
             payload.setdefault("frontier", dict(frontier_state))
         if meta_overrides:
             filtered_overrides = dict(meta_overrides)
+            # BREAKING CHANGE (Option A): Remove both scope_context and business_context
             filtered_overrides.pop("scope_context", None)
+            filtered_overrides.pop("business_context", None)
             for key in (
                 "tenant_id",
                 "case_id",
@@ -584,6 +609,8 @@ class CrawlerWorker:
                 "invocation_id",
                 "user_id",
                 "service_id",
+                "document_id",
+                "document_version_id",
             ):
                 filtered_overrides.pop(key, None)
             payload.update(filtered_overrides)

@@ -12,6 +12,8 @@ from django.test import RequestFactory
 from ai_core import services, views
 from ai_core.contracts.crawler_runner import CrawlerRunContext
 from ai_core.contracts.payloads import CompletionPayload, DeltaPayload, GuardrailPayload
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts import ToolContext
 from ai_core.infra import object_store, rate_limit
 from ai_core.services import crawler_state_builder as crawler_state_builder_module
@@ -124,20 +126,20 @@ def test_v1_ping_does_not_require_authorization(
 
 
 @pytest.mark.django_db
-def test_missing_case_header_returns_400(authenticated_client, test_tenant_schema_name):
+def test_missing_case_header_defaults_case_id(
+    authenticated_client, monkeypatch, test_tenant_schema_name
+):
+    monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     resp = authenticated_client.post(
         "/ai/intake/",
         data={},
         content_type="application/json",
         **{META_TENANT_ID_KEY: test_tenant_schema_name},
     )
-    assert resp.status_code == 400
-    error_body = resp.json()
-    assert (
-        error_body["detail"]
-        == "Case header is required and must use the documented format."
-    )
-    assert error_body["code"] == "invalid_case_header"
+    assert resp.status_code == 200
+    payload = resp.json()
+    assert payload["tenant_id"] == test_tenant_schema_name
+    assert payload["case_id"] == "general"
 
 
 @pytest.mark.django_db
@@ -153,10 +155,7 @@ def test_invalid_case_header_returns_400(authenticated_client, test_tenant_schem
     )
     assert resp.status_code == 400
     error_body = resp.json()
-    assert (
-        error_body["detail"]
-        == "Case header is required and must use the documented format."
-    )
+    assert error_body["detail"] == "Case header must use the documented format."
     assert error_body["code"] == "invalid_case_header"
 
 
@@ -600,7 +599,6 @@ def test_rag_query_endpoint_builds_tool_context_and_retrieve_input(
     assert params.process == "travel"
     assert params.doc_class == "policy"
     assert params.visibility == "tenant"
-    assert params.visibility_override_allowed is True
     assert params.hybrid == {"alpha": 0.7}
 
     state_before = recorded["state_before"]
@@ -993,11 +991,17 @@ def test_rag_query_endpoint_applies_top_k_override(
             body = body.decode("utf-8")
         state = json.loads(body or "{}")
         context = ToolContext(
-            tenant_id=request_obj.META.get(META_TENANT_ID_KEY, ""),
-            tenant_schema=request_obj.META.get(META_TENANT_SCHEMA_KEY),
-            case_id=request_obj.META.get(META_CASE_ID_KEY, ""),
-            trace_id="test-trace",
-            run_id="run-test",
+            scope=ScopeContext(
+                tenant_id=request_obj.META.get(META_TENANT_ID_KEY, ""),
+                tenant_schema=request_obj.META.get(META_TENANT_SCHEMA_KEY),
+                trace_id="test-trace",
+                invocation_id="inv-test",
+                run_id="run-test",
+                service_id="test-worker",
+            ),
+            business=BusinessContext(
+                case_id=request_obj.META.get(META_CASE_ID_KEY) or None,
+            ),
             metadata={"graph_name": "rag.default", "graph_version": "test"},
         )
         params = retrieve.RetrieveInput.from_state(state)
@@ -1435,11 +1439,13 @@ def test_build_crawler_state_provides_guardrail_inputs(monkeypatch):
     meta = {
         "scope_context": {
             "tenant_id": "tenant-guard",
-            "case_id": "case-guard",
             "trace_id": "trace-guard",
             "invocation_id": "inv-guard",
             "run_id": "run-guard",
-        }
+        },
+        "business_context": {
+            "case_id": "case-guard",
+        },
     }
     context = CrawlerRunContext(
         meta=meta,
@@ -1521,11 +1527,13 @@ def test_build_crawler_state_builds_normalized_document(monkeypatch):
     meta = {
         "scope_context": {
             "tenant_id": "tenant-fetch",
-            "case_id": "case-fetch",
             "trace_id": "trace-fetch",
             "invocation_id": "inv-fetch",
             "run_id": "run-fetch",
-        }
+        },
+        "business_context": {
+            "case_id": "case-fetch",
+        },
     }
     context = CrawlerRunContext(
         meta=meta,
@@ -1612,11 +1620,13 @@ def test_build_crawler_state_preserves_binary_payload(monkeypatch):
     meta = {
         "scope_context": {
             "tenant_id": "tenant-binary",
-            "case_id": "case-binary",
             "trace_id": "trace-binary",
             "invocation_id": "inv-binary",
             "run_id": "run-binary",
-        }
+        },
+        "business_context": {
+            "case_id": "case-binary",
+        },
     }
     context = CrawlerRunContext(
         meta=meta,

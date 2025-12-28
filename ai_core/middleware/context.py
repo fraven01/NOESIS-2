@@ -125,6 +125,8 @@ class RequestContextMiddleware:
             "key_alias": key_alias,
             "traceparent": traceparent,
         }
+        if case_id:
+            response_meta["business_context"] = {"case_id": case_id}
         if span_id:
             response_meta["span_id"] = span_id
 

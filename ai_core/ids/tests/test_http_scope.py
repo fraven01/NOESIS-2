@@ -43,12 +43,10 @@ class TestNormalizeRequest(TestCase):
 
         assert isinstance(scope, ScopeContext)
         assert scope.tenant_id == "test-tenant"
-        assert scope.case_id == "case-123"
         assert scope.trace_id == "trace-456"
         assert scope.invocation_id == "inv-789"
         assert scope.run_id == "run-abc"
         assert scope.ingestion_run_id is None
-        assert scope.workflow_id == "wf-xyz"
         assert scope.idempotency_key == "idem-key"
         assert scope.tenant_schema == "schema-test"
 
@@ -65,9 +63,7 @@ class TestNormalizeRequest(TestCase):
     def test_tenant_context_fallback(self):
         """Test fallback to TenantContext if header is missing."""
         request = HttpRequest()
-        request.META = {
-            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
-        }
+        request.META = {}
 
         # Setup mock to return a tenant
         mock_tenant = Mock()
@@ -83,7 +79,6 @@ class TestNormalizeRequest(TestCase):
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
-            "HTTP_X_CASE_ID": "case-123",
             "HTTP_X_RUN_ID": "run-1",
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
@@ -103,7 +98,6 @@ class TestNormalizeRequest(TestCase):
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
-            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
         }
 
         mock_tenant = Mock()
@@ -123,7 +117,6 @@ class TestNormalizeRequest(TestCase):
         request = HttpRequest()
         request.META = {
             "HTTP_X_TENANT_ID": "t1",
-            "HTTP_X_CASE_ID": "case-123",  # case_id is mandatory
             "HTTP_X_INGESTION_RUN_ID": "ing-1",
         }
 

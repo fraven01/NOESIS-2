@@ -6,7 +6,6 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Tuple
-from uuid import uuid4
 
 
 from ai_core.contracts.audit_meta import audit_meta_from_scope
@@ -156,9 +155,13 @@ class FrameworkAnalysisGraph:
         """
         # Validate required business context
         if not context.business.collection_id:
-            raise ValueError("Framework analysis requires business.collection_id in ToolContext")
+            raise ValueError(
+                "Framework analysis requires business.collection_id in ToolContext"
+            )
         if not context.business.document_id:
-            raise ValueError("Framework analysis requires business.document_id in ToolContext")
+            raise ValueError(
+                "Framework analysis requires business.document_id in ToolContext"
+            )
 
         logger.info(
             "framework_graph_starting",
@@ -214,8 +217,8 @@ class FrameworkAnalysisGraph:
         logger.info(
             "framework_graph_completed",
             extra={
-                "tenant_id": tenant_id,
-                "trace_id": trace_id,
+                "tenant_id": state["tenant_id"],
+                "trace_id": state["trace_id"],
                 "profile_id": str(output.profile_id),
                 "gremium_identifier": output.gremium_identifier,
                 "version": output.version,

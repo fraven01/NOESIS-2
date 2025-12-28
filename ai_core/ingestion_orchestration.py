@@ -89,7 +89,9 @@ class IngestionContextBuilder:
         - Raw payload path: Special extraction from state
         """
         state_meta = self._extract_from_mapping(state, "meta")
+        # BREAKING CHANGE (Option A): Business IDs now in business_context, not scope_context
         scope_meta = self._extract_from_mapping(meta, "scope_context")
+        business_meta = self._extract_from_mapping(meta, "business_context")
         raw_reference = self._extract_from_mapping(state, "raw_document")
         raw_metadata = None
         if isinstance(raw_reference, MappingABC):
@@ -103,15 +105,17 @@ class IngestionContextBuilder:
             or self._extract_from_mapping(state, "tenant_id")
         )
 
-        # Extract case_id
+        # Extract case_id (BREAKING CHANGE: now in business_context)
         case_id = self._coerce_str(
-            trace_context.get("case_id") or self._extract_from_mapping(state, "case_id")
+            trace_context.get("case_id")
+            or self._extract_from_mapping(business_meta, "case_id")
+            or self._extract_from_mapping(state, "case_id")
         )
 
-        # Extract workflow_id (longest fallback chain)
+        # Extract workflow_id (BREAKING CHANGE: now in business_context)
         workflow_id = self._coerce_str(
             trace_context.get("workflow_id")
-            or self._extract_from_mapping(scope_meta, "workflow_id")
+            or self._extract_from_mapping(business_meta, "workflow_id")
             or self._extract_from_mapping(state_meta, "workflow_id")
             or self._extract_from_mapping(state, "workflow_id")
             or self._extract_from_mapping(raw_reference, "workflow_id")
@@ -121,10 +125,10 @@ class IngestionContextBuilder:
         # Extract trace_id
         trace_id = self._coerce_str(trace_context.get("trace_id"))
 
-        # Extract collection_id
+        # Extract collection_id (BREAKING CHANGE: now in business_context)
         collection_id = self._coerce_str(
             trace_context.get("collection_id")
-            or self._extract_from_mapping(scope_meta, "collection_id")
+            or self._extract_from_mapping(business_meta, "collection_id")
             or self._extract_from_mapping(state, "collection_id")
             or self._extract_from_mapping(raw_metadata, "collection_id")
         )

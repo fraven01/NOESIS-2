@@ -143,6 +143,26 @@ def _build_scope_context(request: Any) -> ScopeContext:
     if not ingestion_run_id and not run_id:
         run_id = uuid4().hex
 
+    # BREAKING CHANGE (Option A - Pre-MVP ID Contract):
+    # Extract identity IDs (user_id for User Request Hops, service_id for S2S Hops)
+    user_id: str | None = None
+    service_id: str | None = None
+
+    # Try to extract user_id from Django auth if available
+    user = getattr(request, "user", None)
+    if user is not None and getattr(user, "is_authenticated", False):
+        user_pk = getattr(user, "pk", None)
+        if user_pk is not None:
+            user_id = str(user_pk)
+
+    # Try to extract service_id from headers/META (for S2S Hops)
+    if not user_id:
+        service_id = _normalize_header_value(
+            getattr(request, "service_id", None)
+            or headers.get("X-Service-ID")
+            or meta.get("HTTP_X_SERVICE_ID")
+        )
+
     # BREAKING CHANGE (Option A): Business IDs removed from ScopeContext
     # case_id, workflow_id, collection_id, document_id, document_version_id
     # are now extracted separately and placed in BusinessContext
@@ -150,6 +170,8 @@ def _build_scope_context(request: Any) -> ScopeContext:
         "tenant_id": tenant_id,
         "trace_id": trace_id,
         "invocation_id": invocation_id,
+        "user_id": user_id,
+        "service_id": service_id,
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
         "idempotency_key": idempotency_key,
@@ -175,7 +197,9 @@ def normalize_meta(request: Any) -> dict:
     workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
     collection_id = _coalesce(request, X_COLLECTION_ID_HEADER, META_COLLECTION_ID_KEY)
     document_id = _coalesce(request, X_DOCUMENT_ID_HEADER, META_DOCUMENT_ID_KEY)
-    document_version_id = _coalesce(request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY)
+    document_version_id = _coalesce(
+        request, X_DOCUMENT_VERSION_ID_HEADER, META_DOCUMENT_VERSION_ID_KEY
+    )
 
     # Build BusinessContext (all fields optional per Option A)
     business = BusinessContext(

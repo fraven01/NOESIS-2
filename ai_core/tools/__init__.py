@@ -48,7 +48,7 @@ def __getattr__(name: str):
         "WebSearchResponse",
         "WebSearchWorker",
     }:
-        from .web_search import (
+        from .web_search import (  # noqa: F401
             BaseSearchAdapter,
             ProviderSearchResult,
             RawSearchResult,

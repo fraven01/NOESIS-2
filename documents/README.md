@@ -2,6 +2,39 @@
 
 This application manages the lifecycle, storage, and metadata of documents within the system.
 
+## Overview
+
+The documents app provides:
+- **Document Storage**: Multi-tenant document repository with blob storage abstraction
+- **Lifecycle Management**: State tracking (pending → ingesting → embedded → active)
+- **User Attribution**: Document ownership and activity tracking (see [User Integration](#user-integration))
+- **Format Support**: PDF, DOCX, XLSX, PPTX, HTML, Markdown, Images (with OCR)
+- **RAG Integration**: Semantic chunking, embedding, and hybrid search
+- **Multi-Tenancy**: Schema-per-tenant isolation with case-based access control
+
+## User Integration
+
+**Status**: Roadmap (USER-MANAGEMENT branch completed)
+
+The document repository integrates with the user management system to provide:
+- User attribution (`created_by`, `updated_by` on documents)
+- Document activity tracking (downloads, views, searches)
+- Document-level permissions (fine-grained access control)
+- User preferences (favorites, recent documents, saved searches)
+- Collaboration features (comments, annotations, @mentions)
+
+**Documentation**:
+- **Architecture**: [`docs/architecture/user-document-integration.md`](../docs/architecture/user-document-integration.md)
+- **Roadmap**: [`roadmap/document-repo-user-integration.md`](../roadmap/document-repo-user-integration.md)
+
+**Implementation Phases**:
+1. **Phase 1** (MVP-Critical): Direct user attribution on documents
+2. **Phase 2** (Compliance): Document activity tracking
+3. **Phase 3** (Strategic): Document-level permissions
+4. **Phase 4** (Post-MVP): User preferences & collaboration features
+
+See the roadmap for detailed implementation plan, code locations, and acceptance criteria.
+
 ## Media Type Handling
 
 Correct MediaType (MIME type) handling is critical for proper file processing and display. The system follows a strict propagation flow to ensure the correct type is preserved from upload to display.

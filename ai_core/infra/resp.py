@@ -22,14 +22,24 @@ def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
     The ``meta`` mapping may optionally include a ``traceparent`` entry. When
     provided, the corresponding W3C trace context header is forwarded alongside
     the standard ``X-*`` metadata headers.
+
+    BREAKING CHANGE (Option A - Strict Separation):
+    case_id is a business identifier, extracted from business_context.
     """
 
     if not 200 <= response.status_code < 300:
         return response
 
+    # BREAKING CHANGE (Option A): Extract business_context for business IDs
+    business_context = meta.get("business_context", {})
+    if not isinstance(business_context, Mapping):
+        business_context = {}
+
     header_map = {
         X_TRACE_ID_HEADER: meta["scope_context"]["trace_id"],
-        X_CASE_ID_HEADER: meta["scope_context"].get("case_id"),
+        X_CASE_ID_HEADER: business_context.get(
+            "case_id"
+        ),  # BREAKING CHANGE: from business_context
         X_TENANT_ID_HEADER: meta["scope_context"]["tenant_id"],
         X_KEY_ALIAS_HEADER: meta.get("key_alias"),
         IDEMPOTENCY_KEY_HEADER: meta["scope_context"].get("idempotency_key"),

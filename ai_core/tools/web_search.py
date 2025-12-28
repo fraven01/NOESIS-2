@@ -243,9 +243,7 @@ class WebSearchWorker:
         self._logger = logger or LOGGER
         self._adapter_limit_kwarg = self._determine_limit_keyword(adapter)
 
-    def run(
-        self, *, query: str, context: ToolContext
-    ) -> WebSearchResponse:
+    def run(self, *, query: str, context: ToolContext) -> WebSearchResponse:
         """Run the web search with validation, deduplication, and telemetry.
 
         BREAKING CHANGE (Option A - Strict Separation):
@@ -348,9 +346,7 @@ class WebSearchWorker:
         )
         return WebSearchResponse(results=results, outcome=outcome)
 
-    def _validate_context(
-        self, context: ToolContext
-    ) -> ToolContext:
+    def _validate_context(self, context: ToolContext) -> ToolContext:
         """Validate ToolContext and ensure worker_call_id is set.
 
         Args:

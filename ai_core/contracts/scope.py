@@ -26,12 +26,14 @@ See: OPTION_A_IMPLEMENTATION_PLAN.md, OPTION_A_SOURCE_CODE_ANALYSIS.md
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:  # pragma: no cover
+    from ai_core.contracts.business import BusinessContext
     from ai_core.tool_contracts.base import ToolContext
 
 # Type aliases for ScopeContext fields (infrastructure/correlation IDs only)
@@ -103,6 +105,28 @@ class ScopeContext(BaseModel):
     timestamp: Timestamp = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def forbid_business_ids(cls, data: object) -> object:
+        """Reject business identifiers passed into ScopeContext."""
+        if isinstance(data, ScopeContext):
+            return data
+        if isinstance(data, Mapping):
+            forbidden = {
+                "case_id",
+                "collection_id",
+                "workflow_id",
+                "document_id",
+                "document_version_id",
+            }
+            present = sorted(key for key in forbidden if key in data)
+            if present:
+                raise ValueError(
+                    "ScopeContext cannot include business IDs. "
+                    f"Move {', '.join(present)} to BusinessContext."
+                )
+        return data
 
     @model_validator(mode="after")
     def validate_run_scope(self) -> "ScopeContext":

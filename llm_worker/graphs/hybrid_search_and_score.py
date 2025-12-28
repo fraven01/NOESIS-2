@@ -702,8 +702,16 @@ class HybridSearchAndScoreGraph:
         scope_context = meta.get("scope_context")
         if not isinstance(scope_context, Mapping):
             scope_context = {}
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # case_id is a business identifier, extract from business_context
+        business_context = meta.get("business_context")
+        if not isinstance(business_context, Mapping):
+            business_context = {}
+
         tenant_id = str(scope_context.get("tenant_id") or "").strip()
-        case_id = str(scope_context.get("case_id") or "").strip()
+        case_id = str(
+            business_context.get("case_id") or ""
+        ).strip()  # BREAKING CHANGE: from business_context
         trace_id = str(scope_context.get("trace_id") or "").strip()
         if not tenant_id or not case_id:
             return [], {"rag_unavailable": True}

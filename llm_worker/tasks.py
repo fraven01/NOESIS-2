@@ -74,21 +74,32 @@ def run_graph(  # type: ignore[no-untyped-def]
     if not isinstance(scope_context, Mapping):
         scope_context = {}
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (workflow_id, collection_id) now in business_context
+    business_context = runner_meta.get("business_context")
+    if not isinstance(business_context, Mapping):
+        business_context = {}
+
     # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
     # S2S Hop: service_id REQUIRED, user_id ABSENT
-    if tenant_id and case_id:
+    # BREAKING CHANGE (Option A): case_id is optional, only check tenant_id
+    if tenant_id:
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=case_id,
+            case_id=case_id,  # Optional after Option A
             service_id="celery-agents-worker",
             trace_id=trace_id or scope_context.get("trace_id"),
             invocation_id=scope_context.get("invocation_id"),
-            workflow_id=scope_context.get("workflow_id"),
+            workflow_id=business_context.get(
+                "workflow_id"
+            ),  # BREAKING CHANGE: from business_context
             run_id=scope_context.get("run_id"),
             ingestion_run_id=scope_context.get("ingestion_run_id"),
             idempotency_key=scope_context.get("idempotency_key"),
             tenant_schema=scope_context.get("tenant_schema"),
-            collection_id=scope_context.get("collection_id"),
+            collection_id=business_context.get(
+                "collection_id"
+            ),  # BREAKING CHANGE: from business_context
         )
         # Inject scope context into meta for graph execution
         runner_meta["scope_context"] = scope.model_dump(mode="json")

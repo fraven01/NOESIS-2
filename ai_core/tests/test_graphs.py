@@ -3,11 +3,13 @@ from ai_core.graphs.technical import info_intake, retrieval_augmented_generation
 META = {
     "scope_context": {
         "tenant_id": "t1",
-        "case_id": "c1",
         "trace_id": "tr",
         "invocation_id": "inv-1",
         "run_id": "run-1",
-    }
+    },
+    "business_context": {
+        "case_id": "c1",
+    },
 }
 
 

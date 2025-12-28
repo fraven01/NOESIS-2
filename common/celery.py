@@ -120,6 +120,11 @@ class ContextTask(Task):
         return context
 
     def _from_meta(self, meta: Any) -> dict[str, str]:
+        """Extract scope context from meta dict.
+
+        BREAKING CHANGE (Option A - Strict Separation):
+        case_id is a business identifier, now extracted from business_context.
+        """
         if not isinstance(meta, Mapping):
             return {}
 
@@ -129,17 +134,24 @@ class ContextTask(Task):
         if not isinstance(scope_context, Mapping):
             return {}
 
+        # BREAKING CHANGE (Option A): Extract business_context for business IDs
+        business_context = meta.get("business_context")
+        if not isinstance(business_context, Mapping):
+            business_context = {}
+
+        # Infrastructure IDs from scope_context
         trace_id = scope_context.get("trace_id")
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        case = scope_context.get("case_id")
-        if case:
-            context["case_id"] = self._normalize(case)
-
         tenant = scope_context.get("tenant_id")
         if tenant:
             context["tenant_id"] = self._normalize(tenant)
+
+        # Business IDs from business_context (BREAKING CHANGE)
+        case = business_context.get("case_id")
+        if case:
+            context["case_id"] = self._normalize(case)
 
         key_alias = meta.get("key_alias")
         if key_alias:

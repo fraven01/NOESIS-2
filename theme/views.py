@@ -1147,14 +1147,21 @@ def web_search_ingest_selected(request):
         )
 
         # L2 -> L3 Dispatch
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Separate infrastructure (scope_context) from business (business_context)
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
-            "case_id": str(data.get("case_id") or "").strip() or None,
             "trace_id": str(data.get("trace_id") or "").strip() or str(uuid4()),
             "ingestion_run_id": str(uuid4()),
         }
-        meta = {"scope_context": scope_context}
+        business_context = {
+            "case_id": str(data.get("case_id") or "").strip() or None,
+        }
+        meta = {
+            "scope_context": scope_context,
+            "business_context": business_context,
+        }
 
         manager = CrawlerManager()
         try:
@@ -1501,13 +1508,19 @@ def ingestion_submit(request):
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
-            "case_id": case_id,
             "trace_id": uuid4().hex,
+            "invocation_id": uuid4().hex,
+            "run_id": uuid4().hex,
+        }
+        business_context = {
+            "case_id": case_id,
             "collection_id": manual_collection_id,  # Explicitly set collection
             "workflow_id": "document-upload-manual",  # Workflow type for tracing
-            "invocation_id": uuid4().hex,
         }
-        meta = {"scope_context": scope_context}
+        meta = {
+            "scope_context": scope_context,
+            "business_context": business_context,
+        }
 
         # Upload document
         upload_response = handle_document_upload(
@@ -1677,27 +1690,28 @@ def chat_submit(request):
             },
         }
 
-        trace_id = uuid4().hex
-        run_id = str(uuid4())
+        from ai_core.contracts.business import BusinessContext
+        from ai_core.ids.http_scope import normalize_request
 
-        from ai_core.tool_contracts import ToolContext
-
-        tool_context = ToolContext(
-            tenant_id=tenant_id,
-            tenant_schema=tenant_schema,
+        scope = normalize_request(request)
+        business = BusinessContext(
             case_id=case_id,
-            trace_id=trace_id,
-            run_id=run_id,
             workflow_id="rag-chat-manual",
+        )
+        tool_context = scope.to_tool_context(
+            business=business,
+            metadata={"graph_name": "rag.default", "graph_version": "v0"},
         )
 
         meta = {
             "tenant_id": tenant_id,
-            "tenant_schema": tenant_schema,
+            "tenant_schema": tenant_schema or scope.tenant_schema,
             "case_id": case_id,
-            "trace_id": trace_id,
-            "run_id": run_id,  # Required for ScopeContext validation
+            "trace_id": scope.trace_id,
+            "run_id": scope.run_id,  # Required for ScopeContext validation
             "workflow_id": "rag-chat-manual",  # Workflow type for tracing
+            "scope_context": scope.model_dump(mode="json", exclude_none=True),
+            "business_context": business.model_dump(mode="json", exclude_none=True),
             # Ensure we have a valid tool context
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         }

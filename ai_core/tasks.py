@@ -115,10 +115,15 @@ logger = get_logger(__name__)
 
 
 def _build_path(meta: Dict[str, str], *parts: str) -> str:
+    """Build object store path with tenant and case identifiers.
+
+    BREAKING CHANGE (Option A - Strict Separation):
+    case_id is a business identifier, extracted from business_context.
+    """
     tenant = object_store.sanitize_identifier(meta["scope_context"]["tenant_id"])
-    case = object_store.sanitize_identifier(
-        meta["scope_context"].get("case_id") or "upload"
-    )
+    # BREAKING CHANGE: Extract case_id from business_context, not scope_context
+    business_context = meta.get("business_context", {})
+    case = object_store.sanitize_identifier(business_context.get("case_id") or "upload")
     return "/".join([tenant, case, *parts])
 
 
@@ -587,9 +592,11 @@ def _estimate_overlap_ratio(text: str, meta: Dict[str, str]) -> float:
         return ratio_min
 
     ratio = 0.15
+    # BREAKING CHANGE (Option A): collection_id from business_context
+    business_context = meta.get("business_context", {})
     doc_type = str(
         meta.get("doc_class")
-        or meta["scope_context"].get("collection_id")
+        or business_context.get("collection_id")
         or meta.get("document_type")
         or meta.get("type")
         or ""
@@ -804,11 +811,13 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
         except FileNotFoundError:
             payload = None
         except Exception:  # pragma: no cover - defensive guard
+            # BREAKING CHANGE (Option A): case_id from business_context
+            business_context = meta.get("business_context", {})
             logger.warning(
                 "ingestion.chunk.blocks_read_failed",
                 extra={
                     "tenant_id": meta["scope_context"].get("tenant_id"),
-                    "case_id": meta["scope_context"].get("case_id"),
+                    "case_id": business_context.get("case_id"),
                     "path": blocks_path_value,
                 },
             )
@@ -1180,9 +1189,14 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
             chunk_hash_input = f"{content_hash}:{chunk_index}".encode("utf-8")
             chunk_hash = hashlib.sha256(chunk_hash_input).hexdigest()
             scope_context = meta["scope_context"]
+            # BREAKING CHANGE (Option A): Business IDs from business_context
+            business_context = meta.get("business_context", {})
+
             chunk_meta = {
                 "tenant_id": scope_context["tenant_id"],
-                "case_id": scope_context.get("case_id"),
+                "case_id": business_context.get(
+                    "case_id"
+                ),  # BREAKING CHANGE: from business_context
                 "source": text_path,
                 "hash": chunk_hash,
                 "external_id": external_id,
@@ -1195,10 +1209,11 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
                 chunk_meta["embedding_profile"] = meta["embedding_profile"]
             if meta.get("vector_space_id"):
                 chunk_meta["vector_space_id"] = meta["vector_space_id"]
-            if scope_context.get("collection_id"):
-                chunk_meta["collection_id"] = scope_context["collection_id"]
-            if scope_context.get("workflow_id"):
-                chunk_meta["workflow_id"] = scope_context["workflow_id"]
+            # BREAKING CHANGE (Option A): Business IDs from business_context
+            if business_context.get("collection_id"):
+                chunk_meta["collection_id"] = business_context["collection_id"]
+            if business_context.get("workflow_id"):
+                chunk_meta["workflow_id"] = business_context["workflow_id"]
 
             if document_id:
                 # Ensure canonical dashed UUID format for document_id in chunk meta
@@ -1270,6 +1285,8 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             if isinstance(parents, dict) and parents:
                 load_metrics.set("parents_count", len(parents))
 
+        # BREAKING CHANGE (Option A): Extract business IDs from business_context
+        business_context = meta.get("business_context", {})
         try:
             update_observation(
                 tags=["ingestion", "embed"],
@@ -1279,14 +1296,14 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
                     else None
                 ),
                 session_id=(
-                    str(meta["scope_context"].get("case_id"))
-                    if meta["scope_context"].get("case_id")
+                    str(business_context.get("case_id"))
+                    if business_context.get("case_id")
                     else None
                 ),
                 metadata={
                     "embedding_profile": meta.get("embedding_profile"),
                     "vector_space_id": meta.get("vector_space_id"),
-                    "collection_id": meta["scope_context"].get("collection_id"),
+                    "collection_id": business_context.get("collection_id"),
                 },
             )
         except Exception:
@@ -1409,13 +1426,15 @@ def embed(meta: Dict[str, str], chunks_path: str) -> Dict[str, str]:
             "ingestion.embed.summary",
             extra={"chunks": total_chunks, "batches": batches},
         )
+        # BREAKING CHANGE (Option A): case_id from business_context
+        business_context = meta.get("business_context", {})
         try:
             logger.warning(
                 "ingestion.embed.parents",
                 extra={
                     "event": "DEBUG.TASKS.EMBED.PARENTS",
                     "tenant_id": meta["scope_context"].get("tenant_id"),
-                    "case_id": meta["scope_context"].get("case_id"),
+                    "case_id": business_context.get("case_id"),
                     "parents_count": (
                         len(parents) if isinstance(parents, dict) else None
                     ),
@@ -1474,13 +1493,15 @@ def upsert(
     else:
         data = list(raw_data or [])
     # Debug visibility for parents presence in upsert input and parsed payload
+    # BREAKING CHANGE (Option A): case_id from business_context
+    business_context = meta.get("business_context", {}) if meta else {}
     try:
         logger.warning(
             "ingestion.upsert.parents_loaded",
             extra={
                 "event": "DEBUG.TASKS.UPSERT.PARENTS_LOADED",
                 "tenant_id": meta["scope_context"].get("tenant_id") if meta else None,
-                "case_id": meta["scope_context"].get("case_id") if meta else None,
+                "case_id": business_context.get("case_id"),
                 "parents_present": bool(parents),
                 "parents_count": (len(parents) if isinstance(parents, dict) else None),
             },
@@ -1499,13 +1520,15 @@ def upsert(
         try:
             meta_model = ChunkMeta.model_validate(raw_meta)
         except ValidationError:
+            # BREAKING CHANGE (Option A): case_id from business_context
+            business_context = meta.get("business_context", {}) if meta else {}
             logger.error(
                 "ingestion.chunk.meta.invalid",
                 extra={
                     "tenant_id": (
                         meta["scope_context"].get("tenant_id") if meta else None
                     ),
-                    "case_id": meta["scope_context"].get("case_id") if meta else None,
+                    "case_id": business_context.get("case_id"),
                     "chunk_index": index,
                     "keys": (
                         sorted(raw_meta.keys()) if isinstance(raw_meta, dict) else None
@@ -1589,12 +1612,14 @@ def upsert(
         except (TypeError, ValueError):
             expected_dimension = None
 
+    # BREAKING CHANGE (Option A): workflow_id from business_context
+    business_context = meta.get("business_context", {}) if meta else {}
     ensure_embedding_dimensions(
         chunk_objs,
         expected_dimension,
         tenant_id=tenant_id,
         process=meta.get("process") if meta else None,
-        workflow_id=meta["scope_context"].get("workflow_id") if meta else None,
+        workflow_id=business_context.get("workflow_id"),
         embedding_profile=meta.get("embedding_profile") if meta else None,
         vector_space_id=meta.get("vector_space_id") if meta else None,
     )
@@ -1712,10 +1737,21 @@ def _extract_from_mapping(mapping: Any, key: str) -> Optional[str]:
 def _resolve_document_id(
     state: Mapping[str, Any], meta: Optional[Mapping[str, Any]]
 ) -> Optional[str]:
-    """Try to resolve the document identifier from meta/state payloads."""
+    """Try to resolve the document identifier from meta/state payloads.
+
+    BREAKING CHANGE (Option A - Strict Separation):
+    Document ID is a business identifier, so we check business_context first.
+    """
 
     state_meta = state.get("meta") if isinstance(state, MappingABC) else None
+    business_meta = _extract_from_mapping(meta, "business_context")
 
+    # Check business_context first (BREAKING CHANGE)
+    candidate = _extract_from_mapping(business_meta, "document_id")
+    if candidate:
+        return candidate
+
+    # Fallback to other sources
     for source in (meta, state_meta, state):
         candidate = _extract_from_mapping(source, "document_id")
         if candidate:
@@ -1740,28 +1776,37 @@ def _resolve_document_id(
 def _resolve_trace_context(
     state: Mapping[str, Any], meta: Optional[Mapping[str, Any]]
 ) -> Dict[str, Optional[str]]:
-    """Collect identifiers required for tracing metadata."""
+    """Collect identifiers required for tracing metadata.
+
+    BREAKING CHANGE (Option A - Strict Separation):
+    Business IDs (case_id, workflow_id) now extracted from business_context,
+    not scope_context.
+    """
 
     state_meta = state.get("meta") if isinstance(state, MappingABC) else None
     scope_meta = _extract_from_mapping(meta, "scope_context")
+    business_meta = _extract_from_mapping(meta, "business_context")
 
+    # Infrastructure IDs from scope_context
     tenant_id = _coerce_str(
         _extract_from_mapping(scope_meta, "tenant_id")
         or _extract_from_mapping(state_meta, "tenant_id")
         or _extract_from_mapping(state, "tenant_id")
-    )
-    case_id = _coerce_str(
-        _extract_from_mapping(scope_meta, "case_id")
-        or _extract_from_mapping(state_meta, "case_id")
-        or _extract_from_mapping(state, "case_id")
     )
     trace_id = _coerce_str(
         _extract_from_mapping(scope_meta, "trace_id")
         or _extract_from_mapping(state_meta, "trace_id")
         or _extract_from_mapping(state, "trace_id")
     )
+
+    # Business IDs from business_context (BREAKING CHANGE)
+    case_id = _coerce_str(
+        _extract_from_mapping(business_meta, "case_id")
+        or _extract_from_mapping(state_meta, "case_id")
+        or _extract_from_mapping(state, "case_id")
+    )
     workflow_id = _coerce_str(
-        _extract_from_mapping(scope_meta, "workflow_id")
+        _extract_from_mapping(business_meta, "workflow_id")
         or _extract_from_mapping(state_meta, "workflow_id")
         or _extract_from_mapping(state, "workflow_id")
     )
@@ -2055,17 +2100,22 @@ def run_ingestion_graph(
             collection_id=collection_id,  # DEPRECATED parameter (not in ScopeContext)
         )
 
+        # BREAKING CHANGE (Option A - Full ToolContext Migration):
+        # Universal ingestion graph now expects nested ToolContext structure
+        from ai_core.contracts.business import BusinessContext
+
+        business = BusinessContext(
+            case_id=case_id,
+            workflow_id=workflow_id,
+            collection_id=collection_id,
+        )
+
         run_context = {
-            "tenant_id": scope.tenant_id,
-            # BREAKING CHANGE (Option A): Use local variables, not scope
-            "case_id": case_id,  # Was: scope.case_id
-            "trace_id": scope.trace_id,
-            "workflow_id": workflow_id,  # Was: scope.workflow_id
-            "invocation_id": scope.invocation_id,
-            "run_id": scope.run_id,
-            "ingestion_run_id": scope.ingestion_run_id,
-            "service_id": scope.service_id,
-            "dry_run": False,
+            "scope": scope.model_dump(mode="json"),
+            "business": business.model_dump(mode="json"),
+            "metadata": {
+                "dry_run": False,
+            },
         }
 
         result = graph.invoke({"input": input_payload, "context": run_context})

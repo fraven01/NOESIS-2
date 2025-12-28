@@ -5,6 +5,31 @@ from documents.contracts import FileBlob
 
 # Remove top-level import to allow pre-import patching
 # from ai_core.graphs.technical.universal_ingestion_graph import ...
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
+
+
+def _tool_context(
+    *,
+    tenant_id: str,
+    trace_id: str,
+    invocation_id: str,
+    run_id: str | None = None,
+    ingestion_run_id: str | None = None,
+    case_id: str | None = None,
+    workflow_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+):
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        invocation_id=invocation_id,
+        run_id=run_id,
+        ingestion_run_id=ingestion_run_id,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
+    return scope.to_tool_context(business=business, metadata=metadata or {})
 
 
 @pytest.fixture
@@ -72,11 +97,13 @@ def test_universal_ingestion_graph_validation_error(
             "metadata_obj": {},
             "normalized_document": None,
         },
-        "context": {
-            "tenant_id": "tenant-1",
-            "trace_id": "trace-1",
-            "case_id": "case-1",
-        },
+        "context": _tool_context(
+            tenant_id="tenant-1",
+            trace_id="trace-1",
+            invocation_id="inv-1",
+            run_id="run-1",
+            case_id="case-1",
+        ),
     }
 
     result = graph.invoke(state)
@@ -132,13 +159,13 @@ def test_universal_ingestion_graph_success_crawler(
             "metadata_obj": None,
             "normalized_document": norm_doc_payload,
         },
-        "context": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-            "trace_id": "00000000-0000-0000-0000-000000000001",
-            "invocation_id": "inv-crawler-test",
-            "case_id": "00000000-0000-0000-0000-000000000001",
-            "ingestion_run_id": "00000000-0000-0000-0000-000000000001",
-        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000001",
+            invocation_id="inv-crawler-test",
+            ingestion_run_id="00000000-0000-0000-0000-000000000001",
+            case_id="00000000-0000-0000-0000-000000000001",
+        ),
     }
 
     result = graph.invoke(state)
@@ -187,17 +214,14 @@ def test_universal_ingestion_graph_missing_context(
             "collection_id": "00000000-0000-0000-0000-000000000001",
             "normalized_document": {},
         },
-        "context": {
-            "tenant_id": "tenant-1",
-            # Missing trace_id and case_id
-        },
+        "context": {},
     }
 
     result = graph.invoke(state)
     output = result["output"]
 
     assert output["decision"] == "error"
-    assert "Missing required context" in output["reason"]
+    assert "Invalid context structure" in output["reason"]
 
 
 def test_universal_ingestion_graph_success_upload(
@@ -226,13 +250,13 @@ def test_universal_ingestion_graph_success_upload(
             "metadata_obj": metadata,
             "normalized_document": None,
         },
-        "context": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-            "trace_id": "00000000-0000-0000-0000-000000000001",
-            "invocation_id": "inv-upload-test",
-            "case_id": "00000000-0000-0000-0000-000000000001",
-            "ingestion_run_id": "00000000-0000-0000-0000-000000000001",
-        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000001",
+            invocation_id="inv-upload-test",
+            ingestion_run_id="00000000-0000-0000-0000-000000000001",
+            case_id="00000000-0000-0000-0000-000000000001",
+        ),
     }
 
     result = graph.invoke(state)
@@ -331,14 +355,14 @@ def test_search_source_acquire_and_ingest(
         "preselected_results": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-1",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-        "runtime_worker": mock_search_worker,
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+        metadata={"runtime_worker": mock_search_worker},
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 
@@ -373,14 +397,14 @@ def test_search_source_acquire_only(utg_module, mock_search_worker):
         "preselected_results": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-1",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-        "runtime_worker": mock_search_worker,
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+        metadata={"runtime_worker": mock_search_worker},
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 
@@ -421,14 +445,13 @@ def test_search_source_with_preselected_results(
         "normalized_document": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-1",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-        # No runtime_worker needed - should use preselected results directly
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 
@@ -453,13 +476,13 @@ def test_search_source_missing_query_and_preselected(utg_module):
         "normalized_document": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-1",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 
@@ -501,13 +524,13 @@ def test_search_source_checksum_is_url_hash(
         "normalized_document": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-checksum-test",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-checksum-test",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 
@@ -559,12 +582,7 @@ def test_persist_node_missing_invocation_id(utg_module):
 
     state = {
         "normalized_document": norm_doc,
-        "context": {
-            "tenant_id": "tenant-1",
-            "trace_id": "trace-1",
-            # Missing invocation_id - should fail!
-            "ingestion_run_id": "run-1",
-        },
+        "context": {},
         "input": {"collection_id": collection_id},
     }
 
@@ -599,13 +617,13 @@ def test_unsupported_mode(utg_module, mock_processing_graph, mock_document_servi
         "preselected_results": None,
     }
 
-    context = {
-        "tenant_id": "tenant-1",
-        "trace_id": "trace-1",
-        "invocation_id": "inv-1",
-        "case_id": "case-1",
-        "ingestion_run_id": "run-1",
-    }
+    context = _tool_context(
+        tenant_id="tenant-1",
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        ingestion_run_id="run-1",
+        case_id="case-1",
+    )
 
     result = graph.invoke({"input": input_payload, "context": context})
 

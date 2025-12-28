@@ -126,7 +126,9 @@ def _build_normalized_document(
     # 1. Resolve IDs from ToolContext
     tenant_id = context.scope.tenant_id
     workflow_id = (
-        context.business.workflow_id or context.business.case_id or "universal_ingestion"
+        context.business.workflow_id
+        or context.business.case_id
+        or "universal_ingestion"
     )
 
     if not tenant_id:
@@ -212,7 +214,7 @@ def validate_input_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     # 1. Validate ToolContext structure
     try:
-        tool_context = ToolContext.model_validate(context_dict)
+        ToolContext.model_validate(context_dict)
     except ValidationError as exc:
         error_msg = f"Invalid context structure: {exc.errors()}"
         logger.error(error_msg)
@@ -370,6 +372,7 @@ def search_node(state: UniversalIngestionState) -> dict[str, Any]:
 
     # Get timeout from settings with fallback to 30 seconds
     from django.conf import settings
+
     search_timeout = getattr(settings, "SEARCH_WORKER_TIMEOUT_SECONDS", 30)
 
     try:
@@ -488,7 +491,9 @@ def _normalize_from_search(
     """
     tenant_id = context.scope.tenant_id
     workflow_id = (
-        context.business.workflow_id or context.business.case_id or "universal_ingestion"
+        context.business.workflow_id
+        or context.business.case_id
+        or "universal_ingestion"
     )
 
     if not tenant_id:
@@ -728,17 +733,30 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
     error = state.get("error")
     context_dict = state.get("context", {})
 
-    # Build ToolContext
-    tool_context = ToolContext.model_validate(context_dict)
+    tool_context = None
+    try:
+        tool_context = ToolContext.model_validate(context_dict)
+    except ValidationError:
+        if not error:
+            raise
 
-    telemetry = {
-        "trace_id": tool_context.scope.trace_id,
-        "tenant_id": tool_context.scope.tenant_id,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        # Pre-MVP ID Contract: identity tracking
-        "service_id": tool_context.scope.service_id,
-        "invocation_id": tool_context.scope.invocation_id,
-    }
+    if tool_context is None:
+        telemetry = {
+            "trace_id": None,
+            "tenant_id": None,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service_id": None,
+            "invocation_id": None,
+        }
+    else:
+        telemetry = {
+            "trace_id": tool_context.scope.trace_id,
+            "tenant_id": tool_context.scope.tenant_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            # Pre-MVP ID Contract: identity tracking
+            "service_id": tool_context.scope.service_id,
+            "invocation_id": tool_context.scope.invocation_id,
+        }
 
     if error:
         return {
@@ -746,7 +764,9 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
                 "decision": "error",
                 "reason": error,
                 "telemetry": telemetry,
-                "ingestion_run_id": None,
+                "ingestion_run_id": (
+                    tool_context.scope.ingestion_run_id if tool_context else None
+                ),
                 "document_id": None,
                 "hitl_required": False,
                 "hitl_reasons": [],

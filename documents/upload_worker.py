@@ -341,16 +341,32 @@ class UploadWorker:
         trace_id: Optional[str],
         invocation_id: Optional[str],
     ) -> Dict[str, Any]:
-        """Compose metadata for the graph execution context."""
-        """Compose metadata for the graph execution context."""
+        """Compose metadata for the graph execution context.
+
+        BREAKING CHANGE (Option A - Strict Separation):
+        Returns both scope_context (infrastructure) and business_context (domain).
+        """
+        from ai_core.contracts.business import BusinessContext
+
+        # Build ScopeContext (infrastructure only, no business IDs)
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=case_id,
+            case_id=case_id,  # DEPRECATED parameter, not used in ScopeContext
             service_id="upload-worker",
             trace_id=trace_id,
             invocation_id=invocation_id,
         )
-        return {"scope_context": scope.model_dump(mode="json")}
+
+        # Build BusinessContext (business domain IDs)
+        business = BusinessContext(
+            case_id=case_id,
+            workflow_id=case_id,  # Default workflow_id to case_id if not provided
+        )
+
+        return {
+            "scope_context": scope.model_dump(mode="json"),
+            "business_context": business.model_dump(mode="json", exclude_none=True),
+        }
 
     def _get_domain_service(self) -> DocumentDomainService:
         if self._domain_service is None:

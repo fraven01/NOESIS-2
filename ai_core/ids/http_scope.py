@@ -11,14 +11,11 @@ from django.http import HttpRequest
 from ai_core.contracts.scope import ScopeContext
 from ai_core.ids import (
     coerce_trace_id,
-    normalize_case_header,
     normalize_idempotency_key,
 )
 from common.constants import (
     META_TENANT_SCHEMA_KEY,
-    META_WORKFLOW_ID_KEY,
     X_TENANT_SCHEMA_HEADER,
-    X_WORKFLOW_ID_HEADER,
 )
 
 

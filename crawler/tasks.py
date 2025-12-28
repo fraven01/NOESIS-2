@@ -25,7 +25,11 @@ def crawl_url_task(
         meta: Context metadata (tenant_id, case_id, etc.).
         ingestion_overrides: Optional overrides for the ingestion process.
     """
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs now in business_context, not scope_context
     scope_context = meta.get("scope_context", {})
+    business_context = meta.get("business_context", {})
+
     tenant_id = scope_context.get("tenant_id")
     if not tenant_id:
         logger.error("crawl_url_task.missing_tenant_id", extra={"url": url})
@@ -63,16 +67,17 @@ def crawl_url_task(
 
         # 3. Process
         # worker.process handles fetching, asset extraction, and dispatching ingestion
+        # BREAKING CHANGE (Option A): Business IDs from business_context
         doc_meta = {"source": url}
-        if scope_context.get("workflow_id"):
-            doc_meta["workflow_id"] = scope_context.get("workflow_id")
-        if scope_context.get("collection_id"):
-            doc_meta["collection_id"] = scope_context.get("collection_id")
+        if business_context.get("workflow_id"):
+            doc_meta["workflow_id"] = business_context.get("workflow_id")
+        if business_context.get("collection_id"):
+            doc_meta["collection_id"] = business_context.get("collection_id")
 
         result = worker.process(
             request,
             tenant_id=tenant_id,
-            case_id=scope_context.get("case_id"),
+            case_id=business_context.get("case_id"),
             crawl_id=meta.get("crawl_id"),
             trace_id=scope_context.get("trace_id"),
             document_metadata=doc_meta,

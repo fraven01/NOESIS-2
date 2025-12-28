@@ -60,7 +60,7 @@ def test_ingestion_submit_happy_path(settings):
 
         assert "scope_context" in meta
         assert meta["scope_context"]["tenant_id"] == tenant.schema_name
-        assert meta["scope_context"]["collection_id"] is not None
+        assert meta["business_context"]["collection_id"] is not None
 
 
 @pytest.mark.django_db

@@ -41,10 +41,16 @@ def upload_document_task(
 
     worker = UploadWorker()
     scope_context = meta["scope_context"]
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # case_id is a business identifier, extract from business_context
+    business_context = meta.get("business_context", {})
+
     result = worker.process(
         upload,
         tenant_id=scope_context["tenant_id"],
-        case_id=scope_context.get("case_id"),
+        case_id=business_context.get(
+            "case_id"
+        ),  # BREAKING CHANGE: from business_context
         trace_id=scope_context.get("trace_id"),
         invocation_id=scope_context.get("invocation_id"),
         document_metadata=metadata,

@@ -806,12 +806,14 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
             setattr(request._request, "tool_context", tool_context)
 
     scope_context = normalized_meta["scope_context"]
+    # BREAKING CHANGE (Option A): Extract business IDs from business_context
+    business_context = normalized_meta.get("business_context", {})
     run_id = uuid4().hex
-    workflow_id = scope_context.get("workflow_id") or scope_context.get("case_id")
+    workflow_id = business_context.get("workflow_id") or business_context.get("case_id")
 
     context = GraphContext(
         tenant_id=scope_context["tenant_id"],
-        case_id=scope_context["case_id"],
+        case_id=business_context.get("case_id"),
         trace_id=scope_context["trace_id"],
         workflow_id=workflow_id,
         run_id=run_id,
@@ -1247,17 +1249,20 @@ def start_ingestion_run(
         )
 
     scope_context = meta["scope_context"]
+    # BREAKING CHANGE (Option A): Extract business IDs from business_context
+    business_context = meta.get("business_context", {})
     tenant_schema = scope_context.get("tenant_schema") or meta.get("tenant_schema")
 
     collection_scope = getattr(validated_data, "collection_id", None)
-    if collection_scope and isinstance(scope_context, dict):
-        scope_context["collection_id"] = collection_scope
+    # BREAKING CHANGE (Option A): collection_id goes to business_context, not scope_context
+    if collection_scope and isinstance(business_context, dict):
+        business_context["collection_id"] = collection_scope
 
     if collection_scope:
         _ensure_document_collection(
             collection_id=collection_scope,
             tenant_identifier=tenant_schema or scope_context.get("tenant_id"),
-            case_identifier=scope_context.get("case_id"),
+            case_identifier=business_context.get("case_id"),
             metadata=request_data if isinstance(request_data, Mapping) else None,
         )
 
@@ -1279,9 +1284,10 @@ def start_ingestion_run(
     ingestion_run_id = uuid4().hex
     queued_at = timezone.now().isoformat()
 
+    # BREAKING CHANGE (Option A): case_id from business_context
     valid_document_ids, invalid_document_ids = _get_partition_document_ids()(
         scope_context["tenant_id"],
-        scope_context["case_id"],
+        business_context.get("case_id"),
         validated_data.document_ids,
     )
 
@@ -1291,7 +1297,7 @@ def start_ingestion_run(
     if collection_scope:
         _persist_collection_scope(
             scope_context["tenant_id"],
-            scope_context["case_id"],
+            business_context.get("case_id"),
             to_dispatch,
             collection_scope,
         )
@@ -1299,7 +1305,7 @@ def start_ingestion_run(
         scope_context.setdefault("ingestion_run_id", ingestion_run_id)
     state_payload: dict[str, object] = {
         "tenant_id": scope_context["tenant_id"],
-        "case_id": scope_context["case_id"],
+        "case_id": business_context.get("case_id"),
         "document_ids": to_dispatch,
         "embedding_profile": resolved_profile_id,
         "tenant_schema": tenant_schema,
@@ -1308,13 +1314,14 @@ def start_ingestion_run(
     }
     if collection_scope:
         state_payload["collection_id"] = collection_scope
+    # BREAKING CHANGE (Option A): case_id from business_context
     _enqueue_ingestion_task(
         _get_run_ingestion_task(),
         state=state_payload,
         meta=dict(meta),
         legacy_args=(
             scope_context["tenant_id"],
-            scope_context["case_id"],
+            business_context.get("case_id"),
             to_dispatch,
             resolved_profile_id,
         ),
@@ -1328,7 +1335,7 @@ def start_ingestion_run(
 
     record_ingestion_run_queued(
         tenant_id=scope_context["tenant_id"],
-        case=scope_context["case_id"],
+        case=business_context.get("case_id"),
         run_id=ingestion_run_id,
         document_ids=to_dispatch,
         queued_at=queued_at,
@@ -1338,7 +1345,7 @@ def start_ingestion_run(
     )
     emit_ingestion_case_event(
         scope_context["tenant_id"],
-        scope_context["case_id"],
+        business_context.get("case_id"),
         run_id=ingestion_run_id,
         context="queued",
     )
@@ -1361,15 +1368,25 @@ def start_ingestion_run(
 
 
 def _derive_workflow_id(
-    scope_context: Mapping[str, object], metadata: Mapping[str, object]
+    scope_context: Mapping[str, object],
+    metadata: Mapping[str, object],
+    business_context: Mapping[str, object] | None = None,
 ) -> str:
+    """Derive workflow ID from metadata or business context.
+
+    BREAKING CHANGE (Option A): case_id is now in business_context, not scope_context.
+    """
     candidate = metadata.get("workflow_id")
     if isinstance(candidate, str):
         candidate = candidate.strip()
         if candidate:
             return candidate.replace(":", "_")
 
-    case_id = str(scope_context.get("case_id") or "").strip()
+    # BREAKING CHANGE (Option A): use business_context only
+    case_id = ""
+    if business_context:
+        case_id = str(business_context.get("case_id") or "").strip()
+
     if not case_id:
         return "upload"
     return case_id.replace(":", "_")
@@ -1390,8 +1407,13 @@ def _build_document_meta(
     external_id: str,
     *,
     media_type: str | None = None,
+    business_context: Mapping[str, object] | None = None,
 ) -> DocumentMeta:
-    workflow_id = _derive_workflow_id(scope_context, metadata_obj)
+    """Build DocumentMeta from scope and metadata.
+
+    BREAKING CHANGE (Option A): business_context parameter added for workflow_id derivation.
+    """
+    workflow_id = _derive_workflow_id(scope_context, metadata_obj, business_context)
     payload: dict[str, object] = {
         "tenant_id": str(scope_context["tenant_id"]),
         "workflow_id": workflow_id,
@@ -1429,8 +1451,12 @@ def _ensure_document_collection_record(
     source: str | None = None,
     key: str | None = None,
     label: str | None = None,
+    business_context: dict | None = None,
 ) -> None:
-    """Create or update a DocumentCollection row for manual developer uploads."""
+    """Create or update a DocumentCollection row for manual developer uploads.
+
+    BREAKING CHANGE (Option A): case_id is now in business_context, not scope_context.
+    """
 
     if not collection_id:
         return
@@ -1441,9 +1467,11 @@ def _ensure_document_collection_record(
             else UUID(str(collection_id))
         )
     except (TypeError, ValueError, AttributeError):
+        extra_payload = {"scope_context": scope_context}
+        extra_payload["collection_id"] = collection_id
         logger.warning(
             "document_collection.ensure.invalid_id",
-            extra={"scope_context": scope_context, "collection_id": collection_id},
+            extra=extra_payload,
         )
         return
 
@@ -1469,7 +1497,8 @@ def _ensure_document_collection_record(
         return
 
     case_obj = None
-    case_id = scope_context.get("case_id")
+    # BREAKING CHANGE (Option A): use business_context only
+    case_id = business_context.get("case_id") if business_context else None
     if case_id:
         case_obj = Case.objects.filter(
             tenant=tenant_obj,
@@ -1592,8 +1621,12 @@ def handle_document_upload(
     if metadata_obj is None:
         metadata_obj = {}
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # scope_context is infrastructure only, business_context has business IDs
     scope_context = meta["scope_context"]
-    header_collection = scope_context.get("collection_id")
+    business_context = meta.get("business_context", {})
+
+    header_collection = business_context.get("collection_id")
     if header_collection and not metadata_obj.get("collection_id"):
         metadata_obj["collection_id"] = header_collection
 
@@ -1639,16 +1672,18 @@ def handle_document_upload(
         try:
             ensure_manual_collection(tenant_obj)
         except Exception:  # pragma: no cover - defensive guard
+            # BREAKING CHANGE (Option A): case_id from business_context
             logger.warning(
                 "upload.ensure_manual_collection_failed",
                 extra={
                     "tenant_id": scope_context.get("tenant_id"),
-                    "case_id": scope_context.get("case_id"),
+                    "case_id": business_context.get("case_id"),
                 },
                 exc_info=True,
             )
         metadata_obj["collection_id"] = manual_collection_scope
 
+    # BREAKING CHANGE (Option A): Pass business_context to _ensure_document_collection_record
     if manual_scope_assigned and metadata_obj.get("collection_id"):
         _ensure_document_collection_record(
             scope_context=scope_context,
@@ -1656,6 +1691,7 @@ def handle_document_upload(
             source="upload",
             key=MANUAL_COLLECTION_SLUG,
             label=MANUAL_COLLECTION_LABEL,
+            business_context=business_context,
         )
 
     tenant = tenant_obj
@@ -1747,11 +1783,16 @@ def handle_document_upload(
     if not metadata_obj.get("title"):
         metadata_obj["title"] = original_name
 
+    # BREAKING CHANGE (Option A): Pass business_context to _build_document_meta
     document_meta = _build_document_meta(
-        scope_context, metadata_obj, external_id, media_type=detected_mime
+        scope_context,
+        metadata_obj,
+        external_id,
+        media_type=detected_mime,
+        business_context=business_context,
     )
-    if isinstance(scope_context, dict):
-        scope_context.setdefault("workflow_id", document_meta.workflow_id)
+    if isinstance(business_context, dict):
+        business_context.setdefault("workflow_id", document_meta.workflow_id)
 
     print(
         f"DEBUG: collection_ids={collection_ids!r} metadata_obj_collection_id={metadata_obj.get('collection_id')!r}"
@@ -1806,16 +1847,34 @@ def handle_document_upload(
             "normalized_document": normalized_document.model_dump(),
         }
 
+        # BREAKING CHANGE (Option A - Full ToolContext Migration):
+        # Universal ingestion graph now expects nested ToolContext structure
+        from ai_core.contracts.business import BusinessContext
+
+        # Build BusinessContext from business_context dict
+        business = BusinessContext(
+            case_id=business_context.get("case_id"),
+            workflow_id=business_context.get("workflow_id"),
+            collection_id=(
+                str(ensured_collection.collection_id)
+                if ensured_collection
+                else str(metadata_obj.get("collection_id"))
+            ),
+        )
+
         graph_state = {
             "input": graph_input,
             "context": {
-                "tenant_id": scope_context["tenant_id"],
-                "trace_id": scope_context["trace_id"],
-                "case_id": scope_context["case_id"],
-                "invocation_id": scope_context.get("invocation_id") or uuid4().hex,
-                "ingestion_run_id": ingestion_run_id,
-                # Runtime dependencies passed in context for now (Phase 2/3 style)
-                "runtime_repository": repository,  # Though persist_node currently instantiates its own service, we should align this later context usage
+                "scope": {
+                    **scope_context,
+                    "invocation_id": scope_context.get("invocation_id") or uuid4().hex,
+                    "ingestion_run_id": ingestion_run_id,
+                },
+                "business": business.model_dump(mode="json"),
+                "metadata": {
+                    # Runtime dependencies passed in metadata
+                    "runtime_repository": repository,
+                },
             },
         }
 
@@ -1882,11 +1941,12 @@ def handle_document_upload(
                 status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         # ... (rest of error handling remains similar but simplified) ...
+        # BREAKING CHANGE (Option A): case_id from business_context
         logger.exception(
             "Upload ingestion graph failed",
             extra={
                 "tenant_id": scope_context.get("tenant_id"),
-                "case_id": scope_context.get("case_id"),
+                "case_id": business_context.get("case_id"),
                 "reason": reason,
             },
         )
@@ -1896,11 +1956,12 @@ def handle_document_upload(
             status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     except Exception as exc:
+        # BREAKING CHANGE (Option A): case_id from business_context
         logger.exception(
             "Unexpected error while running upload ingestion graph",
             extra={
                 "tenant_id": scope_context.get("tenant_id"),
-                "case_id": scope_context.get("case_id"),
+                "case_id": business_context.get("case_id"),
                 "error_type": type(exc).__name__,
                 "error_message": str(exc),
             },
@@ -1927,11 +1988,12 @@ def handle_document_upload(
 
     document_id = graph_result.get("document_id")
     if not isinstance(document_id, str) or not document_id:
+        # BREAKING CHANGE (Option A): case_id from business_context
         logger.error(
             "Upload ingestion graph completed without persisting document",
             extra={
                 "tenant_id": scope_context.get("tenant_id"),
-                "case_id": scope_context.get("case_id"),
+                "case_id": business_context.get("case_id"),
                 "graph_decision": decision,
             },
         )
@@ -1946,11 +2008,12 @@ def handle_document_upload(
     # No need to dispatch a separate task.
     ingestion_run_id = graph_result.get("ingestion_run_id") or uuid4().hex
 
+    # BREAKING CHANGE (Option A): case_id and workflow_id from business_context
     logger.info(
         "Upload ingestion completed synchronously",
         extra={
             "tenant_id": scope_context.get("tenant_id"),
-            "case_id": scope_context.get("case_id"),
+            "case_id": business_context.get("case_id"),
             "document_id": document_id,
             "run_id": ingestion_run_id,
         },
@@ -1958,7 +2021,7 @@ def handle_document_upload(
 
     response_payload: dict[str, object] = {
         "trace_id": scope_context.get("trace_id"),
-        "workflow_id": scope_context.get("workflow_id"),
+        "workflow_id": business_context.get("workflow_id"),
     }
     if document_id:
         response_payload["document_id"] = document_id

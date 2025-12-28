@@ -70,8 +70,8 @@ def test_middleware_binds_headers_and_sets_response_metadata():
 
     assert response.status_code == 200
     assert response["X-Trace-Id"] == "4bf92f3577b34da6a3ce929d0e0e4736"
-    assert response["X-Tenant-Id"] == "tenant-789"
     assert response["X-Case-Id"] == "case-456"
+    assert response["X-Tenant-Id"] == "tenant-789"
     assert response["X-Key-Alias"] == "alias-001"
     assert response["traceparent"] == traceparent
     assert response[IDEMPOTENCY_KEY_HEADER] == "idem-789"
@@ -92,7 +92,6 @@ def test_middleware_binds_headers_and_sets_response_metadata():
     assert scope.run_id != scope.trace_id
     assert scope.ingestion_run_id is None
     assert scope.invocation_id
-    assert scope.case_id == "case-456"
     assert scope.idempotency_key == "idem-789"
 
     assert get_contextvars() == {}
@@ -104,7 +103,7 @@ def test_middleware_generates_trace_ids_when_headers_missing():
         factory,
         "post",
         "/ai/intake/",
-        HTTP_X_CASE_ID="case-auto",  # case_id is mandatory (Pre-MVP ID Contract)
+        HTTP_X_CASE_ID="case-auto",
     )
     request.tenant = Tenant(schema_name="trace-tenant", name="Trace Tenant")
 
@@ -124,9 +123,9 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert response.status_code == 201
     trace_id = response["X-Trace-Id"]
     assert re.fullmatch(r"[0-9a-f]{32}", trace_id)
+    assert response["X-Case-Id"] == "case-auto"
     assert response["X-Tenant-Id"] == "trace-tenant"
     assert "traceparent" not in response
-    assert response["X-Case-Id"] == "case-auto"
     assert "X-Key-Alias" not in response
 
     assert captured["trace.id"] == trace_id
@@ -144,7 +143,6 @@ def test_middleware_generates_trace_ids_when_headers_missing():
     assert scope.run_id != scope.trace_id
     assert scope.invocation_id
     assert scope.ingestion_run_id is None
-    assert scope.case_id == "case-auto"
     assert scope.idempotency_key is None
 
     assert get_contextvars() == {}
@@ -221,7 +219,7 @@ def test_middleware_uses_resolved_tenant_over_header():
         "get",
         "/ai/ping/",
         HTTP_X_TENANT_ID="spoofed-tenant",
-        HTTP_X_CASE_ID="case-tenant",  # case_id is mandatory (Pre-MVP ID Contract)
+        HTTP_X_CASE_ID="case-tenant",
     )
     request.tenant = Tenant(schema_name="canonical-tenant", name="Canonical")
 
@@ -269,7 +267,6 @@ def test_middleware_builds_scope_context_from_ingestion_headers():
     assert captured_scope.run_id is None
     assert captured_scope.invocation_id == "invoke-99"
     assert captured_scope.trace_id == "trace-scope"
-    assert captured_scope.case_id == "case-scope"
     assert captured_scope.tenant_id == "tenant-scope"
 
 
@@ -282,7 +279,7 @@ def test_middleware_accepts_both_run_ids():
         "/ai/ping/",
         HTTP_X_TENANT_ID="tenant-both",
         HTTP_X_TRACE_ID="trace-both",
-        HTTP_X_CASE_ID="case-both",  # case_id is mandatory
+        HTTP_X_CASE_ID="case-both",
         HTTP_X_RUN_ID="graph-1",
         HTTP_X_INGESTION_RUN_ID="ingest-1",
     )
@@ -303,7 +300,6 @@ def test_middleware_accepts_both_run_ids():
     assert isinstance(captured_scope, ScopeContext)
     assert captured_scope.run_id == "graph-1"
     assert captured_scope.ingestion_run_id == "ingest-1"
-    assert captured_scope.case_id == "case-both"
 
 
 def test_middleware_allows_value_error_from_view_to_propagate():
@@ -313,7 +309,7 @@ def test_middleware_allows_value_error_from_view_to_propagate():
         "get",
         "/ai/ping/",
         HTTP_X_TENANT_ID="tenant-error",
-        HTTP_X_CASE_ID="case-error",  # case_id is mandatory (Pre-MVP ID Contract)
+        HTTP_X_CASE_ID="case-error",
     )
     request.tenant = Tenant(schema_name="tenant-error", name="Tenant Error")
 

@@ -28,7 +28,7 @@ New code should use explicit paths:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Annotated, Any, ClassVar, Generic, Literal, Optional, TypeVar, Union
 
 try:  # pragma: no cover - typing backport

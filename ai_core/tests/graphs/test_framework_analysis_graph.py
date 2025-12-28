@@ -8,6 +8,8 @@ from uuid import uuid4
 
 import pytest
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.business.framework_analysis_graph import (
     build_graph,
     FrameworkAnalysisGraph,
@@ -397,17 +399,22 @@ class TestGraphEndToEnd:
 
         # Execute graph
         graph = build_graph()
-        input_params = FrameworkAnalysisInput(
-            document_collection_id=uuid4(),
-            document_id=uuid4(),
-        )
-
-        output = graph.run(
-            input_params=input_params,
+        input_params = FrameworkAnalysisInput()
+        context = ScopeContext(
             tenant_id="test_tenant",
             tenant_schema="test_schema",
             trace_id="test_trace",
+            invocation_id=str(uuid4()),
+            run_id="run-test",
+            service_id="test-worker",
+        ).to_tool_context(
+            business=BusinessContext(
+                collection_id=str(uuid4()),
+                document_id=str(uuid4()),
+            )
         )
+
+        output = graph.run(context=context, input_params=input_params)
 
         # Verify output
         assert output.gremium_identifier == "KBR"
@@ -425,16 +432,21 @@ class TestGraphEndToEnd:
         mock_retrieve.run.side_effect = Exception("Retrieve failed")
 
         graph = build_graph()
-        input_params = FrameworkAnalysisInput(
-            document_collection_id=uuid4(),
-            document_id=uuid4(),
+        input_params = FrameworkAnalysisInput()
+        context = ScopeContext(
+            tenant_id="test_tenant",
+            tenant_schema="test_schema",
+            trace_id="test_trace",
+            invocation_id=str(uuid4()),
+            run_id="run-test",
+            service_id="test-worker",
+        ).to_tool_context(
+            business=BusinessContext(
+                collection_id=str(uuid4()),
+                document_id=str(uuid4()),
+            )
         )
 
         # Should handle error gracefully
         with pytest.raises(Exception):
-            graph.run(
-                input_params=input_params,
-                tenant_id="test_tenant",
-                tenant_schema="test_schema",
-                trace_id="test_trace",
-            )
+            graph.run(context=context, input_params=input_params)

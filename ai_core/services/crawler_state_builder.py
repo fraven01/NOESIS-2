@@ -78,6 +78,9 @@ def build_crawler_state(
     repository = context.repository
     meta = context.meta
     scope_meta = meta["scope_context"]
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (case_id, workflow_id) now in business_context
+    business_meta = meta.get("business_context", {})
 
     builds: list[CrawlerStateBundle] = []
     for origin in request_data.origins or []:
@@ -341,7 +344,8 @@ def build_crawler_state(
 
         if snapshot_requested and body_bytes:
             tenant_id = str(scope_meta.get("tenant_id"))
-            case_id = str(scope_meta.get("case_id"))
+            # BREAKING CHANGE (Option A): case_id from business_context
+            case_id = str(business_meta.get("case_id"))
             snapshot_path, snapshot_sha256 = _write_snapshot(
                 object_store,
                 tenant=tenant_id,
@@ -354,7 +358,9 @@ def build_crawler_state(
 
         state: dict[str, object] = {
             "tenant_id": scope_meta.get("tenant_id"),
-            "case_id": scope_meta.get("case_id"),
+            "case_id": business_meta.get(
+                "case_id"
+            ),  # BREAKING CHANGE (Option A): from business_context
             "workflow_id": workflow_id,
             "external_id": source.external_id,
             "origin_uri": source.canonical_source,
