@@ -1759,6 +1759,13 @@ def handle_document_upload(
     document_metadata_payload.setdefault("content_hash", checksum)
     document_metadata_payload.setdefault("content_type", detected_mime)
 
+    audit_meta = {
+        "created_by_user_id": scope_context.get("user_id"),
+        "initiated_by_user_id": scope_context.get("user_id"),
+        "last_hop_service_id": scope_context.get("service_id"),
+    }
+    audit_meta = {key: value for key, value in audit_meta.items() if value}
+
     if domain_service and tenant:
         ingest_result = domain_service.ingest_document(
             tenant=tenant,
@@ -1767,6 +1774,7 @@ def handle_document_upload(
             or original_name,
             content_hash=checksum,
             metadata=document_metadata_payload,
+            audit_meta=audit_meta,
             collections=(
                 (ensured_collection,) if ensured_collection is not None else ()
             ),
@@ -1874,6 +1882,7 @@ def handle_document_upload(
                 "metadata": {
                     # Runtime dependencies passed in metadata
                     "runtime_repository": repository,
+                    "audit_meta": audit_meta,
                 },
             },
         }

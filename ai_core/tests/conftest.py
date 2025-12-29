@@ -24,12 +24,15 @@ class CapturingInMemoryDocumentsRepository(InMemoryDocumentsRepository):
         workflow_id: str | None = None,
         *,
         scope: object | None = None,
+        audit_meta: object | None = None,
     ) -> NormalizedDocument:
         payload = _extract_payload(doc.blob)
         original_flag = getattr(self, "_inline_conversion_enabled", True)
         self._inline_conversion_enabled = False
         try:
-            persisted = super().upsert(doc, workflow_id=workflow_id, scope=scope)
+            persisted = super().upsert(
+                doc, workflow_id=workflow_id, scope=scope, audit_meta=audit_meta
+            )
         finally:
             self._inline_conversion_enabled = original_flag
         source_media_type = getattr(doc.blob, "media_type", None)

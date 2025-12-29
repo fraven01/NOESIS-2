@@ -49,12 +49,15 @@ Proceed without asking only when the change stays within existing enforced contr
 Canonical header constants live in `common/constants.py`:
 
 **Infrastructure Headers (ScopeContext)**:
+
 - `X-Tenant-ID`, `X-Tenant-Schema`, `X-Trace-ID`, `X-Invocation-ID`, `Idempotency-Key`
 
 **Business Domain Headers (BusinessContext)**:
+
 - `X-Case-ID`, `X-Collection-ID`, `X-Workflow-ID`, `X-Document-ID`, `X-Document-Version-ID`
 
 **Other Headers**:
+
 - `X-Key-Alias`, `X-Retry-Attempt`
 
 ### Request -> scope context
@@ -98,6 +101,7 @@ audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
 ```
 
 Keys in `audit_meta`:
+
 - `trace_id`, `invocation_id`: Correlation
 - `created_by_user_id`: Entity owner (set once, immutable)
 - `initiated_by_user_id`: Who triggered the flow (causal tracking)
@@ -205,6 +209,7 @@ def validate_business_context(context: ToolContext) -> None:
 #### Migration from Old Code (Pre-Option A)
 
 **Old code (before Option A)**:
+
 ```python
 # ❌ BROKEN: case_id no longer in ScopeContext
 case_id = scope.case_id
@@ -216,6 +221,7 @@ class RetrieveInput(BaseModel):
 ```
 
 **New code (after Option A)**:
+
 ```python
 # ✅ CORRECT: case_id in BusinessContext
 case_id = context.business.case_id
@@ -321,6 +327,14 @@ Deterministic error type identifiers are defined in `ai_core/tools/errors.py:Too
 - Dev-only document/collection endpoints are guarded by `settings.DEBUG` (`documents/dev_api.py:_require_debug`) and wired in `noesis2/urls.py`.
 - Health endpoint for lifecycle checks: `noesis2/urls.py` -> `api/health/document-lifecycle/`.
 
+## Documents: User Integration & Collaboration
+
+- **User Attribution**: `Document.created_by` / `Document.updated_by` (driven by `AuditMeta`).
+- **Authorization**: `documents/authz.py:DocumentAuthzService` (checks owner > permission > case > role).
+- **Activity Tracking**: `documents/activity_service.py` logs to `DocumentActivity`.
+- **Collaboration**: `DocumentComment`, `DocumentMention`, `UserDocumentFavorite` (Phase 4a).
+- **Notifications**: In-app (`DocumentNotification`) and external (`NotificationEvent` / `NotificationDelivery`) (Phase 4b).
+
 ## Worker queue (ingestion)
 
 - Ingestion Celery queue name is `"ingestion"` (e.g. `ai_core/tasks.py:run_ingestion_graph` uses `@shared_task(..., queue="ingestion", name="ai_core.tasks.run_ingestion_graph")`).
@@ -344,14 +358,17 @@ Deterministic error type identifiers are defined in `ai_core/tools/errors.py:Too
 ## Tests (Docker)
 
 **All Python tests**:
+
 - Linux: `npm run test:py` (vollständig inkl. `@pytest.mark.slow`)
 - Windows: `npm run win:test:py`
 
 **Einzelne Tests**:
+
 - Linux: `npm run test:py:single -- path/to/test.py`
 - Windows: `npm run win:test:py:single -- path/to/test.py`
 
 **Beispiele**:
+
 ```bash
 # Einzelne Testdatei
 npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_graph.py
@@ -364,6 +381,7 @@ npm run win:test:py:single -- ai_core/tests/graphs/test_universal_ingestion_grap
 ```
 
 **Weitere Test-Varianten**:
+
 - Fast (ohne `@pytest.mark.slow`): `npm run test:py:fast` / `npm run win:test:py:fast`
 - Unit (ohne DB): `npm run test:py:unit` / `npm run win:test:py:unit`
 - Coverage: `npm run test:py:cov` / `npm run win:test:py:cov`

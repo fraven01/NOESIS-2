@@ -1,0 +1,90 @@
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 h-full">
+    <!-- Notifications Feed -->
+    <div class="lg:col-span-1 border-r border-slate-200 pr-6 overflow-y-auto">
+        <h3 class="text-sm font-semibold text-slate-900 mb-4 flex items-center gap-2">
+            <svg class="h-4 w-4 text-slate-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                    d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
+            </svg>
+            My Notifications
+            <span class="bg-indigo-100 text-indigo-700 text-xs px-2 py-0.5 rounded-full">{{ notifications|length
+                }}</span>
+        </h3>
+
+        <div class="space-y-3">
+            {% for notification in notifications %}
+            <div class="p-3 bg-white rounded-lg border border-slate-200 hover:border-indigo-200 transition-colors">
+                <div class="flex items-start gap-3">
+                    <div
+                        class="h-8 w-8 rounded-full bg-indigo-50 flex items-center justify-center text-xs font-bold text-indigo-600 shrink-0">
+                        {{ notification.actor.first_name|slice:":1" }}
+                    </div>
+                    <div>
+                        <p class="text-sm text-slate-800">
+                            <span class="font-medium">{{ notification.actor.first_name }}</span>
+                            {{ notification.verb }}
+                        </p>
+                        <p class="text-xs text-slate-500 mt-1">{{ notification.description }}</p>
+                        <div class="mt-2 flex items-center gap-2 text-[10px] text-slate-400">
+                            <span>{{ notification.created_at|timesince }} ago</span>
+                            &bull;
+                            <span class="font-mono">{{ notification.target_document.title }}</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% empty %}
+            <div class="text-center py-8 text-slate-400 text-sm italic">
+                No notifications yet.
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+
+    <!-- Playground -->
+    <div class="lg:col-span-2">
+        <h3 class="text-sm font-semibold text-slate-900 mb-4">Collaboration Playground</h3>
+
+        <div class="bg-white rounded-xl border border-slate-200 p-6 shadow-sm">
+            <p class="text-sm text-slate-600 mb-4">
+                Select a document from the "Document Explorer" tab to start collaborating, or use the quick actions
+                below.
+            </p>
+
+            <div class="grid grid-cols-2 gap-4">
+                <div class="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <h4 class="font-medium text-slate-800 mb-2">Simulate Access</h4>
+                    <p class="text-xs text-slate-500 mb-3">Check how permissions resolve for the current simulated user.
+                    </p>
+                    <button
+                        class="w-full text-center px-4 py-2 bg-white border border-slate-300 rounded text-sm text-slate-700 hover:bg-slate-50">
+                        Check Permissions
+                    </button>
+                </div>
+
+                <div class="p-4 bg-slate-50 rounded-lg border border-slate-200">
+                    <h4 class="font-medium text-slate-800 mb-2">Trigger Notification</h4>
+                    <p class="text-xs text-slate-500 mb-3">Send a test notification to this user.</p>
+                    <button
+                        class="w-full text-center px-4 py-2 bg-indigo-600 border border-transparent rounded text-sm text-white hover:bg-indigo-700">
+                        Send Test Ping
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Document Preview (Placeholder) -->
+        <div id="collab-doc-preview" class="mt-6 border-t border-slate-200 pt-6">
+            <div
+                class="flex items-center justify-center h-48 rounded-lg border-2 border-dashed border-slate-200 text-slate-400">
+                <div class="text-center">
+                    <svg class="mx-auto h-8 w-8 text-slate-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                            d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    <p class="mt-2 text-sm">Select a document to view comments</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

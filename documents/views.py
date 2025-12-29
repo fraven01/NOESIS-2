@@ -1,13 +1,21 @@
 """Document download views."""
 
+import json
 import time
 
-from django.http import FileResponse, HttpResponse, HttpResponseNotModified
+from django.http import FileResponse, HttpResponse, HttpResponseNotModified, JsonResponse
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_http_methods
+from django_tenants.utils import schema_context
 from structlog.stdlib import get_logger
 
 from ai_core.services import _get_documents_repository
 from customers.tenant_context import TenantContext, TenantRequiredError
+from documents.activity_service import ActivityTracker
+from documents.authz import DocumentAuthzService
+from documents.models import Document, DocumentActivity, DocumentPermission
+from documents.serializers import DocumentSerializer
+from profiles.models import UserProfile
 from .utils import (
     detect_content_type,
     sanitize_filename,
@@ -23,6 +31,12 @@ from .http_handlers import (
 )
 
 logger = get_logger(__name__)
+
+
+RECENT_ACTIVITY_TYPES = (
+    DocumentActivity.ActivityType.VIEW,
+    DocumentActivity.ActivityType.DOWNLOAD,
+)
 
 
 def _tenant_context_from_request(request) -> tuple[str, str]:
@@ -46,6 +60,53 @@ def _tenant_context_from_request(request) -> tuple[str, str]:
         raise TenantRequiredError("Tenant could not be resolved from request")
 
     return str(tenant_id), str(tenant_schema)
+
+
+def _resolve_request_user(request):
+    user = getattr(request, "user", None)
+    if user and getattr(user, "is_authenticated", False):
+        return user
+    return None
+
+
+def _require_authenticated_user(request):
+    user = _resolve_request_user(request)
+    if user:
+        return user, None
+    return None, error(403, "AuthenticationRequired", "Authentication required")
+
+
+def _user_is_tenant_admin(user) -> bool:
+    try:
+        profile = user.userprofile
+    except UserProfile.DoesNotExist:
+        return False
+    return profile.is_active and profile.role == UserProfile.Roles.TENANT_ADMIN
+
+
+def _log_download_activity(
+    request,
+    *,
+    document_id,
+    tenant_id: str,
+    tenant_schema: str,
+) -> None:
+    user = _resolve_request_user(request)
+    try:
+        ActivityTracker.log(
+            document_id=document_id,
+            activity_type="DOWNLOAD",
+            user=user,
+            request=request,
+            tenant_schema=tenant_schema,
+        )
+    except Exception:
+        logger.warning(
+            "documents.download.activity_log_failed",
+            exc_info=True,
+            tenant_id=tenant_id,
+            document_id=str(document_id),
+        )
 
 
 @require_http_methods(["GET", "HEAD"])
@@ -78,6 +139,23 @@ def document_download(request, document_id: str):
         tenant_id, tenant_schema = _tenant_context_from_request(request)
     except TenantRequiredError as exc:
         return error(403, "TenantRequired", str(exc))
+
+    user, auth_error = _require_authenticated_user(request)
+    if auth_error:
+        return auth_error
+
+    tenant_obj = TenantContext.resolve_identifier(tenant_id, allow_pk=True)
+    with schema_context(tenant_schema):
+        access = DocumentAuthzService.user_can_access_document_id(
+            user=user,
+            document_id=doc_uuid,
+            permission_type=DocumentPermission.PermissionType.DOWNLOAD,
+            tenant=tenant_obj,
+        )
+    if not access.allowed:
+        if access.reason == "not_found":
+            return error(404, "DocumentNotFound", f"Document {document_id} not found")
+        return error(403, "PermissionDenied", "Permission denied")
 
     logger.info(
         "documents.download.started",
@@ -162,6 +240,13 @@ def document_download(request, document_id: str):
             for key, value in cache_strategy.cache_headers().items():
                 response[key] = value
 
+            _log_download_activity(
+                request,
+                document_id=doc_uuid,
+                tenant_id=tenant_id,
+                tenant_schema=tenant_schema,
+            )
+
             duration_ms = int((time.time() - start_time) * 1000)
             logger.info(
                 "documents.download.partial_content",
@@ -206,6 +291,13 @@ def document_download(request, document_id: str):
         response["Last-Modified"] = cache_meta.last_modified
         for key, value in cache_strategy.cache_headers().items():
             response[key] = value
+
+        _log_download_activity(
+            request,
+            document_id=doc_uuid,
+            tenant_id=tenant_id,
+            tenant_schema=tenant_schema,
+        )
 
         duration_ms = int((time.time() - start_time) * 1000)
         logger.info(
@@ -378,3 +470,153 @@ def asset_serve(request, document_id: str, asset_id: str):
             duration_ms=duration_ms,
         )
         return error(500, "InternalError", str(e))
+
+
+@require_http_methods(["GET"])
+def recent_documents(request):
+    """Return the most recent documents accessed by the authenticated user."""
+    user = _resolve_request_user(request)
+    if not user:
+        return JsonResponse(
+            {"detail": "Authentication required"},
+            status=401,
+        )
+
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
+
+    with schema_context(tenant_schema):
+        activity_ids = (
+            DocumentActivity.objects.filter(
+                user=user, activity_type__in=RECENT_ACTIVITY_TYPES
+            )
+            .order_by("-timestamp")
+            .values_list("document_id", flat=True)[:20]
+        )
+
+        document_ids = []
+        seen = set()
+        for document_id in activity_ids:
+            if document_id in seen:
+                continue
+            seen.add(document_id)
+            document_ids.append(document_id)
+            if len(document_ids) >= 10:
+                break
+
+        documents = list(
+            Document.objects.filter(id__in=document_ids).select_related(
+                "created_by", "updated_by"
+            )
+        )
+        documents_by_id = {doc.id: doc for doc in documents}
+        ordered_documents = [
+            documents_by_id[doc_id]
+            for doc_id in document_ids
+            if doc_id in documents_by_id
+        ]
+
+    return JsonResponse(DocumentSerializer(ordered_documents, many=True).data, safe=False)
+
+
+@require_http_methods(["POST"])
+def share_document(request, document_id: str):
+    """Grant document permission to another user."""
+    user, auth_error = _require_authenticated_user(request)
+    if auth_error:
+        return auth_error
+
+    try:
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
+    except TenantRequiredError as exc:
+        return error(403, "TenantRequired", str(exc))
+
+    try:
+        payload = json.loads(request.body or b"{}")
+    except json.JSONDecodeError:
+        return error(400, "InvalidJSON", "Invalid JSON payload")
+
+    target_user_id = payload.get("user_id")
+    if not target_user_id:
+        return error(400, "MissingUserId", "user_id is required")
+
+    permission_type = payload.get(
+        "permission_type", DocumentPermission.PermissionType.VIEW
+    )
+    try:
+        permission_type = DocumentPermission.PermissionType(permission_type).value
+    except ValueError:
+        return error(
+            400,
+            "InvalidPermissionType",
+            f"Invalid permission_type: {permission_type}",
+        )
+
+    expires_at = None
+    expires_at_raw = payload.get("expires_at")
+    if expires_at_raw:
+        expires_at = parse_datetime(str(expires_at_raw))
+        if expires_at is None:
+            return error(400, "InvalidExpiresAt", "expires_at must be ISO datetime")
+
+    from django.apps import apps
+
+    User = apps.get_model("users", "User")
+
+    with schema_context(tenant_schema):
+        document = (
+            Document.objects.filter(id=document_id)
+            .select_related("created_by")
+            .first()
+        )
+        if document is None:
+            return error(404, "DocumentNotFound", f"Document {document_id} not found")
+
+        if document.created_by_id != user.id and not _user_is_tenant_admin(user):
+            return error(403, "PermissionDenied", "Only owner can share document")
+
+        target_user = User.objects.filter(pk=target_user_id).first()
+        if target_user is None:
+            return error(404, "UserNotFound", f"User {target_user_id} not found")
+
+        permission, _ = DocumentPermission.objects.update_or_create(
+            document=document,
+            user=target_user,
+            permission_type=permission_type,
+            defaults={
+                "granted_by": user,
+                "expires_at": expires_at,
+            },
+        )
+
+        try:
+            ActivityTracker.log(
+                document=document,
+                activity_type=DocumentActivity.ActivityType.SHARE,
+                user=user,
+                case_id=document.case_id,
+                metadata={
+                    "shared_with": str(target_user.id),
+                    "permission_type": permission_type,
+                },
+            )
+        except Exception:
+            logger.warning(
+                "documents.share.activity_log_failed",
+                exc_info=True,
+                tenant_id=tenant_id,
+                document_id=str(document_id),
+            )
+
+    return JsonResponse(
+        {
+            "permission_id": permission.id,
+            "document_id": str(document.id),
+            "user_id": str(target_user.id),
+            "permission_type": permission_type,
+            "expires_at": expires_at.isoformat() if expires_at else None,
+        },
+        status=201,
+    )

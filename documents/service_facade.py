@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from django.utils import timezone
 
+from ai_core.contracts.audit_meta import audit_meta_from_scope
 from ai_core.contracts.scope import ScopeContext
 from customers.tenant_context import TenantContext
 from django_tenants.utils import schema_context
@@ -114,12 +115,14 @@ def ingest_document(
         schema_context(scope.tenant_schema) if scope.tenant_schema else nullcontext()
     )
 
+    audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
     with tenant_schema_ctx:
         ingest_result = service.ingest_document(
             tenant=tenant,
             source=str(source),
             content_hash=str(content_hash),
             metadata=metadata,
+            audit_meta=audit_meta.model_dump(mode="json"),
             collections=collections,
             embedding_profile=metadata.get("embedding_profile"),
             scope=metadata.get("scope"),

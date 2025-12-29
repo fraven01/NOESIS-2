@@ -54,19 +54,39 @@
     <div class="mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
       <div class="flex items-center justify-between">
         <h1 class="text-lg font-semibold text-slate-900">RAG Developer Workbench</h1>
-        <div class="flex items-center gap-4 text-xs text-slate-500">
-          <div class="flex items-center gap-2">
-            <span class="font-medium">Tenant:</span>
-            <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ tenant_id }}</code>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="font-medium">Schema:</span>
-            <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ tenant_schema }}</code>
-          </div>
-          <div class="flex items-center gap-2">
-            <span class="font-medium">Case:</span>
-            <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ case_id }}</code>
-          </div>
+        <div class="flex items-center gap-6">
+            <!-- Identity Switcher -->
+            <form action="{% url 'rag_tools_identity_switch' %}" method="post" class="flex items-center gap-2">
+                {% csrf_token %}
+                <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting As:</label>
+                <select name="user_id" id="identity-switch" onchange="this.form.submit()"
+                    class="block w-40 rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 {% if request.is_simulated_user %}bg-amber-50 text-amber-900 border-amber-300{% endif %}">
+                    <option value="">-- Real User --</option>
+                    <option value="anonymous" {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
+                    <optgroup label="Simulated Persons">
+                        {% for u in simulated_users %}
+                        <option value="{{ u.pk }}" {% if u.pk|stringformat:"s" == current_simulated_user_id|stringformat:"s" %}selected{% endif %}>
+                            {{ u.username }} ({{ u.profile.role }})
+                        </option>
+                        {% endfor %}
+                    </optgroup>
+                </select>
+            </form>
+
+            <div class="flex items-center gap-4 text-xs text-slate-500 border-l border-slate-200 pl-6">
+              <div class="flex items-center gap-2">
+                <span class="font-medium">Tenant:</span>
+                <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ tenant_id }}</code>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-medium">Schema:</span>
+                <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ tenant_schema }}</code>
+              </div>
+              <div class="flex items-center gap-2">
+                <span class="font-medium">Case:</span>
+                <code class="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">{{ case_id }}</code>
+              </div>
+            </div>
         </div>
       </div>
     </div>
@@ -83,6 +103,10 @@
           class="border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700 whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium transition-colors">Crawler</button>
         <button data-tab-target="#tab-ingestion"
           class="border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700 whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium transition-colors">Ingestion</button>
+        <button data-tab-target="#tab-collaboration"
+            class="border-transparent text-slate-500 hover:border-slate-300 hover:text-slate-700 whitespace-nowrap border-b-2 py-4 px-1 text-sm font-medium transition-colors">
+            Collaboration & Identity
+        </button>
       </nav>
     </div>
 
@@ -172,8 +196,8 @@
                   class="mt-1 block w-full rounded-md border-slate-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 sm:text-sm">
                 <datalist id="collection-options">
                   {% for opt in collection_options %}
-                  <option value="{{ opt }}">
-                    {% endfor %}
+                  <option value="{{ opt }}"></option>
+                  {% endfor %}
                 </datalist>
               </div>
 
@@ -301,6 +325,19 @@
               <p class="text-sm text-slate-500">Ingestion response will appear here.</p>
             </div>
           </div>
+        </div>
+      </div>
+
+      <!-- Collaboration Tab -->
+      <div id="tab-collaboration" data-tab-content class="hidden">
+        <div hx-get="{% url 'tool_collaboration' %}" hx-trigger="revealed" hx-swap="innerHTML">
+            <!-- Content loaded via HTMX when tab is shown -->
+            <div class="rounded-lg border border-dashed border-slate-300 p-12 text-center">
+                <svg class="mx-auto h-12 w-12 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                <h3 class="mt-2 text-sm font-medium text-slate-900">Loading Collaboration Tools...</h3>
+            </div>
         </div>
       </div>
     </div>

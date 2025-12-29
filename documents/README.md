@@ -17,11 +17,15 @@ The documents app provides:
 **Status**: Roadmap (USER-MANAGEMENT branch completed)
 
 The document repository integrates with the user management system to provide:
-- User attribution (`created_by`, `updated_by` on documents)
-- Document activity tracking (downloads, views, searches)
+- User attribution (`created_by`, `updated_by` on documents, sourced from `AuditMeta.created_by_user_id`)
+- Document activity tracking (downloads/uploads; views/searches pending)
 - Document-level permissions (fine-grained access control)
 - User preferences (favorites, recent documents, saved searches)
 - Collaboration features (comments, annotations, @mentions)
+- In-app notifications for mentions and saved search alerts (Phase 4a)
+
+Ownership uses `AuditMeta.created_by_user_id` (not `initiated_by_user_id`) and is preserved
+through S2S hops via audit meta.
 
 **Documentation**:
 - **Architecture**: [`docs/architecture/user-document-integration.md`](../docs/architecture/user-document-integration.md)

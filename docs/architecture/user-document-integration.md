@@ -47,27 +47,29 @@ context = ToolContext(
 ```python
 # ai_core/contracts/audit_meta.py:AuditMeta
 audit = AuditMeta(
-    created_by_user_id=scope.user_id,      # Document creator
-    initiated_by_user_id=scope.user_id,     # Request initiator
-    last_hop_service_id=scope.service_id,   # Service identifier (if S2S)
+    created_by_user_id=created_by_user_id,  # Ownership signal
+    initiated_by_user_id=initiated_by_user_id,  # Request initiator
+    last_hop_service_id=scope.service_id,   # Service identifier (S2S hop)
     last_modified_at=now
 )
 ```
+Notes:
+- For user request hops, `created_by_user_id` defaults to `scope.user_id`.
+- For S2S hops, `created_by_user_id` is preserved via `audit_meta` in tool metadata.
 
 ### Current User-Document Relationships
 
 **Document Model** (`documents/models.py:Document`):
-- **No direct FK** to User (no `created_by`/`updated_by` fields)
+- Direct FK to User via `created_by` / `updated_by`
 - Context fields: `workflow_id`, `trace_id`, `case_id` (for traceability)
 - Lifecycle: `lifecycle_state`, `lifecycle_updated_at`
 
-**Indirect Attribution** (via AuditMeta JSON):
-- Stored in `NormalizedDocument.meta` during ingestion
-- Not directly queryable via Django ORM
-- Used for audit trail, not authorization
+**Ownership Source** (via AuditMeta):
+- `AuditMeta.created_by_user_id` drives `Document.created_by` (write-once)
+- `AuditMeta` is transported through graph metadata to repository upserts
 
 **DocumentCollectionMembership** (`documents/models.py`):
-- `added_by` (CharField): Service or user identifier (string, not FK)
+- `added_by_user` (FK) / `added_by_service_id` (CharField), both nullable (pre-MVP)
 - `added_at` (DateTimeField): When document was added to collection
 
 ### Authorization Model
@@ -75,7 +77,12 @@ audit = AuditMeta(
 **Case-Based Access Control:**
 - Primary authorization: `CaseMembership` (M2M: `Case` ↔ `User`)
 - Function: `cases/authz.py:user_can_access_case(user, case, tenant)`
-- Returns: `CaseAccessResult` with `allowed` boolean and context
+- Returns: `bool`
+
+**Document-Level Access Control:**
+- Explicit grants: `documents/models.py:DocumentPermission`
+- Authorization service: `documents/authz.py:DocumentAuthzService`
+- Enforced in: `documents/views.py:document_download`, `ai_core/nodes/retrieve.py`
 
 **Role-Based Rules** (tenant-type dependent):
 
@@ -101,13 +108,14 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 **Current Implementation:**
 - **CaseEvent** (`cases/models.py`): Structured event log with `payload` (JSONField)
 - **Langfuse Traces**: Production observability (not persisted in DB for user queries)
-- **No dedicated DocumentActivity model**: Downloads, views, searches not tracked
+- **DocumentActivity** (`documents/models.py`): Append-only activity log
+  - Download events logged in `documents/views.py:document_download`
+  - Upload events logged in `documents/upload_worker.py:UploadWorker`
 
-**What's NOT tracked:**
-- Document downloads (no audit log)
-- Document views/access
+**What's NOT tracked (yet):**
+- Document views/access (non-download)
 - Search queries by user
-- Document modifications
+- Document modifications beyond upload/download
 
 ## Identified Gaps
 
@@ -123,6 +131,8 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 - Difficult audit queries
 - No ownership lifecycle management
 
+**Status:** Implemented in Phase 1 (created_by/updated_by + membership attribution).
+
 ### 2. No Document-Level Permissions
 
 **Problem:**
@@ -134,6 +144,8 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 - Coarse-grained access control
 - Cannot implement least-privilege principle
 - No external sharing capability
+
+**Status:** Implemented in Phase 3 (DocumentPermission + authz + share endpoint).
 
 ### 3. No User Activity Audit Trail
 
@@ -147,6 +159,8 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 - Security blind spot (no detection of suspicious access)
 - No usage analytics
 
+**Status:** Implemented in Phase 2 (DocumentActivity + download/upload logging).
+
 ### 4. No User Preferences for Documents
 
 **Problem:**
@@ -159,6 +173,8 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 - Reduced productivity
 - No personalization
 
+**Status:** Implemented in Phase 4a (preferences, favorites, saved searches).
+
 ### 5. No Collaboration Features
 
 **Problem:**
@@ -170,6 +186,8 @@ LAW_FIRM mode (`tenant_type == 'LAW_FIRM'`):
 - No team collaboration
 - Knowledge siloed
 - Reduced engagement
+
+**Status:** Core comments/mentions implemented in Phase 4a; external notifications pending.
 
 ## Proposed Architecture
 
@@ -196,20 +214,26 @@ class Document(models.Model):
         related_name='updated_documents'
     )
 
-    # Timestamps
+    # Timestamps (already present, no change needed)
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 ```
 
 **Migration Strategy:**
 - Add nullable FK fields
-- Backfill from `AuditMeta` JSON where possible
-- Future uploads: Set from `ScopeContext.user_id`
+- No backfill required (DB reset acceptable)
+- Future uploads: Set ownership via `AuditMeta.created_by_user_id` (not `initiated_by_user_id`)
 
 **Integration Points:**
-- `documents/domain_service.py:DocumentDomainService.register_document_from_upload`
-- `documents/upload_worker.py:UploadWorker._run`
-- `ai_core/graphs/technical/universal_ingestion_graph.py` (extract user from context)
+- `documents/domain_service.py:DocumentDomainService.ingest_document` (write-once created_by)
+- `documents/upload_worker.py:UploadWorker.process` (preserve audit_meta, consistent workflow_id)
+- `ai_core/tasks.py` (carry audit_meta into ToolContext metadata)
+- `ai_core/adapters/db_documents_repository.py` (set created_by/updated_by from audit_meta)
+
+**Collection Membership Attribution (Phase 1):**
+- Replace `added_by` with `added_by_user` + `added_by_service_id` (nullable).
+- Pre-MVP: allow both NULL; Post-MVP: add XOR constraint if desired.
+- Source: `audit_meta.created_by_user_id` first, else `audit_meta.last_hop_service_id`.
 
 ### Phase 2: Document Activity Tracking (Compliance)
 
@@ -229,6 +253,7 @@ class DocumentActivity(models.Model):
             ('SHARE', 'Shared'),
             ('UPLOAD', 'Uploaded'),
             ('DELETE', 'Deleted'),
+            ('TRANSFER', 'Ownership Transferred'),
         ],
         db_index=True
     )
@@ -237,10 +262,10 @@ class DocumentActivity(models.Model):
 
     # Request context
     ip_address = models.GenericIPAddressField(null=True)
-    user_agent = models.TextField(blank=True)
+    user_agent = models.CharField(max_length=500, blank=True, default="")
 
     # Business context
-    case_id = models.UUIDField(null=True, db_index=True)
+    case_id = models.CharField(max_length=255, null=True, db_index=True)
     trace_id = models.CharField(max_length=255, null=True, db_index=True)
 
     # Optional metadata
@@ -256,10 +281,9 @@ class DocumentActivity(models.Model):
 ```
 
 **Integration Points:**
-- `documents/views.py:download_document` - Log DOWNLOAD
-- `documents/views.py:serve_asset` - Log VIEW (optional)
-- `ai_core/nodes/retrieve.py` - Log SEARCH (when document returned)
-- `documents/domain_service.py` - Log UPLOAD, DELETE
+- `documents/views.py:document_download` - Log DOWNLOAD
+- `documents/upload_worker.py:UploadWorker` - Log UPLOAD (pre-registration path)
+- `documents/views.py:recent_documents` - Recent documents API
 
 **Retention Policy:**
 - Keep activity logs for configurable period (default: 90 days)
@@ -273,7 +297,7 @@ class DocumentActivity(models.Model):
 # documents/models.py:DocumentPermission
 class DocumentPermission(models.Model):
     document = models.ForeignKey('Document', on_delete=models.CASCADE)
-    user = models.ForeignKey('users.User', on_delete=models.CASCADE, null=True)
+    user = models.ForeignKey('users.User', on_delete=models.CASCADE)
     # Future: group = models.ForeignKey('users.UserGroup', ...)
 
     permission_type = models.CharField(
@@ -292,17 +316,21 @@ class DocumentPermission(models.Model):
         'users.User',
         on_delete=models.SET_NULL,
         null=True,
-        related_name='granted_permissions'
+        related_name='granted_document_permissions'
     )
     granted_at = models.DateTimeField(auto_now_add=True)
-    expires_at = models.DateTimeField(null=True, blank=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
 
     class Meta:
-        unique_together = [('document', 'user', 'permission_type')]
+        constraints = [
+            models.UniqueConstraint(
+                fields=('document', 'user', 'permission_type'),
+                name='document_permission_unique'
+            )
+        ]
         indexes = [
             models.Index(fields=['document', 'user']),
             models.Index(fields=['user', 'permission_type']),
-            models.Index(fields=['expires_at']),
         ]
 ```
 
@@ -323,24 +351,32 @@ class DocumentAuthzService:
         Check if user can access document with given permission.
 
         Authorization hierarchy:
-        1. Document-level permissions (explicit grant)
-        2. Case-level permissions (CaseMembership)
-        3. Role-based access (Tenant rules)
+        1. Owner access
+        2. Document-level permissions (explicit grant)
+        3. Case-level permissions (CaseMembership)
+        4. Role-based access (Tenant rules)
         """
+        # Owner access
+        if document.created_by_id == user.id:
+            return DocumentAccessResult(allowed=True, source='owner')
+
         # Check explicit document permission
+        # Q imported from django.db.models
         if DocumentPermission.objects.filter(
             document=document,
             user=user,
             permission_type=permission_type,
-            expires_at__gt=now() | expires_at__isnull=True
+        ).filter(
+            Q(expires_at__gt=now()) | Q(expires_at__isnull=True)
         ).exists():
             return DocumentAccessResult(allowed=True, source='document_permission')
 
         # Fallback to case-level authorization
         if document.case_id:
-            case = Case.objects.get(external_id=document.case_id)
-            case_access = user_can_access_case(user, case, tenant)
-            if case_access.allowed:
+            case = Case.objects.filter(
+                tenant=tenant, external_id=document.case_id
+            ).first()
+            if case and user_can_access_case(user, case, tenant):
                 return DocumentAccessResult(allowed=True, source='case_membership')
 
         # Fallback to role-based (tenant-level all-cases access)
@@ -350,11 +386,11 @@ class DocumentAuthzService:
 ```
 
 **Integration Points:**
-- `documents/views.py:download_document` - Check permissions before serving
+- `documents/views.py:document_download` - Check permissions before serving
 - `ai_core/nodes/retrieve.py` - Filter results by user permissions
-- New endpoints: `POST /documents/{id}/share`, `DELETE /documents/{id}/permissions/{perm_id}`
+- Share endpoint: `POST /documents/share/<uuid:document_id>/`
 
-### Phase 4: User Preferences & Collaboration (Post-MVP)
+### Phase 4a: Preferences, Collaboration, In-App Notifications (Pre-MVP)
 
 **User Preferences:**
 ```python
@@ -407,6 +443,40 @@ class DocumentMention(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 ```
 
+**In-App Notifications:**
+```python
+# documents/models.py:DocumentNotification
+class DocumentNotification(models.Model):
+    user = models.ForeignKey('users.User', on_delete=models.SET_NULL, null=True)
+    document = models.ForeignKey('Document', on_delete=models.SET_NULL, null=True)
+    comment = models.ForeignKey('DocumentComment', on_delete=models.SET_NULL, null=True)
+    event_type = models.CharField(choices=[('MENTION', 'Mention'), ...])
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+```
+
+**Mention Parsing (Phase 4a):**
+- Primary: rich token with user_id (`<@123>`)
+- Fallback: `@username` when the username is unique (case-insensitive)
+
+**Saved Searches (Phase 4a):**
+- `SavedSearch` model stores query + filters
+- Scheduler runs hourly by default (bounded + incremental)
+- Emits in-app notifications with match counts
+
+### Phase 4b: External Notifications & Advanced Collaboration (Post-MVP)
+
+**Scope (Phase 4b MVP):**
+- External notification pipeline with persisted events + deliveries
+- Document subscriptions powering reply notifications
+- User-level email delivery preferences (enabled + frequency + comment reply)
+
+**Core Models:**
+- `NotificationEvent` (external event log)
+- `NotificationDelivery` (email delivery queue + status)
+- `DocumentSubscription` (who follows a document)
+
 ## Migration Strategy (Pre-MVP Simplified)
 
 **Pre-MVP Context**: Database resets are acceptable. No backward compatibility or data migration required. This significantly simplifies all phases.
@@ -414,7 +484,7 @@ class DocumentMention(models.Model):
 ### Database Migrations
 
 **Phase 1 (Simplified):**
-1. Add `created_by`, `updated_by`, `created_at`, `updated_at` to Document (nullable for system uploads)
+1. Add `created_by`, `updated_by` to Document (timestamps already exist)
 2. ~~Backfill script~~ - NOT NEEDED (pre-MVP clean start)
 3. Create indexes on new fields (auto-generated)
 
@@ -428,17 +498,24 @@ class DocumentMention(models.Model):
 2. Implement DocumentAuthzService
 3. Integrate in retrieve node and views
 
-**Phase 4:**
+**Phase 4a:**
 1. Extend UserProfile with document preferences
 2. Create UserDocumentFavorite model
 3. Create DocumentComment, DocumentMention models
+4. Create DocumentNotification + SavedSearch models
+
+**Phase 4b:**
+1. Add `NotificationEvent`, `NotificationDelivery`, `DocumentSubscription`
+2. Extend `UserProfile` with external email preferences
+3. External notification dispatch + delivery providers
+4. Collaboration enhancements beyond Phase 4a
 
 ### Backward Compatibility (Pre-MVP: NOT REQUIRED)
 
 **AuditMeta:**
-- ~~Preservation~~ - Can be removed or simplified post-migration
-- New system: Use FK fields as single source of truth
-- ~~Dual-write~~ - NOT NEEDED (pre-MVP)
+- Ownership source: `created_by_user_id` drives `Document.created_by`
+- Transport: carried in `ToolContext.metadata` through ingestion to `upsert()`
+- Storage: not persisted in `Document.metadata` (pre-MVP simplification)
 
 **API Compatibility:**
 - Breaking changes acceptable (pre-MVP)
@@ -454,16 +531,19 @@ class DocumentMention(models.Model):
 - `documents/tests/test_domain_service.py`: Update existing tests
 
 **Phase 2:**
-- `documents/tests/test_activity_tracking.py`: Test activity logging
-- `documents/tests/test_views.py`: Update download tests
+- `documents/tests/test_activity_service.py`: Test activity logging
+- `documents/tests/test_download_view.py`: Download logging coverage
 
 **Phase 3:**
 - `documents/tests/test_authz.py`: Document permission checks
-- `ai_core/tests/nodes/test_retrieve.py`: Permission-filtered retrieval
+- `documents/tests/test_share_document.py`: Share endpoint
+- `ai_core/tests/test_retrieve_permissions.py`: Permission-filtered retrieval
 
-**Phase 4:**
-- `documents/tests/test_favorites.py`: Favorites CRUD
-- `documents/tests/test_comments.py`: Comments system
+**Phase 4a:**
+- `documents/tests/test_favorites_api.py`: Favorites CRUD
+- `documents/tests/test_comments_api.py`: Comments system + mentions
+- `documents/tests/test_notifications_api.py`: In-app notifications
+- `documents/tests/test_saved_searches.py`: Saved searches + scheduler
 
 ### Integration Tests
 
@@ -476,33 +556,47 @@ class DocumentMention(models.Model):
 ### Acceptance Criteria
 
 **Phase 1 (Pre-MVP):**
-- [ ] Document model has `created_by`, `updated_by` FK fields
-- [ ] New uploads set `created_by` from `ScopeContext.user_id`
-- [ ] System uploads (crawler) have `created_by = NULL`
-- [ ] Django Admin shows user attribution
-- [ ] API returns `created_by` in document responses
+- [x] Document model has `created_by`, `updated_by` FK fields
+- [x] New uploads set `created_by` from `AuditMeta.created_by_user_id`
+- [x] System uploads (crawler) have `created_by = NULL`
+- [x] DocumentCollectionMembership has `added_by_user` / `added_by_service_id` (nullable)
+- [x] Django Admin shows user attribution
+- [x] API returns `created_by` in document responses
 - [ ] ~~Migration backfills~~ - NOT NEEDED (pre-MVP clean start)
 
 **Phase 2:**
-- [ ] DocumentActivity model exists with all activity types
-- [ ] Download endpoint logs DOWNLOAD activity
-- [ ] Upload logs UPLOAD activity
+- [x] DocumentActivity model exists with all activity types
+- [x] Download endpoint logs DOWNLOAD activity
+- [x] Upload logs UPLOAD activity
 - [ ] Activity retention policy implemented
-- [ ] Admin interface for activity log
+- [x] Admin interface for activity log
 
 **Phase 3:**
-- [ ] DocumentPermission model supports VIEW/DOWNLOAD/COMMENT/EDIT_META
-- [ ] DocumentAuthzService checks permissions before access
-- [ ] Retrieve node filters by user permissions
-- [ ] Share endpoint creates permission grants
+- [x] DocumentPermission model supports VIEW/DOWNLOAD/COMMENT/EDIT_META
+- [x] DocumentAuthzService checks permissions before access
+- [x] Retrieve node filters by user permissions
+- [x] Share endpoint creates permission grants
 - [ ] Expiring permissions auto-cleaned (Celery task)
 
-**Phase 4:**
-- [ ] UserProfile extended with document preferences
-- [ ] Favorites API (add/remove/list)
-- [ ] Comments system (create/reply/edit/delete)
-- [ ] @Mentions trigger notifications
-- [ ] Recent documents API
+**Phase 4a:**
+- [x] UserProfile extended with document preferences
+- [x] Favorites API (add/remove/list)
+- [x] Comments system (create/reply/edit/delete)
+- [x] @Mentions trigger in-app notifications
+- [x] Saved searches with hourly scheduler (bounded + incremental)
+- [x] In-app notifications inbox endpoints
+- [x] Recent documents API (delivered in Phase 2)
+
+**Phase 4b:**
+- [x] NotificationEvent + NotificationDelivery models
+- [x] DocumentSubscription model for collaboration subscriptions
+- [x] UserProfile external email preferences (enabled + frequency)
+- [x] Permission gate: recipients require VIEW before delivery
+- [x] Dispatcher creates email deliveries for eligible events
+- [x] Celery task sends pending email deliveries with retry backoff
+- [x] Mention, saved search, comment reply emit external events
+- [ ] External notification delivery (email/push) beyond email MVP
+- [ ] Collaboration enhancements (advanced mentions, threading UX)
 
 ## Code Locations
 
@@ -510,20 +604,23 @@ class DocumentMention(models.Model):
 
 **Models:**
 - `documents/models.py:Document` - Add user FK fields
-- `documents/models.py:DocumentCollectionMembership` - Change `added_by` to FK
+- `documents/models.py:DocumentCollectionMembership` - Add `added_by_user` + `added_by_service_id` (pre-MVP allow NULL)
 - `profiles/models.py:UserProfile` - Add document preferences
 
 **Services:**
-- `documents/domain_service.py:DocumentDomainService.register_document_from_upload` - Set created_by
-- `documents/upload_worker.py:UploadWorker._run` - Pass user_id to service
+- `documents/domain_service.py:DocumentDomainService.ingest_document` - Set created_by via audit/actor fields
+- `documents/upload_worker.py:UploadWorker.process` - Preserve audit_meta and workflow_id
+- `documents/tasks.py:upload_document_task` - Pass audit_meta inputs through to worker
+- `ai_core/tasks.py:run_ingestion_graph` - Carry audit_meta into ToolContext metadata
+- `ai_core/adapters/db_documents_repository.py:DbDocumentsRepository.upsert` - Apply audit_meta to created_by/updated_by
 - `documents/collection_service.py` - Update membership attribution
 
 **Views:**
-- `documents/views.py:download_document` - Add activity logging + permission check
-- `documents/views.py:serve_asset` - Add activity logging
+- `documents/views.py:document_download` - Add activity logging + permission check
+- `documents/views.py:asset_serve` - Add activity logging
 
 **Graphs:**
-- `ai_core/graphs/technical/universal_ingestion_graph.py` - Extract user from ToolContext
+- `ai_core/graphs/technical/universal_ingestion_graph.py` - Use ToolContext metadata for persistence inputs
 
 **Retrieval:**
 - `ai_core/nodes/retrieve.py` - Filter by document permissions
@@ -536,27 +633,43 @@ class DocumentMention(models.Model):
 - `documents/models.py:UserDocumentFavorite`
 - `documents/models.py:DocumentComment`
 - `documents/models.py:DocumentMention`
+- `documents/models.py:DocumentNotification`
+- `documents/models.py:NotificationEvent`
+- `documents/models.py:NotificationDelivery`
+- `documents/models.py:DocumentSubscription`
+- `documents/models.py:SavedSearch`
 
 **Services:**
 - `documents/authz.py:DocumentAuthzService` - Authorization logic
 - `documents/activity_service.py:ActivityTracker` - Activity logging abstraction
-- `documents/preferences_service.py` - User preferences management
+- `documents/mentions.py` - Mention parsing helpers
+- `documents/notification_service.py` - In-app notifications
+- `documents/notification_dispatcher.py` - External notifications + delivery dispatch
+- (Post-MVP) `documents/preferences_service.py` - User preferences management
 
 **Views/APIs:**
-- `documents/api.py:DocumentPermissionViewSet` - Permission management
-- `documents/api.py:DocumentActivityViewSet` - Activity log (read-only)
-- `documents/api.py:DocumentFavoriteViewSet` - Favorites CRUD
-- `documents/api.py:DocumentCommentViewSet` - Comments CRUD
+- `documents/views.py:document_download` - Permission checks + download
+- `documents/views.py:share_document` - Share endpoint
+- `documents/urls.py` - Share route wiring
+- `documents/api_views.py` - Favorites, comments, saved searches, notifications
+- (Post-MVP) `documents/api.py:DocumentPermissionViewSet` - Permission management
+- (Post-MVP) `documents/api.py:DocumentActivityViewSet` - Activity log (read-only)
 
 **Tasks:**
 - `documents/tasks.py:clean_expired_permissions` - Celery periodic task
 - `documents/tasks.py:archive_old_activities` - Activity retention
+- `documents/tasks.py:run_saved_search_alerts` - Saved search scheduler
+- `documents/tasks.py:send_pending_email_deliveries` - External email delivery
 
 **Migrations:**
-- `documents/migrations/000X_add_user_attribution.py`
-- `documents/migrations/000X_create_document_activity.py`
-- `documents/migrations/000X_create_document_permission.py`
-- `documents/migrations/000X_create_collaboration_models.py`
+- `documents/migrations/0018_add_user_attribution_and_membership_actor.py`
+- `documents/migrations/0019_create_document_activity.py`
+- `documents/migrations/0020_create_document_permission.py`
+- `documents/migrations/0021_add_collaboration_phase4a.py`
+- `profiles/migrations/0003_add_document_preferences.py`
+- `documents/migrations/0022_create_external_notifications_phase4b.py`
+- `profiles/migrations/0004_add_external_email_preferences.py`
+- (Post-MVP) `documents/migrations/00XX_create_collaboration_models.py`
 
 ## Security Considerations
 
@@ -564,8 +677,8 @@ class DocumentMention(models.Model):
 
 **Constraints:**
 - Only `created_by` or `TENANT_ADMIN` can grant document permissions
-- External accounts cannot grant permissions (even if TENANT_ADMIN role)
-- Permission expiry enforced at query time + periodic cleanup
+- External accounts are restricted from tenant-wide access in DocumentAuthzService
+- Permission expiry enforced at query time (cleanup task pending)
 
 ### Audit Trail Integrity
 

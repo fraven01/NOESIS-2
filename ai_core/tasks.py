@@ -2110,11 +2110,13 @@ def run_ingestion_graph(
             collection_id=collection_id,
         )
 
+        audit_meta = (meta or {}).get("audit_meta") if meta else {}
         run_context = {
             "scope": scope.model_dump(mode="json"),
             "business": business.model_dump(mode="json"),
             "metadata": {
                 "dry_run": False,
+                "audit_meta": dict(audit_meta or {}),
             },
         }
 

@@ -254,6 +254,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "theme.middleware.SimulatedUserMiddleware",
     "profiles.middleware.ExternalAccountExpiryMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
@@ -369,6 +370,9 @@ ADMINS = [
 ]
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DOCUMENT_COMMENT_CREATE_RATE = env(
+    "DOCUMENT_COMMENT_CREATE_RATE", default="60/min"
+)
 
 # Logging / observability
 LOGGING_CONFIG = "common.logging.configure_django_logging"

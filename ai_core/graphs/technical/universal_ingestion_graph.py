@@ -638,7 +638,8 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
         scope = tool_context.scope
 
         # Upsert with scope to preserve lineage
-        saved_doc = service.upsert(norm_doc, scope=scope)
+        audit_meta = tool_context.metadata.get("audit_meta")
+        saved_doc = service.upsert(norm_doc, scope=scope, audit_meta=audit_meta)
 
         # If successfully saved, we return the persisted ID
         doc_id = (

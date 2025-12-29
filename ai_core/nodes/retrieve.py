@@ -422,6 +422,73 @@ def _deduplicate_matches(matches: list[Dict[str, Any]]) -> list[Dict[str, Any]]:
     return ordered_matches
 
 
+def _extract_document_id(match: Mapping[str, Any]) -> str | None:
+    doc_id = _coerce_str(match.get("id"))
+    if doc_id:
+        return doc_id
+    meta = match.get("meta")
+    if isinstance(meta, Mapping):
+        return _coerce_str(meta.get("document_id"))
+    return None
+
+
+def _filter_matches_by_permissions(
+    matches: list[Dict[str, Any]],
+    *,
+    context: ToolContext,
+    permission_type: str = "VIEW",
+) -> list[Dict[str, Any]]:
+    user_id = context.scope.user_id
+    if not user_id:
+        return matches
+
+    doc_ids = [_extract_document_id(match) for match in matches]
+    doc_ids = [doc_id for doc_id in doc_ids if doc_id]
+    if not doc_ids:
+        return matches
+
+    from contextlib import nullcontext
+    from django_tenants.utils import schema_context
+
+    from customers.tenant_context import TenantContext
+    from django.contrib.auth import get_user_model
+    from documents.authz import DocumentAuthzService
+
+    tenant = TenantContext.resolve_identifier(context.scope.tenant_id, allow_pk=True)
+    tenant_schema = (
+        context.scope.tenant_schema
+        or (tenant.schema_name if tenant else None)
+        or context.scope.tenant_id
+    )
+
+    context_manager = (
+        schema_context(tenant_schema) if tenant_schema else nullcontext()
+    )
+    with context_manager:
+        User = get_user_model()
+        user = User.objects.filter(pk=user_id).first()
+        if user is None:
+            return []
+
+        allowed_ids = set(
+            str(doc_id)
+            for doc_id in DocumentAuthzService.accessible_documents_queryset(
+                user=user,
+                tenant=tenant,
+                permission_type=permission_type,
+            )
+            .filter(id__in=doc_ids)
+            .values_list("id", flat=True)
+        )
+
+    filtered: list[Dict[str, Any]] = []
+    for match in matches:
+        doc_id = _extract_document_id(match)
+        if not doc_id or doc_id in allowed_ids:
+            filtered.append(match)
+    return filtered
+
+
 _TOKEN_PATTERN = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
 
 
@@ -741,6 +808,11 @@ def run(context: ToolContext, params: RetrieveInput) -> RetrieveOutput:
         strength=hybrid_config.diversify_strength,
     )
     final_matches = diversified[: hybrid_config.top_k]
+    final_matches = _filter_matches_by_permissions(
+        final_matches,
+        context=context,
+        permission_type="VIEW",
+    )
 
     if parent_context:
         for match in final_matches:

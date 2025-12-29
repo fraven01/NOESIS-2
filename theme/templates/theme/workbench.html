@@ -128,6 +128,22 @@
                 </svg>
                 Framework Analysis
             </button>
+
+
+            <!-- Collaboration & Identity -->
+            <button @click="setTab('collaboration')" id="tab-btn-collaboration"
+                :class="activeTab === 'collaboration' ? 'bg-indigo-50 text-indigo-700 shadow-sm ring-1 ring-indigo-200' : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'"
+                class="group w-full flex items-center px-4 py-3 text-sm font-medium rounded-xl transition-all duration-200 ease-in-out"
+                hx-get="{% url 'tool_collaboration' %}" hx-target="#workspace-content"
+                hx-headers='{"X-Case-ID": "{{ case_id|default:'' }}"}'>
+                <svg :class="activeTab === 'collaboration' ? 'text-indigo-600' : 'text-slate-400 group-hover:text-slate-500'"
+                    class="mr-3 flex-shrink-0 h-5 w-5 transition-colors" fill="none" viewBox="0 0 24 24"
+                    stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                        d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+                </svg>
+                Identity & Collab
+            </button>
         </nav>
 
         <!-- Context Info -->
@@ -186,13 +202,39 @@
                                     x-text="activeTab.charAt(0).toUpperCase() + activeTab.slice(1)">Current</span>
                             </div>
                         </li>
+                        </li>
                     </ol>
                 </nav>
             </div>
             <div class="flex items-center gap-4">
-                <div
-                    class="h-8 w-8 rounded-full bg-indigo-100 flex items-center justify-center text-indigo-700 font-bold text-xs ring-2 ring-white shadow-sm">
-                    AI
+                <!-- Identity Switcher -->
+                <form action="{% url 'rag_tools_identity_switch' %}" method="post" class="flex items-center gap-2">
+                    {% csrf_token %}
+                    <input type="hidden" name="active_tab" :value="activeTab">
+                    <label for="identity-switch" class="text-xs font-medium text-slate-500">Acting As:</label>
+                    <div class="flex flex-col">
+                        <select name="user_id" id="identity-switch" onchange="this.form.submit()"
+                            class="block w-40 rounded border-slate-300 py-1 pl-2 pr-8 text-xs focus:border-indigo-500 focus:ring-indigo-500 {% if request.is_simulated_user %}bg-amber-50 text-amber-900 border-amber-300 font-semibold{% endif %}">
+                            <option value="">-- Real User --</option>
+                            <option value="anonymous" {% if not request.user.is_authenticated and not request.is_simulated_user %}selected{% endif %}>Anonymous</option>
+                            <optgroup label="Simulated Persons">
+                                {% for u in simulated_users %}
+                                <option value="{{ u.pk }}" {% if u.pk|stringformat:"s" == current_simulated_user_id|stringformat:"s" %}selected{% endif %}>
+                                    {{ u.username }} ({{ u.profile.role }})
+                                </option>
+                                {% endfor %}
+                            </optgroup>
+                        </select>
+                        {% if request.is_simulated_user %}
+                        <span class="text-[10px] text-amber-700 text-right font-medium leading-none mt-0.5">Role: {{
+                            request.user.profile.role|default:"User" }}</span>
+                        {% endif %}
+                    </div>
+                </form>
+
+                <div class="h-8 w-8 rounded-full {% if request.is_simulated_user %}bg-amber-100 text-amber-700 ring-amber-300{% else %}bg-indigo-100 text-indigo-700 ring-white{% endif %} flex items-center justify-center font-bold text-xs ring-2 shadow-sm"
+                    title="Current User: {{ request.user.username }}">
+                    {{ request.user.first_name|slice:":1"|default:"U" }}
                 </div>
             </div>
         </header>
@@ -212,7 +254,8 @@
                             </svg>
                         </div>
                     </div>
-                    <p class="mt-6 text-sm font-medium text-slate-500 animate-pulse">Initializing RAG Workbench...</p>
+                    <p class="mt-6 text-sm font-medium text-slate-500 animate-pulse">Initializing RAG
+                        Workbench...</p>
                 </div>
             </div>
         </div>
