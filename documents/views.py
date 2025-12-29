@@ -3,7 +3,12 @@
 import json
 import time
 
-from django.http import FileResponse, HttpResponse, HttpResponseNotModified, JsonResponse
+from django.http import (
+    FileResponse,
+    HttpResponse,
+    HttpResponseNotModified,
+    JsonResponse,
+)
 from django.utils.dateparse import parse_datetime
 from django.views.decorators.http import require_http_methods
 from django_tenants.utils import schema_context
@@ -518,7 +523,9 @@ def recent_documents(request):
             if doc_id in documents_by_id
         ]
 
-    return JsonResponse(DocumentSerializer(ordered_documents, many=True).data, safe=False)
+    return JsonResponse(
+        DocumentSerializer(ordered_documents, many=True).data, safe=False
+    )
 
 
 @require_http_methods(["POST"])
@@ -567,9 +574,7 @@ def share_document(request, document_id: str):
 
     with schema_context(tenant_schema):
         document = (
-            Document.objects.filter(id=document_id)
-            .select_related("created_by")
-            .first()
+            Document.objects.filter(id=document_id).select_related("created_by").first()
         )
         if document is None:
             return error(404, "DocumentNotFound", f"Document {document_id} not found")

@@ -17,7 +17,9 @@ logger = logging.getLogger(__name__)
 class LocalGraphExecutor(GraphExecutor):
     """Executes graphs in the same process via the registry."""
 
-    def run(self, name: str, input: dict[str, Any], meta: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def run(
+        self, name: str, input: dict[str, Any], meta: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Synchronously execute the graph from the registry.
 
         Args:
@@ -32,7 +34,9 @@ class LocalGraphExecutor(GraphExecutor):
             KeyError: If graph name is not found in registry.
         """
         runner = registry.get(name)
-        logger.info("graph.execution.local.run", extra={"graph": name, "executor": "local"})
+        logger.info(
+            "graph.execution.local.run", extra={"graph": name, "executor": "local"}
+        )
         return runner.run(input, meta)
 
     def submit(self, name: str, input: dict[str, Any], meta: dict[str, Any]) -> str:
@@ -44,4 +48,6 @@ class LocalGraphExecutor(GraphExecutor):
         Raises:
             NotImplementedError: Always.
         """
-        raise NotImplementedError("LocalGraphExecutor does not support async submission. Use run() or a Celery-based executor.")
+        raise NotImplementedError(
+            "LocalGraphExecutor does not support async submission. Use run() or a Celery-based executor."
+        )

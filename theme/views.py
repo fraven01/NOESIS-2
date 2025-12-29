@@ -57,7 +57,6 @@ from cases.services import ensure_case
 from pydantic import ValidationError
 
 
-
 from django.contrib.auth import get_user_model
 from django.shortcuts import redirect
 from documents.models import DocumentNotification
@@ -67,6 +66,7 @@ DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
 # build_graph aliasing removed as build_external_knowledge_graph is gone
 crawl_selected = _core_crawl_selected  # Re-export for tests
 DEV_DEFAULT_CASE_ID = "dev-case-local"
+
 
 def _get_dev_simulated_users():
     User = get_user_model()
@@ -591,7 +591,9 @@ def rag_tools(request):
             ),
             "manual_collection_id": manual_collection_id,
             "simulated_users": _get_dev_simulated_users(),
-            "current_simulated_user_id": request.session.get("rag_tools_simulated_user_id"),
+            "current_simulated_user_id": request.session.get(
+                "rag_tools_simulated_user_id"
+            ),
         },
     )
 
@@ -601,20 +603,20 @@ def rag_tools_identity_switch(request):
     """Switch the simulated user identity for the workbench."""
     user_id = request.POST.get("user_id")
     active_tab = request.POST.get("active_tab", "search")
-    
+
     if user_id == "anonymous":
-         if "rag_tools_simulated_user_id" in request.session:
+        if "rag_tools_simulated_user_id" in request.session:
             del request.session["rag_tools_simulated_user_id"]
     elif user_id:
         request.session["rag_tools_simulated_user_id"] = user_id
     elif "rag_tools_simulated_user_id" in request.session:
         # Empty value means reset to real user
         del request.session["rag_tools_simulated_user_id"]
-    
+
     redirect_url = reverse("rag-tools")
     if active_tab:
         redirect_url += f"#{active_tab}"
-    
+
     return redirect(redirect_url)
 
 
@@ -623,9 +625,11 @@ def tool_collaboration(request):
     notifications = []
     if request.user.is_authenticated:
         try:
-            notifications = DocumentNotification.objects.filter(
-                user=request.user
-            ).select_related("document", "comment", "comment__user").order_by("-created_at")[:20]
+            notifications = (
+                DocumentNotification.objects.filter(user=request.user)
+                .select_related("document", "comment", "comment__user")
+                .order_by("-created_at")[:20]
+            )
         except Exception:
             pass
 
@@ -1650,9 +1654,7 @@ def workbench_index(request):
         "tenant_schema": tenant_schema,
         "case_id": case_id,
         "simulated_users": _get_dev_simulated_users(),
-        "current_simulated_user_id": request.session.get(
-            "rag_tools_simulated_user_id"
-        ),
+        "current_simulated_user_id": request.session.get("rag_tools_simulated_user_id"),
     }
     return render(request, "theme/workbench.html", context)
 

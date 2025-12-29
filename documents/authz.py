@@ -21,9 +21,7 @@ class DocumentAccessResult:
     reason: str | None = None
 
 
-def _user_has_tenant_wide_access(
-    profile: UserProfile, tenant: Tenant | None
-) -> bool:
+def _user_has_tenant_wide_access(profile: UserProfile, tenant: Tenant | None) -> bool:
     if profile.account_type == UserProfile.AccountType.EXTERNAL:
         return False
 
@@ -37,9 +35,7 @@ def _user_has_tenant_wide_access(
         ):
             return True
         if profile.role == UserProfile.Roles.WORKS_COUNCIL:
-            scope = getattr(
-                tenant, "works_council_scope", Tenant.WorksCouncilScope.ALL
-            )
+            scope = getattr(tenant, "works_council_scope", Tenant.WorksCouncilScope.ALL)
             return scope == Tenant.WorksCouncilScope.ALL
         return False
 
@@ -106,7 +102,9 @@ class DocumentAuthzService:
         permission_type: str = DocumentPermission.PermissionType.VIEW,
         tenant: Tenant | None = None,
     ) -> DocumentAccessResult:
-        document = Document.objects.filter(id=document_id).select_related("tenant").first()
+        document = (
+            Document.objects.filter(id=document_id).select_related("tenant").first()
+        )
         if document is None:
             return DocumentAccessResult(False, reason="not_found")
         return DocumentAuthzService.user_can_access_document(

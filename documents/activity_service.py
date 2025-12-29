@@ -39,9 +39,8 @@ class ActivityTracker:
             ip_address = request.META.get("REMOTE_ADDR")
             user_agent = request.META.get("HTTP_USER_AGENT", "")[:500]
             if trace_id is None:
-                trace_id = (
-                    request.headers.get(X_TRACE_ID_HEADER)
-                    or request.META.get(META_TRACE_ID_KEY)
+                trace_id = request.headers.get(X_TRACE_ID_HEADER) or request.META.get(
+                    META_TRACE_ID_KEY
                 )
 
         context = schema_context(tenant_schema) if tenant_schema else nullcontext()

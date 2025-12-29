@@ -461,9 +461,7 @@ def _filter_matches_by_permissions(
         or context.scope.tenant_id
     )
 
-    context_manager = (
-        schema_context(tenant_schema) if tenant_schema else nullcontext()
-    )
+    context_manager = schema_context(tenant_schema) if tenant_schema else nullcontext()
     with context_manager:
         User = get_user_model()
         user = User.objects.filter(pk=user_id).first()

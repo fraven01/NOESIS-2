@@ -12,7 +12,9 @@ from typing import Protocol, Any, runtime_checkable
 class GraphExecutor(Protocol):
     """Execution boundary for invoking graphs."""
 
-    def run(self, name: str, input: dict[str, Any], meta: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    def run(
+        self, name: str, input: dict[str, Any], meta: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Synchronously execute the named graph.
 
         Args:

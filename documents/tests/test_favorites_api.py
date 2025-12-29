@@ -34,9 +34,7 @@ def test_favorites_create_and_list(test_tenant_schema_name):
     )
 
     assert response.status_code == 201
-    assert UserDocumentFavorite.objects.filter(
-        user=user, document=document
-    ).exists()
+    assert UserDocumentFavorite.objects.filter(user=user, document=document).exists()
 
     list_response = client.get(
         "/documents/api/favorites/",

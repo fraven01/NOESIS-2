@@ -10,7 +10,7 @@ class SimulatedUserMiddleware(MiddlewareMixin):
     """
     Middleware that allows overriding the logged-in user for 'rag-tools' views
     to simulate different personas (Admin, Legal, etc.) during development.
-    
+
     This is STRICTLY for development and requires DEBUG=True or RAG_TOOLS_ENABLED=True.
     """
 
@@ -29,19 +29,18 @@ class SimulatedUserMiddleware(MiddlewareMixin):
         try:
             # We fetch the user instance. We handle the case where it might be a string ID or int.
             user = User.objects.get(pk=simulated_user_id)
-            # Override request.user. 
-            # Note: This does NOT log the user in via session auth, 
+            # Override request.user.
+            # Note: This does NOT log the user in via session auth,
             # it just overrides the attribute for this request cycle.
             request.user = user
             request.is_simulated_user = True
-            
-            # Also attach to scope context if possible/needed, or just rely on 
+
+            # Also attach to scope context if possible/needed, or just rely on
             # views extracting it from request.user
-            
+
         except User.DoesNotExist:
             logger.warning(
-                "rag_tools.simulation.user_not_found", 
-                user_id=simulated_user_id
+                "rag_tools.simulation.user_not_found", user_id=simulated_user_id
             )
             # Clean up invalid session key
             if "rag_tools_simulated_user_id" in request.session:

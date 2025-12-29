@@ -137,7 +137,9 @@ class DocumentCommentViewSet(viewsets.ModelViewSet):
         base_qs = DocumentComment.objects.select_related("user", "document", "parent")
         if self.action in ("list",):
             if not doc_id:
-                raise ValidationError({"document_id": "This query parameter is required."})
+                raise ValidationError(
+                    {"document_id": "This query parameter is required."}
+                )
             document = Document.objects.filter(id=doc_id).first()
             if document is None:
                 return base_qs.none()

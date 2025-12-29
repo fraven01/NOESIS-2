@@ -9,118 +9,310 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('documents', '0020_create_document_permission'),
+        ("documents", "0020_create_document_permission"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='DocumentComment',
+            name="DocumentComment",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('text', models.TextField()),
-                ('anchor_type', models.CharField(blank=True, choices=[('TEXT', 'Text'), ('PAGE', 'Page'), ('ASSET', 'Asset')], max_length=20, null=True)),
-                ('anchor_reference', models.JSONField(blank=True, null=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('document', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='comments', to='documents.document')),
-                ('parent', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='replies', to='documents.documentcomment')),
-                ('user', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='document_comments', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("text", models.TextField()),
+                (
+                    "anchor_type",
+                    models.CharField(
+                        blank=True,
+                        choices=[
+                            ("TEXT", "Text"),
+                            ("PAGE", "Page"),
+                            ("ASSET", "Asset"),
+                        ],
+                        max_length=20,
+                        null=True,
+                    ),
+                ),
+                ("anchor_reference", models.JSONField(blank=True, null=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="comments",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "parent",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="replies",
+                        to="documents.documentcomment",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="document_comments",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
-            name='DocumentMention',
+            name="DocumentMention",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('comment', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='mentions', to='documents.documentcomment')),
-                ('mentioned_user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='document_mentions', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "comment",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="mentions",
+                        to="documents.documentcomment",
+                    ),
+                ),
+                (
+                    "mentioned_user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="document_mentions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
-            name='DocumentNotification',
+            name="DocumentNotification",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('event_type', models.CharField(choices=[('MENTION', 'Mention'), ('COMMENT', 'Comment'), ('FAVORITE', 'Favorite'), ('SAVED_SEARCH', 'Saved Search')], db_index=True, max_length=30)),
-                ('payload', models.JSONField(blank=True, default=dict)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('read_at', models.DateTimeField(blank=True, null=True)),
-                ('comment', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='notifications', to='documents.documentcomment')),
-                ('document', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='notifications', to='documents.document')),
-                ('user', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='document_notifications', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "event_type",
+                    models.CharField(
+                        choices=[
+                            ("MENTION", "Mention"),
+                            ("COMMENT", "Comment"),
+                            ("FAVORITE", "Favorite"),
+                            ("SAVED_SEARCH", "Saved Search"),
+                        ],
+                        db_index=True,
+                        max_length=30,
+                    ),
+                ),
+                ("payload", models.JSONField(blank=True, default=dict)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("read_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "comment",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="notifications",
+                        to="documents.documentcomment",
+                    ),
+                ),
+                (
+                    "document",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="notifications",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="document_notifications",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
-            name='SavedSearch',
+            name="SavedSearch",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('name', models.CharField(max_length=255)),
-                ('query', models.TextField(blank=True, default='')),
-                ('filters', models.JSONField(blank=True, default=dict)),
-                ('enable_alerts', models.BooleanField(default=True)),
-                ('alert_frequency', models.CharField(choices=[('HOURLY', 'Hourly'), ('DAILY', 'Daily'), ('WEEKLY', 'Weekly')], default='HOURLY', max_length=20)),
-                ('last_run_at', models.DateTimeField(blank=True, null=True)),
-                ('next_run_at', models.DateTimeField(db_index=True, default=documents.models._default_next_run_at)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='saved_searches', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("name", models.CharField(max_length=255)),
+                ("query", models.TextField(blank=True, default="")),
+                ("filters", models.JSONField(blank=True, default=dict)),
+                ("enable_alerts", models.BooleanField(default=True)),
+                (
+                    "alert_frequency",
+                    models.CharField(
+                        choices=[
+                            ("HOURLY", "Hourly"),
+                            ("DAILY", "Daily"),
+                            ("WEEKLY", "Weekly"),
+                        ],
+                        default="HOURLY",
+                        max_length=20,
+                    ),
+                ),
+                ("last_run_at", models.DateTimeField(blank=True, null=True)),
+                (
+                    "next_run_at",
+                    models.DateTimeField(
+                        db_index=True, default=documents.models._default_next_run_at
+                    ),
+                ),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="saved_searches",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
-            name='UserDocumentFavorite',
+            name="UserDocumentFavorite",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('favorited_at', models.DateTimeField(auto_now_add=True)),
-                ('document', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='favorites', to='documents.document')),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='document_favorites', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                ("favorited_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="favorites",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="document_favorites",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.AddIndex(
-            model_name='documentcomment',
-            index=models.Index(fields=['document', 'created_at'], name='doc_comment_doc_time_idx'),
+            model_name="documentcomment",
+            index=models.Index(
+                fields=["document", "created_at"], name="doc_comment_doc_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='documentcomment',
-            index=models.Index(fields=['user', 'created_at'], name='doc_comment_user_time_idx'),
+            model_name="documentcomment",
+            index=models.Index(
+                fields=["user", "created_at"], name="doc_comment_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='documentmention',
-            index=models.Index(fields=['mentioned_user', 'created_at'], name='doc_mention_user_time_idx'),
+            model_name="documentmention",
+            index=models.Index(
+                fields=["mentioned_user", "created_at"],
+                name="doc_mention_user_time_idx",
+            ),
         ),
         migrations.AddConstraint(
-            model_name='documentmention',
-            constraint=models.UniqueConstraint(fields=('comment', 'mentioned_user'), name='document_mention_unique'),
+            model_name="documentmention",
+            constraint=models.UniqueConstraint(
+                fields=("comment", "mentioned_user"), name="document_mention_unique"
+            ),
         ),
         migrations.AddIndex(
-            model_name='documentnotification',
-            index=models.Index(fields=['user', 'read_at'], name='doc_notif_user_read_idx'),
+            model_name="documentnotification",
+            index=models.Index(
+                fields=["user", "read_at"], name="doc_notif_user_read_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='documentnotification',
-            index=models.Index(fields=['user', 'created_at'], name='doc_notif_user_time_idx'),
+            model_name="documentnotification",
+            index=models.Index(
+                fields=["user", "created_at"], name="doc_notif_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='documentnotification',
-            index=models.Index(fields=['event_type', 'created_at'], name='doc_notif_type_time_idx'),
+            model_name="documentnotification",
+            index=models.Index(
+                fields=["event_type", "created_at"], name="doc_notif_type_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='savedsearch',
-            index=models.Index(fields=['user', 'created_at'], name='saved_search_user_time_idx'),
+            model_name="savedsearch",
+            index=models.Index(
+                fields=["user", "created_at"], name="saved_search_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='savedsearch',
-            index=models.Index(fields=['enable_alerts', 'next_run_at'], name='saved_search_due_idx'),
+            model_name="savedsearch",
+            index=models.Index(
+                fields=["enable_alerts", "next_run_at"], name="saved_search_due_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='userdocumentfavorite',
-            index=models.Index(fields=['user', 'favorited_at'], name='doc_fav_user_time_idx'),
+            model_name="userdocumentfavorite",
+            index=models.Index(
+                fields=["user", "favorited_at"], name="doc_fav_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
-            model_name='userdocumentfavorite',
-            index=models.Index(fields=['document', 'favorited_at'], name='doc_fav_doc_time_idx'),
+            model_name="userdocumentfavorite",
+            index=models.Index(
+                fields=["document", "favorited_at"], name="doc_fav_doc_time_idx"
+            ),
         ),
         migrations.AddConstraint(
-            model_name='userdocumentfavorite',
-            constraint=models.UniqueConstraint(fields=('user', 'document'), name='document_favorite_unique'),
+            model_name="userdocumentfavorite",
+            constraint=models.UniqueConstraint(
+                fields=("user", "document"), name="document_favorite_unique"
+            ),
         ),
     ]

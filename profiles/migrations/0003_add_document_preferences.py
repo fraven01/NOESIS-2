@@ -6,33 +6,37 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('profiles', '0002_migrate_roles_add_account_type'),
+        ("profiles", "0002_migrate_roles_add_account_type"),
     ]
 
     operations = [
         migrations.AddField(
-            model_name='userprofile',
-            name='document_view_mode',
-            field=models.CharField(choices=[('LIST', 'List'), ('GRID', 'Grid'), ('TABLE', 'Table')], default='LIST', max_length=10),
+            model_name="userprofile",
+            name="document_view_mode",
+            field=models.CharField(
+                choices=[("LIST", "List"), ("GRID", "Grid"), ("TABLE", "Table")],
+                default="LIST",
+                max_length=10,
+            ),
         ),
         migrations.AddField(
-            model_name='userprofile',
-            name='documents_per_page',
+            model_name="userprofile",
+            name="documents_per_page",
             field=models.IntegerField(default=25),
         ),
         migrations.AddField(
-            model_name='userprofile',
-            name='notify_on_case_document',
+            model_name="userprofile",
+            name="notify_on_case_document",
             field=models.BooleanField(default=False),
         ),
         migrations.AddField(
-            model_name='userprofile',
-            name='notify_on_document_upload',
+            model_name="userprofile",
+            name="notify_on_document_upload",
             field=models.BooleanField(default=True),
         ),
         migrations.AddField(
-            model_name='userprofile',
-            name='notify_on_mention',
+            model_name="userprofile",
+            name="notify_on_mention",
             field=models.BooleanField(default=True),
         ),
     ]

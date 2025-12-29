@@ -8,25 +8,86 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('documents', '0019_create_document_activity'),
+        ("documents", "0019_create_document_activity"),
         migrations.swappable_dependency(settings.AUTH_USER_MODEL),
     ]
 
     operations = [
         migrations.CreateModel(
-            name='DocumentPermission',
+            name="DocumentPermission",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('permission_type', models.CharField(choices=[('VIEW', 'View'), ('DOWNLOAD', 'Download'), ('COMMENT', 'Comment'), ('EDIT_META', 'Edit Metadata'), ('SHARE', 'Share'), ('DELETE', 'Delete')], db_index=True, max_length=20)),
-                ('granted_at', models.DateTimeField(auto_now_add=True)),
-                ('expires_at', models.DateTimeField(blank=True, db_index=True, null=True)),
-                ('document', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='permissions', to='documents.document')),
-                ('granted_by', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='granted_document_permissions', to=settings.AUTH_USER_MODEL)),
-                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='document_permissions', to=settings.AUTH_USER_MODEL)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "permission_type",
+                    models.CharField(
+                        choices=[
+                            ("VIEW", "View"),
+                            ("DOWNLOAD", "Download"),
+                            ("COMMENT", "Comment"),
+                            ("EDIT_META", "Edit Metadata"),
+                            ("SHARE", "Share"),
+                            ("DELETE", "Delete"),
+                        ],
+                        db_index=True,
+                        max_length=20,
+                    ),
+                ),
+                ("granted_at", models.DateTimeField(auto_now_add=True)),
+                (
+                    "expires_at",
+                    models.DateTimeField(blank=True, db_index=True, null=True),
+                ),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="permissions",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "granted_by",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="granted_document_permissions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="document_permissions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
             options={
-                'indexes': [models.Index(fields=['document', 'user'], name='doc_perm_doc_user_idx'), models.Index(fields=['user', 'permission_type'], name='doc_perm_user_type_idx')],
-                'constraints': [models.UniqueConstraint(fields=('document', 'user', 'permission_type'), name='document_permission_unique')],
+                "indexes": [
+                    models.Index(
+                        fields=["document", "user"], name="doc_perm_doc_user_idx"
+                    ),
+                    models.Index(
+                        fields=["user", "permission_type"],
+                        name="doc_perm_user_type_idx",
+                    ),
+                ],
+                "constraints": [
+                    models.UniqueConstraint(
+                        fields=("document", "user", "permission_type"),
+                        name="document_permission_unique",
+                    )
+                ],
             },
         ),
     ]

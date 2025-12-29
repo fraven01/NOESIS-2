@@ -194,9 +194,7 @@ def _create_pending_delivery(tenant, user):
     return delivery
 
 
-def test_send_pending_email_deliveries_marks_sent(
-    settings, test_tenant_schema_name
-):
+def test_send_pending_email_deliveries_marks_sent(settings, test_tenant_schema_name):
     settings.EMAIL_BACKEND = "django.core.mail.backends.locmem.EmailBackend"
     tenant = Tenant.objects.get(schema_name=test_tenant_schema_name)
     recipient = UserFactory(email="notify@example.com")

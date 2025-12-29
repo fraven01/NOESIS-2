@@ -24,7 +24,9 @@ def _next_daily_window(now: timezone.datetime) -> timezone.datetime:
     return next_day.replace(hour=0, minute=0, second=0, microsecond=0)
 
 
-def _next_delivery_at(profile: UserProfile, now: timezone.datetime) -> timezone.datetime:
+def _next_delivery_at(
+    profile: UserProfile, now: timezone.datetime
+) -> timezone.datetime:
     if profile.external_email_frequency == UserProfile.ExternalEmailFrequency.DAILY:
         return _next_daily_window(now)
     return now

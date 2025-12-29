@@ -348,7 +348,9 @@ class UserDocumentFavorite(models.Model):
         ]
         indexes = [
             models.Index(fields=("user", "favorited_at"), name="doc_fav_user_time_idx"),
-            models.Index(fields=("document", "favorited_at"), name="doc_fav_doc_time_idx"),
+            models.Index(
+                fields=("document", "favorited_at"), name="doc_fav_doc_time_idx"
+            ),
         ]
 
 
@@ -392,8 +394,12 @@ class DocumentComment(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=("document", "created_at"), name="doc_comment_doc_time_idx"),
-            models.Index(fields=("user", "created_at"), name="doc_comment_user_time_idx"),
+            models.Index(
+                fields=("document", "created_at"), name="doc_comment_doc_time_idx"
+            ),
+            models.Index(
+                fields=("user", "created_at"), name="doc_comment_user_time_idx"
+            ),
         ]
 
 
@@ -420,7 +426,10 @@ class DocumentMention(models.Model):
             )
         ]
         indexes = [
-            models.Index(fields=("mentioned_user", "created_at"), name="doc_mention_user_time_idx"),
+            models.Index(
+                fields=("mentioned_user", "created_at"),
+                name="doc_mention_user_time_idx",
+            ),
         ]
 
 
@@ -448,7 +457,9 @@ class DocumentSubscription(models.Model):
         ]
         indexes = [
             models.Index(fields=("user", "created_at"), name="doc_sub_user_time_idx"),
-            models.Index(fields=("document", "created_at"), name="doc_sub_doc_time_idx"),
+            models.Index(
+                fields=("document", "created_at"), name="doc_sub_doc_time_idx"
+            ),
         ]
 
 
@@ -495,7 +506,9 @@ class DocumentNotification(models.Model):
         indexes = [
             models.Index(fields=("user", "read_at"), name="doc_notif_user_read_idx"),
             models.Index(fields=("user", "created_at"), name="doc_notif_user_time_idx"),
-            models.Index(fields=("event_type", "created_at"), name="doc_notif_type_time_idx"),
+            models.Index(
+                fields=("event_type", "created_at"), name="doc_notif_type_time_idx"
+            ),
         ]
 
 
@@ -627,8 +640,12 @@ class SavedSearch(models.Model):
 
     class Meta:
         indexes = [
-            models.Index(fields=("user", "created_at"), name="saved_search_user_time_idx"),
-            models.Index(fields=("enable_alerts", "next_run_at"), name="saved_search_due_idx"),
+            models.Index(
+                fields=("user", "created_at"), name="saved_search_user_time_idx"
+            ),
+            models.Index(
+                fields=("enable_alerts", "next_run_at"), name="saved_search_due_idx"
+            ),
         ]
 
 

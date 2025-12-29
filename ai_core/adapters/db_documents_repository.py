@@ -261,9 +261,7 @@ class DbDocumentsRepository(DocumentsRepository):
                     if created_by_user:
                         membership_defaults["added_by_user"] = created_by_user
                     elif last_hop_service_id:
-                        membership_defaults["added_by_service_id"] = (
-                            last_hop_service_id
-                        )
+                        membership_defaults["added_by_service_id"] = last_hop_service_id
                     DocumentCollectionMembership.objects.get_or_create(
                         document=document,
                         collection=coll,

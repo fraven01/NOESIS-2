@@ -151,9 +151,7 @@ def run_saved_search_alerts() -> dict[str, int]:
                         | Q(external_id__icontains=saved_search.query)
                     )
 
-                matches = list(
-                    queryset.order_by("updated_at")[:MAX_MATCHES_PER_SEARCH]
-                )
+                matches = list(queryset.order_by("updated_at")[:MAX_MATCHES_PER_SEARCH])
 
                 if matches:
                     create_notification(
@@ -182,11 +180,17 @@ def run_saved_search_alerts() -> dict[str, int]:
 
                 saved_search.last_run_at = now
                 saved_search.next_run_at = now + timezone.timedelta(
-                    hours=1
-                    if saved_search.alert_frequency == SavedSearch.AlertFrequency.HOURLY
-                    else 24
-                    if saved_search.alert_frequency == SavedSearch.AlertFrequency.DAILY
-                    else 24 * 7
+                    hours=(
+                        1
+                        if saved_search.alert_frequency
+                        == SavedSearch.AlertFrequency.HOURLY
+                        else (
+                            24
+                            if saved_search.alert_frequency
+                            == SavedSearch.AlertFrequency.DAILY
+                            else 24 * 7
+                        )
+                    )
                 )
                 saved_search.save(update_fields=["last_run_at", "next_run_at"])
                 total_processed += 1
@@ -328,7 +332,9 @@ def send_pending_email_deliveries() -> dict[str, int]:
                     if not access.allowed:
                         delivery.status = NotificationDelivery.Status.SKIPPED
                         delivery.last_error = "permission_denied"
-                        delivery.save(update_fields=["status", "last_error", "updated_at"])
+                        delivery.save(
+                            update_fields=["status", "last_error", "updated_at"]
+                        )
                         total_skipped += 1
                         continue
 

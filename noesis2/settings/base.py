@@ -370,9 +370,7 @@ ADMINS = [
 ]
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
-DOCUMENT_COMMENT_CREATE_RATE = env(
-    "DOCUMENT_COMMENT_CREATE_RATE", default="60/min"
-)
+DOCUMENT_COMMENT_CREATE_RATE = env("DOCUMENT_COMMENT_CREATE_RATE", default="60/min")
 
 # Logging / observability
 LOGGING_CONFIG = "common.logging.configure_django_logging"

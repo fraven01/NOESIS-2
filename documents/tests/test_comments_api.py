@@ -4,7 +4,12 @@ import pytest
 from rest_framework.test import APIClient
 
 from customers.models import Tenant
-from documents.models import Document, DocumentMention, DocumentNotification, DocumentPermission
+from documents.models import (
+    Document,
+    DocumentMention,
+    DocumentNotification,
+    DocumentPermission,
+)
 from users.tests.factories import UserFactory
 
 

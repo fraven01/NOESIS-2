@@ -8,7 +8,12 @@ from django_tenants.utils import schema_context
 
 from ai_core.adapters.db_documents_repository import DbDocumentsRepository
 from customers.models import Tenant
-from documents.contracts import DocumentMeta, DocumentRef, InlineBlob, NormalizedDocument
+from documents.contracts import (
+    DocumentMeta,
+    DocumentRef,
+    InlineBlob,
+    NormalizedDocument,
+)
 from documents.domain_service import DocumentDomainService
 from documents.models import Document, DocumentCollectionMembership
 from users.models import User

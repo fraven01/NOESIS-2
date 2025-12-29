@@ -62,9 +62,7 @@ def resolve_mentioned_users(text: str | None) -> list[object]:
                 candidate["id"]
             )
 
-        unique_ids = [
-            ids[0] for ids in by_username.values() if len(ids) == 1
-        ]
+        unique_ids = [ids[0] for ids in by_username.values() if len(ids) == 1]
         if unique_ids:
             fallback_users = list(User.objects.filter(id__in=unique_ids))
 

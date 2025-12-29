@@ -17,65 +17,183 @@ class Migration(migrations.Migration):
         migrations.CreateModel(
             name="DocumentSubscription",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("document", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="subscriptions", to="documents.document")),
-                ("user", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="document_subscriptions", to=settings.AUTH_USER_MODEL)),
+                (
+                    "document",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="subscriptions",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="document_subscriptions",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
             name="NotificationEvent",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
-                ("event_type", models.CharField(choices=[("MENTION", "Mention"), ("SAVED_SEARCH", "Saved Search"), ("COMMENT_REPLY", "Comment Reply")], db_index=True, max_length=30)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "event_type",
+                    models.CharField(
+                        choices=[
+                            ("MENTION", "Mention"),
+                            ("SAVED_SEARCH", "Saved Search"),
+                            ("COMMENT_REPLY", "Comment Reply"),
+                        ],
+                        db_index=True,
+                        max_length=30,
+                    ),
+                ),
                 ("payload", models.JSONField(blank=True, default=dict)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("comment", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="notification_events", to="documents.documentcomment")),
-                ("document", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="notification_events", to="documents.document")),
-                ("user", models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name="notification_events", to=settings.AUTH_USER_MODEL)),
+                (
+                    "comment",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="notification_events",
+                        to="documents.documentcomment",
+                    ),
+                ),
+                (
+                    "document",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="notification_events",
+                        to="documents.document",
+                    ),
+                ),
+                (
+                    "user",
+                    models.ForeignKey(
+                        blank=True,
+                        null=True,
+                        on_delete=django.db.models.deletion.SET_NULL,
+                        related_name="notification_events",
+                        to=settings.AUTH_USER_MODEL,
+                    ),
+                ),
             ],
         ),
         migrations.CreateModel(
             name="NotificationDelivery",
             fields=[
-                ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
-                ("channel", models.CharField(choices=[("EMAIL", "Email")], db_index=True, max_length=20)),
-                ("status", models.CharField(choices=[("PENDING", "Pending"), ("SENT", "Sent"), ("FAILED", "Failed"), ("SKIPPED", "Skipped")], db_index=True, default="PENDING", max_length=20)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "channel",
+                    models.CharField(
+                        choices=[("EMAIL", "Email")], db_index=True, max_length=20
+                    ),
+                ),
+                (
+                    "status",
+                    models.CharField(
+                        choices=[
+                            ("PENDING", "Pending"),
+                            ("SENT", "Sent"),
+                            ("FAILED", "Failed"),
+                            ("SKIPPED", "Skipped"),
+                        ],
+                        db_index=True,
+                        default="PENDING",
+                        max_length=20,
+                    ),
+                ),
                 ("attempts", models.IntegerField(default=0)),
-                ("next_attempt_at", models.DateTimeField(db_index=True, default=timezone.now)),
+                (
+                    "next_attempt_at",
+                    models.DateTimeField(db_index=True, default=timezone.now),
+                ),
                 ("last_error", models.TextField(blank=True, default="")),
                 ("sent_at", models.DateTimeField(blank=True, null=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
                 ("updated_at", models.DateTimeField(auto_now=True)),
-                ("event", models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name="deliveries", to="documents.notificationevent")),
+                (
+                    "event",
+                    models.ForeignKey(
+                        on_delete=django.db.models.deletion.CASCADE,
+                        related_name="deliveries",
+                        to="documents.notificationevent",
+                    ),
+                ),
             ],
         ),
         migrations.AddIndex(
             model_name="documentsubscription",
-            index=models.Index(fields=["user", "created_at"], name="doc_sub_user_time_idx"),
+            index=models.Index(
+                fields=["user", "created_at"], name="doc_sub_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
             model_name="documentsubscription",
-            index=models.Index(fields=["document", "created_at"], name="doc_sub_doc_time_idx"),
+            index=models.Index(
+                fields=["document", "created_at"], name="doc_sub_doc_time_idx"
+            ),
         ),
         migrations.AddConstraint(
             model_name="documentsubscription",
-            constraint=models.UniqueConstraint(fields=("user", "document"), name="document_subscription_unique"),
+            constraint=models.UniqueConstraint(
+                fields=("user", "document"), name="document_subscription_unique"
+            ),
         ),
         migrations.AddIndex(
             model_name="notificationevent",
-            index=models.Index(fields=["user", "created_at"], name="notif_evt_user_time_idx"),
+            index=models.Index(
+                fields=["user", "created_at"], name="notif_evt_user_time_idx"
+            ),
         ),
         migrations.AddIndex(
             model_name="notificationevent",
-            index=models.Index(fields=["event_type", "created_at"], name="notif_evt_type_time_idx"),
+            index=models.Index(
+                fields=["event_type", "created_at"], name="notif_evt_type_time_idx"
+            ),
         ),
         migrations.AddIndex(
             model_name="notificationdelivery",
-            index=models.Index(fields=["status", "next_attempt_at"], name="notif_delivery_due_idx"),
+            index=models.Index(
+                fields=["status", "next_attempt_at"], name="notif_delivery_due_idx"
+            ),
         ),
         migrations.AddConstraint(
             model_name="notificationdelivery",
-            constraint=models.UniqueConstraint(fields=("event", "channel"), name="notification_delivery_unique"),
+            constraint=models.UniqueConstraint(
+                fields=("event", "channel"), name="notification_delivery_unique"
+            ),
         ),
     ]

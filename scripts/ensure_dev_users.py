@@ -1,12 +1,13 @@
 import os
 import django
 
+
 def ensure_dev_users():
     from django.contrib.auth import get_user_model
     from profiles.models import UserProfile
-    
+
     User = get_user_model()
-    
+
     users_data = [
         {
             "username": "admin",
@@ -36,16 +37,16 @@ def ensure_dev_users():
             "last_name": "External",
             "role": UserProfile.Roles.STAKEHOLDER,
             "account_type": UserProfile.AccountType.EXTERNAL,
-        }
+        },
     ]
 
     print("Ensuring dev users exist...")
-    
+
     for u_data in users_data:
         username = u_data["username"]
         role = u_data.get("role")
         account_type = u_data.get("account_type", UserProfile.AccountType.INTERNAL)
-        
+
         user, created = User.objects.get_or_create(
             username=username,
             defaults={
@@ -55,16 +56,16 @@ def ensure_dev_users():
                 "is_active": True,
                 "is_staff": username == "admin",
                 "is_superuser": username == "admin",
-            }
+            },
         )
-        
+
         if created:
             user.set_password("password")
             user.save()
             print(f"Created user: {username}")
         else:
             print(f"User exists: {username}")
-            
+
         # Ensure profile
         profile, p_created = UserProfile.objects.get_or_create(user=user)
         if p_created or profile.role != role or profile.account_type != account_type:
@@ -72,6 +73,7 @@ def ensure_dev_users():
             profile.account_type = account_type
             profile.save()
             print(f"Updated profile for: {username} (Role: {role})")
+
 
 if __name__ == "__main__":
     os.environ.setdefault("DJANGO_SETTINGS_MODULE", "noesis2.settings")
