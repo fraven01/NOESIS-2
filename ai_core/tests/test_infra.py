@@ -47,10 +47,12 @@ def test_apply_std_headers_sets_metadata_headers_for_success():
     meta = {
         "scope_context": {
             "trace_id": "abc123",
-            "case_id": "case-1",
             "tenant_id": "tenant-1",
             "invocation_id": "inv-1",
             "run_id": "run-1",
+        },
+        "business_context": {
+            "case_id": "case-1",
         },
         "key_alias": "alias-1",
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
@@ -70,10 +72,12 @@ def test_apply_std_headers_skips_missing_optional_headers():
     meta = {
         "scope_context": {
             "trace_id": "abc123",
-            "case_id": "case-1",
             "tenant_id": "tenant-1",
             "invocation_id": "inv-2",
             "run_id": "run-2",
+        },
+        "business_context": {
+            "case_id": "case-1",
         },
     }
 
@@ -88,10 +92,12 @@ def test_apply_std_headers_ignores_non_success_responses():
     meta = {
         "scope_context": {
             "trace_id": "abc123",
-            "case_id": "case-1",
             "tenant_id": "tenant-1",
             "invocation_id": "inv-3",
             "run_id": "run-3",
+        },
+        "business_context": {
+            "case_id": "case-1",
         },
         "traceparent": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
     }

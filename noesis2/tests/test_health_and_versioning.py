@@ -39,6 +39,9 @@ def api_client() -> APIClient:
 class VersionedContractView(APIView):
     """Simple endpoint that validates tenant/version headers for tests."""
 
+    authentication_classes = []
+    permission_classes = []
+
     def get(self, request):  # type: ignore[override]
         tenant = request.headers.get(X_TENANT_ID_HEADER)
         if not tenant:
@@ -77,6 +80,9 @@ class VersionedContractView(APIView):
 
 class DeprecatedMixinView(DeprecationHeadersMixin, APIView):
     """View that relies on the mixin to emit configured headers."""
+
+    authentication_classes = []
+    permission_classes = []
 
     api_deprecated = True
     api_deprecation_id = "ai-core-legacy"

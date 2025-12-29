@@ -5,9 +5,14 @@ from __future__ import annotations
 import uuid
 
 from django.db import models
+from django.utils import timezone
 
 
 from . import framework_models  # noqa: F401
+
+
+def _default_next_run_at() -> timezone.datetime:
+    return timezone.now() + timezone.timedelta(hours=1)
 
 
 class DocumentCollection(models.Model):
@@ -110,6 +115,24 @@ class Document(models.Model):
         help_text="Business case this document belongs to",
     )
 
+    created_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_documents",
+        db_index=True,
+        help_text="User who created/uploaded this document (NULL for system)",
+    )
+    updated_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="updated_documents",
+        help_text="User who last modified this document",
+    )
+
     lifecycle_state = models.CharField(
         max_length=32,
         default="pending",
@@ -158,7 +181,17 @@ class DocumentCollectionMembership(models.Model):
         related_name="collection_memberships",
     )
     added_at = models.DateTimeField(auto_now_add=True)
-    added_by = models.CharField(max_length=255, default="system")
+    added_by_user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+    )
+    added_by_service_id = models.CharField(
+        max_length=100,
+        null=True,
+        blank=True,
+    )
 
     class Meta:
         constraints = [
@@ -170,6 +203,449 @@ class DocumentCollectionMembership(models.Model):
         indexes = [
             models.Index(fields=("collection",), name="document_collection_idx"),
             models.Index(fields=("document",), name="collection_document_idx"),
+        ]
+
+
+class DocumentActivity(models.Model):
+    """Audit trail for document access and modifications."""
+
+    class ActivityType(models.TextChoices):
+        VIEW = "VIEW", "Viewed"
+        DOWNLOAD = "DOWNLOAD", "Downloaded"
+        SEARCH = "SEARCH", "Found in Search"
+        SHARE = "SHARE", "Shared"
+        UPLOAD = "UPLOAD", "Uploaded"
+        DELETE = "DELETE", "Deleted"
+        TRANSFER = "TRANSFER", "Ownership Transferred"
+
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="activities",
+        db_index=True,
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="document_activities",
+    )
+
+    activity_type = models.CharField(
+        max_length=20,
+        choices=ActivityType.choices,
+        db_index=True,
+    )
+
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True, default="")
+
+    case_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+    )
+    trace_id = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        db_index=True,
+    )
+
+    metadata = models.JSONField(default=dict, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("document", "-timestamp")),
+            models.Index(fields=("user", "-timestamp")),
+            models.Index(fields=("activity_type", "-timestamp")),
+            models.Index(fields=("case_id", "-timestamp")),
+        ]
+        verbose_name = "Document Activity"
+        verbose_name_plural = "Document Activities"
+
+    def __str__(self) -> str:  # pragma: no cover - debug helper
+        user_display = getattr(self.user, "id", None) or "system"
+        return f"{self.activity_type} {self.document_id} by {user_display}"
+
+
+class DocumentPermission(models.Model):
+    """Document-level access control."""
+
+    class PermissionType(models.TextChoices):
+        VIEW = "VIEW", "View"
+        DOWNLOAD = "DOWNLOAD", "Download"
+        COMMENT = "COMMENT", "Comment"
+        EDIT_META = "EDIT_META", "Edit Metadata"
+        SHARE = "SHARE", "Share"
+        DELETE = "DELETE", "Delete"
+
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="permissions",
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="document_permissions",
+    )
+    permission_type = models.CharField(
+        max_length=20,
+        choices=PermissionType.choices,
+        db_index=True,
+    )
+    granted_by = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="granted_document_permissions",
+    )
+    granted_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(null=True, blank=True, db_index=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("document", "user", "permission_type"),
+                name="document_permission_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("document", "user"), name="doc_perm_doc_user_idx"),
+            models.Index(
+                fields=("user", "permission_type"), name="doc_perm_user_type_idx"
+            ),
+        ]
+
+
+class UserDocumentFavorite(models.Model):
+    """User favorites for documents."""
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="document_favorites",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="favorites",
+    )
+    favorited_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "document"),
+                name="document_favorite_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("user", "favorited_at"), name="doc_fav_user_time_idx"),
+            models.Index(
+                fields=("document", "favorited_at"), name="doc_fav_doc_time_idx"
+            ),
+        ]
+
+
+class DocumentComment(models.Model):
+    """Comments attached to documents (supports threading)."""
+
+    class AnchorType(models.TextChoices):
+        TEXT = "TEXT", "Text"
+        PAGE = "PAGE", "Page"
+        ASSET = "ASSET", "Asset"
+
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="comments",
+    )
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="document_comments",
+    )
+    parent = models.ForeignKey(
+        "self",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="replies",
+    )
+    text = models.TextField()
+    anchor_type = models.CharField(
+        max_length=20,
+        choices=AnchorType.choices,
+        null=True,
+        blank=True,
+    )
+    anchor_reference = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=("document", "created_at"), name="doc_comment_doc_time_idx"
+            ),
+            models.Index(
+                fields=("user", "created_at"), name="doc_comment_user_time_idx"
+            ),
+        ]
+
+
+class DocumentMention(models.Model):
+    """Mention references extracted from document comments."""
+
+    comment = models.ForeignKey(
+        DocumentComment,
+        on_delete=models.CASCADE,
+        related_name="mentions",
+    )
+    mentioned_user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="document_mentions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("comment", "mentioned_user"),
+                name="document_mention_unique",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("mentioned_user", "created_at"),
+                name="doc_mention_user_time_idx",
+            ),
+        ]
+
+
+class DocumentSubscription(models.Model):
+    """User subscriptions for document-level notifications."""
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="document_subscriptions",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.CASCADE,
+        related_name="subscriptions",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("user", "document"),
+                name="document_subscription_unique",
+            )
+        ]
+        indexes = [
+            models.Index(fields=("user", "created_at"), name="doc_sub_user_time_idx"),
+            models.Index(
+                fields=("document", "created_at"), name="doc_sub_doc_time_idx"
+            ),
+        ]
+
+
+class DocumentNotification(models.Model):
+    """In-app notifications for document events."""
+
+    class EventType(models.TextChoices):
+        MENTION = "MENTION", "Mention"
+        COMMENT = "COMMENT", "Comment"
+        FAVORITE = "FAVORITE", "Favorite"
+        SAVED_SEARCH = "SAVED_SEARCH", "Saved Search"
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="document_notifications",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    comment = models.ForeignKey(
+        DocumentComment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notifications",
+    )
+    event_type = models.CharField(
+        max_length=30,
+        choices=EventType.choices,
+        db_index=True,
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    read_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("user", "read_at"), name="doc_notif_user_read_idx"),
+            models.Index(fields=("user", "created_at"), name="doc_notif_user_time_idx"),
+            models.Index(
+                fields=("event_type", "created_at"), name="doc_notif_type_time_idx"
+            ),
+        ]
+
+
+class NotificationEvent(models.Model):
+    """External notification event queue."""
+
+    class EventType(models.TextChoices):
+        MENTION = "MENTION", "Mention"
+        SAVED_SEARCH = "SAVED_SEARCH", "Saved Search"
+        COMMENT_REPLY = "COMMENT_REPLY", "Comment Reply"
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notification_events",
+    )
+    document = models.ForeignKey(
+        Document,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notification_events",
+    )
+    comment = models.ForeignKey(
+        DocumentComment,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="notification_events",
+    )
+    event_type = models.CharField(
+        max_length=30,
+        choices=EventType.choices,
+        db_index=True,
+    )
+    payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=("user", "created_at"), name="notif_evt_user_time_idx"),
+            models.Index(
+                fields=("event_type", "created_at"), name="notif_evt_type_time_idx"
+            ),
+        ]
+
+
+class NotificationDelivery(models.Model):
+    """External notification delivery tracking."""
+
+    class Channel(models.TextChoices):
+        EMAIL = "EMAIL", "Email"
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        SENT = "SENT", "Sent"
+        FAILED = "FAILED", "Failed"
+        SKIPPED = "SKIPPED", "Skipped"
+
+    event = models.ForeignKey(
+        NotificationEvent,
+        on_delete=models.CASCADE,
+        related_name="deliveries",
+    )
+    channel = models.CharField(
+        max_length=20,
+        choices=Channel.choices,
+        db_index=True,
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=Status.choices,
+        default=Status.PENDING,
+        db_index=True,
+    )
+    attempts = models.IntegerField(default=0)
+    next_attempt_at = models.DateTimeField(default=timezone.now, db_index=True)
+    last_error = models.TextField(blank=True, default="")
+    sent_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=("event", "channel"),
+                name="notification_delivery_unique",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=("status", "next_attempt_at"),
+                name="notif_delivery_due_idx",
+            ),
+        ]
+
+
+class SavedSearch(models.Model):
+    """User-defined saved searches with scheduled alerts."""
+
+    class AlertFrequency(models.TextChoices):
+        HOURLY = "HOURLY", "Hourly"
+        DAILY = "DAILY", "Daily"
+        WEEKLY = "WEEKLY", "Weekly"
+
+    user = models.ForeignKey(
+        "users.User",
+        on_delete=models.CASCADE,
+        related_name="saved_searches",
+    )
+    name = models.CharField(max_length=255)
+    query = models.TextField(blank=True, default="")
+    filters = models.JSONField(default=dict, blank=True)
+    enable_alerts = models.BooleanField(default=True)
+    alert_frequency = models.CharField(
+        max_length=20,
+        choices=AlertFrequency.choices,
+        default=AlertFrequency.HOURLY,
+    )
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    next_run_at = models.DateTimeField(
+        default=_default_next_run_at,
+        db_index=True,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(
+                fields=("user", "created_at"), name="saved_search_user_time_idx"
+            ),
+            models.Index(
+                fields=("enable_alerts", "next_run_at"), name="saved_search_due_idx"
+            ),
         ]
 
 

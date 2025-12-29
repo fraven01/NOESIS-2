@@ -1,0 +1,24 @@
+{% extends "theme/base.html" %}
+
+{% block title %}Logged out - NOESIS 2{% endblock %}
+
+{% block content %}
+<div class="min-h-screen flex items-center justify-center bg-gray-50 dark:bg-gray-900 py-12 px-4 sm:px-6 lg:px-8">
+  <div class="max-w-md w-full space-y-8">
+    <div>
+      <h2 class="mt-6 text-center text-3xl font-extrabold text-gray-900 dark:text-white">
+        Logged out
+      </h2>
+      <p class="mt-2 text-center text-sm text-gray-600 dark:text-gray-400">
+        You have been successfully logged out.
+      </p>
+    </div>
+    <div class="mt-8">
+      <a href="{% url 'login' %}"
+         class="group relative w-full flex justify-center py-2 px-4 border border-transparent text-sm font-medium rounded-md text-white bg-brand-600 hover:bg-brand-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-brand-500">
+        Log in again
+      </a>
+    </div>
+  </div>
+</div>
+{% endblock %}

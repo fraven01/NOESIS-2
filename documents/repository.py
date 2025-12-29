@@ -1112,6 +1112,7 @@ class DocumentsRepository:
         doc: NormalizedDocument,
         workflow_id: Optional[str] = None,
         scope: Optional["ScopeContext"] = None,
+        audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
         """Create or replace a document instance."""
 
@@ -1277,6 +1278,7 @@ class InMemoryDocumentsRepository(DocumentsRepository):
         scope: Optional[
             "ScopeContext"
         ] = None,  # scope unused in-memory but kept for parity
+        audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
         doc_copy = doc.model_copy(deep=True)
         doc_copy = self._materialize_document(doc_copy)

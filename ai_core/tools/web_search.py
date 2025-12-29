@@ -22,6 +22,7 @@ from pydantic import (
 )
 
 from ai_core.infra.observability import record_span
+from ai_core.tool_contracts import ToolContext
 from ai_core.tools.errors import InputError
 
 LOGGER = logging.getLogger(__name__)
@@ -98,27 +99,6 @@ class BaseSearchAdapter(Protocol):
 
 # Backwards compatibility for callers importing the legacy protocol name.
 SearchAdapter = BaseSearchAdapter
-
-
-class WebSearchContext(BaseModel):
-    """Validated runtime context for web search executions."""
-
-    model_config = ConfigDict(frozen=True, extra="forbid")
-
-    tenant_id: str
-    trace_id: str
-    workflow_id: str
-    case_id: str | None = None
-    run_id: str
-    worker_call_id: str | None = None
-
-    @field_validator("tenant_id", "trace_id", "workflow_id", "run_id")
-    @classmethod
-    def _ensure_non_empty(cls, value: str) -> str:
-        text = (value or "").strip()
-        if not text:
-            raise ValueError("must not be empty")
-        return text
 
 
 class WebSearchInput(BaseModel):
@@ -263,10 +243,20 @@ class WebSearchWorker:
         self._logger = logger or LOGGER
         self._adapter_limit_kwarg = self._determine_limit_keyword(adapter)
 
-    def run(
-        self, *, query: str, context: WebSearchContext | dict[str, object]
-    ) -> WebSearchResponse:
-        """Run the web search with validation, deduplication, and telemetry."""
+    def run(self, *, query: str, context: ToolContext) -> WebSearchResponse:
+        """Run the web search with validation, deduplication, and telemetry.
+
+        BREAKING CHANGE (Option A - Strict Separation):
+        WebSearchContext has been removed. Use ToolContext instead.
+        worker_call_id is now in context.metadata["worker_call_id"].
+
+        Args:
+            query: Search query string
+            context: ToolContext with scope, business, and metadata
+
+        Returns:
+            WebSearchResponse with results and outcome
+        """
 
         try:
             ctx = self._validate_context(context)
@@ -330,7 +320,7 @@ class WebSearchWorker:
             quota_remaining=quota_remaining,
         )
         record_span(
-            "tool.web_search", attributes=span_attributes, trace_id=ctx.trace_id
+            "tool.web_search", attributes=span_attributes, trace_id=ctx.scope.trace_id
         )
 
         outcome_meta = self._build_outcome_meta(
@@ -356,27 +346,23 @@ class WebSearchWorker:
         )
         return WebSearchResponse(results=results, outcome=outcome)
 
-    def _validate_context(
-        self, context: WebSearchContext | dict[str, object]
-    ) -> WebSearchContext:
-        try:
-            ctx = (
-                context
-                if isinstance(context, WebSearchContext)
-                else WebSearchContext.model_validate(context)
-            )
-        except ValidationError as exc:
-            raise InputError(
-                "invalid_context",
-                "Invalid tool context",
-                context={"errors": exc.errors()},
-            ) from exc
+    def _validate_context(self, context: ToolContext) -> ToolContext:
+        """Validate ToolContext and ensure worker_call_id is set.
 
-        worker_call_id = (ctx.worker_call_id or "").strip()
+        Args:
+            context: ToolContext instance
+
+        Returns:
+            ToolContext with worker_call_id in metadata
+        """
+        # Ensure worker_call_id is set in metadata (for WebSearch-specific tracking)
+        worker_call_id = (context.metadata.get("worker_call_id") or "").strip()
         if not worker_call_id:
             worker_call_id = str(uuid4())
-            ctx = ctx.model_copy(update={"worker_call_id": worker_call_id})
-        return ctx
+            # ToolContext is frozen, so we need to rebuild with updated metadata
+            updated_metadata = {**context.metadata, "worker_call_id": worker_call_id}
+            context = context.model_copy(update={"metadata": updated_metadata})
+        return context
 
     def _execute_with_retries(self, query: str) -> SearchAdapterResponse:
         attempts = 0
@@ -533,7 +519,7 @@ class WebSearchWorker:
 
     def _build_span_attributes(
         self,
-        ctx: WebSearchContext,
+        ctx: ToolContext,
         *,
         provider: str,
         query: str,
@@ -546,12 +532,12 @@ class WebSearchWorker:
         quota_remaining: int | None = None,
     ) -> dict[str, object]:
         attributes: dict[str, object] = {
-            "tenant_id": ctx.tenant_id,
-            "trace_id": ctx.trace_id,
-            "workflow_id": ctx.workflow_id,
-            "case_id": ctx.case_id,
-            "run_id": ctx.run_id,
-            "worker_call_id": ctx.worker_call_id,
+            "tenant_id": ctx.scope.tenant_id,
+            "trace_id": ctx.scope.trace_id,
+            "workflow_id": ctx.business.workflow_id,
+            "case_id": ctx.business.case_id,
+            "run_id": ctx.scope.run_id,
+            "worker_call_id": ctx.metadata.get("worker_call_id"),
             "provider": provider,
             "query": query,
             "http.status": http_status,
@@ -574,7 +560,7 @@ class WebSearchWorker:
 
     def _build_outcome_meta(
         self,
-        ctx: WebSearchContext,
+        ctx: ToolContext,
         *,
         provider: str,
         latency_ms: int,
@@ -587,12 +573,12 @@ class WebSearchWorker:
         quota_remaining: int | None = None,
     ) -> dict[str, object]:
         meta: dict[str, object] = {
-            "tenant_id": ctx.tenant_id,
-            "trace_id": ctx.trace_id,
-            "workflow_id": ctx.workflow_id,
-            "case_id": ctx.case_id,
-            "run_id": ctx.run_id,
-            "worker_call_id": ctx.worker_call_id,
+            "tenant_id": ctx.scope.tenant_id,
+            "trace_id": ctx.scope.trace_id,
+            "workflow_id": ctx.business.workflow_id,
+            "case_id": ctx.business.case_id,
+            "run_id": ctx.scope.run_id,
+            "worker_call_id": ctx.metadata.get("worker_call_id"),
             "provider": provider,
             "latency_ms": latency_ms,
             "http_status": http_status,
@@ -619,7 +605,7 @@ class WebSearchWorker:
 
     def _validation_failure(
         self,
-        ctx: WebSearchContext,
+        ctx: ToolContext,
         exc: ValidationError,
     ) -> WebSearchResponse:
         message = "invalid_query"
@@ -753,7 +739,6 @@ __all__ = [
     "SearchProviderBadResponse",
     "SearchResult",
     "ToolOutcome",
-    "WebSearchContext",
     "WebSearchInput",
     "WebSearchResponse",
     "WebSearchWorker",

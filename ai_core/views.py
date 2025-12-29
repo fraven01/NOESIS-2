@@ -658,31 +658,39 @@ def _prepare_request(request: Request):
     scope_context = normalize_request(request)
     scope_payload = scope_context.model_dump(mode="json")
     scope_trace_id = scope_payload["trace_id"]
-    scope_case_id = scope_payload.get("case_id")
     scope_tenant_id = scope_payload["tenant_id"]
-    scope_workflow_id = scope_payload.get("workflow_id")
-    scope_collection_id = scope_payload.get("collection_id")
     scope_tenant_schema = scope_payload.get("tenant_schema") or tenant_schema
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (case_id, workflow_id, collection_id) are NO LONGER in ScopeContext
+    # They were already extracted from headers and set in META at lines 633-652
+    # DO NOT overwrite them here - they remain in META for normalize_meta() to read
+
+    # Update META with infrastructure IDs from ScopeContext
     request.META[META_TRACE_ID_KEY] = scope_trace_id
-    if scope_case_id:
-        request.META[META_CASE_ID_KEY] = scope_case_id
     if scope_tenant_id:
         request.META[META_TENANT_ID_KEY] = scope_tenant_id
     if scope_tenant_schema:
         request.META[META_TENANT_SCHEMA_KEY] = scope_tenant_schema
-    if scope_workflow_id:
-        request.META[META_WORKFLOW_ID_KEY] = scope_workflow_id
-    else:
-        request.META.pop(META_WORKFLOW_ID_KEY, None)
-    if scope_collection_id:
-        request.META[META_COLLECTION_ID_KEY] = scope_collection_id
-    else:
-        request.META.pop(META_COLLECTION_ID_KEY, None)
+
+    # Business IDs (case_id, workflow_id, collection_id) remain in META from header extraction
+    # normalize_meta() will build BusinessContext from these META values
+
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Build BusinessContext from extracted business domain IDs
+    from ai_core.contracts.business import BusinessContext
+
+    business_context = BusinessContext(
+        case_id=case_id,
+        workflow_id=workflow_id,
+        collection_id=collection_id,
+        # document_id and document_version_id extracted from headers if needed
+    )
 
     # Build meta dict from validated scope and additional view-specific fields
     meta = {
         "scope_context": scope_payload,
+        "business_context": business_context.model_dump(mode="json", exclude_none=True),
         "tenant_schema": scope_tenant_schema,
     }
     if key_alias:
@@ -690,12 +698,12 @@ def _prepare_request(request: Request):
 
     log_context = {
         "trace_id": scope_trace_id,
-        "case_id": scope_case_id,
-        "workflow_id": scope_workflow_id,
+        "case_id": case_id,  # From header extraction (line 480)
+        "workflow_id": workflow_id,  # From header extraction (line 481)
         "tenant_id": scope_tenant_id,
         "tenant": scope_tenant_id,
         "key_alias": key_alias,
-        "collection_id": scope_collection_id,
+        "collection_id": collection_id,  # From header extraction (line 588-592)
         # Pre-MVP ID Contract: identity tracking
         "user_id": scope_context.user_id,
         "invocation_id": scope_context.invocation_id,
@@ -1323,8 +1331,9 @@ RAG_DEMO_DEPRECATED_RESPONSE = inline_serializer(
 
 
 class _BaseAgentView(DeprecationHeadersMixin, APIView):
-    authentication_classes: list = []
-    permission_classes: list = []
+    # Authentication and permissions are inherited from REST_FRAMEWORK defaults
+    # (SessionAuthentication + IsAuthenticated)
+    pass
 
 
 class _PingBase(_BaseAgentView):
@@ -1588,6 +1597,16 @@ def crawl_selected(request):
         mode = data.get("mode", "live")
         workflow_id = data.get("workflow_id", "crawler-demo")
 
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # _prepare_request only builds scope_context, we need to add business_context
+        # Extract business IDs from request headers
+        case_id = drf_request.headers.get("X-Case-ID", "").strip() or None
+        meta["business_context"] = {
+            "case_id": case_id,
+            "workflow_id": workflow_id,
+            "collection_id": collection_id,
+        }
+
         if not urls:
             return HttpResponse("No URLs provided", status=400)
 
@@ -1683,17 +1702,30 @@ class RagUploadView(APIView):
         if error:
             return error
 
-        scope_context = meta["scope_context"]
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # scope_context is infrastructure only (ScopeContext).
+        # Business IDs like case_id should be in a separate business_context dict.
+        # For now, check and set case_id in request.META instead.
+        case_id_from_header = request.headers.get("X-Case-ID", "").strip()
 
         # Fix for Silent RAG Failure (Finding #22):
         # In DEV/DEBUG mode, default missing case_id to the dev default.
         # so that uploads from Workbench are visible to the RAG Chat.
-        if settings.DEBUG and not scope_context.get("case_id"):
+        if settings.DEBUG and not case_id_from_header:
             logger.info(
                 "view.rag_upload.defaulting_case_id",
                 extra={"assigned_case_id": DEV_DEFAULT_CASE_ID},
             )
-            scope_context["case_id"] = DEV_DEFAULT_CASE_ID
+            case_id_from_header = DEV_DEFAULT_CASE_ID
+            request.META["META_CASE_ID"] = case_id_from_header
+
+        # Add business context to meta for handle_document_upload
+        meta["business_context"] = {
+            "case_id": case_id_from_header,
+            "workflow_id": request.headers.get("X-Workflow-ID", "").strip()
+            or case_id_from_header,
+            "collection_id": request.headers.get("X-Collection-ID", "").strip() or None,
+        }
 
         content_type = request.headers.get("Content-Type", "")
         if content_type:
@@ -1735,11 +1767,12 @@ class RagIngestionRunView(APIView):
         if error:
             return error
 
-        scope_context = meta["scope_context"]
+        # BREAKING CHANGE (Option A): Extract business IDs from business_context
+        business_context = meta.get("business_context", {})
 
         # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
-        if settings.DEBUG and not scope_context.get("case_id"):
-            scope_context["case_id"] = DEV_DEFAULT_CASE_ID
+        if settings.DEBUG and not business_context.get("case_id"):
+            business_context["case_id"] = DEV_DEFAULT_CASE_ID
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):
@@ -1748,11 +1781,11 @@ class RagIngestionRunView(APIView):
             payload = dict(getattr(request, "data", {}) or {})
 
         if (
-            scope_context.get("collection_id")
+            business_context.get("collection_id")
             and not payload.get("collection_id")
             and payload.get("collection_ids") in (None, "")
         ):
-            payload["collection_id"] = scope_context["collection_id"]
+            payload["collection_id"] = business_context["collection_id"]
 
         response = services.start_ingestion_run(payload, meta, idempotency_key)
 
@@ -1768,10 +1801,12 @@ class RagIngestionStatusView(APIView):
         if error:
             return error
 
+        # BREAKING CHANGE (Option A): Extract business and infrastructure IDs
         scope_context = meta["scope_context"]
-        latest = get_latest_ingestion_run(
-            scope_context["tenant_id"], scope_context["case_id"]
-        )
+        business_context = meta.get("business_context", {})
+        tenant_id = scope_context["tenant_id"]
+        case_id = business_context.get("case_id")
+        latest = get_latest_ingestion_run(tenant_id, case_id)
         if not latest:
             response = _error_response(
                 "No ingestion runs recorded for the current tenant/case.",
@@ -1824,8 +1859,9 @@ class RagIngestionStatusView(APIView):
 
         tenant_obj = TenantContext.resolve_identifier(scope_context["tenant_id"])
         if tenant_obj is not None:
+            # BREAKING CHANGE (Option A): case_id from business_context
             case_obj = Case.objects.filter(
-                tenant=tenant_obj, external_id=scope_context["case_id"]
+                tenant=tenant_obj, external_id=business_context.get("case_id")
             ).first()
             if case_obj is not None:
                 response_payload["case_status"] = case_obj.status

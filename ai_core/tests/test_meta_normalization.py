@@ -49,9 +49,11 @@ def test_normalize_meta_returns_expected_mapping(monkeypatch):
     meta = normalize_meta(request)
 
     scope_context = meta["scope_context"]
+    business_context = meta["business_context"]
     assert scope_context["tenant_id"] == tenant_id
-    assert scope_context["case_id"] == "case-42"
     assert scope_context["trace_id"] == "trace-123"
+    assert "case_id" not in scope_context
+    assert business_context["case_id"] == "case-42"
     assert meta["graph_name"] == "info_intake"
     assert meta["graph_version"] == "v9"
     assert meta["tenant_schema"] == "tenant_schema"
@@ -173,7 +175,8 @@ def test_normalize_meta_includes_collection_scope(monkeypatch):
     meta = normalize_meta(request)
 
     assert (
-        meta["scope_context"]["collection_id"] == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
+        meta["business_context"]["collection_id"]
+        == "54d8d3b2-04de-4a38-a9c8-3c9a4b52c5b6"
     )
     from ai_core.tool_contracts import ToolContext
 

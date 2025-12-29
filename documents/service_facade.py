@@ -14,6 +14,7 @@ from uuid import UUID, uuid4
 
 from django.utils import timezone
 
+from ai_core.contracts.audit_meta import audit_meta_from_scope
 from ai_core.contracts.scope import ScopeContext
 from customers.tenant_context import TenantContext
 from django_tenants.utils import schema_context
@@ -114,12 +115,14 @@ def ingest_document(
         schema_context(scope.tenant_schema) if scope.tenant_schema else nullcontext()
     )
 
+    audit_meta = audit_meta_from_scope(scope, created_by_user_id=scope.user_id)
     with tenant_schema_ctx:
         ingest_result = service.ingest_document(
             tenant=tenant,
             source=str(source),
             content_hash=str(content_hash),
             metadata=metadata,
+            audit_meta=audit_meta.model_dump(mode="json"),
             collections=collections,
             embedding_profile=metadata.get("embedding_profile"),
             scope=metadata.get("scope"),
@@ -128,12 +131,16 @@ def ingest_document(
             initial_lifecycle_state=DocumentLifecycleState.INGESTING,
         )
 
+    # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+    # TODO: Accept BusinessContext parameter to extract case_id
+    case_id_meta = metadata.get("case_id") if metadata else None
+
     return {
         "status": "queued",
         "chunks_inserted": 0,
         "trace_id": scope.trace_id,
         "ingestion_run_id": scope.ingestion_run_id,
-        "case_id": scope.case_id,
+        "case_id": case_id_meta,  # Was: scope.case_id
         "tenant_schema": scope.tenant_schema,
         "document_id": str(ingest_result.document.id),
         "collection_ids": [str(cid) for cid in ingest_result.collection_ids],
@@ -176,6 +183,11 @@ def delete_document(
     )
 
     ingestion_run_id = str(scope.ingestion_run_id or uuid4())
+
+    # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+    # TODO: Accept BusinessContext parameter to extract case_id
+    case_id_for_delete = None  # Was: str(scope.case_id) if scope.case_id else None
+
     request = QueuedDeleteRequest(
         tenant_id=str(scope.tenant_id),
         trace_id=str(scope.trace_id),
@@ -183,7 +195,7 @@ def delete_document(
         ingestion_run_id=ingestion_run_id,
         document_ids=tuple(str(doc_id) for doc_id in normalized_ids),
         queued_at=timezone.now().isoformat(),
-        case_id=str(scope.case_id) if scope.case_id else None,
+        case_id=case_id_for_delete,
         tenant_schema=scope.tenant_schema,
         reason=reason,
         ticket_ref=ticket_ref,

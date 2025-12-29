@@ -19,6 +19,7 @@ from documents.collection_service import CollectionService
 from documents.domain_service import DocumentDomainService
 from documents.lifecycle import DocumentLifecycleState
 from documents.models import Document
+from documents.serializers import DocumentSerializer
 
 
 def _require_debug() -> None:
@@ -107,17 +108,7 @@ class DocumentDevViewSet(viewsets.ViewSet):
         tenant = self._resolve_tenant(tenant_id)
         with schema_context(tenant.schema_name):
             document = get_object_or_404(Document, pk=UUID(str(document_id)))
-        return Response(
-            {
-                "document_id": str(document.id),
-                "tenant_id": str(document.tenant_id),
-                "source": document.source,
-                "hash": document.hash,
-                "metadata": document.metadata,
-                "lifecycle_state": document.lifecycle_state,
-                "lifecycle_updated_at": document.lifecycle_updated_at,
-            }
-        )
+        return Response(DocumentSerializer(document).data)
 
     @action(
         detail=False,

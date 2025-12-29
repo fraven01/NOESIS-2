@@ -18,6 +18,8 @@ from documents.contracts import (
 )
 from documents.views import document_download
 
+pytestmark = pytest.mark.django_db
+
 
 @pytest.fixture
 def mock_repo(monkeypatch):
@@ -25,6 +27,30 @@ def mock_repo(monkeypatch):
     repo = Mock()
     monkeypatch.setattr("documents.views._get_documents_repository", lambda: repo)
     return repo
+
+
+@pytest.fixture(autouse=True)
+def mock_authenticated_user(monkeypatch):
+    user = SimpleNamespace(is_authenticated=True, id=1)
+    monkeypatch.setattr("documents.views._resolve_request_user", lambda request: user)
+    return user
+
+
+@pytest.fixture(autouse=True)
+def allow_download_permission(monkeypatch):
+    access = SimpleNamespace(allowed=True, reason=None)
+    monkeypatch.setattr(
+        "documents.views.DocumentAuthzService.user_can_access_document_id",
+        lambda **kwargs: access,
+    )
+    return access
+
+
+@pytest.fixture(autouse=True)
+def mock_activity_logger(monkeypatch):
+    mock_logger = Mock()
+    monkeypatch.setattr("documents.views.ActivityTracker.log", mock_logger)
+    return mock_logger
 
 
 @pytest.fixture
@@ -97,6 +123,29 @@ def test_document_download_success(mock_repo, sample_document, monkeypatch):
 
     # Verify repo was called correctly
     mock_repo.get.assert_called_once_with("tenant-test", doc.ref.document_id)
+
+
+def test_document_download_logs_activity(
+    mock_repo, sample_document, monkeypatch, mock_activity_logger
+):
+    doc, test_file = sample_document
+    mock_repo.get.return_value = doc
+
+    monkeypatch.setattr(
+        "documents.access_service.get_upload_file_path", lambda *args: test_file
+    )
+
+    factory = RequestFactory()
+    request = factory.get(f"/documents/download/{doc.ref.document_id}/")
+    request.tenant = SimpleNamespace(tenant_id="tenant-test", schema_name="test")
+
+    response = document_download(request, str(doc.ref.document_id))
+
+    assert isinstance(response, FileResponse)
+    mock_activity_logger.assert_called_once()
+    call_kwargs = mock_activity_logger.call_args.kwargs
+    assert call_kwargs["activity_type"] == "DOWNLOAD"
+    assert call_kwargs["document_id"] == doc.ref.document_id
 
 
 def test_document_download_not_found(mock_repo):

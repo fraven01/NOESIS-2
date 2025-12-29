@@ -29,22 +29,36 @@ class Command(BaseCommand):
 
             # Bootstrap system collections for the public tenant
             if not options.get("skip_collections"):
-                self.stdout.write("Bootstrapping system collections...")
-                try:
-                    service = CollectionService()
-                    collection_id = service.ensure_manual_collection(
-                        tenant=tenant,
-                        slug="manual-search",
-                        label="Manual Search",
-                    )
-                    self.stdout.write(
-                        self.style.SUCCESS(
-                            f"✅ System collection 'manual-search' ready (ID: {collection_id})"
+                # Check if 'documents' is installed in the public schema (SHARED_APPS)
+                # We check for "documents" or configured AppConfig paths starting with "documents."
+                is_documents_shared = any(
+                    app == "documents" or app.startswith("documents.")
+                    for app in settings.SHARED_APPS
+                )
+
+                if is_documents_shared:
+                    self.stdout.write("Bootstrapping system collections...")
+                    try:
+                        service = CollectionService()
+                        collection_id = service.ensure_manual_collection(
+                            tenant=tenant,
+                            slug="manual-search",
+                            label="Manual Search",
                         )
-                    )
-                except Exception as exc:
+                        self.stdout.write(
+                            self.style.SUCCESS(
+                                f"✅ System collection 'manual-search' ready (ID: {collection_id})"
+                            )
+                        )
+                    except Exception as exc:
+                        self.stdout.write(
+                            self.style.WARNING(
+                                f"⚠️  Could not bootstrap collections: {str(exc)}"
+                            )
+                        )
+                else:
                     self.stdout.write(
                         self.style.WARNING(
-                            f"⚠️  Could not bootstrap collections: {str(exc)}"
+                            "⚠️  Skipping system collection bootstrap: 'documents' app is not shared."
                         )
                     )

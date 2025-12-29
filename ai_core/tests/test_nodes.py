@@ -14,6 +14,8 @@ from ai_core.nodes import (
 from ai_core.nodes._prompt_runner import run_prompt_node
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_client import HybridSearchResult
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts import (
     ContextError,
     InconsistentMetadataError,
@@ -28,6 +30,25 @@ META = {
     "trace_id": "tr",
     "tenant_schema": "tenant-schema-1",
 }
+
+
+def _tool_context(
+    *,
+    tenant_id: str,
+    case_id: str | None,
+    run_id: str,
+    tenant_schema: str | None = None,
+) -> ToolContext:
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        run_id=run_id,
+        tenant_schema=tenant_schema,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id=case_id)
+    return scope.to_tool_context(business=business)
 
 
 class _DummyProfile:
@@ -108,7 +129,7 @@ def test_retrieve_hybrid_search(monkeypatch):
     }
 
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
 
     result = retrieve.run(context, params)
 
@@ -180,7 +201,7 @@ def test_retrieve_scoped_router(monkeypatch):
 
     state = {"query": "hi", "hybrid": {}}
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(
+    context = _tool_context(
         tenant_id="tenant-42",
         case_id="case-42",
         run_id="run-1",
@@ -195,7 +216,7 @@ def test_retrieve_scoped_router(monkeypatch):
 
 def test_retrieve_requires_tenant_id():
     params = retrieve.RetrieveInput(query="Hello", hybrid={})
-    context = ToolContext(tenant_id="", case_id="c1", run_id="run-1")
+    context = _tool_context(tenant_id="", case_id="c1", run_id="run-1")
     with pytest.raises(ContextError, match="tenant_id required"):
         retrieve.run(context, params)
 
@@ -203,7 +224,7 @@ def test_retrieve_requires_tenant_id():
 def test_retrieve_unknown_hybrid_key(monkeypatch):
     _patch_routing(monkeypatch)
     params = retrieve.RetrieveInput(query="Hello", hybrid={"alpha": 0.5, "unknown": 1})
-    context = ToolContext(tenant_id="tenant-1", case_id="c1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-1", case_id="c1", run_id="run-1")
     with pytest.raises(InputError, match=r"Unknown hybrid parameter\(s\): unknown"):
         retrieve.run(context, params)
 
@@ -278,7 +299,7 @@ def test_retrieve_deduplicates_matches(monkeypatch):
 
     state = {"query": "hello", "hybrid": {"top_k": 5}}
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(tenant_id="tenant-1", case_id="c1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-1", case_id="c1", run_id="run-1")
 
     result = retrieve.run(context, params)
 
@@ -323,7 +344,7 @@ def test_retrieve_raises_on_chunks_without_ids(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
 
     params = retrieve.RetrieveInput.from_state({"query": "hi", "hybrid": {}})
-    context = ToolContext(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
 
     with pytest.raises(InconsistentMetadataError, match="reindex required"):
         retrieve.run(context, params)
@@ -351,7 +372,7 @@ def test_retrieve_raises_not_found_when_no_candidates(monkeypatch):
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: _Router())
 
     params = retrieve.RetrieveInput.from_state({"query": "missing", "hybrid": {}})
-    context = ToolContext(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-1", case_id="case-1", run_id="run-1")
 
     with pytest.raises(NotFoundError, match="No matching documents"):
         retrieve.run(context, params)

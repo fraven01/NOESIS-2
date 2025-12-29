@@ -9,6 +9,8 @@ from uuid import uuid4
 import pytest
 
 from ai_core import services
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts import ToolContext
 
 
@@ -46,29 +48,21 @@ def test_execute_graph_emits_cost_summary_and_updates_observation(monkeypatch):
     tenant_id = str(uuid4())
     run_id = "run-1"
     invocation_id = str(uuid4())
-    tool_context = ToolContext(
+    scope = ScopeContext(
         tenant_id=tenant_id,
-        case_id="case-456",
         trace_id="trace-abc",
         invocation_id=invocation_id,
-        now_iso=datetime.now(timezone.utc),
         run_id=run_id,
+        timestamp=datetime.now(timezone.utc),
+        service_id="test-worker",
     )
+    business = BusinessContext(case_id="case-456")
+    tool_context = ToolContext(scope=scope, business=business)
     normalized_meta = {
-        "tenant_id": tenant_id,
-        "case_id": "case-456",
-        "trace_id": "trace-abc",
         "graph_name": "custom.graph",
         "graph_version": "v7",
-        "run_id": run_id,
-        "scope_context": {
-            "tenant_id": tenant_id,
-            "case_id": "case-456",
-            "trace_id": "trace-abc",
-            "invocation_id": str(invocation_id),
-            "run_id": run_id,
-            "timestamp": tool_context.now_iso.isoformat(),
-        },
+        "scope_context": scope.model_dump(mode="json"),
+        "business_context": business.model_dump(mode="json"),
         "tool_context": tool_context,
         "ledger": {"id": "ledger-run-1"},
         "cost": {"total_usd": 0.05},

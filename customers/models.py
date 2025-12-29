@@ -7,10 +7,28 @@ from pydantic import ValidationError as PydanticValidationError
 
 
 class Tenant(TenantMixin):
+    class TenantType(models.TextChoices):
+        ENTERPRISE = "ENTERPRISE", "Enterprise"
+        LAW_FIRM = "LAW_FIRM", "Law Firm"
+
+    class WorksCouncilScope(models.TextChoices):
+        ASSIGNED = "ASSIGNED", "Assigned Cases Only"
+        ALL = "ALL", "All Cases"
+
     name = models.CharField(max_length=100)
     paid_until = models.DateField(null=True, blank=True)
     on_trial = models.BooleanField(default=True)
     created_on = models.DateField(auto_now_add=True)
+    tenant_type = models.CharField(
+        max_length=20,
+        choices=TenantType.choices,
+        default=TenantType.ENTERPRISE,
+    )
+    works_council_scope = models.CharField(
+        max_length=20,
+        choices=WorksCouncilScope.choices,
+        default=WorksCouncilScope.ALL,
+    )
     pii_mode = models.CharField(max_length=32, null=True, blank=True)
     pii_policy = models.CharField(max_length=32, null=True, blank=True)
     pii_logging_redaction = models.BooleanField(null=True, blank=True)

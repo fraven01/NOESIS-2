@@ -15,6 +15,16 @@ urlpatterns = [
     path(
         "rag-tools/tool/documents/", views.document_explorer, name="document_explorer"
     ),
+    path(
+        "rag-tools/identity-switch/",
+        views.rag_tools_identity_switch,
+        name="rag_tools_identity_switch",
+    ),
+    path(
+        "rag-tools/tool/collaboration/",
+        views.tool_collaboration,
+        name="tool_collaboration",
+    ),
     # Functional Endpoints
     path("document-space/", views.document_space, name="document-space"),
     path("rag-tools/web-search/", views.web_search, name="web-search"),

@@ -15,6 +15,7 @@ from django.utils import timezone
 
 from ai_core.infra import object_store
 from ai_core.infra.observability import record_span
+from django.apps import apps
 from customers.models import Tenant
 from customers.tenant_context import TenantContext
 from documents.parsers import ParsedResult
@@ -143,6 +144,7 @@ class DocumentDomainService:
         source: str,
         content_hash: str,
         metadata: Mapping[str, object] | None = None,
+        audit_meta: Mapping[str, object] | None = None,
         collections: Iterable[str | UUID | DocumentCollection] = (),
         embedding_profile: str | None = None,
         scope: str | None = None,
@@ -181,6 +183,18 @@ class DocumentDomainService:
 
         lifecycle_state = DocumentLifecycleState(initial_lifecycle_state)
         lifecycle_timestamp = timezone.now()
+        created_by_user_id = (audit_meta or {}).get("created_by_user_id")
+        last_hop_service_id = (audit_meta or {}).get("last_hop_service_id")
+        created_by_user = None
+        if created_by_user_id:
+            try:
+                User = apps.get_model("users", "User")
+                created_by_user = User.objects.get(pk=int(created_by_user_id))
+            except Exception:
+                logger.warning(
+                    "documents.created_by_user_missing",
+                    extra={"user_id": created_by_user_id},
+                )
 
         with transaction.atomic():
             document, created = Document.objects.update_or_create(
@@ -194,6 +208,13 @@ class DocumentDomainService:
                     **({"id": document_id} if document_id is not None else {}),
                 },
             )
+            if created and created_by_user:
+                document.created_by = created_by_user
+                document.updated_by = created_by_user
+                document.save(update_fields=["created_by", "updated_by", "updated_at"])
+            elif created_by_user:
+                document.updated_by = created_by_user
+                document.save(update_fields=["updated_by", "updated_at"])
             if not created and metadata:
                 document.metadata = dict(metadata_payload)
                 document.save(update_fields=["metadata", "updated_at"])
@@ -213,9 +234,15 @@ class DocumentDomainService:
 
             collection_ids: list[UUID] = []
             for collection in collection_instances:
+                membership_defaults: dict[str, object] = {}
+                if created_by_user:
+                    membership_defaults["added_by_user"] = created_by_user
+                elif last_hop_service_id:
+                    membership_defaults["added_by_service_id"] = last_hop_service_id
                 _, _ = DocumentCollectionMembership.objects.get_or_create(
                     document=document,
                     collection=collection,
+                    defaults=membership_defaults or None,
                 )
                 collection_ids.append(collection.collection_id)
 

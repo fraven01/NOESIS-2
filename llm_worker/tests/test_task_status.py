@@ -9,6 +9,7 @@ from django.test import RequestFactory
 from rest_framework import status
 
 from llm_worker.views import task_status
+from users.tests.factories import UserFactory
 
 
 @pytest.mark.django_db
@@ -17,6 +18,7 @@ def test_task_status_pending():
     # Setup
     factory = RequestFactory()
     request = factory.get("/api/llm/tasks/test-task-123/")
+    request.user = UserFactory()  # Authenticate
     task_id = "test-task-123"
 
     # Mock AsyncResult with PENDING state
@@ -46,6 +48,7 @@ def test_task_status_success():
     # Setup
     factory = RequestFactory()
     request = factory.get("/api/llm/tasks/test-task-456/")
+    request.user = UserFactory()  # Authenticate
     task_id = "test-task-456"
 
     # Mock AsyncResult with SUCCESS state and result payload
@@ -83,6 +86,7 @@ def test_task_status_failure():
     # Setup
     factory = RequestFactory()
     request = factory.get("/api/llm/tasks/test-task-789/")
+    request.user = UserFactory()  # Authenticate
     task_id = "test-task-789"
 
     # Mock AsyncResult with FAILURE state and exception info
@@ -115,6 +119,7 @@ def test_task_status_started():
     # Setup
     factory = RequestFactory()
     request = factory.get("/api/llm/tasks/test-task-started/")
+    request.user = UserFactory()  # Authenticate
     task_id = "test-task-started"
 
     # Mock AsyncResult with STARTED state
@@ -144,6 +149,7 @@ def test_task_status_revoked():
     # Setup
     factory = RequestFactory()
     request = factory.get("/api/llm/tasks/test-task-revoked/")
+    request.user = UserFactory()  # Authenticate
     task_id = "test-task-revoked"
 
     # Mock AsyncResult with REVOKED state

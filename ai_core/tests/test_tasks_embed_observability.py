@@ -35,11 +35,13 @@ def test_embed_emits_span_metadata(monkeypatch):
     meta = {
         "scope_context": {
             "tenant_id": "tenant",
-            "case_id": "case",
             "trace_id": "trace-1",
             "invocation_id": "inv-1",
             "run_id": "run-1",
-        }
+        },
+        "business_context": {
+            "case_id": "case",
+        },
     }
     raw_chunks: Dict[str, Any] = {
         "chunks": [
@@ -154,11 +156,13 @@ def test_embed_error_updates_observation(monkeypatch):
     meta = {
         "scope_context": {
             "tenant_id": "tenant",
-            "case_id": "case",
             "trace_id": "trace-2",
             "invocation_id": "inv-2",
             "run_id": "run-2",
-        }
+        },
+        "business_context": {
+            "case_id": "case",
+        },
     }
     chunks = {
         "chunks": [

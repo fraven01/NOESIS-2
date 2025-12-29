@@ -2,7 +2,7 @@ from __future__ import annotations
 import base64
 from contextlib import nullcontext
 from datetime import datetime
-from typing import List, Optional, Tuple
+from typing import List, Mapping, Optional, Tuple
 from uuid import UUID
 import logging
 
@@ -71,6 +71,7 @@ class DbDocumentsRepository(DocumentsRepository):
         doc: NormalizedDocument,
         workflow_id: Optional[str] = None,
         scope: Optional[ScopeContext] = None,
+        audit_meta: Optional[Mapping[str, object]] = None,
     ) -> NormalizedDocument:
         # 1. Handle Frozen Models & Materialization safely
         # We cannot mutate 'doc' if it is frozen. We create a modified copy.
@@ -96,8 +97,24 @@ class DbDocumentsRepository(DocumentsRepository):
         DocumentCollectionMembership = apps.get_model(
             "documents", "DocumentCollectionMembership"
         )
+        User = apps.get_model("users", "User")
 
         with self._schema_ctx(scope, tenant):
+            created_by_user = None
+            created_by_user_id = (audit_meta or {}).get("created_by_user_id")
+            last_hop_service_id = (audit_meta or {}).get("last_hop_service_id")
+            if created_by_user_id:
+                try:
+                    created_by_user = User.objects.get(pk=int(created_by_user_id))
+                except Exception:
+                    logger.warning(
+                        "documents.created_by_user_missing",
+                        extra={
+                            "user_id": created_by_user_id,
+                            "tenant_id": str(tenant.id),
+                        },
+                    )
+
             # Fail fast if collection is specified but missing (Logic Change)
             coll = None
             if collection_id:
@@ -153,7 +170,9 @@ class DbDocumentsRepository(DocumentsRepository):
                         # Extract context IDs from scope or doc metadata
                         ctx_workflow_id = workflow or ""
                         ctx_trace_id = scope.trace_id if scope else ""
-                        ctx_case_id = scope.case_id if scope else None
+                        # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+                        # TODO: Accept BusinessContext parameter to extract case_id
+                        ctx_case_id = None  # Was: scope.case_id if scope else None
 
                         document = Document.objects.create(
                             id=doc_copy.ref.document_id,  # Honor ID if creating new
@@ -166,6 +185,8 @@ class DbDocumentsRepository(DocumentsRepository):
                             case_id=ctx_case_id,
                             lifecycle_state=doc_copy.lifecycle_state,
                             lifecycle_updated_at=doc_copy.created_at,
+                            created_by=created_by_user,
+                            updated_by=created_by_user,
                         )
                 except IntegrityError:
                     # Race condition or ID collision
@@ -225,13 +246,26 @@ class DbDocumentsRepository(DocumentsRepository):
                         document, doc_copy, metadata, scope=scope, workflow_id=workflow
                     )
 
+            if document and created_by_user and not getattr(document, "created_by_id"):
+                document.created_by = created_by_user
+                document.save(update_fields=["created_by", "updated_at"])
+
+            if document and created_by_user:
+                document.updated_by = created_by_user
+                document.save(update_fields=["updated_by", "updated_at"])
+
             # 3. Memberships (Side Effects)
             if coll:
                 try:
+                    membership_defaults: dict[str, object] = {}
+                    if created_by_user:
+                        membership_defaults["added_by_user"] = created_by_user
+                    elif last_hop_service_id:
+                        membership_defaults["added_by_service_id"] = last_hop_service_id
                     DocumentCollectionMembership.objects.get_or_create(
                         document=document,
                         collection=coll,
-                        defaults={"added_by": "system"},
+                        defaults=membership_defaults or None,
                     )
                 except Exception:
                     # Don't fail the main upsert if side effects flake, but log
@@ -311,9 +345,9 @@ class DbDocumentsRepository(DocumentsRepository):
         if scope and scope.trace_id:
             document.trace_id = scope.trace_id
             update_fields.append("trace_id")
-        if scope and scope.case_id:
-            document.case_id = scope.case_id
-            update_fields.append("case_id")
+        # BREAKING CHANGE (Option A): case_id no longer in ScopeContext
+        # TODO: Accept BusinessContext parameter to extract case_id
+        # Removed: if scope and scope.case_id: document.case_id = scope.case_id
 
         document.save(update_fields=update_fields)
         return document

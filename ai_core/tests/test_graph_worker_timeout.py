@@ -14,6 +14,8 @@ from celery import exceptions as celery_exceptions
 from django.conf import settings
 
 from ai_core import services
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts import ToolContext
 
 
@@ -54,26 +56,22 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
 
     tenant_id = str(uuid4())
     invocation_id = str(uuid4())
-    tool_context = ToolContext(
+    scope = ScopeContext(
         tenant_id=tenant_id,
-        case_id="case-test",
         trace_id="trace-test",
         invocation_id=invocation_id,
-        now_iso=datetime.now(timezone.utc),
         run_id="run-test",
+        timestamp=datetime.now(timezone.utc),
+        service_id="test-worker",
     )
+    business = BusinessContext(case_id="case-test")
+    tool_context = ToolContext(scope=scope, business=business)
 
     normalized_meta = {
         "graph_name": "rag.default",
         "graph_version": "v1",
-        "scope_context": {
-            "tenant_id": tenant_id,
-            "case_id": "case-test",
-            "trace_id": "trace-test",
-            "invocation_id": str(invocation_id),
-            "run_id": "run-test",
-            "timestamp": tool_context.now_iso.isoformat(),
-        },
+        "scope_context": scope.model_dump(mode="json"),
+        "business_context": business.model_dump(mode="json"),
         "tool_context": tool_context.model_dump(mode="json"),
     }
 
@@ -96,7 +94,6 @@ def test_rag_worker_sync_success(monkeypatch, disable_async_graphs):
         # Verify the signature was called correctly
         assert signature is not None
         assert scope["tenant_id"] == tenant_id
-        assert scope["case_id"] == "case-test"
         assert scope["trace_id"] == "trace-test"
         return mock_async_result
 
@@ -148,26 +145,22 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
 
     tenant_id = str(uuid4())
     invocation_id = str(uuid4())
-    tool_context = ToolContext(
+    scope = ScopeContext(
         tenant_id=tenant_id,
-        case_id="case-test",
         trace_id="trace-test",
         invocation_id=invocation_id,
-        now_iso=datetime.now(timezone.utc),
         run_id="run-test",
+        timestamp=datetime.now(timezone.utc),
+        service_id="test-worker",
     )
+    business = BusinessContext(case_id="case-test")
+    tool_context = ToolContext(scope=scope, business=business)
 
     normalized_meta = {
         "graph_name": "rag.default",
         "graph_version": "v1",
-        "scope_context": {
-            "tenant_id": tenant_id,
-            "case_id": "case-test",
-            "trace_id": "trace-test",
-            "invocation_id": str(invocation_id),
-            "run_id": "run-test",
-            "timestamp": tool_context.now_iso.isoformat(),
-        },
+        "scope_context": scope.model_dump(mode="json"),
+        "business_context": business.model_dump(mode="json"),
         "tool_context": tool_context.model_dump(mode="json"),
     }
 
@@ -185,7 +178,6 @@ def test_rag_worker_async_fallback(monkeypatch, disable_async_graphs):
         # Verify the signature was called correctly
         assert signature is not None
         assert scope["tenant_id"] == tenant_id
-        assert scope["case_id"] == "case-test"
         assert scope["trace_id"] == "trace-test"
         return mock_async_result
 

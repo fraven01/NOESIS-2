@@ -11,14 +11,11 @@ from django.http import HttpRequest
 from ai_core.contracts.scope import ScopeContext
 from ai_core.ids import (
     coerce_trace_id,
-    normalize_case_header,
     normalize_idempotency_key,
 )
 from common.constants import (
     META_TENANT_SCHEMA_KEY,
-    META_WORKFLOW_ID_KEY,
     X_TENANT_SCHEMA_HEADER,
-    X_WORKFLOW_ID_HEADER,
 )
 
 
@@ -118,13 +115,11 @@ def normalize_request(
 
         raise TenantRequiredError("Tenant could not be resolved from request")
 
-    # 3. Case ID
-    case_id = normalize_case_header(meta)
+    # BREAKING CHANGE (Option A): Business IDs removed from ScopeContext
+    # case_id, workflow_id, collection_id are now extracted in normalize_meta()
+    # and placed in BusinessContext, not here.
 
-    # 4. Workflow ID
-    workflow_id = _coalesce(request, X_WORKFLOW_ID_HEADER, META_WORKFLOW_ID_KEY)
-
-    # 5. Idempotency Key
+    # 3. Idempotency Key
     idempotency_key = normalize_idempotency_key(meta)
 
     # 6. Tenant Schema
@@ -160,14 +155,10 @@ def normalize_request(
     if not ingestion_run_id and not run_id:
         run_id = uuid.uuid4().hex
 
-    # 9. Collection ID ("Aktenschrank" context for scoped operations)
-    # Note: collection_id is stored as string (UUID-string) per ScopeContext contract
-    _collection_uuid = _normalize_uuid_header(
-        headers.get("X-Collection-ID") or meta.get("HTTP_X_COLLECTION_ID")
-    )
-    collection_id: str | None = str(_collection_uuid) if _collection_uuid else None
+    # BREAKING CHANGE (Option A): collection_id removed from ScopeContext
+    # It's now a business domain ID, extracted in normalize_meta() → BusinessContext
 
-    # 10. User ID (Pre-MVP ID Contract: User Request Hops)
+    # 9. User ID (Pre-MVP ID Contract: User Request Hops)
     # Extract from Django auth if user is authenticated
     user_id: str | None = None
     user = getattr(request, "user", None)
@@ -187,6 +178,10 @@ def normalize_request(
     # S2S Hops (Celery tasks, internal calls) set service_id separately
     service_id: str | None = None
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business domain IDs (case_id, workflow_id, collection_id) are NO LONGER
+    # part of ScopeContext. They are extracted separately in normalize_meta()
+    # and placed in BusinessContext.
     scope_kwargs = {
         "tenant_id": tenant_id,  # ScopeContext will validate this is not None
         "trace_id": trace_id,
@@ -195,11 +190,9 @@ def normalize_request(
         "service_id": service_id,
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
-        "case_id": case_id,
-        "workflow_id": workflow_id,
         "idempotency_key": idempotency_key,
         "tenant_schema": tenant_schema,
-        "collection_id": collection_id,
+        # REMOVED (Option A): case_id, workflow_id, collection_id → BusinessContext
     }
 
     return ScopeContext.model_validate(scope_kwargs)
@@ -230,18 +223,24 @@ def normalize_task_context(
     - S2S Hop: service_id REQUIRED, user_id ABSENT.
     - initiated_by_user_id is NOT part of ScopeContext (it goes in audit_meta).
 
+    BREAKING CHANGE (Option A - Strict Separation):
+    - Business domain IDs (case_id, workflow_id, collection_id) are NO LONGER
+      part of ScopeContext. They are kept as parameters for backward compatibility
+      but are NOT included in the returned ScopeContext.
+    - Callers should extract business IDs separately and build BusinessContext.
+
     Args:
         tenant_id: Mandatory tenant identifier.
-        case_id: Mandatory case identifier.
         service_id: REQUIRED for S2S. E.g., "celery-ingestion-worker".
         trace_id: Inherited from parent hop, or generated if None.
         invocation_id: New for this hop, or generated if None.
         run_id: Runtime execution ID (may co-exist with ingestion_run_id).
         ingestion_run_id: Ingestion execution ID (may co-exist with run_id).
-        workflow_id: Optional workflow identifier.
         idempotency_key: Optional request-level determinism key.
         tenant_schema: Optional tenant schema (derived from tenant_id if None).
-        collection_id: Optional collection scope.
+        case_id: DEPRECATED - No longer part of ScopeContext (kept for compatibility).
+        workflow_id: DEPRECATED - No longer part of ScopeContext (kept for compatibility).
+        collection_id: DEPRECATED - No longer part of ScopeContext (kept for compatibility).
         initiated_by_user_id: NOT used in ScopeContext - for audit_meta only.
             Pass this to audit_meta_from_scope() when persisting entities.
 
@@ -259,6 +258,9 @@ def normalize_task_context(
     if not run_id and not ingestion_run_id:
         run_id = uuid.uuid4().hex
 
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business domain IDs (case_id, workflow_id, collection_id) are NO LONGER
+    # part of ScopeContext. Callers should build BusinessContext separately.
     scope_kwargs = {
         "tenant_id": tenant_id,
         "trace_id": final_trace_id,
@@ -267,11 +269,9 @@ def normalize_task_context(
         "service_id": service_id,  # S2S Hops REQUIRE service_id
         "run_id": run_id,
         "ingestion_run_id": ingestion_run_id,
-        "case_id": case_id,
-        "workflow_id": workflow_id,
         "idempotency_key": idempotency_key,
         "tenant_schema": tenant_schema,
-        "collection_id": collection_id,
+        # REMOVED (Option A): case_id, workflow_id, collection_id → BusinessContext
     }
 
     return ScopeContext.model_validate(scope_kwargs)

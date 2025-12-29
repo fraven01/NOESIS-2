@@ -11,10 +11,22 @@ from common.constants import (
     META_TENANT_SCHEMA_KEY,
 )
 from django_tenants.middleware.main import TenantMainMiddleware
+from users.tests.factories import UserFactory
+import pytest
+
+pytestmark = pytest.mark.django_db
+
+
+@pytest.fixture
+def authenticated_client(client):
+    """Authenticated test client."""
+    user = UserFactory()
+    client.force_login(user)
+    return client
 
 
 def test_ingestion_run_rejects_blank_document_ids(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr("customers.tenant_context.TenantContext", MockTenantContext)
     monkeypatch.setattr(
@@ -25,7 +37,7 @@ def test_ingestion_run_rejects_blank_document_ids(
     monkeypatch.setattr(rate_limit, "check", lambda tenant, now=None: True)
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data=json.dumps({"document_ids": ["  "], "embedding_profile": "standard"}),
         content_type="application/json",
@@ -43,7 +55,7 @@ def test_ingestion_run_rejects_blank_document_ids(
 
 
 def test_ingestion_run_rejects_empty_embedding_profile(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr("customers.tenant_context.TenantContext", MockTenantContext)
     monkeypatch.setattr(
@@ -55,7 +67,7 @@ def test_ingestion_run_rejects_empty_embedding_profile(
     monkeypatch.setattr(views, "assert_case_active", lambda *args, **kwargs: None)
 
     valid_document_id = str(uuid.uuid4())
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data=json.dumps(
             {"document_ids": [valid_document_id], "embedding_profile": "   "}
@@ -75,7 +87,7 @@ def test_ingestion_run_rejects_empty_embedding_profile(
 
 
 def test_ingestion_run_normalises_payload_before_dispatch(
-    client, monkeypatch, test_tenant_schema_name
+    authenticated_client, monkeypatch, test_tenant_schema_name
 ):
     monkeypatch.setattr("customers.tenant_context.TenantContext", MockTenantContext)
     monkeypatch.setattr(
@@ -119,7 +131,7 @@ def test_ingestion_run_normalises_payload_before_dispatch(
     monkeypatch.setattr(views.run_ingestion, "delay", _fake_delay)
 
     raw_id = str(uuid.uuid4())
-    response = client.post(
+    response = authenticated_client.post(
         "/ai/rag/ingestion/run/",
         data=json.dumps(
             {

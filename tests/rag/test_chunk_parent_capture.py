@@ -20,10 +20,12 @@ def _build_scope_meta(doc_id: str, external_id: str) -> dict[str, str]:
     return {
         "scope_context": {
             "tenant_id": "tenant",
-            "case_id": "case",
             "trace_id": str(uuid.uuid4()),
             "invocation_id": str(uuid.uuid4()),
             "run_id": str(uuid.uuid4()),
+        },
+        "business_context": {
+            "case_id": "case",
         },
         "external_id": external_id,
         "document_id": doc_id,

@@ -10,4 +10,6 @@ class UserProfileFactory(DjangoModelFactory):
         model = UserProfile
 
     user = factory.SubFactory(UserFactory)
-    role = UserProfile.Roles.GUEST
+    role = UserProfile.Roles.STAKEHOLDER
+    account_type = UserProfile.AccountType.INTERNAL
+    is_active = True

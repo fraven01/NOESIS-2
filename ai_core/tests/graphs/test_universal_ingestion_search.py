@@ -2,12 +2,37 @@ import pytest
 import sys
 from unittest.mock import MagicMock, patch
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tools.web_search import (
     WebSearchResponse,
     WebSearchWorker,
     ToolOutcome,
     SearchResult,
 )
+
+
+def _tool_context(
+    *,
+    tenant_id: str,
+    trace_id: str,
+    invocation_id: str,
+    run_id: str | None = None,
+    ingestion_run_id: str | None = None,
+    case_id: str | None = None,
+    workflow_id: str | None = None,
+    metadata: dict[str, object] | None = None,
+):
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id=trace_id,
+        invocation_id=invocation_id,
+        run_id=run_id,
+        ingestion_run_id=ingestion_run_id,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
+    return scope.to_tool_context(business=business, metadata=metadata or {})
 
 
 @pytest.fixture(autouse=True)
@@ -103,12 +128,14 @@ def test_search_acquire_only(utg_module, mock_search_worker, mock_dependencies):
             "collection_id": "00000000-0000-0000-0000-000000000001",
             "search_query": "test query",
         },
-        "context": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-            "trace_id": "00000000-0000-0000-0000-000000000002",
-            "case_id": "00000000-0000-0000-0000-000000000003",
-            "runtime_worker": mock_search_worker,
-        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-acquire-only",
+            run_id="run-acquire-only",
+            case_id="00000000-0000-0000-0000-000000000003",
+            metadata={"runtime_worker": mock_search_worker},
+        ),
     }
 
     result = graph.invoke(state)
@@ -154,15 +181,15 @@ def test_search_acquire_and_ingest(
             "collection_id": "00000000-0000-0000-0000-000000000001",
             "search_query": "test query",
         },
-        "context": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-            "trace_id": "00000000-0000-0000-0000-000000000002",
-            "invocation_id": "inv-search-test",
-            "case_id": "00000000-0000-0000-0000-000000000003",
-            "ingestion_run_id": "00000000-0000-0000-0000-000000000004",
-            "workflow_id": "workflow-123",  # Added for robustness
-            "runtime_worker": mock_search_worker,
-        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-search-test",
+            ingestion_run_id="00000000-0000-0000-0000-000000000004",
+            case_id="00000000-0000-0000-0000-000000000003",
+            workflow_id="workflow-123",
+            metadata={"runtime_worker": mock_search_worker},
+        ),
     }
 
     result = graph.invoke(state)
@@ -220,13 +247,15 @@ def test_search_preselected_results_bypass(
             "preselected_results": preselected,
             # No search_query provided ensuring validation allows it
         },
-        "context": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-            "trace_id": "00000000-0000-0000-0000-000000000002",
-            "case_id": "00000000-0000-0000-0000-000000000003",
-            "workflow_id": "workflow-123",
-            "runtime_worker": mock_search_worker,
-        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-preselected",
+            run_id="run-preselected",
+            case_id="00000000-0000-0000-0000-000000000003",
+            workflow_id="workflow-123",
+            metadata={"runtime_worker": mock_search_worker},
+        ),
     }
 
     result = graph.invoke(state)

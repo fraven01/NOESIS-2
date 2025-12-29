@@ -32,6 +32,7 @@ from users.views import accept_invitation
 urlpatterns = [
     path("", include("theme.urls")),
     path("admin/", admin.site.urls),
+    path("accounts/", include("django.contrib.auth.urls")),
     path("ai/", include("ai_core.urls")),
     path("cases/", include("cases.urls")),
     path("documents/", include("documents.urls")),

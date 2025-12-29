@@ -151,10 +151,16 @@ class ComponentValidationsOutput(BaseModel):
 
 
 class FrameworkAnalysisInput(BaseModel):
-    """Input for framework analysis."""
+    """Input for framework analysis.
 
-    document_collection_id: UUID
-    document_id: UUID | None = None
+    BREAKING CHANGE (Option A - Strict Separation):
+    Business domain IDs (document_collection_id, document_id) have been REMOVED.
+    These are now read from ToolContext.business.
+
+    Golden Rule: Tool-Inputs contain only functional parameters.
+    Context contains Scope, Business, and Runtime Permissions.
+    """
+
     force_reanalysis: bool = False
     confidence_threshold: float = Field(default=0.70, ge=0.0, le=1.0)
 

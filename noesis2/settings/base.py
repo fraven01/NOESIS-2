@@ -254,6 +254,8 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "theme.middleware.SimulatedUserMiddleware",
+    "profiles.middleware.ExternalAccountExpiryMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",
     "django.middleware.clickjacking.XFrameOptionsMiddleware",
 ]
@@ -368,6 +370,7 @@ ADMINS = [
 ]
 
 EMAIL_BACKEND = "django.core.mail.backends.console.EmailBackend"
+DOCUMENT_COMMENT_CREATE_RATE = env("DOCUMENT_COMMENT_CREATE_RATE", default="60/min")
 
 # Logging / observability
 LOGGING_CONFIG = "common.logging.configure_django_logging"
@@ -402,7 +405,17 @@ LOGGING = {
 
 REST_FRAMEWORK = {
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
-    "DEFAULT_AUTHENTICATION_CLASSES": [],
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        # Policy-enforcing authentication classes that check:
+        # - Account expiry (EXTERNAL accounts)
+        # - Active status (user.is_active, profile.is_active)
+        # - (Future) Concurrent sessions, IP restrictions, etc.
+        "profiles.authentication.PolicyEnforcingSessionAuthentication",
+        "profiles.authentication.PolicyEnforcingBasicAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
 }
 
 TENANT_HEADER_COMPONENTS = api_schema.tenant_header_components()

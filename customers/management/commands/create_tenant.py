@@ -13,11 +13,18 @@ class Command(BaseCommand):
         parser.add_argument("--schema", "--schema_name", dest="schema", required=True)
         parser.add_argument("--name", required=True)
         parser.add_argument("--domain", "--domain-domain", dest="domain", required=True)
+        parser.add_argument(
+            "--tenant-type",
+            choices=["ENTERPRISE", "LAW_FIRM"],
+            default="ENTERPRISE",
+            help="Tenant type (default: ENTERPRISE)",
+        )
 
     def handle(self, *args, **options):
         schema = options["schema"]
         name = options["name"]
         domain = options["domain"]
+        tenant_type = options.get("tenant_type", "ENTERPRISE")
 
         if schema == get_public_schema_name():
             raise CommandError("Schema 'public' is reserved")
@@ -28,7 +35,11 @@ class Command(BaseCommand):
 
         with schema_context(get_public_schema_name()):
             with transaction.atomic():
-                tenant = Tenant.objects.create(schema_name=schema, name=name)
+                tenant = Tenant.objects.create(
+                    schema_name=schema,
+                    name=name,
+                    tenant_type=tenant_type,
+                )
                 Domain.objects.create(domain=domain, tenant=tenant, is_primary=True)
 
         original_auto_create = getattr(tenant, "auto_create_schema", True)

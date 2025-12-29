@@ -4,11 +4,11 @@ set -euo
 
 COMPOSE="docker compose -f docker-compose.yml -f docker-compose.dev.yml"
 
-# Allow passing service names, defaults to web, worker, agents-worker, ingestion-worker
+# Allow passing service names, defaults to web and worker
 if [ "$#" -gt 0 ]; then
   SERVICES=("$@")
 else
-  SERVICES=(web worker agents-worker ingestion-worker)
+  SERVICES=(web worker)
 fi
 
 echo "[dev-restart] Restarting: ${SERVICES[*]}"

@@ -18,6 +18,7 @@ from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.infra import object_store
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.tasks import run_ingestion_graph
+from documents.activity_service import ActivityTracker
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -58,8 +59,10 @@ class UploadWorker:
         *,
         tenant_id: str,
         case_id: Optional[str] = None,
+        workflow_id: Optional[str] = None,
         trace_id: Optional[str] = None,
         invocation_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         document_metadata: Optional[Mapping[str, Any]] = None,
         ingestion_overrides: Optional[Mapping[str, Any]] = None,
     ) -> WorkerPublishResult:
@@ -69,8 +72,10 @@ class UploadWorker:
             upload_file: File-like object with .read(), .name, .content_type
             tenant_id: Tenant identifier
             case_id: Optional case identifier
+            workflow_id: Optional workflow identifier
             trace_id: Distributed tracing ID
             invocation_id: Unique invocation ID for this processing run
+            user_id: Optional user identifier for attribution
             document_metadata: Optional metadata provided by the uploader
             ingestion_overrides: Optional overrides for the ingestion process
 
@@ -100,14 +105,24 @@ class UploadWorker:
         if not collection_id and ingestion_overrides:
             collection_id = ingestion_overrides.get("collection_id")
 
+        resolved_workflow_id = workflow_id or case_id or str(uuid4())
+        audit_meta: Dict[str, Any] = {"last_hop_service_id": "upload-worker"}
+        if user_id:
+            audit_meta["created_by_user_id"] = user_id
+            audit_meta["initiated_by_user_id"] = user_id
+
         # 5. Register document (ID generation & visibility)
         resolved_document_id = self._register_document(
             tenant_id=tenant_id,
+            case_id=case_id,
+            workflow_id=resolved_workflow_id,
+            trace_id=trace_id,
             filename=upload_file.name,
             content_hash=checksum,
             metadata=raw_meta,
             collection_identifier=collection_id,
             ingestion_overrides=ingestion_overrides,
+            audit_meta=audit_meta,
         )
 
         # 6. Compose state (IDENTICAL to Crawler!)
@@ -119,12 +134,20 @@ class UploadWorker:
             case_id,
             trace_id,
             resolved_document_id,
+            resolved_workflow_id,
             raw_meta,
             ingestion_overrides,
         )
 
         # 7. Compose meta (IDENTICAL to Crawler!)
-        meta = self._compose_meta(tenant_id, case_id, trace_id, invocation_id)
+        meta = self._compose_meta(
+            tenant_id,
+            case_id,
+            resolved_workflow_id,
+            trace_id,
+            invocation_id,
+            audit_meta,
+        )
 
         # Observability: Track Celery payload metrics (MVP invariant verification)
         import json
@@ -177,11 +200,15 @@ class UploadWorker:
     def _register_document(
         self,
         tenant_id: str,
+        case_id: Optional[str],
+        workflow_id: str,
+        trace_id: Optional[str],
         filename: str,
         content_hash: str,
         metadata: Dict[str, Any],
         collection_identifier: Optional[Any],
         ingestion_overrides: Optional[Mapping[str, Any]],
+        audit_meta: Mapping[str, Any] | None,
     ) -> Optional[str]:
         """Register document in DomainService to ensure it exists in DB."""
         try:
@@ -222,6 +249,7 @@ class UploadWorker:
                     source=metadata.get("origin_uri") or filename,
                     content_hash=content_hash,
                     metadata=metadata,
+                    audit_meta=audit_meta,
                     collections=collections,
                     embedding_profile=(
                         ingestion_overrides.get("embedding_profile")
@@ -235,6 +263,27 @@ class UploadWorker:
                     ),
                     dispatcher=lambda *args: None,
                 )
+                try:
+                    ActivityTracker.log(
+                        document=result.document,
+                        activity_type="UPLOAD",
+                        user=getattr(result.document, "created_by", None),
+                        case_id=case_id,
+                        trace_id=trace_id,
+                        metadata={
+                            "source": metadata.get("source") or "upload",
+                            "workflow_id": workflow_id,
+                        },
+                    )
+                except Exception:
+                    logger.warning(
+                        "upload_worker.activity_log_failed",
+                        exc_info=True,
+                        extra={
+                            "tenant_id": tenant_id,
+                            "document_id": str(result.document.id),
+                        },
+                    )
                 return str(result.document.id)
         except Exception:
             logger.exception(
@@ -252,6 +301,7 @@ class UploadWorker:
         case_id: Optional[str],
         trace_id: Optional[str],
         resolved_document_id: Optional[str],
+        workflow_id: str,
         raw_meta: Dict[str, Any],
         ingestion_overrides: Optional[Mapping[str, Any]],
     ) -> Dict[str, Any]:
@@ -274,8 +324,6 @@ class UploadWorker:
         state["raw_payload_path"] = payload_path
 
         # Build NormalizedDocumentInput
-        workflow_id = raw_meta.get("workflow_id") or "default"
-
         # Determine Doc ID
         if resolved_document_id:
             doc_uuid = UUID(resolved_document_id)
@@ -338,19 +386,35 @@ class UploadWorker:
         self,
         tenant_id: str,
         case_id: Optional[str],
+        workflow_id: str,
         trace_id: Optional[str],
         invocation_id: Optional[str],
+        audit_meta: Mapping[str, Any] | None,
     ) -> Dict[str, Any]:
-        """Compose metadata for the graph execution context."""
-        """Compose metadata for the graph execution context."""
+        """Compose metadata for the graph execution context.
+
+        BREAKING CHANGE (Option A - Strict Separation):
+        Returns both scope_context (infrastructure) and business_context (domain).
+        """
+        from ai_core.contracts.business import BusinessContext
+
+        # Build ScopeContext (infrastructure only, no business IDs)
         scope = normalize_task_context(
             tenant_id=tenant_id,
-            case_id=case_id,
+            case_id=case_id,  # DEPRECATED parameter, not used in ScopeContext
             service_id="upload-worker",
             trace_id=trace_id,
             invocation_id=invocation_id,
         )
-        return {"scope_context": scope.model_dump(mode="json")}
+
+        # Build BusinessContext (business domain IDs)
+        business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
+
+        return {
+            "scope_context": scope.model_dump(mode="json"),
+            "business_context": business.model_dump(mode="json", exclude_none=True),
+            "audit_meta": dict(audit_meta or {}),
+        }
 
     def _get_domain_service(self) -> DocumentDomainService:
         if self._domain_service is None:

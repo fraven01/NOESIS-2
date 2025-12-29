@@ -33,17 +33,19 @@ def submit_worker_task(
     """
 
     meta = dict(task_payload)
-    # Extract scope fields including identity IDs (Pre-MVP ID Contract)
+
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Split scope dict into infrastructure (ScopeContext) and business (BusinessContext) IDs
+    from ai_core.contracts.business import BusinessContext
+
+    # Extract infrastructure IDs for ScopeContext
     scope_payload = {
         "tenant_id": scope.get("tenant_id"),
-        "case_id": scope.get("case_id"),
         "trace_id": scope.get("trace_id"),
         "invocation_id": scope.get("invocation_id") or uuid4().hex,
         "run_id": scope.get("run_id"),
         "ingestion_run_id": scope.get("ingestion_run_id"),
-        "workflow_id": scope.get("workflow_id"),
         "idempotency_key": scope.get("idempotency_key"),
-        "collection_id": scope.get("collection_id"),
         "tenant_schema": scope.get("tenant_schema"),
         # Identity IDs (Pre-MVP ID Contract)
         "user_id": scope.get("user_id"),  # User Request Hop
@@ -52,9 +54,25 @@ def submit_worker_task(
     if not scope_payload.get("run_id") and not scope_payload.get("ingestion_run_id"):
         scope_payload["run_id"] = uuid4().hex
 
+    # Build ScopeContext (infrastructure only)
     scope_context = ScopeContext.model_validate(scope_payload).model_dump(mode="json")
     meta["scope_context"] = scope_context
 
+    # Extract business IDs for BusinessContext (BREAKING CHANGE)
+    business_payload = {
+        "case_id": scope.get("case_id"),
+        "workflow_id": scope.get("workflow_id"),
+        "collection_id": scope.get("collection_id"),
+        "document_id": scope.get("document_id"),
+        "document_version_id": scope.get("document_version_id"),
+    }
+    # Build BusinessContext (business domain IDs)
+    business_context = BusinessContext(**business_payload).model_dump(
+        mode="json", exclude_none=True
+    )
+    meta["business_context"] = business_context
+
+    # Remove all ID fields from meta (now in scope_context or business_context)
     for key in (
         "tenant_id",
         "case_id",
@@ -65,6 +83,8 @@ def submit_worker_task(
         "workflow_id",
         "idempotency_key",
         "collection_id",
+        "document_id",
+        "document_version_id",
         "tenant_schema",
         "user_id",
         "service_id",

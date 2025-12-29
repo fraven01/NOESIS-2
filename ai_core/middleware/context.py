@@ -79,7 +79,11 @@ class RequestContextMiddleware:
         # Extract values from scope_context for logging and response headers
         trace_id = scope_context.trace_id
         tenant_id = scope_context.tenant_id
-        case_id = scope_context.case_id
+
+        # BREAKING CHANGE (Option A): case_id is no longer in ScopeContext
+        # Extract business domain IDs directly from headers
+        case_id = self._normalize_header(headers.get(self.CASE_ID_HEADER))
+
         key_alias = self._normalize_header(headers.get(self.KEY_ALIAS_HEADER))
         idempotency_key = scope_context.idempotency_key
 
@@ -121,6 +125,8 @@ class RequestContextMiddleware:
             "key_alias": key_alias,
             "traceparent": traceparent,
         }
+        if case_id:
+            response_meta["business_context"] = {"case_id": case_id}
         if span_id:
             response_meta["span_id"] = span_id
 

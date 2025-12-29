@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -130,27 +130,21 @@ class TestFrameworkAnalysisInput:
     def test_valid_input(self) -> None:
         """Test valid analysis input."""
         input_params = FrameworkAnalysisInput(
-            document_collection_id=uuid4(),
-            document_id=uuid4(),
             force_reanalysis=False,
             confidence_threshold=0.70,
         )
-        assert isinstance(input_params.document_collection_id, UUID)
         assert input_params.confidence_threshold == 0.70
 
     def test_input_defaults(self) -> None:
         """Test input with default values."""
-        input_params = FrameworkAnalysisInput(document_collection_id=uuid4())
-        assert input_params.document_id is None
+        input_params = FrameworkAnalysisInput()
         assert input_params.force_reanalysis is False
         assert input_params.confidence_threshold == 0.70
 
     def test_confidence_threshold_bounds(self) -> None:
         """Test confidence threshold validation."""
         with pytest.raises(ValidationError):
-            FrameworkAnalysisInput(
-                document_collection_id=uuid4(), confidence_threshold=1.5  # > 1.0
-            )
+            FrameworkAnalysisInput(confidence_threshold=1.5)  # > 1.0
 
 
 class TestFrameworkStructure:

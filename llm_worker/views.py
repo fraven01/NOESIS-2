@@ -12,7 +12,8 @@ from django.http import JsonResponse
 from django.urls import reverse
 from pydantic import ValidationError
 from rest_framework import serializers, status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
 from structlog.stdlib import get_logger
 
 from llm_worker.runner import submit_worker_task
@@ -58,6 +59,7 @@ def _format_validation_error(error: ValidationError) -> str:
     },
 )
 @api_view(["POST"])
+@permission_classes([AllowAny])
 def run_task(request) -> JsonResponse:
     """Submit a worker task (currently score_results) and optionally wait for completion."""
 
@@ -166,6 +168,7 @@ def run_task(request) -> JsonResponse:
 
 
 @api_view(["GET"])
+@permission_classes([AllowAny])
 def task_status(request, task_id: str) -> JsonResponse:
     """
     Poll the status of a Celery task via Result Backend.

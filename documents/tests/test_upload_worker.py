@@ -66,6 +66,12 @@ def mock_tenants():
         yield mock_ctx
 
 
+@pytest.fixture(autouse=True)
+def mock_activity_logger():
+    with patch("documents.upload_worker.ActivityTracker.log") as mock:
+        yield mock
+
+
 def test_upload_worker_process_success(
     mock_blob_writer,
     mock_run_graph,

@@ -39,7 +39,7 @@ Planned work:
 
 - [x] Introduce package structure split for graphs (e.g. `ai_core/graphs/technical/` and `ai_core/graphs/business/`) without introducing Django-app overhead.
 - [x] Define import direction expectations (business -> technical; technical should not depend on business).
-- [ ] Enforce import direction later via a simple repo test (no new dependencies): fail builds if `ai_core/graphs/technical/**` imports `ai_core/graphs/business/**` (planning only; see also `roadmap/backlog.md`).
+- [x] Enforce import direction later via a simple repo test (no new dependencies): fail builds if `ai_core/graphs/technical/**` imports `ai_core/graphs/business/**` (planning only; see also `roadmap/backlog.md`).
 - [x] Identify current candidates:
   - Business-heavy graph: `ai_core/graphs/framework_analysis_graph.py`
   - Technical graphs: ingestion/retrieval/search graphs under `ai_core/graphs/` (see inventory doc)
@@ -50,9 +50,9 @@ Planned work:
 Goal: allow moving worker-heavy execution out of the Django monolith later without rewriting business orchestration.
 
 - [x] Establish a stable cross-graph interface for technical graphs (versioned Pydantic input/output; avoid implicit state-dict APIs).
-- [ ] Add a “graph executor” boundary (local/in-process vs Celery vs remote service) so business graphs call an executor API instead of importing execution mechanism directly.
-- [ ] Decide/anchor location for the execution layer: place the executor under `ai_core/graph/execution/` (next to `ai_core/graph/schemas.py`, `ai_core/graph/core.py`), so “graph meta normalization” and “graph execution” stay in the same module family.
-- [ ] Define a minimal API surface (planning sketch): `executor.run(name, input, context) -> output` (sync) plus an optional async/remote submission API (`executor.submit(...) -> handle/task_id`), with `trace_id` propagation preserved.
+- [x] Add a “graph executor” boundary (local/in-process vs Celery vs remote service) so business graphs call an executor API instead of importing execution mechanism directly.
+- [x] Decide/anchor location for the execution layer: place the executor under `ai_core/graph/execution/` (next to `ai_core/graph/schemas.py`, `ai_core/graph/core.py`), so “graph meta normalization” and “graph execution” stay in the same module family.
+- [x] Define a minimal API surface (planning sketch): `executor.run(name, input, context) -> output` (sync) plus an optional async/remote submission API (`executor.submit(...) -> handle/task_id`), with `trace_id` propagation preserved.
 - [ ] Reuse/extend the existing in-memory graph registry (`ai_core/graph/registry.py`) as the canonical `graph_name -> runner/factory` mapping (and later add versioning + request/response model metadata).
 - [ ] Standardize context propagation across boundaries (`tenant_id`, `trace_id`, exactly one runtime ID, plus `workflow_id`/`case_id` when applicable) using existing context models.
 - [ ] Observability: require end-to-end correlation (`trace_id`) across local/celery/remote execution.

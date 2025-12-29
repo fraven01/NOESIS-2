@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import pytest
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.nodes import retrieve
 from ai_core.rag.schemas import Chunk
 from ai_core.rag.vector_store import VectorStoreRouter
@@ -177,6 +179,28 @@ class _VisibilityStore:
         return result
 
 
+def _tool_context(
+    *,
+    tenant_id: str,
+    case_id: str | None,
+    run_id: str,
+    tenant_schema: str | None = None,
+    visibility_override_allowed: bool = False,
+) -> ToolContext:
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id="trace-1",
+        invocation_id="inv-1",
+        run_id=run_id,
+        tenant_schema=tenant_schema,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id=case_id)
+    return scope.to_tool_context(
+        business=business, visibility_override_allowed=visibility_override_allowed
+    )
+
+
 def _patch_routing(monkeypatch, profile: str = "standard", space: str = "rag/global"):
     monkeypatch.setattr(
         "ai_core.nodes.retrieve.resolve_embedding_profile",
@@ -266,7 +290,7 @@ def test_retrieve_happy_path(monkeypatch, trgm_limit):
         },
     }
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(
+    context = _tool_context(
         tenant_id=tenant,
         tenant_schema="tenant-schema",
         case_id=case,
@@ -360,7 +384,7 @@ def test_retrieve_includes_parent_context(monkeypatch):
             "hybrid": {"alpha": 0.55, "min_sim": 0.35, "top_k": 1},
         }
     )
-    context = ToolContext(
+    context = _tool_context(
         tenant_id=tenant, tenant_schema=None, case_id=case, run_id="run-1"
     )
 
@@ -413,7 +437,7 @@ def _run_visibility_scenario(
         state["visibility"] = requested
 
     params = retrieve.RetrieveInput.from_state(state)
-    context = ToolContext(
+    context = _tool_context(
         tenant_id=tenant,
         case_id=case,
         run_id="run-1",
@@ -526,7 +550,7 @@ def test_retrieve_scoped_router_without_schema(monkeypatch, caplog):
     router = _TenantOnlyRouter(response)
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
-    context = ToolContext(tenant_id="tenant-123", case_id="case-1", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-123", case_id="case-1", run_id="run-1")
     with caplog.at_level("WARNING"):
         result = retrieve.run(context, _basic_params())
 
@@ -559,7 +583,7 @@ def test_retrieve_warns_without_for_tenant(monkeypatch, caplog):
     router = _UnscopedRouter(response)
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
-    context = ToolContext(tenant_id="tenant-456", case_id="case-9", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-456", case_id="case-9", run_id="run-1")
     with caplog.at_level("WARNING"):
         result = retrieve.run(context, _basic_params())
 
@@ -591,6 +615,6 @@ def test_retrieve_raises_on_incompatible_for_tenant(monkeypatch):
     router = _BadSignatureRouter(response)
     monkeypatch.setattr("ai_core.nodes.retrieve._get_router", lambda: router)
 
-    context = ToolContext(tenant_id="tenant-789", case_id="case-2", run_id="run-1")
+    context = _tool_context(tenant_id="tenant-789", case_id="case-2", run_id="run-1")
     with pytest.raises(ContextError, match="for_tenant must accept"):
         retrieve.run(context, _basic_params())

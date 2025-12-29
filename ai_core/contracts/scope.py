@@ -1,44 +1,49 @@
 """Scope context contracts for tool and graph invocations.
 
-Context identifiers are aligned across APIs, graphs and tools:
-- ``tenant_id`` identifies the organizational tenant and drives schema/permission selection; it is mandatory everywhere.
-- ``case_id`` ties executions to a business case within a tenant, bundling documents and decisions for its full lifetime.
-- ``workflow_id`` labels a logical workflow inside a case (e.g., intake, assessment); repeated executions of the same workflow reuse
-  the same ID provided by the caller or dispatcher.
-- ``run_id`` marks a single LangGraph execution of a workflow; every execution gets a fresh, non-semantic value that belongs to
-  exactly one ``workflow_id`` and ``case_id``.
+BREAKING CHANGE (Option A - Strict Separation):
+Business domain identifiers (case_id, collection_id, workflow_id, document_id)
+have been REMOVED from ScopeContext and moved to BusinessContext.
 
-Relationships: one tenant has many cases → each case can contain many workflows → each workflow can have many runs. Tools require
-``tenant_id``, ``trace_id``, ``invocation_id`` and at least one runtime identifier (``run_id`` and/or ``ingestion_run_id``). Graphs set
-``case_id`` and ``workflow_id`` as soon as the business context is known, while ``run_id`` stays purely technical and is generated
-per execution.
+ScopeContext now contains ONLY request correlation and infrastructure identifiers:
+- ``tenant_id`` identifies the organizational tenant and drives schema/permission selection
+- ``trace_id`` enables distributed tracing across service boundaries
+- ``invocation_id`` uniquely identifies a single invocation within a trace
+- ``run_id`` marks a single LangGraph execution (one workflow run)
+- ``ingestion_run_id`` marks a document ingestion run
+
+Separation rationale:
+- ScopeContext = Request Correlation (WHO, WHEN) - infrastructure concerns
+- BusinessContext = Domain Context (WHAT) - business concerns
+- ToolContext = Runtime Metadata (HOW) - execution concerns
 
 Identity rules (strict):
 - User Request Hop: ``user_id`` REQUIRED (when auth present), ``service_id`` ABSENT.
 - S2S Hop (Celery/Graph): ``service_id`` REQUIRED, ``user_id`` ABSENT.
 - ``initiated_by_user_id`` is for audit_meta only (causal tracking), never a principal in ScopeContext.
+
+See: OPTION_A_IMPLEMENTATION_PLAN.md, OPTION_A_SOURCE_CODE_ANALYSIS.md
 """
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:  # pragma: no cover
+    from ai_core.contracts.business import BusinessContext
     from ai_core.tool_contracts.base import ToolContext
 
+# Type aliases for ScopeContext fields (infrastructure/correlation IDs only)
 TenantId = str
 TraceId = str
 InvocationId = str
-CaseId = str
 TenantSchema = str
-WorkflowId = str
 RunId = str
 IngestionRunId = str
 IdempotencyKey = str
-CollectionId = str | None
 Timestamp = datetime
 
 # Identity IDs (Pre-MVP ID Contract)
@@ -47,10 +52,16 @@ ServiceId = str | None  # Required for S2S Hops (e.g., "celery-ingestion-worker"
 
 
 class ScopeContext(BaseModel):
-    """Canonical scope context containing mandatory correlation identifiers.
+    """Request correlation scope containing infrastructure identifiers.
 
-    The collection_id field represents the "Aktenschrank" (file cabinet) context,
-    enabling multi-collection search and scoped operations.
+    BREAKING CHANGE (Option A):
+    Business domain IDs (case_id, collection_id, workflow_id) REMOVED.
+    These now live in BusinessContext (ai_core.contracts.business).
+
+    ScopeContext represents the infrastructure-level request correlation:
+    - WHO: tenant_id, user_id/service_id (identity)
+    - WHEN: timestamp, trace_id, invocation_id
+    - RUNTIME: run_id, ingestion_run_id
 
     Identity rules (Pre-MVP ID Contract):
     - User Request Hop: user_id REQUIRED (when auth present), service_id ABSENT.
@@ -58,21 +69,21 @@ class ScopeContext(BaseModel):
     - Both user_id and service_id being set is invalid.
     - Both being absent is only valid for public/unauthenticated endpoints.
 
-    BREAKING CHANGE: collection_id is now str (UUID-string, previously UUID).
-    BREAKING CHANGE: run_id and ingestion_run_id may co-exist (previously XOR).
+    Runtime IDs:
+    - run_id and ingestion_run_id may co-exist (when workflow triggers ingestion).
+    - At least ONE runtime ID is required (enforced by validator).
 
-    Note: case_id is optional at the ScopeContext level (for HTTP requests).
-    It becomes mandatory when graphs/tools set business context. The ToolContext
-    enforces case_id requirements for AI operations.
+    Migration from old ScopeContext:
+    - OLD: ScopeContext(tenant_id="t", case_id="c", collection_id="col")
+    - NEW: scope = ScopeContext(tenant_id="t")
+           business = BusinessContext(case_id="c", collection_id="col")
+           context = ToolContext(scope=scope, business=business)
     """
 
     # Mandatory correlation IDs
     tenant_id: TenantId
     trace_id: TraceId
     invocation_id: InvocationId
-
-    # Business context (optional at request level, required for tool invocations)
-    case_id: CaseId | None = None
 
     # Identity IDs (mutually exclusive per hop type)
     user_id: UserId = Field(
@@ -88,17 +99,34 @@ class ScopeContext(BaseModel):
     run_id: RunId | None = None
     ingestion_run_id: IngestionRunId | None = None
 
-    # Optional context
+    # Optional technical context
     tenant_schema: TenantSchema | None = None
-    workflow_id: WorkflowId | None = None
     idempotency_key: IdempotencyKey | None = None
-    collection_id: CollectionId = Field(
-        default=None,
-        description="Collection ID (UUID-string) for scoped operations ('Aktenschrank')",
-    )
     timestamp: Timestamp = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="before")
+    @classmethod
+    def forbid_business_ids(cls, data: object) -> object:
+        """Reject business identifiers passed into ScopeContext."""
+        if isinstance(data, ScopeContext):
+            return data
+        if isinstance(data, Mapping):
+            forbidden = {
+                "case_id",
+                "collection_id",
+                "workflow_id",
+                "document_id",
+                "document_version_id",
+            }
+            present = sorted(key for key in forbidden if key in data)
+            if present:
+                raise ValueError(
+                    "ScopeContext cannot include business IDs. "
+                    f"Move {', '.join(present)} to BusinessContext."
+                )
+        return data
 
     @model_validator(mode="after")
     def validate_run_scope(self) -> "ScopeContext":
@@ -131,17 +159,31 @@ class ScopeContext(BaseModel):
 
         return self
 
-    def to_tool_context(self, **overrides: object) -> "ToolContext":
-        """Project this scope into a ``ToolContext`` with optional overrides."""
+    def to_tool_context(
+        self, business: "BusinessContext | None" = None, **overrides: object
+    ) -> "ToolContext":
+        """Project this scope into a ToolContext with optional BusinessContext.
 
+        Args:
+            business: Optional BusinessContext (case_id, collection_id, etc.)
+            **overrides: Additional ToolContext fields (locale, budget_tokens, etc.)
+
+        Returns:
+            ToolContext with compositional structure (scope + business + overrides)
+
+        Example:
+            from ai_core.contracts.business import BusinessContext
+
+            scope = ScopeContext(tenant_id="t", trace_id="tr", ...)
+            business = BusinessContext(case_id="c", collection_id="col")
+            context = scope.to_tool_context(business=business, locale="de-DE")
+        """
         from ai_core.tool_contracts.base import tool_context_from_scope
 
-        return tool_context_from_scope(self, **overrides)
+        return tool_context_from_scope(self, business, **overrides)
 
 
 __all__ = [
-    "CaseId",
-    "CollectionId",
     "IdempotencyKey",
     "IngestionRunId",
     "InvocationId",
@@ -153,5 +195,4 @@ __all__ = [
     "Timestamp",
     "TraceId",
     "UserId",
-    "WorkflowId",
 ]

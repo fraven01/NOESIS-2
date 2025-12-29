@@ -358,12 +358,64 @@ def cleanup_test_tenants_fixture(django_db_blocker):
     yield
     with django_db_blocker.unblock():
         from django.db import connection
+        import logging
+
+        # Skip cleanup inside atomic blocks to avoid opening a new connection there.
+        if getattr(connection, "in_atomic_block", False):
+            return
+
+        # Reset transaction state without leaving a closed connection handle behind.
+        try:
+            try:
+                connection.rollback()
+            except Exception:
+                pass
+        except Exception:
+            pass
 
         try:
             cleanup_test_tenants()
         except Exception:
-            # Best-effort rollback/ignore when a test aborted the transaction
+            # If cleanup fails (e.g. DB unavailable), just log it
+            logging.getLogger("testsupport").warning(
+                "Final tenant cleanup failed", exc_info=True
+            )
+        finally:
             try:
-                connection.rollback()
+                connection.ensure_connection()
+            except Exception:
+                pass
+
+
+@pytest.fixture(autouse=True, scope="session")
+def cleanup_test_tenants_session(django_db_blocker):
+    """Final cleanup pass for schemas created during the test session."""
+
+    yield
+    with django_db_blocker.unblock():
+        from django.db import connection
+        import logging
+
+        try:
+            try:
+                connection.close()
+            except Exception:
+                pass
+            try:
+                connection.connection = None
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+        try:
+            cleanup_test_tenants()
+        except Exception:
+            logging.getLogger("testsupport").warning(
+                "Session tenant cleanup failed", exc_info=True
+            )
+        finally:
+            try:
+                connection.ensure_connection()
             except Exception:
                 pass

@@ -62,6 +62,9 @@ def run_crawler_runner(
 
     scope_context = meta["scope_context"]
     scope_meta = scope_context
+    # BREAKING CHANGE (Option A - Strict Separation):
+    # Business IDs (case_id, workflow_id) now in business_context
+    business_meta = meta.get("business_context", {})
 
     # Lazy import to prevent OOM in test environments
     from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -69,8 +72,9 @@ def run_crawler_runner(
         UniversalIngestionInput,
     )
 
+    # BREAKING CHANGE (Option A): collection_id goes to business_context, not scope_context
     if request_model.collection_id:
-        scope_context["collection_id"] = request_model.collection_id
+        business_meta["collection_id"] = request_model.collection_id
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_resolved = resolve_workflow_id(
@@ -115,7 +119,8 @@ def run_crawler_runner(
 
     # Pre-validate required IDs for fingerprinting (full validation happens later)
     tenant_id_for_fp = scope_meta.get("tenant_id")
-    case_id_for_fp = scope_meta.get("case_id")  # Optional - may be None
+    # BREAKING CHANGE (Option A): case_id from business_context
+    case_id_for_fp = business_meta.get("case_id")  # Optional - may be None
 
     if not tenant_id_for_fp:
         raise ValueError("tenant_id is required for idempotency fingerprinting")
@@ -203,7 +208,8 @@ def run_crawler_runner(
 
     # Extract validated IDs
     tenant_id = scope_meta["tenant_id"]
-    case_id = scope_meta.get("case_id")  # Optional at HTTP level
+    # BREAKING CHANGE (Option A): case_id from business_context
+    case_id = business_meta.get("case_id")  # Optional at HTTP level
     trace_id = scope_meta["trace_id"]
 
     # Identity IDs (Pre-MVP ID Contract)

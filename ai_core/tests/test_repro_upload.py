@@ -18,13 +18,15 @@ def test_reproduce_failure():
     scope_context = {
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,  # Matches view
-        "case_id": case_id,
         "trace_id": uuid4().hex,
+    }
+    business_context = {
+        "case_id": case_id,
         "collection_id": manual_collection_id,
         "workflow_id": "document-upload-manual",
     }
 
-    meta = {"scope_context": scope_context}
+    meta = {"scope_context": scope_context, "business_context": business_context}
 
     # Mock file
     file_content = b"fake pdf content"

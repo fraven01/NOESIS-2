@@ -15,6 +15,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_POST
 from structlog.stdlib import get_logger
 
+from ai_core.contracts import ScopeContext, BusinessContext
+from common.logging import bind_log_context
 from ai_core.services import _get_documents_repository
 from ai_core.services.crawler_runner import run_crawler_runner
 from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -55,11 +57,22 @@ from cases.services import ensure_case
 from pydantic import ValidationError
 
 
+from django.contrib.auth import get_user_model
+from django.shortcuts import redirect
+from documents.models import DocumentNotification
+
 logger = get_logger(__name__)
 DOCUMENT_SPACE_SERVICE = DocumentSpaceService()
 # build_graph aliasing removed as build_external_knowledge_graph is gone
 crawl_selected = _core_crawl_selected  # Re-export for tests
 DEV_DEFAULT_CASE_ID = "dev-case-local"
+
+
+def _get_dev_simulated_users():
+    User = get_user_model()
+    usernames = ["admin", "legal_bob", "alice_stakeholder", "charles_external"]
+    users = list(User.objects.filter(username__in=usernames).order_by("username"))
+    return users
 
 
 def home(request):
@@ -573,13 +586,58 @@ def rag_tools(request):
             "crawler_default_workflow_id": getattr(
                 settings, "CRAWLER_DEFAULT_WORKFLOW_ID", ""
             ),
-            "crawler_shadow_default": bool(
-                getattr(settings, "CRAWLER_SHADOW_MODE_DEFAULT", False)
-            ),
             "crawler_dry_run_default": bool(
                 getattr(settings, "CRAWLER_DRY_RUN_DEFAULT", False)
             ),
             "manual_collection_id": manual_collection_id,
+            "simulated_users": _get_dev_simulated_users(),
+            "current_simulated_user_id": request.session.get(
+                "rag_tools_simulated_user_id"
+            ),
+        },
+    )
+
+
+@require_POST
+def rag_tools_identity_switch(request):
+    """Switch the simulated user identity for the workbench."""
+    user_id = request.POST.get("user_id")
+    active_tab = request.POST.get("active_tab", "search")
+
+    if user_id == "anonymous":
+        if "rag_tools_simulated_user_id" in request.session:
+            del request.session["rag_tools_simulated_user_id"]
+    elif user_id:
+        request.session["rag_tools_simulated_user_id"] = user_id
+    elif "rag_tools_simulated_user_id" in request.session:
+        # Empty value means reset to real user
+        del request.session["rag_tools_simulated_user_id"]
+
+    redirect_url = reverse("rag-tools")
+    if active_tab:
+        redirect_url += f"#{active_tab}"
+
+    return redirect(redirect_url)
+
+
+def tool_collaboration(request):
+    """Collaboration playground view (HTMX partial)."""
+    notifications = []
+    if request.user.is_authenticated:
+        try:
+            notifications = (
+                DocumentNotification.objects.filter(user=request.user)
+                .select_related("document", "comment", "comment__user")
+                .order_by("-created_at")[:20]
+            )
+        except Exception:
+            pass
+
+    return render(
+        request,
+        "theme/partials/tool_collaboration.html",
+        {
+            "notifications": notifications,
         },
     )
 
@@ -790,6 +848,15 @@ def web_search(request):
 
     run_id = str(uuid4())
 
+    # Bind log context so all subsequent logger.info() calls include these IDs
+    bind_log_context(
+        trace_id=trace_id,
+        tenant_id=tenant_id,
+        case_id=case_id,
+        run_id=run_id,
+        user_id=user_id,
+    )
+
     logger.info("web_search.query", query=query)
 
     manual_collection_id, resolved_collection_id = _resolve_manual_collection(
@@ -862,13 +929,36 @@ def web_search(request):
         except Exception as exc:
             return JsonResponse({"error": f"Invalid input: {str(exc)}"}, status=400)
 
-        # Re-build context manually since we removed GraphContextPayload
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Build ScopeContext and BusinessContext for Collection Search
+        col_scope = ScopeContext(
+            tenant_id=tenant_id,
+            tenant_schema=tenant_id,
+            trace_id=trace_id,
+            invocation_id=str(uuid4()),
+            run_id=run_id,
+            user_id=user_id,  # Pre-MVP ID Contract
+        )
+
+        col_business = BusinessContext(
+            workflow_id="collection-search-manual",
+            case_id=case_id,
+            collection_id=collection_id,
+        )
+
+        # Build context_payload as nested + flattened dict (hybrid for compatibility)
         col_context_payload = {
+            # ToolContext structure (for model_validate)
+            "scope": col_scope.model_dump(mode="json"),
+            "business": col_business.model_dump(mode="json"),
+            "metadata": {},
+            # Flattened fields for backward compatibility
             "tenant_id": tenant_id,
             "workflow_id": "collection-search-manual",
             "case_id": case_id,
             "trace_id": trace_id,
             "run_id": run_id,
+            "user_id": user_id,
         }
 
         col_graph = build_collection_search_graph()
@@ -913,19 +1003,40 @@ def web_search(request):
         except (ValueError, TypeError):
             min_snippet_length = 40
 
-        # Dependencies now passed via context/state to avoid legacy config issues
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Build ScopeContext (infrastructure IDs) and BusinessContext (domain IDs)
+        # instead of flat dict to match ToolContext structure
+
+        scope = ScopeContext(
+            tenant_id=tenant_id,
+            tenant_schema=tenant_id,
+            trace_id=trace_id,
+            invocation_id=str(uuid4()),
+            run_id=run_id,
+            user_id=user_id,  # Pre-MVP ID Contract
+        )
+
+        business = BusinessContext(
+            workflow_id="external-knowledge-manual",
+            case_id=case_id,
+            collection_id=collection_id,
+        )
+
+        # Build context_payload with pure ToolContext structure
+        # BREAKING CHANGE (Option A - Full Migration):
+        # All nodes now use ToolContext, no flattened fields needed anymore!
         context_payload = {
-            "tenant_id": tenant_id,
-            "tenant_schema": tenant_id,
-            "workflow_id": "external-knowledge-manual",
-            "case_id": case_id,
-            "trace_id": trace_id,
-            "run_id": run_id,
-            "runtime_worker": search_worker,
-            "runtime_trigger": ingestion_adapter,
-            "top_n": top_n,
-            "min_snippet_length": min_snippet_length,
-            "prefer_pdf": True,
+            "scope": scope.model_dump(mode="json"),
+            "business": business.model_dump(mode="json"),
+            "metadata": {
+                # Non-serializable objects - graph nodes access via ToolContext.metadata
+                "runtime_worker": search_worker,
+                "runtime_trigger": ingestion_adapter,
+                # Config
+                "top_n": top_n,
+                "min_snippet_length": min_snippet_length,
+                "prefer_pdf": True,
+            },
         }
 
         # Prepare Search Config
@@ -1092,14 +1203,21 @@ def web_search_ingest_selected(request):
         )
 
         # L2 -> L3 Dispatch
+        # BREAKING CHANGE (Option A - Strict Separation):
+        # Separate infrastructure (scope_context) from business (business_context)
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
-            "case_id": str(data.get("case_id") or "").strip() or None,
             "trace_id": str(data.get("trace_id") or "").strip() or str(uuid4()),
             "ingestion_run_id": str(uuid4()),
         }
-        meta = {"scope_context": scope_context}
+        business_context = {
+            "case_id": str(data.get("case_id") or "").strip() or None,
+        }
+        meta = {
+            "scope_context": scope_context,
+            "business_context": business_context,
+        }
 
         manager = CrawlerManager()
         try:
@@ -1446,12 +1564,20 @@ def ingestion_submit(request):
         scope_context = {
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
-            "case_id": case_id,
             "trace_id": uuid4().hex,
+            "invocation_id": uuid4().hex,
+            "run_id": uuid4().hex,
+            "user_id": _extract_user_id(request),
+        }
+        business_context = {
+            "case_id": case_id,
             "collection_id": manual_collection_id,  # Explicitly set collection
             "workflow_id": "document-upload-manual",  # Workflow type for tracing
         }
-        meta = {"scope_context": scope_context}
+        meta = {
+            "scope_context": scope_context,
+            "business_context": business_context,
+        }
 
         # Upload document
         upload_response = handle_document_upload(
@@ -1527,6 +1653,8 @@ def workbench_index(request):
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,
         "case_id": case_id,
+        "simulated_users": _get_dev_simulated_users(),
+        "current_simulated_user_id": request.session.get("rag_tools_simulated_user_id"),
     }
     return render(request, "theme/workbench.html", context)
 
@@ -1621,27 +1749,28 @@ def chat_submit(request):
             },
         }
 
-        trace_id = uuid4().hex
-        run_id = str(uuid4())
+        from ai_core.contracts.business import BusinessContext
+        from ai_core.ids.http_scope import normalize_request
 
-        from ai_core.tool_contracts import ToolContext
-
-        tool_context = ToolContext(
-            tenant_id=tenant_id,
-            tenant_schema=tenant_schema,
+        scope = normalize_request(request)
+        business = BusinessContext(
             case_id=case_id,
-            trace_id=trace_id,
-            run_id=run_id,
             workflow_id="rag-chat-manual",
+        )
+        tool_context = scope.to_tool_context(
+            business=business,
+            metadata={"graph_name": "rag.default", "graph_version": "v0"},
         )
 
         meta = {
             "tenant_id": tenant_id,
-            "tenant_schema": tenant_schema,
+            "tenant_schema": tenant_schema or scope.tenant_schema,
             "case_id": case_id,
-            "trace_id": trace_id,
-            "run_id": run_id,  # Required for ScopeContext validation
+            "trace_id": scope.trace_id,
+            "run_id": scope.run_id,  # Required for ScopeContext validation
             "workflow_id": "rag-chat-manual",  # Workflow type for tracing
+            "scope_context": scope.model_dump(mode="json", exclude_none=True),
+            "business_context": business.model_dump(mode="json", exclude_none=True),
             # Ensure we have a valid tool context
             "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         }

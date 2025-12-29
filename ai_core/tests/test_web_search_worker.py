@@ -4,6 +4,8 @@ from typing import Sequence
 
 import pytest
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tools.web_search import (
     BaseSearchAdapter,
     ProviderSearchResult,
@@ -11,7 +13,6 @@ from ai_core.tools.web_search import (
     SearchProviderBadResponse,
     SearchProviderQuotaExceeded,
     SearchProviderTimeout,
-    WebSearchContext,
     WebSearchWorker,
 )
 
@@ -38,14 +39,21 @@ class _FakeAdapter(BaseSearchAdapter):
 
 
 @pytest.fixture
-def context() -> WebSearchContext:
-    return WebSearchContext(
+def context() -> ScopeContext:
+    return ScopeContext(
         tenant_id="tenant-x",
         trace_id="trace-123",
+        invocation_id="inv-123",
+        run_id="run-abc",
+        service_id="test-worker",
+    )
+
+
+@pytest.fixture
+def business_context() -> BusinessContext:
+    return BusinessContext(
         workflow_id="wf-456",
         case_id="case-789",
-        run_id="run-abc",
-        worker_call_id="",
     )
 
 
@@ -63,7 +71,9 @@ def _result(
 
 
 def test_successful_search(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     captured_span: dict[str, object] = {}
 
@@ -95,7 +105,8 @@ def test_successful_search(
         adapter, max_results=5, sleep=lambda _: None, timer=lambda: 100.0
     )
 
-    response = worker.run(query=" hello world ", context=context)
+    tool_context = context.to_tool_context(business=business_context)
+    response = worker.run(query=" hello world ", context=tool_context)
 
     assert response.outcome.decision == "ok"
     assert response.outcome.rationale == "search_completed"
@@ -116,7 +127,9 @@ def test_successful_search(
 
 
 def test_timeout_error(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     captured_span: dict[str, object] = {}
 
@@ -134,7 +147,9 @@ def test_timeout_error(
         adapter, timer=lambda: 1.0, sleep=lambda _: None, max_attempts=1
     )
 
-    response = worker.run(query="timeout", context=context)
+    response = worker.run(
+        query="timeout", context=context.to_tool_context(business=business_context)
+    )
 
     assert response.outcome.decision == "error"
     assert response.outcome.rationale == "provider_timeout"
@@ -148,7 +163,9 @@ def test_timeout_error(
 
 
 def test_quota_exceeded(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     captured_span: dict[str, object] = {}
 
@@ -166,7 +183,9 @@ def test_quota_exceeded(
         adapter, timer=lambda: 2.0, sleep=lambda _: None, max_attempts=1
     )
 
-    response = worker.run(query="quota", context=context)
+    response = worker.run(
+        query="quota", context=context.to_tool_context(business=business_context)
+    )
 
     assert response.outcome.decision == "error"
     assert response.outcome.rationale == "provider_rate_limited"
@@ -177,7 +196,9 @@ def test_quota_exceeded(
 
 
 def test_deduplication_and_validation(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     monkeypatch.setattr("ai_core.tools.web_search.record_span", lambda *_, **__: None)
 
@@ -197,7 +218,9 @@ def test_deduplication_and_validation(
         adapter, max_results=3, sleep=lambda _: None, timer=lambda: 10.0
     )
 
-    response = worker.run(query="dedupe", context=context)
+    response = worker.run(
+        query="dedupe", context=context.to_tool_context(business=business_context)
+    )
 
     assert len(response.results) == 1
     assert str(response.results[0].url) == "https://example.com/path"
@@ -207,7 +230,9 @@ def test_deduplication_and_validation(
 
 
 def test_invalid_query_only_operators(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     captured_span: dict[str, object] = {}
 
@@ -232,7 +257,10 @@ def test_invalid_query_only_operators(
         adapter, max_results=3, sleep=lambda _: None, timer=lambda: 42.0
     )
 
-    response = worker.run(query="\u200b  site:  \u200c", context=context)
+    response = worker.run(
+        query="\u200b  site:  \u200c",
+        context=context.to_tool_context(business=business_context),
+    )
 
     assert response.outcome.decision == "error"
     assert response.outcome.rationale == "invalid_query"
@@ -246,7 +274,9 @@ def test_invalid_query_only_operators(
 
 
 def test_bad_response_error(
-    monkeypatch: pytest.MonkeyPatch, context: WebSearchContext
+    monkeypatch: pytest.MonkeyPatch,
+    context: ScopeContext,
+    business_context: BusinessContext,
 ) -> None:
     captured_span: dict[str, object] = {}
 
@@ -260,7 +290,9 @@ def test_bad_response_error(
     adapter = _FakeAdapter(side_effects=[SearchProviderBadResponse("bad")])
     worker = WebSearchWorker(adapter, timer=lambda: 3.0, sleep=lambda _: None)
 
-    response = worker.run(query="bad", context=context)
+    response = worker.run(
+        query="bad", context=context.to_tool_context(business=business_context)
+    )
 
     assert response.outcome.decision == "error"
     assert response.outcome.rationale == "provider_bad_response"

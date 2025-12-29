@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from json import loads as json_loads
 
-import pytest
 from pydantic import BaseModel, TypeAdapter
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.tool_contracts.base import (
     ToolContext,
     ToolError,
@@ -29,13 +30,14 @@ class _TestOutput(BaseModel):
 
 
 def test_tool_result_roundtrip() -> None:
-    context = ToolContext(
+    scope = ScopeContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
-        now_iso=datetime(2024, 5, 4, 12, 30, tzinfo=timezone.utc),
         run_id="run-1",
+        timestamp=datetime(2024, 5, 4, 12, 30, tzinfo=timezone.utc),
     )
+    context = ToolContext(scope=scope, business=BusinessContext())
     tool_input = _TestInput(query="hello")
     tool_output = _TestOutput(result="world")
     result = ToolResult[_TestInput, _TestOutput](
@@ -103,36 +105,37 @@ def test_tool_error_upstream_roundtrip() -> None:
 
 
 def test_tool_context_datetime_strictness() -> None:
-    with pytest.raises(ValueError):
-        ToolContext(
-            tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
-            trace_id="trace-1",
-            invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
-            now_iso=datetime(2024, 5, 4, 12, 30),
-            run_id="run-1",
-        )
-
-    context_z = ToolContext(
+    context_naive = ScopeContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
-        now_iso=datetime.fromisoformat("2024-05-04T12:30:00+00:00"),
         run_id="run-1",
+        timestamp=datetime(2024, 5, 4, 12, 30),
     )
 
-    assert context_z.now_iso.tzinfo is timezone.utc
+    assert context_naive.timestamp.tzinfo is None
 
-    context_with_z = ToolContext(
+    context_z = ScopeContext(
         tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
         trace_id="trace-1",
         invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
-        now_iso=datetime.strptime("2024-05-04T12:30:00Z", "%Y-%m-%dT%H:%M:%SZ").replace(
-            tzinfo=timezone.utc
-        ),
         run_id="run-1",
+        timestamp=datetime.fromisoformat("2024-05-04T12:30:00+00:00"),
     )
 
-    assert context_with_z.now_iso.tzinfo is timezone.utc
+    assert context_z.timestamp.tzinfo is timezone.utc
+
+    context_with_z = ScopeContext(
+        tenant_id="aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+        trace_id="trace-1",
+        invocation_id="cccccccc-cccc-cccc-cccc-cccccccccccc",
+        run_id="run-1",
+        timestamp=datetime.strptime(
+            "2024-05-04T12:30:00Z", "%Y-%m-%dT%H:%M:%SZ"
+        ).replace(tzinfo=timezone.utc),
+    )
+
+    assert context_with_z.timestamp.tzinfo is timezone.utc
 
 
 def test_tool_error_type_serialization() -> None:

@@ -4,20 +4,27 @@ from uuid import uuid4
 
 import pytest
 
+from ai_core.contracts.business import BusinessContext
+from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.technical import retrieval_augmented_generation
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
 
 
 def _scope_meta(tenant_id: str, case_id: str) -> dict[str, Any]:
+    scope = ScopeContext(
+        tenant_id=tenant_id,
+        trace_id="trace-1",
+        invocation_id=uuid4().hex,
+        run_id=uuid4().hex,
+        service_id="test-worker",
+    )
+    business = BusinessContext(case_id=case_id)
+    tool_context = scope.to_tool_context(business=business)
     return {
-        "scope_context": {
-            "tenant_id": tenant_id,
-            "case_id": case_id,
-            "trace_id": "trace-1",
-            "invocation_id": uuid4().hex,
-            "run_id": uuid4().hex,
-        }
+        "scope_context": scope.model_dump(mode="json"),
+        "business_context": business.model_dump(mode="json"),
+        "tool_context": tool_context.model_dump(mode="json"),
     }
 
 
