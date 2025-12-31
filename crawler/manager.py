@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from ai_core.schemas import CrawlerRunRequest
+from ai_core.tool_contracts.base import tool_context_from_meta
 from common.logging import get_logger
 from crawler.tasks import crawl_url_task
 
@@ -28,8 +29,8 @@ class CrawlerManager:
         Returns:
             Summary of dispatched tasks.
         """
-        scope_context = meta.get("scope_context", {})
-        tenant_id = scope_context.get("tenant_id")
+        context = tool_context_from_meta(meta)
+        tenant_id = context.scope.tenant_id
         if not tenant_id:
             raise ValueError("Tenant ID is required for crawl dispatch.")
 

@@ -18,6 +18,7 @@ from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.infra import object_store
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.tasks import run_ingestion_graph
+from ai_core.tool_contracts.base import tool_context_from_meta
 from documents.activity_service import ActivityTracker
 from documents.contracts import (
     DocumentMeta,
@@ -169,8 +170,8 @@ class UploadWorker:
 
         # 8. Dispatch
         signature = run_ingestion_graph.s(state, meta)
-        scope_context = meta.get("scope_context")
-        scope = dict(scope_context) if isinstance(scope_context, Mapping) else {}
+        context = tool_context_from_meta(meta)
+        scope = context.scope.model_dump(mode="json", exclude_none=True)
         async_result = with_scope_apply_async(signature, scope)
 
         return WorkerPublishResult(

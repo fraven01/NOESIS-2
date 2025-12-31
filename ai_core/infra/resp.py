@@ -4,6 +4,7 @@ from collections.abc import Mapping
 
 from django.http import HttpResponse
 
+from ai_core.tool_contracts.base import tool_context_from_meta
 from common.constants import (
     IDEMPOTENCY_KEY_HEADER,
     X_CASE_ID_HEADER,
@@ -30,19 +31,14 @@ def apply_std_headers(response: HttpResponse, meta: Meta) -> HttpResponse:
     if not 200 <= response.status_code < 300:
         return response
 
-    # BREAKING CHANGE (Option A): Extract business_context for business IDs
-    business_context = meta.get("business_context", {})
-    if not isinstance(business_context, Mapping):
-        business_context = {}
+    context = tool_context_from_meta(meta)
 
     header_map = {
-        X_TRACE_ID_HEADER: meta["scope_context"]["trace_id"],
-        X_CASE_ID_HEADER: business_context.get(
-            "case_id"
-        ),  # BREAKING CHANGE: from business_context
-        X_TENANT_ID_HEADER: meta["scope_context"]["tenant_id"],
+        X_TRACE_ID_HEADER: context.scope.trace_id,
+        X_CASE_ID_HEADER: context.business.case_id,
+        X_TENANT_ID_HEADER: context.scope.tenant_id,
         X_KEY_ALIAS_HEADER: meta.get("key_alias"),
-        IDEMPOTENCY_KEY_HEADER: meta["scope_context"].get("idempotency_key"),
+        IDEMPOTENCY_KEY_HEADER: context.scope.idempotency_key,
         "traceparent": meta.get("traceparent"),
     }
 

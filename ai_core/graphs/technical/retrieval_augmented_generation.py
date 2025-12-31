@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, Tuple
 from ai_core.nodes import compose, retrieve
 from ai_core.tool_contracts import ContextError, ToolContext
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 
 logger = logging.getLogger(__name__)
@@ -129,29 +130,13 @@ def _normalise_snippets(
 
 
 def _build_tool_context(meta: MutableMapping[str, Any]) -> ToolContext:
-    # 1. Try to use pre-built tool_context from meta (injected by normalize_meta)
-    prebuilt = meta.get("tool_context")
-    if isinstance(prebuilt, dict):
-        return ToolContext(**prebuilt)
-    if isinstance(prebuilt, ToolContext):
-        return prebuilt
-
-    # 2. Try to build from scope_context if available
-    scope_data = meta.get("scope_context")
-    if scope_data:
-        from ai_core.contracts.scope import ScopeContext
-        from ai_core.tool_contracts.base import tool_context_from_scope
-
-        if isinstance(scope_data, dict):
-            scope = ScopeContext.model_validate(scope_data)
-            return tool_context_from_scope(scope, metadata=dict(meta))
-        if isinstance(scope_data, ScopeContext):
-            return tool_context_from_scope(scope_data, metadata=dict(meta))
-
-    raise ContextError(
-        "scope_context or tool_context is required for retrieval graphs",
-        field="scope_context",
-    )
+    try:
+        return tool_context_from_meta(meta)
+    except Exception as exc:
+        raise ContextError(
+            "scope_context or tool_context is required for retrieval graphs",
+            field="scope_context",
+        ) from exc
 
 
 @dataclass(frozen=True)

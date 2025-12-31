@@ -19,6 +19,7 @@ from documents.notification_dispatcher import (
 )
 from documents.notification_service import create_notification
 from documents.upload_worker import UploadWorker
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 
 @shared_task(queue="ingestion")
@@ -55,22 +56,17 @@ def upload_document_task(
     upload = MockUploadedFile(file_bytes, filename, content_type)
 
     worker = UploadWorker()
-    scope_context = meta["scope_context"]
-    # BREAKING CHANGE (Option A - Strict Separation):
-    # case_id is a business identifier, extract from business_context
-    business_context = meta.get("business_context", {})
-    user_id = scope_context.get("user_id")
-    workflow_id = business_context.get("workflow_id")
+    context = tool_context_from_meta(meta)
+    user_id = context.scope.user_id
+    workflow_id = context.business.workflow_id
 
     result = worker.process(
         upload,
-        tenant_id=scope_context["tenant_id"],
-        case_id=business_context.get(
-            "case_id"
-        ),  # BREAKING CHANGE: from business_context
+        tenant_id=context.scope.tenant_id,
+        case_id=context.business.case_id,  # BREAKING CHANGE: from business_context
         workflow_id=workflow_id,
-        trace_id=scope_context.get("trace_id"),
-        invocation_id=scope_context.get("invocation_id"),
+        trace_id=context.scope.trace_id,
+        invocation_id=context.scope.invocation_id,
         user_id=user_id,
         document_metadata=metadata,
         ingestion_overrides=metadata.get("ingestion_overrides"),

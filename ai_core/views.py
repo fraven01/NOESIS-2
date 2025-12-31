@@ -78,6 +78,7 @@ from ai_core.authz.visibility import allow_extended_visibility
 from ai_core.contracts.scope import ScopeContext
 from ai_core.graph.adapters import module_runner
 from ai_core.graph.core import GraphRunner
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.graph.registry import get as get_graph_runner, register as register_graph
 
 from ai_core.graphs.technical import (
@@ -1768,11 +1769,18 @@ class RagIngestionRunView(APIView):
             return error
 
         # BREAKING CHANGE (Option A): Extract business IDs from business_context
-        business_context = meta.get("business_context", {})
+        context = tool_context_from_meta(meta)
 
         # Fix for Silent RAG Failure (Finding #22): Default case_id for async ingestion too
-        if settings.DEBUG and not business_context.get("case_id"):
-            business_context["case_id"] = DEV_DEFAULT_CASE_ID
+        if settings.DEBUG and not context.business.case_id:
+            updated_business = context.business.model_copy(
+                update={"case_id": DEV_DEFAULT_CASE_ID}
+            )
+            context = context.model_copy(update={"business": updated_business})
+            meta["business_context"] = updated_business.model_dump(
+                mode="json", exclude_none=True
+            )
+            meta["tool_context"] = context.model_dump(mode="json", exclude_none=True)
 
         idempotency_key = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if isinstance(request.data, Mapping):
@@ -1781,11 +1789,11 @@ class RagIngestionRunView(APIView):
             payload = dict(getattr(request, "data", {}) or {})
 
         if (
-            business_context.get("collection_id")
+            context.business.collection_id
             and not payload.get("collection_id")
             and payload.get("collection_ids") in (None, "")
         ):
-            payload["collection_id"] = business_context["collection_id"]
+            payload["collection_id"] = context.business.collection_id
 
         response = services.start_ingestion_run(payload, meta, idempotency_key)
 
@@ -1802,10 +1810,9 @@ class RagIngestionStatusView(APIView):
             return error
 
         # BREAKING CHANGE (Option A): Extract business and infrastructure IDs
-        scope_context = meta["scope_context"]
-        business_context = meta.get("business_context", {})
-        tenant_id = scope_context["tenant_id"]
-        case_id = business_context.get("case_id")
+        context = tool_context_from_meta(meta)
+        tenant_id = context.scope.tenant_id
+        case_id = context.business.case_id
         latest = get_latest_ingestion_run(tenant_id, case_id)
         if not latest:
             response = _error_response(
@@ -1857,11 +1864,11 @@ class RagIngestionStatusView(APIView):
 
         from customers.tenant_context import TenantContext
 
-        tenant_obj = TenantContext.resolve_identifier(scope_context["tenant_id"])
+        tenant_obj = TenantContext.resolve_identifier(context.scope.tenant_id)
         if tenant_obj is not None:
             # BREAKING CHANGE (Option A): case_id from business_context
             case_obj = Case.objects.filter(
-                tenant=tenant_obj, external_id=business_context.get("case_id")
+                tenant=tenant_obj, external_id=context.business.case_id
             ).first()
             if case_obj is not None:
                 response_payload["case_status"] = case_obj.status
@@ -1892,7 +1899,7 @@ class RagIngestionStatusView(APIView):
 
         response = Response(response_payload, status=status.HTTP_200_OK)
         processed_response = apply_std_headers(response, meta)
-        idempotency_key_value = scope_context.get("idempotency_key")
+        idempotency_key_value = context.scope.idempotency_key
         header_idempotency = request.headers.get(IDEMPOTENCY_KEY_HEADER)
         if not header_idempotency:
             meta_header_key = "HTTP_" + IDEMPOTENCY_KEY_HEADER.upper().replace("-", "_")
@@ -1910,7 +1917,16 @@ class RagIngestionStatusView(APIView):
                 resolved_idempotency,
             )
             if not idempotency_key_value:
-                scope_context["idempotency_key"] = resolved_idempotency
+                updated_scope = context.scope.model_copy(
+                    update={"idempotency_key": resolved_idempotency}
+                )
+                updated_context = context.model_copy(update={"scope": updated_scope})
+                meta["scope_context"] = updated_scope.model_dump(
+                    mode="json", exclude_none=True
+                )
+                meta["tool_context"] = updated_context.model_dump(
+                    mode="json", exclude_none=True
+                )
         return processed_response
 
 

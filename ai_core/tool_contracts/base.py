@@ -28,6 +28,7 @@ New code should use explicit paths:
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Generic, Literal, Optional, TypeVar, Union
 
@@ -226,6 +227,63 @@ def tool_context_from_scope(
     return ToolContext(**payload)
 
 
+def tool_context_from_meta(meta: Mapping[str, Any]) -> ToolContext:
+    """Parse a ToolContext from graph metadata.
+
+    Prefers a prebuilt ``tool_context`` entry, with a fallback to scope/business
+    metadata for legacy call sites.
+    """
+
+    tool_context_data = meta.get("tool_context")
+    if isinstance(tool_context_data, ToolContext):
+        return tool_context_data
+    if isinstance(tool_context_data, Mapping):
+        return ToolContext.model_validate(tool_context_data)
+
+    scope_data = meta.get("scope_context")
+    if scope_data is None:
+        raise ValueError("tool_context or scope_context is required in meta")
+
+    business_keys = {
+        "case_id",
+        "collection_id",
+        "workflow_id",
+        "document_id",
+        "document_version_id",
+    }
+
+    if isinstance(scope_data, ScopeContext):
+        scope = scope_data
+        scope_payload: dict[str, Any] = {}
+        scope_source: Mapping[str, Any] = {}
+    elif isinstance(scope_data, Mapping):
+        scope_source = scope_data
+        scope_payload = {k: v for k, v in scope_data.items() if k not in business_keys}
+        scope = ScopeContext.model_validate(scope_payload)
+    else:
+        raise TypeError("scope_context must be a mapping or ScopeContext")
+
+    business_data = meta.get("business_context")
+    if isinstance(business_data, BusinessContext):
+        business = business_data
+    else:
+        business_payload: dict[str, Any] = {}
+        if isinstance(business_data, Mapping):
+            business_payload.update(business_data)
+        if scope_source:
+            for key in business_keys:
+                if key in scope_source and key not in business_payload:
+                    business_payload[key] = scope_source[key]
+        business = BusinessContext.model_validate(business_payload)
+
+    metadata = meta.get("context_metadata")
+    metadata_payload = dict(metadata) if isinstance(metadata, Mapping) else None
+
+    if metadata_payload is None:
+        return tool_context_from_scope(scope, business)
+    return tool_context_from_scope(scope, business, metadata=metadata_payload)
+
+
 class ToolErrorMeta(BaseModel):
     """Meta information for tool errors."""
 
@@ -356,6 +414,7 @@ __all__ = [
     "PositiveInt",
     "ToolContext",
     "tool_context_from_scope",
+    "tool_context_from_meta",
     "ToolErrorMeta",
     "ToolErrorDetail",
     "ToolError",

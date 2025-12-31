@@ -21,6 +21,7 @@ from django.core.cache import cache
 from ai_core.infra.observability import update_observation
 from ai_core.nodes import retrieve
 from ai_core.tool_contracts import ToolContext
+from ai_core.tool_contracts.base import tool_context_from_meta
 from llm_worker.graphs.score_results import run_score_results
 from llm_worker.schemas import (
     CoverageDimension,
@@ -521,10 +522,8 @@ class HybridSearchAndScoreGraph:
         working_state = _ensure_mutable(state)
         working_meta = _ensure_mutable(meta)
         scoring_context = _load_scoring_context(working_meta)
-        scope_context = working_meta.get("scope_context")
-        if not isinstance(scope_context, Mapping):
-            scope_context = {}
-        tenant_id = str(scope_context.get("tenant_id") or "").strip() or None
+        context = tool_context_from_meta(working_meta)
+        tenant_id = str(context.scope.tenant_id or "").strip() or None
         domain_policy = _build_domain_policy(scoring_context, tenant_id=tenant_id)
         debug_info: dict[str, Any] = {}
         rrf_k_override = working_meta.get("rrf_k")
@@ -699,20 +698,10 @@ class HybridSearchAndScoreGraph:
         meta: MutableMapping[str, Any],
         scoring_context: ScoringContext | None,
     ) -> tuple[list[RAGCoverageSummary], dict[str, bool]]:
-        scope_context = meta.get("scope_context")
-        if not isinstance(scope_context, Mapping):
-            scope_context = {}
-        # BREAKING CHANGE (Option A - Strict Separation):
-        # case_id is a business identifier, extract from business_context
-        business_context = meta.get("business_context")
-        if not isinstance(business_context, Mapping):
-            business_context = {}
-
-        tenant_id = str(scope_context.get("tenant_id") or "").strip()
-        case_id = str(
-            business_context.get("case_id") or ""
-        ).strip()  # BREAKING CHANGE: from business_context
-        trace_id = str(scope_context.get("trace_id") or "").strip()
+        context = tool_context_from_meta(meta)
+        tenant_id = str(context.scope.tenant_id or "").strip()
+        case_id = str(context.business.case_id or "").strip()
+        trace_id = str(context.scope.trace_id or "").strip()
         if not tenant_id or not case_id:
             return [], {"rag_unavailable": True}
 
@@ -752,28 +741,28 @@ class HybridSearchAndScoreGraph:
             }
             retrieve_params = retrieve.RetrieveInput.from_state(retrieve_state)
             # Extract runtime IDs
-            run_id = scope_context.get("run_id")
-            ingestion_run_id = scope_context.get("ingestion_run_id")
+            run_id = context.scope.run_id
+            ingestion_run_id = context.scope.ingestion_run_id
 
             # Enforce XOR rule: if neither is present, generate a run_id
             if not run_id and not ingestion_run_id:
                 run_id = str(uuid5(UUID(int=0), f"hybrid-run-{query_hash}"))
 
-            tool_context = ToolContext(
-                tenant_id=tenant_id,
-                case_id=case_id,
-                trace_id=trace_id or None,
-                run_id=str(run_id) if run_id else None,
-                ingestion_run_id=str(ingestion_run_id) if ingestion_run_id else None,
-                tenant_schema=scope_context.get("tenant_schema"),
-                visibility_override_allowed=bool(
-                    meta.get("visibility_override_allowed", False)
-                ),
-                metadata={
-                    "scoring_context": (
-                        scoring_context.model_dump() if scoring_context else {}
-                    )
-                },
+            if not context.scope.run_id and run_id:
+                updated_scope = context.scope.model_copy(update={"run_id": run_id})
+                context = context.model_copy(update={"scope": updated_scope})
+
+            metadata = dict(context.metadata)
+            if scoring_context:
+                metadata["scoring_context"] = scoring_context.model_dump()
+
+            tool_context = context.model_copy(
+                update={
+                    "metadata": metadata,
+                    "visibility_override_allowed": bool(
+                        meta.get("visibility_override_allowed", False)
+                    ),
+                }
             )
             retrieve_output = retrieve.run(tool_context, retrieve_params)
         except Exception as exc:  # pragma: no cover - defensive logging
@@ -1019,10 +1008,8 @@ class HybridSearchAndScoreGraph:
 
         query_hash = _hash_values(query)
         url_hash = _hash_values(*(candidate.id for candidate in search_candidates))
-        scope_context = meta.get("scope_context")
-        if not isinstance(scope_context, Mapping):
-            scope_context = {}
-        tenant_id = str(scope_context.get("tenant_id") or "").strip()
+        context = tool_context_from_meta(meta)
+        tenant_id = str(context.scope.tenant_id or "").strip()
         context_chunks: list[str] = []
         if tenant_id:
             context_chunks.append(tenant_id)

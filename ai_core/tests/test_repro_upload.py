@@ -19,6 +19,8 @@ def test_reproduce_failure():
         "tenant_id": tenant_id,
         "tenant_schema": tenant_schema,  # Matches view
         "trace_id": uuid4().hex,
+        "invocation_id": uuid4().hex,
+        "run_id": uuid4().hex,
     }
     business_context = {
         "case_id": case_id,

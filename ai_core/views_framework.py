@@ -23,6 +23,7 @@ from noesis2.api import default_extend_schema
 
 from ai_core.contracts.scope import ScopeContext
 from ai_core.graphs.business.framework_analysis_graph import build_graph
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.tools.framework_contracts import (
     FrameworkAnalysisInput,
     FrameworkAnalysisErrorCode,
@@ -354,10 +355,10 @@ class FrameworkAnalysisView(APIView):
         if error:
             return error
 
-        scope_context = meta["scope_context"]
-        tenant_id = scope_context["tenant_id"]
+        context = tool_context_from_meta(meta)
+        tenant_id = context.scope.tenant_id
         tenant_schema = meta["tenant_schema"]
-        trace_id = scope_context["trace_id"]
+        trace_id = context.scope.trace_id
 
         # Parse request body
         try:

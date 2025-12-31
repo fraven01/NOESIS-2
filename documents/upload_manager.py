@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from ai_core.tool_contracts.base import tool_context_from_meta
+
 
 class UploadManager:
     """Technical Manager for Upload operations (Layer 3)."""
@@ -46,11 +48,12 @@ class UploadManager:
             metadata=metadata,
             meta=meta,
         )
+        context = tool_context_from_meta(meta)
 
         return {
             "status": "accepted",
             "task_id": task_result.id,
-            "trace_id": meta["scope_context"].get("trace_id"),
+            "trace_id": context.scope.trace_id,
             "document_id": metadata.get(
                 "document_id"
             ),  # Might be None if not pre-provided

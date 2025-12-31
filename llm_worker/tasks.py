@@ -9,6 +9,7 @@ from ai_core.graph.registry import get as get_graph_runner
 from ai_core.graphs.technical.cost_tracking import track_ledger_costs
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.infra.observability import emit_event
+from ai_core.tool_contracts.base import tool_context_from_meta
 from cases.integration import emit_case_lifecycle_for_collection_search
 from common.celery import ScopedTask
 from llm_worker.graphs import run_score_results
@@ -70,15 +71,18 @@ def run_graph(  # type: ignore[no-untyped-def]
     runner_state = dict(state or {})
     runner_meta = dict(meta or {})
 
-    scope_context = runner_meta.get("scope_context")
-    if not isinstance(scope_context, Mapping):
-        scope_context = {}
+    tool_context = None
+    if runner_meta:
+        try:
+            tool_context = tool_context_from_meta(runner_meta)
+        except (TypeError, ValueError):
+            tool_context = None
+
+    scope_context = tool_context.scope if tool_context else None
 
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (workflow_id, collection_id) now in business_context
-    business_context = runner_meta.get("business_context")
-    if not isinstance(business_context, Mapping):
-        business_context = {}
+    business_context = tool_context.business if tool_context else None
 
     # Build ScopeContext via normalize_task_context (Pre-MVP ID Contract)
     # S2S Hop: service_id REQUIRED, user_id ABSENT
@@ -88,17 +92,23 @@ def run_graph(  # type: ignore[no-untyped-def]
             tenant_id=tenant_id,
             case_id=case_id,  # Optional after Option A
             service_id="celery-agents-worker",
-            trace_id=trace_id or scope_context.get("trace_id"),
-            invocation_id=scope_context.get("invocation_id"),
-            workflow_id=business_context.get(
-                "workflow_id"
+            trace_id=trace_id or (scope_context.trace_id if scope_context else None),
+            invocation_id=(
+                scope_context.invocation_id if scope_context else None
+            ),
+            workflow_id=(
+                business_context.workflow_id if business_context else None
             ),  # BREAKING CHANGE: from business_context
-            run_id=scope_context.get("run_id"),
-            ingestion_run_id=scope_context.get("ingestion_run_id"),
-            idempotency_key=scope_context.get("idempotency_key"),
-            tenant_schema=scope_context.get("tenant_schema"),
-            collection_id=business_context.get(
-                "collection_id"
+            run_id=scope_context.run_id if scope_context else None,
+            ingestion_run_id=(
+                scope_context.ingestion_run_id if scope_context else None
+            ),
+            idempotency_key=(
+                scope_context.idempotency_key if scope_context else None
+            ),
+            tenant_schema=scope_context.tenant_schema if scope_context else None,
+            collection_id=(
+                business_context.collection_id if business_context else None
             ),  # BREAKING CHANGE: from business_context
         )
         # Inject scope context into meta for graph execution

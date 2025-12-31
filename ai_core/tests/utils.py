@@ -121,9 +121,27 @@ def make_test_meta(
     Accepts all arguments from `make_test_ids` via kwargs.
     """
     ids = make_test_ids(**kwargs)
+    scope = make_test_scope_context(
+        tenant_id=ids.get("tenant_id", "test-tenant-id"),
+        trace_id=ids.get("trace_id"),
+        run_id=ids.get("run_id"),
+        ingestion_run_id=ids.get("ingestion_run_id"),
+    )
+    business = BusinessContext(
+        case_id=ids.get("case_id"),
+        workflow_id=ids.get("workflow_id"),
+    )
+    tool_context = scope.to_tool_context(business=business)
+
+    meta = {
+        **ids,
+        "scope_context": scope.model_dump(mode="json", exclude_none=True),
+        "business_context": business.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+    }
     if extra:
-        ids.update(extra)
-    return ids
+        meta.update(extra)
+    return meta
 
 
 def make_test_scope_context(

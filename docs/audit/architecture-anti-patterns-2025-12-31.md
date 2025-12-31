@@ -1,7 +1,7 @@
 # Architecture Anti-Patterns Analysis
 
 **Date**: 2025-12-31
-**Scope**: NOESIS-2 Codebase (680 Python files)
+**Scope**: NOESIS-2 Codebase (~674 Python files)
 **Status**: Pre-MVP, Breaking Changes Allowed
 **Related Backlog**: [roadmap/backlog.md](../../roadmap/backlog.md#code-quality--architecture-cleanup-pre-mvp-refactoring)
 
@@ -17,17 +17,18 @@ Comprehensive architectural analysis identified **critical "vibe coding" pattern
 
 | Metric | Count | Critical Files |
 |--------|-------|----------------|
-| Private helper functions (views.py) | 17 | [theme/views.py](../../theme/views.py) |
-| Normalize/convert functions | 54 | 36 files |
-| Error raise sites | 395 | 81 files |
-| Adapter/Wrapper classes | 8 | 8 files |
+| Private helper functions (views.py) | ~17 | [theme/views.py](../../theme/views.py) |
+| Normalize/convert functions | ~54 | 36 files |
+| Error raise sites | ~395 | 81 files |
+| Adapter/Wrapper classes | ~8 | 8 files |
 | Lines in largest service | 2,034 | [ai_core/services/__init__.py](../../ai_core/services/__init__.py) |
-| Lines in largest view | 2,045 | [theme/views.py](../../theme/views.py) |
+| Lines in largest view | 2,055 | [theme/views.py](../../theme/views.py) |
+
+_Counts are approximate snapshots; re-run counts before executing refactors._
 
 ---
 
-## 1. Glue Code Inflation ⚠️⚠️⚠️
-
+## 1. Glue Code Inflation
 ### Severity: HIGH
 
 **Definition**: Pass-through functions that move data without adding business logic.
@@ -62,12 +63,10 @@ def _parse_bool(value: object, *, default: bool = False) -> bool:
 | `_parse_limit()` | 197-202 | Int clamping | Pydantic `@field_validator` with `ge=5, le=200` |
 | `_extract_user_id()` | 101-115 | Attribute access | Direct access or property |
 | `_human_readable_bytes()` | 220-235 | Formatting | Template filter or frontend |
-| `_tenant_context_from_request()` | 84-98 | Request unwrapping | Middleware or dependency injection |
-| `_resolve_manual_collection()` | 122-162 | String equality check | Enum or constant comparison |
-| `_normalize_collection_id()` | 165-194 | UUID coercion | Pydantic `UUID` field type |
-| `_resolve_rerank_model_preset()` | 242-265 | Config lookup | Direct config access |
 | `_normalise_quality_mode()` | 268-272 | String validation | Pydantic `Literal` type |
 | `_normalise_max_candidates()` | 275-281 | Int clamping | Pydantic field constraint |
+
+**Note**: Helpers that include IO or domain logic (tenant resolution, collection lookup, cache/LLM routing) are not pass-through. These should be refactored or relocated, not deleted (e.g. `_tenant_context_from_request`, `_resolve_manual_collection`, `_normalize_collection_id`, `_resolve_rerank_model_preset`).
 
 ### Impact
 
@@ -103,7 +102,6 @@ class SearchQueryParams(BaseModel):
 ---
 
 ## 2. Normalizer Syndrome
-
 ### Severity: HIGH
 
 **Definition**: Excessive conversion functions that are nearly identical, indicating copy-paste over abstraction.
@@ -134,20 +132,24 @@ def _make_json_safe(value):
 ### Pattern Duplication: theme/views.py
 
 ```python
-# Line 268
-def _normalise_quality_mode(value: str) -> str:
-    return str(value).strip().lower()
+# Line 264
+def _normalise_quality_mode(value: object, default: str = "standard") -> str:
+    candidate = str(value or "").strip().lower()
+    if candidate in {"standard", "premium", "fast"}:
+        return candidate
+    return default
 
-# Line 275
-def _normalise_max_candidates(value: int) -> int:
-    return max(1, min(100, int(value)))
+# Line 271
+def _normalise_max_candidates(value: object, *, default: int = 20) -> int:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        numeric = default
+    return max(5, min(40, numeric))
 
-# Line 165
-def _normalize_collection_id(value: str) -> UUID:
-    return UUID(str(value).strip())
 ```
 
-**Problem**: Each does similar normalization with slight variations. This is **copy-paste normalization**.
+**Problem**: Many functions do similar normalization with small variations. Consolidate only truly identical patterns (e.g., strip/lower, int clamping) to avoid behavior drift.
 
 ### Distribution Across Codebase
 
@@ -203,8 +205,8 @@ from pydantic import TypeAdapter
 result = TypeAdapter(Any).dump_python(payload, mode="json")
 
 # BEFORE: Multiple normalize_* functions
-def _normalise_quality_mode(v): return str(v).strip().lower()
-def _normalise_max_candidates(v): return str(v).strip().lower()
+def _strip_lower(v): return str(v).strip().lower()
+def _clamp_int(v): return max(5, min(40, int(v)))
 
 # AFTER: Shared validator in common/validators.py
 from pydantic import field_validator
@@ -225,8 +227,7 @@ class QualityParams(BaseModel):
 
 ---
 
-## 3. Anemic Domain Model ⚠️⚠️
-
+## 3. Anemic Domain Model
 ### Severity: CRITICAL
 
 **Definition**: Domain models are pure data containers with no behavior, while "service" classes contain all procedural logic.
@@ -294,17 +295,11 @@ def handle_document_upload(meta, file, ...):
 ### Anti-Pattern Diagram
 
 ```
-┌─────────────────────┐
-│  Anemic Models      │  ← Data only, no behavior
-│  (DTOs in disguise) │
-└─────────────────────┘
-          │
-          │ Used by
-          ▼
-┌─────────────────────┐
-│   Fat Services      │  ← All logic here (procedural)
-│   (God Functions)   │
-└─────────────────────┘
+Anemic Models (data only)
+        |
+        v
+Fat Services (procedural logic)
+
 ```
 
 **Classic OOP Anti-Pattern**: Should be reversed.
@@ -353,8 +348,7 @@ class TypeEvidence(BaseModel):
 
 ---
 
-## 4. Boilerplate Hallucination ⚠️
-
+## 4. Boilerplate Hallucination
 ### Severity: MEDIUM
 
 **Definition**: Design patterns implemented without clear value, adding complexity for "professional appearance."
@@ -412,7 +406,7 @@ ledger = _LedgerShim()
 
 **Problem**: This pretends to be a Strategy pattern for testability, but is actually:
 - A glorified no-op in production
-- Comment says "tests replace this" → monkey-patching instead of DI
+- Comment says "tests replace this" -> monkey-patching instead of DI
 - The `try/except` does nothing (silent failure)
 
 **Better approach**: Proper dependency injection or remove if unused.
@@ -454,8 +448,7 @@ captioner = DeterministicCaptioner()
 
 ---
 
-## 5. Fragmented Logic ⚠️⚠️
-
+## 5. Fragmented Logic
 ### Severity: HIGH
 
 **Definition**: Inconsistent error handling and logging strategies across the codebase.
@@ -589,7 +582,6 @@ logger.info(
 ---
 
 ## 6. Context-Propagation Spaghetti
-
 ### Severity: HIGH
 
 **Definition**: Manual dictionary unpacking repeated across 50+ locations instead of typed context objects.
@@ -649,7 +641,6 @@ trace_id = ctx.scope.trace_id
 ---
 
 ## 7. State Dict Manipulation
-
 ### Severity: MEDIUM
 
 **Definition**: Building nested dictionaries manually instead of using typed dataclasses.
@@ -684,7 +675,7 @@ entry = {
 
 ### Recommendation
 
-**Hygiene Task**: [State Dict → Dataclasses](../../roadmap/backlog.md#hygiene)
+**Hygiene Task**: [State Dict -> Dataclasses](../../roadmap/backlog.md#hygiene)
 
 **Implementation**:
 ```python
@@ -847,9 +838,9 @@ state = SynthesizedState.from_result(result, build.state)
 | File | Lines | Category |
 |------|-------|----------|
 | ai_core/services/__init__.py | 2,034 | God File |
-| theme/views.py | 2,045 | God File |
-| ai_core/graphs/technical/retrieval_augmented_generation.py | 847 | Large |
-| ai_core/tools/framework_contracts.py | 623 | Anemic Models |
+| theme/views.py | 2,055 | God File |
+| ai_core/graphs/technical/retrieval_augmented_generation.py | 254 | Medium |
+| ai_core/tools/framework_contracts.py | 255 | Anemic Models |
 
 ### Function Complexity
 
@@ -862,11 +853,11 @@ state = SynthesizedState.from_result(result, build.state)
 ### Anti-Pattern Distribution
 
 ```
-Glue Code Inflation:       ███████████░░░░░░░░░  55%
-Normalizer Syndrome:       ████████████████░░░░  80%
-Anemic Domain Model:       ███████████████████░  95%
-Boilerplate Hallucination: █████░░░░░░░░░░░░░░░  25%
-Fragmented Logic:          ████████████░░░░░░░░  60%
+Glue Code Inflation:       ###########--------- 55%
+Normalizer Syndrome:       ################---- 80%
+Anemic Domain Model:       ###################- 95%
+Boilerplate Hallucination: #####--------------- 25%
+Fragmented Logic:          ############-------- 60%
 ```
 
 ---

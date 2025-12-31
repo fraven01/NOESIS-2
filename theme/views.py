@@ -1165,6 +1165,7 @@ def web_search_ingest_selected(request):
             "tenant_id": tenant_id,
             "tenant_schema": tenant_schema,
             "trace_id": str(data.get("trace_id") or "").strip() or str(uuid4()),
+            "invocation_id": str(uuid4()),
             "ingestion_run_id": str(uuid4()),
         }
         business_context = {

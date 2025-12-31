@@ -50,6 +50,7 @@ from common.constants import (
 from ai_core.graph.core import FileCheckpointer, GraphContext, GraphRunner
 from ai_core.graph.schemas import merge_state
 from ai_core.tool_contracts import ToolContext
+from ai_core.tool_contracts.base import tool_context_from_meta
 from ai_core.graph.schemas import normalize_meta as _base_normalize_meta
 from ai_core.graphs.technical.cost_tracking import coerce_cost_value, track_ledger_costs
 from ai_core.llm.client import LlmClientError, RateLimitError
@@ -225,8 +226,11 @@ def _enqueue_ingestion_task(
     if _task_accepts_state(task):
         # task.delay(state, meta)
         signature = task.s(state, meta)
-        scope = meta.get("scope_context")
-        scope_dict = dict(scope) if isinstance(scope, Mapping) else {}
+        try:
+            context = tool_context_from_meta(meta)
+            scope_dict = context.scope.model_dump(mode="json", exclude_none=True)
+        except (TypeError, ValueError):
+            scope_dict = {}
         with_scope_apply_async(signature, scope_dict)
         return
     task.delay(*legacy_args, **legacy_kwargs)
@@ -791,30 +795,17 @@ def execute_graph(request: Request, graph_runner: GraphRunner) -> Response:
         )
         return _error_response(error_msg, error_code, status.HTTP_400_BAD_REQUEST)
 
-    tool_context_data = normalized_meta.get("tool_context")
-    tool_context: ToolContext | None = None
-    if isinstance(tool_context_data, ToolContext):
-        tool_context = tool_context_data
-    elif isinstance(tool_context_data, Mapping):
-        try:
-            tool_context = ToolContext(**tool_context_data)
-        except TypeError:
-            tool_context = None
-    if tool_context is not None:
-        setattr(request, "tool_context", tool_context)
-        if hasattr(request, "_request") and request._request is not request:
-            setattr(request._request, "tool_context", tool_context)
-
-    scope_context = normalized_meta["scope_context"]
-    # BREAKING CHANGE (Option A): Extract business IDs from business_context
-    business_context = normalized_meta.get("business_context", {})
+    tool_context = tool_context_from_meta(normalized_meta)
+    setattr(request, "tool_context", tool_context)
+    if hasattr(request, "_request") and request._request is not request:
+        setattr(request._request, "tool_context", tool_context)
     run_id = uuid4().hex
-    workflow_id = business_context.get("workflow_id") or business_context.get("case_id")
+    workflow_id = tool_context.business.workflow_id or tool_context.business.case_id
 
     context = GraphContext(
-        tenant_id=scope_context["tenant_id"],
-        case_id=business_context.get("case_id"),
-        trace_id=scope_context["trace_id"],
+        tenant_id=tool_context.scope.tenant_id,
+        case_id=tool_context.business.case_id,
+        trace_id=tool_context.scope.trace_id,
         workflow_id=workflow_id,
         run_id=run_id,
         graph_name=normalized_meta["graph_name"],
@@ -1248,21 +1239,26 @@ def start_ingestion_run(
             str(exc), "validation_error", status.HTTP_400_BAD_REQUEST
         )
 
-    scope_context = meta["scope_context"]
-    # BREAKING CHANGE (Option A): Extract business IDs from business_context
-    business_context = meta.get("business_context", {})
-    tenant_schema = scope_context.get("tenant_schema") or meta.get("tenant_schema")
+    tool_context = tool_context_from_meta(meta)
+    tenant_schema = tool_context.scope.tenant_schema or meta.get("tenant_schema")
 
     collection_scope = getattr(validated_data, "collection_id", None)
     # BREAKING CHANGE (Option A): collection_id goes to business_context, not scope_context
-    if collection_scope and isinstance(business_context, dict):
-        business_context["collection_id"] = collection_scope
+    if collection_scope:
+        updated_business = tool_context.business.model_copy(
+            update={"collection_id": collection_scope}
+        )
+        tool_context = tool_context.model_copy(update={"business": updated_business})
+        meta["business_context"] = updated_business.model_dump(
+            mode="json", exclude_none=True
+        )
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
 
     if collection_scope:
         _ensure_document_collection(
             collection_id=collection_scope,
-            tenant_identifier=tenant_schema or scope_context.get("tenant_id"),
-            case_identifier=business_context.get("case_id"),
+            tenant_identifier=tenant_schema or tool_context.scope.tenant_id,
+            case_identifier=tool_context.business.case_id,
             metadata=request_data if isinstance(request_data, Mapping) else None,
         )
 
@@ -1286,8 +1282,8 @@ def start_ingestion_run(
 
     # BREAKING CHANGE (Option A): case_id from business_context
     valid_document_ids, invalid_document_ids = _get_partition_document_ids()(
-        scope_context["tenant_id"],
-        business_context.get("case_id"),
+        tool_context.scope.tenant_id,
+        tool_context.business.case_id,
         validated_data.document_ids,
     )
 
@@ -1296,21 +1292,28 @@ def start_ingestion_run(
     )
     if collection_scope:
         _persist_collection_scope(
-            scope_context["tenant_id"],
-            business_context.get("case_id"),
+            tool_context.scope.tenant_id,
+            tool_context.business.case_id,
             to_dispatch,
             collection_scope,
         )
-    if isinstance(scope_context, dict):
-        scope_context.setdefault("ingestion_run_id", ingestion_run_id)
+    if not tool_context.scope.ingestion_run_id:
+        updated_scope = tool_context.scope.model_copy(
+            update={"ingestion_run_id": ingestion_run_id}
+        )
+        tool_context = tool_context.model_copy(update={"scope": updated_scope})
+        meta["scope_context"] = updated_scope.model_dump(
+            mode="json", exclude_none=True
+        )
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
     state_payload: dict[str, object] = {
-        "tenant_id": scope_context["tenant_id"],
-        "case_id": business_context.get("case_id"),
+        "tenant_id": tool_context.scope.tenant_id,
+        "case_id": tool_context.business.case_id,
         "document_ids": to_dispatch,
         "embedding_profile": resolved_profile_id,
         "tenant_schema": tenant_schema,
         "run_id": ingestion_run_id,
-        "trace_id": scope_context["trace_id"],
+        "trace_id": tool_context.scope.trace_id,
     }
     if collection_scope:
         state_payload["collection_id"] = collection_scope
@@ -1320,32 +1323,32 @@ def start_ingestion_run(
         state=state_payload,
         meta=dict(meta),
         legacy_args=(
-            scope_context["tenant_id"],
-            business_context.get("case_id"),
+            tool_context.scope.tenant_id,
+            tool_context.business.case_id,
             to_dispatch,
             resolved_profile_id,
         ),
         legacy_kwargs={
             "tenant_schema": tenant_schema,
             "run_id": ingestion_run_id,
-            "trace_id": scope_context["trace_id"],
+            "trace_id": tool_context.scope.trace_id,
             "idempotency_key": idempotency_key,
         },
     )
 
     record_ingestion_run_queued(
-        tenant_id=scope_context["tenant_id"],
-        case=business_context.get("case_id"),
+        tenant_id=tool_context.scope.tenant_id,
+        case=tool_context.business.case_id,
         run_id=ingestion_run_id,
         document_ids=to_dispatch,
         queued_at=queued_at,
-        trace_id=scope_context["trace_id"],
+        trace_id=tool_context.scope.trace_id,
         embedding_profile=validated_data.embedding_profile,
         source=validated_data.source,
     )
     emit_ingestion_case_event(
-        scope_context["tenant_id"],
-        business_context.get("case_id"),
+        tool_context.scope.tenant_id,
+        tool_context.business.case_id,
         run_id=ingestion_run_id,
         context="queued",
     )
@@ -1355,7 +1358,7 @@ def start_ingestion_run(
         "status": "queued",
         "queued_at": queued_at,
         "ingestion_run_id": ingestion_run_id,
-        "trace_id": scope_context["trace_id"],
+        "trace_id": tool_context.scope.trace_id,
         "idempotent": idempotent,
     }
 
@@ -1623,8 +1626,9 @@ def handle_document_upload(
 
     # BREAKING CHANGE (Option A - Strict Separation):
     # scope_context is infrastructure only, business_context has business IDs
-    scope_context = meta["scope_context"]
-    business_context = meta.get("business_context", {})
+    tool_context = tool_context_from_meta(meta)
+    scope_context = tool_context.scope.model_dump(mode="json", exclude_none=True)
+    business_context = tool_context.business.model_dump(mode="json", exclude_none=True)
 
     header_collection = business_context.get("collection_id")
     if header_collection and not metadata_obj.get("collection_id"):

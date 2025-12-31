@@ -24,6 +24,7 @@ from ai_core.infra import object_store
 from ai_core.middleware import guardrails as guardrails_middleware
 from ai_core.rag.guardrails import GuardrailLimits
 from ai_core.schemas import CrawlerRunRequest
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 # NOTE: build_universal_ingestion_graph imported lazily inside run_crawler_runner()
 # to prevent OOM in test environments that mock heavy modules.
@@ -60,11 +61,11 @@ def run_crawler_runner(
 ) -> CrawlerRunnerCoordinatorResult:
     """Execute the crawler ingestion LangGraph for the provided request."""
 
-    scope_context = meta["scope_context"]
-    scope_meta = scope_context
+    tool_context = tool_context_from_meta(meta)
+    scope_meta = tool_context.scope
     # BREAKING CHANGE (Option A - Strict Separation):
     # Business IDs (case_id, workflow_id) now in business_context
-    business_meta = meta.get("business_context", {})
+    business_meta = tool_context.business
 
     # Lazy import to prevent OOM in test environments
     from ai_core.graphs.technical.universal_ingestion_graph import (
@@ -73,8 +74,18 @@ def run_crawler_runner(
     )
 
     # BREAKING CHANGE (Option A): collection_id goes to business_context, not scope_context
-    if request_model.collection_id:
-        business_meta["collection_id"] = request_model.collection_id
+    if request_model.collection_id and (
+        request_model.collection_id != business_meta.collection_id
+    ):
+        updated_business = business_meta.model_copy(
+            update={"collection_id": request_model.collection_id}
+        )
+        tool_context = tool_context.model_copy(update={"business": updated_business})
+        meta["business_context"] = updated_business.model_dump(
+            mode="json", exclude_none=True
+        )
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
+        business_meta = updated_business
 
     workflow_default = getattr(settings, "CRAWLER_DEFAULT_WORKFLOW_ID", None)
     workflow_resolved = resolve_workflow_id(
@@ -113,14 +124,14 @@ def run_crawler_runner(
 
     # Idempotency: compute a lightweight fingerprint so repeat calls can be flagged.
     # NOTE: This must run BEFORE ID validation to allow early return for idempotent requests
-    idempotency_key = scope_meta.get("idempotency_key")
+    idempotency_key = scope_meta.idempotency_key
     idempotent_flag = False
     fingerprint = None
 
     # Pre-validate required IDs for fingerprinting (full validation happens later)
-    tenant_id_for_fp = scope_meta.get("tenant_id")
+    tenant_id_for_fp = scope_meta.tenant_id
     # BREAKING CHANGE (Option A): case_id from business_context
-    case_id_for_fp = business_meta.get("case_id")  # Optional - may be None
+    case_id_for_fp = business_meta.case_id  # Optional - may be None
 
     if not tenant_id_for_fp:
         raise ValueError("tenant_id is required for idempotency fingerprinting")
@@ -203,21 +214,21 @@ def run_crawler_runner(
     }
 
     for field, error_msg in required_ids.items():
-        if not scope_meta.get(field):
+        if not getattr(scope_meta, field, None):
             raise ValueError(error_msg)
 
     # Extract validated IDs
-    tenant_id = scope_meta["tenant_id"]
+    tenant_id = scope_meta.tenant_id
     # BREAKING CHANGE (Option A): case_id from business_context
-    case_id = business_meta.get("case_id")  # Optional at HTTP level
-    trace_id = scope_meta["trace_id"]
+    case_id = business_meta.case_id  # Optional at HTTP level
+    trace_id = scope_meta.trace_id
 
     # Identity IDs (Pre-MVP ID Contract)
     # HTTP requests have user_id (if authenticated), service_id is None
     # S2S hops (Celery tasks) have service_id, user_id may be present for audit trail
     # Crawler runner accepts both patterns since it can be called from HTTP or Celery
-    _service_id = scope_meta.get("service_id")
-    _user_id = scope_meta.get("user_id")
+    _service_id = scope_meta.service_id
+    _user_id = scope_meta.user_id
 
     completed_runs: list[dict[str, object]] = []
     # Updated to use UniversalIngestionGraph
@@ -534,11 +545,10 @@ def _maybe_start_ingestion(
     if build.collection_id:
         payload["collection_id"] = build.collection_id
 
-    scope_context = meta["scope_context"]
-    scope_meta = scope_context
     try:
+        context = tool_context_from_meta(meta)
         response = services_module.start_ingestion_run(
-            payload, dict(meta), scope_meta.get("idempotency_key")
+            payload, dict(meta), context.scope.idempotency_key
         )
     except Exception:
         logger.exception(
