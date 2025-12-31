@@ -84,12 +84,9 @@ def test_rag_tools_rejects_spoofed_headers():
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_universal_ingestion_graph")
+@patch("ai_core.graphs.web_acquisition_graph.build_web_acquisition_graph")
 def test_web_search_uses_external_knowledge_graph(mock_build_graph):
-    """Test that web_search view uses ExternalKnowledgeGraph orchestration.
-
-    The view only performs search phase; ingestion is handled separately.
-    """
+    """Test that web_search view uses WebAcquisitionGraph for search."""
     tenant_schema = "test"
 
     # Create a mock graph object that the factory returns
@@ -97,17 +94,20 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
 
     mock_graph = MagicMock()
     mock_graph.invoke.return_value = {
-        "search_results": [
-            {
-                "url": "https://example.com",
-                "title": "Test",
-                "snippet": "Test snippet",
-            }
-        ],
-        "selected_result": None,
-        "ingestion_result": None,
-        "error": None,
-        "auto_ingest": False,
+        "output": {
+            "decision": "acquired",
+            "search_results": [
+                {
+                    "url": "https://example.com",
+                    "title": "Test",
+                    "snippet": "Test snippet",
+                }
+            ],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
+            "auto_ingest": False,
+        }
     }
     # Factory function returns the mock graph
     mock_build_graph.return_value = mock_graph
@@ -134,14 +134,14 @@ def test_web_search_uses_external_knowledge_graph(mock_build_graph):
     mock_graph.invoke.assert_called_once()
     call_args = mock_graph.invoke.call_args
     state = call_args[0][0]
-    # Universal Ingestion Graph Input Structure
-    assert state["input"]["search_query"] == "test query"
-    assert state["input"]["collection_id"] == "test-collection"
-    assert state["input"]["mode"] == "acquire_only"
+    # Web Acquisition Graph Input Structure
+    assert state["input"]["query"] == "test query"
+    assert state["input"]["mode"] == "search_only"
+    assert "collection_id" not in state["input"]  # collection_id is in Context now
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_universal_ingestion_graph")
+@patch("ai_core.graphs.web_acquisition_graph.build_web_acquisition_graph")
 def test_web_search_htmx_returns_partial(mock_build_graph):
     """Test that web_search returns HTML partial for HTMX requests."""
     tenant_schema = "test"
@@ -151,17 +151,20 @@ def test_web_search_htmx_returns_partial(mock_build_graph):
 
     mock_graph = MagicMock()
     mock_graph.invoke.return_value = {
-        "search_results": [
-            {
-                "url": "https://example.com",
-                "title": "HTMX Result",
-                "snippet": "Snippet",
-            }
-        ],
-        "selected_result": None,
-        "ingestion_result": None,
-        "error": None,
-        "auto_ingest": False,
+        "output": {
+            "decision": "acquired",
+            "search_results": [
+                {
+                    "url": "https://example.com",
+                    "title": "HTMX Result",
+                    "snippet": "Snippet",
+                }
+            ],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
+            "auto_ingest": False,
+        }
     }
     mock_build_graph.return_value = mock_graph
 
@@ -185,7 +188,7 @@ def test_web_search_htmx_returns_partial(mock_build_graph):
 
 
 @pytest.mark.django_db
-@patch("theme.views.build_universal_ingestion_graph")
+@patch("ai_core.graphs.web_acquisition_graph.build_web_acquisition_graph")
 def test_web_search_defaults_to_manual_collection(mock_build_graph):
     tenant_schema = "fallback"
     tenant = TenantFactory(schema_name=tenant_schema)
@@ -195,11 +198,14 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
 
     mock_graph = MagicMock()
     mock_graph.invoke.return_value = {
-        "search_results": [],
-        "selected_result": None,
-        "ingestion_result": None,
-        "error": None,
-        "auto_ingest": False,
+        "output": {
+            "decision": "no_results",
+            "search_results": [],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
+            "auto_ingest": False,
+        }
     }
     mock_build_graph.return_value = mock_graph
 
@@ -227,7 +233,10 @@ def test_web_search_defaults_to_manual_collection(mock_build_graph):
     # If data.get("collection_id") is None, resolved is None. manual_collection_id should be returned by _resolve_manual_collection if tenant exists.
     # So expectation should be manual_id.
     # So expectation should be manual_id.
-    assert state["input"]["collection_id"] == manual_id
+    # Expect manual_collection_id via BusinessContext
+    # We can check tool_context.business.collection_id
+    tool_context = state["tool_context"]
+    assert tool_context.business.collection_id == manual_id
 
 
 @pytest.mark.django_db
@@ -266,7 +275,7 @@ def test_web_search_ingest_selected_defaults_to_manual_collection(
 @pytest.mark.django_db
 @patch("theme.views.llm_routing.resolve")
 @patch("theme.views.submit_worker_task")
-@patch("theme.views.build_universal_ingestion_graph")
+@patch("ai_core.graphs.web_acquisition_graph.build_web_acquisition_graph")
 def test_web_search_rerank_applies_scores(
     mock_build_graph, mock_submit_task, mock_resolve, settings
 ):
@@ -287,28 +296,31 @@ def test_web_search_rerank_applies_scores(
 
     mock_graph = MagicMock()
     mock_graph.invoke.return_value = {
-        "search_results": [
-            {
-                "document_id": "doc-a",
-                "title": "Alpha",
-                "snippet": "Snippet A",
-                "source": "crawler",
-                "url": "https://a.example",
-                "score": 0.3,
-            },
-            {
-                "document_id": "doc-b",
-                "title": "Beta",
-                "snippet": "Snippet B",
-                "source": "crawler",
-                "url": "https://b.example",
-                "score": 0.2,
-            },
-        ],
-        "selected_result": None,
-        "ingestion_result": None,
-        "error": None,
-        "auto_ingest": False,
+        "output": {
+            "decision": "acquired",
+            "search_results": [
+                {
+                    "document_id": "doc-a",
+                    "title": "Alpha",
+                    "snippet": "Snippet A",
+                    "source": "crawler",
+                    "url": "https://a.example",
+                    "score": 0.3,
+                },
+                {
+                    "document_id": "doc-b",
+                    "title": "Beta",
+                    "snippet": "Snippet B",
+                    "source": "crawler",
+                    "url": "https://b.example",
+                    "score": 0.2,
+                },
+            ],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
+            "auto_ingest": False,
+        }
     }
     mock_build_graph.return_value = mock_graph
     mock_submit_task.return_value = (
@@ -347,7 +359,7 @@ def test_web_search_rerank_applies_scores(
 
 @pytest.mark.django_db
 @patch("theme.views.submit_worker_task", return_value=({"task_id": "task-q"}, False))
-@patch("theme.views.build_universal_ingestion_graph")
+@patch("ai_core.graphs.web_acquisition_graph.build_web_acquisition_graph")
 def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_task):
     cache.clear()
     tenant_schema = "queued"
@@ -357,18 +369,21 @@ def test_web_search_rerank_returns_queue_status(mock_build_graph, _mock_submit_t
 
     mock_graph = MagicMock()
     mock_graph.invoke.return_value = {
-        "search_results": [
-            {
-                "document_id": "doc-a",
-                "title": "Alpha",
-                "snippet": "Snippet A",
-                "url": "https://a.example",
-            }
-        ],
-        "selected_result": None,
-        "ingestion_result": None,
-        "error": None,
-        "auto_ingest": False,
+        "output": {
+            "decision": "acquired",
+            "search_results": [
+                {
+                    "document_id": "doc-a",
+                    "title": "Alpha",
+                    "snippet": "Snippet A",
+                    "url": "https://a.example",
+                }
+            ],
+            "selected_result": None,
+            "ingestion_result": None,
+            "error": None,
+            "auto_ingest": False,
+        }
     }
     mock_build_graph.return_value = mock_graph
 

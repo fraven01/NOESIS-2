@@ -214,6 +214,10 @@ def tracing_enabled() -> bool:
     return _get_tracer() is not None
 
 
+import functools
+
+# ... (simulated location, actually need to add import at top)
+
 def observe_span(
     name: Optional[str] = None,
     *,
@@ -238,6 +242,7 @@ def observe_span(
                 _maybe_annotate_span(phase, args, kwargs, result)
             return result
 
+        @functools.wraps(func)
         def wrapped(*args: Any, **kwargs: Any):  # type: ignore[misc]
             if not tracing_enabled():
                 return _run(*args, **kwargs)

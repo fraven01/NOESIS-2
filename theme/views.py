@@ -19,10 +19,6 @@ from ai_core.contracts import ScopeContext, BusinessContext
 from common.logging import bind_log_context
 from ai_core.services import _get_documents_repository
 from ai_core.services.crawler_runner import run_crawler_runner
-from ai_core.graphs.technical.universal_ingestion_graph import (
-    build_universal_ingestion_graph,
-    UniversalIngestionState,
-)
 from ai_core.graphs.technical.collection_search import (
     GraphInput as CollectionSearchGraphInput,
     build_graph as build_collection_search_graph,
@@ -832,7 +828,7 @@ def web_search(request):
         return JsonResponse({"error": "Query is required"}, status=400)
 
     try:
-        tenant_id, _ = _tenant_context_from_request(request)
+        tenant_id, tenant_schema = _tenant_context_from_request(request)
     except TenantRequiredError as exc:
         return _tenant_required_response(exc)
     case_id = str(data.get("case_id") or "").strip() or None
@@ -982,11 +978,10 @@ def web_search(request):
         }
 
     else:
-        # External Knowledge Graph (LangGraph)
-        from ai_core.tools.shared_workers import get_web_search_worker
-
-        search_worker = get_web_search_worker()
-        ingestion_adapter = _ViewCrawlerIngestionAdapter()
+        # Web Acquisition Graph (Search Only)
+        from ai_core.graphs.web_acquisition_graph import build_web_acquisition_graph
+        from ai_core.contracts.business import BusinessContext
+        from ai_core.tool_contracts import ToolContext
 
         # Parse configurable parameters from request
         try:
@@ -996,107 +991,65 @@ def web_search(request):
         except (ValueError, TypeError):
             top_n = 5
 
-        try:
-            min_snippet_length = int(data.get("min_snippet_length", 40))
-            if min_snippet_length < 10 or min_snippet_length > 500:
-                min_snippet_length = 40
-        except (ValueError, TypeError):
-            min_snippet_length = 40
-
-        # BREAKING CHANGE (Option A - Strict Separation):
-        # Build ScopeContext (infrastructure IDs) and BusinessContext (domain IDs)
-        # instead of flat dict to match ToolContext structure
-
-        scope = ScopeContext(
-            tenant_id=tenant_id,
-            tenant_schema=tenant_id,
-            trace_id=trace_id,
-            invocation_id=str(uuid4()),
-            run_id=run_id,
-            user_id=user_id,  # Pre-MVP ID Contract
-        )
-
+        input_payload = {
+             "query": query,
+             "mode": data.get("mode", "search_only"),
+             "search_config": {
+                 "top_n": top_n,
+                 "prefer_pdf": True,
+             }
+        }
+        
+        # Build ToolContext
         business = BusinessContext(
-            workflow_id="external-knowledge-manual",
+            workflow_id="web-acquisition-manual",
             case_id=case_id,
             collection_id=collection_id,
         )
-
-        # Build context_payload with pure ToolContext structure
-        # BREAKING CHANGE (Option A - Full Migration):
-        # All nodes now use ToolContext, no flattened fields needed anymore!
-        context_payload = {
-            "scope": scope.model_dump(mode="json"),
-            "business": business.model_dump(mode="json"),
-            "metadata": {
-                # Non-serializable objects - graph nodes access via ToolContext.metadata
-                "runtime_worker": search_worker,
-                "runtime_trigger": ingestion_adapter,
-                # Config
-                "top_n": top_n,
-                "min_snippet_length": min_snippet_length,
-                "prefer_pdf": True,
+        
+        tool_context = ToolContext(
+            scope={
+                "tenant_id": tenant_id,
+                "tenant_schema": tenant_schema,
+                "trace_id": trace_id,
+                "user_id": user_id,
+                "invocation_id": str(uuid4()),
+                "ingestion_run_id": run_id,
             },
-        }
-
-        # Prepare Search Config
-        search_config = {
-            "top_n": top_n,
-            "min_snippet_length": min_snippet_length,
-            "prefer_pdf": True,
-        }
-
-        input_payload = {
-            "source": "search",
-            "mode": "acquire_only",  # Manual search implies viewing results first
-            "collection_id": collection_id,
-            "search_query": query,
-            "search_config": search_config,
-            # Required fields for TypedDict but None for search
-            "upload_blob": None,
-            "metadata_obj": None,
-            "normalized_document": None,
-        }
-
-        # Universal Ingestion State
-        input_state: UniversalIngestionState = {
+            business=business,
+            metadata={},
+        )
+        
+        # Acquisition State
+        graph_state = {
             "input": input_payload,
-            "context": context_payload,
-            "normalized_document": None,
-            "search_results": [],
-            "selected_result": None,
-            "processing_result": None,
-            "ingestion_result": None,
-            "output": None,
-            "error": None,
+            "tool_context": tool_context,
         }
-
-        try:
-
-            # Phase 4 Migration: Use Universal Ingestion Graph
-            universal_graph = build_universal_ingestion_graph()
-            final_state = universal_graph.invoke(input_state)
-        except Exception:
-            logger.exception("web_search.failed")
-            return JsonResponse({"error": "Graph execution failed."}, status=500)
-
-        # Use filtered_results (after top_n and min_snippet_length filtering)
-        # Fallback to search_results if filtering hasn't run
-        # Use search_results from Universal Graph
-        results = final_state.get("search_results", [])
-        # Construct response similar to old format for UI compatibility
+        
+        web_graph = build_web_acquisition_graph()
+        result_state = web_graph.invoke(graph_state)
+        
+        output = result_state.get("output", {})
+        decision = output.get("decision", "error")
+        error_msg = output.get("error")
+        # Legacy UI expects "search.results" structure
+        search_results = output.get("search_results") or []
+        
         response_data = {
-            "outcome": "completed",  # Simple outcome
-            "results": results,
-            "search": {"results": results},  # UI expects search.results
-            "telemetry": {},  # Simplified telemetry for now
+            # P2 Fix: Both 'acquired' and 'no_results' are successful completion states
+            "outcome": "completed" if decision in ("acquired", "no_results") else "error",
+            "results": search_results, 
+            "search": {"results": search_results},
+            "telemetry": {},
             "trace_id": trace_id,
         }
-
-        if final_state.get("error"):
-            # If error field is set
-            response_data["outcome"] = "error"
-            response_data["error"] = final_state["error"]
+        
+        if error_msg:
+             response_data["error"] = error_msg
+             response_data["outcome"] = "error"
+             
+             if decision == "error":
+                 logger.warning("web_search.acquisition_failed", extra={"error": error_msg})
 
     # Common Logic
     results = response_data.get("results", [])
@@ -1370,7 +1323,8 @@ def start_rerank_workflow(request):
         search_payload = graph_result.get("search") or {}
         telemetry_payload = graph_result.get("telemetry") or {}
         outcome_label = graph_result.get("outcome") or "Workflow abgeschlossen"
-        response_payload = {
+        
+        response_data = {
             "status": "completed",
             "graph_name": "collection_search",
             "task_id": result_payload.get("task_id"),
@@ -1388,14 +1342,15 @@ def start_rerank_workflow(request):
                 request,
                 "theme/partials/_web_search_results.html",
                 {
-                    "results": response_payload.get("results"),
-                    "search": response_payload.get("search"),
-                    "trace_id": trace_id,
-                    "collection_id": collection_id,
+                    "results": response_data.get("results"),
+                    "search": response_data.get("search"),
+                    "trace_id": response_data.get("trace_id"),
+                    "status": "completed",
+                    "task_id": response_data.get("task_id"),
                 },
             )
 
-        return JsonResponse(response_payload)
+        return JsonResponse(response_data)
 
     except json.JSONDecodeError:
         return JsonResponse({"error": "Invalid JSON"}, status=400)
@@ -1579,9 +1534,18 @@ def ingestion_submit(request):
             "business_context": business_context,
         }
 
+        # Check for Store Only mode (Archive/No-RAG)
+        store_only = request.POST.get("store_only") == "on"
+        metadata_obj = {}
+        if store_only:
+             metadata_obj["pipeline_config"] = {"enable_embedding": False}
+
         # Upload document
         upload_response = handle_document_upload(
-            upload=uploaded_file, metadata_raw=None, meta=meta, idempotency_key=None
+            upload=uploaded_file, 
+            metadata_raw=json.dumps(metadata_obj) if metadata_obj else None, 
+            meta=meta, 
+            idempotency_key=None
         )
 
         if upload_response.status_code >= 400:

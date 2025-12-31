@@ -1843,15 +1843,6 @@ def handle_document_upload(
         # Prepare input for Universal Ingestion Graph
         # We pre-build the NormalizedDocument here to handle Django-specific file handling
         graph_input = {
-            "source": "upload",
-            "mode": "ingest_only",
-            "collection_id": (
-                str(ensured_collection.collection_id)
-                if ensured_collection
-                else str(metadata_obj.get("collection_id"))
-            ),
-            "upload_blob": None,  # Not used as we pass normalized_document
-            "metadata_obj": None,  # Not used as we pass normalized_document
             "normalized_document": normalized_document.model_dump(),
         }
 
@@ -1901,7 +1892,8 @@ def handle_document_upload(
         decision = output.get("decision", "error")
         reason = output.get("reason", "unknown")
 
-        if decision == "error":
+        # P1 Fix: Handle both 'error' and 'failed' decisions from the graph
+        if decision in ("error", "failed"):
             # P2 Fix: Distinguish user validation errors from server errors
             # Validate/Normalize nodes return "Missing...", "Unsupported...", "Normalization failed..."
             is_user_error = any(

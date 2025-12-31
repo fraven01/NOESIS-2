@@ -145,13 +145,27 @@
                 {% endif %}
 
                 <div class="mt-3 flex items-center gap-2 opacity-0 transition-opacity group-hover:opacity-100">
+                    <!-- Live Ingest -->
                     <form hx-post="{% url 'web-search-ingest-selected' %}" hx-target="#ingestion-status-panel"
                         hx-swap="innerHTML" class="inline">
                         <input type="hidden" name="urls" value="{{ result.url }}">
                         <input type="hidden" name="collection_id" value="{{ collection_id }}">
+                        <input type="hidden" name="mode" value="live">
                         <button type="submit"
+                            class="rounded border border-indigo-200 bg-indigo-50 px-2 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100">
+                            Ingest
+                        </button>
+                    </form>
+
+                    <!-- Archive Ingest -->
+                    <form hx-post="{% url 'web-search-ingest-selected' %}" hx-target="#ingestion-status-panel"
+                        hx-swap="innerHTML" class="inline">
+                        <input type="hidden" name="urls" value="{{ result.url }}">
+                        <input type="hidden" name="collection_id" value="{{ collection_id }}">
+                        <input type="hidden" name="mode" value="store_only">
+                        <button type="submit" title="Ingest to Store Only (No RAG)"
                             class="rounded border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50">
-                            Ingest this
+                            Archive
                         </button>
                     </form>
                 </div>
