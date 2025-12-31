@@ -72,7 +72,7 @@ LOGGER = logging.getLogger(__name__)
 
 @dataclass(frozen=True, slots=True)
 class RoutingRule:
-    """A single routing rule describing an override for a profile."""
+    """A single routing rule describing an override for a profile and/or chunker mode."""
 
     profile: str
     index: int
@@ -81,6 +81,7 @@ class RoutingRule:
     collection_id: str | None = None
     workflow_id: str | None = None
     doc_class: str | None = None
+    chunker_mode: str | None = None  # late | agentic | hybrid
 
     def matches(
         self,
@@ -166,10 +167,11 @@ class RoutingResolution:
 
 @dataclass(frozen=True, slots=True)
 class RoutingTable:
-    """Validated routing table for embedding profiles."""
+    """Validated routing table for embedding profiles and chunker modes."""
 
     default_profile: str
     rules: tuple[RoutingRule, ...]
+    default_chunker_mode: str = "late"  # late | agentic | hybrid
 
     def resolve(
         self,
@@ -374,6 +376,9 @@ def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
         )
         workflow_id = _normalise_optional(raw.get("workflow_id"), field="workflow_id")
         doc_class = _normalise_optional(raw.get("doc_class"), field="doc_class")
+        chunker_mode = _normalise_optional(
+            raw.get("chunker_mode"), field="chunker_mode"
+        )
 
         if use_collection_routing and collection_id is None and doc_class is not None:
             collection_id = doc_class
@@ -387,6 +392,7 @@ def _build_rules(raw_rules: Sequence[object]) -> tuple[RoutingRule, ...]:
             collection_id=collection_id,
             workflow_id=workflow_id,
             doc_class=doc_class,
+            chunker_mode=chunker_mode,
         )
 
         rules.append(rule)
@@ -526,6 +532,11 @@ def get_routing_table() -> RoutingTable:
             )
         )
 
+    # Parse default_chunker_mode (optional, defaults to "late")
+    default_chunker_mode = str(raw_config.get("default_chunker_mode", "late")).strip()
+    if not default_chunker_mode:
+        default_chunker_mode = "late"
+
     raw_rules = raw_config.get("rules", [])
     if not isinstance(raw_rules, Sequence):
         raise RoutingConfigurationError(
@@ -537,7 +548,11 @@ def get_routing_table() -> RoutingTable:
 
     rules = _build_rules(raw_rules)
 
-    table = RoutingTable(default_profile=default_profile, rules=rules)
+    table = RoutingTable(
+        default_profile=default_profile,
+        rules=rules,
+        default_chunker_mode=default_chunker_mode,
+    )
 
     config = get_embedding_configuration()
 
@@ -573,6 +588,73 @@ def resolve_embedding_profile_id(
     )
 
 
+def resolve_chunker_mode(
+    *,
+    tenant: str,
+    process: str | None = None,
+    doc_class: str | None = None,
+    collection_id: str | None = None,
+    workflow_id: str | None = None,
+) -> str:
+    """
+    Resolve chunker mode based on routing rules.
+
+    Args:
+        tenant: Tenant identifier
+        process: Optional process name
+        doc_class: Optional document class
+        collection_id: Optional collection identifier
+        workflow_id: Optional workflow identifier
+
+    Returns:
+        Chunker mode string (late | agentic | hybrid)
+
+    Raises:
+        RoutingConfigurationError: If routing configuration is invalid
+    """
+    table = get_routing_table()
+
+    # Find best matching rule with chunker_mode
+    best_rule: RoutingRule | None = None
+    best_priority: tuple[int, int, int, int, int, int] | None = None
+
+    for rule in table.rules:
+        # Skip rules without chunker_mode
+        if rule.chunker_mode is None:
+            continue
+
+        if not rule.matches(
+            tenant=tenant,
+            process=process,
+            collection_id=collection_id,
+            workflow_id=workflow_id,
+            doc_class=doc_class,
+        ):
+            continue
+
+        priority = rule.priority_key
+
+        if best_priority is None or priority > best_priority:
+            best_rule = rule
+            best_priority = priority
+            continue
+
+        if priority == best_priority and best_rule is not None:
+            if rule.chunker_mode != best_rule.chunker_mode:
+                raise RoutingConfigurationError(
+                    _format_error(
+                        RoutingErrorCode.CONFLICT,
+                        "Ambiguous routing rules match the same selector for chunker_mode",
+                    )
+                )
+
+    # Return matched rule's chunker_mode or default
+    if best_rule is not None:
+        return best_rule.chunker_mode  # type: ignore[return-value]
+
+    return table.default_chunker_mode
+
+
 def validate_routing_rules() -> None:
     """Validate routing rules at startup."""
 
@@ -594,6 +676,7 @@ __all__ = [
     "get_routing_table",
     "is_collection_routing_enabled",
     "resolve_embedding_profile_id",
+    "resolve_chunker_mode",
     "reset_routing_rules_cache",
     "validate_routing_rules",
 ]

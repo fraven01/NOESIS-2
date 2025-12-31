@@ -219,6 +219,7 @@ def test_search_acquire_and_ingest(
         "search",
         "select",
         "normalize",
+        "dedup",  # P2 Fix: Include dedup node
         "persist",
         "process",
         "finalize",
@@ -273,3 +274,181 @@ def test_search_preselected_results_bypass(
     assert result.get("selected_result") is not None
     assert result["selected_result"]["url"] == "https://example.com/preselected"
     assert output["decision"] == "acquired"
+
+
+def test_dedup_workflow_new_document(utg_module, mock_dependencies):
+    """Test that dedup_node is called and sets dedup_status='new' for new documents."""
+    graph = utg_module.build_universal_ingestion_graph()
+
+    # Use new upload_blob format instead of deprecated file_path/content_type
+    upload_blob = {
+        "type": "file",
+        "uri": "objectstore://bucket/new-document.pdf",
+        "media_type": "application/pdf",
+        "size": 2048,
+        "sha256": "a" * 64,
+    }
+
+    state = {
+        "input": {
+            "source": "upload",
+            "mode": "acquire_and_ingest",
+            "collection_id": "00000000-0000-0000-0000-000000000001",
+            "upload_blob": upload_blob,
+            "metadata_obj": {"file_name": "new-document.pdf"},
+        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-dedup-new",
+            ingestion_run_id="00000000-0000-0000-0000-000000000004",
+        ),
+    }
+
+    result = graph.invoke(state)
+
+    # 1. Verify dedup_status was set
+    assert result.get("dedup_status") is not None
+    # For now, dedup_node always returns "new" (MVP implementation)
+    assert result["dedup_status"] == "new"
+
+    # 2. Verify dedup_node was in the execution path
+    output = result.get("output")
+    assert output is not None
+    assert "dedup" in output["transitions"]
+
+    # 3. Verify workflow proceeded to persist and process (not skipped)
+    assert "persist" in output["transitions"]
+    assert "process" in output["transitions"]
+
+    # 4. Verify decision is "ingested" (not "duplicate")
+    assert output["decision"] == "ingested"
+
+
+def test_dedup_workflow_duplicate_document(utg_module, mock_dependencies):
+    """Test that dedup_node detects duplicates and skips persist/process."""
+    # NOTE: This test requires mocking the dedup_node to return dedup_status="duplicate"
+    # since the MVP implementation always returns "new"
+    from unittest.mock import patch
+
+    # P2 Fix: Upload source requires upload_blob, not file_path/content_type
+    upload_blob = {
+        "type": "file",
+        "uri": "objectstore://bucket/fake-document.pdf",
+        "media_type": "application/pdf",
+        "size": 1024,
+        "sha256": "b" * 64,
+    }
+
+    state = {
+        "input": {
+            "source": "upload",
+            "mode": "acquire_and_ingest",
+            "collection_id": "00000000-0000-0000-0000-000000000001",
+            "upload_blob": upload_blob,
+            "metadata_obj": {"file_name": "fake-document.pdf"},
+        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-dedup-duplicate",
+            ingestion_run_id="00000000-0000-0000-0000-000000000004",
+        ),
+    }
+
+    # Mock dedup_node to return duplicate status with existing document ref
+    from ai_core.ids.contracts import DocumentRef
+
+    existing_doc_ref = DocumentRef(
+        tenant_id="00000000-0000-0000-0000-000000000001",
+        workflow_id="workflow-existing",
+        document_id="existing-doc-123",
+        collection_id="00000000-0000-0000-0000-000000000001",
+    )
+
+    def mock_dedup_node(state):
+        """Mock dedup that returns duplicate status."""
+        return {
+            "dedup_status": "duplicate",
+            "existing_document_ref": existing_doc_ref,
+        }
+
+    # P2 Fix: Patch dedup_node BEFORE building graph so compiled LangGraph uses mock
+    with patch.object(utg_module, "dedup_node", side_effect=mock_dedup_node):
+        graph = utg_module.build_universal_ingestion_graph()
+        result = graph.invoke(state)
+
+    # 1. Verify dedup_status was set to duplicate
+    assert result.get("dedup_status") == "duplicate"
+
+    # 2. Verify dedup was in the execution path
+    output = result.get("output")
+    assert output is not None
+    assert "dedup" in output["transitions"]
+
+    # 3. Verify persist and process were SKIPPED (duplicate path)
+    assert "persist" not in output["transitions"]
+    assert "process" not in output["transitions"]
+
+    # 4. Verify transitions show duplicate path
+    expected_transitions = ["validate_input", "normalize", "dedup", "finalize"]
+    assert output["transitions"] == expected_transitions
+
+    # 5. Verify decision is "duplicate"
+    assert output["decision"] == "duplicate"
+
+    # 6. P1 Fix: Verify document_id is the existing document's ID, not phantom new ID
+    assert output["document_id"] == "existing-doc-123"
+
+
+def test_dedup_workflow_duplicate_without_existing_ref(utg_module, mock_dependencies):
+    """Test that duplicate without existing_document_ref returns None (no phantom ID)."""
+    from unittest.mock import patch
+
+    upload_blob = {
+        "type": "file",
+        "uri": "objectstore://bucket/fake-document.pdf",
+        "media_type": "application/pdf",
+        "size": 1024,
+        "sha256": "b" * 64,
+    }
+
+    state = {
+        "input": {
+            "source": "upload",
+            "mode": "acquire_and_ingest",
+            "collection_id": "00000000-0000-0000-0000-000000000001",
+            "upload_blob": upload_blob,
+            "metadata_obj": {"file_name": "fake-document.pdf"},
+        },
+        "context": _tool_context(
+            tenant_id="00000000-0000-0000-0000-000000000001",
+            trace_id="00000000-0000-0000-0000-000000000002",
+            invocation_id="inv-dedup-no-ref",
+            ingestion_run_id="00000000-0000-0000-0000-000000000004",
+        ),
+    }
+
+    # Mock dedup_node to return duplicate status WITHOUT existing_document_ref
+    def mock_dedup_node(state):
+        """Mock dedup that returns duplicate status but no existing ref."""
+        return {
+            "dedup_status": "duplicate",
+            "existing_document_ref": None,  # MVP implementation
+        }
+
+    with patch.object(utg_module, "dedup_node", side_effect=mock_dedup_node):
+        graph = utg_module.build_universal_ingestion_graph()
+        result = graph.invoke(state)
+
+    # Verify dedup_status was set to duplicate
+    assert result.get("dedup_status") == "duplicate"
+
+    output = result.get("output")
+    assert output is not None
+
+    # Verify decision is "duplicate"
+    assert output["decision"] == "duplicate"
+
+    # P1 Fix: Verify document_id is None (not a phantom new ID from normalized_document)
+    assert output["document_id"] is None

@@ -8,6 +8,7 @@ import os
 import re
 import time
 import uuid
+import warnings
 from contextlib import contextmanager, nullcontext
 from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
 from dataclasses import asdict, is_dataclass
@@ -63,7 +64,7 @@ from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
 from .rag.embedding_config import get_embedding_profile
-from .rag.chunking import SectionChunkPlan, SemanticChunker, SemanticTextBlock
+from .rag.semantic_chunker import SectionChunkPlan, SemanticChunker, SemanticTextBlock
 from .rag.parents import limit_parent_payload
 from .rag.schemas import Chunk
 from .rag.normalization import normalise_text
@@ -987,6 +988,12 @@ def chunk(meta: Dict[str, str], text_path: str) -> Dict[str, str]:
 
     semantic_plans: List[SectionChunkPlan] = []
     if structured_blocks:
+        warnings.warn(
+            "SemanticChunker is deprecated and will be removed in a future version. "
+            "Use HybridChunker from ai_core.rag.chunking instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         semantic_chunker = SemanticChunker(
             sentence_splitter=_split_sentences,
             chunkify_fn=lambda sentences: _chunkify(

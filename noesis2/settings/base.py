@@ -93,6 +93,26 @@ RAG_HARD_DELETE_REINDEX_THRESHOLD = env.int(
     "RAG_HARD_DELETE_REINDEX_THRESHOLD", default=0
 )
 
+# Chunker Configuration (MODEL_ROUTING.yaml labels)
+RAG_CHUNKER_MODE = env("RAG_CHUNKER_MODE", default="late")  # late | agentic | hybrid
+RAG_LATE_CHUNK_MODEL = env(
+    "RAG_LATE_CHUNK_MODEL", default="embedding"
+)  # MODEL_ROUTING.yaml label
+RAG_LATE_CHUNK_MAX_TOKENS = env.int("RAG_LATE_CHUNK_MAX_TOKENS", default=8000)
+RAG_AGENTIC_CHUNK_MODEL = env(
+    "RAG_AGENTIC_CHUNK_MODEL", default="agentic-chunk"
+)  # MODEL_ROUTING.yaml label
+RAG_ENABLE_QUALITY_METRICS = env.bool("RAG_ENABLE_QUALITY_METRICS", default=True)
+RAG_QUALITY_EVAL_MODEL = env(
+    "RAG_QUALITY_EVAL_MODEL", default="quality-eval"
+)  # MODEL_ROUTING.yaml label
+
+# Phase 2: SOTA Embedding-based Similarity
+RAG_USE_EMBEDDING_SIMILARITY = env.bool("RAG_USE_EMBEDDING_SIMILARITY", default=False)
+RAG_CHUNKING_WINDOW_SIZE = env.int("RAG_CHUNKING_WINDOW_SIZE", default=3)
+RAG_CHUNKING_BATCH_SIZE = env.int("RAG_CHUNKING_BATCH_SIZE", default=16)
+RAG_USE_CONTENT_BASED_IDS = env.bool("RAG_USE_CONTENT_BASED_IDS", default=True)
+
 if "RAG_EMBEDDING_PROFILES" not in globals():
     RAG_EMBEDDING_PROFILES = {
         "standard": {

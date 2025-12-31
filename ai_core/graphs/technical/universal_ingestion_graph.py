@@ -93,6 +93,8 @@ class UniversalIngestionState(TypedDict):
 
     # Pipeline Artifacts
     normalized_document: NormalizedDocument | None
+    dedup_status: str | None  # P2 Fix: 'new' or 'duplicate'
+    existing_document_ref: Any | None  # P2 Fix: DocumentRef if duplicate found
 
     # Search Artifacts
     search_results: list[dict[str, Any]] | None
@@ -613,6 +615,25 @@ def normalize_document_node(state: UniversalIngestionState) -> dict[str, Any]:
         return {"error": str(exc)}
 
 
+@observe_span(name="node.dedup")
+def dedup_node(state: UniversalIngestionState) -> dict[str, Any]:
+    """Check if document is a duplicate (MVP: always returns 'new').
+
+    P2 Fix: Implement actual deduplication logic based on SHA256 hash.
+    For MVP, this node always returns dedup_status='new' to allow
+    all documents to proceed through the pipeline.
+
+    Future implementation should:
+    - Extract SHA256 hash from normalized_document.blob.sha256
+    - Query document repository for existing documents with same hash in collection
+    - Return dedup_status='duplicate' if found, 'new' otherwise
+    - Include existing_document_id in state if duplicate found
+    """
+    # MVP: Always mark as new document
+    # Future: Check SHA256 hash against existing documents in collection
+    return {"dedup_status": "new"}
+
+
 @observe_span(name="node.persist")
 def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
     """Persist the normalized document (upsert).
@@ -780,7 +801,25 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
     # If success
     # Extract document_id from normalized_document or processing result
     norm_doc = state.get("normalized_document")
-    doc_id = str(norm_doc.ref.document_id) if norm_doc else None
+    dedup_status = state.get("dedup_status")
+
+    # P1 Fix: For duplicates, use existing_document_ref.document_id instead of phantom new ID
+    if dedup_status == "duplicate":
+        existing_ref = state.get("existing_document_ref")
+        if existing_ref:
+            # Handle both dict and Pydantic model
+            if isinstance(existing_ref, dict):
+                doc_id = existing_ref.get("document_id")
+            else:
+                doc_id = (
+                    str(existing_ref.document_id)
+                    if hasattr(existing_ref, "document_id")
+                    else None
+                )
+        else:
+            doc_id = None
+    else:
+        doc_id = str(norm_doc.ref.document_id) if norm_doc else None
 
     # Construct transitions (simplified for Phase 2)
     # Construct transitions dynamically based on execution path
@@ -794,6 +833,7 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
                 "search",
                 "select",
                 "normalize",
+                "dedup",
                 "persist",
                 "process",
                 "finalize",
@@ -803,13 +843,27 @@ def finalize_node(state: UniversalIngestionState) -> dict[str, Any]:
             transitions = ["validate_input", "search", "select", "finalize"]
     else:
         # standard ingestion (upload/crawler)
-        transitions = ["validate_input", "normalize", "persist", "process", "finalize"]
+        if dedup_status == "duplicate":
+            # Duplicate detected: skip persist and process
+            transitions = ["validate_input", "normalize", "dedup", "finalize"]
+        else:
+            transitions = [
+                "validate_input",
+                "normalize",
+                "dedup",
+                "persist",
+                "process",
+                "finalize",
+            ]
 
     # Construct review_payload for HITL signaling
     review_payload = norm_doc.model_dump() if norm_doc else None
 
     # Determine decision with strict invariants
-    if doc_id:
+    if dedup_status == "duplicate":
+        # Duplicate detected (MVP: tests mock this, P2: SHA256-based dedup)
+        decision = "duplicate"
+    elif doc_id:
         decision = "ingested"
     elif state.get("selected_result"):
         # If we didn't persist but had a selection (and no error), it's an acquisition
@@ -852,7 +906,7 @@ def _get_cached_processing_graph() -> Any:
     # Lazy imports to avoid circular dependencies
     from ai_core.services import _get_documents_repository, get_document_components
     from documents.parsers import create_default_parser_dispatcher
-    from documents.cli import SimpleDocumentChunker
+    from ai_core.rag.chunking import RoutingAwareChunker
     from ai_core.api import (
         trigger_embedding,
         decide_delta,
@@ -870,7 +924,8 @@ def _get_cached_processing_graph() -> Any:
 
     # 2. Key Processing Logic
     parser_dispatcher = create_default_parser_dispatcher()
-    chunker = SimpleDocumentChunker()
+    # Routing-aware chunker resolves config from context.metadata at call time
+    chunker = RoutingAwareChunker()
 
     # 3. Build Compiled Graph
     # The graph is stateless regarding the pipeline config (passed in state),
@@ -912,6 +967,7 @@ def build_universal_ingestion_graph() -> Any:
     workflow.add_node("search", search_node)
     workflow.add_node("select", selection_node)
     workflow.add_node("normalize", normalize_document_node)
+    workflow.add_node("dedup", dedup_node)
     workflow.add_node("persist", persist_node)
 
     # Process node will now use the cached sub-graph internally
@@ -959,12 +1015,31 @@ def build_universal_ingestion_graph() -> Any:
 
     def check_normalization(
         state: UniversalIngestionState,
-    ) -> Literal["persist", "finalize"]:
+    ) -> Literal["dedup", "finalize"]:
         if state.get("error"):
             return "finalize"
-        return "persist"
+        return "dedup"
 
     workflow.add_conditional_edges("normalize", check_normalization)
+
+    def check_dedup(
+        state: UniversalIngestionState,
+    ) -> Literal["persist", "finalize"]:
+        """Route after dedup: skip persist/process if duplicate detected.
+
+        MVP: Dedup node always returns 'new' (SHA256-based dedup in P2).
+        Tests mock dedup_node to return 'duplicate' for validation.
+        """
+        if state.get("error"):
+            return "finalize"
+
+        # Check dedup_status and skip persist/process if duplicate
+        if state.get("dedup_status") == "duplicate":
+            return "finalize"
+
+        return "persist"
+
+    workflow.add_conditional_edges("dedup", check_dedup)
 
     def check_persistence(
         state: UniversalIngestionState,

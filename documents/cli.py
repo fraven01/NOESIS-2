@@ -7,6 +7,7 @@ import base64
 import hashlib
 import json
 import sys
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -511,6 +512,12 @@ class SimpleDocumentChunker:
         config: DocumentPipelineConfig,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         """Return per-block chunks suitable for smoke testing."""
+        warnings.warn(
+            "SimpleDocumentChunker is deprecated and will be removed in a future version. "
+            "Use HybridChunker from ai_core.rag.chunking instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
         _ = (document, context, config)  # unused but part of the interface
         chunks: list[dict[str, Any]] = []

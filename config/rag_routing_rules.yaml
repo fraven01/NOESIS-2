@@ -1,8 +1,8 @@
-# Routing table for embedding profiles used by the RAG vector store.
+# Routing table for embedding profiles and chunker modes used by the RAG system.
 #
-# The router selects a profile deterministically based on tenant, process,
-# workflow or collection scope. The default profile must always be defined and
-# every override must reference an existing embedding profile identifier.
+# The router selects a profile and chunker mode deterministically based on tenant,
+# process, workflow or collection scope. The default profile and default_chunker_mode
+# must always be defined.
 #
 # Duplicate selectors that point to the same profile are tolerated and will
 # emit a `ROUTE_DUP_SAME_TARGET` warning to highlight redundant entries.
@@ -13,13 +13,29 @@
 #
 # Operators can override this file via the RAG_ROUTING_RULES_PATH setting.
 
+# Default embedding profile for all tenants
 default_profile: standard
+
+# Default chunker mode (late | agentic | hybrid)
+default_chunker_mode: late
+
 rules:
+  # Dev tenant: standard profile, late chunking (default)
   - tenant: dev
     profile: standard
+    chunker_mode: late
+
+  # Demo tenant: demo profile, late chunking (default)
   - tenant: demo
-    workflow_id: onboarding
     profile: demo
-  - tenant: demo
-    collection_id: support-faq
-    profile: demo
+    chunker_mode: late
+
+  # Example: Enterprise tenant with different chunker mode
+  # - tenant: enterprise
+  #   profile: premium
+  #   chunker_mode: agentic
+  #
+  # Note: collection_id and workflow_id are RUNTIME parameters from UI/Business-Graph.
+  # They are NOT configured here but passed dynamically via context.metadata.
+  # The routing system (resolve_chunker_mode) will match them at runtime against
+  # tenant-based defaults defined above.

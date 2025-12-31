@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from documents.captioning import DeterministicCaptioner
-from documents.cli import CLIContext, SimpleDocumentChunker, main
+from documents.cli import CLIContext, main
 from documents.contracts import (
     DocumentMeta,
     DocumentRef,
@@ -87,12 +87,18 @@ def _sample_document() -> NormalizedDocument:
 
 
 def _build_context(parser: StubParser) -> CLIContext:
+    from ai_core.rag.chunking import HybridChunker, ChunkerConfig, ChunkerMode
+
     storage = InMemoryStorage()
     repository = InMemoryDocumentsRepository(storage=storage)
     registry = ParserRegistry([parser])
     dispatcher = ParserDispatcher(registry)
     captioner = DeterministicCaptioner()
-    chunker = SimpleDocumentChunker()
+    chunker_config = ChunkerConfig(
+        mode=ChunkerMode.LATE,
+        enable_quality_metrics=False,  # Disable for CLI test performance
+    )
+    chunker = HybridChunker(chunker_config)
     config = DocumentPipelineConfig(caption_min_confidence_default=0.0)
     return CLIContext(
         repository=repository,

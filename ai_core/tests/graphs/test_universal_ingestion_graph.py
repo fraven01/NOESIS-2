@@ -179,6 +179,7 @@ def test_universal_ingestion_graph_success_crawler(
     assert output["transitions"] == [
         "validate_input",
         "normalize",
+        "dedup",  # P2 Fix: Include dedup node
         "persist",
         "process",
         "finalize",
@@ -269,6 +270,7 @@ def test_universal_ingestion_graph_success_upload(
     assert output["transitions"] == [
         "validate_input",
         "normalize",
+        "dedup",  # P2 Fix: Include dedup node
         "persist",
         "process",
         "finalize",
