@@ -16,6 +16,7 @@ import os
 import base64
 from contextvars import ContextVar
 from typing import Any, Callable, Iterable, Optional, TypeVar, cast, TYPE_CHECKING
+import functools
 
 if TYPE_CHECKING:
     from .usage import Usage
@@ -213,10 +214,6 @@ def tracing_enabled() -> bool:
         return False
     return _get_tracer() is not None
 
-
-import functools
-
-# ... (simulated location, actually need to add import at top)
 
 def observe_span(
     name: Optional[str] = None,

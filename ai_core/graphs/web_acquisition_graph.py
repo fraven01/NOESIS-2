@@ -15,6 +15,7 @@ from queue import Empty, Queue
 from typing import Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
+from langchain_core.runnables import RunnableConfig
 from pydantic import ValidationError
 
 from ai_core.infra.observability import observe_span
@@ -57,16 +58,17 @@ class WebAcquisitionState(TypedDict):
     input: WebAcquisitionInput
     # ToolContext is validated once and stored here
     tool_context: ToolContext | None
-    
+
     # Internal state
     search_results: list[dict[str, Any]]
     selected_result: dict[str, Any] | None
-    
+
     error: str | None
     output: WebAcquisitionOutput | None
 
 
 # --------------------------------------------------------------------- Helpers
+
 
 def _run_search_with_timeout(worker, query: str, context: ToolContext, timeout: int):
     """Run search worker with timeout protection."""
@@ -137,22 +139,25 @@ def _blocked_domain(url: str, blocked_domains: list[str]) -> bool:
 
 # --------------------------------------------------------------------- Nodes
 
+
 @observe_span(name="node.validate_input")
-def validate_input_node(state: WebAcquisitionState, config: dict[str, Any] | None = None) -> dict[str, Any]:
+def validate_input_node(
+    state: WebAcquisitionState, config: dict[str, Any] | None = None
+) -> dict[str, Any]:
     """Validate input and initialize ToolContext."""
     inp = state.get("input", {})
-    configurable = config.get("configurable", {}) if config else {}
-    
+    # Note: config.configurable can be used for future extensions
+
     # 1. Recover Context from configurable (passed by invocation)
     # Ideally LangGraph invocations pass 'context' in configurable
     # For now, we assume caller passes it in the state "context" key if not in configurable
     # BUT architectural fix says: "tool_context will be validated once and kept in state"
     # So we expect the caller to pass 'tool_context' in state OR a raw dict 'context' we parse.
-    
+
     # Let's support both for transition:
     # 1. 'tool_context' already in state (ideal)
     # 2. 'context' dict in state (legacy adapter)
-    
+
     tool_context = state.get("tool_context")
     if not tool_context:
         raw_context = state.get("context")  # Legacy hook
@@ -162,15 +167,13 @@ def validate_input_node(state: WebAcquisitionState, config: dict[str, Any] | Non
             except ValidationError as ve:
                 return {"error": f"Invalid context: {ve}"}
         else:
-             return {"error": "Missing 'tool_context' or 'context' in input state"}
+            return {"error": "Missing 'tool_context' or 'context' in input state"}
 
     if not inp.get("query") and not inp.get("preselected_results"):
         return {"error": "Missing 'query' or 'preselected_results'"}
 
     return {"tool_context": tool_context, "error": None}
 
-
-from langchain_core.runnables import RunnableConfig
 
 @observe_span(name="node.search")
 def search_node(state: WebAcquisitionState, config: RunnableConfig) -> dict[str, Any]:
@@ -205,16 +208,17 @@ def search_node(state: WebAcquisitionState, config: RunnableConfig) -> dict[str,
     # config is RunnableConfig (dict-like)
     configurable = config.get("configurable", {}) if config else {}
     worker = configurable.get("search_worker")
-    
+
     if not worker:
         # Fallback to metadata for transition or default factory
         worker = tool_context.metadata.get("runtime_worker") or get_web_search_worker()
-    
+
     if not worker:
         return {"error": "No search worker configured"}
 
     # Timeout
     from django.conf import settings
+
     search_timeout = getattr(settings, "SEARCH_WORKER_TIMEOUT_SECONDS", 30)
 
     try:
@@ -247,7 +251,7 @@ def select_node(state: WebAcquisitionState) -> dict[str, Any]:
     """Filter and select best candidate."""
     if state.get("error"):
         return {}
-        
+
     results = state.get("search_results", [])
     inp = state.get("input", {})
     config = inp.get("search_config") or {}
@@ -271,10 +275,10 @@ def select_node(state: WebAcquisitionState) -> dict[str, Any]:
 
         if not url:
             continue
-            
+
         if url not in preselected_urls and len(snippet) < min_len:
             continue
-            
+
         if _blocked_domain(url, blocked):
             continue
 
@@ -304,7 +308,7 @@ def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
     """Build final output."""
     error = state.get("error")
     tool_context = state.get("tool_context")
-    
+
     # Telemetry
     if tool_context:
         telemetry = {
@@ -322,27 +326,28 @@ def finalize_node(state: WebAcquisitionState) -> dict[str, Any]:
                 "error": error,
                 "search_results": [],
                 "selected_result": None,
-                "telemetry": telemetry
+                "telemetry": telemetry,
             }
         }
-        
+
     results = state.get("search_results", [])
     selected = state.get("selected_result")
-    
+
     decision = "acquired" if results else "no_results"
-    
+
     return {
         "output": {
             "decision": decision,
             "error": None,
             "search_results": results,
             "selected_result": selected,
-            "telemetry": telemetry
+            "telemetry": telemetry,
         }
     }
 
 
 # --------------------------------------------------------------------- Graph
+
 
 def build_web_acquisition_graph() -> StateGraph:
     """Construct the Web Acquisition Graph."""
@@ -354,14 +359,14 @@ def build_web_acquisition_graph() -> StateGraph:
     workflow.add_node("finalize", finalize_node)
 
     workflow.add_edge(START, "validate_input")
-    
+
     def check_error(state: WebAcquisitionState) -> str:
         if state.get("error"):
             return "finalize"
         return "search"
 
     workflow.add_conditional_edges("validate_input", check_error)
-    
+
     def check_mode(state: WebAcquisitionState) -> str:
         if state.get("error"):
             return "finalize"
@@ -369,7 +374,7 @@ def build_web_acquisition_graph() -> StateGraph:
         if mode == "select_best":
             return "select"
         return "finalize"
-        
+
     workflow.add_conditional_edges("search", check_mode)
     workflow.add_edge("select", "finalize")
     workflow.add_edge("finalize", END)

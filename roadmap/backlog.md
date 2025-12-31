@@ -16,13 +16,15 @@ Prefer linking each item to concrete code paths (and optionally to an issue).
 
 _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test updates are acceptable if they reduce agent friction and clarify contracts._
 
-### P0 - Critical Quick Wins (High Impact, Medium Effort)
+### P0 - Critical Quick Wins (High Impact, Medium-High Effort)
 
-- [ ] **ToolContext-First Context Access** BREAKING: Replace manual dict unpacking with typed `ToolContext` parsed from `meta["tool_context"]` (pointers: 50+ locations in `ai_core/services/__init__.py:808-816,1251-1254,1626-1627`, `ai_core/services/crawler_runner.py:63-67,80-83,122-123`, `theme/views.py:934-947,1164-1176,1443-1452`; implementation: add a helper like `tool_context_from_meta(meta)` or use `ToolContext.model_validate(meta["tool_context"])`, then use `context.scope.*` / `context.business.*`; acceptance: no direct `meta["scope_context"]` / `meta["business_context"]` access in application code, type-safe context use, tests updated)
+- [ ] **ToolContext-First Context Access** BREAKING: Replace manual dict unpacking with typed `ToolContext` parsed from `meta["tool_context"]` (pointers: **50+ locations** in `ai_core/services/__init__.py:808-816,1251-1254,1626-1627`, `ai_core/services/crawler_runner.py:63-67,80-83,122-123`, `theme/views.py:934-947,1164-1176,1443-1452`; **Effort: HIGH** due to breadth of changes; implementation: add a helper like `tool_context_from_meta(meta)` or use `ToolContext.model_validate(meta["tool_context"])`, then use `context.scope.*` / `context.business.*`; acceptance: no direct `meta["scope_context"]` / `meta["business_context"]` access in application code, type-safe context use, tests updated)
 
 - [ ] **Kill JSON Normalization Boilerplate** BREAKING: Remove `_make_json_safe()` and use Pydantic JSON serialization for mixed payloads (pointers: `ai_core/services/__init__.py:145-188` (43 lines!); implementation: replace calls with `TypeAdapter(Any).dump_python(value, mode="json")` or `pydantic_core.to_jsonable_python` to handle dataclasses/UUIDs/sets, update tests; acceptance: `_make_json_safe()` deleted, consistent JSON serialization, tests updated)
 
 - [ ] **Standardize Error Handling** BREAKING: Converge on existing tool error contracts (pointers: 395 error sites across 81 files, 4 different patterns: typed exceptions in `ai_core/tool_contracts/__init__.py`, Pydantic ValidationError, custom graph exceptions, string-based codes in `theme/views.py`; implementation: define a single error-to-response mapping that emits `ToolErrorType` codes, translate ValidationError/custom exceptions at boundaries; acceptance: one error contract in responses, no string-based error returns, tests updated)
+
+- [ ] **Fix Logging Chaos** BREAKING: Standardize logging strategy across codebase (pointers: `theme/views.py:1214` (**print() in production code!**), mixed `logger.info/warning/exception` without context, inconsistent structured logging; **Critical**: production `print()` statements are bugs, not just observability issues; implementation: enforce structured logging via `extra={}` everywhere, remove ALL print() statements, create logging standards doc `docs/observability/logging-standards.md`; acceptance: no print() in production code, all logs have `tenant_id/trace_id/invocation_id`, consistent log levels)
 
 ### Docs/Test touchpoints (checklist)
 
@@ -44,7 +46,7 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 
 - [ ] **Normalize the Normalizers** BREAKING: Consolidate duplicate conversion functions without changing behavior (pointers: `theme/views.py:268` (_normalise_quality_mode), `:275` (_normalise_max_candidates), `:165` (_normalize_collection_id) - all do `str(value).strip().lower()`; implementation: create `common/validators.py` with reusable Pydantic validators (e.g. `@field_validator` for strip/lower), replace only identical normalize_* functions; acceptance: <10 distinct normalization patterns remain, shared validators, no behavior drift, tests updated)
 
-- [ ] **Remove Fake Abstractions**: Delete ceremonial wrappers without value (pointers: `ai_core/services/__init__.py:307-326` (DocumentComponents - fake builder pattern), `:128-138` (_LedgerShim - fake strategy pattern); implementation: replace DocumentComponents with direct imports, replace _LedgerShim with proper dependency injection or remove if unused; acceptance: boilerplate classes deleted, direct usage, tests passing)
+- [ ] **Remove Fake Abstractions**: Delete ceremonial wrappers without value (pointers: `ai_core/services/__init__.py:307-326` (DocumentComponents - fake builder pattern), `:128-138` (_LedgerShim - fake strategy pattern); implementation: replace DocumentComponents with direct imports, replace_LedgerShim with proper dependency injection or remove if unused; acceptance: boilerplate classes deleted, direct usage, tests passing)
 
 ### P2 - Long-term Improvements (High Effort)
 
@@ -56,7 +58,7 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 
 ### Observability Cleanup
 
-- [ ] **Fix Logging Chaos**: Standardize logging strategy across codebase (pointers: `theme/views.py:1214` (print() in production!), mixed `logger.info/warning/exception` without context, inconsistent structured logging; implementation: enforce structured logging via `extra={}` everywhere, remove all print() statements, create logging standards doc; acceptance: no print() in production code, all logs have `tenant_id/trace_id/invocation_id`, consistent log levels)
+_Note: Critical logging issues (print() in production) moved to P0. Remaining observability work stays here._
 
 ### Hygiene
 
@@ -67,7 +69,8 @@ _Based on architectural analysis 2025-12-31. Pre-MVP; breaking changes and test 
 - [x] Semantics vNext: keep `case_id` required; standardize defaults (`general` for API views, `dev-case-local` for `/rag-tools`) and ensure that case exists per tenant (`ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py`, `theme/views.py`, `cases/*`)
 - [ ] Hard-break ScopeContext business IDs: reject business identifiers in `ScopeContext` (pointers: `ai_core/contracts/scope.py:ScopeContext.forbid_business_ids`, `ai_core/tests/test_scope_context.py`; acceptance: ScopeContext validation raises when `case_id|collection_id|workflow_id|document_id|document_version_id` appear in input)
 - [ ] ID propagation clarity: document and/or enforce the "runtime context injection" pattern for graphs (pointers: `docs/audit/contract_divergence_report.md#id-propagation-compliance`, `ai_core/graphs/upload_ingestion_graph.py`, `ai_core/graph/schemas.py`, `ai_core/contracts/scope.py`; acceptance: one canonical pattern, documented in code/doc pointers, so tenant/trace/run IDs are not "implicit knowledge")
-- [x] Breaking meta contract: enforce `scope_context` as the only ID source in graph/tool meta (pointers: `ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py:_prepare_request`, `llm_worker/runner.py:submit_worker_task`, `common/celery.py:ContextTask._from_meta`; acceptance: no top-level ID reads, all callers use `meta["scope_context"]`, tests updated and passing)
+- [x] Breaking meta contract (Contract Definition): enforce `scope_context` as the only ID source in graph/tool meta at contract level (pointers: `ai_core/graph/schemas.py:normalize_meta`, `ai_core/views.py:_prepare_request`, `llm_worker/runner.py:submit_worker_task`, `common/celery.py:ContextTask._from_meta`; acceptance: contract enforces `meta["scope_context"]` structure)
+- [ ] Breaking meta contract (Implementation): migrate all 50+ dict unpacking call sites to use typed ToolContext (tracked as P0 "ToolContext-First Context Access"; acceptance: no direct `meta["scope_context"]` / `meta["business_context"]` access in application code)
 
 ## Layering / boundaries
 

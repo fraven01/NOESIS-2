@@ -980,7 +980,6 @@ def web_search(request):
     else:
         # Web Acquisition Graph (Search Only)
         from ai_core.graphs.web_acquisition_graph import build_web_acquisition_graph
-        from ai_core.contracts.business import BusinessContext
         from ai_core.tool_contracts import ToolContext
 
         # Parse configurable parameters from request
@@ -992,21 +991,21 @@ def web_search(request):
             top_n = 5
 
         input_payload = {
-             "query": query,
-             "mode": data.get("mode", "search_only"),
-             "search_config": {
-                 "top_n": top_n,
-                 "prefer_pdf": True,
-             }
+            "query": query,
+            "mode": data.get("mode", "search_only"),
+            "search_config": {
+                "top_n": top_n,
+                "prefer_pdf": True,
+            },
         }
-        
+
         # Build ToolContext
         business = BusinessContext(
             workflow_id="web-acquisition-manual",
             case_id=case_id,
             collection_id=collection_id,
         )
-        
+
         tool_context = ToolContext(
             scope={
                 "tenant_id": tenant_id,
@@ -1019,37 +1018,41 @@ def web_search(request):
             business=business,
             metadata={},
         )
-        
+
         # Acquisition State
         graph_state = {
             "input": input_payload,
             "tool_context": tool_context,
         }
-        
+
         web_graph = build_web_acquisition_graph()
         result_state = web_graph.invoke(graph_state)
-        
+
         output = result_state.get("output", {})
         decision = output.get("decision", "error")
         error_msg = output.get("error")
         # Legacy UI expects "search.results" structure
         search_results = output.get("search_results") or []
-        
+
         response_data = {
             # P2 Fix: Both 'acquired' and 'no_results' are successful completion states
-            "outcome": "completed" if decision in ("acquired", "no_results") else "error",
-            "results": search_results, 
+            "outcome": (
+                "completed" if decision in ("acquired", "no_results") else "error"
+            ),
+            "results": search_results,
             "search": {"results": search_results},
             "telemetry": {},
             "trace_id": trace_id,
         }
-        
+
         if error_msg:
-             response_data["error"] = error_msg
-             response_data["outcome"] = "error"
-             
-             if decision == "error":
-                 logger.warning("web_search.acquisition_failed", extra={"error": error_msg})
+            response_data["error"] = error_msg
+            response_data["outcome"] = "error"
+
+            if decision == "error":
+                logger.warning(
+                    "web_search.acquisition_failed", extra={"error": error_msg}
+                )
 
     # Common Logic
     results = response_data.get("results", [])
@@ -1323,7 +1326,7 @@ def start_rerank_workflow(request):
         search_payload = graph_result.get("search") or {}
         telemetry_payload = graph_result.get("telemetry") or {}
         outcome_label = graph_result.get("outcome") or "Workflow abgeschlossen"
-        
+
         response_data = {
             "status": "completed",
             "graph_name": "collection_search",
@@ -1538,14 +1541,14 @@ def ingestion_submit(request):
         store_only = request.POST.get("store_only") == "on"
         metadata_obj = {}
         if store_only:
-             metadata_obj["pipeline_config"] = {"enable_embedding": False}
+            metadata_obj["pipeline_config"] = {"enable_embedding": False}
 
         # Upload document
         upload_response = handle_document_upload(
-            upload=uploaded_file, 
-            metadata_raw=json.dumps(metadata_obj) if metadata_obj else None, 
-            meta=meta, 
-            idempotency_key=None
+            upload=uploaded_file,
+            metadata_raw=json.dumps(metadata_obj) if metadata_obj else None,
+            meta=meta,
+            idempotency_key=None,
         )
 
         if upload_response.status_code >= 400:

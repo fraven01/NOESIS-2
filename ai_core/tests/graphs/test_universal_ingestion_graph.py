@@ -30,9 +30,7 @@ def _context_payload(
         service_id="test-worker",
     )
     business = BusinessContext(
-        case_id=case_id, 
-        workflow_id=workflow_id,
-        collection_id=collection_id
+        case_id=case_id, workflow_id=workflow_id, collection_id=collection_id
     )
     # Return as raw dict (payload style) or ToolContext object
     # The graph accepts raw dict in 'context' and validates it
@@ -51,6 +49,7 @@ def utg_module():
             del sys.modules["ai_core.graphs.technical.universal_ingestion_graph"]
 
         import ai_core.graphs.technical.universal_ingestion_graph as m
+
         yield m
 
 
@@ -77,9 +76,7 @@ def mock_document_service(utg_module):
         yield repo_mock
 
 
-def test_uig_success_path(
-    utg_module, mock_processing_graph, mock_document_service
-):
+def test_uig_success_path(utg_module, mock_processing_graph, mock_document_service):
     """Test successful ingestion of a normalized document."""
     graph = utg_module.build_universal_ingestion_graph()
 
@@ -94,7 +91,7 @@ def test_uig_success_path(
         "meta": {
             "tenant_id": "00000000-0000-0000-0000-000000000001",
             "workflow_id": "00000000-0000-0000-0000-000000000001",
-             "pipeline_config": {"enable_embedding": True}, 
+            "pipeline_config": {"enable_embedding": True},
         },
         "blob": {
             "type": "inline",
@@ -107,7 +104,7 @@ def test_uig_success_path(
         "created_at": "2024-01-01T00:00:00Z",
         "source": "upload",
     }
-    
+
     context = _context_payload(
         tenant_id="00000000-0000-0000-0000-000000000001",
         trace_id="trace-1",
@@ -125,10 +122,10 @@ def test_uig_success_path(
 
     assert output["decision"] == "processed"
     assert output["document_id"] == "00000000-0000-0000-0000-000000000123"
-    
+
     # Verify Upsert
     mock_document_service.upsert.assert_called_once()
-    
+
     # Verify Processing
     mock_processing_graph.return_value.invoke.assert_called_once()
 
@@ -139,19 +136,33 @@ def test_uig_missing_collection_id_in_context(utg_module):
 
     # Even if doc is valid, missing collection_id in context triggers failure
     norm_doc = {
-        "ref": {"document_id": "00000000-0000-0000-0000-000000000000", "tenant_id": "00000000-0000-0000-0000-000000000001", "workflow_id": "00000000-0000-0000-0000-000000000001", "collection_id": "00000000-0000-0000-0000-000000000001"},
-        "meta": {"tenant_id": "00000000-0000-0000-0000-000000000001", "workflow_id": "00000000-0000-0000-0000-000000000001"},
-        "blob": {"type": "inline", "media_type": "text/plain", "base64": "AA==", "sha256": "0"*64, "size": 1},
-        "checksum": "0"*64,
+        "ref": {
+            "document_id": "00000000-0000-0000-0000-000000000000",
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
+            "collection_id": "00000000-0000-0000-0000-000000000001",
+        },
+        "meta": {
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
+        },
+        "blob": {
+            "type": "inline",
+            "media_type": "text/plain",
+            "base64": "AA==",
+            "sha256": "0" * 64,
+            "size": 1,
+        },
+        "checksum": "0" * 64,
         "created_at": "2024-01-01T00:00:00Z",
-        "source": "upload"
+        "source": "upload",
     }
 
     context = _context_payload(
         tenant_id="t1",
         trace_id="tr1",
         invocation_id="inv1",
-        collection_id=None, # Missing!
+        collection_id=None,  # Missing!
     )
 
     state = {
@@ -163,58 +174,19 @@ def test_uig_missing_collection_id_in_context(utg_module):
     output = result["output"]
 
     assert output["decision"] == "failed"
-    assert output["reason_code"] == "PROCESSING_ERROR"
+    assert output["reason_code"] == "VALIDATION_ERROR"
     assert "Missing collection_id" in output["reason"]
 
 
-def test_uig_duplicate_logic(
-    utg_module, mock_processing_graph, mock_document_service
-):
+def test_uig_duplicate_logic(utg_module, mock_processing_graph, mock_document_service):
     """Test behavior when dedup node identifies a duplicate (Mocked via state injection if possible or modifying node logic).
-    
+
     Since we can't easily inject 'dedup_status' into the graph internal flow without mocking the node,
     we will stick to checking that MVP logic returns 'new'.
     """
     graph = utg_module.build_universal_ingestion_graph()
-    
+
     # ... setup valid input ...
-    norm_doc_payload = {
-        "ref": {
-            "tenant_id": "00000000-0000-0000-0000-000000000001",
-             "document_id": "00000000-0000-0000-0000-000000000123",
-            "collection_id": "00000000-0000-0000-0000-000000000001",
-            "workflow_id": "00000000-0000-0000-0000-000000000001",
-        },
-        "meta": {"tenant_id": "00000000-0000-0000-0000-000000000001", "workflow_id": "00000000-0000-0000-0000-000000000001"},
-        "blob": {"type": "inline", "media_type": "text/plain", "base64": "AA==", "sha256": "0"*64, "size": 1},
-        "checksum": "0"*64,
-        "created_at": "2024-01-01T00:00:00Z",
-        "source": "upload",
-    }
-    context = _context_payload(
-        tenant_id="t1", trace_id="tr1", invocation_id="inv1", 
-        collection_id="00000000-0000-0000-0000-000000000001"
-    )
-    
-    state = {
-        "input": {"normalized_document": norm_doc_payload},
-        "context": context,
-    }
-    
-    # In MVP, dedup logic always returns "new", so it should proceed to persist
-    result = graph.invoke(state)
-    output = result["output"]
-    assert output["decision"] == "processed"
-    
-    # Ensure intermediate state had dedup_status="new" (if we could check it, but we only get output)
-
-
-def test_uig_store_only_mode(
-    utg_module, mock_processing_graph, mock_document_service
-):
-    """Test that enable_embedding=False skips processing."""
-    graph = utg_module.build_universal_ingestion_graph()
-    
     norm_doc_payload = {
         "ref": {
             "tenant_id": "00000000-0000-0000-0000-000000000001",
@@ -223,12 +195,64 @@ def test_uig_store_only_mode(
             "workflow_id": "00000000-0000-0000-0000-000000000001",
         },
         "meta": {
-             "tenant_id": "00000000-0000-0000-0000-000000000001",
-             "workflow_id": "00000000-0000-0000-0000-000000000001",
-             "pipeline_config": {"enable_embedding": False}, 
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
         },
-        "blob": {"type": "inline", "media_type": "text/plain", "base64": "AA==", "sha256": "0"*64, "size": 1},
-        "checksum": "0"*64,
+        "blob": {
+            "type": "inline",
+            "media_type": "text/plain",
+            "base64": "AA==",
+            "sha256": "0" * 64,
+            "size": 1,
+        },
+        "checksum": "0" * 64,
+        "created_at": "2024-01-01T00:00:00Z",
+        "source": "upload",
+    }
+    context = _context_payload(
+        tenant_id="t1",
+        trace_id="tr1",
+        invocation_id="inv1",
+        collection_id="00000000-0000-0000-0000-000000000001",
+    )
+
+    state = {
+        "input": {"normalized_document": norm_doc_payload},
+        "context": context,
+    }
+
+    # In MVP, dedup logic always returns "new", so it should proceed to persist
+    result = graph.invoke(state)
+    output = result["output"]
+    assert output["decision"] == "processed"
+
+    # Ensure intermediate state had dedup_status="new" (if we could check it, but we only get output)
+
+
+def test_uig_store_only_mode(utg_module, mock_processing_graph, mock_document_service):
+    """Test that enable_embedding=False skips processing."""
+    graph = utg_module.build_universal_ingestion_graph()
+
+    norm_doc_payload = {
+        "ref": {
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "document_id": "00000000-0000-0000-0000-000000000123",
+            "collection_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
+        },
+        "meta": {
+            "tenant_id": "00000000-0000-0000-0000-000000000001",
+            "workflow_id": "00000000-0000-0000-0000-000000000001",
+            "pipeline_config": {"enable_embedding": False},
+        },
+        "blob": {
+            "type": "inline",
+            "media_type": "text/plain",
+            "base64": "AA==",
+            "sha256": "0" * 64,
+            "size": 1,
+        },
+        "checksum": "0" * 64,
         "created_at": "2024-01-01T00:00:00Z",
         "source": "upload",
     }
@@ -236,18 +260,17 @@ def test_uig_store_only_mode(
         tenant_id="00000000-0000-0000-0000-000000000001",
         trace_id="tr1",
         invocation_id="inv1",
-        collection_id="00000000-0000-0000-0000-000000000001"
+        collection_id="00000000-0000-0000-0000-000000000001",
     )
-    
+
     state = {"input": {"normalized_document": norm_doc_payload}, "context": context}
     result = graph.invoke(state)
-    
+
     output = result["output"]
     assert output["decision"] == "processed"
-    
+
     # Persist called
     mock_document_service.upsert.assert_called_once()
-    
+
     # Processing SKIPPED
     mock_processing_graph.return_value.invoke.assert_not_called()
-    
