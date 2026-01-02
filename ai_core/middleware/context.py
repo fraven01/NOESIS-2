@@ -8,6 +8,7 @@ from django.http import HttpRequest, HttpResponse, JsonResponse
 from pydantic import ValidationError
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from ai_core.contracts.business import BusinessContext
 from ai_core.ids import (
     coerce_trace_id,
     normalize_request,
@@ -128,13 +129,17 @@ class RequestContextMiddleware:
         if client_ip:
             log_context["client.ip"] = client_ip
 
+        business_context = BusinessContext(case_id=case_id)
+        tool_context = scope_context.to_tool_context(business=business_context)
         response_meta: dict[str, Any] = {
             "scope_context": scope_context.model_dump(mode="json"),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "key_alias": key_alias,
             "traceparent": traceparent,
         }
-        if case_id:
-            response_meta["business_context"] = {"case_id": case_id}
         if span_id:
             response_meta["span_id"] = span_id
 

@@ -72,7 +72,7 @@ Zweck: Beschreibt Titel, Sprache, Tags und externe Referenzen. Wird von [Normali
   "language": "en-US",
   "tags": ["finance", "q1"],
   "origin_uri": "https://source.example/reports/2024-03",
-  "crawl_timestamp": "2024-03-01T12:00:00+00:00",
+  "crawl_timestamp": "2024-03-01T12:00:00Z",
   "external_ref": {
     "provider": "confluence",
     "id": "PAGE-12345"
@@ -228,7 +228,7 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
     "size": 2048
   },
   "checksum": "0f343b0931126a20f133d67c2b018a3b6d91ef1ed97e1a6f760fd9e3c8f2b518",
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "source": "upload",
   "assets": []
 }
@@ -251,7 +251,7 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
     "size": 2048
   },
   "checksum": "0f343b0931126a20f133d67c2b018a3b6d91ef1ed97e1a6f760fd9e3c8f2b518",
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "assets": [
     {
       "ref": {
@@ -268,7 +268,7 @@ Zweck: Vollständiger Dokument-Contract inkl. Blob und Assets. Verweist auf [Doc
         "size": 512
       },
       "caption_method": "none",
-      "created_at": "2024-05-02T10:15:00+00:00",
+      "created_at": "2024-05-02T10:15:00Z",
       "checksum": "0f343b0931126a20f133d67c2b018a3b6d91ef1ed97e1a6f760fd9e3c8f2b518"
     }
   ]
@@ -331,7 +331,7 @@ Zweck: Beschreibt ein extrahiertes Asset (z. B. Bild) inklusive Kontext, Blob un
   "caption_method": "vlm_caption",
   "caption_model": "stub-v1",
   "caption_confidence": 0.82,
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "checksum": "b1946ac92492d2347c6235b4d2611184f23a0a0d6a688b8b0f2e64d5a458d7f8"
 }
 ```
@@ -353,7 +353,7 @@ Zweck: Beschreibt ein extrahiertes Asset (z. B. Bild) inklusive Kontext, Blob un
   },
   "bbox": [0.4, 0.4, 0.2, 0.5],
   "caption_method": "none",
-  "created_at": "2024-05-02T10:15:00+00:00",
+  "created_at": "2024-05-02T10:15:00Z",
   "checksum": "b1946ac92492d2347c6235b4d2611184f23a0a0d6a688b8b0f2e64d5a458d7f8"
 }
 ```

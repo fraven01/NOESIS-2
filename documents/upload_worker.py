@@ -16,6 +16,7 @@ from uuid import UUID, uuid4
 
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
 from ai_core.infra import object_store
+from ai_core.infra.serialization import to_jsonable
 from ai_core.ids.http_scope import normalize_task_context
 from ai_core.tasks import run_ingestion_graph
 from ai_core.tool_contracts.base import tool_context_from_meta
@@ -153,7 +154,8 @@ class UploadWorker:
         # Observability: Track Celery payload metrics (MVP invariant verification)
         import json
 
-        celery_payload_bytes = len(json.dumps(state, default=str).encode("utf-8"))
+        payload_json = json.dumps(to_jsonable(state))
+        celery_payload_bytes = len(payload_json.encode("utf-8"))
         blob_uri = (
             state.get("normalized_document_input", {}).get("blob", {}).get("uri", "")
         )
@@ -410,10 +412,12 @@ class UploadWorker:
 
         # Build BusinessContext (business domain IDs)
         business = BusinessContext(case_id=case_id, workflow_id=workflow_id)
+        tool_context = scope.to_tool_context(business=business)
 
         return {
             "scope_context": scope.model_dump(mode="json"),
             "business_context": business.model_dump(mode="json", exclude_none=True),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "audit_meta": dict(audit_meta or {}),
         }
 

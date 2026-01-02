@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 from lxml import html
 
 from ai_core.infra import object_store
+from ai_core.infra.serialization import to_jsonable
 from ai_core.ids.http_scope import normalize_task_context
 from common.logging import get_logger
 from ai_core.infra.blob_writers import ObjectStoreBlobWriter
@@ -137,9 +138,8 @@ class CrawlerWorker:
         # Observability: Track Celery payload metrics (MVP invariant verification)
         import json
 
-        celery_payload_bytes = len(
-            json.dumps(payload_state, default=str).encode("utf-8")
-        )
+        payload_json = json.dumps(to_jsonable(payload_state))
+        celery_payload_bytes = len(payload_json.encode("utf-8"))
         blob_uri = (
             payload_state.get("normalized_document_input", {})
             .get("blob", {})
@@ -584,10 +584,12 @@ class CrawlerWorker:
                 str(resolved_collection_id) if resolved_collection_id else None
             ),
         )
+        tool_context = scope.to_tool_context(business=business)
 
         payload: dict[str, Any] = {
             "scope_context": scope.model_dump(mode="json"),
             "business_context": business.model_dump(mode="json", exclude_none=True),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
             "crawl_id": crawl_id,
         }
         if frontier_state:

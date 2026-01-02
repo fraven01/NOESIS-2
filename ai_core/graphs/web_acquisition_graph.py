@@ -142,7 +142,7 @@ def _blocked_domain(url: str, blocked_domains: list[str]) -> bool:
 
 @observe_span(name="node.validate_input")
 def validate_input_node(
-    state: WebAcquisitionState, config: dict[str, Any] | None = None
+    state: WebAcquisitionState, config: RunnableConfig
 ) -> dict[str, Any]:
     """Validate input and initialize ToolContext."""
     inp = state.get("input", {})

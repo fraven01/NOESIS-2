@@ -599,7 +599,6 @@ def process_document(
     # Ensure correct tenant schema context for DB operations
     from django.db import connection
     from django_tenants.utils import schema_context
-    from ai_core.services import get_document_components
     from documents.processing_graph import (
         build_document_processing_graph,
         DocumentProcessingState,
@@ -649,19 +648,11 @@ def process_document(
                 )
 
             # 2. Build Components
-            components = get_document_components()
-
-            # Storage - use concrete ObjectStoreStorage instead of abstract Storage class
             from documents.storage import ObjectStoreStorage
+            from documents.captioning import DeterministicCaptioner
 
             storage = ObjectStoreStorage()
-
-            # Captioner
-            captioner_cls = components.captioner
-            try:
-                captioner = captioner_cls()
-            except TypeError:
-                captioner = captioner_cls
+            captioner = DeterministicCaptioner()
 
             # Parser
             # We use the default parser dispatcher from services/documents

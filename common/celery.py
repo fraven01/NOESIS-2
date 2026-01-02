@@ -18,6 +18,7 @@ from ai_core.infra.policy import (
     set_session_scope,
     get_session_scope,
 )
+from ai_core.tool_contracts.base import tool_context_from_meta
 
 
 try:
@@ -130,26 +131,22 @@ class ContextTask(Task):
 
         context: dict[str, str] = {}
 
-        scope_context = meta.get("scope_context")
-        if not isinstance(scope_context, Mapping):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
             return {}
 
-        # BREAKING CHANGE (Option A): Extract business_context for business IDs
-        business_context = meta.get("business_context")
-        if not isinstance(business_context, Mapping):
-            business_context = {}
-
         # Infrastructure IDs from scope_context
-        trace_id = scope_context.get("trace_id")
+        trace_id = tool_context.scope.trace_id
         if trace_id:
             context["trace_id"] = self._normalize(trace_id)
 
-        tenant = scope_context.get("tenant_id")
+        tenant = tool_context.scope.tenant_id
         if tenant:
             context["tenant_id"] = self._normalize(tenant)
 
         # Business IDs from business_context (BREAKING CHANGE)
-        case = business_context.get("case_id")
+        case = tool_context.business.case_id
         if case:
             context["case_id"] = self._normalize(case)
 

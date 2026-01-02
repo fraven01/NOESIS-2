@@ -438,6 +438,10 @@ def _pii_redaction_processor_factory() -> structlog.types.Processor | None:
             if not isinstance(raw_value, str):
                 continue
 
+            # Exempt known system identifiers from heuristic redaction
+            if key in _CONTEXT_FIELDS:
+                continue
+
             # Always try structured masking for JSON-like strings to ensure keys such as
             # "access_token" are redacted, independent of the fast-path heuristic.
             is_jsonish = "{" in raw_value and '":' in raw_value

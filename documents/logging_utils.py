@@ -65,9 +65,7 @@ def suppress_logging() -> Iterable[None]:
         stream = getattr(handler, "stream", None)
         if not hasattr(handler, "setStream"):
             continue
-        if stream not in (sys.stderr, sys.stdout) and not getattr(
-            stream, "closed", False
-        ):
+        if stream is None:
             continue
         swapped.append((handler, stream))
         try:
@@ -79,7 +77,10 @@ def suppress_logging() -> Iterable[None]:
     finally:
         for handler, stream in swapped:
             try:
-                target = sys.stderr if getattr(stream, "closed", False) else stream
+                if stream is None or getattr(stream, "closed", False):
+                    target = sys.stderr
+                else:
+                    target = stream
                 try:
                     handler.setStream(target)
                 except ValueError:

@@ -119,8 +119,10 @@ def _prepare_framework_request(request: Request) -> tuple[dict, Response | None]
         }
     )
 
+    tool_context = scope_context.to_tool_context()
     meta = {
         "scope_context": scope_context.model_dump(mode="json"),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         "tenant_schema": tenant_schema,
     }
 

@@ -13,6 +13,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
+from common.validators import normalise_str_sequence, optional_str, require_trimmed_str
+
 try:
     from langgraph.graph import StateGraph, END
     from langgraph.config import RunnableConfig
@@ -64,12 +66,7 @@ class SearchStrategyRequest(BaseModel):
     @field_validator("tenant_id", "query", "quality_mode", "purpose", mode="before")
     @classmethod
     def _trimmed(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
+        return require_trimmed_str(value)
 
 
 class SearchStrategy(BaseModel):
@@ -107,31 +104,12 @@ class SearchStrategy(BaseModel):
     )
     @classmethod
     def _normalise_sequences(cls, value: Any) -> tuple[str, ...]:
-        if value in (None, "", (), []):
-            return ()
-        if isinstance(value, str):
-            candidate = value.strip()
-            return (candidate,) if candidate else ()
-        if not isinstance(value, (list, tuple, set)):
-            raise ValueError("value must be a sequence of strings")
-        cleaned: list[str] = []
-        for item in value:
-            if item in (None, ""):
-                continue
-            cleaned_item = str(item).strip()
-            if cleaned_item:
-                cleaned.append(cleaned_item)
-        return tuple(cleaned)
+        return normalise_str_sequence(value)
 
     @field_validator("notes", mode="before")
     @classmethod
     def _normalise_notes(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("notes must be a string")
-        candidate = value.strip()
-        return candidate or None
+        return optional_str(value, field_name="notes")
 
 
 class GraphContextPayload(BaseModel):
@@ -152,12 +130,7 @@ class GraphContextPayload(BaseModel):
     @field_validator("tenant_id", "workflow_id", mode="before")
     @classmethod
     def _trimmed_required(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            raise ValueError("value must be a string")
-        candidate = value.strip()
-        if not candidate:
-            raise ValueError("value must not be empty")
-        return candidate
+        return require_trimmed_str(value)
 
     @field_validator(
         "case_id",
@@ -220,31 +193,14 @@ class HitlDecision(BaseModel):
     )
     @classmethod
     def _normalise_ids(cls, value: Any) -> tuple[str, ...]:
-        if value in (None, "", (), []):
-            return ()
-        if isinstance(value, str):
-            candidate = value.strip()
-            return (candidate,) if candidate else ()
-        if not isinstance(value, (list, tuple, set)):
-            raise ValueError("decision values must be sequences of strings")
-        cleaned: list[str] = []
-        for item in value:
-            if item in (None, ""):
-                continue
-            cleaned_item = str(item).strip()
-            if cleaned_item:
-                cleaned.append(cleaned_item)
-        return tuple(cleaned)
+        return normalise_str_sequence(
+            value, error_message="decision values must be sequences of strings"
+        )
 
     @field_validator("rationale", mode="before")
     @classmethod
     def _normalise_rationale(cls, value: Any) -> str | None:
-        if value in (None, ""):
-            return None
-        if not isinstance(value, str):
-            raise ValueError("rationale must be a string")
-        candidate = value.strip()
-        return candidate or None
+        return optional_str(value, field_name="rationale")
 
 
 class CollectionSearchPlan(BaseModel):

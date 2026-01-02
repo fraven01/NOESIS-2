@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import hashlib
 import inspect
 import math
@@ -10,10 +9,7 @@ import time
 import uuid
 import warnings
 from contextlib import contextmanager, nullcontext
-from collections.abc import Mapping as MappingABC, Sequence as SequenceABC
-from dataclasses import asdict, is_dataclass
-from datetime import date, datetime
-from decimal import Decimal
+from collections.abc import Mapping as MappingABC
 from pathlib import Path
 from typing import (
     Any,
@@ -61,6 +57,7 @@ from django.utils import timezone
 from pydantic import ValidationError
 
 from .infra import object_store, pii
+from .infra.serialization import to_jsonable
 from .infra.pii_flags import get_pii_config
 from .segmentation import segment_markdown_blocks
 from .rag import metrics
@@ -294,43 +291,7 @@ def log_ingestion_run_start(
 
 def _jsonify_for_task(value: Any) -> Any:
     """Convert objects returned by ingestion tasks into JSON primitives."""
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-    if isinstance(value, (datetime, date)):
-        return value.isoformat()
-    if isinstance(value, uuid.UUID):
-        return str(value)
-    if isinstance(value, Decimal):
-        return str(value)
-    if isinstance(value, bytes):
-        return base64.b64encode(value).decode("ascii")
-    if is_dataclass(value):
-        return _jsonify_for_task(asdict(value))
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        try:
-            dumped = model_dump(mode="json")
-        except TypeError:
-            dumped = model_dump()
-        return _jsonify_for_task(dumped)
-    to_dict = getattr(value, "to_dict", None)
-    if callable(to_dict):
-        return _jsonify_for_task(dict(to_dict()))
-    if isinstance(value, MappingABC):
-        return {str(key): _jsonify_for_task(item) for key, item in value.items()}
-    if isinstance(value, set):
-        return [_jsonify_for_task(item) for item in value]
-    if isinstance(value, SequenceABC) and not isinstance(
-        value, (str, bytes, bytearray)
-    ):
-        return [_jsonify_for_task(item) for item in value]
-    if hasattr(value, "__iter__") and not isinstance(value, (str, bytes, bytearray)):
-        try:
-            return [_jsonify_for_task(item) for item in list(value)]
-        except TypeError:
-            pass
-    return str(value)
+    return to_jsonable(value)
 
 
 def log_ingestion_run_end(
@@ -1736,12 +1697,17 @@ def _resolve_document_id(
     """
 
     state_meta = state.get("meta") if isinstance(state, MappingABC) else None
-    business_meta = _extract_from_mapping(meta, "business_context")
+    tool_context = None
+    if isinstance(meta, MappingABC):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            tool_context = None
 
     # Check business_context first (BREAKING CHANGE)
-    candidate = _extract_from_mapping(business_meta, "document_id")
+    candidate = tool_context.business.document_id if tool_context is not None else None
     if candidate:
-        return candidate
+        return _coerce_str(candidate)
 
     # Fallback to other sources
     for source in (meta, state_meta, state):
@@ -1776,29 +1742,35 @@ def _resolve_trace_context(
     """
 
     state_meta = state.get("meta") if isinstance(state, MappingABC) else None
-    scope_meta = _extract_from_mapping(meta, "scope_context")
-    business_meta = _extract_from_mapping(meta, "business_context")
+    tool_context = None
+    if isinstance(meta, MappingABC):
+        try:
+            tool_context = tool_context_from_meta(meta)
+        except (TypeError, ValueError):
+            tool_context = None
+    scope_context = tool_context.scope if tool_context else None
+    business_context = tool_context.business if tool_context else None
 
     # Infrastructure IDs from scope_context
     tenant_id = _coerce_str(
-        _extract_from_mapping(scope_meta, "tenant_id")
+        (scope_context.tenant_id if scope_context else None)
         or _extract_from_mapping(state_meta, "tenant_id")
         or _extract_from_mapping(state, "tenant_id")
     )
     trace_id = _coerce_str(
-        _extract_from_mapping(scope_meta, "trace_id")
+        (scope_context.trace_id if scope_context else None)
         or _extract_from_mapping(state_meta, "trace_id")
         or _extract_from_mapping(state, "trace_id")
     )
 
     # Business IDs from business_context (BREAKING CHANGE)
     case_id = _coerce_str(
-        _extract_from_mapping(business_meta, "case_id")
+        (business_context.case_id if business_context else None)
         or _extract_from_mapping(state_meta, "case_id")
         or _extract_from_mapping(state, "case_id")
     )
     workflow_id = _coerce_str(
-        _extract_from_mapping(business_meta, "workflow_id")
+        (business_context.workflow_id if business_context else None)
         or _extract_from_mapping(state_meta, "workflow_id")
         or _extract_from_mapping(state, "workflow_id")
     )

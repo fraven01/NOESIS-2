@@ -40,8 +40,8 @@ der Worker-Standard (derzeit 3).
 
 `SearchCandidate.detected_date` muss einen Zeitzonen-Offset enthalten. Naive
 Zeitstempel führen zu einem Validierungsfehler. Aware Werte werden intern nach
-UTC normalisiert, wodurch `.model_dump_json()` ISO-8601-Werte mit Offset
-(`+00:00` bzw. `Z`) erzeugt.
+UTC normalisiert, wobei `.model_dump_json()` UTC als `Z` serialisiert. Eingaben
+akzeptieren `Z` und `+00:00`.
 
 ## HybridResult Beispiel
 

@@ -68,10 +68,16 @@ def mock_document_service(utg_module):
     # Patch _get_documents_repository
     with patch.object(utg_module, "_get_documents_repository") as get_repo_mock:
         repo_mock = MagicMock()
-        repo_mock.upsert.return_value = MagicMock(id="doc-123")
-        repo_mock.upsert.return_value.ref = MagicMock(
-            document_id="00000000-0000-0000-0000-000000000123"
-        )
+
+        # Pass-through the document to preserve pipeline_config and other metadata
+        # which allows process_node to see the correct flags (e.g. enable_embedding)
+        def _upsert_side_effect(doc, scope=None, audit_meta=None):
+            # Simulate ID assignment if needed, but for unit test, input doc is fine
+            # If doc.ref.document_id is None, validation might fail, but test inputs usually have it.
+            return doc
+
+        repo_mock.upsert.side_effect = _upsert_side_effect
+
         get_repo_mock.return_value = repo_mock
         yield repo_mock
 
@@ -97,10 +103,10 @@ def test_uig_success_path(utg_module, mock_processing_graph, mock_document_servi
             "type": "inline",
             "media_type": "text/plain",
             "base64": "SGVsbG8=",
-            "sha256": "0" * 64,
+            "sha256": "185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969",
             "size": 5,
         },
-        "checksum": "0" * 64,
+        "checksum": "185f8db32271fe25f561a6fc938b2e264306ec304eda518007d1764826381969",
         "created_at": "2024-01-01T00:00:00Z",
         "source": "upload",
     }
@@ -117,17 +123,26 @@ def test_uig_success_path(utg_module, mock_processing_graph, mock_document_servi
         "context": context,
     }
 
-    result = graph.invoke(state)
-    output = result["output"]
-
-    assert output["decision"] == "processed"
-    assert output["document_id"] == "00000000-0000-0000-0000-000000000123"
-
     # Verify Upsert
-    mock_document_service.upsert.assert_called_once()
 
     # Verify Processing
-    mock_processing_graph.return_value.invoke.assert_called_once()
+    # Wraps dependency patching since process_node imports them
+    with patch("documents.parsers.create_default_parser_dispatcher"), patch(
+        "ai_core.rag.chunking.RoutingAwareChunker"
+    ):
+        result = graph.invoke(state)
+        output = result["output"]
+
+        assert (
+            output["decision"] == "processed"
+        ), f"Failed with error: {output.get('error')} | Reason: {output.get('reason')}"
+        assert output["document_id"] == "00000000-0000-0000-0000-000000000123"
+
+        # Verify Upsert
+        mock_document_service.upsert.assert_called_once()
+
+        # Verify Processing Graph was called
+        mock_processing_graph.return_value.invoke.assert_called_once()
 
 
 def test_uig_missing_collection_id_in_context(utg_module):
@@ -202,10 +217,10 @@ def test_uig_duplicate_logic(utg_module, mock_processing_graph, mock_document_se
             "type": "inline",
             "media_type": "text/plain",
             "base64": "AA==",
-            "sha256": "0" * 64,
+            "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
             "size": 1,
         },
-        "checksum": "0" * 64,
+        "checksum": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
         "created_at": "2024-01-01T00:00:00Z",
         "source": "upload",
     }
@@ -222,9 +237,15 @@ def test_uig_duplicate_logic(utg_module, mock_processing_graph, mock_document_se
     }
 
     # In MVP, dedup logic always returns "new", so it should proceed to persist
-    result = graph.invoke(state)
-    output = result["output"]
-    assert output["decision"] == "processed"
+    with patch("documents.parsers.create_default_parser_dispatcher"), patch(
+        "ai_core.rag.chunking.RoutingAwareChunker"
+    ):
+
+        result = graph.invoke(state)
+        output = result["output"]
+        assert (
+            output["decision"] == "processed"
+        ), f"Failed with error: {output.get('error')} | Reason: {output.get('reason')}"
 
     # Ensure intermediate state had dedup_status="new" (if we could check it, but we only get output)
 
@@ -249,10 +270,10 @@ def test_uig_store_only_mode(utg_module, mock_processing_graph, mock_document_se
             "type": "inline",
             "media_type": "text/plain",
             "base64": "AA==",
-            "sha256": "0" * 64,
+            "sha256": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
             "size": 1,
         },
-        "checksum": "0" * 64,
+        "checksum": "6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d",
         "created_at": "2024-01-01T00:00:00Z",
         "source": "upload",
     }
@@ -264,13 +285,20 @@ def test_uig_store_only_mode(utg_module, mock_processing_graph, mock_document_se
     )
 
     state = {"input": {"normalized_document": norm_doc_payload}, "context": context}
-    result = graph.invoke(state)
 
-    output = result["output"]
-    assert output["decision"] == "processed"
+    # Patch dependencies even for skipped processing to prevent import/instantiation errors
+    with patch("documents.parsers.create_default_parser_dispatcher"), patch(
+        "ai_core.rag.chunking.RoutingAwareChunker"
+    ):
+        result = graph.invoke(state)
+        output = result["output"]
 
-    # Persist called
-    mock_document_service.upsert.assert_called_once()
+        assert (
+            output["decision"] == "processed"
+        ), f"Failed with error: {output.get('error')} | Reason: {output.get('reason')}"
 
-    # Processing SKIPPED
-    mock_processing_graph.return_value.invoke.assert_not_called()
+        # Persist called
+        mock_document_service.upsert.assert_called_once()
+
+        # Processing SKIPPED
+        mock_processing_graph.return_value.invoke.assert_not_called()

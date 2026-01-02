@@ -481,7 +481,7 @@ def _prepare_request(request: Request):
 
     Returns:
         tuple: (meta dict, error response or None)
-            meta includes 'scope_context' with serialized ScopeContext
+            meta includes 'scope_context' with serialized ScopeContext and tool_context
     """
     from customers.tenant_context import TenantContext, TenantRequiredError
 
@@ -696,10 +696,13 @@ def _prepare_request(request: Request):
         # document_id and document_version_id extracted from headers if needed
     )
 
+    tool_context = scope_context.to_tool_context(business=business_context)
+
     # Build meta dict from validated scope and additional view-specific fields
     meta = {
         "scope_context": scope_payload,
         "business_context": business_context.model_dump(mode="json", exclude_none=True),
+        "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
         "tenant_schema": scope_tenant_schema,
     }
     if key_alias:
@@ -1622,11 +1625,18 @@ def crawl_selected(request):
         # _prepare_request only builds scope_context, we need to add business_context
         # Extract business IDs from request headers
         case_id = drf_request.headers.get("X-Case-ID", "").strip() or None
-        meta["business_context"] = {
-            "case_id": case_id,
-            "workflow_id": workflow_id,
-            "collection_id": collection_id,
-        }
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext(
+            case_id=case_id,
+            workflow_id=workflow_id,
+            collection_id=collection_id,
+        )
+        meta["business_context"] = business_context.model_dump(
+            mode="json", exclude_none=True
+        )
+        tool_context = tool_context_from_meta(meta)
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
 
         if not urls:
             return HttpResponse("No URLs provided", status=400)
@@ -1768,12 +1778,19 @@ class RagUploadView(APIView):
             request.META["META_CASE_ID"] = case_id_from_header
 
         # Add business context to meta for handle_document_upload
-        meta["business_context"] = {
-            "case_id": case_id_from_header,
-            "workflow_id": request.headers.get("X-Workflow-ID", "").strip()
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext(
+            case_id=case_id_from_header,
+            workflow_id=request.headers.get("X-Workflow-ID", "").strip()
             or case_id_from_header,
-            "collection_id": request.headers.get("X-Collection-ID", "").strip() or None,
-        }
+            collection_id=request.headers.get("X-Collection-ID", "").strip() or None,
+        )
+        meta["business_context"] = business_context.model_dump(
+            mode="json", exclude_none=True
+        )
+        tool_context = tool_context_from_meta(meta)
+        meta["tool_context"] = tool_context.model_dump(mode="json", exclude_none=True)
 
         content_type = request.headers.get("Content-Type", "")
         if content_type:
@@ -2049,7 +2066,17 @@ class RagHardDeleteAdminView(APIView):
                 "idempotency_key": request.headers.get(IDEMPOTENCY_KEY_HEADER),
             }
         )
-        meta = {"scope_context": scope_context.model_dump(mode="json")}
+        from ai_core.contracts.business import BusinessContext
+
+        business_context = BusinessContext()
+        tool_context = scope_context.to_tool_context(business=business_context)
+        meta = {
+            "scope_context": scope_context.model_dump(mode="json"),
+            "business_context": business_context.model_dump(
+                mode="json", exclude_none=True
+            ),
+            "tool_context": tool_context.model_dump(mode="json", exclude_none=True),
+        }
         response = Response(response_payload, status=status.HTTP_202_ACCEPTED)
         return apply_std_headers(response, meta)
 

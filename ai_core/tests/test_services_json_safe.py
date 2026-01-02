@@ -34,5 +34,5 @@ def test_dump_jsonable_coerces_uuid_and_datetime():
     )
 
     assert safe_payload["document_id"] == str(sample_id)
-    assert safe_payload["created_at"] == sample_time.isoformat()
+    assert safe_payload["created_at"] == sample_time.isoformat().replace("+00:00", "Z")
     json.dumps(safe_payload)

@@ -193,7 +193,10 @@ def persist_node(state: UniversalIngestionState) -> dict[str, Any]:
             else str(saved_doc.id)
         )
 
-        return {"ingestion_result": {"status": "persisted", "id": doc_id}}
+        return {
+            "ingestion_result": {"status": "persisted", "id": doc_id},
+            "normalized_document": saved_doc,
+        }
 
     except Exception as exc:
         logger.exception("Persistence failed")
@@ -241,19 +244,26 @@ def process_node(
         pipeline_config = DocumentPipelineConfig(**filtered_conf)
 
         # 3. Resolve Dependencies
-        from ai_core.services import get_document_components
+        from documents.storage import ObjectStoreStorage
+        from documents.captioning import DeterministicCaptioner
+        from documents.parsers import create_default_parser_dispatcher
+        from ai_core.rag.chunking import RoutingAwareChunker
 
-        storage = get_document_components().storage()
+        storage = ObjectStoreStorage()
+        captioner = DeterministicCaptioner()
+        repository = _get_documents_repository()
+        parser = create_default_parser_dispatcher()
+        chunker = RoutingAwareChunker()
 
         # 4. Invoke Processing Graph
-        # Uses standard build_document_processing_graph which now expects RoutingAwareChunker
-        # We rely on the fact that build_document_processing_graph is configured correctly.
-        # User manual change: Inject chunker via config is handled inside the processing graph construction
-        # or defaults. We use the standard builder here.
-
-        processing_workflow = (
-            build_document_processing_graph()
-        )  # Uses defaults (RoutingAwareChunker)
+        # Inject all required dependencies into the factory
+        processing_workflow = build_document_processing_graph(
+            parser=parser,
+            repository=repository,
+            storage=storage,
+            captioner=captioner,
+            chunker=chunker,
+        )
 
         sub_input = {
             "document": norm_doc,

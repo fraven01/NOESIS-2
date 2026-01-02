@@ -340,6 +340,8 @@ class TypeEvidence(BaseModel):
 
 **File**: [ai_core/services/__init__.py:307-326](../../ai_core/services/__init__.py#L307-L326)
 
+**Status**: RESOLVED (DocumentComponents removed; call sites now import storage/captioner directly.)
+
 ```python
 class DocumentComponents:
     """Container for document processing pipeline components."""
@@ -371,6 +373,8 @@ from documents.captioning import DeterministicCaptioner
 ### Evidence: Fake Strategy Pattern
 
 **File**: [ai_core/services/__init__.py:128-138](../../ai_core/services/__init__.py#L128-L138)
+
+**Status**: RESOLVED (services now uses the real `ai_core.infra.ledger` module.)
 
 ```python
 class _LedgerShim:
@@ -820,8 +824,11 @@ state = SynthesizedState.from_result(result, build.state)
 
 | File | Lines | Category |
 |------|-------|----------|
-| ai_core/services/__init__.py | 2,034 | God File |
-| theme/views.py | 2,055 | God File |
+| ai_core/services/__init__.py | 92 | OK (re-exports) |
+| ai_core/services/graph_executor.py | 510 | Large |
+| ai_core/services/document_upload.py | 427 | Large |
+| theme/views.py | 478 | Large |
+| theme/views_web_search.py | 492 | Large |
 | ai_core/graphs/technical/retrieval_augmented_generation.py | 254 | Medium |
 | ai_core/tools/framework_contracts.py | 255 | Anemic Models |
 
