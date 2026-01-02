@@ -355,9 +355,7 @@ class GraphExecutionCommand:
                             runner_meta.pop("ledger_logger", None)
                     cost_summary = tracker.summary(ledger_identifier)
                     if cost_summary and "total_usd" in cost_summary:
-                        cost_summary["total_usd"] = round(
-                            cost_summary["total_usd"], 4
-                        )
+                        cost_summary["total_usd"] = round(cost_summary["total_usd"], 4)
                 try:
                     dt_ms = int((time.monotonic() - t0) * 1000)
                     logger.info(
