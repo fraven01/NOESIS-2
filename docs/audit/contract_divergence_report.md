@@ -72,7 +72,7 @@ class Chunk:
 
 ### 3. ~~Upload Ingestion Graph Documentation Gap~~ ✅ RESOLVED (2025-12-15)
 
-**Issue**: ~~[`ai_core/graphs/upload_ingestion_graph.py`](../../ai_core/graphs/upload_ingestion_graph.py) implements a complete LangGraph flow but is not documented.~~
+**Issue**: ~~[`ai_core/graphs/technical/universal_ingestion_graph.py`](../../ai_core/graphs/technical/universal_ingestion_graph.py) implements a complete LangGraph flow but is not documented.~~
 
 **Resolution**: Added comprehensive documentation in [`docs/rag/ingestion.md`](../../docs/rag/ingestion.md#upload-ingestion-graph) (Lines 33-133):
 
@@ -143,19 +143,16 @@ class Chunk:
 - `invocation_id` (Pflicht für Tools)
 - Genau eine Laufzeit-ID: `run_id` XOR `ingestion_run_id`
 
-### Upload Ingestion Graph
+### Universal Ingestion Graph (Current)
 
 **State Fields**:
 
 ```python
-trace_id: NotRequired[str]
-case_id: NotRequired[str]
+context: dict[str, Any]  # Serialized ToolContext from invocation
+tool_context: ToolContext | None
 ```
 
-**Issue**: `tenant_id` not in state (passed via runtime context)
-**Compliance**: ⚠️ PARTIAL - Context-based propagation, not explicit in state
-
-**Recommendation**: Document context injection pattern in graph docs
+**Compliance**: PASS - Context injected via ToolContext and stored in state
 
 ### External Knowledge Graph
 
@@ -166,6 +163,25 @@ context: dict[str, Any]  # Tenant ID, Trace ID, etc.
 ```
 
 **Compliance**: ✅ PASS - Context explicitly captures all IDs
+
+### Canonical Runtime Context Injection Pattern
+
+**Goal**: Ensure tenant/trace/run IDs are never implicit knowledge inside graphs.
+
+**Pattern**:
+
+1. Boundary builds meta via `ai_core/graph/schemas.py:normalize_meta`.
+2. Graph entry parses a single `ToolContext` via
+   `ai_core/tool_contracts/base.py:tool_context_from_meta`.
+3. The validated context is stored in state (e.g. `state["tool_context"]`).
+4. Nodes read IDs from `context.scope.*` and `context.business.*` only.
+
+**Pointers**:
+- `ai_core/graph/schemas.py:normalize_meta`
+- `ai_core/contracts/scope.py:ScopeContext`
+- `ai_core/contracts/business.py:BusinessContext`
+- `ai_core/tool_contracts/base.py:tool_context_from_meta`
+- `ai_core/graphs/README.md` (Context & Identity)
 
 ---
 
@@ -250,7 +266,7 @@ No obsolete files identified for deletion in this audit. All scanned docs/ files
 ### Low Priority
 
 7. ~~**[LOW]** Create `docs/development/rag-tools-workbench.md`~~ ✅ DONE
-8. **[LOW]** Add ID propagation pattern documentation for graphs
+8. ~~**[LOW]** Add ID propagation pattern documentation for graphs~~ DONE
 
 ---
 

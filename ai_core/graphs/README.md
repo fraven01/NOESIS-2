@@ -9,11 +9,25 @@ Observability-Layer.
 
 ## Context & Identity (Pre-MVP ID Contract)
 
-Graphs receive context via `scope_context` in the graph meta. The `ScopeContext` includes:
+Graphs receive context via `normalize_meta()` in `ai_core/graph/schemas.py`. The
+graph meta carries three structured contexts:
 
-- **Correlation IDs**: `tenant_id`, `trace_id`, `invocation_id`, `case_id`, `workflow_id`
-- **Runtime IDs**: `run_id` and/or `ingestion_run_id` (may co-exist when workflow triggers ingestion)
-- **Identity IDs**: `user_id` (User Request Hop) or `service_id` (S2S Hop) - mutually exclusive
+- **ScopeContext** (`scope_context`): `tenant_id`, `trace_id`, `invocation_id`,
+  `run_id` and/or `ingestion_run_id`, `user_id` or `service_id`, `tenant_schema`,
+  `idempotency_key`, `timestamp`
+- **BusinessContext** (`business_context`): `case_id`, `collection_id`,
+  `workflow_id`, `document_id`, `document_version_id`
+- **ToolContext** (`tool_context`): Composition of scope + business + runtime metadata
+
+Canonical runtime context injection pattern:
+
+1. Boundary builds meta via `normalize_meta(request)`.
+2. Graph entry parses `ToolContext` once via `tool_context_from_meta(meta)`.
+3. Persist the validated context in state (e.g. `state["tool_context"] = context`).
+4. Nodes read IDs from `context.scope.*` and `context.business.*`.
+
+Do not re-derive IDs from headers or implicit state; context is the single
+source of truth.
 
 For entity persistence within graphs, use `audit_meta_from_scope()`:
 

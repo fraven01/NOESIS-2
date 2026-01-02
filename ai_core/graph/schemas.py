@@ -188,6 +188,11 @@ def normalize_meta(request: Any) -> dict:
     BREAKING CHANGE (Option A - Graph-Specific Validation):
     No longer enforces case_id globally. Business context fields are optional.
     Individual graphs validate required fields based on their needs.
+
+    Canonical runtime context injection:
+    - `normalize_meta()` attaches `scope_context`, `business_context`, and `tool_context`.
+    - Graph entrypoints should parse `tool_context` once (via `tool_context_from_meta`)
+      and keep it in state for node access.
     """
 
     scope = _build_scope_context(request)
